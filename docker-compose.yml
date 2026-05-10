@@ -1,0 +1,30 @@
+# RAG Chat — local stack (Phase 1: vector DB only for now)
+# Image: https://hub.docker.com/r/pgvector/pgvector
+# Extension docs: https://github.com/pgvector/pgvector
+
+services:
+  vector-db:
+    image: pgvector/pgvector:pg17-bookworm
+    container_name: rag-chat-vector-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_dev_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-rag_chat}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+      - ./vector-db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  pgvector_data:

@@ -1,128 +1,129 @@
-# RAG Chat — Implementation Plan
+# D&D 5e Ruleset RAG — Implementation Plan
 
-> **Status**: Draft — in active development with owner
-> **Last updated**: 2026-04-28
-> **Runtime**: Docker Compose — all services run as containers
+> **Status**: Draft — **product track**: semantic search and RAG over **Dungeons & Dragons 5th Edition** rules text  
+> **Last updated**: 2026-05-03  
+> **Repo**: **rag-chat** (this repository)
+
+**Not in scope here**: [Agent Forge](https://github.com/jupes/agent-forge-harness) **harness RAG** over dev `repos/` with **local pgvector**. That plan is committed in the harness: **`docs/plans/harness-rag-local-vector.md`**.
+
+**Beads (harness tracker)**: Epic **agent-forge-harness-17u** — *D&D 5e ruleset RAG (GCP)*.
 
 ---
 
 ## Overview
 
-Build a minimal RAG pipeline as three independent services connected by HTTP/WebSocket APIs.
-Each service is scoped to do one thing well. No framework magic — just clean interfaces.
+Deliver a **rules-grounded** Q&A or search experience for D&D 5e: user asks in natural language; the system retrieves relevant **official or licensed rules passages** (per your rights to the corpus), assembles context, and answers with **citations** to book/chapter/section or SRD paragraph.
 
-All services run in Docker containers and are orchestrated with a single `docker-compose.yml` at the repo root.
-`docker compose up` brings the entire stack online; each service has its own `Dockerfile`.
+**Default deployment shape**: **GCP**-oriented stack; **vector store** is **hosted** (e.g. **[Pinecone](https://www.pinecone.io/)**, or **Qdrant Cloud** / **Vertex AI Vector Search** / **AlloyDB pgvector** if you standardize on Google-native components). Pick one for v1; keep **ingestion**, **embedding**, and **query** behind adapters.
 
----
-
-## Phase 1 — Vector DB Setup
-
-**Goal**: Stand up a vector database and confirm it can store and retrieve embeddings.
-
-- Choose a vector DB and define its Docker image/service in `docker-compose.yml`
-- Define collection/index schema: embedding dimensions, metadata fields (source, chunk_id, text)
-- Mount a named Docker volume for data persistence across container restarts
-- Verify round-trip: insert a vector, query by similarity, get expected result back
-- Document connection string, port mapping, and volume config
-
-**Acceptance criteria**:
-- `docker compose up vector-db` starts the DB container
-- Insert + similarity search works via CLI or test script against the container
-- Data persists across `docker compose down` + `up` via named volume
-- Schema and connection details documented in `vector-db/README.md`
+**Corpus**: You must only index text you have the **legal right** to use (e.g. **SRD** content, your own notes, OGL/CC material). This plan does not assume redistribution of non-SRD books.
 
 ---
 
-## Phase 2 — Data Ingestion
+## Phase 1 — Hosted vector index (GCP-friendly)
 
-**Goal**: Load source documents into the vector DB so the agent has something to retrieve from.
+**Goal**: Provision a **managed** index/collection in GCP or a paired SaaS (Pinecone, etc.): dimensions, namespaces (e.g. `srd`, `house-rules`), metadata schema.
 
-- Define document source format (files, URLs, plain text)
-- Chunk documents into passages (configurable chunk size + overlap)
-- Embed each chunk via embedding model API (e.g. OpenAI `text-embedding-3-small`)
-- Upsert vectors + metadata into the vector DB
-- Idempotent: re-running ingestion on the same source should not duplicate records
-- Ingestion runs as a short-lived Docker container (`docker compose run ingestion`) that exits on completion
-- Source documents are bind-mounted into the container at runtime (`./data:/data`)
+- Metadata fields (suggested): `source` (e.g. `SRD 5.2`), `section`, `chunk_id`, `text`, optional `page` / `topic_tags`.
+- Secrets: API keys or workload identity in **Secret Manager** (or `.env` for local dev only); never commit secrets.
+- Smoke test from dev machine or Cloud Shell: upsert small batch, query, assert neighbor ids.
 
-**Acceptance criteria**:
-- `docker compose run ingestion` processes documents from the bind-mounted `./data` directory
-- Documents are chunked, embedded, and stored in the vector DB container
-- Querying the DB after ingestion returns relevant chunks for a test query
+**Acceptance**
+
+- Dev/staging index exists; non-secret config documented in repo `README` or `vector-db/README.md`.
+- Automated or scripted insert + similarity search passes.
+- Clear story for **prod** vs **dev** namespaces or separate indexes.
 
 ---
 
-## Phase 3 — Agent Service
+## Phase 2 — Rules corpus ingestion
 
-**Goal**: Build the orchestration API that sits between the chat app and the retrieval + LLM layers.
+**Goal**: Chunk, embed, and upsert **5e rules** content into the hosted index.
 
-### Endpoints
-- `POST /chat` — accepts `{ prompt: string }`, returns `{ response: string, sources: Chunk[] }`
+- Normalize source files (Markdown, PDF extraction pipeline, or vendor-provided SRD JSON) into a **canonical chunk format**.
+- Chunking tuned for **short rule paragraphs** and **tables** (tables may need special handling or flattening).
+- Idempotent upserts using stable keys (`source` + `section_ref` + `chunk_index` or hash).
+- Optional: separate ingestion job on **Cloud Run** or batch pipeline triggered after corpus updates.
 
-### Internals
-1. Embed the incoming prompt using the embedding model
-2. Query the vector DB for top-K similar chunks
-3. Build a context window: system prompt + retrieved chunks + user prompt
-4. Call the LLM (e.g. Claude via Anthropic SDK) with the assembled context
-5. Return the LLM response and the source chunks used
+**Acceptance**
 
-- Service runs as a Docker container; port exposed via `docker-compose.yml` (e.g. `3001:3001`)
-- Communicates with the vector DB container over the Docker internal network (no localhost)
-- API key / env config injected via `.env` file (never committed)
-
-**Acceptance criteria**:
-- `docker compose up agent-service` starts the service and exposes the API
-- `POST /chat` returns a grounded response for a prompt covered by ingested data
-- Sources array identifies which chunks were used
-- Service is stateless (no session stored server-side)
+- Full **allowed** corpus ingested; spot-check retrieval for iconic queries (“What is the Help action?”, “grappling rules”, spell slot progression).
+- Re-run pipeline: no duplicate vectors for unchanged chunks.
 
 ---
 
-## Phase 4 — Chat App
+## Phase 3 — Agent / API service
 
-**Goal**: Simple browser UI for submitting prompts and reading responses.
+**Goal**: Stateless HTTP API: embed question → vector search → LLM with citations.
 
-- Single-page app (React or plain HTML + fetch is fine)
-- Input: text field + submit button
-- Output: response text with collapsible source citations
-- Loading state while waiting for agent service
+- Endpoints (align with your stack): e.g. `POST /rules/ask` or `POST /chat/stream` (SSE) returning final `sources[]`.
+- System prompt: **only answer from retrieved text**; refuse or narrow when retrieval is empty or low-confidence.
+- Log **request id** + retrieved ids for debugging; no storage of user prompts in prod unless product requires it (privacy).
 
-- Served as a static build from an Nginx Docker container (or Node dev server in development)
-- Port exposed via `docker-compose.yml` (e.g. `3000:80`)
-- Agent service URL injected at build time via env var
+**Acceptance**
 
-**Acceptance criteria**:
-- `docker compose up chat-app` serves the UI on `localhost:3000`
-- User can type a prompt, submit it, and see a response
-- Source citations are visible
-- Works end-to-end against the local agent service container
+- Grounded answers for golden questions with populated `sources`.
+- Explicit behavior when retrieval finds nothing relevant.
 
 ---
 
-## Open Questions
+## Phase 4 — Client (web or CLI)
 
-- [ ] Which vector DB? (Qdrant Docker image recommended — `qdrant/qdrant`)
-- [ ] Which embedding model? (OpenAI `text-embedding-3-small` unless we want local)
-- [ ] What is the source data corpus? (Decide before starting ingestion)
-- [ ] LLM for generation? (Claude via Anthropic SDK recommended)
-- [ ] Auth between services? (None for local dev; all on Docker internal network)
-- [ ] Hot-reload in dev? (Volume-mount source + use nodemon/vite dev server vs. rebuild image)
+**Goal**: Minimal UI or CLI for play at the table or prep: prompt in, answer + expandable citations out.
+
+- Can be a small **React** app, static export to **Cloud Storage** + **HTTPS**, or **Firebase Hosting** — product choice.
+- Show **book/SRD reference** per citation, not just internal chunk ids, for trust at the table.
+
+**Acceptance**
+
+- End-to-end demo from browser or CLI against staging API and index.
 
 ---
 
-## Service Boundaries
+## Phase 5 — Evaluation (5e golden set)
+
+Build **10–30** golden items grounded in **your** indexed corpus, for example:
+
+| Field | Purpose |
+|--------|--------|
+| `question` | Natural language player/DM question |
+| `expected_answer_shape` | Short correct ruling (for human or LLM-judge) |
+| `expected_sources` | Section ids or headings that must appear in citations |
+| `must_include` | Rule phrases that must appear in the answer |
+| `must_not_include` | Common wrong rulings or wrong editions |
+
+Use the set to tune **topK**, **chunk size**, **metadata filters** (e.g. filter to `Combat` only when the query implies combat).
+
+---
+
+## Open questions (D&D product)
+
+- [ ] **Vector provider**: Pinecone vs Vertex Vector Search vs AlloyDB — cost, latency, EU region if needed.
+- [ ] **Corpus**: SRD-only v1 vs licensed sources you control.
+- [ ] **Embedding model**: OpenAI vs Gemini vs open weights — dimension locks index schema.
+- [ ] **LLM**: same-vendor vs best-of-breed for cost/latency.
+- [ ] **Multilingual** or English-only v1?
+
+---
+
+## Service boundaries (rag-chat repo, indicative)
 
 ```
-docker-compose.yml       # Root orchestration — brings up all services
-.env.example             # Template for required env vars (committed)
-.env                     # Actual secrets — NEVER committed
-data/                    # Source documents for ingestion (bind-mounted)
-chat-app/                # Phase 4 — frontend; Dockerfile builds static Nginx image
-agent-service/           # Phase 3 — orchestration API; Dockerfile builds Node image
-vector-db/               # Phase 1 — DB config and schema docs (no Dockerfile; uses upstream image)
-ingestion/               # Phase 2 — one-shot script container; Dockerfile builds Node image
+docker-compose.yml       # Local dev: optional API + workers; index may still be cloud
+cloudbuild.yaml / tf/    # Optional — GCP deploy artifacts (add when chosen)
+ingestion/               # Chunk + embed + upsert to hosted index
+agent-service/           # Rules Q&A API
+chat-app/                # Or rules-ui/ — user-facing surface
+vector-db/               # Docs for *hosted* schema + env vars (not necessarily local Postgres)
 ```
 
-Each service directory contains its own `Dockerfile` (except `vector-db/`, which uses the upstream image directly).
-The root `docker-compose.yml` wires them together on a shared internal network.
+For **local-only experiments**, you may temporarily use the same **pgvector** Docker pattern as the harness plan; production intent for **this** product remains **hosted on GCP**.
+
+---
+
+## Next steps (D&D track)
+
+1. Lock **corpus** legal scope and file layout.
+2. Choose **hosted vector** + region; create dev index.
+3. Ship ingestion for SRD slice → first golden eval.
+4. Expose API + thin UI; iterate on filters and prompts before scaling corpus.
