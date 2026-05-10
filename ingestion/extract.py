@@ -43,9 +43,16 @@ BOOK_CONFIGS: dict[str, dict] = {
         "header_re": re.compile(       # page header to strip before processing
             r"^\d+\s*\nD&D Player's Basic Rules[^\n]*\n", re.MULTILINE
         ),
+        "header_line_re": re.compile(  # single-line match to drop header lines in column extraction
+            r"D&D Player.{0,3}s Basic Rules", re.IGNORECASE
+        ),
         "spell_level_re": re.compile(  # line that follows a spell name
             r"^\s*(\d+(?:st|nd|rd|th)-level|cantrip)", re.IGNORECASE
         ),
+        # Chapter headings whose pages should be skipped entirely.
+        # Appendix C contains lore, character sheet forms, and marketing copy —
+        # none of which has retrieval value for rules lookup.
+        "skip_chapters": {"appendix c"},
     },
 }
 
@@ -261,6 +268,7 @@ def _extract_column_chunks(
     chapter_title_pt  = cfg["chapter_title_pt"]
     entity_name_pt    = cfg["entity_name_pt"]
     spell_level_re    = cfg["spell_level_re"]
+    header_line_re    = cfg.get("header_line_re")
 
     current_lines: list[str] = []
     current_entity: str | None = None
@@ -270,7 +278,8 @@ def _extract_column_chunks(
 
     def _flush() -> None:
         text = "\n".join(current_lines).strip()
-        if not text:
+        if not text or len(text.split()) < 5:
+            current_lines.clear()
             return
         chunk_counter[0] += 1
         # For class_feature chunks, entity_name holds the feature name
@@ -299,6 +308,8 @@ def _extract_column_chunks(
     for line in lines:
         text = _line_text(line)
         if not text:
+            continue
+        if header_line_re and header_line_re.search(text):
             continue
         size = _dominant_size(line)
 
@@ -352,6 +363,7 @@ def extract_pdf(
     current_section: str | None = None
     current_part:    str | None = None
     current_ctype  = "rule"
+    skip_chapters: set[str] = {s.lower() for s in cfg.get("skip_chapters", set())}
 
     with pdfplumber.open(pdf_path) as pdf:
         total = len(pdf.pages)
@@ -372,6 +384,12 @@ def extract_pdf(
                 current_ctype   = ctype
                 if part:
                     current_part = part
+
+            # -- Skip chapters explicitly excluded in book config -------------
+            if current_chapter and any(
+                s in current_chapter.lower() for s in skip_chapters
+            ):
+                continue
 
             # -- Tables (extracted before column text to avoid duplication) --
             yield from _extract_table_chunks(
