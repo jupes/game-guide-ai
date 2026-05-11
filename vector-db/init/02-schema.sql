@@ -1,6 +1,7 @@
 -- D&D RAG chunk store.
--- Embedding dimension 1024 matches mxbai-embed-large via Ollama.
+-- Embedding dimension 768 matches nomic-embed-text via Ollama.
 -- Cosine distance operator: <=> (pgvector README).
+-- See docs/plans/dnd-embedding-guide.md for model selection rationale.
 
 CREATE TABLE IF NOT EXISTS dnd.chunks (
   chunk_id       TEXT PRIMARY KEY,
@@ -16,7 +17,7 @@ CREATE TABLE IF NOT EXISTS dnd.chunks (
   class_name     TEXT,
   feature_name   TEXT,
   text           TEXT NOT NULL,
-  embedding      vector(1024) NOT NULL,
+  embedding      vector(768) NOT NULL,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
