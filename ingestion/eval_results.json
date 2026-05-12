@@ -1,0 +1,344 @@
+[
+  {
+    "question": "What is the range of Fireball?",
+    "mode": "hybrid",
+    "expected_content_type": "spell",
+    "expected_entity": "Fireball",
+    "expected_class": null,
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 0.4,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "bdd879ee446eccd3d087",
+        "content_type": "spell",
+        "entity_name": "Fireball",
+        "class_name": null,
+        "rrf_score": 0.032787,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "b670bb79601629e1440b",
+        "content_type": "spell",
+        "entity_name": "Delayed Blast Fireball",
+        "class_name": null,
+        "rrf_score": 0.032258,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "2bda5492cd23c8b1ff6a",
+        "content_type": "rule",
+        "entity_name": "Longer Casting Times",
+        "class_name": "Casting a Spell",
+        "rrf_score": 0.029031,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "a5464aebaadf3a14b8db",
+        "content_type": "spell",
+        "entity_name": "Antimagic Field",
+        "class_name": "Spell Descriptions",
+        "rrf_score": 0.028665,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "affe6d41ab614e382ad3",
+        "content_type": "spell",
+        "entity_name": "Fire Bolt",
+        "class_name": null,
+        "rrf_score": 0.016816,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "How many hit points does a Fighter get at level 1?",
+    "mode": "hybrid",
+    "expected_content_type": "class_feature",
+    "expected_entity": null,
+    "expected_class": "Fighter",
+    "expected_chapter": null,
+    "hit_at_1": false,
+    "precision_at_k": 0.0,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "50ef1c7cfcf0306da42e",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Class Features",
+        "rrf_score": 0.017337,
+        "is_hit": false
+      },
+      {
+        "rank": 2,
+        "chunk_id": "f15f429c2f3017f66062",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Class Features",
+        "rrf_score": 0.017072,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "984d25cbc9a9db87ff9c",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Class Features",
+        "rrf_score": 0.016816,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "d7f0d957883f0b10a3ec",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Class Features",
+        "rrf_score": 0.016568,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "895ed5fe52439e7ed52d",
+        "content_type": "narrative",
+        "entity_name": "Hit Points and Hit Dice",
+        "class_name": null,
+        "rrf_score": 0.016328,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What does the Blinded condition do?",
+    "mode": "hybrid",
+    "expected_content_type": "condition",
+    "expected_entity": "Blinded",
+    "expected_class": null,
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 0.2,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "8006270e063c42512806",
+        "content_type": "condition",
+        "entity_name": "Blinded",
+        "class_name": null,
+        "rrf_score": 0.032787,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "13619617dcae6473dcff",
+        "content_type": "condition",
+        "entity_name": null,
+        "class_name": null,
+        "rrf_score": 0.031498,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "978c29a6a10eabb88879",
+        "content_type": "rule",
+        "entity_name": null,
+        "class_name": null,
+        "rrf_score": 0.030118,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "d82486ffe04a14ac3a07",
+        "content_type": "spell",
+        "entity_name": "Lesser Restoration",
+        "class_name": null,
+        "rrf_score": 0.029643,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "e682b7b581ffa75cfbc2",
+        "content_type": "rule",
+        "entity_name": "Blindsight",
+        "class_name": null,
+        "rrf_score": 0.017072,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "How does grappling work?",
+    "mode": "hybrid",
+    "expected_content_type": "rule",
+    "expected_entity": null,
+    "expected_class": null,
+    "expected_chapter": "Chapter 9",
+    "hit_at_1": true,
+    "precision_at_k": 0.6,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "851a5c9a24489750c4e0",
+        "content_type": "rule",
+        "entity_name": "Grappling",
+        "class_name": null,
+        "rrf_score": 0.017337,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "3a6cb3f5b3e0abceeed2",
+        "content_type": "condition",
+        "entity_name": "Grappled",
+        "class_name": null,
+        "rrf_score": 0.017072,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "ff8b504643ffddd871e0",
+        "content_type": "rule",
+        "entity_name": null,
+        "class_name": null,
+        "rrf_score": 0.016816,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "a659c289042be8fc5d8d",
+        "content_type": "rule",
+        "entity_name": "Climbing, Swimming, and Crawling",
+        "class_name": null,
+        "rrf_score": 0.016568,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "9f4b944baf6fc5f50253",
+        "content_type": "rule",
+        "entity_name": "Using Different Speeds",
+        "class_name": null,
+        "rrf_score": 0.016328,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What languages do Elves know?",
+    "mode": "hybrid",
+    "expected_content_type": "race_feature",
+    "expected_entity": "Elf",
+    "expected_class": null,
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 0.4,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "d197b45958d07360ce38",
+        "content_type": "race_feature",
+        "entity_name": "High Elf",
+        "class_name": null,
+        "rrf_score": 0.032787,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "6580bd91d4acc8b228f5",
+        "content_type": "race_feature",
+        "entity_name": null,
+        "class_name": null,
+        "rrf_score": 0.017072,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "99f496ab0cdaa8f2821f",
+        "content_type": "race_feature",
+        "entity_name": null,
+        "class_name": null,
+        "rrf_score": 0.016816,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "1e83257f9f15ba7db8fd",
+        "content_type": "race_feature",
+        "entity_name": null,
+        "class_name": null,
+        "rrf_score": 0.016568,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "d0c49a06216287b0983e",
+        "content_type": "race_feature",
+        "entity_name": "Wood Elf",
+        "class_name": null,
+        "rrf_score": 0.016328,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What are the components of Cure Wounds?",
+    "mode": "hybrid",
+    "expected_content_type": "spell",
+    "expected_entity": "Cure Wounds",
+    "expected_class": null,
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 0.4,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "7b20408e58667eb9c5c1",
+        "content_type": "spell",
+        "entity_name": "Mass Cure Wounds",
+        "class_name": null,
+        "rrf_score": 0.032522,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "2b08fc30c9b730d7d1a4",
+        "content_type": "spell",
+        "entity_name": "Cure Wounds",
+        "class_name": null,
+        "rrf_score": 0.032522,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "d2ebdf5ed94db76b8e57",
+        "content_type": "rule",
+        "entity_name": null,
+        "class_name": null,
+        "rrf_score": 0.025488,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "264d9fce9c47c2033a09",
+        "content_type": "spell",
+        "entity_name": "Raise Dead",
+        "class_name": null,
+        "rrf_score": 0.024585,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "3678cd89f0830723412d",
+        "content_type": "spell",
+        "entity_name": "Inflict Wounds",
+        "class_name": null,
+        "rrf_score": 0.016816,
+        "is_hit": false
+      }
+    ]
+  }
+]

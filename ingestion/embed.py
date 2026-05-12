@@ -81,19 +81,25 @@ INSERT INTO dnd.chunks (
     chunk_id, book_slug, source_file, page_start, page_end,
     part, chapter, section, content_type,
     entity_name, class_name, feature_name,
-    text, embedding
+    text, embedding, search_vector
 ) VALUES (
     %(chunk_id)s, %(book_slug)s, %(source_file)s, %(page_start)s, %(page_end)s,
     %(part)s, %(chapter)s, %(section)s, %(content_type)s,
     %(entity_name)s, %(class_name)s, %(feature_name)s,
-    %(text)s, %(embedding)s
+    %(text)s, %(embedding)s,
+    setweight(to_tsvector('english', coalesce(%(entity_name)s, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(%(class_name)s,  '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(%(feature_name)s,'')), 'A') ||
+    setweight(to_tsvector('english', replace(coalesce(%(content_type)s, ''), '_', ' ')), 'B') ||
+    setweight(to_tsvector('english', %(text)s), 'C')
 )
 ON CONFLICT (chunk_id) DO UPDATE SET
-    text      = EXCLUDED.text,
-    embedding = EXCLUDED.embedding,
-    part      = EXCLUDED.part,
-    chapter   = EXCLUDED.chapter,
-    section   = EXCLUDED.section
+    text          = EXCLUDED.text,
+    embedding     = EXCLUDED.embedding,
+    search_vector = EXCLUDED.search_vector,
+    part          = EXCLUDED.part,
+    chapter       = EXCLUDED.chapter,
+    section       = EXCLUDED.section
 """
 
 
