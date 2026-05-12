@@ -1,16 +1,19 @@
 """
-D&D chunk embedder — reads chunks.jsonl, embeds via Ollama, upserts into pgvector.
+D&D chunk embedder — reads chunks.jsonl, embeds via OpenAI or Ollama, upserts into pgvector.
 
 Usage:
-    uv run --with psycopg --with psycopg[binary] python ingestion/embed.py [--chunks <path>] [--dsn <dsn>]
+    uv run --with "psycopg[binary]" --with openai python ingestion/embed.py
 
-Example:
-    uv run --with "psycopg[binary]" python ingestion/embed.py
+Env vars:
+    DATABASE_URL      postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat
+    OPENAI_API_KEY    sk-...  (required for OpenAI backend)
+    EMBED_BACKEND     openai | ollama  (default: openai)
+    EMBED_MODEL       default depends on backend:
+                        openai  -> text-embedding-3-small
+                        ollama  -> nomic-embed-text
+    OLLAMA_URL        http://localhost:11434  (ollama backend only)
 
-Env vars (override with flags):
-    DATABASE_URL  postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat
-    OLLAMA_URL    http://localhost:11434
-    EMBED_MODEL   mxbai-embed-large
+See docs/plans/dnd-embedding-guide.md for model selection rationale.
 """
 
 from __future__ import annotations
@@ -24,26 +27,40 @@ import urllib.request
 from pathlib import Path
 
 import psycopg
-from psycopg.rows import dict_row
 
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
 
 DEFAULT_DSN         = "postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat"
+DEFAULT_BACKEND     = "openai"
+DEFAULT_MODEL_OAI   = "text-embedding-3-small"
+DEFAULT_MODEL_OLLAMA = "nomic-embed-text"
 DEFAULT_OLLAMA_URL  = "http://localhost:11434"
-DEFAULT_MODEL       = "nomic-embed-text"
 DEFAULT_CHUNKS_PATH = Path(__file__).parent / "chunks.jsonl"
-BATCH_SIZE          = 32   # chunks per Ollama request
-MAX_EMBED_CHARS     = 8000 # nomic-embed-text supports 8192 tokens; headroom for tokenizer overhead
+BATCH_SIZE          = 128  # OpenAI supports up to 2048 inputs per request
 
 
 # ---------------------------------------------------------------------------
-# Ollama embedding
+# Embedding backends
 # ---------------------------------------------------------------------------
 
-def _embed_batch(texts: list[str], ollama_url: str, model: str) -> list[list[float]]:
-    """Call Ollama /api/embed and return one embedding per text."""
+def _embed_openai(texts: list[str], model: str) -> list[list[float]]:
+    """Embed a batch of texts via the OpenAI API."""
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key or api_key == "sk-replace-me":
+        print("ERROR: OPENAI_API_KEY is not set. Add it to your .env file.", file=sys.stderr)
+        print("  See .env.example for the expected format.", file=sys.stderr)
+        sys.exit(1)
+
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    resp = client.embeddings.create(model=model, input=texts)
+    return [d.embedding for d in resp.data]
+
+
+def _embed_ollama(texts: list[str], model: str, ollama_url: str) -> list[list[float]]:
+    """Embed a batch of texts via Ollama /api/embed."""
     payload = json.dumps({"model": model, "input": texts}).encode()
     req = urllib.request.Request(
         f"{ollama_url}/api/embed",
@@ -52,8 +69,7 @@ def _embed_batch(texts: list[str], ollama_url: str, model: str) -> list[list[flo
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=120) as resp:
-        result = json.loads(resp.read())
-    return result["embeddings"]
+        return json.loads(resp.read())["embeddings"]
 
 
 # ---------------------------------------------------------------------------
@@ -94,21 +110,25 @@ def _upsert_batch(conn: psycopg.Connection, rows: list[dict]) -> None:
 def embed_and_upsert(
     chunks_path: Path,
     dsn: str,
-    ollama_url: str,
+    backend: str,
     model: str,
+    ollama_url: str,
 ) -> None:
     chunks = [json.loads(l) for l in chunks_path.read_text(encoding="utf-8").splitlines() if l.strip()]
     total = len(chunks)
-    print(f"Chunks to embed: {total}  (model: {model})")
+    print(f"Chunks to embed: {total}  (backend: {backend}, model: {model})")
 
     with psycopg.connect(dsn) as conn:
         upserted = 0
         for batch_start in range(0, total, BATCH_SIZE):
             batch = chunks[batch_start : batch_start + BATCH_SIZE]
-            texts = [c["text"][:MAX_EMBED_CHARS] for c in batch]
+            texts = [c["text"] for c in batch]
 
             t0 = time.monotonic()
-            embeddings = _embed_batch(texts, ollama_url, model)
+            if backend == "openai":
+                embeddings = _embed_openai(texts, model)
+            else:
+                embeddings = _embed_ollama(texts, model, ollama_url)
             elapsed = time.monotonic() - t0
 
             rows = []
@@ -136,18 +156,27 @@ def main() -> None:
                         help="Path to chunks.jsonl")
     parser.add_argument("--dsn",   default=os.environ.get("DATABASE_URL", DEFAULT_DSN),
                         help="PostgreSQL DSN")
+    parser.add_argument("--backend", default=os.environ.get("EMBED_BACKEND", DEFAULT_BACKEND),
+                        choices=["openai", "ollama"],
+                        help="Embedding backend (default: openai)")
+    parser.add_argument("--model", default=None,
+                        help="Model name (default: text-embedding-3-small for openai, nomic-embed-text for ollama)")
     parser.add_argument("--ollama-url", default=os.environ.get("OLLAMA_URL", DEFAULT_OLLAMA_URL),
-                        help="Ollama base URL")
-    parser.add_argument("--model", default=os.environ.get("EMBED_MODEL", DEFAULT_MODEL),
-                        help="Ollama embedding model name")
+                        help="Ollama base URL (ollama backend only)")
     args = parser.parse_args()
+
+    if args.model is None:
+        args.model = os.environ.get(
+            "EMBED_MODEL",
+            DEFAULT_MODEL_OAI if args.backend == "openai" else DEFAULT_MODEL_OLLAMA,
+        )
 
     chunks_path = Path(args.chunks)
     if not chunks_path.exists():
         print(f"ERROR: chunks file not found: {chunks_path}", file=sys.stderr)
         sys.exit(1)
 
-    embed_and_upsert(chunks_path, args.dsn, args.ollama_url, args.model)
+    embed_and_upsert(chunks_path, args.dsn, args.backend, args.model, args.ollama_url)
 
 
 if __name__ == "__main__":
