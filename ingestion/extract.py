@@ -10,6 +10,19 @@ Example:
     uv run --with pdfplumber python ingestion/extract.py "PlayerDnDBasicRules_v0.2_PrintFriendly.pdf"
 
 See docs/plans/dnd-pdf-parsing-guide.md for calibration details.
+
+Two-pass extraction
+-------------------
+Pass 1 (TOC scan): For chapters whose content_type maps to "class_feature" or
+"race_feature", scan all pages and collect every 20pt heading in document order.
+The FIRST 20pt heading after the chapter boundary is the entity owner (e.g.
+"Fighter"). Subsequent 20pt headings on that entity's pages are structural
+subheadings ("Class Features", "Martial Archetypes") and must NOT overwrite the
+owner. The pass produces a page → entity_owner dict.
+
+Pass 2 (extraction): The existing column-extraction logic, but for 20pt lines
+in entity-ownership chapters the class_name is resolved from the page-range map
+rather than set directly from the heading text.
 """
 
 from __future__ import annotations
@@ -94,6 +107,178 @@ def _chapter_meta(heading: str) -> tuple[str, str | None]:
         if pattern.search(heading):
             return ctype, part
     return "rule", None
+
+
+# Content types that have entity ownership (class/race names as 20pt headings)
+_ENTITY_OWNERSHIP_CTYPES = {"class_feature", "race_feature"}
+
+
+# ---------------------------------------------------------------------------
+# Section 2b: Pass-1 TOC scan — build page → entity-owner map
+# ---------------------------------------------------------------------------
+
+def _collect_entity_chapter_headings(
+    pdf: "pdfplumber.PDF",
+    cfg: dict,
+) -> dict[str, tuple[list[tuple[int, int, float, str]], list[int]]]:
+    """
+    Collect all 20pt headings and all page numbers from entity-ownership chapters.
+
+    Returns {chapter_heading: (headings, all_pages)} where:
+    - headings = [(page_num, col_order, y, text), ...], col_order 0=left 1=right
+    - all_pages = sorted list of every page number in that chapter
+
+    Sorting headings by (page_num, col_order, y) gives true document order.
+    """
+    entity_name_pt = cfg["entity_name_pt"]
+    header_line_re = cfg.get("header_line_re")
+    split_x = cfg["column_split_x"]
+
+    headings_map: dict[str, list[tuple[int, int, float, str]]] = {}
+    pages_map: dict[str, list[int]] = {}
+    current_chapter: str | None = None
+    current_ctype = "rule"
+
+    for page_num, page in enumerate(pdf.pages, start=1):
+        raw = page.extract_text() or ""
+        first_line = raw.split("\n")[0].strip() if raw else ""
+        if first_line and _CHAPTER_BOUNDARY_RE.match(first_line):
+            ctype, _ = _chapter_meta(first_line)
+            current_chapter = first_line
+            current_ctype = ctype
+
+        if current_ctype not in _ENTITY_OWNERSHIP_CTYPES or current_chapter is None:
+            continue
+
+        if current_chapter not in headings_map:
+            headings_map[current_chapter] = []
+            pages_map[current_chapter] = []
+        pages_map[current_chapter].append(page_num)
+
+        for col_order, (x0, x1) in enumerate([(0, split_x), (split_x, page.width)]):
+            cropped = page.crop((x0, 0, x1, page.height))
+            if not cropped.chars:
+                continue
+            for line in _group_into_lines(cropped.chars):
+                text = _line_text(line)
+                if not text:
+                    continue
+                if header_line_re and header_line_re.search(text):
+                    continue
+                if abs(_dominant_size(line) - entity_name_pt) < 0.5:
+                    y = line[0]["top"]
+                    headings_map[current_chapter].append((page_num, col_order, y, text))
+
+    return {ch: (headings_map[ch], pages_map[ch]) for ch in headings_map}
+
+
+def _identify_entity_names(
+    headings: list[tuple[int, int, float, str]],
+) -> set[str]:
+    """
+    Given an ordered list of (page, col_order, y, text) 20pt headings from one
+    chapter, return the set of text values that are entity names (class/race names).
+
+    Strategy: the structural marker is the most-frequent 20pt heading text in
+    the chapter (e.g. "Class Features" — appears once per class). Entity names
+    are headings that immediately PRECEDE the structural marker in document order.
+    The very first heading in the chapter is always an entity name (it opens the
+    first entity's section).
+
+    For chapters with no repeated heading (e.g. races in PHB basic), fall back to
+    keeping ALL headings as entity names and excluding the first one IF it looks
+    like a section intro (multi-word, appears before any other heading on the page).
+    """
+    if not headings:
+        return set()
+
+    # Sort by (page, col_order, y) to get document order
+    ordered = sorted(headings, key=lambda h: (h[0], h[1], h[2]))
+    texts = [h[3] for h in ordered]
+
+    # Find the structural marker: the most-frequent heading text
+    from collections import Counter
+    freq = Counter(texts)
+    max_freq = max(freq.values())
+
+    if max_freq > 1:
+        # There is a repeated structural marker (e.g. "Class Features")
+        structural_marker = max(
+            (t for t, c in freq.items() if c == max_freq), key=lambda t: freq[t]
+        )
+        entity_names: set[str] = set()
+        # First heading in chapter is always an entity name
+        if texts[0] != structural_marker:
+            entity_names.add(texts[0])
+        # Headings immediately preceding the structural marker are entity names
+        for i, text in enumerate(texts):
+            if text == structural_marker and i > 0 and texts[i - 1] != structural_marker:
+                entity_names.add(texts[i - 1])
+        return entity_names
+    else:
+        # No repeated heading: all unique headings could be entity names.
+        # Exclude multi-word "section intro" headings that appear before ANY
+        # single-word heading (e.g. "Choosing a Race" in the races chapter).
+        # Single-word headings are always entity names (Elf, Dwarf, Halfling…).
+        single_word = {t for t in texts if len(t.split()) == 1}
+        if single_word:
+            return single_word
+        # All headings single-word anyway — treat all as entity names
+        return set(texts)
+
+
+def _build_entity_ownership_map(
+    pdf: "pdfplumber.PDF",
+    cfg: dict,
+) -> dict[int, str]:
+    """
+    Pass 1: Scan every page and return a mapping of {1-based page_num: entity_owner}.
+
+    For chapters whose content_type is in _ENTITY_OWNERSHIP_CTYPES, each page is
+    assigned to the entity (class or race) whose section it belongs to.
+
+    Method:
+    1. Collect all 20pt headings per chapter with their document-order position.
+    2. Identify which headings are entity names vs. structural subheadings.
+    3. Walk the headings in document order: when an entity name heading is seen,
+       start a new entity section. All pages until the next entity name belong to
+       the current entity (including continuation pages with no 20pt headings).
+    """
+    chapter_data = _collect_entity_chapter_headings(pdf, cfg)
+
+    page_owner: dict[int, str] = {}
+
+    for chapter, (headings, all_pages) in chapter_data.items():
+        if not headings:
+            continue
+
+        entity_names = _identify_entity_names(headings)
+        ordered = sorted(headings, key=lambda h: (h[0], h[1], h[2]))
+
+        entity_page_starts: list[tuple[int, str]] = []
+        for page_num, col_order, y, text in ordered:
+            if text in entity_names:
+                entity_page_starts.append((page_num, text))
+
+        if not entity_page_starts:
+            continue
+
+        # Fill page → owner using contiguous ranges over ALL chapter pages
+        # (not just pages with headings), so continuation pages are covered.
+        sorted_pages = sorted(all_pages)
+        max_page = sorted_pages[-1]
+
+        for i, (start_page, owner) in enumerate(entity_page_starts):
+            end_page = (
+                entity_page_starts[i + 1][0] - 1
+                if i + 1 < len(entity_page_starts)
+                else max_page
+            )
+            for pg in sorted_pages:
+                if start_page <= pg <= end_page:
+                    page_owner[pg] = owner
+
+    return page_owner
 
 
 # ---------------------------------------------------------------------------
@@ -246,15 +431,21 @@ def _extract_column_chunks(
     default_content_type: str,
     cfg: dict,
     chunk_counter: list[int],
+    entity_owner_map: dict[int, str] | None = None,
 ) -> list[DndChunk]:
     """
     Crop the page to [x0, x1], group chars into lines, use font-size
     transitions to identify chunk boundaries, and return DndChunk list.
 
     12pt lines  → named entity heading (spell, condition, feature…) → new chunk
-    20pt lines  → class/race entity name → update class_name context
+    20pt lines  → class/race entity name or structural subheading → flush + update context
     24pt lines  → chapter/section title → update section context (not a chunk boundary)
     10/9/8.5pt  → body prose → accumulate into current chunk
+
+    When entity_owner_map is provided (Pass-2 mode), 20pt headings that are
+    structural subheadings ("Class Features", "Martial Archetypes", etc.) still
+    flush the current chunk but do NOT overwrite class_name — the owner is
+    resolved from the map instead.
     """
     cropped = page.crop((x0, 0, x1, page.height))
     chars = cropped.chars
@@ -275,6 +466,15 @@ def _extract_column_chunks(
     current_class:  str | None = None
     current_feature: str | None = None
     current_ctype = default_content_type
+
+    # Seed class/entity from the ownership map when entering a new page — this
+    # ensures even pages where the entity name heading has already scrolled past
+    # (multi-page entity sections) carry the correct owner from the first chunk.
+    if entity_owner_map is not None:
+        owner = entity_owner_map.get(page_num)
+        if owner:
+            current_class = owner
+            current_entity = owner
 
     def _flush() -> None:
         text = "\n".join(current_lines).strip()
@@ -318,10 +518,18 @@ def _extract_column_chunks(
             current_lines.append(text)
 
         elif abs(size - entity_name_pt) < 0.5:
-            # Class or race name (e.g. "Cleric", "Dwarf")
+            # 20pt heading — could be the entity name ("Fighter") or a structural
+            # subheading ("Class Features", "Martial Archetypes"). Always flush so
+            # each subsection becomes its own chunk. For ownership, prefer the
+            # page-range map over the raw heading text when in Pass-2 mode.
             _flush()
-            current_class = text
-            current_entity = text
+            if entity_owner_map is not None:
+                resolved = entity_owner_map.get(page_num, text)
+                current_class = resolved
+                current_entity = resolved
+            else:
+                current_class = text
+                current_entity = text
             current_feature = None
             current_lines.append(text)
 
@@ -352,23 +560,35 @@ def extract_pdf(
     """
     Yield DndChunk objects for every page of the PDF.
     Processes left column then right column; extracts tables separately.
+
+    Two-pass strategy: Pass 1 builds a page → entity-owner map for chapters
+    with entity ownership (races, classes). Pass 2 uses that map so structural
+    20pt subheadings ("Class Features", "Martial Archetypes") never overwrite
+    the true entity owner resolved in Pass 1.
     """
     cfg = BOOK_CONFIGS[book_slug]
     source_file = Path(pdf_path).name
     split_x = cfg["column_split_x"]
     chunk_counter = [0]  # mutable so nested helpers can increment it
 
-    # Persistent chapter context across pages
-    current_chapter: str | None = None
-    current_section: str | None = None
-    current_part:    str | None = None
-    current_ctype  = "rule"
     skip_chapters: set[str] = {s.lower() for s in cfg.get("skip_chapters", set())}
 
     with pdfplumber.open(pdf_path) as pdf:
+        # -- Pass 1: build entity-ownership map --------------------------------
+        print("  Pass 1: scanning entity ownership...", flush=True)
+        entity_owner_map = _build_entity_ownership_map(pdf, cfg)
+        print(f"  Pass 1 complete — {len(entity_owner_map)} pages mapped", flush=True)
+
+        # -- Pass 2: extract chunks --------------------------------------------
         total = len(pdf.pages)
+        # Persistent chapter context across pages
+        current_chapter: str | None = None
+        current_section: str | None = None
+        current_part:    str | None = None
+        current_ctype  = "rule"
+
         for page_num, page in enumerate(pdf.pages, start=1):
-            print(f"\r  Page {page_num}/{total}", end="", flush=True)
+            print(f"\r  Pass 2: page {page_num}/{total}", end="", flush=True)
 
             # -- Parse page header to track chapter context ------------------
             # Only update context when the first line is a genuine chapter
@@ -391,6 +611,10 @@ def extract_pdf(
             ):
                 continue
 
+            # Provide ownership map only for entity-ownership chapters so that
+            # non-entity chapters (spells, conditions) keep the old behaviour.
+            page_map = entity_owner_map if current_ctype in _ENTITY_OWNERSHIP_CTYPES else None
+
             # -- Tables (extracted before column text to avoid duplication) --
             yield from _extract_table_chunks(
                 page, page_num, book_slug, source_file,
@@ -405,6 +629,7 @@ def extract_pdf(
                 chapter=current_chapter, section=current_section, part=current_part,
                 default_content_type=current_ctype,
                 cfg=cfg, chunk_counter=chunk_counter,
+                entity_owner_map=page_map,
             )
 
             # -- Right column ------------------------------------------------
@@ -414,6 +639,7 @@ def extract_pdf(
                 chapter=current_chapter, section=current_section, part=current_part,
                 default_content_type=current_ctype,
                 cfg=cfg, chunk_counter=chunk_counter,
+                entity_owner_map=page_map,
             )
 
     print()  # newline after progress

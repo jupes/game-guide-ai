@@ -99,7 +99,10 @@ ON CONFLICT (chunk_id) DO UPDATE SET
     search_vector = EXCLUDED.search_vector,
     part          = EXCLUDED.part,
     chapter       = EXCLUDED.chapter,
-    section       = EXCLUDED.section
+    section       = EXCLUDED.section,
+    entity_name   = EXCLUDED.entity_name,
+    class_name    = EXCLUDED.class_name,
+    feature_name  = EXCLUDED.feature_name
 """
 
 
