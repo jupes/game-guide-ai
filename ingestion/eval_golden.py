@@ -56,6 +56,7 @@ class GoldenQuery:
 
 
 GOLDEN_SET: list[GoldenQuery] = [
+    # ── Original 6 ──────────────────────────────────────────────────────
     GoldenQuery(
         question="What is the range of Fireball?",
         expected_content_type="spell",
@@ -85,6 +86,80 @@ GOLDEN_SET: list[GoldenQuery] = [
         question="What are the components of Cure Wounds?",
         expected_content_type="spell",
         expected_entity="Cure Wounds",
+    ),
+
+    # ── 4 additional spell queries ──────────────────────────────────────
+    GoldenQuery(
+        question="What level is Shield and what does it do?",
+        expected_content_type="spell",
+        expected_entity="Shield",
+    ),
+    GoldenQuery(
+        question="How does Counterspell work?",
+        expected_content_type="spell",
+        expected_entity="Counterspell",
+    ),
+    GoldenQuery(
+        question="What is the casting time of Healing Word?",
+        expected_content_type="spell",
+        expected_entity="Healing Word",
+    ),
+    GoldenQuery(
+        question="What does the Magic Missile spell do?",
+        expected_content_type="spell",
+        expected_entity="Magic Missile",
+    ),
+
+    # ── 10 hard queries (multi-concept, cross-chunk, edge cases) ───────
+    GoldenQuery(
+        question="What happens when a creature is both Prone and Restrained?",
+        expected_content_type="condition",
+        expected_entity="Prone",
+    ),
+    GoldenQuery(
+        question="How does the Cleric's Channel Divinity: Turn Undead work?",
+        expected_content_type="class_feature",
+        expected_class="Cleric",
+    ),
+    GoldenQuery(
+        question="What saving throw proficiencies does a Wizard get?",
+        expected_content_type="class_feature",
+        expected_class="Wizard",
+    ),
+    GoldenQuery(
+        question="How does two-weapon fighting work in combat?",
+        expected_content_type="rule",
+        expected_chapter="Chapter 9",
+    ),
+    GoldenQuery(
+        question="What are the Rogue's Sneak Attack requirements?",
+        expected_content_type="class_feature",
+        expected_class="Rogue",
+    ),
+    GoldenQuery(
+        question="What ability score bonuses do Dwarves get?",
+        expected_content_type="race_feature",
+        expected_entity="Dwarf",
+    ),
+    GoldenQuery(
+        question="How do opportunity attacks work?",
+        expected_content_type="rule",
+        expected_chapter="Chapter 9",
+    ),
+    GoldenQuery(
+        question="What does the Paralyzed condition do to saving throws?",
+        expected_content_type="condition",
+        expected_entity="Paralyzed",
+    ),
+    GoldenQuery(
+        question="How does multiclassing work?",
+        expected_content_type="rule",
+        expected_chapter="Chapter 6",
+    ),
+    GoldenQuery(
+        question="What equipment does a Fighter start with?",
+        expected_content_type="class_feature",
+        expected_class="Fighter",
     ),
 ]
 

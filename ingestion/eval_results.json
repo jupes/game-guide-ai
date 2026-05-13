@@ -129,7 +129,7 @@
         "content_type": "condition",
         "entity_name": "Blinded",
         "class_name": null,
-        "cosine_distance": 0.321867,
+        "cosine_distance": 0.321823,
         "is_hit": true
       },
       {
@@ -138,7 +138,7 @@
         "content_type": "rule",
         "entity_name": "Blindsight",
         "class_name": null,
-        "cosine_distance": 0.443711,
+        "cosine_distance": 0.4437,
         "is_hit": false
       },
       {
@@ -147,7 +147,7 @@
         "content_type": "spell",
         "entity_name": "Blur",
         "class_name": null,
-        "cosine_distance": 0.446401,
+        "cosine_distance": 0.446368,
         "is_hit": false
       },
       {
@@ -156,7 +156,7 @@
         "content_type": "condition",
         "entity_name": null,
         "class_name": null,
-        "cosine_distance": 0.528052,
+        "cosine_distance": 0.528073,
         "is_hit": false
       },
       {
@@ -165,7 +165,7 @@
         "content_type": "spell",
         "entity_name": null,
         "class_name": null,
-        "cosine_distance": 0.529737,
+        "cosine_distance": 0.529706,
         "is_hit": false
       }
     ]
@@ -243,7 +243,7 @@
         "content_type": "race_feature",
         "entity_name": "High Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.380505,
+        "cosine_distance": 0.380436,
         "is_hit": true
       },
       {
@@ -252,7 +252,7 @@
         "content_type": "race_feature",
         "entity_name": "Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.393632,
+        "cosine_distance": 0.393607,
         "is_hit": true
       },
       {
@@ -261,7 +261,7 @@
         "content_type": "race_feature",
         "entity_name": "Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.433602,
+        "cosine_distance": 0.43356,
         "is_hit": true
       },
       {
@@ -270,7 +270,7 @@
         "content_type": "race_feature",
         "entity_name": "Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.446867,
+        "cosine_distance": 0.446805,
         "is_hit": true
       },
       {
@@ -279,7 +279,7 @@
         "content_type": "race_feature",
         "entity_name": "Wood Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.480308,
+        "cosine_distance": 0.480235,
         "is_hit": true
       }
     ]
@@ -338,6 +338,804 @@
         "class_name": null,
         "cosine_distance": 0.554404,
         "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What level is Shield and what does it do?",
+    "mode": "vector",
+    "expected_content_type": "spell",
+    "expected_entity": "Shield",
+    "expected_class": null,
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 0.4,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "cea8ef447ee2318c4465",
+        "content_type": "spell",
+        "entity_name": "Shield",
+        "class_name": null,
+        "cosine_distance": 0.481804,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "41770bc9474d25cc51d2",
+        "content_type": "spell",
+        "entity_name": "Shield of Faith",
+        "class_name": null,
+        "cosine_distance": 0.570725,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "439da8ce73d338440fa7",
+        "content_type": "rule",
+        "entity_name": "Armor and Shields",
+        "class_name": "Armor and Shields",
+        "cosine_distance": 0.592207,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "66f8630597793c7a0b9a",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Fighter",
+        "cosine_distance": 0.607378,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "5a778c5e09ce0d4ef417",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Cleric",
+        "cosine_distance": 0.619035,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "How does Counterspell work?",
+    "mode": "vector",
+    "expected_content_type": "spell",
+    "expected_entity": "Counterspell",
+    "expected_class": null,
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 0.2,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "f31dbd3c5983351da15b",
+        "content_type": "spell",
+        "entity_name": "Counterspell",
+        "class_name": null,
+        "cosine_distance": 0.410517,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "0a886014047ae782a637",
+        "content_type": "spell",
+        "entity_name": "Detect Magic",
+        "class_name": null,
+        "cosine_distance": 0.536975,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "90aef9e0251d36c25659",
+        "content_type": "rule",
+        "entity_name": "What Is a Spell?",
+        "class_name": "What Is a Spell?",
+        "cosine_distance": 0.551292,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "d87d499c7a730347d176",
+        "content_type": "rule",
+        "entity_name": null,
+        "class_name": null,
+        "cosine_distance": 0.554096,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "7deff5340d8674eb0931",
+        "content_type": "spell",
+        "entity_name": null,
+        "class_name": null,
+        "cosine_distance": 0.554292,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What is the casting time of Healing Word?",
+    "mode": "vector",
+    "expected_content_type": "spell",
+    "expected_entity": "Healing Word",
+    "expected_class": null,
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 0.4,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "02bc74e2e127613e8c1a",
+        "content_type": "spell",
+        "entity_name": "Healing Word",
+        "class_name": null,
+        "cosine_distance": 0.36119,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "6264d4f8d25c6c4a9833",
+        "content_type": "spell",
+        "entity_name": "Mass Healing Word",
+        "class_name": null,
+        "cosine_distance": 0.36337,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "f22d7884380fbee3f528",
+        "content_type": "spell",
+        "entity_name": "Prayer of Healing",
+        "class_name": null,
+        "cosine_distance": 0.405123,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "0eb3c0bfbb6aae546a6e",
+        "content_type": "spell",
+        "entity_name": "Heal",
+        "class_name": null,
+        "cosine_distance": 0.462492,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "2b08fc30c9b730d7d1a4",
+        "content_type": "spell",
+        "entity_name": "Cure Wounds",
+        "class_name": null,
+        "cosine_distance": 0.473963,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What does the Magic Missile spell do?",
+    "mode": "vector",
+    "expected_content_type": "spell",
+    "expected_entity": "Magic Missile",
+    "expected_class": null,
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 0.2,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "f065411c16585a1b8a43",
+        "content_type": "spell",
+        "entity_name": "Magic Missile",
+        "class_name": null,
+        "cosine_distance": 0.34255,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "cea8ef447ee2318c4465",
+        "content_type": "spell",
+        "entity_name": "Shield",
+        "class_name": null,
+        "cosine_distance": 0.465646,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "a5464aebaadf3a14b8db",
+        "content_type": "spell",
+        "entity_name": "Antimagic Field",
+        "class_name": "Spell Descriptions",
+        "cosine_distance": 0.49741,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "0a886014047ae782a637",
+        "content_type": "spell",
+        "entity_name": "Detect Magic",
+        "class_name": null,
+        "cosine_distance": 0.504946,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "3c1a697f887e275bd8dc",
+        "content_type": "spell",
+        "entity_name": null,
+        "class_name": null,
+        "cosine_distance": 0.511124,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What happens when a creature is both Prone and Restrained?",
+    "mode": "vector",
+    "expected_content_type": "condition",
+    "expected_entity": "Prone",
+    "expected_class": null,
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 0.2,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "067b1126aa4dc23ed94f",
+        "content_type": "condition",
+        "entity_name": "Prone",
+        "class_name": null,
+        "cosine_distance": 0.346583,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "ca12dd159d738b0460cf",
+        "content_type": "condition",
+        "entity_name": "Restrained",
+        "class_name": null,
+        "cosine_distance": 0.371401,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "4aed06d1770d3b71c1d6",
+        "content_type": "condition",
+        "entity_name": "Unconscious",
+        "class_name": null,
+        "cosine_distance": 0.505238,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "c2afda5db54f3a4f35a9",
+        "content_type": "condition",
+        "entity_name": "Stunned",
+        "class_name": null,
+        "cosine_distance": 0.510733,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "3a6cb3f5b3e0abceeed2",
+        "content_type": "condition",
+        "entity_name": "Grappled",
+        "class_name": null,
+        "cosine_distance": 0.52601,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "How does the Cleric's Channel Divinity: Turn Undead work?",
+    "mode": "vector",
+    "expected_content_type": "class_feature",
+    "expected_entity": null,
+    "expected_class": "Cleric",
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 1.0,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "4183710bc38fad368afc",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Cleric",
+        "cosine_distance": 0.263422,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "208951b2b2cc2fe15356",
+        "content_type": "class_feature",
+        "entity_name": "Cleric",
+        "class_name": "Cleric",
+        "cosine_distance": 0.348426,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "2d7bb067ab2be8632515",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Cleric",
+        "cosine_distance": 0.362572,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "8c2373ff9e26436774ae",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Cleric",
+        "cosine_distance": 0.366338,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "68f18aa4eb7b605b979b",
+        "content_type": "class_feature",
+        "entity_name": "Cleric",
+        "class_name": "Cleric",
+        "cosine_distance": 0.45005,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What saving throw proficiencies does a Wizard get?",
+    "mode": "vector",
+    "expected_content_type": "class_feature",
+    "expected_entity": null,
+    "expected_class": "Wizard",
+    "expected_chapter": null,
+    "hit_at_1": false,
+    "precision_at_k": 0.6,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "5a7d6bcca86f3f5f59cc",
+        "content_type": "rule",
+        "entity_name": "Saving Throws",
+        "class_name": "Saving Throws",
+        "cosine_distance": 0.360042,
+        "is_hit": false
+      },
+      {
+        "rank": 2,
+        "chunk_id": "78182102f2acc0c27a97",
+        "content_type": "class_feature",
+        "entity_name": "Wizard",
+        "class_name": "Wizard",
+        "cosine_distance": 0.36732,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "051feb50fd157d84292a",
+        "content_type": "rule",
+        "entity_name": "Spellcasting Ability",
+        "class_name": null,
+        "cosine_distance": 0.398683,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "e26aaf56c34c3ad8f606",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Wizard",
+        "cosine_distance": 0.404387,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "402f619af62cb92408d8",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Wizard",
+        "cosine_distance": 0.431497,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "How does two-weapon fighting work in combat?",
+    "mode": "vector",
+    "expected_content_type": "rule",
+    "expected_entity": null,
+    "expected_class": null,
+    "expected_chapter": "Chapter 9",
+    "hit_at_1": true,
+    "precision_at_k": 0.2,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "139c78bafbf5e496d781",
+        "content_type": "rule",
+        "entity_name": "Two-Weapon Fighting",
+        "class_name": null,
+        "cosine_distance": 0.315431,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "c9cafec69935062e79a9",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Fighter",
+        "cosine_distance": 0.390236,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "042d7ff49c585f29e90f",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Fighter",
+        "cosine_distance": 0.417032,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "72e0957f25087349b70c",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Fighter",
+        "cosine_distance": 0.422425,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "26b3e4df4d0b3b699bfa",
+        "content_type": "rule",
+        "entity_name": null,
+        "class_name": null,
+        "cosine_distance": 0.521331,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What are the Rogue's Sneak Attack requirements?",
+    "mode": "vector",
+    "expected_content_type": "class_feature",
+    "expected_entity": null,
+    "expected_class": "Rogue",
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 1.0,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "1fc770f879dbf5afbe7a",
+        "content_type": "class_feature",
+        "entity_name": "Rogue",
+        "class_name": "Rogue",
+        "cosine_distance": 0.317093,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "3c1b48e01748a9e6be2e",
+        "content_type": "class_feature",
+        "entity_name": "Rogue",
+        "class_name": "Rogue",
+        "cosine_distance": 0.332603,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "a0c3164e5b3b9d5e040c",
+        "content_type": "class_feature",
+        "entity_name": "Rogue",
+        "class_name": "Rogue",
+        "cosine_distance": 0.411611,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "988c2466eb91e864364a",
+        "content_type": "class_feature",
+        "entity_name": "Rogue",
+        "class_name": "Rogue",
+        "cosine_distance": 0.429282,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "1a4ccc103934a4802511",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Rogue",
+        "cosine_distance": 0.443563,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What ability score bonuses do Dwarves get?",
+    "mode": "vector",
+    "expected_content_type": "race_feature",
+    "expected_entity": "Dwarf",
+    "expected_class": null,
+    "expected_chapter": null,
+    "hit_at_1": false,
+    "precision_at_k": 0.4,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "0fbcc94678c1f82675c6",
+        "content_type": "race_feature",
+        "entity_name": "Elf",
+        "class_name": "Elf",
+        "cosine_distance": 0.323011,
+        "is_hit": false
+      },
+      {
+        "rank": 2,
+        "chunk_id": "de685b6f5e4314a3cdfb",
+        "content_type": "race_feature",
+        "entity_name": "Hill Dwarf",
+        "class_name": "Elf",
+        "cosine_distance": 0.33626,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "65e160b2301db23ecd2c",
+        "content_type": "narrative",
+        "entity_name": null,
+        "class_name": null,
+        "cosine_distance": 0.341889,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "658cfa77b5797bcc894a",
+        "content_type": "race_feature",
+        "entity_name": "Mountain Dwarf",
+        "class_name": "Elf",
+        "cosine_distance": 0.358541,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "d197b45958d07360ce38",
+        "content_type": "race_feature",
+        "entity_name": "High Elf",
+        "class_name": "Elf",
+        "cosine_distance": 0.406569,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "How do opportunity attacks work?",
+    "mode": "vector",
+    "expected_content_type": "rule",
+    "expected_entity": null,
+    "expected_class": null,
+    "expected_chapter": "Chapter 9",
+    "hit_at_1": true,
+    "precision_at_k": 0.4,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "981b96d0b1bd828ec58f",
+        "content_type": "rule",
+        "entity_name": "Opportunity Attacks",
+        "class_name": null,
+        "cosine_distance": 0.274114,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "367aff6a5cec57f0ff7e",
+        "content_type": "condition",
+        "entity_name": null,
+        "class_name": null,
+        "cosine_distance": 0.514491,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "98b0b48f57bfa8d232ff",
+        "content_type": "rule",
+        "entity_name": null,
+        "class_name": null,
+        "cosine_distance": 0.519934,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "b309def1b729f5633089",
+        "content_type": "rule",
+        "entity_name": "Noticing Threats",
+        "class_name": null,
+        "cosine_distance": 0.549496,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "51fd82e5617ad3184f5c",
+        "content_type": "class_feature",
+        "entity_name": "Rogue",
+        "class_name": "Rogue",
+        "cosine_distance": 0.561234,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What does the Paralyzed condition do to saving throws?",
+    "mode": "vector",
+    "expected_content_type": "condition",
+    "expected_entity": "Paralyzed",
+    "expected_class": null,
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 0.2,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "bff80d186e41b4869a9b",
+        "content_type": "condition",
+        "entity_name": "Paralyzed",
+        "class_name": null,
+        "cosine_distance": 0.358461,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "5a7d6bcca86f3f5f59cc",
+        "content_type": "rule",
+        "entity_name": "Saving Throws",
+        "class_name": "Saving Throws",
+        "cosine_distance": 0.479013,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "f3ad7901a7d8c5a25bb9",
+        "content_type": "rule",
+        "entity_name": "Death Saving Throws",
+        "class_name": null,
+        "cosine_distance": 0.495362,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "9cb33bd1add8b3be47cd",
+        "content_type": "rule",
+        "entity_name": "Stabilizing a Creature",
+        "class_name": null,
+        "cosine_distance": 0.517194,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "dd1a9a718b87a1a19089",
+        "content_type": "spell",
+        "entity_name": null,
+        "class_name": null,
+        "cosine_distance": 0.531224,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "How does multiclassing work?",
+    "mode": "vector",
+    "expected_content_type": "rule",
+    "expected_entity": null,
+    "expected_class": null,
+    "expected_chapter": "Chapter 6",
+    "hit_at_1": true,
+    "precision_at_k": 0.6,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "2c8d0faff575b2cc467f",
+        "content_type": "rule",
+        "entity_name": "Multiclassing",
+        "class_name": "Multiclassing",
+        "cosine_distance": 0.351489,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "2219dc879a9e16a76303",
+        "content_type": "rule",
+        "entity_name": null,
+        "class_name": null,
+        "cosine_distance": 0.510994,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "2f4cbf7427a10163ee61",
+        "content_type": "class_feature",
+        "entity_name": "Cleric",
+        "class_name": "Cleric",
+        "cosine_distance": 0.557648,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "d39dc9f2f657d5d9a66b",
+        "content_type": "rule",
+        "entity_name": null,
+        "class_name": null,
+        "cosine_distance": 0.587184,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "4e8db6cdddb48d3e5dcb",
+        "content_type": "narrative",
+        "entity_name": null,
+        "class_name": null,
+        "cosine_distance": 0.589842,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What equipment does a Fighter start with?",
+    "mode": "vector",
+    "expected_content_type": "class_feature",
+    "expected_entity": null,
+    "expected_class": "Fighter",
+    "expected_chapter": null,
+    "hit_at_1": true,
+    "precision_at_k": 0.6,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "ad0137f5d1115b303ec6",
+        "content_type": "class_feature",
+        "entity_name": "Fighter",
+        "class_name": "Fighter",
+        "cosine_distance": 0.394943,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "d62e406b87d864802953",
+        "content_type": "rule",
+        "entity_name": "Starting Equipment",
+        "class_name": "Starting Equipment",
+        "cosine_distance": 0.450998,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "4004c51caa5a907dbabb",
+        "content_type": "class_feature",
+        "entity_name": "Fighter",
+        "class_name": "Fighter",
+        "cosine_distance": 0.464554,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "630c75c35f0616562e50",
+        "content_type": "background",
+        "entity_name": "Equipment",
+        "class_name": null,
+        "cosine_distance": 0.46517,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "730fbda16ecfc77bf958",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Fighter",
+        "cosine_distance": 0.496673,
+        "is_hit": true
       }
     ]
   }
