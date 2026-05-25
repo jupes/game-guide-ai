@@ -230,23 +230,29 @@ def _identify_entity_names(
 def _build_entity_ownership_map(
     pdf: "pdfplumber.PDF",
     cfg: dict,
-) -> dict[int, str]:
+) -> dict[tuple[int, int], str]:
     """
-    Pass 1: Scan every page and return a mapping of {1-based page_num: entity_owner}.
+    Pass 1: Scan every page and return a mapping of {(page_num, col_order): entity_owner}.
 
-    For chapters whose content_type is in _ENTITY_OWNERSHIP_CTYPES, each page is
-    assigned to the entity (class or race) whose section it belongs to.
+    For chapters whose content_type is in _ENTITY_OWNERSHIP_CTYPES, each
+    (page, column) slot is assigned to the entity whose section it belongs to.
+
+    Using (page, col) keys rather than page-only keys correctly handles the case
+    where two entities start on the same page in different columns (e.g. the last
+    Dwarf column and the first Elf column both on page N). A page-level map would
+    assign the whole page to whichever entity started later, mislabeling the earlier
+    entity's column. Column-level keys split them correctly.
 
     Method:
-    1. Collect all 20pt headings per chapter with their document-order position.
+    1. Collect all 20pt headings per chapter with their document-order position
+       (page, col_order, y).
     2. Identify which headings are entity names vs. structural subheadings.
-    3. Walk the headings in document order: when an entity name heading is seen,
-       start a new entity section. All pages until the next entity name belong to
-       the current entity (including continuation pages with no 20pt headings).
+    3. Walk all (page, col) slots in document order; assign each slot to the most
+       recently seen entity heading.
     """
     chapter_data = _collect_entity_chapter_headings(pdf, cfg)
 
-    page_owner: dict[int, str] = {}
+    page_owner: dict[tuple[int, int], str] = {}
 
     for chapter, (headings, all_pages) in chapter_data.items():
         if not headings:
@@ -255,28 +261,35 @@ def _build_entity_ownership_map(
         entity_names = _identify_entity_names(headings)
         ordered = sorted(headings, key=lambda h: (h[0], h[1], h[2]))
 
-        entity_page_starts: list[tuple[int, str]] = []
-        for page_num, col_order, y, text in ordered:
-            if text in entity_names:
-                entity_page_starts.append((page_num, text))
+        # Entity starts keyed by (page, col_order) in document order
+        entity_starts: list[tuple[int, int, str]] = [
+            (page_num, col_order, text)
+            for page_num, col_order, y, text in ordered
+            if text in entity_names
+        ]
 
-        if not entity_page_starts:
+        if not entity_starts:
             continue
 
-        # Fill page → owner using contiguous ranges over ALL chapter pages
-        # (not just pages with headings), so continuation pages are covered.
-        sorted_pages = sorted(all_pages)
-        max_page = sorted_pages[-1]
+        # Build a sorted list of all (page, col) slots in this chapter
+        all_slots = sorted(
+            ((pg, col) for pg in all_pages for col in [0, 1]),
+            key=lambda x: (x[0], x[1]),
+        )
 
-        for i, (start_page, owner) in enumerate(entity_page_starts):
-            end_page = (
-                entity_page_starts[i + 1][0] - 1
-                if i + 1 < len(entity_page_starts)
-                else max_page
-            )
-            for pg in sorted_pages:
-                if start_page <= pg <= end_page:
-                    page_owner[pg] = owner
+        # Walk slots in document order, advancing the entity pointer when a new
+        # entity heading is reached. Each slot is owned by the last entity seen.
+        current_owner: str | None = None
+        entity_idx = 0
+        for slot_page, slot_col in all_slots:
+            while (
+                entity_idx < len(entity_starts)
+                and (entity_starts[entity_idx][0], entity_starts[entity_idx][1]) <= (slot_page, slot_col)
+            ):
+                current_owner = entity_starts[entity_idx][2]
+                entity_idx += 1
+            if current_owner is not None:
+                page_owner[(slot_page, slot_col)] = current_owner
 
     return page_owner
 
@@ -431,7 +444,7 @@ def _extract_column_chunks(
     default_content_type: str,
     cfg: dict,
     chunk_counter: list[int],
-    entity_owner_map: dict[int, str] | None = None,
+    entity_owner_map: dict[tuple[int, int], str] | None = None,
 ) -> list[DndChunk]:
     """
     Crop the page to [x0, x1], group chars into lines, use font-size
@@ -467,11 +480,11 @@ def _extract_column_chunks(
     current_feature: str | None = None
     current_ctype = default_content_type
 
-    # Seed class/entity from the ownership map when entering a new page — this
+    # Seed class/entity from the ownership map when entering a new (page, col) —
     # ensures even pages where the entity name heading has already scrolled past
     # (multi-page entity sections) carry the correct owner from the first chunk.
     if entity_owner_map is not None:
-        owner = entity_owner_map.get(page_num)
+        owner = entity_owner_map.get((page_num, col_idx))
         if owner:
             current_class = owner
             current_entity = owner
@@ -524,7 +537,7 @@ def _extract_column_chunks(
             # page-range map over the raw heading text when in Pass-2 mode.
             _flush()
             if entity_owner_map is not None:
-                resolved = entity_owner_map.get(page_num, text)
+                resolved = entity_owner_map.get((page_num, col_idx), text)
                 current_class = resolved
                 current_entity = resolved
             else:
