@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from eval_golden import (
     extract_query_entities,
     build_vector_sql,
+    compute_metrics,
 )
 
 
@@ -140,6 +141,80 @@ def test_class_and_entity_filter_uses_or():
 
 
 # ---------------------------------------------------------------------------
+# compute_metrics — Hit@1, P@5, MRR, Recall@10
+# ---------------------------------------------------------------------------
+
+def test_metrics_all_hits():
+    # All 10 results are hits → perfect score
+    hits = [True] * 10
+    m = compute_metrics(hits)
+    assert m["hit_at_1"] is True
+    assert m["precision_at_5"] == 1.0
+    assert m["mrr"] == 1.0, f"Expected MRR=1.0 (first hit at rank 1), got {m['mrr']}"
+    assert m["recall_at_10"] is True
+
+
+def test_metrics_all_misses():
+    hits = [False] * 10
+    m = compute_metrics(hits)
+    assert m["hit_at_1"] is False
+    assert m["precision_at_5"] == 0.0
+    assert m["mrr"] == 0.0, f"Expected MRR=0.0 (no hit), got {m['mrr']}"
+    assert m["recall_at_10"] is False
+
+
+def test_mrr_first_hit_at_rank_3():
+    # Hit appears at rank 3 → MRR = 1/3
+    hits = [False, False, True, False, False, False, False, False, False, False]
+    m = compute_metrics(hits)
+    assert m["hit_at_1"] is False
+    assert m["precision_at_5"] == 0.2, f"Expected P@5=0.2 (1 hit in top 5), got {m['precision_at_5']}"
+    assert abs(m["mrr"] - 1/3) < 1e-9, f"Expected MRR≈0.333, got {m['mrr']}"
+    assert m["recall_at_10"] is True
+
+
+def test_mrr_uses_first_hit_only():
+    # Multiple hits, but MRR only credits the first one
+    hits = [False, True, False, True, True, False, False, False, False, False]
+    m = compute_metrics(hits)
+    assert abs(m["mrr"] - 0.5) < 1e-9, f"Expected MRR=0.5 (first hit at rank 2), got {m['mrr']}"
+
+
+def test_recall_at_10_finds_late_hit():
+    # First hit is at rank 9 — Recall@10 still True, Hit@1 False, P@5 zero
+    hits = [False] * 8 + [True, False]
+    m = compute_metrics(hits)
+    assert m["hit_at_1"] is False
+    assert m["precision_at_5"] == 0.0
+    assert m["recall_at_10"] is True
+    assert abs(m["mrr"] - 1/9) < 1e-9
+
+
+def test_metrics_handles_fewer_than_10_results():
+    # If retrieval returned only 4 results (e.g. small corpus), metrics still work
+    hits = [False, True, False, False]
+    m = compute_metrics(hits)
+    assert m["hit_at_1"] is False
+    # P@5 normalizes against 5 even if fewer results — only 1 hit out of 5 possible slots
+    assert m["precision_at_5"] == 0.2
+    assert abs(m["mrr"] - 0.5) < 1e-9
+    assert m["recall_at_10"] is True
+
+
+def test_q13_simulation_filter_lifts_to_hit_at_1():
+    # Simulates Q13 from the eval report: pre-filter, Wizard chunk was at rank 5.
+    # Post-filter (from cl1), the Wizard chunk wins rank 1.
+    pre_filter = [False, False, False, False, True, False, False, False, False, False]
+    post_filter = [True, False, False, False, False, False, False, False, False, False]
+    pre = compute_metrics(pre_filter)
+    post = compute_metrics(post_filter)
+    assert pre["hit_at_1"] is False and post["hit_at_1"] is True
+    assert post["mrr"] > pre["mrr"], "MRR should improve when hit moves from rank 5 to rank 1"
+    # Both should report Recall@10 = True since the chunk was found in either case
+    assert pre["recall_at_10"] is True and post["recall_at_10"] is True
+
+
+# ---------------------------------------------------------------------------
 # Test runner
 # ---------------------------------------------------------------------------
 
@@ -156,6 +231,13 @@ def _run():
         test_class_filter_adds_where,
         test_entity_filter_adds_where,
         test_class_and_entity_filter_uses_or,
+        test_metrics_all_hits,
+        test_metrics_all_misses,
+        test_mrr_first_hit_at_rank_3,
+        test_mrr_uses_first_hit_only,
+        test_recall_at_10_finds_late_hit,
+        test_metrics_handles_fewer_than_10_results,
+        test_q13_simulation_filter_lifts_to_hit_at_1,
     ]
     failed = 0
     for t in tests:

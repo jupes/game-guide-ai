@@ -44,7 +44,10 @@ if _ENV_PATH.exists():
 
 DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat"
 EMBED_MODEL = "text-embedding-3-small"
-TOP_K = 5
+# Retrieve 10 to drive Recall@10 + MRR; slice to 5 for the legacy Hit@1 / P@5
+# headline metrics so trend comparisons against the 2026-05-11 report stay valid.
+TOP_K = 10
+PRECISION_K = 5
 
 
 @dataclass
@@ -385,6 +388,38 @@ def retrieve_top_k(
 # Evaluation logic
 # ---------------------------------------------------------------------------
 
+def compute_metrics(hits: list[bool]) -> dict:
+    """
+    Derive retrieval metrics from an ordered list of hit/miss booleans.
+
+    Returns:
+        hit_at_1:      hits[0] (top result is a match)
+        precision_at_5: fraction of top-5 that are hits (normalized to 5 even
+                        if fewer results are available)
+        mrr:           1 / rank of the FIRST hit; 0 if no hits anywhere
+        recall_at_10:  any hit in the first 10 results
+    """
+    hit_at_1 = bool(hits and hits[0])
+
+    top5 = hits[:PRECISION_K]
+    precision_at_5 = sum(top5) / PRECISION_K  # denominator is fixed at K, not len(top5)
+
+    mrr = 0.0
+    for rank, hit in enumerate(hits[:TOP_K], start=1):
+        if hit:
+            mrr = 1.0 / rank
+            break
+
+    recall_at_10 = any(hits[:TOP_K])
+
+    return {
+        "hit_at_1": hit_at_1,
+        "precision_at_5": precision_at_5,
+        "mrr": mrr,
+        "recall_at_10": recall_at_10,
+    }
+
+
 def is_hit(chunk: RetrievedChunk, golden: GoldenQuery) -> bool:
     """Check if a retrieved chunk matches the golden query's expectations."""
     if chunk.content_type != golden.expected_content_type:
@@ -426,7 +461,7 @@ def main() -> None:
 
     print("=" * 72)
     print("D&D RAG — Golden Set Evaluation")
-    print(f"Model: {EMBED_MODEL}  |  Top-K: {TOP_K}  |  Mode: {args.mode}")
+    print(f"Model: {EMBED_MODEL}  |  Top-K: {TOP_K}  |  P@: {PRECISION_K}  |  Mode: {args.mode}")
     print("=" * 72)
 
     conn = psycopg.connect(dsn)
@@ -442,7 +477,9 @@ def main() -> None:
     print(f"Vocab loaded: {len(known_classes)} classes, {len(known_entities)} entities\n")
 
     total_hit_at_1 = 0
-    total_precision_at_k = 0.0
+    total_precision_at_5 = 0.0
+    total_mrr = 0.0
+    total_recall_at_10 = 0
     results_json: list[dict] = []
 
     for i, golden in enumerate(GOLDEN_SET, 1):
@@ -472,14 +509,17 @@ def main() -> None:
 
         # Score
         hits = [is_hit(c, golden) for c in chunks]
-        hit_at_1 = hits[0] if hits else False
-        precision = sum(hits) / TOP_K
+        metrics = compute_metrics(hits)
 
-        total_hit_at_1 += int(hit_at_1)
-        total_precision_at_k += precision
+        total_hit_at_1 += int(metrics["hit_at_1"])
+        total_precision_at_5 += metrics["precision_at_5"]
+        total_mrr += metrics["mrr"]
+        total_recall_at_10 += int(metrics["recall_at_10"])
 
-        status = "HIT" if hit_at_1 else "MISS"
-        print(f"  Result: {status}  |  Precision@{TOP_K}: {precision:.1%}")
+        status = "HIT" if metrics["hit_at_1"] else "MISS"
+        print(f"  Result: {status}  |  P@{PRECISION_K}: {metrics['precision_at_5']:.1%}  "
+              f"|  MRR: {metrics['mrr']:.3f}  |  Recall@{TOP_K}: "
+              f"{'Y' if metrics['recall_at_10'] else 'N'}")
         print()
 
         score_label = "rrf" if args.mode == "hybrid" else "dist"
@@ -502,8 +542,10 @@ def main() -> None:
             "expected_chapter": golden.expected_chapter,
             "matched_classes": sorted(match_classes),
             "matched_entities": sorted(match_entities),
-            "hit_at_1": hit_at_1,
-            "precision_at_k": precision,
+            "hit_at_1": metrics["hit_at_1"],
+            "precision_at_5": metrics["precision_at_5"],
+            "mrr": round(metrics["mrr"], 6),
+            "recall_at_10": metrics["recall_at_10"],
             "top_k": [
                 {
                     "rank": j + 1,
@@ -525,7 +567,9 @@ def main() -> None:
     print("=" * 72)
     print("SUMMARY")
     print(f"  Hit@1:        {total_hit_at_1}/{n}  ({total_hit_at_1/n:.1%})")
-    print(f"  Precision@{TOP_K}:  {total_precision_at_k/n:.1%}  (avg across queries)")
+    print(f"  Precision@{PRECISION_K}:   {total_precision_at_5/n:.1%}  (avg across queries)")
+    print(f"  MRR:          {total_mrr/n:.3f}  (avg across queries; 1.0 = perfect rank-1)")
+    print(f"  Recall@{TOP_K}:    {total_recall_at_10}/{n}  ({total_recall_at_10/n:.1%})")
     print("=" * 72)
 
     # Save results JSON
