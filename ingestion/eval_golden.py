@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -201,6 +202,114 @@ ORDER BY embedding <=> %s::vector
 LIMIT %s
 """
 
+
+# ---------------------------------------------------------------------------
+# Query-time entity extraction + filtered vector SQL
+#
+# Q13 ("What saving throw proficiencies does a Wizard get?") originally missed
+# because a generic Saving Throws rule chunk outranked the Wizard-specific
+# proficiencies block. The fix: detect class/entity hints in the query against
+# the actual vocabulary in dnd.chunks, then add a WHERE filter so vector search
+# only ranks chunks tagged with one of those names.
+# ---------------------------------------------------------------------------
+
+def extract_query_entities(
+    text: str,
+    known_classes: set[str],
+    known_entities: set[str],
+) -> tuple[set[str], set[str]]:
+    """
+    Return (matched_classes, matched_entities) found in `text`.
+
+    Matching is case-insensitive, with word boundaries to avoid false positives
+    (e.g. "Bard" must not match "bombard"). Multi-word names are matched as a
+    single phrase. Plurals are handled by allowing a trailing "s"/"es".
+    """
+    lowered = text.lower()
+    classes: set[str] = set()
+    entities: set[str] = set()
+
+    def _match(name: str) -> bool:
+        # \b on each end. Allow regular plural (s/es) and the f→ves irregular
+        # plural ("Dwarf" → "Dwarves", "Elf" → "Elves") common in D&D vocab.
+        base = re.escape(name.lower())
+        if name.lower().endswith("f"):
+            ves = re.escape(name.lower()[:-1] + "ves")
+            pattern = rf"\b(?:{base}(?:e?s)?|{ves})\b"
+        else:
+            pattern = rf"\b{base}(?:e?s)?\b"
+        return re.search(pattern, lowered) is not None
+
+    for name in known_classes:
+        if _match(name):
+            classes.add(name)
+    for name in known_entities:
+        if _match(name):
+            entities.add(name)
+
+    return classes, entities
+
+
+def build_vector_sql(
+    emb_str: str,
+    k: int,
+    classes: set[str],
+    entities: set[str],
+) -> tuple[str, tuple]:
+    """
+    Build the vector retrieval SQL and parameter tuple.
+
+    When `classes` or `entities` is non-empty, an entity-aware WHERE clause is
+    added so vector search only ranks chunks whose class_name or entity_name is
+    in the matched vocabulary. Otherwise returns the unfiltered _VECTOR_SQL.
+
+    Params order matches the placeholders in the returned SQL string.
+    """
+    if not classes and not entities:
+        return _VECTOR_SQL, (emb_str, emb_str, k)
+
+    where_parts: list[str] = []
+    params: list = [emb_str]
+
+    if classes:
+        where_parts.append("class_name = ANY(%s)")
+        params.append(list(classes))
+    if entities:
+        where_parts.append("entity_name = ANY(%s)")
+        params.append(list(entities))
+
+    where_clause = " OR ".join(where_parts)
+    params.extend([emb_str, k])
+
+    sql = f"""
+SELECT
+    chunk_id,
+    content_type,
+    entity_name,
+    class_name,
+    feature_name,
+    chapter,
+    section,
+    page_start,
+    left(text, 120) AS text_preview,
+    embedding <=> %s::vector AS cosine_distance
+FROM dnd.chunks
+WHERE {where_clause}
+ORDER BY embedding <=> %s::vector
+LIMIT %s
+"""
+    return sql, tuple(params)
+
+
+def load_vocabulary(conn: psycopg.Connection) -> tuple[set[str], set[str]]:
+    """Pull distinct class_name and entity_name values from dnd.chunks."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT class_name FROM dnd.chunks WHERE class_name IS NOT NULL")
+        classes = {r[0] for r in cur.fetchall() if r[0]}
+        cur.execute("SELECT DISTINCT entity_name FROM dnd.chunks WHERE entity_name IS NOT NULL")
+        entities = {r[0] for r in cur.fetchall() if r[0]}
+    return classes, entities
+
 _HYBRID_SQL = """
 SELECT
     chunk_id,
@@ -237,13 +346,23 @@ def retrieve_top_k(
     query_text: str,
     k: int,
     mode: str = "vector",
+    classes: set[str] | None = None,
+    entities: set[str] | None = None,
 ) -> list[RetrievedChunk]:
     emb_str = str(query_embedding)
+    classes = classes or set()
+    entities = entities or set()
+    has_filters = bool(classes or entities)
+
     with conn.cursor() as cur:
-        if mode == "hybrid":
+        if mode == "hybrid" and not has_filters:
             cur.execute(_HYBRID_SQL, (emb_str, query_text, k))
         else:
-            cur.execute(_VECTOR_SQL, (emb_str, emb_str, k))
+            # Hybrid path can't accept filters today (dnd.hybrid_search is filter-free).
+            # The eval report shows hybrid ≡ vector at this corpus size, so we use
+            # filtered vector when entity hints are present — same precision either way.
+            sql, params = build_vector_sql(emb_str, k, classes, entities)
+            cur.execute(sql, params)
         rows = cur.fetchall()
     return [
         RetrievedChunk(
@@ -316,7 +435,11 @@ def main() -> None:
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM dnd.chunks")
         chunk_count = cur.fetchone()[0]
-    print(f"Chunks in dnd.chunks: {chunk_count}\n")
+    print(f"Chunks in dnd.chunks: {chunk_count}")
+
+    # Pull entity vocabulary from the corpus for query-time hint extraction.
+    known_classes, known_entities = load_vocabulary(conn)
+    print(f"Vocab loaded: {len(known_classes)} classes, {len(known_entities)} entities\n")
 
     total_hit_at_1 = 0
     total_precision_at_k = 0.0
@@ -334,9 +457,18 @@ def main() -> None:
             print(f", chapter={golden.expected_chapter}", end="")
         print()
 
-        # Embed and retrieve
+        # Embed and retrieve (with query-time entity filter when applicable)
         emb = embed_query(golden.question)
-        chunks = retrieve_top_k(conn, emb, golden.question, TOP_K, mode=args.mode)
+        match_classes, match_entities = extract_query_entities(
+            golden.question, known_classes, known_entities,
+        )
+        if match_classes or match_entities:
+            print(f"  Filter: classes={sorted(match_classes) or '—'}  "
+                  f"entities={sorted(match_entities) or '—'}")
+        chunks = retrieve_top_k(
+            conn, emb, golden.question, TOP_K, mode=args.mode,
+            classes=match_classes, entities=match_entities,
+        )
 
         # Score
         hits = [is_hit(c, golden) for c in chunks]
@@ -368,6 +500,8 @@ def main() -> None:
             "expected_entity": golden.expected_entity,
             "expected_class": golden.expected_class,
             "expected_chapter": golden.expected_chapter,
+            "matched_classes": sorted(match_classes),
+            "matched_entities": sorted(match_entities),
             "hit_at_1": hit_at_1,
             "precision_at_k": precision,
             "top_k": [
