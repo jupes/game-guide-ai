@@ -16,9 +16,14 @@ extractor anchors on *textual structure* instead:
                      Everything else chunks as dm_guidance under caps section
                      headings.
 
+Engine: pymupdf (fitz) by default — it decodes books pdfplumber can't read
+(Xanathar's junk OCR layer, Tortle's CID fonts) and exposes bold flags. The
+old pdfplumber reader stays available via --engine pdfplumber.
+
 Usage:
-    uv run --with pdfplumber python ingestion/extract_scan.py <pdf> --book-slug mm-5e
-    uv run --with pdfplumber python ingestion/extract_scan.py <pdf> --book-slug dmg-5e
+    uv run --with pymupdf python ingestion/extract_scan.py <pdf> --book-slug mm-5e
+    uv run --with pymupdf python ingestion/extract_scan.py <pdf> --book-slug dmg-5e
+    uv run --with pdfplumber python ingestion/extract_scan.py <pdf> --book-slug mm-5e --engine pdfplumber
 
 Output: JSONL with the same DndChunk schema as extract.py (embed.py-ready).
 """
@@ -62,6 +67,7 @@ class LineItem:
     col: int       # 0 = left, 1 = right
     size: float    # dominant font size
     text: str
+    bold: bool = False   # majority of the line is bold (pymupdf flags & 16)
 
 
 def _chunk_id(book_slug: str, page: int, col: int, idx: int) -> str:
@@ -73,8 +79,15 @@ def _chunk_id(book_slug: str, page: int, col: int, idx: int) -> str:
 # Book configs
 # ---------------------------------------------------------------------------
 
+# Each config carries the PDF reader engine it was calibrated against. mm-5e and
+# dmg-5e were tuned on pdfplumber's line grouping and are already embedded
+# (777/925 chunks, 98.3% eval) — the fitz reader groups lines differently and
+# regresses their stat-block/item heuristics (parity gate caught Tarrasque/Lich
+# dropping), so they stay on pdfplumber. New books use fitz (it decodes layers
+# pdfplumber can't read). --engine on the CLI overrides per run.
 BOOK_CONFIGS: dict[str, dict] = {
     "mm-5e": {
+        "engine": "pdfplumber",
         "kind": "monster_manual",
         "first_content_page": 12,   # AARAKOCRA starts the bestiary
         "min_body_pt": 7.0,         # below this = margin-art captions / flavor quotes
@@ -82,6 +95,7 @@ BOOK_CONFIGS: dict[str, dict] = {
         "max_chunk_chars": 1400,
     },
     "dmg-5e": {
+        "engine": "pdfplumber",
         "kind": "dmg",
         "first_content_page": 6,
         "min_body_pt": 7.0,
@@ -459,8 +473,88 @@ def extract_dmg_chunks(
 # ---------------------------------------------------------------------------
 
 _Y_TOL = 2.0
+_BOLD_FLAG = 16   # pymupdf span flag bit for bold (TEXT_FONT_BOLD)
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def group_spans_to_lines(
+    spans: list[tuple[float, float, float, int, str]],
+    page_num: int,
+    page_width: float,
+) -> list[LineItem]:
+    """
+    Group pymupdf spans into LineItems (pure — no PDF library needed).
+
+    Each span tuple is (x0, top, size, flags, text), matching what
+    read_pdf_stream_fitz pulls from page.get_text("dict"). Spans are split
+    into two columns by x-midpoint, grouped into visual lines by y within
+    _Y_TOL, concatenated in reading order, and tagged with the dominant
+    font size and a bold flag (majority of characters bold via flags & 16).
+    """
+    from collections import Counter
+
+    split_x = page_width / 2
+    # Bucket spans by (column, y-band)
+    buckets: dict[tuple[int, int], list[tuple]] = {}
+    for x0, top, size, flags, text in spans:
+        col = 0 if x0 < split_x else 1
+        yband = round(top / _Y_TOL)
+        buckets.setdefault((col, yband), []).append((x0, top, size, flags, text))
+
+    lines: list[LineItem] = []
+    for (col, yband), group in sorted(buckets.items()):
+        group.sort(key=lambda s: s[0])  # left-to-right within the line
+        text = " ".join(s[4].strip() for s in group if s[4].strip())
+        text = _CONTROL_RE.sub("", text).strip()
+        text = re.sub(r"\s+", " ", text)
+        if not text:
+            continue
+        # Dominant size weighted by character count
+        size_chars: Counter = Counter()
+        bold_chars = 0
+        total_chars = 0
+        for _, _, size, flags, t in group:
+            n = len(t.strip())
+            size_chars[round(size, 1)] += n
+            if flags & _BOLD_FLAG:
+                bold_chars += n
+            total_chars += n
+        dominant = max(size_chars, key=size_chars.__getitem__) if size_chars else 0.0
+        bold = total_chars > 0 and bold_chars / total_chars >= 0.5
+        lines.append(LineItem(page=page_num, col=col, size=dominant, text=text, bold=bold))
+    return lines
+
+
+def read_pdf_stream_fitz(pdf_path: str) -> list[LineItem]:
+    """Read a PDF into a LineItem stream via pymupdf (fitz).
+
+    Preferred engine: decodes books pdfplumber can't (XGE's junk OCR layer,
+    Tortle's CID fonts) and exposes bold flags. Falls back per-page to nothing
+    if a page has no text (image-only)."""
+    import fitz  # pymupdf
+
+    stream: list[LineItem] = []
+    doc = fitz.open(pdf_path)
+    total = len(doc)
+    for page_num, page in enumerate(doc, start=1):
+        print(f"\r  reading page {page_num}/{total}", end="", flush=True)
+        spans: list[tuple[float, float, float, int, str]] = []
+        data = page.get_text("dict")
+        for block in data.get("blocks", []):
+            for line in block.get("lines", []):
+                for sp in line.get("spans", []):
+                    spans.append((
+                        sp["bbox"][0], sp["bbox"][1],
+                        sp["size"], sp.get("flags", 0), sp["text"],
+                    ))
+        stream.extend(group_spans_to_lines(spans, page_num, page.rect.width))
+    doc.close()
+    print()
+    return stream
+
 
 def read_pdf_stream(pdf_path: str) -> list[LineItem]:
+    """Legacy pdfplumber reader — kept as a fallback engine (--engine pdfplumber)."""
     import pdfplumber
     from collections import Counter
 
@@ -478,7 +572,7 @@ def read_pdf_stream(pdf_path: str) -> list[LineItem]:
                     text = "".join(c["text"] for c in grp).strip()
                     # OCR output can carry NUL and other control bytes that
                     # PostgreSQL text columns reject — strip them here.
-                    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+                    text = _CONTROL_RE.sub("", text)
                     if not text:
                         continue
                     sizes = Counter(round(c["size"], 1) for c in grp)
@@ -499,6 +593,8 @@ def main() -> None:
     parser.add_argument("pdf", help="Path to the PDF")
     parser.add_argument("--book-slug", required=True, choices=list(BOOK_CONFIGS.keys()))
     parser.add_argument("--out", default=None, help="Output JSONL (default: chunks-<slug>.jsonl)")
+    parser.add_argument("--engine", choices=["fitz", "pdfplumber"], default=None,
+                        help="PDF reader engine override (default: per-book config, else fitz)")
     args = parser.parse_args()
 
     if not Path(args.pdf).exists():
@@ -509,8 +605,10 @@ def main() -> None:
     out_path = Path(args.out or f"chunks-{args.book_slug}.jsonl")
     source_file = Path(args.pdf).name
 
-    print(f"Extracting: {args.pdf}  (book-slug: {args.book_slug})")
-    stream = read_pdf_stream(args.pdf)
+    engine = args.engine or cfg.get("engine", "fitz")
+    print(f"Extracting: {args.pdf}  (book-slug: {args.book_slug}, engine: {engine})")
+    reader = read_pdf_stream_fitz if engine == "fitz" else read_pdf_stream
+    stream = reader(args.pdf)
     print(f"  {len(stream)} lines read")
 
     if cfg["kind"] == "monster_manual":

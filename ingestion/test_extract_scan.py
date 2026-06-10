@@ -17,6 +17,7 @@ from extract_scan import (
     LineItem,
     extract_dmg_chunks,
     extract_mm_chunks,
+    group_spans_to_lines,
     is_caps_heading,
     normalize_entity_name,
     split_paragraph_chunks,
@@ -265,6 +266,79 @@ def test_dmg_rarity_line_without_caps_name_is_body():
     ]
     chunks = extract_dmg_chunks(stream, "dmg-5e", "dmg.pdf", DMG_CFG)
     assert not any(c.content_type == "magic_item" for c in chunks)
+
+
+# ---------------------------------------------------------------------------
+# group_spans_to_lines (pymupdf engine — pure grouping over span tuples)
+# ---------------------------------------------------------------------------
+# Span tuple shape mirrors what read_pdf_stream_fitz pulls from
+# page.get_text("dict"): (x0, top, size, flags, text)
+
+def test_spans_group_into_lines_by_column():
+    # Two spans same y, left + right columns → two LineItems, correct cols
+    spans = [
+        (10.0, 100.0, 13.0, 16, "BASILISK"),      # left col (x0=10 < 300)
+        (320.0, 100.0, 9.0, 4, "Travelers find"),  # right col (x0=320 > 300)
+    ]
+    lines = group_spans_to_lines(spans, page_num=5, page_width=600.0)
+    by_col = {li.col: li for li in lines}
+    assert by_col[0].text == "BASILISK" and by_col[0].page == 5
+    assert by_col[1].text == "Travelers find"
+
+
+def test_spans_same_line_merge_in_reading_order():
+    # Three spans, same y, same column, left-to-right → one merged line
+    spans = [
+        (10.0, 50.0, 9.0, 4, "Armor"),
+        (40.0, 50.0, 9.0, 4, "Class"),
+        (70.0, 50.0, 9.0, 4, "15"),
+    ]
+    lines = group_spans_to_lines(spans, page_num=1, page_width=600.0)
+    assert len(lines) == 1
+    assert lines[0].text == "Armor Class 15"
+
+
+def test_spans_dominant_size_per_line():
+    # Mixed sizes on one line → dominant (most chars) wins
+    spans = [
+        (10.0, 50.0, 13.0, 16, "A"),           # 1 char at 13pt
+        (20.0, 50.0, 9.0, 4, "long body text"), # many chars at 9pt
+    ]
+    lines = group_spans_to_lines(spans, page_num=1, page_width=600.0)
+    assert lines[0].size == 9.0
+
+
+def test_spans_bold_flag_when_majority_bold():
+    # flags & 16 = bold; majority-bold line → bold True
+    spans = [
+        (10.0, 50.0, 13.0, 20, "RANGER"),  # flags 20 = 16(bold)+4(serif)
+    ]
+    lines = group_spans_to_lines(spans, page_num=1, page_width=600.0)
+    assert lines[0].bold is True
+
+
+def test_spans_not_bold_for_body():
+    spans = [(10.0, 50.0, 9.0, 4, "ordinary body prose here")]  # flags 4 = serif only
+    lines = group_spans_to_lines(spans, page_num=1, page_width=600.0)
+    assert lines[0].bold is False
+
+
+def test_spans_strip_control_bytes():
+    spans = [(10.0, 50.0, 9.0, 4, "clean\x00text\x07here")]
+    lines = group_spans_to_lines(spans, page_num=1, page_width=600.0)
+    assert "\x00" not in lines[0].text and "\x07" not in lines[0].text
+
+
+def test_spans_drop_empty_after_strip():
+    spans = [(10.0, 50.0, 9.0, 4, "\x00\x07  ")]
+    lines = group_spans_to_lines(spans, page_num=1, page_width=600.0)
+    assert lines == []
+
+
+def test_lineitem_bold_defaults_false():
+    # Regression guard for review finding: positional construction must still work
+    li = LineItem(1, 0, 9.0, "text")
+    assert li.bold is False
 
 
 # ---------------------------------------------------------------------------
