@@ -61,138 +61,12 @@ class GoldenQuery:
     book: str = "phb"                        # which book should answer this
 
 
-GOLDEN_SET: list[GoldenQuery] = [
-    # ════════════════════════════════════════════════════════════════════
-    # PHB Basic — the original 20 (tagged for stratification)
-    # ════════════════════════════════════════════════════════════════════
-    GoldenQuery("What is the range of Fireball?",
-                "spell", expected_entity="Fireball", category="spell_lookup"),
-    GoldenQuery("How many hit points does a Fighter get at level 1?",
-                "class_feature", expected_class="Fighter", category="class_feature"),
-    GoldenQuery("What does the Blinded condition do?",
-                "condition", expected_entity="Blinded", category="condition"),
-    GoldenQuery("How does grappling work?",
-                "rule", expected_chapter="Chapter 9", category="rule"),
-    GoldenQuery("What languages do Elves know?",
-                "race_feature", expected_entity="Elf", category="race_feature"),
-    GoldenQuery("What are the components of Cure Wounds?",
-                "spell", expected_entity="Cure Wounds", category="spell_lookup"),
-    GoldenQuery("What level is Shield and what does it do?",
-                "spell", expected_entity="Shield", category="spell_lookup"),
-    GoldenQuery("How does Counterspell work?",
-                "spell", expected_entity="Counterspell", category="spell_lookup"),
-    GoldenQuery("What is the casting time of Healing Word?",
-                "spell", expected_entity="Healing Word", category="spell_lookup"),
-    GoldenQuery("What does the Magic Missile spell do?",
-                "spell", expected_entity="Magic Missile", category="spell_lookup"),
-    GoldenQuery("What happens when a creature is both Prone and Restrained?",
-                "condition", expected_entity="Prone", category="condition"),
-    GoldenQuery("How does the Cleric's Channel Divinity: Turn Undead work?",
-                "class_feature", expected_class="Cleric", category="class_feature"),
-    GoldenQuery("What saving throw proficiencies does a Wizard get?",
-                "class_feature", expected_class="Wizard", category="class_feature"),
-    GoldenQuery("How does two-weapon fighting work in combat?",
-                "rule", expected_chapter="Chapter 9", category="rule"),
-    GoldenQuery("What are the Rogue's Sneak Attack requirements?",
-                "class_feature", expected_class="Rogue", category="class_feature"),
-    GoldenQuery("What ability score bonuses do Dwarves get?",
-                "race_feature", expected_entity="Dwarf", category="race_feature"),
-    GoldenQuery("How do opportunity attacks work?",
-                "rule", expected_chapter="Chapter 9", category="rule"),
-    GoldenQuery("What does the Paralyzed condition do to saving throws?",
-                "condition", expected_entity="Paralyzed", category="condition"),
-    GoldenQuery("How does multiclassing work?",
-                "rule", expected_chapter="Chapter 6", category="rule"),
-    GoldenQuery("What equipment does a Fighter start with?",
-                "class_feature", expected_class="Fighter", category="class_feature"),
+# Cross-book disambiguation + negative queries are hand-curated; the bulk of the
+# suite is generated from real corpus rows by gen_golden.py (golden_set.json),
+# which guarantees expected tags match real data. See agent-forge-harness-wsq.
 
-    # ════════════════════════════════════════════════════════════════════
-    # Monster Manual — stat block queries
-    # ════════════════════════════════════════════════════════════════════
-    GoldenQuery("What is the armor class of a Basilisk?",
-                "monster", expected_entity="Basilisk", category="monster_stat", book="mm"),
-    GoldenQuery("How many hit points does the Tarrasque have?",
-                "monster", expected_entity="Tarrasque", category="monster_stat", book="mm"),
-    GoldenQuery("What is the challenge rating of a Kraken?",
-                "monster", expected_entity="Kraken", category="monster_stat", book="mm"),
-    GoldenQuery("What legendary actions can an Ancient Red Dragon take?",
-                "monster", expected_entity="Ancient Red Dragon", category="monster_stat", book="mm"),
-    GoldenQuery("What attacks does an Owlbear make?",
-                "monster", expected_entity="Owlbear", category="monster_stat", book="mm"),
-    GoldenQuery("What does the Mimic's Adhesive trait do?",
-                "monster", expected_entity="Mimic", category="monster_stat", book="mm"),
-    GoldenQuery("What does a Banshee's Wail do?",
-                "monster", expected_entity="Banshee", category="monster_stat", book="mm"),
-    GoldenQuery("What damage resistances does a Rakshasa have?",
-                "monster", expected_entity="Rakshasa", category="monster_stat", book="mm"),
-    GoldenQuery("How does a Medusa's Petrifying Gaze work?",
-                "monster", expected_entity="Medusa", category="monster_stat", book="mm"),
-    GoldenQuery("What is the flying speed of a Wyvern?",
-                "monster", expected_entity="Wyvern", category="monster_stat", book="mm"),
-    GoldenQuery("What spells can a Solar cast?",
-                "monster", expected_entity="Solar", category="monster_stat", book="mm"),
-    GoldenQuery("What is the bite attack of a Pit Fiend?",
-                "monster", expected_entity="Pit Fiend", category="monster_stat", book="mm"),
-
-    # ── Monster Manual — lore queries ────────────────────────────────────
-    GoldenQuery("Where do basilisks make their lairs?",
-                "monster", expected_entity="Basilisk", category="monster_lore", book="mm"),
-    GoldenQuery("What ancient memories do aboleths keep?",
-                "monster", expected_entity="Aboleth", category="monster_lore", book="mm"),
-    GoldenQuery("How were owlbears created?",
-                "monster", expected_entity="Owlbear", category="monster_lore", book="mm"),
-    GoldenQuery("Why do mind flayers eat brains?",
-                "monster", expected_entity="Mind Flayer", category="monster_lore", book="mm"),
-    GoldenQuery("How does a ghost come into existence?",
-                "monster", expected_entity="Ghost", category="monster_lore", book="mm"),
-    GoldenQuery("What happens to sailors when a kraken surfaces?",
-                "monster", expected_entity="Kraken", category="monster_lore", book="mm"),
-
-    # ════════════════════════════════════════════════════════════════════
-    # DMG — magic item queries
-    # ════════════════════════════════════════════════════════════════════
-    GoldenQuery("How much weight can a Bag of Holding hold?",
-                "magic_item", expected_entity="Bag Of Holding", category="magic_item", book="dmg"),
-    GoldenQuery("What happens when you draw cards from the Deck of Many Things?",
-                "magic_item", expected_entity="Deck Of Many Things", category="magic_item", book="dmg"),
-    GoldenQuery("How deep is a Portable Hole?",
-                "magic_item", expected_entity="Portable Hole", category="magic_item", book="dmg"),
-    GoldenQuery("What can the Staff of the Magi absorb?",
-                "magic_item", expected_entity="Staff Of The Magi", category="magic_item", book="dmg"),
-    GoldenQuery("What bonus does a Ring of Protection grant?",
-                "magic_item", expected_entity="Ring Of Protection", category="magic_item", book="dmg"),
-    GoldenQuery("What does a Belt of Giant Strength do to your Strength score?",
-                "magic_item", expected_entity="Giant Strength", category="magic_item", book="dmg"),
-    GoldenQuery("What extra damage does a Flame Tongue sword deal?",
-                "magic_item", expected_entity="Flame Tongue", category="magic_item", book="dmg"),
-    GoldenQuery("Who can attune to a Holy Avenger?",
-                "magic_item", expected_entity="Holy Avenger", category="magic_item", book="dmg"),
-    GoldenQuery("What do Gauntlets of Ogre Power do?",
-                "magic_item", expected_entity="Gauntlets Of Ogre Power", category="magic_item", book="dmg"),
-    GoldenQuery("What do Boots of Elvenkind do?",
-                "magic_item", expected_entity="Boots Of Elvenkind", category="magic_item", book="dmg"),
-
-    # ── DMG — DM guidance queries ────────────────────────────────────────
-    GoldenQuery("How do the madness rules work?",
-                "dm_guidance", expected_entity="Madness", category="dm_guidance", book="dmg"),
-    GoldenQuery("How should I design traps for my dungeon?",
-                "dm_guidance", expected_entity="Traps", category="dm_guidance", book="dmg"),
-    GoldenQuery("How does a DM build a balanced combat encounter?",
-                "dm_guidance", expected_entity="Encounters", category="dm_guidance", book="dmg"),
-    GoldenQuery("How do chase scenes work?",
-                "dm_guidance", expected_entity="Chases", category="dm_guidance", book="dmg"),
-    GoldenQuery("What is the Shadowfell?",
-                "dm_guidance", expected_entity="Shadowfell", category="dm_guidance", book="dmg"),
-    GoldenQuery("What is the Feywild like?",
-                "dm_guidance", expected_entity="Feywild", category="dm_guidance", book="dmg"),
-    GoldenQuery("How do diseases work in the game?",
-                "dm_guidance", expected_entity="Disease", category="dm_guidance", book="dmg"),
-    GoldenQuery("What siege equipment exists?",
-                "dm_guidance", expected_entity="Siege", category="dm_guidance", book="dmg"),
-
-    # ════════════════════════════════════════════════════════════════════
-    # Cross-book disambiguation — same word, different books/types
-    # ════════════════════════════════════════════════════════════════════
+CURATED: list[GoldenQuery] = [
+    # ── Cross-book disambiguation: same word, different type/book ──────────
     GoldenQuery("What does the Invisibility spell do?",
                 "spell", expected_entity="Invisibility", category="cross_book"),
     GoldenQuery("Is there a magic item that makes you invisible?",
@@ -201,21 +75,48 @@ GOLDEN_SET: list[GoldenQuery] = [
                 "magic_item", expected_entity="Giant Strength", category="cross_book", book="dmg"),
     GoldenQuery("What is a Beholder Zombie?",
                 "monster", expected_entity="Beholder Zombie", category="cross_book", book="mm"),
+    GoldenQuery("What does the Shield spell do?",
+                "spell", expected_entity="Shield", category="cross_book"),
+    GoldenQuery("What is a Shield Guardian?",
+                "monster", expected_entity="Shield Guardian", category="cross_book", book="mm"),
 
-    # ════════════════════════════════════════════════════════════════════
-    # Negative queries — the answer is NOT in the corpus. Reported as
-    # top-1 distance only (no pass/fail); a future answerability gate
-    # would refuse these.
-    # ════════════════════════════════════════════════════════════════════
-    GoldenQuery("How does the Artificer class work?",
+    # ── Negative queries: NOT in this 12-book corpus. Reported by top-1
+    #    distance only (no pass/fail). NOTE: Artificer (TCE) and Druid Wild
+    #    Shape (PHB) ARE now in-corpus, so they are no longer negatives.
+    GoldenQuery("How does spelljamming through wildspace work?",
                 None, category="negative"),
-    GoldenQuery("What are the rules for the Druid's Wild Shape?",
-                None, category="negative"),
-    GoldenQuery("How does spelljamming between worlds work?",
+    GoldenQuery("What are the rules for Strixhaven mascots?",
                 None, category="negative"),
     GoldenQuery("What is THAC0 and how is it calculated?",
                 None, category="negative"),
+    GoldenQuery("How do I evolve my Pokemon in combat?",
+                None, category="negative"),
+    GoldenQuery("What are the rules for piloting a starship in space?",
+                None, category="negative"),
 ]
+
+
+def _load_generated() -> list[GoldenQuery]:
+    """Load the corpus-generated queries (gen_golden.py → golden_set.json)."""
+    path = Path(__file__).parent / "golden_set.json"
+    if not path.exists():
+        return []
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    return [
+        GoldenQuery(
+            question=r["question"],
+            expected_content_type=r.get("expected_content_type"),
+            expected_entity=r.get("expected_entity"),
+            expected_class=r.get("expected_class"),
+            expected_chapter=r.get("expected_chapter"),
+            category=r.get("category", "general"),
+            book=r.get("book", "phb"),
+        )
+        for r in rows
+    ]
+
+
+GOLDEN_SET: list[GoldenQuery] = _load_generated() + CURATED
 
 
 # ---------------------------------------------------------------------------

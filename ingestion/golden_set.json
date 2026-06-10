@@ -1,0 +1,1122 @@
+[
+  {
+    "question": "How do the Using Ability Scores rules work?",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Using Ability Scores",
+    "category": "dm_guidance",
+    "book": "dmg"
+  },
+  {
+    "question": "What guidance is there on N Master Inspiration?",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "N Master Inspiration",
+    "category": "dm_guidance",
+    "book": "dmg"
+  },
+  {
+    "question": "Explain Unusual Environments for a dungeon master.",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Unusual Environments",
+    "category": "dm_guidance",
+    "book": "dmg"
+  },
+  {
+    "question": "How do the Adventuring Options rules work?",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Adventuring Options",
+    "category": "dm_guidance",
+    "book": "dmg"
+  },
+  {
+    "question": "What guidance is there on Magic In Your World?",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Magic In Your World",
+    "category": "dm_guidance",
+    "book": "dmg"
+  },
+  {
+    "question": "Explain Onplayer Characters for a dungeon master.",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Onplayer Characters",
+    "category": "dm_guidance",
+    "book": "dmg"
+  },
+  {
+    "question": "What does the Radiant Weapon feat give you?",
+    "expected_content_type": "feat",
+    "expected_entity": "Radiant Weapon",
+    "category": "feat",
+    "book": "eberron"
+  },
+  {
+    "question": "What are the benefits of the Homunculus Servant feat?",
+    "expected_content_type": "feat",
+    "expected_entity": "Homunculus Servant",
+    "category": "feat",
+    "book": "eberron"
+  },
+  {
+    "question": "What is the prerequisite for Boots Of The Winding Path?",
+    "expected_content_type": "feat",
+    "expected_entity": "Boots Of The Winding Path",
+    "category": "feat",
+    "book": "eberron"
+  },
+  {
+    "question": "What does the Resistant Armor feat give you?",
+    "expected_content_type": "feat",
+    "expected_entity": "Resistant Armor",
+    "category": "feat",
+    "book": "eberron"
+  },
+  {
+    "question": "What are the benefits of the Repulsion Shield feat?",
+    "expected_content_type": "feat",
+    "expected_entity": "Repulsion Shield",
+    "category": "feat",
+    "book": "eberron"
+  },
+  {
+    "question": "What does the Svirfneblin Magic feat give you?",
+    "expected_content_type": "feat",
+    "expected_entity": "Svirfneblin Magic",
+    "category": "feat",
+    "book": "eepc"
+  },
+  {
+    "question": "What does the Defensive Duelist feat give you?",
+    "expected_content_type": "feat",
+    "expected_entity": "Defensive Duelist",
+    "category": "feat",
+    "book": "phb"
+  },
+  {
+    "question": "What are the benefits of the Ritual Caster feat?",
+    "expected_content_type": "feat",
+    "expected_entity": "Ritual Caster",
+    "category": "feat",
+    "book": "phb"
+  },
+  {
+    "question": "What is the prerequisite for Moderately Armored?",
+    "expected_content_type": "feat",
+    "expected_entity": "Moderately Armored",
+    "category": "feat",
+    "book": "phb"
+  },
+  {
+    "question": "What does the Grappler feat give you?",
+    "expected_content_type": "feat",
+    "expected_entity": "Grappler",
+    "category": "feat",
+    "book": "phb"
+  },
+  {
+    "question": "What are the benefits of the Book Of Ancient Secrets feat?",
+    "expected_content_type": "feat",
+    "expected_entity": "Book Of Ancient Secrets",
+    "category": "feat",
+    "book": "phb"
+  },
+  {
+    "question": "What is the prerequisite for Eldritch Spear?",
+    "expected_content_type": "feat",
+    "expected_entity": "Eldritch Spear",
+    "category": "feat",
+    "book": "phb"
+  },
+  {
+    "question": "What does the R Ank O Fficial feat give you?",
+    "expected_content_type": "feat",
+    "expected_entity": "R Ank O Fficial",
+    "category": "feat",
+    "book": "ravnica"
+  },
+  {
+    "question": "What are the benefits of the Proven feat?",
+    "expected_content_type": "feat",
+    "expected_entity": "Proven",
+    "category": "feat",
+    "book": "ravnica"
+  },
+  {
+    "question": "What is the prerequisite for Boros Guild Spells?",
+    "expected_content_type": "feat",
+    "expected_entity": "Boros Guild Spells",
+    "category": "feat",
+    "book": "ravnica"
+  },
+  {
+    "question": "What does the Rakdos Guild Spells feat give you?",
+    "expected_content_type": "feat",
+    "expected_entity": "Rakdos Guild Spells",
+    "category": "feat",
+    "book": "ravnica"
+  },
+  {
+    "question": "What are the benefits of the Class feat?",
+    "expected_content_type": "feat",
+    "expected_entity": "Class",
+    "category": "feat",
+    "book": "ravnica"
+  },
+  {
+    "question": "What is the prerequisite for Rank Commander?",
+    "expected_content_type": "feat",
+    "expected_entity": "Rank Commander",
+    "category": "feat",
+    "book": "ravnica"
+  },
+  {
+    "question": "What does the Metamagic Adept feat give you?",
+    "expected_content_type": "feat",
+    "expected_entity": "Metamagic Adept",
+    "category": "feat",
+    "book": "tce"
+  },
+  {
+    "question": "What are the benefits of the Arcane Propulsion Armor feat?",
+    "expected_content_type": "feat",
+    "expected_entity": "Arcane Propulsion Armor",
+    "category": "feat",
+    "book": "tce"
+  },
+  {
+    "question": "What is the prerequisite for Eldritch Adept?",
+    "expected_content_type": "feat",
+    "expected_entity": "Eldritch Adept",
+    "category": "feat",
+    "book": "tce"
+  },
+  {
+    "question": "What does the Fighting Initiate feat give you?",
+    "expected_content_type": "feat",
+    "expected_entity": "Fighting Initiate",
+    "category": "feat",
+    "book": "tce"
+  },
+  {
+    "question": "What are the benefits of the Far Scribe feat?",
+    "expected_content_type": "feat",
+    "expected_entity": "Far Scribe",
+    "category": "feat",
+    "book": "tce"
+  },
+  {
+    "question": "What is the prerequisite for Investment Of The Chain Master?",
+    "expected_content_type": "feat",
+    "expected_entity": "Investment Of The Chain Master",
+    "category": "feat",
+    "book": "tce"
+  },
+  {
+    "question": "What does the Dragon Hide feat give you?",
+    "expected_content_type": "feat",
+    "expected_entity": "Dragon Hide",
+    "category": "feat",
+    "book": "xge"
+  },
+  {
+    "question": "What are the benefits of the Fey Teleportation feat?",
+    "expected_content_type": "feat",
+    "expected_entity": "Fey Teleportation",
+    "category": "feat",
+    "book": "xge"
+  },
+  {
+    "question": "What is the prerequisite for Improved Pact Weapon?",
+    "expected_content_type": "feat",
+    "expected_entity": "Improved Pact Weapon",
+    "category": "feat",
+    "book": "xge"
+  },
+  {
+    "question": "What does the Fade Away feat give you?",
+    "expected_content_type": "feat",
+    "expected_entity": "Fade Away",
+    "category": "feat",
+    "book": "xge"
+  },
+  {
+    "question": "What are the benefits of the Maddening Hex feat?",
+    "expected_content_type": "feat",
+    "expected_entity": "Maddening Hex",
+    "category": "feat",
+    "book": "xge"
+  },
+  {
+    "question": "What is the prerequisite for Tomb Of Levistus?",
+    "expected_content_type": "feat",
+    "expected_entity": "Tomb Of Levistus",
+    "category": "feat",
+    "book": "xge"
+  },
+  {
+    "question": "What does the Deck Of Many Things do?",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Deck Of Many Things",
+    "category": "magic_item",
+    "book": "dmg"
+  },
+  {
+    "question": "What are the properties of Book Of Vile Darkness?",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Book Of Vile Darkness",
+    "category": "magic_item",
+    "book": "dmg"
+  },
+  {
+    "question": "How does Eye And Hand Of Vecna work?",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Eye And Hand Of Vecna",
+    "category": "magic_item",
+    "book": "dmg"
+  },
+  {
+    "question": "What does the Moonblade do?",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Moonblade",
+    "category": "magic_item",
+    "book": "dmg"
+  },
+  {
+    "question": "What are the properties of Ron Of Lordly Might?",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Ron Of Lordly Might",
+    "category": "magic_item",
+    "book": "dmg"
+  },
+  {
+    "question": "How does Wand Of Wonder work?",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Wand Of Wonder",
+    "category": "magic_item",
+    "book": "dmg"
+  },
+  {
+    "question": "What is the armor class of Radiant Idol?",
+    "expected_content_type": "monster",
+    "expected_entity": "Radiant Idol",
+    "category": "monster",
+    "book": "eberron"
+  },
+  {
+    "question": "What attacks can a Shifters make?",
+    "expected_content_type": "monster",
+    "expected_entity": "Shifters",
+    "category": "monster",
+    "book": "eberron"
+  },
+  {
+    "question": "What is the challenge rating of a Warforged Colossus?",
+    "expected_content_type": "monster",
+    "expected_entity": "Warforged Colossus",
+    "category": "monster",
+    "book": "eberron"
+  },
+  {
+    "question": "Describe the Dyrrn monster.",
+    "expected_content_type": "monster",
+    "expected_entity": "Dyrrn",
+    "category": "monster",
+    "book": "eberron"
+  },
+  {
+    "question": "What is the armor class of Dusk Hag?",
+    "expected_content_type": "monster",
+    "expected_entity": "Dusk Hag",
+    "category": "monster",
+    "book": "eberron"
+  },
+  {
+    "question": "What attacks can a Lady Lllmarrow make?",
+    "expected_content_type": "monster",
+    "expected_entity": "Lady Lllmarrow",
+    "category": "monster",
+    "book": "eberron"
+  },
+  {
+    "question": "What is the armor class of Lizardf Olk?",
+    "expected_content_type": "monster",
+    "expected_entity": "Lizardf Olk",
+    "category": "monster",
+    "book": "mm"
+  },
+  {
+    "question": "What attacks can a Gibbering Mouther make?",
+    "expected_content_type": "monster",
+    "expected_entity": "Gibbering Mouther",
+    "category": "monster",
+    "book": "mm"
+  },
+  {
+    "question": "What is the challenge rating of a Green Dragon Wyrmling?",
+    "expected_content_type": "monster",
+    "expected_entity": "Green Dragon Wyrmling",
+    "category": "monster",
+    "book": "mm"
+  },
+  {
+    "question": "Describe the Kraken monster.",
+    "expected_content_type": "monster",
+    "expected_entity": "Kraken",
+    "category": "monster",
+    "book": "mm"
+  },
+  {
+    "question": "What is the armor class of Be'Holders?",
+    "expected_content_type": "monster",
+    "expected_entity": "Be'Holders",
+    "category": "monster",
+    "book": "mm"
+  },
+  {
+    "question": "What attacks can a Gray Ooze make?",
+    "expected_content_type": "monster",
+    "expected_entity": "Gray Ooze",
+    "category": "monster",
+    "book": "mm"
+  },
+  {
+    "question": "What is the armor class of Evil?",
+    "expected_content_type": "monster",
+    "expected_entity": "Evil",
+    "category": "monster",
+    "book": "mtf"
+  },
+  {
+    "question": "What attacks can a Star Spawn Hulk make?",
+    "expected_content_type": "monster",
+    "expected_entity": "Star Spawn Hulk",
+    "category": "monster",
+    "book": "mtf"
+  },
+  {
+    "question": "What is the challenge rating of a Large?",
+    "expected_content_type": "monster",
+    "expected_entity": "Large",
+    "category": "monster",
+    "book": "mtf"
+  },
+  {
+    "question": "Describe the Skulk monster.",
+    "expected_content_type": "monster",
+    "expected_entity": "Skulk",
+    "category": "monster",
+    "book": "mtf"
+  },
+  {
+    "question": "What is the armor class of Chaot Ic Evil?",
+    "expected_content_type": "monster",
+    "expected_entity": "Chaot Ic Evil",
+    "category": "monster",
+    "book": "mtf"
+  },
+  {
+    "question": "What is the armor class of Sing Each Ability?",
+    "expected_content_type": "monster",
+    "expected_entity": "Sing Each Ability",
+    "category": "monster",
+    "book": "phb"
+  },
+  {
+    "question": "What attacks can a Martial Archetypes make?",
+    "expected_content_type": "monster",
+    "expected_entity": "Martial Archetypes",
+    "category": "monster",
+    "book": "phb"
+  },
+  {
+    "question": "What is the challenge rating of a Pseudodragon?",
+    "expected_content_type": "monster",
+    "expected_entity": "Pseudodragon",
+    "category": "monster",
+    "book": "phb"
+  },
+  {
+    "question": "Describe the The Environment monster.",
+    "expected_content_type": "monster",
+    "expected_entity": "The Environment",
+    "category": "monster",
+    "book": "phb"
+  },
+  {
+    "question": "What is the armor class of Panther?",
+    "expected_content_type": "monster",
+    "expected_entity": "Panther",
+    "category": "monster",
+    "book": "phb"
+  },
+  {
+    "question": "What attacks can a Tiger make?",
+    "expected_content_type": "monster",
+    "expected_entity": "Tiger",
+    "category": "monster",
+    "book": "phb"
+  },
+  {
+    "question": "What is the armor class of Blastseeker?",
+    "expected_content_type": "monster",
+    "expected_entity": "Blastseeker",
+    "category": "monster",
+    "book": "ravnica"
+  },
+  {
+    "question": "What is the armor class of Tasha?",
+    "expected_content_type": "monster",
+    "expected_entity": "Tasha",
+    "category": "monster",
+    "book": "tce"
+  },
+  {
+    "question": "What attacks can a Construct Spirit make?",
+    "expected_content_type": "monster",
+    "expected_entity": "Construct Spirit",
+    "category": "monster",
+    "book": "tce"
+  },
+  {
+    "question": "What is the challenge rating of a Wildfire Spirit?",
+    "expected_content_type": "monster",
+    "expected_entity": "Wildfire Spirit",
+    "category": "monster",
+    "book": "tce"
+  },
+  {
+    "question": "Describe the Dancing Item monster.",
+    "expected_content_type": "monster",
+    "expected_entity": "Dancing Item",
+    "category": "monster",
+    "book": "tce"
+  },
+  {
+    "question": "What is the armor class of Juvenile Mimic?",
+    "expected_content_type": "monster",
+    "expected_entity": "Juvenile Mimic",
+    "category": "monster",
+    "book": "tce"
+  },
+  {
+    "question": "What attacks can a Steel Defender make?",
+    "expected_content_type": "monster",
+    "expected_entity": "Steel Defender",
+    "category": "monster",
+    "book": "tce"
+  },
+  {
+    "question": "What is the armor class of Yethhound?",
+    "expected_content_type": "monster",
+    "expected_entity": "Yethhound",
+    "category": "monster",
+    "book": "vgm"
+  },
+  {
+    "question": "What attacks can a Sea Spawn make?",
+    "expected_content_type": "monster",
+    "expected_entity": "Sea Spawn",
+    "category": "monster",
+    "book": "vgm"
+  },
+  {
+    "question": "What is the challenge rating of a Meaium?",
+    "expected_content_type": "monster",
+    "expected_entity": "Meaium",
+    "category": "monster",
+    "book": "vgm"
+  },
+  {
+    "question": "Explain the Sports And Games rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Sports And Games",
+    "category": "rule",
+    "book": "eberron"
+  },
+  {
+    "question": "How does I I work?",
+    "expected_content_type": "rule",
+    "expected_entity": "I I",
+    "category": "rule",
+    "book": "eberron"
+  },
+  {
+    "question": "What are the rules for Clientele?",
+    "expected_content_type": "rule",
+    "expected_entity": "Clientele",
+    "category": "rule",
+    "book": "eberron"
+  },
+  {
+    "question": "Explain the Notable Locations rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Notable Locations",
+    "category": "rule",
+    "book": "eberron"
+  },
+  {
+    "question": "How does Goblinoids work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Goblinoids",
+    "category": "rule",
+    "book": "eberron"
+  },
+  {
+    "question": "What are the rules for Guilds And Groups?",
+    "expected_content_type": "rule",
+    "expected_entity": "Guilds And Groups",
+    "category": "rule",
+    "book": "eberron"
+  },
+  {
+    "question": "Explain the Genasi On Athas rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Genasi On Athas",
+    "category": "rule",
+    "book": "eepc"
+  },
+  {
+    "question": "How does Aarakocra Backgrounds work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Aarakocra Backgrounds",
+    "category": "rule",
+    "book": "eepc"
+  },
+  {
+    "question": "What are the rules for On The Cover?",
+    "expected_content_type": "rule",
+    "expected_entity": "On The Cover",
+    "category": "rule",
+    "book": "eepc"
+  },
+  {
+    "question": "Explain the Aarakocra In The Forgotten Realms rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Aarakocra In The Forgotten Realms",
+    "category": "rule",
+    "book": "eepc"
+  },
+  {
+    "question": "How does Water Genasi work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Water Genasi",
+    "category": "rule",
+    "book": "eepc"
+  },
+  {
+    "question": "What are the rules for Earth Genasi?",
+    "expected_content_type": "rule",
+    "expected_entity": "Earth Genasi",
+    "category": "rule",
+    "book": "eepc"
+  },
+  {
+    "question": "Explain the Fierna And Belial rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Fierna And Belial",
+    "category": "rule",
+    "book": "mtf"
+  },
+  {
+    "question": "How does Vlaakith's Dilemma work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Vlaakith's Dilemma",
+    "category": "rule",
+    "book": "mtf"
+  },
+  {
+    "question": "What are the rules for Cult Of Levistu S?",
+    "expected_content_type": "rule",
+    "expected_entity": "Cult Of Levistu S",
+    "category": "rule",
+    "book": "mtf"
+  },
+  {
+    "question": "Explain the Githyanki rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Githyanki",
+    "category": "rule",
+    "book": "mtf"
+  },
+  {
+    "question": "How does Bael work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Bael",
+    "category": "rule",
+    "book": "mtf"
+  },
+  {
+    "question": "What are the rules for Mammon?",
+    "expected_content_type": "rule",
+    "expected_entity": "Mammon",
+    "category": "rule",
+    "book": "mtf"
+  },
+  {
+    "question": "Explain the Hit Points rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Hit Points",
+    "category": "rule",
+    "book": "phb"
+  },
+  {
+    "question": "How does Class Features work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Class Features",
+    "category": "rule",
+    "book": "phb"
+  },
+  {
+    "question": "What are the rules for Trained For Danger?",
+    "expected_content_type": "rule",
+    "expected_entity": "Trained For Danger",
+    "category": "rule",
+    "book": "phb"
+  },
+  {
+    "question": "Explain the Ranger rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Ranger",
+    "category": "rule",
+    "book": "phb"
+  },
+  {
+    "question": "How does Sacred Oaths work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Sacred Oaths",
+    "category": "rule",
+    "book": "phb"
+  },
+  {
+    "question": "What are the rules for Divine Domains?",
+    "expected_content_type": "rule",
+    "expected_entity": "Divine Domains",
+    "category": "rule",
+    "book": "phb"
+  },
+  {
+    "question": "Explain the Foes rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Foes",
+    "category": "rule",
+    "book": "ravnica"
+  },
+  {
+    "question": "How does Simic Characters work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Simic Characters",
+    "category": "rule",
+    "book": "ravnica"
+  },
+  {
+    "question": "What are the rules for Rakdos Items?",
+    "expected_content_type": "rule",
+    "expected_entity": "Rakdos Items",
+    "category": "rule",
+    "book": "ravnica"
+  },
+  {
+    "question": "Explain the Rakdos Lampooner rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Rakdos Lampooner",
+    "category": "rule",
+    "book": "ravnica"
+  },
+  {
+    "question": "How does Guild C Ha R Ms work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Guild C Ha R Ms",
+    "category": "rule",
+    "book": "ravnica"
+  },
+  {
+    "question": "What are the rules for Flying Horror?",
+    "expected_content_type": "rule",
+    "expected_entity": "Flying Horror",
+    "category": "rule",
+    "book": "ravnica"
+  },
+  {
+    "question": "Explain the Mira Bar rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Mira Bar",
+    "category": "rule",
+    "book": "scag"
+  },
+  {
+    "question": "How does If I work?",
+    "expected_content_type": "rule",
+    "expected_entity": "If I",
+    "category": "rule",
+    "book": "scag"
+  },
+  {
+    "question": "What are the rules for Forms Of Worship?",
+    "expected_content_type": "rule",
+    "expected_entity": "Forms Of Worship",
+    "category": "rule",
+    "book": "scag"
+  },
+  {
+    "question": "Explain the Llmater rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Llmater",
+    "category": "rule",
+    "book": "scag"
+  },
+  {
+    "question": "How does Magic In The Realms work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Magic In The Realms",
+    "category": "rule",
+    "book": "scag"
+  },
+  {
+    "question": "What are the rules for Tieflings?",
+    "expected_content_type": "rule",
+    "expected_entity": "Tieflings",
+    "category": "rule",
+    "book": "scag"
+  },
+  {
+    "question": "Explain the Beast Master Companions rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Beast Master Companions",
+    "category": "rule",
+    "book": "tce"
+  },
+  {
+    "question": "How does Ta Lla work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Ta Lla",
+    "category": "rule",
+    "book": "tce"
+  },
+  {
+    "question": "What are the rules for Primal Fruit?",
+    "expected_content_type": "rule",
+    "expected_entity": "Primal Fruit",
+    "category": "rule",
+    "book": "tce"
+  },
+  {
+    "question": "Explain the Taslla rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Taslla",
+    "category": "rule",
+    "book": "tce"
+  },
+  {
+    "question": "How does Menu work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Menu",
+    "category": "rule",
+    "book": "tce"
+  },
+  {
+    "question": "What are the rules for Ranger Archetypes?",
+    "expected_content_type": "rule",
+    "expected_entity": "Ranger Archetypes",
+    "category": "rule",
+    "book": "tce"
+  },
+  {
+    "question": "Explain the Tortle rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Tortle",
+    "category": "rule",
+    "book": "tortle"
+  },
+  {
+    "question": "How does Container Contents work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Container Contents",
+    "category": "rule",
+    "book": "tortle"
+  },
+  {
+    "question": "What are the rules for Axe Beak?",
+    "expected_content_type": "rule",
+    "expected_entity": "Axe Beak",
+    "category": "rule",
+    "book": "tortle"
+  },
+  {
+    "question": "Explain the Encounter Land Water rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Encounter Land Water",
+    "category": "rule",
+    "book": "tortle"
+  },
+  {
+    "question": "How does Introduction work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Introduction",
+    "category": "rule",
+    "book": "tortle"
+  },
+  {
+    "question": "What are the rules for Senses?",
+    "expected_content_type": "rule",
+    "expected_entity": "Senses",
+    "category": "rule",
+    "book": "tortle"
+  },
+  {
+    "question": "Explain the Trolls rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Trolls",
+    "category": "rule",
+    "book": "vgm"
+  },
+  {
+    "question": "How does Expert T'Unnelers work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Expert T'Unnelers",
+    "category": "rule",
+    "book": "vgm"
+  },
+  {
+    "question": "What are the rules for Leaving The Lair?",
+    "expected_content_type": "rule",
+    "expected_entity": "Leaving The Lair",
+    "category": "rule",
+    "book": "vgm"
+  },
+  {
+    "question": "Explain the Mind Flayer Flaws rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Mind Flayer Flaws",
+    "category": "rule",
+    "book": "vgm"
+  },
+  {
+    "question": "How does Stone Giants work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Stone Giants",
+    "category": "rule",
+    "book": "vgm"
+  },
+  {
+    "question": "What are the rules for Actions?",
+    "expected_content_type": "rule",
+    "expected_entity": "Actions",
+    "category": "rule",
+    "book": "vgm"
+  },
+  {
+    "question": "Explain the Magic Items rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Magic Items",
+    "category": "rule",
+    "book": "xge"
+  },
+  {
+    "question": "How does Tool Descriptions work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Tool Descriptions",
+    "category": "rule",
+    "book": "xge"
+  },
+  {
+    "question": "What are the rules for Designing Complex Traps?",
+    "expected_content_type": "rule",
+    "expected_entity": "Designing Complex Traps",
+    "category": "rule",
+    "book": "xge"
+  },
+  {
+    "question": "Explain the Rivals rules.",
+    "expected_content_type": "rule",
+    "expected_entity": "Rivals",
+    "category": "rule",
+    "book": "xge"
+  },
+  {
+    "question": "How does Designing Simple Tr A Ps work?",
+    "expected_content_type": "rule",
+    "expected_entity": "Designing Simple Tr A Ps",
+    "category": "rule",
+    "book": "xge"
+  },
+  {
+    "question": "What are the rules for Dloo Name?",
+    "expected_content_type": "rule",
+    "expected_entity": "Dloo Name",
+    "category": "rule",
+    "book": "xge"
+  },
+  {
+    "question": "What does the Gust spell do?",
+    "expected_content_type": "spell",
+    "expected_entity": "Gust",
+    "category": "spell_lookup",
+    "book": "eberron"
+  },
+  {
+    "question": "What does the Absorb Elements spell do?",
+    "expected_content_type": "spell",
+    "expected_entity": "Absorb Elements",
+    "category": "spell_lookup",
+    "book": "eepc"
+  },
+  {
+    "question": "What is the casting time of Magic Stone?",
+    "expected_content_type": "spell",
+    "expected_entity": "Magic Stone",
+    "category": "spell_lookup",
+    "book": "eepc"
+  },
+  {
+    "question": "What level is the spell Investiture Of Stone?",
+    "expected_content_type": "spell",
+    "expected_entity": "Investiture Of Stone",
+    "category": "spell_lookup",
+    "book": "eepc"
+  },
+  {
+    "question": "What are the components of Investiture Of Flame?",
+    "expected_content_type": "spell",
+    "expected_entity": "Investiture Of Flame",
+    "category": "spell_lookup",
+    "book": "eepc"
+  },
+  {
+    "question": "What does the Investiture Of Wind spell do?",
+    "expected_content_type": "spell",
+    "expected_entity": "Investiture Of Wind",
+    "category": "spell_lookup",
+    "book": "eepc"
+  },
+  {
+    "question": "What is the casting time of Bones Of The Earth?",
+    "expected_content_type": "spell",
+    "expected_entity": "Bones Of The Earth",
+    "category": "spell_lookup",
+    "book": "eepc"
+  },
+  {
+    "question": "What does the Spare The Dying spell do?",
+    "expected_content_type": "spell",
+    "expected_entity": "Spare The Dying",
+    "category": "spell_lookup",
+    "book": "phb"
+  },
+  {
+    "question": "What is the casting time of Beast Sense?",
+    "expected_content_type": "spell",
+    "expected_entity": "Beast Sense",
+    "category": "spell_lookup",
+    "book": "phb"
+  },
+  {
+    "question": "What level is the spell True Strike?",
+    "expected_content_type": "spell",
+    "expected_entity": "True Strike",
+    "category": "spell_lookup",
+    "book": "phb"
+  },
+  {
+    "question": "What are the components of Prestidigitation?",
+    "expected_content_type": "spell",
+    "expected_entity": "Prestidigitation",
+    "category": "spell_lookup",
+    "book": "phb"
+  },
+  {
+    "question": "What does the Spell Descriptions spell do?",
+    "expected_content_type": "spell",
+    "expected_entity": "Spell Descriptions",
+    "category": "spell_lookup",
+    "book": "phb"
+  },
+  {
+    "question": "What is the casting time of Mage Hand?",
+    "expected_content_type": "spell",
+    "expected_entity": "Mage Hand",
+    "category": "spell_lookup",
+    "book": "phb"
+  },
+  {
+    "question": "What does the Dream Of The Blue Veil spell do?",
+    "expected_content_type": "spell",
+    "expected_entity": "Dream Of The Blue Veil",
+    "category": "spell_lookup",
+    "book": "tce"
+  },
+  {
+    "question": "What is the casting time of Summon Celestial?",
+    "expected_content_type": "spell",
+    "expected_entity": "Summon Celestial",
+    "category": "spell_lookup",
+    "book": "tce"
+  },
+  {
+    "question": "What level is the spell Tasha's Otherworldly Guise?",
+    "expected_content_type": "spell",
+    "expected_entity": "Tasha's Otherworldly Guise",
+    "category": "spell_lookup",
+    "book": "tce"
+  },
+  {
+    "question": "What are the components of Summon Beast?",
+    "expected_content_type": "spell",
+    "expected_entity": "Summon Beast",
+    "category": "spell_lookup",
+    "book": "tce"
+  },
+  {
+    "question": "What does the Summon Aberration spell do?",
+    "expected_content_type": "spell",
+    "expected_entity": "Summon Aberration",
+    "category": "spell_lookup",
+    "book": "tce"
+  },
+  {
+    "question": "What is the casting time of Blade Of Disaster?",
+    "expected_content_type": "spell",
+    "expected_entity": "Blade Of Disaster",
+    "category": "spell_lookup",
+    "book": "tce"
+  },
+  {
+    "question": "What does the Temple Of The Gods spell do?",
+    "expected_content_type": "spell",
+    "expected_entity": "Temple Of The Gods",
+    "category": "spell_lookup",
+    "book": "xge"
+  },
+  {
+    "question": "What is the casting time of Bo Nes Of The Earth?",
+    "expected_content_type": "spell",
+    "expected_entity": "Bo Nes Of The Earth",
+    "category": "spell_lookup",
+    "book": "xge"
+  },
+  {
+    "question": "What level is the spell Dr Agon's Bre At H?",
+    "expected_content_type": "spell",
+    "expected_entity": "Dr Agon's Bre At H",
+    "category": "spell_lookup",
+    "book": "xge"
+  },
+  {
+    "question": "What are the components of Wall Of Light?",
+    "expected_content_type": "spell",
+    "expected_entity": "Wall Of Light",
+    "category": "spell_lookup",
+    "book": "xge"
+  },
+  {
+    "question": "What does the Watery Sphere spell do?",
+    "expected_content_type": "spell",
+    "expected_entity": "Watery Sphere",
+    "category": "spell_lookup",
+    "book": "xge"
+  },
+  {
+    "question": "What is the casting time of Word Of Radiance?",
+    "expected_content_type": "spell",
+    "expected_entity": "Word Of Radiance",
+    "category": "spell_lookup",
+    "book": "xge"
+  }
+]
