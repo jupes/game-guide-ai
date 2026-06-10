@@ -125,7 +125,7 @@ def test_class_filter_adds_where():
         classes={"Wizard"}, entities=set(),
     )
     assert "WHERE" in sql
-    assert "class_name = ANY" in sql, f"Expected class_name filter in SQL: {sql}"
+    assert "class_name ILIKE ANY" in sql, f"Expected class_name filter in SQL: {sql}"
     # params: emb (top-level), class_list, emb (order), k
     assert any("Wizard" in str(p) for p in params), f"Wizard not in params: {params}"
 
@@ -135,7 +135,7 @@ def test_entity_filter_adds_where():
         emb_str="[0.1, 0.2]", k=5,
         classes=set(), entities={"Fireball"},
     )
-    assert "entity_name = ANY" in sql
+    assert "entity_name ILIKE ANY" in sql
     assert any("Fireball" in str(p) for p in params)
 
 
@@ -146,8 +146,8 @@ def test_class_and_entity_filter_uses_or():
     )
     # Both filters present → OR'd together so either match qualifies
     assert " OR " in sql, f"Expected OR between class/entity filters: {sql}"
-    assert "class_name = ANY" in sql
-    assert "entity_name = ANY" in sql
+    assert "class_name ILIKE ANY" in sql
+    assert "entity_name ILIKE ANY" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +318,7 @@ def test_class_and_content_type_filter_uses_and():
         emb_str="[0.1, 0.2]", k=5,
         classes={"Wizard"}, entities=set(), content_types={"class_feature"},
     )
-    assert "class_name = ANY" in sql
+    assert "class_name ILIKE ANY" in sql
     assert "content_type = ANY" in sql
     assert " AND " in sql, f"Expected AND between entity/class and content_type filters: {sql}"
 

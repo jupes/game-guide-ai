@@ -1,7 +1,9 @@
 [
   {
     "question": "What is the range of Fireball?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "spell_lookup",
+    "book": "phb",
     "expected_content_type": "spell",
     "expected_entity": "Fireball",
     "expected_class": null,
@@ -16,7 +18,7 @@
       "spell"
     ],
     "hit_at_1": true,
-    "precision_at_5": 0.2,
+    "precision_at_5": 0.4,
     "mrr": 1.0,
     "recall_at_10": true,
     "top_k": [
@@ -26,23 +28,43 @@
         "content_type": "spell",
         "entity_name": "Fireball",
         "class_name": null,
-        "cosine_distance": 0.38399,
+        "rrf_score": 0.38399,
         "is_hit": true
       },
       {
         "rank": 2,
+        "chunk_id": "b670bb79601629e1440b",
+        "content_type": "spell",
+        "entity_name": "Delayed Blast Fireball",
+        "class_name": null,
+        "rrf_score": 0.437033,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
         "chunk_id": "e9ba2d8c4fea5081b01c",
         "content_type": "rule",
         "entity_name": "Range",
         "class_name": null,
-        "cosine_distance": 0.600896,
+        "rrf_score": 0.600896,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "6d5a01778213a436ff46",
+        "content_type": "rule",
+        "entity_name": "Ranged Attacks in Close Combat",
+        "class_name": null,
+        "rrf_score": 0.744659,
         "is_hit": false
       }
     ]
   },
   {
     "question": "How many hit points does a Fighter get at level 1?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "class_feature",
+    "book": "phb",
     "expected_content_type": "class_feature",
     "expected_entity": null,
     "expected_class": "Fighter",
@@ -71,95 +93,97 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Fighter",
-        "cosine_distance": 0.253634,
+        "rrf_score": 0.253634,
         "is_hit": true
       },
       {
         "rank": 2,
+        "chunk_id": "895ed5fe52439e7ed52d",
+        "content_type": "narrative",
+        "entity_name": "Hit Points and Hit Dice",
+        "class_name": null,
+        "rrf_score": 0.428604,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
         "chunk_id": "7c3c1bbeea66da9caa3b",
         "content_type": "class_feature",
         "entity_name": "Fighter",
         "class_name": "Fighter",
-        "cosine_distance": 0.476296,
-        "is_hit": true
-      },
-      {
-        "rank": 3,
-        "chunk_id": "4004c51caa5a907dbabb",
-        "content_type": "class_feature",
-        "entity_name": "Fighter",
-        "class_name": "Fighter",
-        "cosine_distance": 0.501572,
+        "rrf_score": 0.476296,
         "is_hit": true
       },
       {
         "rank": 4,
-        "chunk_id": "72e0957f25087349b70c",
+        "chunk_id": "4004c51caa5a907dbabb",
         "content_type": "class_feature",
-        "entity_name": null,
+        "entity_name": "Fighter",
         "class_name": "Fighter",
-        "cosine_distance": 0.514098,
+        "rrf_score": 0.501572,
         "is_hit": true
       },
       {
         "rank": 5,
+        "chunk_id": "72e0957f25087349b70c",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Fighter",
+        "rrf_score": 0.514098,
+        "is_hit": true
+      },
+      {
+        "rank": 6,
         "chunk_id": "57f060d7af2973dc0bb6",
         "content_type": "rule",
         "entity_name": "Hit Points",
         "class_name": null,
-        "cosine_distance": 0.520229,
+        "rrf_score": 0.520229,
         "is_hit": false
       },
       {
-        "rank": 6,
+        "rank": 7,
         "chunk_id": "94999434faafe8cea774",
         "content_type": "class_feature",
         "entity_name": "Fighter",
         "class_name": "Fighter",
-        "cosine_distance": 0.541325,
-        "is_hit": true
-      },
-      {
-        "rank": 7,
-        "chunk_id": "ad0137f5d1115b303ec6",
-        "content_type": "class_feature",
-        "entity_name": "Fighter",
-        "class_name": "Fighter",
-        "cosine_distance": 0.555385,
+        "rrf_score": 0.541325,
         "is_hit": true
       },
       {
         "rank": 8,
-        "chunk_id": "9c6d223b4ca36646c1ec",
+        "chunk_id": "ac5846477a8a28531461",
         "content_type": "narrative",
-        "entity_name": "Level",
-        "class_name": null,
-        "cosine_distance": 0.576479,
+        "entity_name": "Beyond 1st Level",
+        "class_name": "Beyond 1st Level",
+        "rrf_score": 0.548069,
         "is_hit": false
       },
       {
         "rank": 9,
-        "chunk_id": "2b4c57a76ef1634adb30",
+        "chunk_id": "ad0137f5d1115b303ec6",
         "content_type": "class_feature",
-        "entity_name": null,
+        "entity_name": "Fighter",
         "class_name": "Fighter",
-        "cosine_distance": 0.592559,
+        "rrf_score": 0.555385,
         "is_hit": true
       },
       {
         "rank": 10,
-        "chunk_id": "c9cafec69935062e79a9",
-        "content_type": "class_feature",
-        "entity_name": null,
-        "class_name": "Fighter",
-        "cosine_distance": 0.61941,
-        "is_hit": true
+        "chunk_id": "9c6d223b4ca36646c1ec",
+        "content_type": "narrative",
+        "entity_name": "Level",
+        "class_name": null,
+        "rrf_score": 0.576479,
+        "is_hit": false
       }
     ]
   },
   {
     "question": "What does the Blinded condition do?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "condition",
+    "book": "phb",
     "expected_content_type": "condition",
     "expected_entity": "Blinded",
     "expected_class": null,
@@ -182,14 +206,16 @@
         "content_type": "condition",
         "entity_name": "Blinded",
         "class_name": null,
-        "cosine_distance": 0.321823,
+        "rrf_score": 0.321823,
         "is_hit": true
       }
     ]
   },
   {
     "question": "How does grappling work?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "rule",
+    "book": "phb",
     "expected_content_type": "rule",
     "expected_entity": null,
     "expected_class": null,
@@ -212,14 +238,16 @@
         "content_type": "rule",
         "entity_name": "Grappling",
         "class_name": null,
-        "cosine_distance": 0.354503,
+        "rrf_score": 0.354503,
         "is_hit": true
       }
     ]
   },
   {
     "question": "What languages do Elves know?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "race_feature",
+    "book": "phb",
     "expected_content_type": "race_feature",
     "expected_entity": "Elf",
     "expected_class": null,
@@ -232,6 +260,7 @@
       "Languages"
     ],
     "matched_content_types": [
+      "background",
       "race_feature"
     ],
     "hit_at_1": true,
@@ -245,7 +274,7 @@
         "content_type": "race_feature",
         "entity_name": "High Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.380436,
+        "rrf_score": 0.380436,
         "is_hit": true
       },
       {
@@ -254,7 +283,7 @@
         "content_type": "race_feature",
         "entity_name": "Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.393607,
+        "rrf_score": 0.393607,
         "is_hit": true
       },
       {
@@ -263,7 +292,7 @@
         "content_type": "race_feature",
         "entity_name": "Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.43356,
+        "rrf_score": 0.43356,
         "is_hit": true
       },
       {
@@ -272,7 +301,7 @@
         "content_type": "race_feature",
         "entity_name": "Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.446805,
+        "rrf_score": 0.446805,
         "is_hit": true
       },
       {
@@ -281,7 +310,7 @@
         "content_type": "race_feature",
         "entity_name": "Wood Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.480235,
+        "rrf_score": 0.480235,
         "is_hit": true
       },
       {
@@ -290,7 +319,7 @@
         "content_type": "race_feature",
         "entity_name": "Languages",
         "class_name": null,
-        "cosine_distance": 0.491,
+        "rrf_score": 0.491,
         "is_hit": false
       },
       {
@@ -299,41 +328,43 @@
         "content_type": "race_feature",
         "entity_name": "Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.510666,
+        "rrf_score": 0.510666,
         "is_hit": true
       },
       {
         "rank": 8,
+        "chunk_id": "07912defdb934881a3fd",
+        "content_type": "background",
+        "entity_name": "Languages",
+        "class_name": null,
+        "rrf_score": 0.516914,
+        "is_hit": false
+      },
+      {
+        "rank": 9,
         "chunk_id": "33dc9b4ecbab2eebc82c",
         "content_type": "race_feature",
         "entity_name": "Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.523383,
-        "is_hit": true
-      },
-      {
-        "rank": 9,
-        "chunk_id": "d185416ca78bf0020591",
-        "content_type": "race_feature",
-        "entity_name": "Elf",
-        "class_name": "Elf",
-        "cosine_distance": 0.524185,
+        "rrf_score": 0.523383,
         "is_hit": true
       },
       {
         "rank": 10,
-        "chunk_id": "0fbcc94678c1f82675c6",
+        "chunk_id": "d185416ca78bf0020591",
         "content_type": "race_feature",
         "entity_name": "Elf",
         "class_name": "Elf",
-        "cosine_distance": 0.576446,
+        "rrf_score": 0.524185,
         "is_hit": true
       }
     ]
   },
   {
     "question": "What are the components of Cure Wounds?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "spell_lookup",
+    "book": "phb",
     "expected_content_type": "spell",
     "expected_entity": "Cure Wounds",
     "expected_class": null,
@@ -346,24 +377,35 @@
       "spell"
     ],
     "hit_at_1": true,
-    "precision_at_5": 0.2,
+    "precision_at_5": 0.4,
     "mrr": 1.0,
     "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
+        "chunk_id": "7b20408e58667eb9c5c1",
+        "content_type": "spell",
+        "entity_name": "Mass Cure Wounds",
+        "class_name": null,
+        "rrf_score": 0.362555,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
         "chunk_id": "2b08fc30c9b730d7d1a4",
         "content_type": "spell",
         "entity_name": "Cure Wounds",
         "class_name": null,
-        "cosine_distance": 0.402729,
+        "rrf_score": 0.402729,
         "is_hit": true
       }
     ]
   },
   {
     "question": "What level is Shield and what does it do?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "spell_lookup",
+    "book": "phb",
     "expected_content_type": "spell",
     "expected_entity": "Shield",
     "expected_class": null,
@@ -378,7 +420,7 @@
       "spell"
     ],
     "hit_at_1": true,
-    "precision_at_5": 0.2,
+    "precision_at_5": 0.4,
     "mrr": 1.0,
     "recall_at_10": true,
     "top_k": [
@@ -388,23 +430,43 @@
         "content_type": "spell",
         "entity_name": "Shield",
         "class_name": null,
-        "cosine_distance": 0.481778,
+        "rrf_score": 0.481778,
         "is_hit": true
       },
       {
         "rank": 2,
+        "chunk_id": "41770bc9474d25cc51d2",
+        "content_type": "spell",
+        "entity_name": "Shield of Faith",
+        "class_name": null,
+        "rrf_score": 0.570719,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "ac5846477a8a28531461",
+        "content_type": "narrative",
+        "entity_name": "Beyond 1st Level",
+        "class_name": "Beyond 1st Level",
+        "rrf_score": 0.652062,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
         "chunk_id": "9c6d223b4ca36646c1ec",
         "content_type": "narrative",
         "entity_name": "Level",
         "class_name": null,
-        "cosine_distance": 0.734428,
+        "rrf_score": 0.734428,
         "is_hit": false
       }
     ]
   },
   {
     "question": "How does Counterspell work?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "spell_lookup",
+    "book": "phb",
     "expected_content_type": "spell",
     "expected_entity": "Counterspell",
     "expected_class": null,
@@ -427,14 +489,16 @@
         "content_type": "spell",
         "entity_name": "Counterspell",
         "class_name": null,
-        "cosine_distance": 0.410549,
+        "rrf_score": 0.410549,
         "is_hit": true
       }
     ]
   },
   {
     "question": "What is the casting time of Healing Word?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "spell_lookup",
+    "book": "phb",
     "expected_content_type": "spell",
     "expected_entity": "Healing Word",
     "expected_class": null,
@@ -451,7 +515,7 @@
       "spell"
     ],
     "hit_at_1": true,
-    "precision_at_5": 0.2,
+    "precision_at_5": 0.4,
     "mrr": 1.0,
     "recall_at_10": true,
     "top_k": [
@@ -461,23 +525,52 @@
         "content_type": "spell",
         "entity_name": "Healing Word",
         "class_name": null,
-        "cosine_distance": 0.361191,
+        "rrf_score": 0.361191,
         "is_hit": true
       },
       {
         "rank": 2,
+        "chunk_id": "6264d4f8d25c6c4a9833",
+        "content_type": "spell",
+        "entity_name": "Mass Healing Word",
+        "class_name": null,
+        "rrf_score": 0.363362,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "2bda5492cd23c8b1ff6a",
+        "content_type": "rule",
+        "entity_name": "Longer Casting Times",
+        "class_name": "Casting a Spell",
+        "rrf_score": 0.576312,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "78bedf2d34eed59d2405",
+        "content_type": "spell",
+        "entity_name": "Time Stop",
+        "class_name": null,
+        "rrf_score": 0.637236,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
         "chunk_id": "acb86be0c839473d1a5e",
         "content_type": "rule",
         "entity_name": "Time",
         "class_name": "Time",
-        "cosine_distance": 0.716782,
+        "rrf_score": 0.716782,
         "is_hit": false
       }
     ]
   },
   {
     "question": "What does the Magic Missile spell do?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "spell_lookup",
+    "book": "phb",
     "expected_content_type": "spell",
     "expected_entity": "Magic Missile",
     "expected_class": null,
@@ -500,14 +593,16 @@
         "content_type": "spell",
         "entity_name": "Magic Missile",
         "class_name": null,
-        "cosine_distance": 0.342527,
+        "rrf_score": 0.342527,
         "is_hit": true
       }
     ]
   },
   {
     "question": "What happens when a creature is both Prone and Restrained?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "condition",
+    "book": "phb",
     "expected_content_type": "condition",
     "expected_entity": "Prone",
     "expected_class": null,
@@ -531,7 +626,7 @@
         "content_type": "condition",
         "entity_name": "Prone",
         "class_name": null,
-        "cosine_distance": 0.346583,
+        "rrf_score": 0.346583,
         "is_hit": true
       },
       {
@@ -540,14 +635,16 @@
         "content_type": "condition",
         "entity_name": "Restrained",
         "class_name": null,
-        "cosine_distance": 0.371401,
+        "rrf_score": 0.371401,
         "is_hit": false
       }
     ]
   },
   {
     "question": "How does the Cleric's Channel Divinity: Turn Undead work?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "class_feature",
+    "book": "phb",
     "expected_content_type": "class_feature",
     "expected_entity": null,
     "expected_class": "Cleric",
@@ -572,7 +669,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Cleric",
-        "cosine_distance": 0.26345,
+        "rrf_score": 0.26345,
         "is_hit": true
       },
       {
@@ -581,7 +678,7 @@
         "content_type": "class_feature",
         "entity_name": "Cleric",
         "class_name": "Cleric",
-        "cosine_distance": 0.348448,
+        "rrf_score": 0.348448,
         "is_hit": true
       },
       {
@@ -590,7 +687,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Cleric",
-        "cosine_distance": 0.362569,
+        "rrf_score": 0.362569,
         "is_hit": true
       },
       {
@@ -599,7 +696,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Cleric",
-        "cosine_distance": 0.366359,
+        "rrf_score": 0.366359,
         "is_hit": true
       },
       {
@@ -608,7 +705,7 @@
         "content_type": "class_feature",
         "entity_name": "Cleric",
         "class_name": "Cleric",
-        "cosine_distance": 0.450049,
+        "rrf_score": 0.450049,
         "is_hit": true
       },
       {
@@ -617,7 +714,7 @@
         "content_type": "class_feature",
         "entity_name": "Cleric",
         "class_name": "Cleric",
-        "cosine_distance": 0.491497,
+        "rrf_score": 0.491497,
         "is_hit": true
       },
       {
@@ -626,7 +723,7 @@
         "content_type": "class_feature",
         "entity_name": "Cleric",
         "class_name": "Cleric",
-        "cosine_distance": 0.498606,
+        "rrf_score": 0.498606,
         "is_hit": true
       },
       {
@@ -635,7 +732,7 @@
         "content_type": "class_feature",
         "entity_name": "Cleric",
         "class_name": "Cleric",
-        "cosine_distance": 0.545913,
+        "rrf_score": 0.545913,
         "is_hit": true
       },
       {
@@ -644,7 +741,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Cleric",
-        "cosine_distance": 0.558457,
+        "rrf_score": 0.558457,
         "is_hit": true
       },
       {
@@ -653,14 +750,16 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Cleric",
-        "cosine_distance": 0.566374,
+        "rrf_score": 0.566374,
         "is_hit": true
       }
     ]
   },
   {
     "question": "What saving throw proficiencies does a Wizard get?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "class_feature",
+    "book": "phb",
     "expected_content_type": "class_feature",
     "expected_entity": null,
     "expected_class": "Wizard",
@@ -687,7 +786,7 @@
         "content_type": "class_feature",
         "entity_name": "Wizard",
         "class_name": "Wizard",
-        "cosine_distance": 0.36732,
+        "rrf_score": 0.36732,
         "is_hit": true
       },
       {
@@ -696,7 +795,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Wizard",
-        "cosine_distance": 0.404387,
+        "rrf_score": 0.404387,
         "is_hit": true
       },
       {
@@ -705,7 +804,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Wizard",
-        "cosine_distance": 0.431497,
+        "rrf_score": 0.431497,
         "is_hit": true
       },
       {
@@ -714,7 +813,7 @@
         "content_type": "class_feature",
         "entity_name": "Wizard",
         "class_name": "Wizard",
-        "cosine_distance": 0.436984,
+        "rrf_score": 0.436984,
         "is_hit": true
       },
       {
@@ -723,7 +822,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Wizard",
-        "cosine_distance": 0.437651,
+        "rrf_score": 0.437651,
         "is_hit": true
       },
       {
@@ -732,7 +831,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Wizard",
-        "cosine_distance": 0.489186,
+        "rrf_score": 0.489186,
         "is_hit": true
       },
       {
@@ -741,7 +840,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Wizard",
-        "cosine_distance": 0.502134,
+        "rrf_score": 0.502134,
         "is_hit": true
       },
       {
@@ -750,7 +849,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Wizard",
-        "cosine_distance": 0.507195,
+        "rrf_score": 0.507195,
         "is_hit": true
       },
       {
@@ -759,7 +858,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Wizard",
-        "cosine_distance": 0.515624,
+        "rrf_score": 0.515624,
         "is_hit": true
       },
       {
@@ -768,27 +867,31 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Wizard",
-        "cosine_distance": 0.517971,
+        "rrf_score": 0.517971,
         "is_hit": true
       }
     ]
   },
   {
     "question": "How does two-weapon fighting work in combat?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "rule",
+    "book": "phb",
     "expected_content_type": "rule",
     "expected_entity": null,
     "expected_class": null,
     "expected_chapter": "Chapter 9",
     "matched_classes": [],
     "matched_entities": [
+      "Combat",
       "Two-Weapon Fighting"
     ],
     "matched_content_types": [
+      "dm_guidance",
       "rule"
     ],
     "hit_at_1": true,
-    "precision_at_5": 0.2,
+    "precision_at_5": 0.6,
     "mrr": 1.0,
     "recall_at_10": true,
     "top_k": [
@@ -798,14 +901,97 @@
         "content_type": "rule",
         "entity_name": "Two-Weapon Fighting",
         "class_name": null,
-        "cosine_distance": 0.315393,
+        "rrf_score": 0.315393,
         "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "018aad0090e25663e1a0",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat",
+        "class_name": null,
+        "rrf_score": 0.567621,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "6d5a01778213a436ff46",
+        "content_type": "rule",
+        "entity_name": "Ranged Attacks in Close Combat",
+        "class_name": null,
+        "rrf_score": 0.571446,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "05c467158bfa9fbc59ff",
+        "content_type": "rule",
+        "entity_name": "The Order of Combat",
+        "class_name": "The Order of Combat",
+        "rrf_score": 0.583338,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "abce3634cac0bf5a0f43",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat",
+        "class_name": null,
+        "rrf_score": 0.586374,
+        "is_hit": false
+      },
+      {
+        "rank": 6,
+        "chunk_id": "092d987be5579743658f",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat",
+        "class_name": null,
+        "rrf_score": 0.586694,
+        "is_hit": false
+      },
+      {
+        "rank": 7,
+        "chunk_id": "96bc48b0e84b7bb0e0f6",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat Options",
+        "class_name": null,
+        "rrf_score": 0.589244,
+        "is_hit": false
+      },
+      {
+        "rank": 8,
+        "chunk_id": "d413ab7e407d2cf5b863",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat Options",
+        "class_name": null,
+        "rrf_score": 0.592158,
+        "is_hit": false
+      },
+      {
+        "rank": 9,
+        "chunk_id": "72d9c8b2dbc5ebdc5f28",
+        "content_type": "rule",
+        "entity_name": "Actions in Combat",
+        "class_name": "Actions in Combat",
+        "rrf_score": 0.598354,
+        "is_hit": true
+      },
+      {
+        "rank": 10,
+        "chunk_id": "9bd3fc625d14e5153a06",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat Options",
+        "class_name": null,
+        "rrf_score": 0.613568,
+        "is_hit": false
       }
     ]
   },
   {
     "question": "What are the Rogue's Sneak Attack requirements?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "class_feature",
+    "book": "phb",
     "expected_content_type": "class_feature",
     "expected_entity": null,
     "expected_class": "Rogue",
@@ -830,7 +1016,7 @@
         "content_type": "class_feature",
         "entity_name": "Rogue",
         "class_name": "Rogue",
-        "cosine_distance": 0.317062,
+        "rrf_score": 0.317062,
         "is_hit": true
       },
       {
@@ -839,7 +1025,7 @@
         "content_type": "class_feature",
         "entity_name": "Rogue",
         "class_name": "Rogue",
-        "cosine_distance": 0.332574,
+        "rrf_score": 0.332574,
         "is_hit": true
       },
       {
@@ -848,7 +1034,7 @@
         "content_type": "class_feature",
         "entity_name": "Rogue",
         "class_name": "Rogue",
-        "cosine_distance": 0.411612,
+        "rrf_score": 0.411612,
         "is_hit": true
       },
       {
@@ -857,7 +1043,7 @@
         "content_type": "class_feature",
         "entity_name": "Rogue",
         "class_name": "Rogue",
-        "cosine_distance": 0.42926,
+        "rrf_score": 0.42926,
         "is_hit": true
       },
       {
@@ -866,7 +1052,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Rogue",
-        "cosine_distance": 0.443519,
+        "rrf_score": 0.443519,
         "is_hit": true
       },
       {
@@ -875,7 +1061,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Rogue",
-        "cosine_distance": 0.459254,
+        "rrf_score": 0.459254,
         "is_hit": true
       },
       {
@@ -884,7 +1070,7 @@
         "content_type": "class_feature",
         "entity_name": "Rogue",
         "class_name": "Rogue",
-        "cosine_distance": 0.459385,
+        "rrf_score": 0.459385,
         "is_hit": true
       },
       {
@@ -893,7 +1079,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Rogue",
-        "cosine_distance": 0.485697,
+        "rrf_score": 0.485697,
         "is_hit": true
       },
       {
@@ -902,7 +1088,7 @@
         "content_type": "class_feature",
         "entity_name": "Rogue",
         "class_name": "Rogue",
-        "cosine_distance": 0.492476,
+        "rrf_score": 0.492476,
         "is_hit": true
       },
       {
@@ -911,14 +1097,16 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Rogue",
-        "cosine_distance": 0.496072,
+        "rrf_score": 0.496072,
         "is_hit": true
       }
     ]
   },
   {
     "question": "What ability score bonuses do Dwarves get?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "race_feature",
+    "book": "phb",
     "expected_content_type": "race_feature",
     "expected_entity": "Dwarf",
     "expected_class": null,
@@ -933,33 +1121,53 @@
       "race_feature"
     ],
     "hit_at_1": true,
-    "precision_at_5": 0.4,
+    "precision_at_5": 0.8,
     "mrr": 1.0,
     "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "fa009ed4110bb6e7666d",
+        "chunk_id": "de685b6f5e4314a3cdfb",
         "content_type": "race_feature",
-        "entity_name": "Dwarf",
-        "class_name": "Dwarf",
-        "cosine_distance": 0.426928,
+        "entity_name": "Hill Dwarf",
+        "class_name": "Elf",
+        "rrf_score": 0.336263,
         "is_hit": true
       },
       {
         "rank": 2,
+        "chunk_id": "658cfa77b5797bcc894a",
+        "content_type": "race_feature",
+        "entity_name": "Mountain Dwarf",
+        "class_name": "Elf",
+        "rrf_score": 0.35852,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "fa009ed4110bb6e7666d",
+        "content_type": "race_feature",
+        "entity_name": "Dwarf",
+        "class_name": "Dwarf",
+        "rrf_score": 0.426928,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
         "chunk_id": "72def097303727545080",
         "content_type": "race_feature",
         "entity_name": "Dwarf",
         "class_name": "Dwarf",
-        "cosine_distance": 0.488947,
+        "rrf_score": 0.488947,
         "is_hit": true
       }
     ]
   },
   {
     "question": "How do opportunity attacks work?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "rule",
+    "book": "phb",
     "expected_content_type": "rule",
     "expected_entity": null,
     "expected_class": null,
@@ -982,14 +1190,16 @@
         "content_type": "rule",
         "entity_name": "Opportunity Attacks",
         "class_name": null,
-        "cosine_distance": 0.274149,
+        "rrf_score": 0.274149,
         "is_hit": true
       }
     ]
   },
   {
     "question": "What does the Paralyzed condition do to saving throws?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "condition",
+    "book": "phb",
     "expected_content_type": "condition",
     "expected_entity": "Paralyzed",
     "expected_class": null,
@@ -1016,7 +1226,7 @@
         "content_type": "condition",
         "entity_name": "Paralyzed",
         "class_name": null,
-        "cosine_distance": 0.358562,
+        "rrf_score": 0.3585,
         "is_hit": true
       },
       {
@@ -1025,14 +1235,25 @@
         "content_type": "rule",
         "entity_name": "Saving Throws",
         "class_name": "Saving Throws",
-        "cosine_distance": 0.47898,
+        "rrf_score": 0.478974,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "f3ad7901a7d8c5a25bb9",
+        "content_type": "rule",
+        "entity_name": "Death Saving Throws",
+        "class_name": null,
+        "rrf_score": 0.495361,
         "is_hit": false
       }
     ]
   },
   {
     "question": "How does multiclassing work?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "rule",
+    "book": "phb",
     "expected_content_type": "rule",
     "expected_entity": null,
     "expected_class": null,
@@ -1057,14 +1278,16 @@
         "content_type": "rule",
         "entity_name": "Multiclassing",
         "class_name": "Multiclassing",
-        "cosine_distance": 0.351488,
+        "rrf_score": 0.351488,
         "is_hit": true
       }
     ]
   },
   {
     "question": "What equipment does a Fighter start with?",
-    "mode": "vector",
+    "mode": "hybrid",
+    "category": "class_feature",
+    "book": "phb",
     "expected_content_type": "class_feature",
     "expected_entity": null,
     "expected_class": "Fighter",
@@ -1091,7 +1314,7 @@
         "content_type": "class_feature",
         "entity_name": "Fighter",
         "class_name": "Fighter",
-        "cosine_distance": 0.395052,
+        "rrf_score": 0.394991,
         "is_hit": true
       },
       {
@@ -1100,7 +1323,7 @@
         "content_type": "class_feature",
         "entity_name": "Fighter",
         "class_name": "Fighter",
-        "cosine_distance": 0.464646,
+        "rrf_score": 0.464588,
         "is_hit": true
       },
       {
@@ -1109,7 +1332,7 @@
         "content_type": "background",
         "entity_name": "Equipment",
         "class_name": null,
-        "cosine_distance": 0.465147,
+        "rrf_score": 0.465139,
         "is_hit": false
       },
       {
@@ -1118,7 +1341,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Fighter",
-        "cosine_distance": 0.496679,
+        "rrf_score": 0.496623,
         "is_hit": true
       },
       {
@@ -1127,7 +1350,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Fighter",
-        "cosine_distance": 0.511348,
+        "rrf_score": 0.511298,
         "is_hit": true
       },
       {
@@ -1136,7 +1359,7 @@
         "content_type": "class_feature",
         "entity_name": "Fighter",
         "class_name": "Fighter",
-        "cosine_distance": 0.52702,
+        "rrf_score": 0.526959,
         "is_hit": true
       },
       {
@@ -1145,7 +1368,7 @@
         "content_type": "class_feature",
         "entity_name": "Fighter",
         "class_name": "Fighter",
-        "cosine_distance": 0.553013,
+        "rrf_score": 0.552968,
         "is_hit": true
       },
       {
@@ -1154,7 +1377,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Fighter",
-        "cosine_distance": 0.588807,
+        "rrf_score": 0.588769,
         "is_hit": true
       },
       {
@@ -1163,7 +1386,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Fighter",
-        "cosine_distance": 0.636163,
+        "rrf_score": 0.636134,
         "is_hit": true
       },
       {
@@ -1172,9 +1395,2273 @@
         "content_type": "class_feature",
         "entity_name": "Fighter",
         "class_name": "Fighter",
-        "cosine_distance": 0.638322,
+        "rrf_score": 0.638285,
         "is_hit": true
       }
     ]
+  },
+  {
+    "question": "What is the armor class of a Basilisk?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Basilisk",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Armor Class",
+      "Basilisk"
+    ],
+    "matched_content_types": [
+      "monster",
+      "narrative"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.6,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "355c3bc0cb7787f66e74",
+        "content_type": "monster",
+        "entity_name": "Basilisk",
+        "class_name": null,
+        "rrf_score": 0.288608,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "d2209fdd68aa66d00370",
+        "content_type": "monster",
+        "entity_name": "Basilisk",
+        "class_name": null,
+        "rrf_score": 0.401983,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "91a8ef8e75b16cd5ed10",
+        "content_type": "monster",
+        "entity_name": "Basilisk",
+        "class_name": null,
+        "rrf_score": 0.498048,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "8ad99b9c55a0254e49c8",
+        "content_type": "narrative",
+        "entity_name": "Armor Class",
+        "class_name": null,
+        "rrf_score": 0.587522,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "How many hit points does the Tarrasque have?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Tarrasque",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Hit Points",
+      "Tarrasque"
+    ],
+    "matched_content_types": [
+      "monster",
+      "rule"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.4,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "422e02a9a72df614fa00",
+        "content_type": "monster",
+        "entity_name": "Tarrasque",
+        "class_name": null,
+        "rrf_score": 0.341213,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "b2497b89108781e54ec2",
+        "content_type": "monster",
+        "entity_name": "Tarrasque",
+        "class_name": null,
+        "rrf_score": 0.381766,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "57f060d7af2973dc0bb6",
+        "content_type": "rule",
+        "entity_name": "Hit Points",
+        "class_name": null,
+        "rrf_score": 0.628207,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What is the challenge rating of a Kraken?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Kraken",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Kraken"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 1.0,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "d2a700efaac8cc83d8b5",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.571379,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "aa041ba21a053cc44b4e",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.616764,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "941d611861d61864fad2",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.618206,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "4562fdd7e274773a4ff6",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.660955,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "aa5e65afe7e4f64a1c08",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.68792,
+        "is_hit": true
+      },
+      {
+        "rank": 6,
+        "chunk_id": "56f22e8e9f327408bcd7",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.691643,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What legendary actions can an Ancient Red Dragon take?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Ancient Red Dragon",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Ancient Red Dragon"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "88dbaeb8a090e1a80644",
+        "content_type": "monster",
+        "entity_name": "Ancient Red Dragon",
+        "class_name": null,
+        "rrf_score": 0.243123,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What attacks does an Owlbear make?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Owlbear",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Owlbear"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.6,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "434c2382d1b03a055ebd",
+        "content_type": "monster",
+        "entity_name": "Owlbear",
+        "class_name": null,
+        "rrf_score": 0.284523,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "a1c808221b5815854728",
+        "content_type": "monster",
+        "entity_name": "Owlbear",
+        "class_name": null,
+        "rrf_score": 0.284665,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "f9dd92833baf91de3d2f",
+        "content_type": "monster",
+        "entity_name": "Owlbear",
+        "class_name": null,
+        "rrf_score": 0.336662,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What does the Mimic's Adhesive trait do?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Mimic",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Mimic"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "857a7aa65ee6833a5bd7",
+        "content_type": "monster",
+        "entity_name": "Mimic",
+        "class_name": null,
+        "rrf_score": 0.345497,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What does a Banshee's Wail do?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Banshee",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Banshee"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.6,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "7db45450550562337854",
+        "content_type": "monster",
+        "entity_name": "Banshee",
+        "class_name": null,
+        "rrf_score": 0.350927,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "2af9e263080fdab9d8d5",
+        "content_type": "monster",
+        "entity_name": "Banshee",
+        "class_name": null,
+        "rrf_score": 0.39971,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "9a05ab33ed470e80278a",
+        "content_type": "monster",
+        "entity_name": "Banshee",
+        "class_name": null,
+        "rrf_score": 0.409824,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What damage resistances does a Rakshasa have?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Rakshasa",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Rakshasa",
+      "Resistance"
+    ],
+    "matched_content_types": [
+      "monster",
+      "spell"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.4,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "6ba430270e38c8404421",
+        "content_type": "monster",
+        "entity_name": "Rakshasa",
+        "class_name": null,
+        "rrf_score": 0.256408,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "7c19eaddb6db06d98564",
+        "content_type": "monster",
+        "entity_name": "Rakshasa",
+        "class_name": null,
+        "rrf_score": 0.307947,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "e9287ad91b061e18adb4",
+        "content_type": "spell",
+        "entity_name": "Resistance",
+        "class_name": null,
+        "rrf_score": 0.668162,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "How does a Medusa's Petrifying Gaze work?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Medusa",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Medusa"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.6,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "24c067047b01b5f09707",
+        "content_type": "monster",
+        "entity_name": "Medusa",
+        "class_name": null,
+        "rrf_score": 0.323572,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "7680c2e3f82da8b353b0",
+        "content_type": "monster",
+        "entity_name": "Medusa",
+        "class_name": null,
+        "rrf_score": 0.365034,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "310b0be47f65f6217b63",
+        "content_type": "monster",
+        "entity_name": "Medusa",
+        "class_name": null,
+        "rrf_score": 0.403302,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What is the flying speed of a Wyvern?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Wyvern",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Speed",
+      "Wyvern"
+    ],
+    "matched_content_types": [
+      "monster",
+      "race_feature"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.6,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "186c7774ca335c2626e9",
+        "content_type": "monster",
+        "entity_name": "Wyvern",
+        "class_name": null,
+        "rrf_score": 0.36489,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "66bbb9503ec47f83073b",
+        "content_type": "monster",
+        "entity_name": "Wyvern",
+        "class_name": null,
+        "rrf_score": 0.381017,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "d2cbee0d7a1bea3f5b33",
+        "content_type": "monster",
+        "entity_name": "Wyvern",
+        "class_name": null,
+        "rrf_score": 0.422568,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "4add3c796ba8d6f2eaed",
+        "content_type": "race_feature",
+        "entity_name": "Speed",
+        "class_name": null,
+        "rrf_score": 0.628961,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What spells can a Solar cast?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Solar",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Solar",
+      "Spells"
+    ],
+    "matched_content_types": [
+      "dm_guidance",
+      "monster",
+      "spell"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.4,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "be85cfc9e5856cb91058",
+        "content_type": "monster",
+        "entity_name": "Solar",
+        "class_name": null,
+        "rrf_score": 0.332472,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "7d0c2b3a29d0efd60373",
+        "content_type": "monster",
+        "entity_name": "Solar",
+        "class_name": null,
+        "rrf_score": 0.372586,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "87ed2d1ffd7be24c6dd9",
+        "content_type": "spell",
+        "entity_name": "Spell Descriptions",
+        "class_name": "Spell Descriptions",
+        "rrf_score": 0.582294,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "61c4d392ad92137808aa",
+        "content_type": "dm_guidance",
+        "entity_name": "Spells",
+        "class_name": null,
+        "rrf_score": 0.606283,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "bf14168ed794eedc1d18",
+        "content_type": "dm_guidance",
+        "entity_name": "Spells",
+        "class_name": null,
+        "rrf_score": 0.612229,
+        "is_hit": false
+      },
+      {
+        "rank": 6,
+        "chunk_id": "f34ee41e81d8560e521a",
+        "content_type": "dm_guidance",
+        "entity_name": "Creating A Spell",
+        "class_name": null,
+        "rrf_score": 0.614339,
+        "is_hit": false
+      },
+      {
+        "rank": 7,
+        "chunk_id": "a1e6c38104ebe0b1d7b5",
+        "content_type": "dm_guidance",
+        "entity_name": "Creating A Spell",
+        "class_name": null,
+        "rrf_score": 0.620693,
+        "is_hit": false
+      },
+      {
+        "rank": 8,
+        "chunk_id": "31f7d644845c0ad9e7b5",
+        "content_type": "dm_guidance",
+        "entity_name": "Spells",
+        "class_name": null,
+        "rrf_score": 0.633067,
+        "is_hit": false
+      },
+      {
+        "rank": 9,
+        "chunk_id": "f31dbd3c5983351da15b",
+        "content_type": "spell",
+        "entity_name": "Counterspell",
+        "class_name": null,
+        "rrf_score": 0.647781,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What is the bite attack of a Pit Fiend?",
+    "mode": "hybrid",
+    "category": "monster_stat",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Pit Fiend",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Pit Fiend"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.4,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "d127f734080c55bc03d6",
+        "content_type": "monster",
+        "entity_name": "Pit Fiend",
+        "class_name": null,
+        "rrf_score": 0.270069,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "026792b0f4b9a3f7e31f",
+        "content_type": "monster",
+        "entity_name": "Pit Fiend",
+        "class_name": null,
+        "rrf_score": 0.322548,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "Where do basilisks make their lairs?",
+    "mode": "hybrid",
+    "category": "monster_lore",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Basilisk",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Basilisk"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.6,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "d2209fdd68aa66d00370",
+        "content_type": "monster",
+        "entity_name": "Basilisk",
+        "class_name": null,
+        "rrf_score": 0.371882,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "355c3bc0cb7787f66e74",
+        "content_type": "monster",
+        "entity_name": "Basilisk",
+        "class_name": null,
+        "rrf_score": 0.471646,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "91a8ef8e75b16cd5ed10",
+        "content_type": "monster",
+        "entity_name": "Basilisk",
+        "class_name": null,
+        "rrf_score": 0.574703,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What ancient memories do aboleths keep?",
+    "mode": "hybrid",
+    "category": "monster_lore",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Aboleth",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Aboleth"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 1.0,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "17d9c7dbdd20c1ab71fd",
+        "content_type": "monster",
+        "entity_name": "Aboleth",
+        "class_name": null,
+        "rrf_score": 0.299273,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "b58c212f7e77f1bd33dd",
+        "content_type": "monster",
+        "entity_name": "Aboleth",
+        "class_name": null,
+        "rrf_score": 0.392458,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "0b34005d3282cd664c93",
+        "content_type": "monster",
+        "entity_name": "Aboleth",
+        "class_name": null,
+        "rrf_score": 0.411232,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "526553b925ee172f45dc",
+        "content_type": "monster",
+        "entity_name": "Aboleth",
+        "class_name": null,
+        "rrf_score": 0.456879,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "79566301a80c19272ad0",
+        "content_type": "monster",
+        "entity_name": "Aboleth",
+        "class_name": null,
+        "rrf_score": 0.471018,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "How were owlbears created?",
+    "mode": "hybrid",
+    "category": "monster_lore",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Owlbear",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Owlbear"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.6,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "f9dd92833baf91de3d2f",
+        "content_type": "monster",
+        "entity_name": "Owlbear",
+        "class_name": null,
+        "rrf_score": 0.307604,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "a1c808221b5815854728",
+        "content_type": "monster",
+        "entity_name": "Owlbear",
+        "class_name": null,
+        "rrf_score": 0.36808,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "434c2382d1b03a055ebd",
+        "content_type": "monster",
+        "entity_name": "Owlbear",
+        "class_name": null,
+        "rrf_score": 0.426895,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "Why do mind flayers eat brains?",
+    "mode": "hybrid",
+    "category": "monster_lore",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Mind Flayer",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Mind Flayer"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.6,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "c6609ec5341eb40e5354",
+        "content_type": "monster",
+        "entity_name": "Mind Flayer",
+        "class_name": null,
+        "rrf_score": 0.420965,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "272233b9aab7e3177d1e",
+        "content_type": "monster",
+        "entity_name": "Mind Flayer",
+        "class_name": null,
+        "rrf_score": 0.422791,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "445b034a98d978c536ca",
+        "content_type": "monster",
+        "entity_name": "Mind Flayer",
+        "class_name": null,
+        "rrf_score": 0.447332,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "How does a ghost come into existence?",
+    "mode": "hybrid",
+    "category": "monster_lore",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Ghost",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Ghost"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "6d809a852f66733ef2a9",
+        "content_type": "monster",
+        "entity_name": "Ghost",
+        "class_name": null,
+        "rrf_score": 0.463341,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What happens to sailors when a kraken surfaces?",
+    "mode": "hybrid",
+    "category": "monster_lore",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Kraken",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Kraken"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 1.0,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "d2a700efaac8cc83d8b5",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.567808,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "4562fdd7e274773a4ff6",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.667252,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "941d611861d61864fad2",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.672056,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "aa041ba21a053cc44b4e",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.672684,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "aa5e65afe7e4f64a1c08",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.689805,
+        "is_hit": true
+      },
+      {
+        "rank": 6,
+        "chunk_id": "56f22e8e9f327408bcd7",
+        "content_type": "monster",
+        "entity_name": "Kraken",
+        "class_name": null,
+        "rrf_score": 0.708906,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "How much weight can a Bag of Holding hold?",
+    "mode": "hybrid",
+    "category": "magic_item",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Bag Of Holding",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Bag Of Holding"
+    ],
+    "matched_content_types": [
+      "magic_item"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "bfd1b9b488403bf6fa11",
+        "content_type": "magic_item",
+        "entity_name": "Bag Of Holding",
+        "class_name": null,
+        "rrf_score": 0.309106,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What happens when you draw cards from the Deck of Many Things?",
+    "mode": "hybrid",
+    "category": "magic_item",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Deck Of Many Things",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Deck Of Many Things"
+    ],
+    "matched_content_types": [
+      "magic_item"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "8504df55f9cea7334794",
+        "content_type": "magic_item",
+        "entity_name": "Deck Of Many Things",
+        "class_name": null,
+        "rrf_score": 0.41922,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "How deep is a Portable Hole?",
+    "mode": "hybrid",
+    "category": "magic_item",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Portable Hole",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Portable Hole"
+    ],
+    "matched_content_types": [
+      "magic_item"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "a492a49d61771a17a9a2",
+        "content_type": "magic_item",
+        "entity_name": "Portable Hole",
+        "class_name": null,
+        "rrf_score": 0.39879,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What can the Staff of the Magi absorb?",
+    "mode": "hybrid",
+    "category": "magic_item",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Staff Of The Magi",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Staff Of The Magi"
+    ],
+    "matched_content_types": [
+      "magic_item"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "dfdc886f137c21014537",
+        "content_type": "magic_item",
+        "entity_name": "Staff Of The Magi",
+        "class_name": null,
+        "rrf_score": 0.362168,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What bonus does a Ring of Protection grant?",
+    "mode": "hybrid",
+    "category": "magic_item",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Ring Of Protection",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Ring Of Protection"
+    ],
+    "matched_content_types": [
+      "magic_item"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "443948bdabe2b7dfe984",
+        "content_type": "magic_item",
+        "entity_name": "Ring Of Protection",
+        "class_name": null,
+        "rrf_score": 0.216493,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What does a Belt of Giant Strength do to your Strength score?",
+    "mode": "hybrid",
+    "category": "magic_item",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Giant Strength",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Belt Of Giant Strength"
+    ],
+    "matched_content_types": [
+      "magic_item"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "aac0b4caf8a6ba45172b",
+        "content_type": "magic_item",
+        "entity_name": "Belt Of Giant Strength",
+        "class_name": null,
+        "rrf_score": 0.220542,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What extra damage does a Flame Tongue sword deal?",
+    "mode": "hybrid",
+    "category": "magic_item",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Flame Tongue",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Flame Tongue"
+    ],
+    "matched_content_types": [
+      "magic_item"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "181fd6b42f644404311c",
+        "content_type": "magic_item",
+        "entity_name": "Flame Tongue",
+        "class_name": null,
+        "rrf_score": 0.389069,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "Who can attune to a Holy Avenger?",
+    "mode": "hybrid",
+    "category": "magic_item",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Holy Avenger",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Holy Avenger"
+    ],
+    "matched_content_types": [
+      "magic_item"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "1b3850fb29bc40814dd6",
+        "content_type": "magic_item",
+        "entity_name": "Holy Avenger",
+        "class_name": null,
+        "rrf_score": 0.530374,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What do Gauntlets of Ogre Power do?",
+    "mode": "hybrid",
+    "category": "magic_item",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Gauntlets Of Ogre Power",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Gauntlets Of Ogre Power",
+      "Ogre"
+    ],
+    "matched_content_types": [
+      "magic_item",
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "ece02ec6baa5bf934752",
+        "content_type": "magic_item",
+        "entity_name": "Gauntlets Of Ogre Power",
+        "class_name": null,
+        "rrf_score": 0.262376,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "db6587b4505f7b101bdd",
+        "content_type": "monster",
+        "entity_name": "Ogres",
+        "class_name": null,
+        "rrf_score": 0.491427,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "2261cddfb9b09f8f894d",
+        "content_type": "monster",
+        "entity_name": "Ogres",
+        "class_name": null,
+        "rrf_score": 0.502332,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "1478073abb0e13bd3535",
+        "content_type": "monster",
+        "entity_name": "Ogre",
+        "class_name": null,
+        "rrf_score": 0.502861,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "0c6f6245cae6a5829d73",
+        "content_type": "monster",
+        "entity_name": "Ogres",
+        "class_name": null,
+        "rrf_score": 0.522498,
+        "is_hit": false
+      },
+      {
+        "rank": 6,
+        "chunk_id": "d58102d50d96be7d3e35",
+        "content_type": "monster",
+        "entity_name": "Ogres",
+        "class_name": null,
+        "rrf_score": 0.553791,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What do Boots of Elvenkind do?",
+    "mode": "hybrid",
+    "category": "magic_item",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Boots Of Elvenkind",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Boots Of Elvenkind"
+    ],
+    "matched_content_types": [
+      "magic_item"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "8078bcffa6f8da0cf79c",
+        "content_type": "magic_item",
+        "entity_name": "Boots Of Elvenkind",
+        "class_name": null,
+        "rrf_score": 0.321647,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "How do the madness rules work?",
+    "mode": "hybrid",
+    "category": "dm_guidance",
+    "book": "dmg",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Madness",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Madness"
+    ],
+    "matched_content_types": [
+      "dm_guidance"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.8,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "a3a4e4ada8b361ad90c0",
+        "content_type": "dm_guidance",
+        "entity_name": "Madness",
+        "class_name": null,
+        "rrf_score": 0.333176,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "f091ee9c116004076b9e",
+        "content_type": "dm_guidance",
+        "entity_name": "Madness",
+        "class_name": null,
+        "rrf_score": 0.34778,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "fe2c1bb6a763a22d8fb4",
+        "content_type": "dm_guidance",
+        "entity_name": "Madness",
+        "class_name": null,
+        "rrf_score": 0.378535,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "27cfa210d86ab61dc839",
+        "content_type": "dm_guidance",
+        "entity_name": "Madness",
+        "class_name": null,
+        "rrf_score": 0.387515,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "How should I design traps for my dungeon?",
+    "mode": "hybrid",
+    "category": "dm_guidance",
+    "book": "dmg",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Traps",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Traps"
+    ],
+    "matched_content_types": [
+      "dm_guidance"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 1.0,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "2cd7223cc79c01d9c838",
+        "content_type": "dm_guidance",
+        "entity_name": "Traps",
+        "class_name": null,
+        "rrf_score": 0.353103,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "37760f6c70bc4ca5a5f6",
+        "content_type": "dm_guidance",
+        "entity_name": "Traps",
+        "class_name": null,
+        "rrf_score": 0.364617,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "e049bc9f05f9cdfa40cc",
+        "content_type": "dm_guidance",
+        "entity_name": "Traps",
+        "class_name": null,
+        "rrf_score": 0.383926,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "b9f906fa687128f09f23",
+        "content_type": "dm_guidance",
+        "entity_name": "Traps",
+        "class_name": null,
+        "rrf_score": 0.389557,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "83521b5b94a0bb50cabd",
+        "content_type": "dm_guidance",
+        "entity_name": "Traps",
+        "class_name": null,
+        "rrf_score": 0.395784,
+        "is_hit": true
+      },
+      {
+        "rank": 6,
+        "chunk_id": "acc14e42e65a1d3c2437",
+        "content_type": "dm_guidance",
+        "entity_name": "Traps",
+        "class_name": null,
+        "rrf_score": 0.40887,
+        "is_hit": true
+      },
+      {
+        "rank": 7,
+        "chunk_id": "15c9625026255049b656",
+        "content_type": "dm_guidance",
+        "entity_name": "Traps",
+        "class_name": null,
+        "rrf_score": 0.417198,
+        "is_hit": true
+      },
+      {
+        "rank": 8,
+        "chunk_id": "3a596a55d677f7052dc9",
+        "content_type": "dm_guidance",
+        "entity_name": "Traps",
+        "class_name": null,
+        "rrf_score": 0.42268,
+        "is_hit": true
+      },
+      {
+        "rank": 9,
+        "chunk_id": "aa1cb55cb0997decde4a",
+        "content_type": "dm_guidance",
+        "entity_name": "Traps",
+        "class_name": null,
+        "rrf_score": 0.426149,
+        "is_hit": true
+      },
+      {
+        "rank": 10,
+        "chunk_id": "fa094296765df14f420f",
+        "content_type": "dm_guidance",
+        "entity_name": "Traps",
+        "class_name": null,
+        "rrf_score": 0.437581,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "How does a DM build a balanced combat encounter?",
+    "mode": "hybrid",
+    "category": "dm_guidance",
+    "book": "dmg",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Encounters",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Combat"
+    ],
+    "matched_content_types": [
+      "dm_guidance"
+    ],
+    "hit_at_1": false,
+    "precision_at_5": 0.0,
+    "mrr": 0.0,
+    "recall_at_10": false,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "727914864fa0784e1d94",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat",
+        "class_name": null,
+        "rrf_score": 0.395689,
+        "is_hit": false
+      },
+      {
+        "rank": 2,
+        "chunk_id": "c2f48c0a71356ce1e2bf",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat",
+        "class_name": null,
+        "rrf_score": 0.420797,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
+        "chunk_id": "abce3634cac0bf5a0f43",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat",
+        "class_name": null,
+        "rrf_score": 0.432207,
+        "is_hit": false
+      },
+      {
+        "rank": 4,
+        "chunk_id": "c89535574787027ecadf",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat",
+        "class_name": null,
+        "rrf_score": 0.437872,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "4582a740da99257ea602",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat Options",
+        "class_name": null,
+        "rrf_score": 0.438897,
+        "is_hit": false
+      },
+      {
+        "rank": 6,
+        "chunk_id": "1e738b181d7ae33d2ecd",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat",
+        "class_name": null,
+        "rrf_score": 0.442516,
+        "is_hit": false
+      },
+      {
+        "rank": 7,
+        "chunk_id": "dda93332485b9c0c0178",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat",
+        "class_name": null,
+        "rrf_score": 0.472086,
+        "is_hit": false
+      },
+      {
+        "rank": 8,
+        "chunk_id": "d413ab7e407d2cf5b863",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat Options",
+        "class_name": null,
+        "rrf_score": 0.473548,
+        "is_hit": false
+      },
+      {
+        "rank": 9,
+        "chunk_id": "cf9bad3a879a917141ed",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat Options",
+        "class_name": null,
+        "rrf_score": 0.480186,
+        "is_hit": false
+      },
+      {
+        "rank": 10,
+        "chunk_id": "149bad76fc2412df154e",
+        "content_type": "dm_guidance",
+        "entity_name": "Combat",
+        "class_name": null,
+        "rrf_score": 0.48927,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "How do chase scenes work?",
+    "mode": "hybrid",
+    "category": "dm_guidance",
+    "book": "dmg",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Chases",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [],
+    "matched_content_types": [],
+    "hit_at_1": true,
+    "precision_at_5": 1.0,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "21fd281f41455f39c118",
+        "content_type": "dm_guidance",
+        "entity_name": "Chases",
+        "class_name": null,
+        "rrf_score": 0.017337,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "6cd99c58fba05999ecce",
+        "content_type": "dm_guidance",
+        "entity_name": "Chases",
+        "class_name": null,
+        "rrf_score": 0.017072,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "2b31d5a9f9047fc432e0",
+        "content_type": "dm_guidance",
+        "entity_name": "Chases",
+        "class_name": null,
+        "rrf_score": 0.016816,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "c2c88ef988ecd0f81ced",
+        "content_type": "dm_guidance",
+        "entity_name": "Chases",
+        "class_name": null,
+        "rrf_score": 0.016568,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "71c8d2e9dc782f23335c",
+        "content_type": "dm_guidance",
+        "entity_name": "Chases",
+        "class_name": null,
+        "rrf_score": 0.016328,
+        "is_hit": true
+      },
+      {
+        "rank": 6,
+        "chunk_id": "18aee08623b2763a2707",
+        "content_type": "dm_guidance",
+        "entity_name": "Chases",
+        "class_name": null,
+        "rrf_score": 0.016095,
+        "is_hit": true
+      },
+      {
+        "rank": 7,
+        "chunk_id": "5520221c098835ac40f1",
+        "content_type": "dm_guidance",
+        "entity_name": "Chases",
+        "class_name": null,
+        "rrf_score": 0.015869,
+        "is_hit": true
+      },
+      {
+        "rank": 8,
+        "chunk_id": "501b2adc746f6ad6d998",
+        "content_type": "dm_guidance",
+        "entity_name": "Adventure Types",
+        "class_name": null,
+        "rrf_score": 0.015649,
+        "is_hit": false
+      },
+      {
+        "rank": 9,
+        "chunk_id": "fefeb58a5aec8c527fad",
+        "content_type": "dm_guidance",
+        "entity_name": "Chases",
+        "class_name": null,
+        "rrf_score": 0.015436,
+        "is_hit": true
+      },
+      {
+        "rank": 10,
+        "chunk_id": "61c9b5d664a58c667970",
+        "content_type": "dm_guidance",
+        "entity_name": "Adventure Structure",
+        "class_name": null,
+        "rrf_score": 0.015229,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What is the Shadowfell?",
+    "mode": "hybrid",
+    "category": "dm_guidance",
+    "book": "dmg",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Shadowfell",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Shadowfell"
+    ],
+    "matched_content_types": [
+      "dm_guidance"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.8,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "280d7a615f7a8ae8113b",
+        "content_type": "dm_guidance",
+        "entity_name": "Shadowfell",
+        "class_name": null,
+        "rrf_score": 0.235263,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "9f4e9cc7c235fe98b433",
+        "content_type": "dm_guidance",
+        "entity_name": "Shadowfell",
+        "class_name": null,
+        "rrf_score": 0.249932,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "2b66f91fa237bd085d80",
+        "content_type": "dm_guidance",
+        "entity_name": "Shadowfell",
+        "class_name": null,
+        "rrf_score": 0.348059,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "199e411ca95e7a411fb3",
+        "content_type": "dm_guidance",
+        "entity_name": "Shadowfell",
+        "class_name": null,
+        "rrf_score": 0.458939,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What is the Feywild like?",
+    "mode": "hybrid",
+    "category": "dm_guidance",
+    "book": "dmg",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Feywild",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Feywild"
+    ],
+    "matched_content_types": [
+      "dm_guidance"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 1.0,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "6b12ca22aed57dc6e8b7",
+        "content_type": "dm_guidance",
+        "entity_name": "Feywild",
+        "class_name": null,
+        "rrf_score": 0.223461,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "8d38d30c3f2da07f7140",
+        "content_type": "dm_guidance",
+        "entity_name": "Feywild",
+        "class_name": null,
+        "rrf_score": 0.264484,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "83d68bcfb45e92706a9c",
+        "content_type": "dm_guidance",
+        "entity_name": "Feywild",
+        "class_name": null,
+        "rrf_score": 0.270427,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "895cb881c7f84656ecc5",
+        "content_type": "dm_guidance",
+        "entity_name": "Feywild",
+        "class_name": null,
+        "rrf_score": 0.36184,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "8903ab9a398b4815e314",
+        "content_type": "dm_guidance",
+        "entity_name": "Feywild",
+        "class_name": null,
+        "rrf_score": 0.4616,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "How do diseases work in the game?",
+    "mode": "hybrid",
+    "category": "dm_guidance",
+    "book": "dmg",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Disease",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Diseases"
+    ],
+    "matched_content_types": [
+      "dm_guidance"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 1.0,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "c7c493cb0f9c935a3023",
+        "content_type": "dm_guidance",
+        "entity_name": "Diseases",
+        "class_name": null,
+        "rrf_score": 0.397708,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "fb944568ce2e2397c084",
+        "content_type": "dm_guidance",
+        "entity_name": "Sample Diseases",
+        "class_name": null,
+        "rrf_score": 0.476041,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "9b6ad353a41633ea29cf",
+        "content_type": "dm_guidance",
+        "entity_name": "Sample Diseases",
+        "class_name": null,
+        "rrf_score": 0.499493,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "835f6868642d7b90e240",
+        "content_type": "dm_guidance",
+        "entity_name": "Sample Diseases",
+        "class_name": null,
+        "rrf_score": 0.519104,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "7de1d8b978fee1b527ac",
+        "content_type": "dm_guidance",
+        "entity_name": "Sample Diseases",
+        "class_name": null,
+        "rrf_score": 0.55221,
+        "is_hit": true
+      },
+      {
+        "rank": 6,
+        "chunk_id": "7f3b9689a888af0b0665",
+        "content_type": "dm_guidance",
+        "entity_name": "Sample Diseases",
+        "class_name": null,
+        "rrf_score": 0.585944,
+        "is_hit": true
+      },
+      {
+        "rank": 7,
+        "chunk_id": "58549e8d0e25752a2540",
+        "content_type": "dm_guidance",
+        "entity_name": "Sample Diseases",
+        "class_name": null,
+        "rrf_score": 0.585969,
+        "is_hit": true
+      },
+      {
+        "rank": 8,
+        "chunk_id": "f5d24b9deb53e1aaaf98",
+        "content_type": "dm_guidance",
+        "entity_name": "Sample Diseases",
+        "class_name": null,
+        "rrf_score": 0.596431,
+        "is_hit": true
+      },
+      {
+        "rank": 9,
+        "chunk_id": "51b4121f6e43f1c0e1f2",
+        "content_type": "dm_guidance",
+        "entity_name": "Sample Diseases",
+        "class_name": null,
+        "rrf_score": 0.617801,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What siege equipment exists?",
+    "mode": "hybrid",
+    "category": "dm_guidance",
+    "book": "dmg",
+    "expected_content_type": "dm_guidance",
+    "expected_entity": "Siege",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Equipment",
+      "Siege Equipment"
+    ],
+    "matched_content_types": [
+      "background",
+      "dm_guidance"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.6,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "e408712751ec07c9c854",
+        "content_type": "dm_guidance",
+        "entity_name": "Siege Equipment",
+        "class_name": null,
+        "rrf_score": 0.344846,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "19b1ca19053f20dbf38f",
+        "content_type": "dm_guidance",
+        "entity_name": "Siege Equipment",
+        "class_name": null,
+        "rrf_score": 0.35176,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "9710f5e99e8eca4aeda7",
+        "content_type": "dm_guidance",
+        "entity_name": "Siege Equipment",
+        "class_name": null,
+        "rrf_score": 0.480477,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "630c75c35f0616562e50",
+        "content_type": "background",
+        "entity_name": "Equipment",
+        "class_name": null,
+        "rrf_score": 0.679205,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "What does the Invisibility spell do?",
+    "mode": "hybrid",
+    "category": "cross_book",
+    "book": "phb",
+    "expected_content_type": "spell",
+    "expected_entity": "Invisibility",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Invisibility"
+    ],
+    "matched_content_types": [
+      "spell"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.4,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "1e3b132aabfbcd7464e9",
+        "content_type": "spell",
+        "entity_name": "Greater Invisibility",
+        "class_name": null,
+        "rrf_score": 0.349426,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "2b77a616f09332491957",
+        "content_type": "spell",
+        "entity_name": "Invisibility",
+        "class_name": null,
+        "rrf_score": 0.375,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "Is there a magic item that makes you invisible?",
+    "mode": "hybrid",
+    "category": "cross_book",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Invisibility",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Invisible"
+    ],
+    "matched_content_types": [
+      "condition",
+      "magic_item"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.6,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "642023c14e96afd0a1a6",
+        "content_type": "magic_item",
+        "entity_name": "Potion Of Invisibility",
+        "class_name": null,
+        "rrf_score": 0.361418,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "151ecd9dd8a0c07086a2",
+        "content_type": "magic_item",
+        "entity_name": "Cloak Of Invisibility",
+        "class_name": null,
+        "rrf_score": 0.375121,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "dfea5c7f1cc39dea30f4",
+        "content_type": "magic_item",
+        "entity_name": "Ring Of Invisibility",
+        "class_name": null,
+        "rrf_score": 0.379803,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "2a64c1f2ef356173e582",
+        "content_type": "condition",
+        "entity_name": "Invisible",
+        "class_name": null,
+        "rrf_score": 0.409261,
+        "is_hit": false
+      }
+    ]
+  },
+  {
+    "question": "How strong does a Potion of Giant Strength make you?",
+    "mode": "hybrid",
+    "category": "cross_book",
+    "book": "dmg",
+    "expected_content_type": "magic_item",
+    "expected_entity": "Giant Strength",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Potion Of Giant Strength"
+    ],
+    "matched_content_types": [
+      "magic_item"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "a669a62752ed7181b4f2",
+        "content_type": "magic_item",
+        "entity_name": "Potion Of Giant Strength",
+        "class_name": null,
+        "rrf_score": 0.201736,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "What is a Beholder Zombie?",
+    "mode": "hybrid",
+    "category": "cross_book",
+    "book": "mm",
+    "expected_content_type": "monster",
+    "expected_entity": "Beholder Zombie",
+    "expected_class": null,
+    "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Beholder Zombie"
+    ],
+    "matched_content_types": [
+      "monster"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.6,
+    "mrr": 1.0,
+    "recall_at_10": true,
+    "top_k": [
+      {
+        "rank": 1,
+        "chunk_id": "4faee6e44cc43da9b12d",
+        "content_type": "monster",
+        "entity_name": "Beholder Zombie",
+        "class_name": null,
+        "rrf_score": 0.333018,
+        "is_hit": true
+      },
+      {
+        "rank": 2,
+        "chunk_id": "e6defe3be5d2d833b56f",
+        "content_type": "monster",
+        "entity_name": "Beholder Zombie",
+        "class_name": null,
+        "rrf_score": 0.335229,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "4b1fd8b9ffa59ae985f5",
+        "content_type": "monster",
+        "entity_name": "Beholder Zombie",
+        "class_name": null,
+        "rrf_score": 0.363676,
+        "is_hit": true
+      }
+    ]
+  },
+  {
+    "question": "How does the Artificer class work?",
+    "mode": "hybrid",
+    "category": "negative",
+    "book": "phb",
+    "negative": true,
+    "top1_distance": 0.017337,
+    "top1_entity": "Tools"
+  },
+  {
+    "question": "What are the rules for the Druid's Wild Shape?",
+    "mode": "hybrid",
+    "category": "negative",
+    "book": "phb",
+    "negative": true,
+    "top1_distance": 0.421042,
+    "top1_entity": "Druid"
+  },
+  {
+    "question": "How does spelljamming between worlds work?",
+    "mode": "hybrid",
+    "category": "negative",
+    "book": "phb",
+    "negative": true,
+    "top1_distance": 0.017337,
+    "top1_entity": "Spells"
+  },
+  {
+    "question": "What is THAC0 and how is it calculated?",
+    "mode": "hybrid",
+    "category": "negative",
+    "book": "phb",
+    "negative": true,
+    "top1_distance": 0.017337,
+    "top1_entity": "—"
   }
 ]

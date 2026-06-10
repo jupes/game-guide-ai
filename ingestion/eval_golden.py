@@ -53,118 +53,168 @@ PRECISION_K = 5
 @dataclass
 class GoldenQuery:
     question: str
-    expected_content_type: str
+    expected_content_type: str | None        # None → negative query (answer not in corpus)
     expected_entity: str | None = None       # matches entity_name
     expected_class: str | None = None        # matches class_name
     expected_chapter: str | None = None      # substring match on chapter
+    category: str = "general"                # reporting dimension (stratified summary)
+    book: str = "phb"                        # which book should answer this
 
 
 GOLDEN_SET: list[GoldenQuery] = [
-    # ── Original 6 ──────────────────────────────────────────────────────
-    GoldenQuery(
-        question="What is the range of Fireball?",
-        expected_content_type="spell",
-        expected_entity="Fireball",
-    ),
-    GoldenQuery(
-        question="How many hit points does a Fighter get at level 1?",
-        expected_content_type="class_feature",
-        expected_class="Fighter",
-    ),
-    GoldenQuery(
-        question="What does the Blinded condition do?",
-        expected_content_type="condition",
-        expected_entity="Blinded",
-    ),
-    GoldenQuery(
-        question="How does grappling work?",
-        expected_content_type="rule",
-        expected_chapter="Chapter 9",
-    ),
-    GoldenQuery(
-        question="What languages do Elves know?",
-        expected_content_type="race_feature",
-        expected_entity="Elf",
-    ),
-    GoldenQuery(
-        question="What are the components of Cure Wounds?",
-        expected_content_type="spell",
-        expected_entity="Cure Wounds",
-    ),
+    # ════════════════════════════════════════════════════════════════════
+    # PHB Basic — the original 20 (tagged for stratification)
+    # ════════════════════════════════════════════════════════════════════
+    GoldenQuery("What is the range of Fireball?",
+                "spell", expected_entity="Fireball", category="spell_lookup"),
+    GoldenQuery("How many hit points does a Fighter get at level 1?",
+                "class_feature", expected_class="Fighter", category="class_feature"),
+    GoldenQuery("What does the Blinded condition do?",
+                "condition", expected_entity="Blinded", category="condition"),
+    GoldenQuery("How does grappling work?",
+                "rule", expected_chapter="Chapter 9", category="rule"),
+    GoldenQuery("What languages do Elves know?",
+                "race_feature", expected_entity="Elf", category="race_feature"),
+    GoldenQuery("What are the components of Cure Wounds?",
+                "spell", expected_entity="Cure Wounds", category="spell_lookup"),
+    GoldenQuery("What level is Shield and what does it do?",
+                "spell", expected_entity="Shield", category="spell_lookup"),
+    GoldenQuery("How does Counterspell work?",
+                "spell", expected_entity="Counterspell", category="spell_lookup"),
+    GoldenQuery("What is the casting time of Healing Word?",
+                "spell", expected_entity="Healing Word", category="spell_lookup"),
+    GoldenQuery("What does the Magic Missile spell do?",
+                "spell", expected_entity="Magic Missile", category="spell_lookup"),
+    GoldenQuery("What happens when a creature is both Prone and Restrained?",
+                "condition", expected_entity="Prone", category="condition"),
+    GoldenQuery("How does the Cleric's Channel Divinity: Turn Undead work?",
+                "class_feature", expected_class="Cleric", category="class_feature"),
+    GoldenQuery("What saving throw proficiencies does a Wizard get?",
+                "class_feature", expected_class="Wizard", category="class_feature"),
+    GoldenQuery("How does two-weapon fighting work in combat?",
+                "rule", expected_chapter="Chapter 9", category="rule"),
+    GoldenQuery("What are the Rogue's Sneak Attack requirements?",
+                "class_feature", expected_class="Rogue", category="class_feature"),
+    GoldenQuery("What ability score bonuses do Dwarves get?",
+                "race_feature", expected_entity="Dwarf", category="race_feature"),
+    GoldenQuery("How do opportunity attacks work?",
+                "rule", expected_chapter="Chapter 9", category="rule"),
+    GoldenQuery("What does the Paralyzed condition do to saving throws?",
+                "condition", expected_entity="Paralyzed", category="condition"),
+    GoldenQuery("How does multiclassing work?",
+                "rule", expected_chapter="Chapter 6", category="rule"),
+    GoldenQuery("What equipment does a Fighter start with?",
+                "class_feature", expected_class="Fighter", category="class_feature"),
 
-    # ── 4 additional spell queries ──────────────────────────────────────
-    GoldenQuery(
-        question="What level is Shield and what does it do?",
-        expected_content_type="spell",
-        expected_entity="Shield",
-    ),
-    GoldenQuery(
-        question="How does Counterspell work?",
-        expected_content_type="spell",
-        expected_entity="Counterspell",
-    ),
-    GoldenQuery(
-        question="What is the casting time of Healing Word?",
-        expected_content_type="spell",
-        expected_entity="Healing Word",
-    ),
-    GoldenQuery(
-        question="What does the Magic Missile spell do?",
-        expected_content_type="spell",
-        expected_entity="Magic Missile",
-    ),
+    # ════════════════════════════════════════════════════════════════════
+    # Monster Manual — stat block queries
+    # ════════════════════════════════════════════════════════════════════
+    GoldenQuery("What is the armor class of a Basilisk?",
+                "monster", expected_entity="Basilisk", category="monster_stat", book="mm"),
+    GoldenQuery("How many hit points does the Tarrasque have?",
+                "monster", expected_entity="Tarrasque", category="monster_stat", book="mm"),
+    GoldenQuery("What is the challenge rating of a Kraken?",
+                "monster", expected_entity="Kraken", category="monster_stat", book="mm"),
+    GoldenQuery("What legendary actions can an Ancient Red Dragon take?",
+                "monster", expected_entity="Ancient Red Dragon", category="monster_stat", book="mm"),
+    GoldenQuery("What attacks does an Owlbear make?",
+                "monster", expected_entity="Owlbear", category="monster_stat", book="mm"),
+    GoldenQuery("What does the Mimic's Adhesive trait do?",
+                "monster", expected_entity="Mimic", category="monster_stat", book="mm"),
+    GoldenQuery("What does a Banshee's Wail do?",
+                "monster", expected_entity="Banshee", category="monster_stat", book="mm"),
+    GoldenQuery("What damage resistances does a Rakshasa have?",
+                "monster", expected_entity="Rakshasa", category="monster_stat", book="mm"),
+    GoldenQuery("How does a Medusa's Petrifying Gaze work?",
+                "monster", expected_entity="Medusa", category="monster_stat", book="mm"),
+    GoldenQuery("What is the flying speed of a Wyvern?",
+                "monster", expected_entity="Wyvern", category="monster_stat", book="mm"),
+    GoldenQuery("What spells can a Solar cast?",
+                "monster", expected_entity="Solar", category="monster_stat", book="mm"),
+    GoldenQuery("What is the bite attack of a Pit Fiend?",
+                "monster", expected_entity="Pit Fiend", category="monster_stat", book="mm"),
 
-    # ── 10 hard queries (multi-concept, cross-chunk, edge cases) ───────
-    GoldenQuery(
-        question="What happens when a creature is both Prone and Restrained?",
-        expected_content_type="condition",
-        expected_entity="Prone",
-    ),
-    GoldenQuery(
-        question="How does the Cleric's Channel Divinity: Turn Undead work?",
-        expected_content_type="class_feature",
-        expected_class="Cleric",
-    ),
-    GoldenQuery(
-        question="What saving throw proficiencies does a Wizard get?",
-        expected_content_type="class_feature",
-        expected_class="Wizard",
-    ),
-    GoldenQuery(
-        question="How does two-weapon fighting work in combat?",
-        expected_content_type="rule",
-        expected_chapter="Chapter 9",
-    ),
-    GoldenQuery(
-        question="What are the Rogue's Sneak Attack requirements?",
-        expected_content_type="class_feature",
-        expected_class="Rogue",
-    ),
-    GoldenQuery(
-        question="What ability score bonuses do Dwarves get?",
-        expected_content_type="race_feature",
-        expected_entity="Dwarf",
-    ),
-    GoldenQuery(
-        question="How do opportunity attacks work?",
-        expected_content_type="rule",
-        expected_chapter="Chapter 9",
-    ),
-    GoldenQuery(
-        question="What does the Paralyzed condition do to saving throws?",
-        expected_content_type="condition",
-        expected_entity="Paralyzed",
-    ),
-    GoldenQuery(
-        question="How does multiclassing work?",
-        expected_content_type="rule",
-        expected_chapter="Chapter 6",
-    ),
-    GoldenQuery(
-        question="What equipment does a Fighter start with?",
-        expected_content_type="class_feature",
-        expected_class="Fighter",
-    ),
+    # ── Monster Manual — lore queries ────────────────────────────────────
+    GoldenQuery("Where do basilisks make their lairs?",
+                "monster", expected_entity="Basilisk", category="monster_lore", book="mm"),
+    GoldenQuery("What ancient memories do aboleths keep?",
+                "monster", expected_entity="Aboleth", category="monster_lore", book="mm"),
+    GoldenQuery("How were owlbears created?",
+                "monster", expected_entity="Owlbear", category="monster_lore", book="mm"),
+    GoldenQuery("Why do mind flayers eat brains?",
+                "monster", expected_entity="Mind Flayer", category="monster_lore", book="mm"),
+    GoldenQuery("How does a ghost come into existence?",
+                "monster", expected_entity="Ghost", category="monster_lore", book="mm"),
+    GoldenQuery("What happens to sailors when a kraken surfaces?",
+                "monster", expected_entity="Kraken", category="monster_lore", book="mm"),
+
+    # ════════════════════════════════════════════════════════════════════
+    # DMG — magic item queries
+    # ════════════════════════════════════════════════════════════════════
+    GoldenQuery("How much weight can a Bag of Holding hold?",
+                "magic_item", expected_entity="Bag Of Holding", category="magic_item", book="dmg"),
+    GoldenQuery("What happens when you draw cards from the Deck of Many Things?",
+                "magic_item", expected_entity="Deck Of Many Things", category="magic_item", book="dmg"),
+    GoldenQuery("How deep is a Portable Hole?",
+                "magic_item", expected_entity="Portable Hole", category="magic_item", book="dmg"),
+    GoldenQuery("What can the Staff of the Magi absorb?",
+                "magic_item", expected_entity="Staff Of The Magi", category="magic_item", book="dmg"),
+    GoldenQuery("What bonus does a Ring of Protection grant?",
+                "magic_item", expected_entity="Ring Of Protection", category="magic_item", book="dmg"),
+    GoldenQuery("What does a Belt of Giant Strength do to your Strength score?",
+                "magic_item", expected_entity="Giant Strength", category="magic_item", book="dmg"),
+    GoldenQuery("What extra damage does a Flame Tongue sword deal?",
+                "magic_item", expected_entity="Flame Tongue", category="magic_item", book="dmg"),
+    GoldenQuery("Who can attune to a Holy Avenger?",
+                "magic_item", expected_entity="Holy Avenger", category="magic_item", book="dmg"),
+    GoldenQuery("What do Gauntlets of Ogre Power do?",
+                "magic_item", expected_entity="Gauntlets Of Ogre Power", category="magic_item", book="dmg"),
+    GoldenQuery("What do Boots of Elvenkind do?",
+                "magic_item", expected_entity="Boots Of Elvenkind", category="magic_item", book="dmg"),
+
+    # ── DMG — DM guidance queries ────────────────────────────────────────
+    GoldenQuery("How do the madness rules work?",
+                "dm_guidance", expected_entity="Madness", category="dm_guidance", book="dmg"),
+    GoldenQuery("How should I design traps for my dungeon?",
+                "dm_guidance", expected_entity="Traps", category="dm_guidance", book="dmg"),
+    GoldenQuery("How does a DM build a balanced combat encounter?",
+                "dm_guidance", expected_entity="Encounters", category="dm_guidance", book="dmg"),
+    GoldenQuery("How do chase scenes work?",
+                "dm_guidance", expected_entity="Chases", category="dm_guidance", book="dmg"),
+    GoldenQuery("What is the Shadowfell?",
+                "dm_guidance", expected_entity="Shadowfell", category="dm_guidance", book="dmg"),
+    GoldenQuery("What is the Feywild like?",
+                "dm_guidance", expected_entity="Feywild", category="dm_guidance", book="dmg"),
+    GoldenQuery("How do diseases work in the game?",
+                "dm_guidance", expected_entity="Disease", category="dm_guidance", book="dmg"),
+    GoldenQuery("What siege equipment exists?",
+                "dm_guidance", expected_entity="Siege", category="dm_guidance", book="dmg"),
+
+    # ════════════════════════════════════════════════════════════════════
+    # Cross-book disambiguation — same word, different books/types
+    # ════════════════════════════════════════════════════════════════════
+    GoldenQuery("What does the Invisibility spell do?",
+                "spell", expected_entity="Invisibility", category="cross_book"),
+    GoldenQuery("Is there a magic item that makes you invisible?",
+                "magic_item", expected_entity="Invisibility", category="cross_book", book="dmg"),
+    GoldenQuery("How strong does a Potion of Giant Strength make you?",
+                "magic_item", expected_entity="Giant Strength", category="cross_book", book="dmg"),
+    GoldenQuery("What is a Beholder Zombie?",
+                "monster", expected_entity="Beholder Zombie", category="cross_book", book="mm"),
+
+    # ════════════════════════════════════════════════════════════════════
+    # Negative queries — the answer is NOT in the corpus. Reported as
+    # top-1 distance only (no pass/fail); a future answerability gate
+    # would refuse these.
+    # ════════════════════════════════════════════════════════════════════
+    GoldenQuery("How does the Artificer class work?",
+                None, category="negative"),
+    GoldenQuery("What are the rules for the Druid's Wild Shape?",
+                None, category="negative"),
+    GoldenQuery("How does spelljamming between worlds work?",
+                None, category="negative"),
+    GoldenQuery("What is THAC0 and how is it calculated?",
+                None, category="negative"),
 ]
 
 
@@ -253,6 +303,21 @@ def extract_query_entities(
     return classes, entities
 
 
+def _stem(name: str) -> str:
+    """
+    Crude suffix stem for ILIKE patterns, applied to the LAST word of a name:
+    'Invisible' → 'Invisib' (matches Invisibility too), plurals drop 's'.
+    Keeps at least 5 characters so short names stay intact.
+    """
+    words = name.split()
+    last = words[-1]
+    for suffix in ("ility", "ible", "able", "ity", "le", "es", "s", "e"):
+        if last.lower().endswith(suffix) and len(last) - len(suffix) >= 5:
+            last = last[: len(last) - len(suffix)]
+            break
+    return " ".join(words[:-1] + [last])
+
+
 def build_vector_sql(
     emb_str: str,
     k: int,
@@ -280,14 +345,21 @@ def build_vector_sql(
 
     params: list = [emb_str]
 
-    # Build the (class OR entity) clause
+    # Build the (class OR entity) clause. Substring matching (ILIKE) on a
+    # stemmed pattern rather than exact equality: a query about things that
+    # make you "invisible" matches the vocab entity "Invisible" (the
+    # condition), but the relevant chunks are named "Ring Of Invisibility" /
+    # "Potion Of Invisibility". Exact = ANY() excludes them all; plain
+    # substring still fails (invisib-LE vs invisib-ILITY), so patterns are
+    # stemmed to the shared prefix. The content_type clause still bounds
+    # the result set.
     entity_class_parts: list[str] = []
     if classes:
-        entity_class_parts.append("class_name = ANY(%s)")
-        params.append(list(classes))
+        entity_class_parts.append("class_name ILIKE ANY(%s)")
+        params.append([f"%{_stem(c)}%" for c in classes])
     if entities:
-        entity_class_parts.append("entity_name = ANY(%s)")
-        params.append(list(entities))
+        entity_class_parts.append("entity_name ILIKE ANY(%s)")
+        params.append([f"%{_stem(e)}%" for e in entities])
 
     where_parts: list[str] = []
     if entity_class_parts:
@@ -352,6 +424,11 @@ _CTYPE_KEYWORDS: dict[str, str] = {
     "racial": "race_feature",
     "background": "background",
     "backgrounds": "background",
+    "monster": "monster",
+    "monsters": "monster",
+    "creature stat": "monster",
+    "magic item": "magic_item",
+    "magic items": "magic_item",
 }
 
 
@@ -600,18 +677,29 @@ def main() -> None:
     total_mrr = 0.0
     total_recall_at_10 = 0
     results_json: list[dict] = []
+    # category → [metrics dict, ...] for the stratified summary
+    by_category: dict[str, list[dict]] = {}
+    negative_results: list[tuple[str, float, str]] = []   # (question, top1 dist, top1 entity)
+    positive_top1_distances: list[float] = []
+
+    positives = [g for g in GOLDEN_SET if g.expected_content_type is not None]
+    n_pos = len(positives)
 
     for i, golden in enumerate(GOLDEN_SET, 1):
-        print(f"─── Query {i}/{len(GOLDEN_SET)} ───")
+        is_negative = golden.expected_content_type is None
+        print(f"─── Query {i}/{len(GOLDEN_SET)} [{golden.category}] ───")
         print(f"  Q: {golden.question}")
-        print(f"  Expect: content_type={golden.expected_content_type}", end="")
-        if golden.expected_entity:
-            print(f", entity={golden.expected_entity}", end="")
-        if golden.expected_class:
-            print(f", class={golden.expected_class}", end="")
-        if golden.expected_chapter:
-            print(f", chapter={golden.expected_chapter}", end="")
-        print()
+        if is_negative:
+            print("  Expect: NOT answerable from corpus (negative query)")
+        else:
+            print(f"  Expect: content_type={golden.expected_content_type}", end="")
+            if golden.expected_entity:
+                print(f", entity={golden.expected_entity}", end="")
+            if golden.expected_class:
+                print(f", class={golden.expected_class}", end="")
+            if golden.expected_chapter:
+                print(f", chapter={golden.expected_chapter}", end="")
+            print()
 
         # Embed and retrieve (with query-time entity + content_type filters)
         emb = embed_query(golden.question)
@@ -631,14 +719,41 @@ def main() -> None:
             content_types=match_ctypes,
         )
 
+        score_key = "rrf_score" if args.mode == "hybrid" else "cosine_distance"
+        score_label = "rrf" if args.mode == "hybrid" else "dist"
+
+        if is_negative:
+            # No pass/fail — record what the system surfaces and how confident
+            # it looks. High distance = good (nothing close in the corpus).
+            top1 = chunks[0] if chunks else None
+            d = top1.cosine_distance if top1 else float("nan")
+            ename = (top1.entity_name or top1.class_name or "—") if top1 else "—"
+            negative_results.append((golden.question, d, ename))
+            print(f"  Top-1: {score_label}={d:.4f}  entity={ename}  "
+                  f"type={top1.content_type if top1 else '—'}")
+            print()
+            results_json.append({
+                "question": golden.question,
+                "mode": args.mode,
+                "category": golden.category,
+                "book": golden.book,
+                "negative": True,
+                "top1_distance": round(d, 6) if top1 else None,
+                "top1_entity": ename,
+            })
+            continue
+
         # Score
         hits = [is_hit(c, golden) for c in chunks]
         metrics = compute_metrics(hits)
+        if chunks:
+            positive_top1_distances.append(chunks[0].cosine_distance)
 
         total_hit_at_1 += int(metrics["hit_at_1"])
         total_precision_at_5 += metrics["precision_at_5"]
         total_mrr += metrics["mrr"]
         total_recall_at_10 += int(metrics["recall_at_10"])
+        by_category.setdefault(golden.category, []).append(metrics)
 
         status = "HIT" if metrics["hit_at_1"] else "MISS"
         print(f"  Result: {status}  |  P@{PRECISION_K}: {metrics['precision_at_5']:.1%}  "
@@ -646,20 +761,21 @@ def main() -> None:
               f"{'Y' if metrics['recall_at_10'] else 'N'}")
         print()
 
-        score_label = "rrf" if args.mode == "hybrid" else "dist"
-        for j, (chunk, hit) in enumerate(zip(chunks, hits), 1):
-            marker = "✓" if hit else "✗"
-            ename = chunk.entity_name or chunk.class_name or chunk.feature_name or "—"
-            print(f"    {marker} #{j}  {score_label}={chunk.cosine_distance:.4f}  "
-                  f"type={chunk.content_type:15s}  entity={ename}")
-            print(f"         ch={chunk.chapter or '—'}  p.{chunk.page_start}")
-            print(f"         {chunk.text_preview}")
+        # Per-result detail only for misses (the suite is too big to dump all)
+        if not metrics["hit_at_1"]:
+            for j, (chunk, hit) in enumerate(zip(chunks[:5], hits[:5]), 1):
+                marker = "✓" if hit else "✗"
+                ename = chunk.entity_name or chunk.class_name or chunk.feature_name or "—"
+                print(f"    {marker} #{j}  {score_label}={chunk.cosine_distance:.4f}  "
+                      f"type={chunk.content_type:15s}  entity={ename}")
+                print(f"         {chunk.text_preview}")
             print()
 
-        score_key = "rrf_score" if args.mode == "hybrid" else "cosine_distance"
         results_json.append({
             "question": golden.question,
             "mode": args.mode,
+            "category": golden.category,
+            "book": golden.book,
             "expected_content_type": golden.expected_content_type,
             "expected_entity": golden.expected_entity,
             "expected_class": golden.expected_class,
@@ -688,13 +804,31 @@ def main() -> None:
     conn.close()
 
     # Summary
-    n = len(GOLDEN_SET)
     print("=" * 72)
-    print("SUMMARY")
-    print(f"  Hit@1:        {total_hit_at_1}/{n}  ({total_hit_at_1/n:.1%})")
-    print(f"  Precision@{PRECISION_K}:   {total_precision_at_5/n:.1%}  (avg across queries)")
-    print(f"  MRR:          {total_mrr/n:.3f}  (avg across queries; 1.0 = perfect rank-1)")
-    print(f"  Recall@{TOP_K}:    {total_recall_at_10}/{n}  ({total_recall_at_10/n:.1%})")
+    print("SUMMARY (positive queries)")
+    print(f"  Hit@1:        {total_hit_at_1}/{n_pos}  ({total_hit_at_1/n_pos:.1%})")
+    print(f"  Precision@{PRECISION_K}:   {total_precision_at_5/n_pos:.1%}  (avg across queries)")
+    print(f"  MRR:          {total_mrr/n_pos:.3f}  (avg across queries; 1.0 = perfect rank-1)")
+    print(f"  Recall@{TOP_K}:    {total_recall_at_10}/{n_pos}  ({total_recall_at_10/n_pos:.1%})")
+    print("-" * 72)
+    print("BY CATEGORY")
+    print(f"  {'category':16s} {'n':>3s}  {'Hit@1':>7s}  {'P@5':>6s}  {'MRR':>6s}  {'R@10':>6s}")
+    for cat in sorted(by_category):
+        ms = by_category[cat]
+        cn = len(ms)
+        h1 = sum(m['hit_at_1'] for m in ms)
+        p5 = sum(m['precision_at_5'] for m in ms) / cn
+        mrr = sum(m['mrr'] for m in ms) / cn
+        r10 = sum(m['recall_at_10'] for m in ms)
+        print(f"  {cat:16s} {cn:3d}  {h1:3d}/{cn:<3d}  {p5:6.1%}  {mrr:6.3f}  {r10:3d}/{cn:<3d}")
+    if negative_results:
+        print("-" * 72)
+        print("NEGATIVE QUERIES (answer not in corpus — top-1 distance, higher = better)")
+        if positive_top1_distances:
+            avg_pos = sum(positive_top1_distances) / len(positive_top1_distances)
+            print(f"  reference: avg top-1 distance on positives = {avg_pos:.4f}")
+        for q, d, ename in negative_results:
+            print(f"  {d:.4f}  {ename:30.30s}  {q[:50]}")
     print("=" * 72)
 
     # Save results JSON
