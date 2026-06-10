@@ -104,6 +104,28 @@ BOOK_CONFIGS: dict[str, dict] = {
         "item_name_max_pt": 11.0,
         "max_chunk_chars": 1400,
     },
+    # Mixed-content supplements — fitz engine, generic supplement extractor.
+    # first_content_page skips covers/TOC/credits; tune per book.
+    "phb-5e":     {"engine": "fitz", "kind": "supplement", "first_content_page": 5,
+                   "min_body_pt": 8.0, "heading_min_pt": 11.0, "max_chunk_chars": 1400},
+    "xge-5e":     {"engine": "fitz", "kind": "supplement", "first_content_page": 5,
+                   "min_body_pt": 8.0, "heading_min_pt": 11.0, "max_chunk_chars": 1400},
+    "tce-5e":     {"engine": "fitz", "kind": "supplement", "first_content_page": 5,
+                   "min_body_pt": 8.0, "heading_min_pt": 11.0, "max_chunk_chars": 1400},
+    "vgm-5e":     {"engine": "fitz", "kind": "supplement", "first_content_page": 5,
+                   "min_body_pt": 8.0, "heading_min_pt": 11.0, "max_chunk_chars": 1400},
+    "mtf-5e":     {"engine": "fitz", "kind": "supplement", "first_content_page": 5,
+                   "min_body_pt": 8.0, "heading_min_pt": 11.0, "max_chunk_chars": 1400},
+    "eepc-5e":    {"engine": "fitz", "kind": "supplement", "first_content_page": 2,
+                   "min_body_pt": 8.0, "heading_min_pt": 11.0, "max_chunk_chars": 1400},
+    "scag-5e":    {"engine": "fitz", "kind": "supplement", "first_content_page": 5,
+                   "min_body_pt": 8.0, "heading_min_pt": 11.0, "max_chunk_chars": 1400},
+    "tortle-5e":  {"engine": "fitz", "kind": "supplement", "first_content_page": 2,
+                   "min_body_pt": 8.0, "heading_min_pt": 11.0, "max_chunk_chars": 1400},
+    "eberron-5e": {"engine": "fitz", "kind": "supplement", "first_content_page": 5,
+                   "min_body_pt": 8.0, "heading_min_pt": 11.0, "max_chunk_chars": 1400},
+    "ravnica-5e": {"engine": "fitz", "kind": "supplement", "first_content_page": 5,
+                   "min_body_pt": 8.0, "heading_min_pt": 11.0, "max_chunk_chars": 1400},
 }
 
 _MM_STAT_ANCHOR = re.compile(r"^Armor Class\s*\d", re.IGNORECASE)
@@ -469,6 +491,174 @@ def extract_dmg_chunks(
 
 
 # ---------------------------------------------------------------------------
+# Section: supplement extraction (mixed-content books — XGE/TCE/VGM/etc.)
+# ---------------------------------------------------------------------------
+# Supplements interleave spells, subclasses, feats, monsters, items, and prose
+# in one book. Rather than a per-book structural parser, we chunk on headings
+# (bold or caps) and classify each chunk's content_type by textual signature.
+
+_SPELL_LEVEL_RE = re.compile(
+    r"\b(cantrip|\d+(?:st|nd|rd|th)-level)\b", re.IGNORECASE,
+)
+_SPELL_SCHOOL_RE = re.compile(
+    r"\b(abjuration|conjuration|divination|enchantment|evocation|illusion|necromancy|transmutation)\b",
+    re.IGNORECASE,
+)
+_FEAT_PREREQ_RE = re.compile(r"^\s*Prerequisite:", re.IGNORECASE | re.MULTILINE)
+
+# Strong anchors for the supplement extractor. A line IS the anchor; the entity
+# name is the line immediately above it (the spell/feat/monster heading).
+_SCHOOLS = "abjuration|conjuration|divination|enchantment|evocation|illusion|necromancy|transmutation"
+# "8th-level necromancy" or "Evocation cantrip" — the spell sub-header line
+_SPELL_ANCHOR_RE = re.compile(
+    rf"^\s*(\d+(?:st|nd|rd|th)-level\s+({_SCHOOLS})|({_SCHOOLS})\s+cantrip)\b",
+    re.IGNORECASE,
+)
+_STATBLOCK_ANCHOR_RE = re.compile(r"^\s*Armor Class\s*\d", re.IGNORECASE)
+_FEAT_ANCHOR_RE = re.compile(r"^\s*Prerequisite:", re.IGNORECASE)
+
+
+def is_spell_anchor(text: str) -> bool:
+    return _SPELL_ANCHOR_RE.search(text) is not None
+
+
+def is_feat_anchor(text: str) -> bool:
+    return _FEAT_ANCHOR_RE.search(text) is not None
+
+
+def is_statblock_anchor(text: str) -> bool:
+    return _STATBLOCK_ANCHOR_RE.search(text) is not None
+
+
+def classify_content_type(heading: str, body: str) -> str:
+    """
+    Classify a supplement chunk by textual signature. Order matters — the
+    strongest, lowest-false-positive signals first:
+
+      monster  — has both "Armor Class" and "Hit Points" (a stat block). Checked
+                 first so a monster whose actions mention spells stays a monster.
+      spell    — a spell level/school line AND a "Casting Time:" / "Range:" field.
+      feat     — a "Prerequisite:" line near the top (feat stat block).
+      rule     — default (prose: class features, subclass text, guidance, lore).
+    """
+    head = body[:400]
+    if re.search(r"\bArmor Class\b", body, re.I) and re.search(r"\bHit Points\b", body, re.I):
+        return "monster"
+    has_level = _SPELL_LEVEL_RE.search(head) or _SPELL_SCHOOL_RE.search(head)
+    has_field = re.search(r"\b(Casting Time|Range):", head, re.I)
+    if has_level and has_field:
+        return "spell"
+    if _FEAT_PREREQ_RE.search(head):
+        return "feat"
+    return "rule"
+
+
+def extract_supplement_chunks(
+    stream: list[LineItem],
+    book_slug: str,
+    source_file: str,
+    cfg: dict,
+) -> list[DndChunk]:
+    """
+    Anchor-driven mixed-content extractor for supplements.
+
+    Real supplement spell/feat names are small and unbolded (XGE spell names are
+    9.3pt), so heading detection alone misses them. Instead we anchor on the
+    structural sub-header that always follows the name:
+
+      spell    — a "Nth-level <school>" / "<school> cantrip" line; the name is
+                 the line directly above it.
+      feat     — a "Prerequisite:" line; the name is the line above.
+      monster  — an "Armor Class N" line (some supplements carry stat blocks).
+      prose    — bold/caps headings open rule/lore chunks (classified by
+                 signature); body accumulates until the next anchor or heading.
+
+    When an anchor fires, the pending name line is pulled out of the current
+    accumulation and becomes the new chunk's entity_name.
+    """
+    heading_min = cfg["heading_min_pt"]
+    min_body = cfg["min_body_pt"]
+    max_chars = cfg["max_chunk_chars"]
+    first_page = cfg["first_content_page"]
+
+    chunks: list[DndChunk] = []
+    counter = [0]
+
+    # Current open chunk
+    cur_ctype: str | None = None       # forced type from an anchor; None = prose (classify on flush)
+    cur_entity: str | None = None
+    cur_lines: list[str] = []
+    cur_start: tuple[int, int] | None = None
+
+    def is_heading(li: LineItem) -> bool:
+        if li.bold and 3 <= len(li.text) <= 60 and any(c.isalpha() for c in li.text):
+            return True
+        return is_caps_heading(li.text, li.size, heading_min)
+
+    def flush(end_page: int) -> None:
+        nonlocal cur_ctype, cur_entity, cur_lines, cur_start
+        if cur_entity and cur_lines and cur_start:
+            body_full = "\n".join(cur_lines).strip()
+            ctype = cur_ctype or classify_content_type(cur_entity, body_full)
+            for part in split_paragraph_chunks([cur_entity] + cur_lines, max_chars):
+                if len(part.split()) < 5:
+                    continue
+                counter[0] += 1
+                chunks.append(DndChunk(
+                    chunk_id=_chunk_id(book_slug, cur_start[0], cur_start[1], counter[0]),
+                    book_slug=book_slug, source_file=source_file,
+                    page_start=cur_start[0], page_end=end_page,
+                    part=None, chapter=None, section=None,
+                    content_type=ctype,
+                    entity_name=normalize_entity_name(cur_entity),
+                    class_name=None, feature_name=None,
+                    text=part,
+                ))
+        cur_ctype, cur_entity, cur_lines, cur_start = None, None, [], None
+
+    def open_anchored(li: LineItem, ctype: str) -> None:
+        # The name is the last body line of the current chunk (the line just
+        # above the anchor). Pull it out, flush the rest, open a typed chunk.
+        nonlocal cur_ctype, cur_entity, cur_lines, cur_start
+        name = cur_lines.pop() if cur_lines else cur_entity
+        flush(li.page)
+        cur_ctype = ctype
+        cur_entity = name or "(unknown)"
+        cur_start = (li.page, li.col)
+        cur_lines = [li.text]
+
+    for li in stream:
+        if li.page < first_page or li.size < min_body:
+            continue
+        if is_spell_anchor(li.text):
+            open_anchored(li, "spell")
+        elif is_feat_anchor(li.text):
+            open_anchored(li, "feat")
+        elif is_statblock_anchor(li.text):
+            open_anchored(li, "monster")
+        elif is_heading(li):
+            flush(li.page)
+            cur_ctype = None
+            cur_entity = li.text
+            cur_start = (li.page, li.col)
+            cur_lines = []
+        else:
+            if cur_entity is None:
+                # No open chunk yet — treat this line as a provisional name so a
+                # following anchor can claim it (handles spell name → level line
+                # with no preceding heading).
+                cur_entity = li.text
+                cur_start = (li.page, li.col)
+                cur_lines = []
+            else:
+                cur_lines.append(li.text)
+
+    last_page = stream[-1].page if stream else first_page
+    flush(last_page)
+    return chunks
+
+
+# ---------------------------------------------------------------------------
 # PDF → LineItem stream
 # ---------------------------------------------------------------------------
 
@@ -613,8 +803,10 @@ def main() -> None:
 
     if cfg["kind"] == "monster_manual":
         chunks = extract_mm_chunks(stream, args.book_slug, source_file, cfg)
-    else:
+    elif cfg["kind"] == "dmg":
         chunks = extract_dmg_chunks(stream, args.book_slug, source_file, cfg)
+    else:  # "supplement" — mixed-content books
+        chunks = extract_supplement_chunks(stream, args.book_slug, source_file, cfg)
 
     type_counts: dict[str, int] = {}
     section_counts: dict[str, int] = {}

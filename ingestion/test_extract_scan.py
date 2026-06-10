@@ -15,8 +15,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from extract_scan import (
     BOOK_CONFIGS,
     LineItem,
+    classify_content_type,
     extract_dmg_chunks,
     extract_mm_chunks,
+    extract_supplement_chunks,
     group_spans_to_lines,
     is_caps_heading,
     normalize_entity_name,
@@ -339,6 +341,118 @@ def test_lineitem_bold_defaults_false():
     # Regression guard for review finding: positional construction must still work
     li = LineItem(1, 0, 9.0, "text")
     assert li.bold is False
+
+
+# ---------------------------------------------------------------------------
+# classify_content_type (F3 — within-book content classification)
+# ---------------------------------------------------------------------------
+
+def test_classify_monster_by_statblock():
+    body = ("Medium monstrosity, unaligned\nArmor Class 15 (natural armor)\n"
+            "Hit Points 52 (8d8 + 16)\nSpeed 20 ft.\nChallenge 3 (700 XP)")
+    assert classify_content_type("Basilisk", body) == "monster"
+
+
+def test_classify_spell_by_level_and_casting():
+    body = ("3rd-level evocation\nCasting Time: 1 action\nRange: 150 feet\n"
+            "Components: V, S, M\nA bright streak flashes to a point you choose.")
+    assert classify_content_type("Fireball", body) == "spell"
+
+
+def test_classify_spell_cantrip():
+    body = ("Evocation cantrip\nCasting Time: 1 action\nRange: 120 feet\n"
+            "You create three glowing darts of magical force.")
+    assert classify_content_type("Fire Bolt", body) == "spell"
+
+
+def test_classify_feat_by_prerequisite():
+    body = ("Prerequisite: Dexterity 13 or higher\nYou have mastered techniques "
+            "to take advantage of every drop in any enemy's guard, gaining benefits.")
+    assert classify_content_type("Defensive Duelist", body) == "feat"
+
+
+def test_classify_falls_back_to_rule():
+    body = ("When you make a Dexterity (Stealth) check, you can choose to move "
+            "carefully through the area, taking your time to avoid notice.")
+    assert classify_content_type("Hiding", body) == "rule"
+
+
+def test_classify_statblock_beats_spell_words():
+    # A monster whose actions mention spells must still classify as monster
+    body = ("Large dragon, chaotic evil\nArmor Class 19\nHit Points 256\n"
+            "Spellcasting. The dragon can cast 3rd-level spells. Casting Time varies.")
+    assert classify_content_type("Adult Red Dragon", body) == "monster"
+
+
+# ---------------------------------------------------------------------------
+# extract_supplement_chunks (F3 — generic mixed-content extractor)
+# ---------------------------------------------------------------------------
+
+SUPP_CFG = {
+    "kind": "supplement", "first_content_page": 1,
+    "min_body_pt": 7.0, "heading_min_pt": 11.0, "max_chunk_chars": 1400,
+}
+
+
+def _supp_stream():
+    """Synthetic supplement page mirroring real XGE layout: spell names are
+    SMALL and NOT bold (9.3pt) — they must be found via the level-line anchor,
+    not heading detection. A feat uses the Prerequisite anchor."""
+    L = LineItem
+    return [
+        L(1, 0, 12.0, "SPELL DESCRIPTIONS", bold=True),
+        # Spell 1: name is small + not bold (the real XGE case)
+        L(1, 0, 9.3, "ABSORB ELEMENTS"),
+        L(1, 0, 9.7, "1st-level abjuration"),
+        L(1, 0, 10.0, "Casting Time: 1 reaction"),
+        L(1, 0, 10.0, "Range: Self"),
+        L(1, 0, 10.0, "The spell captures some of the incoming energy, lessening"),
+        L(1, 0, 10.0, "its effect on you and storing it for your next melee attack."),
+        # Spell 2
+        L(1, 0, 9.3, "FIREBALL"),
+        L(1, 0, 9.7, "3rd-level evocation"),
+        L(1, 0, 10.0, "Casting Time: 1 action"),
+        L(1, 0, 10.0, "Range: 150 feet"),
+        L(1, 0, 10.0, "A bright streak flashes from your pointing finger to a point"),
+        L(1, 0, 10.0, "you choose where it blossoms into an explosion of flame."),
+        # A feat (Prerequisite anchor)
+        L(1, 1, 9.3, "DEFENSIVE DUELIST"),
+        L(1, 1, 10.0, "Prerequisite: Dexterity 13 or higher"),
+        L(1, 1, 10.0, "When you are wielding a finesse weapon with which you are"),
+        L(1, 1, 10.0, "proficient and another creature hits you, you can use your"),
+        L(1, 1, 10.0, "reaction to add your proficiency bonus to your armor class."),
+    ]
+
+
+def test_supplement_extracts_spells_via_anchor():
+    chunks = extract_supplement_chunks(_supp_stream(), "xge-5e", "xge.pdf", SUPP_CFG)
+    by_name = {c.entity_name: c for c in chunks}
+    assert "Absorb Elements" in by_name, f"got {list(by_name)}"
+    assert by_name["Absorb Elements"].content_type == "spell"
+    assert "Fireball" in by_name
+    assert by_name["Fireball"].content_type == "spell"
+    # The spell block stays intact (name + level + casting + description)
+    assert "incoming energy" in by_name["Absorb Elements"].text
+
+
+def test_supplement_extracts_feat_via_prereq_anchor():
+    chunks = extract_supplement_chunks(_supp_stream(), "xge-5e", "xge.pdf", SUPP_CFG)
+    by_name = {c.entity_name: c for c in chunks}
+    assert "Defensive Duelist" in by_name
+    assert by_name["Defensive Duelist"].content_type == "feat"
+
+
+def test_supplement_spell_name_not_swallowed_by_prior_chunk():
+    # Fireball's name must open its own chunk, not bleed into Absorb Elements
+    chunks = extract_supplement_chunks(_supp_stream(), "xge-5e", "xge.pdf", SUPP_CFG)
+    absorb = next(c for c in chunks if c.entity_name == "Absorb Elements")
+    assert "Fireball" not in absorb.text
+
+
+def test_supplement_chunk_carries_book_slug():
+    chunks = extract_supplement_chunks(_supp_stream(), "xge-5e", "xge.pdf", SUPP_CFG)
+    assert all(c.book_slug == "xge-5e" for c in chunks)
+    assert all(c.text for c in chunks)
 
 
 # ---------------------------------------------------------------------------
