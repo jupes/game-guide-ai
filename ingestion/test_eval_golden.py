@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from eval_golden import (
     extract_query_entities,
+    extract_query_content_types,
     build_vector_sql,
     compute_metrics,
 )
@@ -29,6 +30,15 @@ KNOWN_ENTITIES = {
     "Healing Word", "Blinded", "Prone", "Paralyzed", "Restrained",
     "Elf", "Dwarf", "Halfling", "Human",
 }
+ENTITY_TO_CTYPE = {
+    "Fireball": "spell", "Magic Missile": "spell", "Cure Wounds": "spell",
+    "Shield": "spell", "Counterspell": "spell", "Healing Word": "spell",
+    "Blinded": "condition", "Prone": "condition", "Paralyzed": "condition",
+    "Restrained": "condition",
+    "Elf": "race_feature", "Dwarf": "race_feature",
+    "Halfling": "race_feature", "Human": "race_feature",
+}
+CLASS_TO_CTYPE = {c: "class_feature" for c in KNOWN_CLASSES}
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +225,114 @@ def test_q13_simulation_filter_lifts_to_hit_at_1():
 
 
 # ---------------------------------------------------------------------------
+# extract_query_content_types (amp)
+# ---------------------------------------------------------------------------
+
+def test_ctype_from_matched_class():
+    # "Wizard" → class_feature (via class vocab lookup)
+    ctypes = extract_query_content_types(
+        "What saving throw proficiencies does a Wizard get?",
+        ENTITY_TO_CTYPE, CLASS_TO_CTYPE,
+    )
+    assert "class_feature" in ctypes, f"Expected class_feature, got {ctypes}"
+
+
+def test_ctype_from_matched_spell_entity():
+    # "Fireball" → spell (via entity vocab lookup)
+    ctypes = extract_query_content_types(
+        "What is the range of Fireball?",
+        ENTITY_TO_CTYPE, CLASS_TO_CTYPE,
+    )
+    assert "spell" in ctypes
+
+
+def test_ctype_from_matched_race_entity():
+    ctypes = extract_query_content_types(
+        "What ability score bonuses do Dwarves get?",
+        ENTITY_TO_CTYPE, CLASS_TO_CTYPE,
+    )
+    assert "race_feature" in ctypes
+
+
+def test_ctype_from_matched_condition_entity():
+    ctypes = extract_query_content_types(
+        "What does the Blinded condition do?",
+        ENTITY_TO_CTYPE, CLASS_TO_CTYPE,
+    )
+    assert "condition" in ctypes
+
+
+def test_ctype_from_spell_keyword_no_entity():
+    # No spell name in the query, but "spell" keyword present → infer spell intent
+    ctypes = extract_query_content_types(
+        "What is a cantrip spell?",
+        ENTITY_TO_CTYPE, CLASS_TO_CTYPE,
+    )
+    assert "spell" in ctypes, f"Keyword 'spell' should imply content_type=spell, got {ctypes}"
+
+
+def test_ctype_from_condition_keyword():
+    ctypes = extract_query_content_types(
+        "Which conditions affect movement?",
+        ENTITY_TO_CTYPE, CLASS_TO_CTYPE,
+    )
+    assert "condition" in ctypes
+
+
+def test_ctype_empty_for_generic_rule_query():
+    # No entity match, no keyword → empty set (falls through to no content_type filter)
+    ctypes = extract_query_content_types(
+        "How does grappling work?",
+        ENTITY_TO_CTYPE, CLASS_TO_CTYPE,
+    )
+    assert ctypes == set(), f"Expected no content_type for generic rule query, got {ctypes}"
+
+
+def test_ctype_multiple_when_query_mixes_signals():
+    # Fighter (class_feature) + "spell" keyword → both content_types
+    ctypes = extract_query_content_types(
+        "Can a Fighter cast any spell?",
+        ENTITY_TO_CTYPE, CLASS_TO_CTYPE,
+    )
+    assert "class_feature" in ctypes
+    assert "spell" in ctypes
+
+
+# ---------------------------------------------------------------------------
+# build_vector_sql with content_types
+# ---------------------------------------------------------------------------
+
+def test_content_type_filter_alone():
+    sql, params = build_vector_sql(
+        emb_str="[0.1, 0.2]", k=5,
+        classes=set(), entities=set(), content_types={"spell"},
+    )
+    assert "content_type = ANY" in sql, f"Expected content_type filter, got: {sql}"
+    assert any("spell" in str(p) for p in params)
+
+
+def test_class_and_content_type_filter_uses_and():
+    # When both entity/class filter and content_type filter are present, the
+    # content_type clause AND's the entity/class clause rather than widening it
+    sql, params = build_vector_sql(
+        emb_str="[0.1, 0.2]", k=5,
+        classes={"Wizard"}, entities=set(), content_types={"class_feature"},
+    )
+    assert "class_name = ANY" in sql
+    assert "content_type = ANY" in sql
+    assert " AND " in sql, f"Expected AND between entity/class and content_type filters: {sql}"
+
+
+def test_no_filters_still_unfiltered():
+    # content_types empty → no WHERE clause (regression check)
+    sql, params = build_vector_sql(
+        emb_str="[0.1, 0.2]", k=5,
+        classes=set(), entities=set(), content_types=set(),
+    )
+    assert "WHERE" not in sql
+
+
+# ---------------------------------------------------------------------------
 # Test runner
 # ---------------------------------------------------------------------------
 
@@ -238,6 +356,17 @@ def _run():
         test_recall_at_10_finds_late_hit,
         test_metrics_handles_fewer_than_10_results,
         test_q13_simulation_filter_lifts_to_hit_at_1,
+        test_ctype_from_matched_class,
+        test_ctype_from_matched_spell_entity,
+        test_ctype_from_matched_race_entity,
+        test_ctype_from_matched_condition_entity,
+        test_ctype_from_spell_keyword_no_entity,
+        test_ctype_from_condition_keyword,
+        test_ctype_empty_for_generic_rule_query,
+        test_ctype_multiple_when_query_mixes_signals,
+        test_content_type_filter_alone,
+        test_class_and_content_type_filter_uses_and,
+        test_no_filters_still_unfiltered,
     ]
     failed = 0
     for t in tests:

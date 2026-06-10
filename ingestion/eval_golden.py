@@ -258,30 +258,48 @@ def build_vector_sql(
     k: int,
     classes: set[str],
     entities: set[str],
+    content_types: set[str] | None = None,
 ) -> tuple[str, tuple]:
     """
     Build the vector retrieval SQL and parameter tuple.
 
-    When `classes` or `entities` is non-empty, an entity-aware WHERE clause is
-    added so vector search only ranks chunks whose class_name or entity_name is
-    in the matched vocabulary. Otherwise returns the unfiltered _VECTOR_SQL.
+    Filter composition:
+        (class_name = ANY OR entity_name = ANY) AND content_type = ANY
 
-    Params order matches the placeholders in the returned SQL string.
+    Entity/class filters OR together (a chunk qualifies if it matches either
+    the named class OR the named entity). Content-type filter AND's that
+    clause: of the chunks tagged with one of the named class/entity values,
+    only those of the right kind survive. When only content_types is set, the
+    SQL uses that filter alone.
+
+    Returns _VECTOR_SQL unchanged when no filters are present.
     """
-    if not classes and not entities:
+    content_types = content_types or set()
+    if not classes and not entities and not content_types:
         return _VECTOR_SQL, (emb_str, emb_str, k)
 
-    where_parts: list[str] = []
     params: list = [emb_str]
 
+    # Build the (class OR entity) clause
+    entity_class_parts: list[str] = []
     if classes:
-        where_parts.append("class_name = ANY(%s)")
+        entity_class_parts.append("class_name = ANY(%s)")
         params.append(list(classes))
     if entities:
-        where_parts.append("entity_name = ANY(%s)")
+        entity_class_parts.append("entity_name = ANY(%s)")
         params.append(list(entities))
 
-    where_clause = " OR ".join(where_parts)
+    where_parts: list[str] = []
+    if entity_class_parts:
+        if len(entity_class_parts) == 1:
+            where_parts.append(entity_class_parts[0])
+        else:
+            where_parts.append("(" + " OR ".join(entity_class_parts) + ")")
+    if content_types:
+        where_parts.append("content_type = ANY(%s)")
+        params.append(list(content_types))
+
+    where_clause = " AND ".join(where_parts)
     params.extend([emb_str, k])
 
     sql = f"""
@@ -304,14 +322,111 @@ LIMIT %s
     return sql, tuple(params)
 
 
-def load_vocabulary(conn: psycopg.Connection) -> tuple[set[str], set[str]]:
-    """Pull distinct class_name and entity_name values from dnd.chunks."""
+# ---------------------------------------------------------------------------
+# Content-type routing (amp)
+#
+# Two signal sources:
+#   1. Matched entities/classes → look up their content_type from the corpus
+#      vocabulary. A query naming "Fireball" implies spell intent; "Wizard"
+#      implies class_feature; "Blinded" implies condition. No classifier
+#      needed — the corpus already labelled these.
+#   2. Bare keywords → for queries with no entity match, lightweight keyword
+#      hints catch "spell", "condition", "race", "background" intent.
+#
+# Rule queries ("How does grappling work?") deliberately fall through to an
+# empty set so vector search runs unfiltered — there is no rule keyword that
+# wouldn't also appear in actual rule chunks, so a positive filter would only
+# hurt recall.
+# ---------------------------------------------------------------------------
+
+_CTYPE_KEYWORDS: dict[str, str] = {
+    # keyword (lowercased, matched on word boundary) → content_type
+    "spell": "spell",
+    "spells": "spell",
+    "cantrip": "spell",
+    "cantrips": "spell",
+    "condition": "condition",
+    "conditions": "condition",
+    "race": "race_feature",
+    "races": "race_feature",
+    "racial": "race_feature",
+    "background": "background",
+    "backgrounds": "background",
+}
+
+
+def extract_query_content_types(
+    text: str,
+    entity_to_ctype: dict[str, str],
+    class_to_ctype: dict[str, str],
+) -> set[str]:
+    """
+    Infer content_type hints from a query string.
+
+    Combines (a) the content_type of any matched entity/class in the corpus
+    vocabulary and (b) a small keyword fallback for queries with no entity
+    name. Returns an empty set when neither signal fires — the caller should
+    then skip the content_type filter.
+    """
+    lowered = text.lower()
+    ctypes: set[str] = set()
+
+    classes, entities = extract_query_entities(
+        text, set(class_to_ctype.keys()), set(entity_to_ctype.keys()),
+    )
+    for c in classes:
+        ct = class_to_ctype.get(c)
+        if ct:
+            ctypes.add(ct)
+    for e in entities:
+        ct = entity_to_ctype.get(e)
+        if ct:
+            ctypes.add(ct)
+
+    for kw, ct in _CTYPE_KEYWORDS.items():
+        if re.search(rf"\b{re.escape(kw)}\b", lowered):
+            ctypes.add(ct)
+
+    return ctypes
+
+
+def load_vocabulary(
+    conn: psycopg.Connection,
+) -> tuple[set[str], set[str], dict[str, str], dict[str, str]]:
+    """
+    Pull entity/class vocabulary from dnd.chunks.
+
+    Returns:
+        classes:          set of distinct class_name values
+        entities:         set of distinct entity_name values
+        entity_to_ctype:  entity_name → most-common content_type for that entity
+        class_to_ctype:   class_name → most-common content_type for that class
+                          (almost always "class_feature")
+    """
     with conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT class_name FROM dnd.chunks WHERE class_name IS NOT NULL")
-        classes = {r[0] for r in cur.fetchall() if r[0]}
-        cur.execute("SELECT DISTINCT entity_name FROM dnd.chunks WHERE entity_name IS NOT NULL")
-        entities = {r[0] for r in cur.fetchall() if r[0]}
-    return classes, entities
+        cur.execute(
+            "SELECT class_name, content_type, count(*) "
+            "FROM dnd.chunks WHERE class_name IS NOT NULL "
+            "GROUP BY class_name, content_type"
+        )
+        class_rows = cur.fetchall()
+        cur.execute(
+            "SELECT entity_name, content_type, count(*) "
+            "FROM dnd.chunks WHERE entity_name IS NOT NULL "
+            "GROUP BY entity_name, content_type"
+        )
+        entity_rows = cur.fetchall()
+
+    def _pick_majority(rows: list[tuple]) -> dict[str, str]:
+        # name → {ctype: count} → ctype with highest count
+        agg: dict[str, dict[str, int]] = {}
+        for name, ctype, n in rows:
+            agg.setdefault(name, {})[ctype] = agg[name].get(ctype, 0) + n
+        return {name: max(cts, key=cts.__getitem__) for name, cts in agg.items() if name}
+
+    class_to_ctype = _pick_majority(class_rows)
+    entity_to_ctype = _pick_majority(entity_rows)
+    return set(class_to_ctype.keys()), set(entity_to_ctype.keys()), entity_to_ctype, class_to_ctype
 
 _HYBRID_SQL = """
 SELECT
@@ -351,11 +466,13 @@ def retrieve_top_k(
     mode: str = "vector",
     classes: set[str] | None = None,
     entities: set[str] | None = None,
+    content_types: set[str] | None = None,
 ) -> list[RetrievedChunk]:
     emb_str = str(query_embedding)
     classes = classes or set()
     entities = entities or set()
-    has_filters = bool(classes or entities)
+    content_types = content_types or set()
+    has_filters = bool(classes or entities or content_types)
 
     with conn.cursor() as cur:
         if mode == "hybrid" and not has_filters:
@@ -363,8 +480,9 @@ def retrieve_top_k(
         else:
             # Hybrid path can't accept filters today (dnd.hybrid_search is filter-free).
             # The eval report shows hybrid ≡ vector at this corpus size, so we use
-            # filtered vector when entity hints are present — same precision either way.
-            sql, params = build_vector_sql(emb_str, k, classes, entities)
+            # filtered vector when entity/content_type hints are present — same
+            # precision either way.
+            sql, params = build_vector_sql(emb_str, k, classes, entities, content_types)
             cur.execute(sql, params)
         rows = cur.fetchall()
     return [
@@ -473,7 +591,7 @@ def main() -> None:
     print(f"Chunks in dnd.chunks: {chunk_count}")
 
     # Pull entity vocabulary from the corpus for query-time hint extraction.
-    known_classes, known_entities = load_vocabulary(conn)
+    known_classes, known_entities, entity_to_ctype, class_to_ctype = load_vocabulary(conn)
     print(f"Vocab loaded: {len(known_classes)} classes, {len(known_entities)} entities\n")
 
     total_hit_at_1 = 0
@@ -494,17 +612,22 @@ def main() -> None:
             print(f", chapter={golden.expected_chapter}", end="")
         print()
 
-        # Embed and retrieve (with query-time entity filter when applicable)
+        # Embed and retrieve (with query-time entity + content_type filters)
         emb = embed_query(golden.question)
         match_classes, match_entities = extract_query_entities(
             golden.question, known_classes, known_entities,
         )
-        if match_classes or match_entities:
+        match_ctypes = extract_query_content_types(
+            golden.question, entity_to_ctype, class_to_ctype,
+        )
+        if match_classes or match_entities or match_ctypes:
             print(f"  Filter: classes={sorted(match_classes) or '—'}  "
-                  f"entities={sorted(match_entities) or '—'}")
+                  f"entities={sorted(match_entities) or '—'}  "
+                  f"ctypes={sorted(match_ctypes) or '—'}")
         chunks = retrieve_top_k(
             conn, emb, golden.question, TOP_K, mode=args.mode,
             classes=match_classes, entities=match_entities,
+            content_types=match_ctypes,
         )
 
         # Score
@@ -542,6 +665,7 @@ def main() -> None:
             "expected_chapter": golden.expected_chapter,
             "matched_classes": sorted(match_classes),
             "matched_entities": sorted(match_entities),
+            "matched_content_types": sorted(match_ctypes),
             "hit_at_1": metrics["hit_at_1"],
             "precision_at_5": metrics["precision_at_5"],
             "mrr": round(metrics["mrr"], 6),
