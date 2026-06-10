@@ -6,8 +6,19 @@
     "expected_entity": "Fireball",
     "expected_class": null,
     "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Fireball",
+      "Range"
+    ],
+    "matched_content_types": [
+      "rule",
+      "spell"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.4,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -15,43 +26,16 @@
         "content_type": "spell",
         "entity_name": "Fireball",
         "class_name": null,
-        "cosine_distance": 0.384002,
+        "cosine_distance": 0.38399,
         "is_hit": true
       },
       {
         "rank": 2,
-        "chunk_id": "b670bb79601629e1440b",
-        "content_type": "spell",
-        "entity_name": "Delayed Blast Fireball",
+        "chunk_id": "e9ba2d8c4fea5081b01c",
+        "content_type": "rule",
+        "entity_name": "Range",
         "class_name": null,
-        "cosine_distance": 0.43703,
-        "is_hit": true
-      },
-      {
-        "rank": 3,
-        "chunk_id": "affe6d41ab614e382ad3",
-        "content_type": "spell",
-        "entity_name": "Fire Bolt",
-        "class_name": null,
-        "cosine_distance": 0.528716,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "27de74f78c2b228978eb",
-        "content_type": "spell",
-        "entity_name": "Flaming Sphere",
-        "class_name": null,
-        "cosine_distance": 0.577588,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "19e28dc89341342755b4",
-        "content_type": "spell",
-        "entity_name": "Meteor Swarm",
-        "class_name": null,
-        "cosine_distance": 0.589068,
+        "cosine_distance": 0.600896,
         "is_hit": false
       }
     ]
@@ -63,8 +47,23 @@
     "expected_entity": null,
     "expected_class": "Fighter",
     "expected_chapter": null,
+    "matched_classes": [
+      "Fighter"
+    ],
+    "matched_entities": [
+      "Fighter",
+      "Hit Points",
+      "Level"
+    ],
+    "matched_content_types": [
+      "class_feature",
+      "narrative",
+      "rule"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.2,
+    "precision_at_5": 0.8,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -72,44 +71,89 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Fighter",
-        "cosine_distance": 0.253584,
+        "cosine_distance": 0.253634,
         "is_hit": true
       },
       {
         "rank": 2,
-        "chunk_id": "f15f429c2f3017f66062",
+        "chunk_id": "7c3c1bbeea66da9caa3b",
         "content_type": "class_feature",
-        "entity_name": null,
-        "class_name": "Cleric",
-        "cosine_distance": 0.386156,
-        "is_hit": false
+        "entity_name": "Fighter",
+        "class_name": "Fighter",
+        "cosine_distance": 0.476296,
+        "is_hit": true
       },
       {
         "rank": 3,
-        "chunk_id": "984d25cbc9a9db87ff9c",
+        "chunk_id": "4004c51caa5a907dbabb",
         "content_type": "class_feature",
-        "entity_name": null,
-        "class_name": "Rogue",
-        "cosine_distance": 0.394596,
-        "is_hit": false
+        "entity_name": "Fighter",
+        "class_name": "Fighter",
+        "cosine_distance": 0.501572,
+        "is_hit": true
       },
       {
         "rank": 4,
-        "chunk_id": "d7f0d957883f0b10a3ec",
+        "chunk_id": "72e0957f25087349b70c",
         "content_type": "class_feature",
         "entity_name": null,
-        "class_name": "Wizard",
-        "cosine_distance": 0.408649,
-        "is_hit": false
+        "class_name": "Fighter",
+        "cosine_distance": 0.514098,
+        "is_hit": true
       },
       {
         "rank": 5,
-        "chunk_id": "895ed5fe52439e7ed52d",
-        "content_type": "narrative",
-        "entity_name": "Hit Points and Hit Dice",
+        "chunk_id": "57f060d7af2973dc0bb6",
+        "content_type": "rule",
+        "entity_name": "Hit Points",
         "class_name": null,
-        "cosine_distance": 0.428544,
+        "cosine_distance": 0.520229,
         "is_hit": false
+      },
+      {
+        "rank": 6,
+        "chunk_id": "94999434faafe8cea774",
+        "content_type": "class_feature",
+        "entity_name": "Fighter",
+        "class_name": "Fighter",
+        "cosine_distance": 0.541325,
+        "is_hit": true
+      },
+      {
+        "rank": 7,
+        "chunk_id": "ad0137f5d1115b303ec6",
+        "content_type": "class_feature",
+        "entity_name": "Fighter",
+        "class_name": "Fighter",
+        "cosine_distance": 0.555385,
+        "is_hit": true
+      },
+      {
+        "rank": 8,
+        "chunk_id": "9c6d223b4ca36646c1ec",
+        "content_type": "narrative",
+        "entity_name": "Level",
+        "class_name": null,
+        "cosine_distance": 0.576479,
+        "is_hit": false
+      },
+      {
+        "rank": 9,
+        "chunk_id": "2b4c57a76ef1634adb30",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Fighter",
+        "cosine_distance": 0.592559,
+        "is_hit": true
+      },
+      {
+        "rank": 10,
+        "chunk_id": "c9cafec69935062e79a9",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Fighter",
+        "cosine_distance": 0.61941,
+        "is_hit": true
       }
     ]
   },
@@ -120,8 +164,17 @@
     "expected_entity": "Blinded",
     "expected_class": null,
     "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Blinded"
+    ],
+    "matched_content_types": [
+      "condition"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.2,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -131,42 +184,6 @@
         "class_name": null,
         "cosine_distance": 0.321823,
         "is_hit": true
-      },
-      {
-        "rank": 2,
-        "chunk_id": "e682b7b581ffa75cfbc2",
-        "content_type": "rule",
-        "entity_name": "Blindsight",
-        "class_name": null,
-        "cosine_distance": 0.4437,
-        "is_hit": false
-      },
-      {
-        "rank": 3,
-        "chunk_id": "1c88e98cee380003c59e",
-        "content_type": "spell",
-        "entity_name": "Blur",
-        "class_name": null,
-        "cosine_distance": 0.446368,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "13619617dcae6473dcff",
-        "content_type": "condition",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.528073,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "dd1a9a718b87a1a19089",
-        "content_type": "spell",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.529706,
-        "is_hit": false
       }
     ]
   },
@@ -177,8 +194,17 @@
     "expected_entity": null,
     "expected_class": null,
     "expected_chapter": "Chapter 9",
+    "matched_classes": [],
+    "matched_entities": [
+      "Grappling"
+    ],
+    "matched_content_types": [
+      "rule"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.6,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -186,43 +212,7 @@
         "content_type": "rule",
         "entity_name": "Grappling",
         "class_name": null,
-        "cosine_distance": 0.354509,
-        "is_hit": true
-      },
-      {
-        "rank": 2,
-        "chunk_id": "3a6cb3f5b3e0abceeed2",
-        "content_type": "condition",
-        "entity_name": "Grappled",
-        "class_name": null,
-        "cosine_distance": 0.477072,
-        "is_hit": false
-      },
-      {
-        "rank": 3,
-        "chunk_id": "ff8b504643ffddd871e0",
-        "content_type": "rule",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.512557,
-        "is_hit": true
-      },
-      {
-        "rank": 4,
-        "chunk_id": "a659c289042be8fc5d8d",
-        "content_type": "rule",
-        "entity_name": "Climbing, Swimming, and Crawling",
-        "class_name": null,
-        "cosine_distance": 0.606334,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "9f4b944baf6fc5f50253",
-        "content_type": "rule",
-        "entity_name": "Using Different Speeds",
-        "class_name": null,
-        "cosine_distance": 0.606543,
+        "cosine_distance": 0.354503,
         "is_hit": true
       }
     ]
@@ -234,8 +224,20 @@
     "expected_entity": "Elf",
     "expected_class": null,
     "expected_chapter": null,
+    "matched_classes": [
+      "Elf"
+    ],
+    "matched_entities": [
+      "Elf",
+      "Languages"
+    ],
+    "matched_content_types": [
+      "race_feature"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 1.0,
+    "precision_at_5": 1.0,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -281,6 +283,51 @@
         "class_name": "Elf",
         "cosine_distance": 0.480235,
         "is_hit": true
+      },
+      {
+        "rank": 6,
+        "chunk_id": "f8b73dfd4e93046f1bb7",
+        "content_type": "race_feature",
+        "entity_name": "Languages",
+        "class_name": null,
+        "cosine_distance": 0.491,
+        "is_hit": false
+      },
+      {
+        "rank": 7,
+        "chunk_id": "2c9fa01a74ef0ed17253",
+        "content_type": "race_feature",
+        "entity_name": "Elf",
+        "class_name": "Elf",
+        "cosine_distance": 0.510666,
+        "is_hit": true
+      },
+      {
+        "rank": 8,
+        "chunk_id": "33dc9b4ecbab2eebc82c",
+        "content_type": "race_feature",
+        "entity_name": "Elf",
+        "class_name": "Elf",
+        "cosine_distance": 0.523383,
+        "is_hit": true
+      },
+      {
+        "rank": 9,
+        "chunk_id": "d185416ca78bf0020591",
+        "content_type": "race_feature",
+        "entity_name": "Elf",
+        "class_name": "Elf",
+        "cosine_distance": 0.524185,
+        "is_hit": true
+      },
+      {
+        "rank": 10,
+        "chunk_id": "0fbcc94678c1f82675c6",
+        "content_type": "race_feature",
+        "entity_name": "Elf",
+        "class_name": "Elf",
+        "cosine_distance": 0.576446,
+        "is_hit": true
       }
     ]
   },
@@ -291,53 +338,26 @@
     "expected_entity": "Cure Wounds",
     "expected_class": null,
     "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Cure Wounds"
+    ],
+    "matched_content_types": [
+      "spell"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.4,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "7b20408e58667eb9c5c1",
-        "content_type": "spell",
-        "entity_name": "Mass Cure Wounds",
-        "class_name": null,
-        "cosine_distance": 0.362581,
-        "is_hit": true
-      },
-      {
-        "rank": 2,
         "chunk_id": "2b08fc30c9b730d7d1a4",
         "content_type": "spell",
         "entity_name": "Cure Wounds",
         "class_name": null,
-        "cosine_distance": 0.402714,
+        "cosine_distance": 0.402729,
         "is_hit": true
-      },
-      {
-        "rank": 3,
-        "chunk_id": "3678cd89f0830723412d",
-        "content_type": "spell",
-        "entity_name": "Inflict Wounds",
-        "class_name": null,
-        "cosine_distance": 0.528554,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "6264d4f8d25c6c4a9833",
-        "content_type": "spell",
-        "entity_name": "Mass Healing Word",
-        "class_name": null,
-        "cosine_distance": 0.540774,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "268907da4c0d4d2ed470",
-        "content_type": "spell",
-        "entity_name": "Mass Heal",
-        "class_name": null,
-        "cosine_distance": 0.554404,
-        "is_hit": false
       }
     ]
   },
@@ -348,8 +368,19 @@
     "expected_entity": "Shield",
     "expected_class": null,
     "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Level",
+      "Shield"
+    ],
+    "matched_content_types": [
+      "narrative",
+      "spell"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.4,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -357,43 +388,16 @@
         "content_type": "spell",
         "entity_name": "Shield",
         "class_name": null,
-        "cosine_distance": 0.481804,
+        "cosine_distance": 0.481778,
         "is_hit": true
       },
       {
         "rank": 2,
-        "chunk_id": "41770bc9474d25cc51d2",
-        "content_type": "spell",
-        "entity_name": "Shield of Faith",
+        "chunk_id": "9c6d223b4ca36646c1ec",
+        "content_type": "narrative",
+        "entity_name": "Level",
         "class_name": null,
-        "cosine_distance": 0.570725,
-        "is_hit": true
-      },
-      {
-        "rank": 3,
-        "chunk_id": "439da8ce73d338440fa7",
-        "content_type": "rule",
-        "entity_name": "Armor and Shields",
-        "class_name": "Armor and Shields",
-        "cosine_distance": 0.592207,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "66f8630597793c7a0b9a",
-        "content_type": "class_feature",
-        "entity_name": null,
-        "class_name": "Fighter",
-        "cosine_distance": 0.607378,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "5a778c5e09ce0d4ef417",
-        "content_type": "class_feature",
-        "entity_name": null,
-        "class_name": "Cleric",
-        "cosine_distance": 0.619035,
+        "cosine_distance": 0.734428,
         "is_hit": false
       }
     ]
@@ -405,8 +409,17 @@
     "expected_entity": "Counterspell",
     "expected_class": null,
     "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Counterspell"
+    ],
+    "matched_content_types": [
+      "spell"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.2,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -414,44 +427,8 @@
         "content_type": "spell",
         "entity_name": "Counterspell",
         "class_name": null,
-        "cosine_distance": 0.410517,
+        "cosine_distance": 0.410549,
         "is_hit": true
-      },
-      {
-        "rank": 2,
-        "chunk_id": "0a886014047ae782a637",
-        "content_type": "spell",
-        "entity_name": "Detect Magic",
-        "class_name": null,
-        "cosine_distance": 0.536975,
-        "is_hit": false
-      },
-      {
-        "rank": 3,
-        "chunk_id": "90aef9e0251d36c25659",
-        "content_type": "rule",
-        "entity_name": "What Is a Spell?",
-        "class_name": "What Is a Spell?",
-        "cosine_distance": 0.551292,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "d87d499c7a730347d176",
-        "content_type": "rule",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.554096,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "7deff5340d8674eb0931",
-        "content_type": "spell",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.554292,
-        "is_hit": false
       }
     ]
   },
@@ -462,8 +439,21 @@
     "expected_entity": "Healing Word",
     "expected_class": null,
     "expected_chapter": null,
+    "matched_classes": [
+      "Time"
+    ],
+    "matched_entities": [
+      "Healing Word",
+      "Time"
+    ],
+    "matched_content_types": [
+      "rule",
+      "spell"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.4,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -471,43 +461,16 @@
         "content_type": "spell",
         "entity_name": "Healing Word",
         "class_name": null,
-        "cosine_distance": 0.36119,
+        "cosine_distance": 0.361191,
         "is_hit": true
       },
       {
         "rank": 2,
-        "chunk_id": "6264d4f8d25c6c4a9833",
-        "content_type": "spell",
-        "entity_name": "Mass Healing Word",
-        "class_name": null,
-        "cosine_distance": 0.36337,
-        "is_hit": true
-      },
-      {
-        "rank": 3,
-        "chunk_id": "f22d7884380fbee3f528",
-        "content_type": "spell",
-        "entity_name": "Prayer of Healing",
-        "class_name": null,
-        "cosine_distance": 0.405123,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "0eb3c0bfbb6aae546a6e",
-        "content_type": "spell",
-        "entity_name": "Heal",
-        "class_name": null,
-        "cosine_distance": 0.462492,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "2b08fc30c9b730d7d1a4",
-        "content_type": "spell",
-        "entity_name": "Cure Wounds",
-        "class_name": null,
-        "cosine_distance": 0.473963,
+        "chunk_id": "acb86be0c839473d1a5e",
+        "content_type": "rule",
+        "entity_name": "Time",
+        "class_name": "Time",
+        "cosine_distance": 0.716782,
         "is_hit": false
       }
     ]
@@ -519,8 +482,17 @@
     "expected_entity": "Magic Missile",
     "expected_class": null,
     "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Magic Missile"
+    ],
+    "matched_content_types": [
+      "spell"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.2,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -528,44 +500,8 @@
         "content_type": "spell",
         "entity_name": "Magic Missile",
         "class_name": null,
-        "cosine_distance": 0.34255,
+        "cosine_distance": 0.342527,
         "is_hit": true
-      },
-      {
-        "rank": 2,
-        "chunk_id": "cea8ef447ee2318c4465",
-        "content_type": "spell",
-        "entity_name": "Shield",
-        "class_name": null,
-        "cosine_distance": 0.465646,
-        "is_hit": false
-      },
-      {
-        "rank": 3,
-        "chunk_id": "a5464aebaadf3a14b8db",
-        "content_type": "spell",
-        "entity_name": "Antimagic Field",
-        "class_name": "Spell Descriptions",
-        "cosine_distance": 0.49741,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "0a886014047ae782a637",
-        "content_type": "spell",
-        "entity_name": "Detect Magic",
-        "class_name": null,
-        "cosine_distance": 0.504946,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "3c1a697f887e275bd8dc",
-        "content_type": "spell",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.511124,
-        "is_hit": false
       }
     ]
   },
@@ -576,8 +512,18 @@
     "expected_entity": "Prone",
     "expected_class": null,
     "expected_chapter": null,
+    "matched_classes": [],
+    "matched_entities": [
+      "Prone",
+      "Restrained"
+    ],
+    "matched_content_types": [
+      "condition"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.2,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -596,33 +542,6 @@
         "class_name": null,
         "cosine_distance": 0.371401,
         "is_hit": false
-      },
-      {
-        "rank": 3,
-        "chunk_id": "4aed06d1770d3b71c1d6",
-        "content_type": "condition",
-        "entity_name": "Unconscious",
-        "class_name": null,
-        "cosine_distance": 0.505238,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "c2afda5db54f3a4f35a9",
-        "content_type": "condition",
-        "entity_name": "Stunned",
-        "class_name": null,
-        "cosine_distance": 0.510733,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "3a6cb3f5b3e0abceeed2",
-        "content_type": "condition",
-        "entity_name": "Grappled",
-        "class_name": null,
-        "cosine_distance": 0.52601,
-        "is_hit": false
       }
     ]
   },
@@ -633,8 +552,19 @@
     "expected_entity": null,
     "expected_class": "Cleric",
     "expected_chapter": null,
+    "matched_classes": [
+      "Cleric"
+    ],
+    "matched_entities": [
+      "Cleric"
+    ],
+    "matched_content_types": [
+      "class_feature"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 1.0,
+    "precision_at_5": 1.0,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -642,7 +572,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Cleric",
-        "cosine_distance": 0.263422,
+        "cosine_distance": 0.26345,
         "is_hit": true
       },
       {
@@ -651,7 +581,7 @@
         "content_type": "class_feature",
         "entity_name": "Cleric",
         "class_name": "Cleric",
-        "cosine_distance": 0.348426,
+        "cosine_distance": 0.348448,
         "is_hit": true
       },
       {
@@ -660,7 +590,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Cleric",
-        "cosine_distance": 0.362572,
+        "cosine_distance": 0.362569,
         "is_hit": true
       },
       {
@@ -669,7 +599,7 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Cleric",
-        "cosine_distance": 0.366338,
+        "cosine_distance": 0.366359,
         "is_hit": true
       },
       {
@@ -678,7 +608,52 @@
         "content_type": "class_feature",
         "entity_name": "Cleric",
         "class_name": "Cleric",
-        "cosine_distance": 0.45005,
+        "cosine_distance": 0.450049,
+        "is_hit": true
+      },
+      {
+        "rank": 6,
+        "chunk_id": "1bd63749799bc29e29b0",
+        "content_type": "class_feature",
+        "entity_name": "Cleric",
+        "class_name": "Cleric",
+        "cosine_distance": 0.491497,
+        "is_hit": true
+      },
+      {
+        "rank": 7,
+        "chunk_id": "7dd9cd5813e4b15e97b8",
+        "content_type": "class_feature",
+        "entity_name": "Cleric",
+        "class_name": "Cleric",
+        "cosine_distance": 0.498606,
+        "is_hit": true
+      },
+      {
+        "rank": 8,
+        "chunk_id": "7e2629bf2e041b6074d4",
+        "content_type": "class_feature",
+        "entity_name": "Cleric",
+        "class_name": "Cleric",
+        "cosine_distance": 0.545913,
+        "is_hit": true
+      },
+      {
+        "rank": 9,
+        "chunk_id": "9caee79f67f4556cde4c",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Cleric",
+        "cosine_distance": 0.558457,
+        "is_hit": true
+      },
+      {
+        "rank": 10,
+        "chunk_id": "5a778c5e09ce0d4ef417",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Cleric",
+        "cosine_distance": 0.566374,
         "is_hit": true
       }
     ]
@@ -690,20 +665,24 @@
     "expected_entity": null,
     "expected_class": "Wizard",
     "expected_chapter": null,
-    "hit_at_1": false,
-    "precision_at_k": 0.6,
+    "matched_classes": [
+      "Wizard"
+    ],
+    "matched_entities": [
+      "Proficiencies",
+      "Wizard"
+    ],
+    "matched_content_types": [
+      "background",
+      "class_feature"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 1.0,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "5a7d6bcca86f3f5f59cc",
-        "content_type": "rule",
-        "entity_name": "Saving Throws",
-        "class_name": "Saving Throws",
-        "cosine_distance": 0.360042,
-        "is_hit": false
-      },
-      {
-        "rank": 2,
         "chunk_id": "78182102f2acc0c27a97",
         "content_type": "class_feature",
         "entity_name": "Wizard",
@@ -712,16 +691,7 @@
         "is_hit": true
       },
       {
-        "rank": 3,
-        "chunk_id": "051feb50fd157d84292a",
-        "content_type": "rule",
-        "entity_name": "Spellcasting Ability",
-        "class_name": null,
-        "cosine_distance": 0.398683,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
+        "rank": 2,
         "chunk_id": "e26aaf56c34c3ad8f606",
         "content_type": "class_feature",
         "entity_name": null,
@@ -730,12 +700,75 @@
         "is_hit": true
       },
       {
-        "rank": 5,
+        "rank": 3,
         "chunk_id": "402f619af62cb92408d8",
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Wizard",
         "cosine_distance": 0.431497,
+        "is_hit": true
+      },
+      {
+        "rank": 4,
+        "chunk_id": "4c4f28efdfe7bb757903",
+        "content_type": "class_feature",
+        "entity_name": "Wizard",
+        "class_name": "Wizard",
+        "cosine_distance": 0.436984,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "60ba3aa70a5c87804c7f",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Wizard",
+        "cosine_distance": 0.437651,
+        "is_hit": true
+      },
+      {
+        "rank": 6,
+        "chunk_id": "ccbb98a077e7479b160c",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Wizard",
+        "cosine_distance": 0.489186,
+        "is_hit": true
+      },
+      {
+        "rank": 7,
+        "chunk_id": "5d52b125da739a917bae",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Wizard",
+        "cosine_distance": 0.502134,
+        "is_hit": true
+      },
+      {
+        "rank": 8,
+        "chunk_id": "273ebc3be5659982aa19",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Wizard",
+        "cosine_distance": 0.507195,
+        "is_hit": true
+      },
+      {
+        "rank": 9,
+        "chunk_id": "b1df0918e43474ad9afc",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Wizard",
+        "cosine_distance": 0.515624,
+        "is_hit": true
+      },
+      {
+        "rank": 10,
+        "chunk_id": "61ca26e6756a7e4356ca",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Wizard",
+        "cosine_distance": 0.517971,
         "is_hit": true
       }
     ]
@@ -747,8 +780,17 @@
     "expected_entity": null,
     "expected_class": null,
     "expected_chapter": "Chapter 9",
+    "matched_classes": [],
+    "matched_entities": [
+      "Two-Weapon Fighting"
+    ],
+    "matched_content_types": [
+      "rule"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.2,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -756,44 +798,8 @@
         "content_type": "rule",
         "entity_name": "Two-Weapon Fighting",
         "class_name": null,
-        "cosine_distance": 0.315431,
+        "cosine_distance": 0.315393,
         "is_hit": true
-      },
-      {
-        "rank": 2,
-        "chunk_id": "c9cafec69935062e79a9",
-        "content_type": "class_feature",
-        "entity_name": null,
-        "class_name": "Fighter",
-        "cosine_distance": 0.390236,
-        "is_hit": false
-      },
-      {
-        "rank": 3,
-        "chunk_id": "042d7ff49c585f29e90f",
-        "content_type": "class_feature",
-        "entity_name": null,
-        "class_name": "Fighter",
-        "cosine_distance": 0.417032,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "72e0957f25087349b70c",
-        "content_type": "class_feature",
-        "entity_name": null,
-        "class_name": "Fighter",
-        "cosine_distance": 0.422425,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "26b3e4df4d0b3b699bfa",
-        "content_type": "rule",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.521331,
-        "is_hit": false
       }
     ]
   },
@@ -804,8 +810,19 @@
     "expected_entity": null,
     "expected_class": "Rogue",
     "expected_chapter": null,
+    "matched_classes": [
+      "Rogue"
+    ],
+    "matched_entities": [
+      "Rogue"
+    ],
+    "matched_content_types": [
+      "class_feature"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 1.0,
+    "precision_at_5": 1.0,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -813,7 +830,7 @@
         "content_type": "class_feature",
         "entity_name": "Rogue",
         "class_name": "Rogue",
-        "cosine_distance": 0.317093,
+        "cosine_distance": 0.317062,
         "is_hit": true
       },
       {
@@ -822,7 +839,7 @@
         "content_type": "class_feature",
         "entity_name": "Rogue",
         "class_name": "Rogue",
-        "cosine_distance": 0.332603,
+        "cosine_distance": 0.332574,
         "is_hit": true
       },
       {
@@ -831,7 +848,7 @@
         "content_type": "class_feature",
         "entity_name": "Rogue",
         "class_name": "Rogue",
-        "cosine_distance": 0.411611,
+        "cosine_distance": 0.411612,
         "is_hit": true
       },
       {
@@ -840,7 +857,7 @@
         "content_type": "class_feature",
         "entity_name": "Rogue",
         "class_name": "Rogue",
-        "cosine_distance": 0.429282,
+        "cosine_distance": 0.42926,
         "is_hit": true
       },
       {
@@ -849,7 +866,52 @@
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Rogue",
-        "cosine_distance": 0.443563,
+        "cosine_distance": 0.443519,
+        "is_hit": true
+      },
+      {
+        "rank": 6,
+        "chunk_id": "d59d4c1c66dddac3849f",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Rogue",
+        "cosine_distance": 0.459254,
+        "is_hit": true
+      },
+      {
+        "rank": 7,
+        "chunk_id": "fe019f9f99e7b696149a",
+        "content_type": "class_feature",
+        "entity_name": "Rogue",
+        "class_name": "Rogue",
+        "cosine_distance": 0.459385,
+        "is_hit": true
+      },
+      {
+        "rank": 8,
+        "chunk_id": "95ee932463d25936bc0a",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Rogue",
+        "cosine_distance": 0.485697,
+        "is_hit": true
+      },
+      {
+        "rank": 9,
+        "chunk_id": "1ef0e9ac5967b0cfb1a0",
+        "content_type": "class_feature",
+        "entity_name": "Rogue",
+        "class_name": "Rogue",
+        "cosine_distance": 0.492476,
+        "is_hit": true
+      },
+      {
+        "rank": 10,
+        "chunk_id": "984d25cbc9a9db87ff9c",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Rogue",
+        "cosine_distance": 0.496072,
         "is_hit": true
       }
     ]
@@ -861,53 +923,37 @@
     "expected_entity": "Dwarf",
     "expected_class": null,
     "expected_chapter": null,
-    "hit_at_1": false,
-    "precision_at_k": 0.4,
+    "matched_classes": [
+      "Dwarf"
+    ],
+    "matched_entities": [
+      "Dwarf"
+    ],
+    "matched_content_types": [
+      "race_feature"
+    ],
+    "hit_at_1": true,
+    "precision_at_5": 0.4,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "0fbcc94678c1f82675c6",
+        "chunk_id": "fa009ed4110bb6e7666d",
         "content_type": "race_feature",
-        "entity_name": "Elf",
-        "class_name": "Elf",
-        "cosine_distance": 0.323011,
-        "is_hit": false
+        "entity_name": "Dwarf",
+        "class_name": "Dwarf",
+        "cosine_distance": 0.426928,
+        "is_hit": true
       },
       {
         "rank": 2,
-        "chunk_id": "de685b6f5e4314a3cdfb",
+        "chunk_id": "72def097303727545080",
         "content_type": "race_feature",
-        "entity_name": "Hill Dwarf",
-        "class_name": "Elf",
-        "cosine_distance": 0.33626,
+        "entity_name": "Dwarf",
+        "class_name": "Dwarf",
+        "cosine_distance": 0.488947,
         "is_hit": true
-      },
-      {
-        "rank": 3,
-        "chunk_id": "65e160b2301db23ecd2c",
-        "content_type": "narrative",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.341889,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "658cfa77b5797bcc894a",
-        "content_type": "race_feature",
-        "entity_name": "Mountain Dwarf",
-        "class_name": "Elf",
-        "cosine_distance": 0.358541,
-        "is_hit": true
-      },
-      {
-        "rank": 5,
-        "chunk_id": "d197b45958d07360ce38",
-        "content_type": "race_feature",
-        "entity_name": "High Elf",
-        "class_name": "Elf",
-        "cosine_distance": 0.406569,
-        "is_hit": false
       }
     ]
   },
@@ -918,8 +964,17 @@
     "expected_entity": null,
     "expected_class": null,
     "expected_chapter": "Chapter 9",
+    "matched_classes": [],
+    "matched_entities": [
+      "Opportunity Attacks"
+    ],
+    "matched_content_types": [
+      "rule"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.4,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -927,44 +982,8 @@
         "content_type": "rule",
         "entity_name": "Opportunity Attacks",
         "class_name": null,
-        "cosine_distance": 0.274114,
+        "cosine_distance": 0.274149,
         "is_hit": true
-      },
-      {
-        "rank": 2,
-        "chunk_id": "367aff6a5cec57f0ff7e",
-        "content_type": "condition",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.514491,
-        "is_hit": false
-      },
-      {
-        "rank": 3,
-        "chunk_id": "98b0b48f57bfa8d232ff",
-        "content_type": "rule",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.519934,
-        "is_hit": true
-      },
-      {
-        "rank": 4,
-        "chunk_id": "b309def1b729f5633089",
-        "content_type": "rule",
-        "entity_name": "Noticing Threats",
-        "class_name": null,
-        "cosine_distance": 0.549496,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "51fd82e5617ad3184f5c",
-        "content_type": "class_feature",
-        "entity_name": "Rogue",
-        "class_name": "Rogue",
-        "cosine_distance": 0.561234,
-        "is_hit": false
       }
     ]
   },
@@ -975,8 +994,21 @@
     "expected_entity": "Paralyzed",
     "expected_class": null,
     "expected_chapter": null,
+    "matched_classes": [
+      "Saving Throws"
+    ],
+    "matched_entities": [
+      "Paralyzed",
+      "Saving Throws"
+    ],
+    "matched_content_types": [
+      "condition",
+      "rule"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.2,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -984,7 +1016,7 @@
         "content_type": "condition",
         "entity_name": "Paralyzed",
         "class_name": null,
-        "cosine_distance": 0.358461,
+        "cosine_distance": 0.358562,
         "is_hit": true
       },
       {
@@ -993,34 +1025,7 @@
         "content_type": "rule",
         "entity_name": "Saving Throws",
         "class_name": "Saving Throws",
-        "cosine_distance": 0.479013,
-        "is_hit": false
-      },
-      {
-        "rank": 3,
-        "chunk_id": "f3ad7901a7d8c5a25bb9",
-        "content_type": "rule",
-        "entity_name": "Death Saving Throws",
-        "class_name": null,
-        "cosine_distance": 0.495362,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "9cb33bd1add8b3be47cd",
-        "content_type": "rule",
-        "entity_name": "Stabilizing a Creature",
-        "class_name": null,
-        "cosine_distance": 0.517194,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "dd1a9a718b87a1a19089",
-        "content_type": "spell",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.531224,
+        "cosine_distance": 0.47898,
         "is_hit": false
       }
     ]
@@ -1032,8 +1037,19 @@
     "expected_entity": null,
     "expected_class": null,
     "expected_chapter": "Chapter 6",
+    "matched_classes": [
+      "Multiclassing"
+    ],
+    "matched_entities": [
+      "Multiclassing"
+    ],
+    "matched_content_types": [
+      "rule"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.6,
+    "precision_at_5": 0.2,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -1041,44 +1057,8 @@
         "content_type": "rule",
         "entity_name": "Multiclassing",
         "class_name": "Multiclassing",
-        "cosine_distance": 0.351489,
+        "cosine_distance": 0.351488,
         "is_hit": true
-      },
-      {
-        "rank": 2,
-        "chunk_id": "2219dc879a9e16a76303",
-        "content_type": "rule",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.510994,
-        "is_hit": true
-      },
-      {
-        "rank": 3,
-        "chunk_id": "2f4cbf7427a10163ee61",
-        "content_type": "class_feature",
-        "entity_name": "Cleric",
-        "class_name": "Cleric",
-        "cosine_distance": 0.557648,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "d39dc9f2f657d5d9a66b",
-        "content_type": "rule",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.587184,
-        "is_hit": true
-      },
-      {
-        "rank": 5,
-        "chunk_id": "4e8db6cdddb48d3e5dcb",
-        "content_type": "narrative",
-        "entity_name": null,
-        "class_name": null,
-        "cosine_distance": 0.589842,
-        "is_hit": false
       }
     ]
   },
@@ -1089,8 +1069,21 @@
     "expected_entity": null,
     "expected_class": "Fighter",
     "expected_chapter": null,
+    "matched_classes": [
+      "Fighter"
+    ],
+    "matched_entities": [
+      "Equipment",
+      "Fighter"
+    ],
+    "matched_content_types": [
+      "background",
+      "class_feature"
+    ],
     "hit_at_1": true,
-    "precision_at_k": 0.6,
+    "precision_at_5": 0.8,
+    "mrr": 1.0,
+    "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
@@ -1098,43 +1091,88 @@
         "content_type": "class_feature",
         "entity_name": "Fighter",
         "class_name": "Fighter",
-        "cosine_distance": 0.394943,
+        "cosine_distance": 0.395052,
         "is_hit": true
       },
       {
         "rank": 2,
-        "chunk_id": "d62e406b87d864802953",
-        "content_type": "rule",
-        "entity_name": "Starting Equipment",
-        "class_name": "Starting Equipment",
-        "cosine_distance": 0.450998,
-        "is_hit": false
-      },
-      {
-        "rank": 3,
         "chunk_id": "4004c51caa5a907dbabb",
         "content_type": "class_feature",
         "entity_name": "Fighter",
         "class_name": "Fighter",
-        "cosine_distance": 0.464554,
+        "cosine_distance": 0.464646,
         "is_hit": true
       },
       {
-        "rank": 4,
+        "rank": 3,
         "chunk_id": "630c75c35f0616562e50",
         "content_type": "background",
         "entity_name": "Equipment",
         "class_name": null,
-        "cosine_distance": 0.46517,
+        "cosine_distance": 0.465147,
         "is_hit": false
       },
       {
-        "rank": 5,
+        "rank": 4,
         "chunk_id": "730fbda16ecfc77bf958",
         "content_type": "class_feature",
         "entity_name": null,
         "class_name": "Fighter",
-        "cosine_distance": 0.496673,
+        "cosine_distance": 0.496679,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "2b4c57a76ef1634adb30",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Fighter",
+        "cosine_distance": 0.511348,
+        "is_hit": true
+      },
+      {
+        "rank": 6,
+        "chunk_id": "94999434faafe8cea774",
+        "content_type": "class_feature",
+        "entity_name": "Fighter",
+        "class_name": "Fighter",
+        "cosine_distance": 0.52702,
+        "is_hit": true
+      },
+      {
+        "rank": 7,
+        "chunk_id": "7c3c1bbeea66da9caa3b",
+        "content_type": "class_feature",
+        "entity_name": "Fighter",
+        "class_name": "Fighter",
+        "cosine_distance": 0.553013,
+        "is_hit": true
+      },
+      {
+        "rank": 8,
+        "chunk_id": "72e0957f25087349b70c",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Fighter",
+        "cosine_distance": 0.588807,
+        "is_hit": true
+      },
+      {
+        "rank": 9,
+        "chunk_id": "818901ea1b729567ec56",
+        "content_type": "class_feature",
+        "entity_name": null,
+        "class_name": "Fighter",
+        "cosine_distance": 0.636163,
+        "is_hit": true
+      },
+      {
+        "rank": 10,
+        "chunk_id": "4b0e4f76fa19387e2c7c",
+        "content_type": "class_feature",
+        "entity_name": "Fighter",
+        "class_name": "Fighter",
+        "cosine_distance": 0.638322,
         "is_hit": true
       }
     ]

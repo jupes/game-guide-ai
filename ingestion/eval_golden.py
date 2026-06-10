@@ -421,7 +421,8 @@ def load_vocabulary(
         # name → {ctype: count} → ctype with highest count
         agg: dict[str, dict[str, int]] = {}
         for name, ctype, n in rows:
-            agg.setdefault(name, {})[ctype] = agg[name].get(ctype, 0) + n
+            inner = agg.setdefault(name, {})
+            inner[ctype] = inner.get(ctype, 0) + n
         return {name: max(cts, key=cts.__getitem__) for name, cts in agg.items() if name}
 
     class_to_ctype = _pick_majority(class_rows)
