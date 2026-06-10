@@ -29,6 +29,20 @@ from pathlib import Path
 import psycopg
 
 # ---------------------------------------------------------------------------
+# Load .env from repo root (same pattern as eval_golden.py) so OPENAI_API_KEY /
+# DATABASE_URL are available without a manual export.
+# ---------------------------------------------------------------------------
+
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+if _ENV_PATH.exists():
+    for _line in _ENV_PATH.read_text().splitlines():
+        _line = _line.strip()
+        if not _line or _line.startswith("#") or "=" not in _line:
+            continue
+        _k, _, _v = _line.partition("=")
+        os.environ.setdefault(_k.strip(), _v.strip())
+
+# ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
 

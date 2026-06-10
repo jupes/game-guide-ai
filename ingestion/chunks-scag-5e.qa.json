@@ -1,0 +1,21 @@
+{
+  "source": "chunks-scag-5e.jsonl",
+  "total": 699,
+  "clean": 691,
+  "quarantined": 8,
+  "pass_rate": 0.9886,
+  "reasons": {
+    "bad_entity": 7,
+    "low_alpha": 1
+  },
+  "samples": {
+    "bad_entity": [
+      "N 0 R T\nQ\nt t 1 ti\nf\n1 2 3 4 5 6 7\nGoDs OF CRAFT\nDumathoin , the Keeper of Secre",
+      "N 0 Q R\nE-\n1 2 3 4 5 6 7\nw\n=\nsuch as Baldur's Gate and Waterdeep to the barbaria",
+      "Short in stature with tan sk in and dark hair, the Arkai-\nuns dwell primarily in"
+    ],
+    "low_alpha": [
+      "I Il L\n8 9 0 10 50 100"
+    ]
+  }
+}

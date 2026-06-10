@@ -1,0 +1,9 @@
+{
+  "source": "chunks-eepc-5e.jsonl",
+  "total": 162,
+  "clean": 162,
+  "quarantined": 0,
+  "pass_rate": 1.0,
+  "reasons": {},
+  "samples": {}
+}

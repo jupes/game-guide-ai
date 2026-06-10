@@ -1,0 +1,23 @@
+{
+  "source": "chunks-ravnica-5e.jsonl",
+  "total": 732,
+  "clean": 711,
+  "quarantined": 21,
+  "pass_rate": 0.9713,
+  "reasons": {
+    "bad_entity": 15,
+    "low_alpha": 6
+  },
+  "samples": {
+    "low_alpha": [
+      "INDEX OF STAT BLOCKS -\nAnarch ..................................................",
+      "....................................................... 195 Master of Cruelties ",
+      "Frontline Medic ........................................ 231\nGalvanic Blastseeke"
+    ],
+    "bad_entity": [
+      "__j\nTHINGS THEIR\nD OING\nCLEARING\nD OING WHAT?\nWHAT?\nEDIFICES\nCIVILIZATION\nTr\nSO\n",
+      "ME ?\nTO\nl\nJ\nI\nl\nSOCIETY AND\nCOMMUNITY\nAND\nOWN\nWHAT'S YO UR\nA\n·\" I COMPREHENSIVE\n",
+      "Forenzad, Gerava, Gharti, Golozar, Gostok, Grezar,\nHelsk,javya, Karlaus, Kirescu"
+    ]
+  }
+}

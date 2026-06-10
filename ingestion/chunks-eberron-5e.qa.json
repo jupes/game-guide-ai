@@ -1,0 +1,22 @@
+{
+  "source": "chunks-eberron-5e.jsonl",
+  "total": 1070,
+  "clean": 1065,
+  "quarantined": 5,
+  "pass_rate": 0.9953,
+  "reasons": {
+    "bad_entity": 3,
+    "low_alpha": 2
+  },
+  "samples": {
+    "low_alpha": [
+      ". .\n.\n· ­ · ·:·. ; ® .1 .. , . ,\nf l i\nt\n.-.-,. ...",
+      "I I\nf\nl_ l_l_I\n1_ 1_1_ 1"
+    ],
+    "bad_entity": [
+      "GHOST OF PFIN\"GSTON NEZZE_!-EC.!!_\nWhen the characters decide to leave the Daask",
+      "gation) skill checks for the next 24 hours.",
+      "!SUCORA Qu o _R_ I\nTsucora quori are nightmarish creatures. Their head­\nless tor"
+    ]
+  }
+}

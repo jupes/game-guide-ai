@@ -1,0 +1,21 @@
+{
+  "source": "chunks-tortle-5e.jsonl",
+  "total": 97,
+  "clean": 90,
+  "quarantined": 7,
+  "pass_rate": 0.9278,
+  "reasons": {
+    "low_alpha": 6,
+    "bad_entity": 1
+  },
+  "samples": {
+    "low_alpha": [
+      "Hit Points\n75 (10d10 + 20)",
+      "STR DEX CON INT WIS CHA\n15 (+2) 14 (+2) 14 (+2) 4 (–3) 10 (+0) 7 (–2)",
+      "STR DEX CON INT WIS CHA\n12 (+1) 10 (+0) 16 (+3) 9 (–1) 14 (+2) 11 (+0)"
+    ],
+    "bad_entity": [
+      "ce.\nrt\ne\nk.\nmudgraw mudgraw\nTHE TORTLE PACKAGE\n25\nk:L]DUGVRIWKH&RDVW//&3HUPLVVLR"
+    ]
+  }
+}

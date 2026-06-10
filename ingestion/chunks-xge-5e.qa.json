@@ -1,0 +1,23 @@
+{
+  "source": "chunks-xge-5e.jsonl",
+  "total": 762,
+  "clean": 743,
+  "quarantined": 19,
+  "pass_rate": 0.9751,
+  "reasons": {
+    "bad_entity": 13,
+    "low_alpha": 6
+  },
+  "samples": {
+    "bad_entity": [
+      "In vestigation and Perception . You gain additional in -\nsight when l ooking for",
+      "You can restore 10 hit points to a damaged ob-\nRepair.\nject for each hour of wor",
+      "Woodcarver's tools a ll ow you to craft intricate objects\nfr om wood, such as wo"
+    ],
+    "low_alpha": [
+      "MULTIPLE MONSTERS: lST-STH LEVEL\nRating·-------\n------ ---...hallenge\nCharacter\n",
+      "MULTIPLE MONSTERS: 6TH-10TH LEVEL\n------------Challenge Rating\nCharacter\nLevel 1",
+      "MULTIPLE MONSTERS: llTH-lSTH LEVEL\n----- -- -------\\.hall enge\nCharacter\n7 8\nLev"
+    ]
+  }
+}
