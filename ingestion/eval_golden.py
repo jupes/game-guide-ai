@@ -552,6 +552,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate retrieval quality against golden queries")
     parser.add_argument("--mode", choices=["vector", "hybrid"], default="hybrid",
                         help="Retrieval mode: vector (cosine only) or hybrid (vector + FTS via RRF)")
+    parser.add_argument("--rerank", action="store_true",
+                        help="Rerank prose-category results with a cross-encoder (bo4)")
+    parser.add_argument("--rerank-topk", type=int, default=10,
+                        help="How many top results to rerank (default 10; 5 halves latency)")
     args = parser.parse_args()
 
     dsn = os.environ.get("DATABASE_URL", DEFAULT_DSN)
@@ -571,7 +575,18 @@ def main() -> None:
 
     # Pull entity vocabulary from the corpus for query-time hint extraction.
     known_classes, known_entities, entity_to_ctype, class_to_ctype = load_vocabulary(conn)
-    print(f"Vocab loaded: {len(known_classes)} classes, {len(known_entities)} entities\n")
+    print(f"Vocab loaded: {len(known_classes)} classes, {len(known_entities)} entities")
+
+    # Optional cross-encoder reranker (bo4), content-type gated.
+    reranker = None
+    rerank_count = 0
+    rerank_fixed: dict[str, int] = {}   # category → misses the rerank fixed
+    rerank_broke: dict[str, int] = {}   # category → hits the rerank broke
+    if args.rerank:
+        from rerank import CrossEncoderReranker, should_rerank
+        reranker = CrossEncoderReranker()
+        print(f"Reranker: ON (gated; top-{args.rerank_topk})")
+    print()
 
     total_hit_at_1 = 0
     total_precision_at_5 = 0.0
@@ -644,6 +659,27 @@ def main() -> None:
             })
             continue
 
+        # Optional gated rerank (bo4): only for prose-like queries. Reranks on
+        # FULL chunk text (RetrievedChunk carries only a 120-char preview, so we
+        # fetch text by id — one batched query) to match the research spike.
+        if reranker is not None and chunks and should_rerank(match_ctypes):
+            k = args.rerank_topk
+            head = chunks[:k]
+            baseline_hit = is_hit(head[0], golden)
+            ids = [c.chunk_id for c in head]
+            with conn.cursor() as cur:
+                cur.execute("SELECT chunk_id, text FROM dnd.chunks WHERE chunk_id = ANY(%s)", (ids,))
+                tmap = dict(cur.fetchall())
+            texts = [tmap.get(c.chunk_id, c.text_preview) for c in head]
+            order = reranker.rerank(golden.question, texts)
+            chunks = [head[i] for i in order] + chunks[k:]
+            rerank_count += 1
+            reranked_hit = is_hit(chunks[0], golden)
+            if not baseline_hit and reranked_hit:
+                rerank_fixed[golden.category] = rerank_fixed.get(golden.category, 0) + 1
+            elif baseline_hit and not reranked_hit:
+                rerank_broke[golden.category] = rerank_broke.get(golden.category, 0) + 1
+
         # Score
         hits = [is_hit(c, golden) for c in chunks]
         metrics = compute_metrics(hits)
@@ -711,6 +747,16 @@ def main() -> None:
     print(f"  Precision@{PRECISION_K}:   {total_precision_at_5/n_pos:.1%}  (avg across queries)")
     print(f"  MRR:          {total_mrr/n_pos:.3f}  (avg across queries; 1.0 = perfect rank-1)")
     print(f"  Recall@{TOP_K}:    {total_recall_at_10}/{n_pos}  ({total_recall_at_10/n_pos:.1%})")
+    if reranker is not None:
+        tot_fixed = sum(rerank_fixed.values())
+        tot_broke = sum(rerank_broke.values())
+        print("-" * 72)
+        print(f"RERANK (gated): reranked {rerank_count}/{n_pos} queries  |  "
+              f"fixed {tot_fixed}  broke {tot_broke}  net {tot_fixed - tot_broke:+d}")
+        cats = sorted(set(rerank_fixed) | set(rerank_broke))
+        for cat in cats:
+            f, b = rerank_fixed.get(cat, 0), rerank_broke.get(cat, 0)
+            print(f"    {cat:14s} fixed {f}  broke {b}  ({f - b:+d})")
     print("-" * 72)
     print("BY CATEGORY")
     print(f"  {'category':16s} {'n':>3s}  {'Hit@1':>7s}  {'P@5':>6s}  {'MRR':>6s}  {'R@10':>6s}")
