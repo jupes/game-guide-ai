@@ -530,6 +530,34 @@ def is_statblock_anchor(text: str) -> bool:
     return _STATBLOCK_ANCHOR_RE.search(text) is not None
 
 
+# A stat-block type line: a size word + a creature type + (usually) an alignment.
+# OCR sometimes fuses the size into the type ("Largemonstrosity"), so the size
+# word is allowed to butt against the type. Requires BOTH a size and a type so a
+# bare monster name never matches.
+_TYPE_LINE_RE = re.compile(
+    r"\b(tiny|small|medium|large|huge|gargantuan)\s*"
+    r"(aberration|beast|celestial|construct|dragon|elemental|fey|fiend|giant"
+    r"|humanoid|monstrosity|ooze|plant|undead|swarm)",
+    re.IGNORECASE,
+)
+
+
+def is_type_line(text: str) -> bool:
+    """True for a monster stat-block type/alignment line (e.g. 'Large
+    monstrosity, neutral evil') — skipped when picking the entity name."""
+    return _TYPE_LINE_RE.search(text) is not None
+
+
+# Bare size words and stat-block field labels that sometimes survive as headings
+# on OCR'd pages — never a monster name.
+_STAT_FIELD_WORDS: frozenset[str] = frozenset({
+    "tiny", "small", "medium", "large", "huge", "gargantuan",
+    "actions", "reactions", "hit", "hit points", "speed", "skills", "senses",
+    "languages", "challenge", "traits", "damage", "armor class", "saving throws",
+    "legendary actions", "str", "dex", "con", "int", "wis", "cha",
+})
+
+
 def classify_content_type(heading: str, body: str) -> str:
     """
     Classify a supplement chunk by textual signature. Order matters — the
@@ -590,10 +618,28 @@ def extract_supplement_chunks(
     cur_lines: list[str] = []
     cur_start: tuple[int, int] | None = None
 
+    # Recent heading lines (bold/caps), kept so a stat-block anchor can recover
+    # its monster name: on OCR'd books the name AND the type line are both bold
+    # headings, so the name never lands in cur_lines — it must be recovered from
+    # the heading stream, skipping the type line.
+    recent_headings: list[LineItem] = []
+
     def is_heading(li: LineItem) -> bool:
         if li.bold and 3 <= len(li.text) <= 60 and any(c.isalpha() for c in li.text):
             return True
         return is_caps_heading(li.text, li.size, heading_min)
+
+    def recover_statblock_name() -> str | None:
+        """Most-recent heading that isn't a type line or a stat-block field
+        label — the monster name."""
+        for h in reversed(recent_headings):
+            t = h.text.strip()
+            low = t.lower().rstrip(".")
+            if is_type_line(t) or low in _STAT_FIELD_WORDS:
+                continue
+            if any(c.isalpha() for c in t) and len(t) <= 50:
+                return t
+        return None
 
     def flush(end_page: int) -> None:
         nonlocal cur_ctype, cur_entity, cur_lines, cur_start
@@ -617,15 +663,32 @@ def extract_supplement_chunks(
         cur_ctype, cur_entity, cur_lines, cur_start = None, None, [], None
 
     def open_anchored(li: LineItem, ctype: str) -> None:
-        # The name is the last body line of the current chunk (the line just
-        # above the anchor). Pull it out, flush the rest, open a typed chunk.
+        # Open a typed chunk. Spell/feat names are non-bold and sit in cur_lines
+        # (pop the line above the anchor). Monster names are bold headings that
+        # never reached cur_lines — recover them from the heading stream, and
+        # fold the type line into the body.
         nonlocal cur_ctype, cur_entity, cur_lines, cur_start
-        name = cur_lines.pop() if cur_lines else cur_entity
+        type_line_text: str | None = None
+        if ctype == "monster":
+            name = recover_statblock_name()
+            if name is None:
+                # Fallback: the line above the anchor, but if that's the type
+                # line, step up to the prior line (the name).
+                cand = cur_lines.pop() if cur_lines else cur_entity
+                if cand and is_type_line(cand) and cur_entity and not is_type_line(cur_entity):
+                    type_line_text, name = cand, cur_entity
+                else:
+                    name = cand
+            elif cur_entity and is_type_line(cur_entity):
+                type_line_text = cur_entity
+        else:
+            name = cur_lines.pop() if cur_lines else cur_entity
         flush(li.page)
+        recent_headings.clear()   # consumed — don't let this name bleed to the next block
         cur_ctype = ctype
         cur_entity = name or "(unknown)"
         cur_start = (li.page, li.col)
-        cur_lines = [li.text]
+        cur_lines = ([type_line_text] if type_line_text else []) + [li.text]
 
     for li in stream:
         if li.page < first_page or li.size < min_body:
@@ -638,6 +701,8 @@ def extract_supplement_chunks(
             open_anchored(li, "monster")
         elif is_heading(li):
             flush(li.page)
+            recent_headings.append(li)
+            del recent_headings[:-6]   # keep the last 6
             cur_ctype = None
             cur_entity = li.text
             cur_start = (li.page, li.col)

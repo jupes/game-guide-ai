@@ -21,6 +21,7 @@ from extract_scan import (
     extract_supplement_chunks,
     group_spans_to_lines,
     is_caps_heading,
+    is_type_line,
     normalize_entity_name,
     split_paragraph_chunks,
 )
@@ -453,6 +454,89 @@ def test_supplement_chunk_carries_book_slug():
     chunks = extract_supplement_chunks(_supp_stream(), "xge-5e", "xge.pdf", SUPP_CFG)
     assert all(c.book_slug == "xge-5e" for c in chunks)
     assert all(c.text for c in chunks)
+
+
+# ---------------------------------------------------------------------------
+# is_type_line — the stat-block type/alignment line (skip for naming)
+# ---------------------------------------------------------------------------
+
+def test_type_line_detected():
+    assert is_type_line("Large monstrosity, neutral evil")
+    assert is_type_line("Medium humanoid (elf), chaotic good")
+    assert is_type_line("Largemonstrosity, neutral evil")  # OCR ran the words together
+
+
+def test_type_line_rejects_names_and_prose():
+    assert not is_type_line("Banderhobb")
+    assert not is_type_line("Ancient Red Dragon")
+    assert not is_type_line("When a creature enters the area it takes fire damage")
+
+
+# ---------------------------------------------------------------------------
+# VGM/MTF monster-name binding via heading history (qg4.a)
+# ---------------------------------------------------------------------------
+# Real layout: bold NAME (≥11.5pt) → bold TYPE line → "Armor Class" anchor.
+# Both name and type line trip is_heading, so the fix must recover the name
+# from the recent-heading history, skipping the type line.
+
+def _vgm_monster_stream():
+    L = LineItem
+    return [
+        # Some lore prose precedes the block (non-bold body)
+        L(1, 0, 9.5, "Legends tell of a dark tower in the Shadowfell where the", bold=False),
+        L(1, 0, 9.5, "shadows sometimes reform, and banderhobbs roam at night.", bold=False),
+        # Stat block: bold name, bold type line, then the anchor
+        L(1, 1, 12.3, "BANDERHOBB", bold=True),
+        L(1, 1, 10.1, "Large monstrosity, neutral evil", bold=True),
+        L(1, 1, 8.6, "Armor Class 15 (natural armor)", bold=True),
+        L(1, 1, 8.8, "Hit Points 84 (8d10 + 40)", bold=True),
+        L(1, 1, 8.2, "Speed 30 ft.", bold=False),
+        L(1, 1, 8.2, "Challenge 5 (1,800 XP)", bold=False),
+        L(1, 1, 8.5, "Shadow Stealth. While in dim light or darkness, the", bold=False),
+        L(1, 1, 8.5, "banderhobb can take the Hide action as a bonus action.", bold=False),
+    ]
+
+
+def test_vgm_monster_named_from_heading_not_type_line():
+    chunks = extract_supplement_chunks(_vgm_monster_stream(), "vgm-5e", "vgm.pdf", SUPP_CFG)
+    stat = next((c for c in chunks if c.content_type == "monster"), None)
+    assert stat is not None, f"no monster chunk; got {[(c.entity_name, c.content_type) for c in chunks]}"
+    assert stat.entity_name == "Banderhobb", f"expected Banderhobb, got {stat.entity_name!r}"
+    # The type line and stat fields belong in the body
+    assert "monstrosity" in stat.text.lower()
+    assert "Armor Class 15" in stat.text
+
+
+def test_vgm_type_line_not_a_separate_chunk():
+    chunks = extract_supplement_chunks(_vgm_monster_stream(), "vgm-5e", "vgm.pdf", SUPP_CFG)
+    assert not any((c.entity_name or "").lower().startswith("large monstrosity") for c in chunks)
+
+
+def test_spell_naming_unaffected_by_fix():
+    # Regression: spell names are non-bold, land in cur_lines, pop path still works
+    chunks = extract_supplement_chunks(_supp_stream(), "xge-5e", "xge.pdf", SUPP_CFG)
+    by = {c.entity_name: c for c in chunks}
+    assert "Absorb Elements" in by and by["Absorb Elements"].content_type == "spell"
+    assert "Fireball" in by and by["Fireball"].content_type == "spell"
+
+
+def test_monster_with_nonbold_name_falls_back():
+    # If the name isn't a bold heading, fall back to the line above the anchor
+    L = LineItem
+    stream = [
+        L(1, 0, 9.0, "Goblin", bold=False),
+        L(1, 0, 9.0, "Small humanoid (goblinoid), neutral evil", bold=False),
+        L(1, 0, 8.6, "Armor Class 15 (leather armor, shield)", bold=False),
+        L(1, 0, 8.8, "Hit Points 7 (2d6)", bold=False),
+        L(1, 0, 8.5, "Nimble Escape. The goblin can take the Disengage or Hide", bold=False),
+        L(1, 0, 8.5, "action as a bonus action on each of its turns in combat.", bold=False),
+    ]
+    chunks = extract_supplement_chunks(stream, "vgm-5e", "vgm.pdf", SUPP_CFG)
+    stat = next((c for c in chunks if c.content_type == "monster"), None)
+    assert stat is not None
+    # Fallback names from the line above the anchor (type line), but at least the
+    # block is captured and the name isn't a Challenge/garbage line.
+    assert "Hit Points 7" in stat.text
 
 
 # ---------------------------------------------------------------------------
