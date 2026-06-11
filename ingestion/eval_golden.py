@@ -80,6 +80,26 @@ CURATED: list[GoldenQuery] = [
     GoldenQuery("What is a Shield Guardian?",
                 "monster", expected_entity="Shield Guardian", category="cross_book", book="mm"),
 
+    # ── VGM/MTF monsters recovered by the heading-history name fix (qg4) ────
+    # These were absent from the corpus before the fix (names mis-bound to type
+    # lines and quarantined) — guaranteed misses then, answerable now.
+    GoldenQuery("What is a Froghemoth?",
+                "monster", expected_entity="Froghemoth", category="monster", book="vgm"),
+    GoldenQuery("What does a Death Kiss do?",
+                "monster", expected_entity="Death Kiss", category="monster", book="vgm"),
+    GoldenQuery("What is a Babau demon?",
+                "monster", expected_entity="Babau", category="monster", book="vgm"),
+    GoldenQuery("What is a Draegloth?",
+                "monster", expected_entity="Draegloth", category="monster", book="vgm"),
+    GoldenQuery("What is a Flail Snail?",
+                "monster", expected_entity="Flail Snail", category="monster", book="vgm"),
+    GoldenQuery("What is a Meazel?",
+                "monster", expected_entity="Meazel", category="monster", book="mtf"),
+    GoldenQuery("What is an Allip?",
+                "monster", expected_entity="Allip", category="monster", book="mtf"),
+    GoldenQuery("What is a Nupperibo?",
+                "monster", expected_entity="Nupperibo", category="monster", book="mtf"),
+
     # ── Negative queries: NOT in this 12-book corpus. Reported by top-1
     #    distance only (no pass/fail). NOTE: Artificer (TCE) and Druid Wild
     #    Shape (PHB) ARE now in-corpus, so they are no longer negatives.
