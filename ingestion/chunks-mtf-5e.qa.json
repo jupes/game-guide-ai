@@ -1,18 +1,18 @@
 {
   "source": "chunks-mtf-5e.jsonl",
-  "total": 979,
-  "clean": 909,
-  "quarantined": 70,
-  "pass_rate": 0.9285,
+  "total": 1042,
+  "clean": 993,
+  "quarantined": 49,
+  "pass_rate": 0.953,
   "reasons": {
-    "bad_entity": 60,
+    "bad_entity": 39,
     "low_alpha": 34
   },
   "samples": {
     "bad_entity": [
       "PASSION VS. RESTRAIN ..!__\nThe elven personality is a mixture of two opposing\nfo",
       "surface e lv es and drow hold for one another.\nThis hatr ed dates back to when t",
-      "-.--\nArmor Class 13\n+\nHit Points 45 (7d8 14)\nSpeed 30 ft.\nSTR DEX CON\nINT W IS C"
+      ".\nArmor Class 19 (natural armor)\nHit Points 95 (lOdlO + 40)\nSpeed 25 ft .\nSTR DE"
     ],
     "low_alpha": [
       "MEAZEL\nMedium humanoid (meazel), neutral evil\n.\n------------------------~__;_ ~-",

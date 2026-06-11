@@ -1,11 +1,11 @@
 {
   "source": "chunks-vgm-5e.jsonl",
-  "total": 1442,
-  "clean": 1263,
-  "quarantined": 179,
-  "pass_rate": 0.8759,
+  "total": 1515,
+  "clean": 1339,
+  "quarantined": 176,
+  "pass_rate": 0.8838,
   "reasons": {
-    "bad_entity": 157,
+    "bad_entity": 154,
     "low_alpha": 43
   },
   "samples": {
