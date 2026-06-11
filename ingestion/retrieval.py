@@ -378,6 +378,18 @@ def fetch_full_texts(conn: psycopg.Connection, chunk_ids: list[str]) -> dict[str
         return {cid: txt for cid, txt in cur.fetchall()}
 
 
+def fetch_chunk_details(conn: psycopg.Connection, chunk_ids: list[str]) -> dict[str, tuple[str, str]]:
+    """Per-chunk (full_text, book_slug) by id — full text for context, book for citations."""
+    if not chunk_ids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT chunk_id, text, book_slug FROM dnd.chunks WHERE chunk_id = ANY(%s)",
+            (chunk_ids,),
+        )
+        return {cid: (txt, book) for cid, txt, book in cur.fetchall()}
+
+
 # ---------------------------------------------------------------------------
 # Service-facing entry point
 # ---------------------------------------------------------------------------
@@ -388,12 +400,16 @@ class RetrievalResult:
     full_texts: dict[str, str]            # chunk_id → full text
     top1_distance: float | None
     answerable: bool
+    book_by_id: dict[str, str] = field(default_factory=dict)   # chunk_id → book_slug
     matched_classes: set[str] = field(default_factory=set)
     matched_entities: set[str] = field(default_factory=set)
     matched_content_types: set[str] = field(default_factory=set)
 
     def text_for(self, chunk: RetrievedChunk) -> str:
         return self.full_texts.get(chunk.chunk_id, chunk.text_preview)
+
+    def book_for(self, chunk: RetrievedChunk) -> str | None:
+        return self.book_by_id.get(chunk.chunk_id)
 
 
 class RagRetriever:
@@ -417,8 +433,10 @@ class RagRetriever:
                 conn, emb, prompt, k, mode="vector",
                 classes=classes, entities=entities, content_types=ctypes,
             )
-            full = fetch_full_texts(conn, [c.chunk_id for c in chunks])
+            details = fetch_chunk_details(conn, [c.chunk_id for c in chunks])
 
+        full = {cid: t for cid, (t, _b) in details.items()}
+        book_by_id = {cid: b for cid, (_t, b) in details.items()}
         top1 = chunks[0].cosine_distance if chunks else None
         answerable = is_answerable(top1)
 
@@ -432,5 +450,6 @@ class RagRetriever:
 
         return RetrievalResult(
             chunks=chunks, full_texts=full, top1_distance=top1, answerable=answerable,
+            book_by_id=book_by_id,
             matched_classes=classes, matched_entities=entities, matched_content_types=ctypes,
         )
