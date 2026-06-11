@@ -187,6 +187,19 @@ LIMIT %s
 # only ranks chunks tagged with one of those names.
 # ---------------------------------------------------------------------------
 
+# ipl: generic single-word "entities" that the corpus carries as entity_name
+# (OCR noise + stat-block field labels + articles). Filtering on these
+# over-restricts — e.g. "combat encounter" matched the junk entity 'Combat' and
+# excluded the real 'Creating Encounters' chunks. Dropped from query matching so
+# the filter never narrows on a non-specific term.
+_GENERIC_ENTITY_STOPLIST: frozenset[str] = frozenset({
+    "the", "a", "an", "of", "and", "combat", "equipment", "tools", "spells",
+    "spell", "actions", "action", "reactions", "foes", "step", "senses", "damage",
+    "traits", "features", "rules", "options", "challenge", "speed", "languages",
+    "skills", "size", "creatures", "creature", "monsters", "items", "magic",
+})
+
+
 def extract_query_entities(
     text: str,
     known_classes: set[str],
@@ -198,6 +211,9 @@ def extract_query_entities(
     Matching is case-insensitive, with word boundaries to avoid false positives
     (e.g. "Bard" must not match "bombard"). Multi-word names are matched as a
     single phrase. Plurals are handled by allowing a trailing "s"/"es".
+
+    Generic single-word terms (_GENERIC_ENTITY_STOPLIST) are never returned as
+    matches — filtering on them over-restricts retrieval (ipl).
     """
     lowered = text.lower()
     classes: set[str] = set()
@@ -215,9 +231,13 @@ def extract_query_entities(
         return re.search(pattern, lowered) is not None
 
     for name in known_classes:
+        if name.lower() in _GENERIC_ENTITY_STOPLIST:
+            continue
         if _match(name):
             classes.add(name)
     for name in known_entities:
+        if name.lower() in _GENERIC_ENTITY_STOPLIST:
+            continue
         if _match(name):
             entities.add(name)
 
@@ -388,6 +408,43 @@ def extract_query_content_types(
     return ctypes
 
 
+# Tuning constants for the retrieval-quality gates (ipl, koz). Derived from the
+# negative-separation data: positives average ~0.39 top-1 cosine distance,
+# out-of-corpus queries sit at 0.50–0.67.
+IPL_FALLBACK_DISTANCE = 0.42   # filtered top-1 worse than this → the filter likely over-restricted
+# top-1 farther than this → not answerable (refuse). 0.50 sits just below the
+# closest out-of-corpus negative (0.5008) while sparing most positives (avg ~0.40);
+# the separation isn't perfectly clean, so this is the precision/recall knob.
+KOZ_ANSWERABLE_DISTANCE = 0.50
+
+
+def needs_unfiltered_fallback(
+    top1_distance: float | None, had_filters: bool, threshold: float = IPL_FALLBACK_DISTANCE,
+) -> bool:
+    """
+    ipl: True when a *filtered* retrieval looks over-restricted — no result, or a
+    top-1 that's farther than a typical positive — so the caller should retry
+    unfiltered. Only meaningful when filters were applied.
+    """
+    if not had_filters:
+        return False
+    if top1_distance is None:
+        return True
+    return top1_distance > threshold
+
+
+def is_answerable(
+    top1_distance: float | None, threshold: float = KOZ_ANSWERABLE_DISTANCE,
+) -> bool:
+    """
+    koz: True when the corpus plausibly contains an answer — the top-1 chunk is
+    within `threshold` cosine distance. Farther (or empty) → refuse.
+    """
+    if top1_distance is None:
+        return False
+    return top1_distance <= threshold
+
+
 def load_vocabulary(
     conn: psycopg.Connection,
 ) -> tuple[set[str], set[str], dict[str, str], dict[str, str]]:
@@ -466,6 +523,7 @@ def retrieve_top_k(
     classes: set[str] | None = None,
     entities: set[str] | None = None,
     content_types: set[str] | None = None,
+    fallback: bool = False,
 ) -> list[RetrievedChunk]:
     emb_str = str(query_embedding)
     classes = classes or set()
@@ -473,32 +531,36 @@ def retrieve_top_k(
     content_types = content_types or set()
     has_filters = bool(classes or entities or content_types)
 
-    with conn.cursor() as cur:
-        if mode == "hybrid" and not has_filters:
-            cur.execute(_HYBRID_SQL, (emb_str, query_text, k))
-        else:
-            # Hybrid path can't accept filters today (dnd.hybrid_search is filter-free).
-            # The eval report shows hybrid ≡ vector at this corpus size, so we use
-            # filtered vector when entity/content_type hints are present — same
-            # precision either way.
-            sql, params = build_vector_sql(emb_str, k, classes, entities, content_types)
+    def _run(sql: str, params) -> list[RetrievedChunk]:
+        with conn.cursor() as cur:
             cur.execute(sql, params)
-        rows = cur.fetchall()
-    return [
-        RetrievedChunk(
-            chunk_id=r[0],
-            content_type=r[1],
-            entity_name=r[2],
-            class_name=r[3],
-            feature_name=r[4],
-            chapter=r[5],
-            section=r[6],
-            page_start=r[7],
-            text_preview=r[8],
-            cosine_distance=r[9],
-        )
-        for r in rows
-    ]
+            rows = cur.fetchall()
+        return [
+            RetrievedChunk(
+                chunk_id=r[0], content_type=r[1], entity_name=r[2], class_name=r[3],
+                feature_name=r[4], chapter=r[5], section=r[6], page_start=r[7],
+                text_preview=r[8], cosine_distance=r[9],
+            )
+            for r in rows
+        ]
+
+    if mode == "hybrid" and not has_filters:
+        return _run(_HYBRID_SQL, (emb_str, query_text, k))
+
+    # Filtered vector (hybrid_search can't take filters; hybrid ≡ vector here).
+    sql, params = build_vector_sql(emb_str, k, classes, entities, content_types)
+    chunks = _run(sql, params)
+
+    # ipl: if the filter looks over-restricted (no/weak top-1), retry unfiltered.
+    if fallback and has_filters:
+        top1 = chunks[0].cosine_distance if chunks else None
+        if needs_unfiltered_fallback(top1, had_filters=True):
+            unf_sql, unf_params = build_vector_sql(emb_str, k, set(), set(), set())
+            unf = _run(unf_sql, unf_params)
+            # Keep whichever has the closer top-1 (lower cosine distance).
+            if unf and (not chunks or unf[0].cosine_distance < chunks[0].cosine_distance):
+                return unf
+    return chunks
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +638,9 @@ def main() -> None:
                         help="Rerank prose-category results with a cross-encoder (bo4)")
     parser.add_argument("--rerank-topk", type=int, default=10,
                         help="How many top results to rerank (default 10; 5 halves latency)")
+    parser.add_argument("--ipl-fallback", action="store_true",
+                        help="Enable the experimental filter→unfiltered distance fallback "
+                             "(net-harmful in the A/B; the generic-entity stoplist is the real ipl fix)")
     args = parser.parse_args()
 
     dsn = os.environ.get("DATABASE_URL", DEFAULT_DSN)
@@ -617,6 +682,8 @@ def main() -> None:
     by_category: dict[str, list[dict]] = {}
     negative_results: list[tuple[str, float, str]] = []   # (question, top1 dist, top1 entity)
     positive_top1_distances: list[float] = []
+    koz_neg_refused = 0          # negatives correctly refused (not answerable)
+    koz_pos_wrongly_refused = 0  # positives wrongly refused
 
     positives = [g for g in GOLDEN_SET if g.expected_content_type is not None]
     n_pos = len(positives)
@@ -652,7 +719,7 @@ def main() -> None:
         chunks = retrieve_top_k(
             conn, emb, golden.question, TOP_K, mode=args.mode,
             classes=match_classes, entities=match_entities,
-            content_types=match_ctypes,
+            content_types=match_ctypes, fallback=args.ipl_fallback,
         )
 
         score_key = "rrf_score" if args.mode == "hybrid" else "cosine_distance"
@@ -664,6 +731,8 @@ def main() -> None:
             top1 = chunks[0] if chunks else None
             d = top1.cosine_distance if top1 else float("nan")
             ename = (top1.entity_name or top1.class_name or "—") if top1 else "—"
+            if not is_answerable(top1.cosine_distance if top1 else None):
+                koz_neg_refused += 1   # correctly refused an out-of-corpus query
             negative_results.append((golden.question, d, ename))
             print(f"  Top-1: {score_label}={d:.4f}  entity={ename}  "
                   f"type={top1.content_type if top1 else '—'}")
@@ -705,6 +774,8 @@ def main() -> None:
         metrics = compute_metrics(hits)
         if chunks:
             positive_top1_distances.append(chunks[0].cosine_distance)
+            if not is_answerable(chunks[0].cosine_distance):
+                koz_pos_wrongly_refused += 1
 
         total_hit_at_1 += int(metrics["hit_at_1"])
         total_precision_at_5 += metrics["precision_at_5"]
@@ -796,6 +867,12 @@ def main() -> None:
             print(f"  reference: avg top-1 distance on positives = {avg_pos:.4f}")
         for q, d, ename in negative_results:
             print(f"  {d:.4f}  {ename:30.30s}  {q[:50]}")
+    # koz: answerability gate quality at KOZ_ANSWERABLE_DISTANCE
+    print("-" * 72)
+    n_neg = len(negative_results)
+    print(f"ANSWERABILITY GATE (koz, threshold {KOZ_ANSWERABLE_DISTANCE} cosine):")
+    print(f"  negatives correctly refused: {koz_neg_refused}/{n_neg}")
+    print(f"  positives wrongly refused:   {koz_pos_wrongly_refused}/{n_pos}")
     print("=" * 72)
 
     # Save results JSON

@@ -114,6 +114,7 @@ ON CONFLICT (chunk_id) DO UPDATE SET
     part          = EXCLUDED.part,
     chapter       = EXCLUDED.chapter,
     section       = EXCLUDED.section,
+    content_type  = EXCLUDED.content_type,
     entity_name   = EXCLUDED.entity_name,
     class_name    = EXCLUDED.class_name,
     feature_name  = EXCLUDED.feature_name

@@ -17,6 +17,8 @@ from eval_golden import (
     extract_query_content_types,
     build_vector_sql,
     compute_metrics,
+    needs_unfiltered_fallback,
+    is_answerable,
 )
 
 
@@ -86,6 +88,16 @@ def test_no_match_returns_empty():
     )
     assert classes == set(), f"Expected no class match, got {classes}"
     assert entities == set(), f"Expected no entity match, got {entities}"
+
+
+def test_generic_stoplist_entities_dropped():
+    # ipl: generic vocab terms must never become filter entities, even if the
+    # corpus carries them as entity_name (OCR noise / field labels).
+    _, entities = extract_query_entities(
+        "How does a DM build a balanced combat encounter?",
+        KNOWN_CLASSES, KNOWN_ENTITIES | {"Combat", "Equipment", "The"},
+    )
+    assert "Combat" not in entities and "Equipment" not in entities and "The" not in entities
 
 
 def test_multiword_entity_match():
@@ -333,41 +345,56 @@ def test_no_filters_still_unfiltered():
 
 
 # ---------------------------------------------------------------------------
+# ipl — filter fallback decision
+# ---------------------------------------------------------------------------
+
+def test_fallback_when_filtered_top1_weak():
+    # filtered result far away → the filter likely over-restricted → fall back
+    assert needs_unfiltered_fallback(top1_distance=0.55, had_filters=True, threshold=0.42)
+
+
+def test_no_fallback_when_filtered_top1_strong():
+    assert not needs_unfiltered_fallback(top1_distance=0.30, had_filters=True, threshold=0.42)
+
+
+def test_no_fallback_without_filters():
+    # nothing to fall back from
+    assert not needs_unfiltered_fallback(top1_distance=0.90, had_filters=False, threshold=0.42)
+
+
+def test_fallback_when_no_results():
+    # empty filtered result (distance None) → fall back
+    assert needs_unfiltered_fallback(top1_distance=None, had_filters=True, threshold=0.42)
+
+
+# ---------------------------------------------------------------------------
+# koz — answerability gate
+# ---------------------------------------------------------------------------
+
+def test_answerable_when_close():
+    assert is_answerable(top1_distance=0.35, threshold=0.45)
+
+
+def test_not_answerable_when_far():
+    # out-of-corpus query → top-1 far → refuse
+    assert not is_answerable(top1_distance=0.60, threshold=0.45)
+
+
+def test_not_answerable_when_no_results():
+    assert not is_answerable(top1_distance=None, threshold=0.45)
+
+
+def test_answerable_boundary():
+    assert is_answerable(top1_distance=0.45, threshold=0.45)       # <= threshold answerable
+    assert not is_answerable(top1_distance=0.4501, threshold=0.45)
+
+
+# ---------------------------------------------------------------------------
 # Test runner
 # ---------------------------------------------------------------------------
 
 def _run():
-    tests = [
-        test_extracts_class_from_query,
-        test_extracts_entity_from_query,
-        test_extracts_race_entity,
-        test_case_insensitive,
-        test_no_match_returns_empty,
-        test_multiword_entity_match,
-        test_word_boundary_avoids_partial_matches,
-        test_no_filters_returns_unfiltered_sql,
-        test_class_filter_adds_where,
-        test_entity_filter_adds_where,
-        test_class_and_entity_filter_uses_or,
-        test_metrics_all_hits,
-        test_metrics_all_misses,
-        test_mrr_first_hit_at_rank_3,
-        test_mrr_uses_first_hit_only,
-        test_recall_at_10_finds_late_hit,
-        test_metrics_handles_fewer_than_10_results,
-        test_q13_simulation_filter_lifts_to_hit_at_1,
-        test_ctype_from_matched_class,
-        test_ctype_from_matched_spell_entity,
-        test_ctype_from_matched_race_entity,
-        test_ctype_from_matched_condition_entity,
-        test_ctype_from_spell_keyword_no_entity,
-        test_ctype_from_condition_keyword,
-        test_ctype_empty_for_generic_rule_query,
-        test_ctype_multiple_when_query_mixes_signals,
-        test_content_type_filter_alone,
-        test_class_and_content_type_filter_uses_and,
-        test_no_filters_still_unfiltered,
-    ]
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
     for t in tests:
         try:

@@ -720,6 +720,29 @@ def extract_supplement_chunks(
 
     last_page = stream[-1].page if stream else first_page
     flush(last_page)
+    return retag_monster_lore(chunks)
+
+
+def retag_monster_lore(chunks: list[DndChunk]) -> list[DndChunk]:
+    """
+    A monster's lore prose is classified `rule` (it lacks Armor Class/Hit Points),
+    but it shares an entity_name with that monster's `monster` stat block. For a
+    "What is X?" query the lore is the better answer, yet a content_type=monster
+    filter/expectation excludes it. Retag any `rule` chunk to `monster`
+    (section="Lore") when its entity_name also owns a `monster` stat block.
+    """
+    monster_entities = {
+        (c.entity_name or "").lower()
+        for c in chunks
+        if c.content_type == "monster" and c.entity_name
+    }
+    if not monster_entities:
+        return chunks
+    for c in chunks:
+        if (c.content_type == "rule" and c.entity_name
+                and c.entity_name.lower() in monster_entities):
+            c.content_type = "monster"
+            c.section = "Lore"
     return chunks
 
 

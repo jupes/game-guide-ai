@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from extract_scan import (
     BOOK_CONFIGS,
+    DndChunk,
     LineItem,
     classify_content_type,
     extract_dmg_chunks,
@@ -23,6 +24,7 @@ from extract_scan import (
     is_caps_heading,
     is_type_line,
     normalize_entity_name,
+    retag_monster_lore,
     split_paragraph_chunks,
 )
 
@@ -537,6 +539,56 @@ def test_monster_with_nonbold_name_falls_back():
     # Fallback names from the line above the anchor (type line), but at least the
     # block is captured and the name isn't a Challenge/garbage line.
     assert "Hit Points 7" in stat.text
+
+
+# ---------------------------------------------------------------------------
+# retag_monster_lore (nux) — a monster's lore prose should be content_type=monster
+# ---------------------------------------------------------------------------
+
+def _c(entity, ctype, text="some body text with enough words here to pass"):
+    return DndChunk(
+        chunk_id="x", book_slug="vgm-5e", source_file="v.pdf",
+        page_start=1, page_end=1, part=None, chapter=None, section=None,
+        content_type=ctype, entity_name=entity, class_name=None,
+        feature_name=None, text=text,
+    )
+
+
+def test_retag_lore_sharing_entity_with_statblock():
+    chunks = [
+        _c("Froghemoth", "monster", "Armor Class 14 Hit Points 184 ..."),
+        _c("Froghemoth", "rule", "The froghemoth is a monstrous amphibian that lurks ..."),
+    ]
+    out = retag_monster_lore(chunks)
+    assert all(c.content_type == "monster" for c in out if c.entity_name == "Froghemoth")
+    lore = next(c for c in out if "lurks" in c.text)
+    assert lore.content_type == "monster"
+    assert lore.section == "Lore"
+
+
+def test_retag_leaves_unrelated_rule_chunks():
+    chunks = [
+        _c("Froghemoth", "monster", "Armor Class 14 ..."),
+        _c("Grappling", "rule", "When you want to grab a creature you make an attack ..."),
+    ]
+    out = retag_monster_lore(chunks)
+    grap = next(c for c in out if c.entity_name == "Grappling")
+    assert grap.content_type == "rule"  # no matching stat block → unchanged
+
+
+def test_retag_case_insensitive_entity_match():
+    chunks = [
+        _c("Death Kiss", "monster", "Armor Class 16 Hit Points 161 ..."),
+        _c("death kiss", "rule", "A death kiss resembles a beholder but is a ..."),
+    ]
+    out = retag_monster_lore(chunks)
+    assert all(c.content_type == "monster" for c in out)
+
+
+def test_retag_noop_without_statblocks():
+    chunks = [_c("Grappling", "rule"), _c("Hiding", "rule")]
+    out = retag_monster_lore(chunks)
+    assert all(c.content_type == "rule" for c in out)
 
 
 # ---------------------------------------------------------------------------
