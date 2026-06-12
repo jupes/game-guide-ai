@@ -1,0 +1,22 @@
+# Service build context — exclude everything except service/ and the two ingestion modules it imports
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Ingestion scripts + data not needed at service runtime
+ingestion/test_*.py
+ingestion/*.jsonl
+ingestion/*.json
+ingestion/spike_*.py
+ingestion/eval_*.py
+ingestion/gen_*.py
+ingestion/embed.py
+ingestion/extract*.py
+ingestion/ingest_books.py
+ingestion/qa_chunks.py
+
+# Other top-level dirs not needed
+vector-db/
+spikes/
+docs/
+ui/

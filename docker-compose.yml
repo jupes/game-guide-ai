@@ -1,6 +1,13 @@
-# RAG Chat — local stack (Phase 1: vector DB only for now)
-# Image: https://hub.docker.com/r/pgvector/pgvector
-# Extension docs: https://github.com/pgvector/pgvector
+# RAG Chat — full local stack
+# Prereq: .env must contain OPENAI_API_KEY (the DB already holds the vectors)
+#
+# docker compose up          → builds images + starts all three services
+# docker compose up -d       → detached
+# docker compose up vector-db → DB only (for local dev with uv-run service)
+#
+# Images: https://hub.docker.com/r/pgvector/pgvector
+#         https://hub.docker.com/r/oven/bun   (UI build stage)
+#         https://hub.docker.com/_/nginx       (UI serve stage)
 
 services:
   vector-db:
@@ -25,6 +32,30 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  service:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    container_name: rag-chat-service
+    env_file: .env          # loads OPENAI_API_KEY
+    environment:
+      # Override localhost default — service connects to the DB container by name
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_dev_change_me}@vector-db:5432/${POSTGRES_DB:-rag_chat}
+    ports:
+      - "8000:8000"
+    depends_on:
+      vector-db:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: ./ui         # Dockerfile + nginx.conf live in ui/
+    container_name: rag-chat-ui
+    ports:
+      - "5173:80"           # same port as the Vite dev server for muscle memory
+    depends_on:
+      - service
 
 volumes:
   pgvector_data:

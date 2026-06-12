@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Sentence-transformers / torch are NOT installed here — the reranker is lazy-loaded
+# and the service defaults to reranker=None (no ML deps needed at runtime).
+RUN pip install --no-cache-dir fastapi "uvicorn[standard]" openai "psycopg[binary]"
+
+# Copy only what the service imports at runtime
+COPY ingestion/retrieval.py ingestion/retrieval.py
+COPY ingestion/rerank.py   ingestion/rerank.py
+COPY service/              service/
+
+EXPOSE 8000
+CMD ["uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8000"]
