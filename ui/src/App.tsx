@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useChat } from './useChat'
+import { exportChat } from './exportChat'
 import { ChatForm } from './components/ChatForm'
 import { ExchangeView } from './components/ExchangeView'
 import './App.css'
@@ -18,6 +19,15 @@ export default function App() {
       <header>
         <h1>D&amp;D 5e Sage</h1>
         <p className="tagline">Grounded answers from the rulebooks — with citations.</p>
+        <button
+          type="button"
+          className="export-btn"
+          onClick={() => exportChat(exchanges)}
+          disabled={exchanges.length === 0}
+          title="Download conversation as JSON"
+        >
+          Export ↓
+        </button>
       </header>
 
       <main className="exchanges">

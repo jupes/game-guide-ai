@@ -10,9 +10,34 @@
 }
 
 header {
+  position: relative;
   padding: 1.5rem 0 0.75rem;
   border-bottom: 1px solid var(--rule);
   text-align: center;
+}
+
+.export-btn {
+  position: absolute;
+  top: 1.25rem;
+  right: 0;
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  color: var(--ink-dim);
+  font-size: 0.8rem;
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+}
+
+.export-btn:hover:not(:disabled) {
+  border-color: var(--gold-dim);
+  color: var(--gold);
+}
+
+.export-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
 header h1 {
