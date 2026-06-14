@@ -92,6 +92,25 @@ def test_response_schema():
     app.dependency_overrides.clear()
 
 
+def test_chat_resolves_with_static_mount():
+    """POST /chat is not shadowed by a '/' StaticFiles mount (API routes registered first)."""
+    import tempfile
+    from fastapi.staticfiles import StaticFiles
+
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "index.html").write_text("<html>ui</html>")
+        saved_routes = list(app.router.routes)
+        app.mount("/", StaticFiles(directory=tmp, html=True), name="_test_static")
+        try:
+            c = _client(_GROUNDED)
+            r = c.post("/chat", json={"prompt": "test"})
+            assert r.status_code == 200
+            assert r.json()["answerable"] is True
+        finally:
+            app.router.routes[:] = saved_routes
+            app.dependency_overrides.clear()
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

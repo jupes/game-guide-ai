@@ -19,6 +19,21 @@ uv run --with fastapi --with uvicorn --with openai --with "psycopg[binary]" \
 The service loads the corpus vocabulary once at startup; each request is
 independent (stateless).
 
+### Single-process serving (UI + API, no nginx)
+
+Build the UI first, then start uvicorn — it will serve both:
+
+```bash
+cd ui && bun run build      # writes ui/dist/
+cd ..
+uv run --with fastapi --with uvicorn --with openai --with "psycopg[binary]" \
+    uvicorn service.app:app --port 8000
+```
+
+Open **<http://localhost:8000>**. The `ui/dist/` mount fires automatically at startup
+(guarded — skipped when the directory is absent, e.g. inside the Docker service
+container where nginx handles static files instead).
+
 ## Endpoints
 
 ### `POST /chat`

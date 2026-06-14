@@ -13,8 +13,10 @@ Run:
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 
 from .models import ChatRequest, ChatResponse
 from .rag import RagService
@@ -55,3 +57,10 @@ def chat(req: ChatRequest, svc: RagService = Depends(get_service)) -> ChatRespon
         return svc.answer(req.prompt)
     except Exception as exc:  # retrieval/generation failure
         raise HTTPException(status_code=503, detail=f"upstream error: {exc}") from exc
+
+
+# Mount the pre-built UI at "/" — after route decorators so API routes always win.
+# Only active when `cd ui && bun run build` has been run (ui/dist/ must exist).
+_UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
+if _UI_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=_UI_DIST, html=True), name="ui")
