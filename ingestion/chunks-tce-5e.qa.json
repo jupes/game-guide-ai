@@ -1,9 +1,17 @@
 {
   "source": "chunks-tce-5e.jsonl",
-  "total": 630,
-  "clean": 630,
-  "quarantined": 0,
-  "pass_rate": 1.0,
-  "reasons": {},
-  "samples": {}
+  "total": 635,
+  "clean": 632,
+  "quarantined": 3,
+  "pass_rate": 0.9953,
+  "reasons": {
+    "bad_entity": 3
+  },
+  "samples": {
+    "bad_entity": [
+      "C D G 1 R M O N A L I\nL!. E\"-4 AA FG£ .!:..\nc_ o\nJ<\n* V G E + £ J H _!_ U I",
+      "M G I A I E A M\nD .!__!_Q _ H£",
+      "N O B I N T I . G\n0"
+    ]
+  }
 }

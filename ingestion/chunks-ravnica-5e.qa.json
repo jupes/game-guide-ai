@@ -1,11 +1,11 @@
 {
   "source": "chunks-ravnica-5e.jsonl",
-  "total": 762,
-  "clean": 744,
-  "quarantined": 18,
-  "pass_rate": 0.9764,
+  "total": 789,
+  "clean": 716,
+  "quarantined": 73,
+  "pass_rate": 0.9075,
   "reasons": {
-    "bad_entity": 12,
+    "bad_entity": 67,
     "low_alpha": 6
   },
   "samples": {

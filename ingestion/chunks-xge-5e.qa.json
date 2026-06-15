@@ -1,18 +1,18 @@
 {
   "source": "chunks-xge-5e.jsonl",
-  "total": 762,
-  "clean": 743,
-  "quarantined": 19,
-  "pass_rate": 0.9751,
+  "total": 818,
+  "clean": 717,
+  "quarantined": 101,
+  "pass_rate": 0.8765,
   "reasons": {
-    "bad_entity": 13,
-    "low_alpha": 6
+    "bad_entity": 96,
+    "low_alpha": 5
   },
   "samples": {
     "bad_entity": [
-      "In vestigation and Perception . You gain additional in -\nsight when l ooking for",
-      "You can restore 10 hit points to a damaged ob-\nRepair.\nject for each hour of wor",
-      "Woodcarver's tools a ll ow you to craft intricate objects\nfr om wood, such as wo"
+      "U NEA RT H ED A R CA NA\nMuch of the material in this book originally appea r ed ",
+      "P E RSO N AL TO TEMS\nd6 Totem\nA tuft of fur from a so li tary wolf that you be -",
+      "OF THE A N CESTRAL GU A RDIAN FEATURES\nBarbarian\nLev el F eat ure\n3rd Ancestral "
     ],
     "low_alpha": [
       "MULTIPLE MONSTERS: lST-STH LEVEL\nRating·-------\n------ ---...hallenge\nCharacter\n",

@@ -1,22 +1,22 @@
 {
   "source": "chunks-eberron-5e.jsonl",
   "total": 1074,
-  "clean": 1069,
-  "quarantined": 5,
-  "pass_rate": 0.9953,
+  "clean": 1047,
+  "quarantined": 27,
+  "pass_rate": 0.9749,
   "reasons": {
-    "bad_entity": 3,
+    "bad_entity": 25,
     "low_alpha": 2
   },
   "samples": {
+    "bad_entity": [
+      "a band of heroes races to claim the Reaper's\nHeart. If the agents of the Emerald",
+      "the edge given them by the mysterious and rare drag­\nonmarks. Its people harness",
+      "This introduction presents an overview of the world:\nits history, its calendar, "
+    ],
     "low_alpha": [
       ". .\n.\n· ­ · ·:·. ; ® .1 .. , . ,\nf l i\nt\n.-.-,. ...",
       "I I\nf\nl_ l_l_I\n1_ 1_1_ 1"
-    ],
-    "bad_entity": [
-      "GHOST OF PFIN\"GSTON NEZZE_!-EC.!!_\nWhen the characters decide to leave the Daask",
-      "gation) skill checks for the next 24 hours.",
-      "!SUCORA Qu o _R_ I\nTsucora quori are nightmarish creatures. Their head­\nless tor"
     ]
   }
 }

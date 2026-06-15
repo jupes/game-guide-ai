@@ -1,9 +1,17 @@
 {
   "source": "chunks-eepc-5e.jsonl",
   "total": 162,
-  "clean": 162,
-  "quarantined": 0,
-  "pass_rate": 1.0,
-  "reasons": {},
-  "samples": {}
+  "clean": 126,
+  "quarantined": 36,
+  "pass_rate": 0.7778,
+  "reasons": {
+    "bad_entity": 36
+  },
+  "samples": {
+    "bad_entity": [
+      "Merge with Stone. You can cast the\npass without\ntrace spell once with this trait",
+      "Duration: 1 round\nThe spell captures some of the incoming energy,\nlessening its ",
+      "Range: Touch\nComponents: V, S, M (a bit of fur wrapped in a cloth)\nDuration: Con"
+    ]
+  }
 }

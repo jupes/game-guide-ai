@@ -137,12 +137,23 @@ def embed_and_upsert(
     backend: str,
     model: str,
     ollama_url: str,
+    replace_book: bool = False,
 ) -> None:
     chunks = [json.loads(l) for l in chunks_path.read_text(encoding="utf-8").splitlines() if l.strip()]
     total = len(chunks)
     print(f"Chunks to embed: {total}  (backend: {backend}, model: {model})")
 
     with psycopg.connect(dsn) as conn:
+        if replace_book:
+            # Re-extraction changes chunk_ids (idx is extraction-order), so a plain
+            # upsert would ORPHAN the old rows. Delete the JSONL's book_slug(s) first
+            # so the corpus exactly matches the new extraction (no stale chunks).
+            slugs = sorted({c.get("book_slug") for c in chunks if c.get("book_slug")})
+            with conn.cursor() as cur:
+                for slug in slugs:
+                    cur.execute("DELETE FROM dnd.chunks WHERE book_slug = %s", (slug,))
+                    print(f"  replace-book: deleted {cur.rowcount} existing rows for book_slug={slug!r}")
+            conn.commit()
         upserted = 0
         for batch_start in range(0, total, BATCH_SIZE):
             batch = chunks[batch_start : batch_start + BATCH_SIZE]
@@ -187,6 +198,9 @@ def main() -> None:
                         help="Model name (default: text-embedding-3-small for openai, nomic-embed-text for ollama)")
     parser.add_argument("--ollama-url", default=os.environ.get("OLLAMA_URL", DEFAULT_OLLAMA_URL),
                         help="Ollama base URL (ollama backend only)")
+    parser.add_argument("--replace-book", action="store_true",
+                        help="Delete existing rows for the JSONL's book_slug(s) before inserting "
+                             "(prevents orphaned chunks when re-extraction changes chunk_ids)")
     args = parser.parse_args()
 
     if args.model is None:
@@ -200,7 +214,8 @@ def main() -> None:
         print(f"ERROR: chunks file not found: {chunks_path}", file=sys.stderr)
         sys.exit(1)
 
-    embed_and_upsert(chunks_path, args.dsn, args.backend, args.model, args.ollama_url)
+    embed_and_upsert(chunks_path, args.dsn, args.backend, args.model, args.ollama_url,
+                     replace_book=args.replace_book)
 
 
 if __name__ == "__main__":

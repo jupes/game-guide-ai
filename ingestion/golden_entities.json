@@ -1,0 +1,23 @@
+{
+  "_comment": "Canonical entities that MUST extract as correctly-named chunks. Guards the spell-extraction fix (0im) against regression. Checked against the committed chunks-<book>.jsonl by test_golden_entities.py. Spells span every school and a range of levels (cantrip..9th).",
+  "entities": [
+    {"entity": "Fireball",        "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Magic Missile",   "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Counterspell",    "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Wish",            "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Cure Wounds",     "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Healing Word",    "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Shield",          "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Lightning Bolt",  "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Polymorph",       "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Sleep",           "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Haste",           "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Misty Step",      "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Bless",           "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Mage Hand",       "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Eldritch Blast",  "book_slug": "phb-5e", "content_type": "spell"},
+    {"entity": "Lich",            "book_slug": "mm-5e",  "content_type": "monster"},
+    {"entity": "Tarrasque",       "book_slug": "mm-5e",  "content_type": "monster"},
+    {"entity": "Mind Flayer",     "book_slug": "mm-5e",  "content_type": "monster"}
+  ]
+}
