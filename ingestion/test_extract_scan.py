@@ -491,6 +491,69 @@ def test_supplement_spells_extracted_despite_ocr_garbled_anchor():
     assert "Fireball" not in by["Dancing Lights"].text
 
 
+def _supp_stream_shredded_level_clean_casting():
+    """Mirrors the REAL PHB Fireball block: the level line is OCR-shredded to
+    '3rd~evelevoeaUon' (hyphen->tilde, dropped/fused letters, no space) so NO
+    level-line anchor can fire — but the 'Casting Time:' field survives clean.
+    The spell must be recovered via the casting-time fallback, with the name
+    scanned back past the shredded level line. (This is the actual Fireball bug.)"""
+    L = LineItem
+    return [
+        L(1, 0, 12.0, "SPELL DESCRIPTIONS", bold=True),
+        # a clean prior spell → there is an open spell chunk before Fireball
+        L(1, 0, 8.4, "FIND TRAPS"),
+        L(1, 0, 9.0, "3rd-level divination"),
+        L(1, 0, 9.0, "Casting Time: 1 action"),
+        L(1, 0, 9.0, "Range: 120 feet"),
+        L(1, 0, 9.0, "You sense the presence of any trap within range."),
+        # Fireball — level line shredded beyond per-letter fuzzing; name present;
+        # Casting Time clean.
+        L(1, 0, 7.4, "FIREBALL"),
+        L(1, 0, 9.0, "3rd~evelevoeaUon"),
+        L(1, 0, 9.0, "Casting Time: 1 action"),
+        L(1, 0, 9.0, "Range: 150 feet"),
+        L(1, 0, 9.0, "A bright streak flashes from your pointing finger to a"),
+        L(1, 0, 9.0, "point you choose where it blossoms into an explosion of flame."),
+    ]
+
+
+def test_supplement_spell_recovered_via_casting_time_when_level_shredded():
+    chunks = extract_supplement_chunks(_supp_stream_shredded_level_clean_casting(), "phb-5e", "phb.pdf", SUPP_CFG)
+    by = {c.entity_name: c for c in chunks}
+    assert "Fireball" in by, f"got {list(by)}"
+    assert by["Fireball"].content_type == "spell"
+    assert "bright streak" in by["Fireball"].text
+    assert "Find Traps" in by, f"got {list(by)}"
+    # Fireball must not have bled into the prior spell
+    assert "bright streak" not in by["Find Traps"].text
+
+
+def test_supplement_spell_name_below_min_body_still_recovered():
+    # The real PHB renders spell NAME lines SMALLER than body: 'FIREBALL' is ~7.4pt,
+    # below the book's min_body_pt of 8.0, so the size filter dropped the name line
+    # entirely and the spell was lost (the actual Fireball bug). A name-looking line
+    # just under min_body must survive the filter.
+    cfg = dict(SUPP_CFG, min_body_pt=8.0)
+    L = LineItem
+    stream = [
+        L(1, 0, 12.0, "SPELL DESCRIPTIONS", bold=True),
+        L(1, 0, 8.4, "ACID SPLASH"),
+        L(1, 0, 9.0, "Conjuration cantrip"),
+        L(1, 0, 9.0, "Casting Time: 1 action"),
+        L(1, 0, 9.0, "You hurl a bubble of acid at creatures within range."),
+        L(1, 0, 7.4, "FIREBALL"),                 # name below min_body (7.4 < 8.0)
+        L(1, 0, 9.0, "3rd~evelevoeaUon"),          # shredded level line
+        L(1, 0, 9.0, "Casting Time: 1 action"),
+        L(1, 0, 9.0, "A bright streak flashes from your pointing finger to flame."),
+        L(1, 0, 6.2, "PART 3 SPELLS"),             # running header — must stay dropped
+    ]
+    chunks = extract_supplement_chunks(stream, "phb-5e", "phb.pdf", cfg)
+    by = {c.entity_name: c for c in chunks}
+    assert "Fireball" in by, f"got {list(by)}"
+    assert "bright streak" in by["Fireball"].text
+    assert "Part 3 Spells" not in by   # the 6.2pt header stays filtered out
+
+
 # ---------------------------------------------------------------------------
 # is_type_line — the stat-block type/alignment line (skip for naming)
 # ---------------------------------------------------------------------------

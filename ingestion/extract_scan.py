@@ -546,6 +546,37 @@ _SPELL_ANCHOR_RE = re.compile(
 _STATBLOCK_ANCHOR_RE = re.compile(r"^\s*Armor Class\s*\d", re.IGNORECASE)
 _FEAT_ANCHOR_RE = re.compile(r"^\s*Prerequisite:", re.IGNORECASE)
 
+# Fallback spell anchor: the "Casting Time" field is far more OCR-stable than the
+# level/school line (which the PHB scan shreds, e.g. "3rd~evelevoeaUon"). Every
+# spell has exactly one, so a SECOND casting-time line inside an open spell chunk
+# marks the next spell's boundary even when its level line never anchored.
+_CASTING_RE = re.compile(rf"^\s*{_ocr_fuzz('casting')}\s+{_ocr_fuzz('time')}\b", re.IGNORECASE)
+
+# Spell stat-field labels — never a spell name (used by name recovery + fault D).
+_SPELL_FIELD_STOP: frozenset[str] = frozenset({
+    "casting time", "range", "components", "duration", "at higher levels",
+    "spell descriptions", "classes", "ritual",
+})
+
+
+def is_casting_time(text: str) -> bool:
+    return _CASTING_RE.search(text) is not None
+
+
+def is_spell_name_line(text: str) -> bool:
+    """A short, caps-leaning line that looks like a spell heading (FIREBALL,
+    FIND TRAPS) — not a stat field, not a level line (starts with a digit), not
+    body prose. Used to recover the name for the casting-time fallback."""
+    s = text.strip()
+    if not (2 <= len(s) <= 40) or s[0].isdigit():
+        return False
+    if s.lower().rstrip(".:").strip() in _SPELL_FIELD_STOP:
+        return False
+    letters = [c for c in s if c.isalpha()]
+    if len(letters) < 2:
+        return False
+    return sum(1 for c in letters if c.isupper()) / len(letters) >= 0.6
+
 
 def is_spell_anchor(text: str) -> bool:
     return _SPELL_ANCHOR_RE.search(text) is not None
@@ -719,8 +750,43 @@ def extract_supplement_chunks(
         cur_start = (li.page, li.col)
         cur_lines = ([type_line_text] if type_line_text else []) + [li.text]
 
+    def open_spell_via_casting(li: LineItem) -> None:
+        # Fallback for a spell whose level/school line was OCR-shredded so no level
+        # anchor fired (e.g. "3rd~evelevoeaUon"). Stateless: on any Casting Time
+        # line, look back over the last few accumulated lines for a spell-name line.
+        # A *level-anchored* spell has no unclaimed name there (the anchor popped
+        # it) and its level line starts with a digit, so this is a no-op for it; a
+        # shredded spell still carries its name line, so we split there. Everything
+        # before the name stays with the prior chunk; the lines between the name and
+        # this Casting Time (the shredded level line) ride into the new spell.
+        nonlocal cur_ctype, cur_entity, cur_lines, cur_start
+        lo = max(0, len(cur_lines) - 6)        # bound the look-back (avoid stray caps in body)
+        name_idx = None
+        for j in range(len(cur_lines) - 1, lo - 1, -1):
+            if is_spell_name_line(cur_lines[j]):
+                name_idx = j
+                break
+        if name_idx is None:
+            cur_lines.append(li.text)          # no recoverable name — keep as body
+            return
+        name = cur_lines[name_idx]
+        carried = cur_lines[name_idx + 1:]     # shredded level line, etc.
+        cur_lines = cur_lines[:name_idx]       # prior chunk keeps everything before the name
+        flush(li.page)
+        recent_headings.clear()
+        cur_ctype = "spell"
+        cur_entity = name
+        cur_start = (li.page, li.col)
+        cur_lines = carried + [li.text]
+
+    # PHB spell NAME lines render a bit smaller than body (e.g. FIREBALL ~7.4pt vs
+    # body 9pt vs min_body 8.0). Don't size-filter a line that looks like a spell
+    # name and is only just under the body floor, or the spell is lost entirely.
+    name_floor = min_body - 1.0
     for li in stream:
-        if li.page < first_page or li.size < min_body:
+        if li.page < first_page:
+            continue
+        if li.size < min_body and not (li.size >= name_floor and is_spell_name_line(li.text)):
             continue
         if is_spell_anchor(li.text):
             open_anchored(li, "spell")
@@ -728,6 +794,10 @@ def extract_supplement_chunks(
             open_anchored(li, "feat")
         elif is_statblock_anchor(li.text):
             open_anchored(li, "monster")
+        elif is_casting_time(li.text):
+            # Stateless spell-boundary fallback: splits only if an unclaimed spell
+            # name sits in the recent tail (a shredded spell), else appends as body.
+            open_spell_via_casting(li)
         elif is_heading(li):
             flush(li.page)
             recent_headings.append(li)
