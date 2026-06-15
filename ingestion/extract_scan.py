@@ -39,6 +39,8 @@ from dataclasses import asdict, dataclass
 from itertools import groupby
 from pathlib import Path
 
+from ocr_normalize import normalize_ocr
+
 # ---------------------------------------------------------------------------
 # Shared schema (mirrors extract.py's DndChunk)
 # ---------------------------------------------------------------------------
@@ -1010,6 +1012,12 @@ def main() -> None:
         chunks = extract_dmg_chunks(stream, args.book_slug, source_file, cfg)
     else:  # "supplement" — mixed-content books
         chunks = extract_supplement_chunks(stream, args.book_slug, source_file, cfg)
+
+    # Normalize OCR text errors (no-op on clean books; fixes the phb-5e scan — 6om)
+    for chunk in chunks:
+        chunk.text = normalize_ocr(chunk.text)
+        if chunk.entity_name:
+            chunk.entity_name = normalize_ocr(chunk.entity_name)
 
     type_counts: dict[str, int] = {}
     section_counts: dict[str, int] = {}
