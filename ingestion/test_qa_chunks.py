@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from qa_chunks import (
     alpha_ratio,
     classify_chunk,
+    detect_collapse,
     entity_name_ok,
     has_cid_marker,
     length_ok,
@@ -184,6 +185,46 @@ def test_classify_multiple_reasons():
     ok, reasons = classify_chunk(_chunk("(cid:1) ", entity_name="DUE;&GAR"))
     assert ok is False
     assert len(reasons) >= 2
+
+
+# ---------------------------------------------------------------------------
+# detect_collapse — corpus-wide regression guard (CP-D)
+# ---------------------------------------------------------------------------
+
+def test_detect_collapse_flags_multiple_statblocks_under_one_entity():
+    # The 'Giants' family-collapse: several Armor Class stat blocks under one name.
+    chunks = [
+        _chunk("Cloud Giant\nHuge giant\nArmor Class 14 (natural armor)", entity_name="Giants"),
+        _chunk("Fire Giant\nHuge giant\nArmor Class 18 (plate)", entity_name="Giants"),
+        _chunk("Frost Giant\nHuge giant\nArmor Class 15 (patchwork armor)", entity_name="Giants"),
+        # a single monster with lots of lore but ONE stat block — must NOT flag
+        _chunk("Demilich\nArmor Class 20 (natural armor)", entity_name="Demilich"),
+        _chunk("The demilich's lore continues across several chunks of prose.", entity_name="Demilich"),
+    ]
+    off = {o["entity"] for o in detect_collapse(chunks)}
+    assert "Giants" in off, off
+    assert "Demilich" not in off, off
+
+
+def test_detect_collapse_flags_merged_spells():
+    # A blob holding two spells (two Casting Time lines) under one (junk) name.
+    chunks = [
+        _chunk("3rd-level divination\nCasting Time: 1 action\nYou sense traps.",
+               entity_name="General Nature Of The Danger", content_type="spell"),
+        _chunk("7th-level necromancy\nCasting Time: 1 action\nYou send negative energy.",
+               entity_name="General Nature Of The Danger", content_type="spell"),
+    ]
+    off = {o["entity"] for o in detect_collapse(chunks)}
+    assert "General Nature Of The Danger" in off, off
+
+
+def test_detect_collapse_clean_corpus_has_no_offenders():
+    chunks = [
+        _chunk("Fireball\n3rd-level evocation\nCasting Time: 1 action\nA bright streak.",
+               entity_name="Fireball", content_type="spell"),
+        _chunk("Goblin\nSmall humanoid\nArmor Class 15 (leather armor)", entity_name="Goblin"),
+    ]
+    assert detect_collapse(chunks) == []
 
 
 # ---------------------------------------------------------------------------

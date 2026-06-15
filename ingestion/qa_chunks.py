@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -52,6 +53,18 @@ _FIELD_SECTION_STOP = frozenset({
 
 _CID_RE = re.compile(r"\(cid:\d+\)")
 _PUA_CONTROL_RE = re.compile(r"[-\x00-\x08\x0b-\x1f\x7f]")
+
+
+# Collapse detector: an entity that merges multiple distinct items shows more than
+# one stat-anchor across its chunks (a spell has one "Casting Time"; a monster one
+# "Armor Class N"). >1 means several entities were merged under one name (e.g. six
+# giants named "Giants"). A single large entity (Demilich: one stat block + much
+# lore) stays at 1 and is not flagged.
+COLLAPSE_MAX_ANCHORS = 1
+# Require the FIELD form ("Casting Time:" with a colon) so a spell description that
+# merely mentions "a casting time of 1 action" in prose is not miscounted.
+_CASTING_COUNT_RE = re.compile(r"casting\s+time\s*:", re.IGNORECASE)
+_AC_COUNT_RE = re.compile(r"armor\s+class\s*\d", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +120,47 @@ def entity_name_ok(name: str | None) -> bool:
         return False
     alpha = sum(c.isalpha() for c in visible)
     return alpha / len(visible) >= ENTITY_ALPHA_MIN
+
+
+# ---------------------------------------------------------------------------
+# Corpus-wide collapse detector (aggregate — not per-chunk)
+# ---------------------------------------------------------------------------
+
+def _anchor_count(text: str, content_type: str) -> int:
+    if content_type == "spell":
+        return len(_CASTING_COUNT_RE.findall(text))
+    if content_type == "monster":
+        return len(_AC_COUNT_RE.findall(text))
+    return 0
+
+
+def detect_collapse(chunks: list[dict], max_anchors: int = COLLAPSE_MAX_ANCHORS) -> list[dict]:
+    """
+    Find entities that merge multiple distinct items. Group spell/monster chunks
+    by (book_slug, content_type, entity_name); flag any group whose chunks
+    collectively contain more than `max_anchors` stat-anchors (Casting Time /
+    Armor Class) — that means several entities were merged under one name.
+
+    Returns offenders sorted worst-first: {book, content_type, entity, anchors, chunks}.
+    """
+    from collections import defaultdict
+
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for c in chunks:
+        ent = c.get("entity_name")
+        ctype = c.get("content_type")
+        if not ent or ctype not in ("spell", "monster"):
+            continue
+        groups[(c.get("book_slug"), ctype, ent)].append(c)
+
+    offenders: list[dict] = []
+    for (book, ctype, ent), cs in groups.items():
+        anchors = sum(_anchor_count(c.get("text", "") or "", ctype) for c in cs)
+        if anchors > max_anchors:
+            offenders.append({"book": book, "content_type": ctype, "entity": ent,
+                              "anchors": anchors, "chunks": len(cs)})
+    offenders.sort(key=lambda o: -o["anchors"])
+    return offenders
 
 
 # ---------------------------------------------------------------------------
@@ -187,14 +241,52 @@ def run_qa(
     }
 
 
+_DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat"
+
+
+def _load_chunks_from_db(dsn: str) -> list[dict]:
+    import psycopg  # local import — only needed for --from-db
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute("SELECT book_slug, content_type, entity_name, page_start, text FROM dnd.chunks")
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _run_collapse_check(chunks: list[dict]) -> int:
+    offenders = detect_collapse(chunks)
+    if not offenders:
+        print(f"collapse-check: OK — no merged entities across {len(chunks)} chunks")
+        return 0
+    print(f"collapse-check: FAIL — {len(offenders)} merged-entity offender(s):")
+    for o in offenders[:30]:
+        print(f"  {o['book'] or '?':10} {o['content_type']:7} {o['entity']!r:42} "
+              f"anchors={o['anchors']} chunks={o['chunks']}")
+    return 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Pre-embedding QA gate for D&D chunks")
-    parser.add_argument("chunks", help="Input chunks JSONL")
+    parser.add_argument("chunks", nargs="?", help="Input chunks JSONL (omit with --from-db)")
     parser.add_argument("--max-chars", type=int, default=MAX_CHUNK_CHARS)
+    parser.add_argument("--collapse-check", action="store_true",
+                        help="Run the corpus collapse detector as a gate (exit 1 on offenders)")
+    parser.add_argument("--from-db", action="store_true",
+                        help="Load chunks from pgvector (DATABASE_URL) instead of a JSONL")
+    parser.add_argument("--dsn", default=os.environ.get("DATABASE_URL", _DEFAULT_DSN))
     args = parser.parse_args()
 
-    in_path = Path(args.chunks)
-    if not in_path.exists():
+    if args.collapse_check:
+        if args.from_db:
+            chunks = _load_chunks_from_db(args.dsn)
+        else:
+            if not args.chunks or not Path(args.chunks).exists():
+                print("ERROR: provide a chunks JSONL or --from-db", file=sys.stderr)
+                sys.exit(2)
+            chunks = [json.loads(l) for l in Path(args.chunks).read_text(encoding="utf-8").splitlines() if l.strip()]
+        sys.exit(_run_collapse_check(chunks))
+
+    in_path = Path(args.chunks) if args.chunks else None
+    if in_path is None or not in_path.exists():
         print(f"ERROR: chunks file not found: {in_path}", file=sys.stderr)
         sys.exit(1)
 
