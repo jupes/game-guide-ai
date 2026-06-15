@@ -458,6 +458,39 @@ def test_supplement_chunk_carries_book_slug():
     assert all(c.text for c in chunks)
 
 
+def _supp_stream_ocr_garbled():
+    """Same shape as _supp_stream but the spell sub-header lines carry the PHB
+    scan's OCR damage (c->e: 'evoeation'/'eantrip'; l->I: 'leveI'). The strict
+    anchor misses these, so each spell silently merges into the prior chunk —
+    the production Fireball bug (agent-forge-harness-7p3)."""
+    L = LineItem
+    return [
+        L(1, 0, 12.0, "SPELL DESCRIPTIONS", bold=True),
+        L(1, 0, 9.3, "DANCING LIGHTS"),
+        L(1, 0, 9.7, "Evoeation eantrip"),               # c->e on school AND 'cantrip'
+        L(1, 0, 10.0, "Casting Time: 1 aetion"),
+        L(1, 0, 10.0, "Range: 120 feet"),
+        L(1, 0, 10.0, "You create up to four torch-sized lights for the duration."),
+        L(1, 0, 9.3, "FIREBALL"),
+        L(1, 0, 9.7, "3rd-leveI evocation"),             # l->I on 'level'
+        L(1, 0, 10.0, "Casting Time: 1 action"),
+        L(1, 0, 10.0, "Range: 150 feet"),
+        L(1, 0, 10.0, "A bright streak flashes from your pointing finger to a point."),
+    ]
+
+
+def test_supplement_spells_extracted_despite_ocr_garbled_anchor():
+    # tracer: OCR damage on the level/school line must not lose the spell.
+    chunks = extract_supplement_chunks(_supp_stream_ocr_garbled(), "phb-5e", "phb.pdf", SUPP_CFG)
+    by = {c.entity_name: c for c in chunks}
+    assert "Fireball" in by, f"got {list(by)}"
+    assert by["Fireball"].content_type == "spell"
+    assert "Dancing Lights" in by, f"got {list(by)}"
+    assert by["Dancing Lights"].content_type == "spell"
+    # and they did not merge into one blob
+    assert "Fireball" not in by["Dancing Lights"].text
+
+
 # ---------------------------------------------------------------------------
 # is_type_line — the stat-block type/alignment line (skip for naming)
 # ---------------------------------------------------------------------------

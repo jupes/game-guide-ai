@@ -508,10 +508,39 @@ _FEAT_PREREQ_RE = re.compile(r"^\s*Prerequisite:", re.IGNORECASE | re.MULTILINE)
 
 # Strong anchors for the supplement extractor. A line IS the anchor; the entity
 # name is the line immediately above it (the spell/feat/monster heading).
-_SCHOOLS = "abjuration|conjuration|divination|enchantment|evocation|illusion|necromancy|transmutation"
-# "8th-level necromancy" or "Evocation cantrip" — the spell sub-header line
+#
+# The PHB scan corrupts these sub-header lines (c->e "evoeation eantrip", l->I
+# "leveI", o->0, s->5), which defeated a strict match and silently merged spells
+# into the prior chunk — the Fireball bug (agent-forge-harness-7p3). We widen
+# ONLY the anchor's fixed keywords (level / cantrip / the 8 schools) by their OCR
+# confusables; general matching is untouched. Under IGNORECASE each class also
+# covers its upper-case form (so [li1] matches l, L, i, I, 1).
+_OCR_TWINS = {
+    "c": "ce", "e": "ce",
+    "l": "li1", "i": "il1", "1": "1li",
+    "o": "o0", "0": "0o",
+    "s": "s5", "5": "5s",
+}
+
+
+def _ocr_fuzz(word: str) -> str:
+    """A regex fragment matching `word` tolerant of the scan's OCR confusables."""
+    out = []
+    for ch in word:
+        twins = _OCR_TWINS.get(ch.lower())
+        out.append(f"[{twins}]" if twins else re.escape(ch))
+    return "".join(out)
+
+
+_SCHOOL_WORDS = ["abjuration", "conjuration", "divination", "enchantment",
+                 "evocation", "illusion", "necromancy", "transmutation"]
+_SCHOOLS = "|".join(_SCHOOL_WORDS)
+_FUZZ_SCHOOLS = "|".join(_ocr_fuzz(w) for w in _SCHOOL_WORDS)
+# "8th-level necromancy" or "Evocation cantrip" — the spell sub-header line,
+# OCR-tolerant on the fixed keywords.
 _SPELL_ANCHOR_RE = re.compile(
-    rf"^\s*(\d+(?:st|nd|rd|th)-level\s+({_SCHOOLS})|({_SCHOOLS})\s+cantrip)\b",
+    rf"^\s*(\d+(?:st|nd|rd|th)-{_ocr_fuzz('level')}\s+({_FUZZ_SCHOOLS})"
+    rf"|({_FUZZ_SCHOOLS})\s+{_ocr_fuzz('cantrip')})\b",
     re.IGNORECASE,
 )
 _STATBLOCK_ANCHOR_RE = re.compile(r"^\s*Armor Class\s*\d", re.IGNORECASE)
