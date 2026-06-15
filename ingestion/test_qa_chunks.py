@@ -120,6 +120,27 @@ def test_entity_name_rejects_ocr_garbage():
     assert not entity_name_ok("DUE;&GAR")
 
 
+def test_entity_name_rejects_field_and_section_labels():
+    # Stat-field / section labels leaked through as entity_names in the PHB spell
+    # section (fault D). They must be quarantined at the QA gate.
+    assert entity_name_ok("Components: V, S") is False
+    assert entity_name_ok("Casting Time: 1 action") is False
+    assert entity_name_ok("Duration") is False
+    assert entity_name_ok("Spell Descriptions") is False
+    assert entity_name_ok("At Higher Levels") is False
+
+
+def test_entity_name_rejects_sentence_fragments():
+    # Body lines popped as names ("Stunned Until The End Of Its Next Turn",
+    # "Increases By I For Each Slot Level Above 5Th.") — not entity names.
+    assert entity_name_ok("Stunned Until The End Of Its Next Turn") is False
+    assert entity_name_ok("Increases By I For Each Slot Level Above 5Th.") is False
+    assert entity_name_ok("General Nature Of The Danger Posed By A Trap You Sense.") is False
+    # but a real multi-word name is fine
+    assert entity_name_ok("Flaming Sphere") is True
+    assert entity_name_ok("Otiluke's Resilient Sphere") is True
+
+
 def test_entity_name_rejects_overlong():
     assert not entity_name_ok("A" * 60)
 

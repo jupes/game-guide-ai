@@ -41,6 +41,14 @@ MAX_CHUNK_CHARS = 8000
 MIN_WORDS = 5               # fragment guard
 ENTITY_NAME_MAX = 48
 ENTITY_ALPHA_MIN = 0.80     # entity names should be almost all letters/spaces
+ENTITY_MAX_WORDS = 6        # real spell/monster names are short; more = a sentence
+
+# Stat-field / section labels that leaked into entity_name in the PHB spell section
+# (fault D). Never a real entity name.
+_FIELD_SECTION_STOP = frozenset({
+    "casting time", "range", "components", "duration", "at higher levels",
+    "spell descriptions", "classes", "ritual", "prerequisite", "spell lists",
+})
 
 _CID_RE = re.compile(r"\(cid:\d+\)")
 _PUA_CONTROL_RE = re.compile(r"[-\x00-\x08\x0b-\x1f\x7f]")
@@ -86,6 +94,13 @@ def entity_name_ok(name: str | None) -> bool:
         return True
     n = name.strip()
     if not n or len(n) > ENTITY_NAME_MAX:
+        return False
+    low = n.lower()
+    # stat-field / section label (with or without a trailing ': value')
+    if low.split(":")[0].strip() in _FIELD_SECTION_STOP or low.rstrip(".:").strip() in _FIELD_SECTION_STOP:
+        return False
+    # sentence fragment popped from body: ends in a period, or too many words
+    if n.endswith(".") or len(n.split()) > ENTITY_MAX_WORDS:
         return False
     visible = n.replace(" ", "").replace("'", "").replace("-", "").replace("(", "").replace(")", "")
     if not visible:

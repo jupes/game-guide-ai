@@ -528,6 +528,30 @@ def test_supplement_spell_recovered_via_casting_time_when_level_shredded():
     assert "bright streak" not in by["Find Traps"].text
 
 
+def test_supplement_field_line_never_becomes_entity_name():
+    # When a spell's own name line was dropped, the level anchor used to pop the
+    # PREVIOUS spell's trailing field line ("Duration: 8 hours") as the name. A
+    # stat-field line must never become an entity_name.
+    cfg = dict(SUPP_CFG, min_body_pt=8.0)
+    L = LineItem
+    stream = [
+        L(1, 0, 12.0, "SPELL DESCRIPTIONS", bold=True),
+        L(1, 0, 8.4, "AID"),
+        L(1, 0, 9.0, "2nd-level abjuration"),
+        L(1, 0, 9.0, "Casting Time: 1 action"),
+        L(1, 0, 9.0, "Your spell bolsters your allies with toughness and resolve."),
+        L(1, 0, 9.0, "Duration: 8 hours"),
+        # next spell — its NAME line is absent; only the level line remains, so the
+        # anchor would otherwise pop "Duration: 8 hours" as the name.
+        L(1, 0, 9.0, "1st-level enchantment"),
+        L(1, 0, 9.0, "Casting Time: 1 action"),
+        L(1, 0, 9.0, "You bless up to three creatures of your choice within range."),
+    ]
+    chunks = extract_supplement_chunks(stream, "phb-5e", "phb.pdf", cfg)
+    bad = [c.entity_name for c in chunks if c.entity_name and "duration" in c.entity_name.lower()]
+    assert not bad, f"field line leaked as entity_name: {bad}"
+
+
 def test_supplement_spell_name_below_min_body_still_recovered():
     # The real PHB renders spell NAME lines SMALLER than body: 'FIREBALL' is ~7.4pt,
     # below the book's min_body_pt of 8.0, so the size filter dropped the name line

@@ -563,6 +563,13 @@ def is_casting_time(text: str) -> bool:
     return _CASTING_RE.search(text) is not None
 
 
+def is_field_line(text: str) -> bool:
+    """A spell stat-field / section label ('Casting Time: 1 action', 'Duration',
+    'Spell Descriptions') — never a spell/feat name."""
+    s = text.strip().lower()
+    return s.split(":")[0].strip() in _SPELL_FIELD_STOP or s.rstrip(".:").strip() in _SPELL_FIELD_STOP
+
+
 def is_spell_name_line(text: str) -> bool:
     """A short, caps-leaning line that looks like a spell heading (FIREBALL,
     FIND TRAPS) — not a stat field, not a level line (starts with a digit), not
@@ -743,6 +750,15 @@ def extract_supplement_chunks(
                 type_line_text = cur_entity
         else:
             name = cur_lines.pop() if cur_lines else cur_entity
+            # a stat-field line (the prior spell's "Duration: …") is never the
+            # name — recover a real name-looking line from the tail, else unknown.
+            if name and is_field_line(name):
+                recovered = None
+                for j in range(len(cur_lines) - 1, max(-1, len(cur_lines) - 7), -1):
+                    if is_spell_name_line(cur_lines[j]):
+                        recovered = cur_lines[j]
+                        break
+                name = recovered or "(unknown)"
         flush(li.page)
         recent_headings.clear()   # consumed — don't let this name bleed to the next block
         cur_ctype = ctype
