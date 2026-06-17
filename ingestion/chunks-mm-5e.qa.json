@@ -1,23 +1,17 @@
 {
   "source": "chunks-mm-5e.jsonl",
-  "total": 777,
-  "clean": 764,
-  "quarantined": 13,
-  "pass_rate": 0.9833,
+  "total": 958,
+  "clean": 941,
+  "quarantined": 17,
+  "pass_rate": 0.9823,
   "reasons": {
-    "bad_entity": 10,
-    "length": 3
+    "bad_entity": 17
   },
   "samples": {
-    "length": [
-      "White Dragon Wy·Rmling\nMedium dragon, chaotic evil\nArmor Class 16 (natural armor",
-      "Gibbering Mouther\nMedium aberration, neutral\nArmor Class 9\nHit Points 67 (9d8 + ",
-      "Lizardf Olk\nArmor Class 15 (natural armor)\nHit Points 78 (l2d8 + 24)\nSpeed 30ft."
-    ],
     "bad_entity": [
-      "Due;&Gar\nArmor Class 16 (scale mail, shield)\nHit Points 26 (4d8 + 8)\n' Speed 25 ",
-      "I Fom01,Han\nHuge giant, chaotiG evil.\nArmor Class 14 (natural armor)\nHit Points ",
-      "Half:... Dragon\ndrago~·\nWhen a in polymorphed form mates with\nanother creature, "
+      "£Pitap~\nthe howl must succeed on a DC 15 Constitution saving throw\nor drop to 0 ",
+      "£Pitap~\nmaximum is reduced to 0 by this effect, the creature dies.\nA creature's ",
+      "Layers And Lords Of The Nine Hells\nLayer Layer Name Archduke or Archduchess Prev"
     ]
   }
 }

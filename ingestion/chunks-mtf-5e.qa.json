@@ -1,18 +1,18 @@
 {
   "source": "chunks-mtf-5e.jsonl",
-  "total": 1042,
-  "clean": 993,
-  "quarantined": 49,
-  "pass_rate": 0.953,
+  "total": 1004,
+  "clean": 887,
+  "quarantined": 117,
+  "pass_rate": 0.8835,
   "reasons": {
-    "bad_entity": 39,
+    "bad_entity": 107,
     "low_alpha": 34
   },
   "samples": {
     "bad_entity": [
-      "PASSION VS. RESTRAIN ..!__\nThe elven personality is a mixture of two opposing\nfo",
-      "surface e lv es and drow hold for one another.\nThis hatr ed dates back to when t",
-      ".\nArmor Class 19 (natural armor)\nHit Points 95 (lOdlO + 40)\nSpeed 25 ft .\nSTR DE"
+      "Yu c o L OT H s : F ICK LE A LL IE\nYugoloths are major players on both sides of ",
+      "th eir efforts on the door ste p of the Nine\nHe ll s, realms\nsuch as the Seven H",
+      "act cruelly or heartlessly one day, and benevol en t and\nca ring the next. A fol"
     ],
     "low_alpha": [
       "MEAZEL\nMedium humanoid (meazel), neutral evil\n.\n------------------------~__;_ ~-",
