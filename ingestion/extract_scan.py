@@ -171,6 +171,37 @@ def is_caps_heading(
     return upper / len(letters) >= min_upper_ratio
 
 
+def is_monster_name_candidate(text: str, size: float, min_pt: float,
+                              max_len: int = 48, min_upper: float = 0.45) -> bool:
+    """A looser monster-NAME test than is_caps_heading, used to recover stat-block
+    owners that the heading gate misses for the two real OCR reasons (6om/0im.3):
+      - upper-ratio: mixed-case OCR names ('Kuo-ToA' = 0.5 < the 0.6 heading gate)
+      - size: small-caps names rendered just under heading_min ('STORM GIANT' 10.1)
+    Always rejects type lines, stat-field labels, and pure stat rows; short and
+    mostly-alphabetic. `min_upper` is relaxed to 0.0 by the caller when the line
+    sits directly above a type line (a strong structural name signal that catches
+    low-caps names like 'Lamia'/'Marilith'). Binding to a stat block is left to
+    `_assign_anchor_owners` position scoring (a candidate with no nearby anchor
+    owns nothing)."""
+    if size < min_pt:
+        return False
+    t = text.strip()
+    if not (3 <= len(t) <= max_len) or t.endswith("."):  # names never end in a period
+        return False
+    low = t.lower().rstrip(".").strip()
+    if is_type_line(t) or low in _STAT_FIELD_WORDS:
+        return False
+    # reject stat rows whose every token is a stat-field / ability word
+    # ("STR DEX CON INT WIS CHA", "Hit Dice") — never a monster name.
+    toks = low.split()
+    if toks and all(tok in _STAT_FIELD_WORDS for tok in toks):
+        return False
+    letters = [c for c in t if c.isalpha()]
+    if not letters or len(letters) / len(t.replace(" ", "")) < 0.7:
+        return False
+    return sum(1 for c in letters if c.isupper()) / len(letters) >= min_upper
+
+
 def normalize_entity_name(caps: str) -> str:
     """'ANCIENT BLACK DRAGON' → 'Ancient Black Dragon'; keeps parens/commas."""
     cleaned = re.sub(r"\s+", " ", caps.strip())
@@ -275,11 +306,21 @@ def extract_mm_chunks(
 
     headings: list[tuple[int, int, int, str]] = []
     anchors: list[tuple[int, int, int]] = []
-    for i, li in visible:
+    for vi, (i, li) in enumerate(visible):
         if is_caps_heading(li.text, li.size, heading_min):
             headings.append((i, li.page, li.col, normalize_entity_name(li.text)))
         elif _MM_STAT_ANCHOR.match(li.text):
             anchors.append((i, li.page, li.col))
+        else:
+            # recover sub-threshold / mixed-case monster names as owner candidates.
+            # Two signals: caps-leaning (>=0.45), OR sitting directly above a type
+            # line (caps-agnostic — catches low-caps names like 'Lamia'/'Marilith').
+            nxt = visible[vi + 1][1] if vi + 1 < len(visible) else None
+            above_type = nxt is not None and is_type_line(nxt.text)
+            if is_monster_name_candidate(li.text, li.size, min_body,
+                                         min_upper=0.0 if above_type else 0.45):
+                # position scoring binds these only when an AC anchor is actually near.
+                headings.append((i, li.page, li.col, normalize_entity_name(li.text)))
 
     owners = _assign_anchor_owners(headings, anchors)
     heading_idxs = {h[0] for h in headings}

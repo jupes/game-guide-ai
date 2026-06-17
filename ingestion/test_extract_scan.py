@@ -179,6 +179,69 @@ def test_mm_cross_column_ownership():
     assert "Armor Class 17" in stats["Azer"].text
 
 
+def _mm_collapse_stream():
+    """Three consecutive monsters whose names fail is_caps_heading for the two real
+    reasons: Kuo-ToA (14.7pt but mixed-case OCR, upper-ratio 0.5 < 0.6) and STORM
+    GIANT (all-caps but 10.1pt < heading_min 10.5). KRAKEN is a clean caps heading.
+    Currently both Kuo-ToA and Storm Giant collapse under KRAKEN."""
+    L = LineItem
+    return [
+        L(1, 0, 13.0, "KRAKEN"),
+        L(1, 0, 8.7, "Gargantuan monstrosity (titan), chaotic evil"),
+        L(1, 0, 8.5, "Armor Class 18 (natural armor)"),
+        L(1, 0, 8.5, "Hit Points 472 (27d20 + 189)"),
+        L(1, 0, 8.5, "Legendary Resistance (3/Day). If the kraken fails a saving throw it can choose to succeed instead."),
+        L(2, 0, 14.7, "Kuo-ToA"),                      # mixed-case OCR name, fails 0.6 upper-ratio
+        L(2, 0, 8.7, "Medium humanoid (kuo-toa), neutral evil"),
+        L(2, 0, 8.5, "Armor Class 13 (natural armor, shield)"),
+        L(2, 0, 8.5, "Hit Points 18 (4d8)"),
+        L(2, 0, 8.5, "Sunlight Sensitivity. While in sunlight the kuo-toa has disadvantage on attack rolls."),
+        L(3, 0, 10.1, "STORM GIANT"),                  # all-caps but sub-threshold size
+        L(3, 0, 8.7, "Huge giant, chaotic good"),
+        L(3, 0, 8.5, "Armor Class 16 (scale mail)"),
+        L(3, 0, 8.5, "Hit Points 230 (20d12 + 100)"),
+        L(3, 0, 8.5, "Amphibious. The giant can breathe air and water without penalty."),
+    ]
+
+
+def test_mm_mixed_case_name_owns_its_statblock():
+    # tracer: a name that fails the upper-ratio gate (Kuo-ToA) still owns its block
+    chunks = extract_mm_chunks(_mm_collapse_stream(), "mm-5e", "mm.pdf", MM_CFG)
+    stats = {c.entity_name for c in chunks if c.section == "Stat Block"}
+    assert "Kuo-Toa" in stats, f"got {stats}"
+    kuo = next(c for c in chunks if c.entity_name == "Kuo-Toa" and c.section == "Stat Block")
+    assert "4d8" in kuo.text and "Kraken" not in kuo.text
+
+
+def test_mm_size_subthreshold_name_owns_its_statblock():
+    chunks = extract_mm_chunks(_mm_collapse_stream(), "mm-5e", "mm.pdf", MM_CFG)
+    stats = {c.entity_name for c in chunks if c.section == "Stat Block"}
+    assert "Storm Giant" in stats, f"got {stats}"
+
+
+def test_mm_collapse_stream_splits_into_three():
+    chunks = extract_mm_chunks(_mm_collapse_stream(), "mm-5e", "mm.pdf", MM_CFG)
+    stats = {c.entity_name for c in chunks if c.section == "Stat Block"}
+    assert stats == {"Kraken", "Kuo-Toa", "Storm Giant"}, f"got {stats}"
+
+
+def test_mm_no_false_owner_from_capsy_prose():
+    # a short caps-ish prose line with NO following AC anchor must not become a stat-block owner
+    L = LineItem
+    stream = [
+        L(1, 0, 13.0, "GOBLIN"),
+        L(1, 0, 8.7, "Small humanoid (goblinoid), neutral evil"),
+        L(1, 0, 8.5, "Armor Class 15 (leather armor, shield)"),
+        L(1, 0, 8.5, "Hit Points 7 (2d6)"),
+        L(1, 0, 8.5, "Nimble Escape. The goblin can take the Disengage action as a bonus action."),
+        L(1, 0, 8.5, "DC 12 Dexterity"),               # caps-ish fragment, no AC anchor after it
+        L(1, 0, 8.5, "saving throw or be knocked prone by the blast."),
+    ]
+    chunks = extract_mm_chunks(stream, "mm-5e", "mm.pdf", MM_CFG)
+    stats = {c.entity_name for c in chunks if c.section == "Stat Block"}
+    assert stats == {"Goblin"}, f"got {stats}"
+
+
 def test_mm_no_heading_falls_back_to_family_section():
     """Beholder case: no detectable heading near the stat block at all —
     it inherits the nearest preceding (family) section heading."""
