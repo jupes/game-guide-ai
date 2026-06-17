@@ -515,6 +515,23 @@ def test_supplement_spell_name_not_swallowed_by_prior_chunk():
     assert "Fireball" not in absorb.text
 
 
+def test_supplement_monster_name_above_typeline_recovered():
+    # A supplement monster whose name is title-case (fails the caps gate) but sits
+    # directly above its type line must recover its own name, not collapse.
+    L = LineItem
+    stream = [
+        L(1, 0, 12.0, "BESTIARY", bold=True),
+        L(1, 0, 9.3, "Cloudchaser"),                       # title-case, low upper-ratio
+        L(1, 0, 9.0, "Large monstrosity, neutral"),        # type line
+        L(1, 0, 9.0, "Armor Class 14 (natural armor)"),
+        L(1, 0, 9.0, "Hit Points 95 (10d10 + 40)"),
+        L(1, 0, 9.0, "Keen Sight. The creature has advantage on Wisdom (Perception) checks."),
+    ]
+    chunks = extract_supplement_chunks(stream, "ravnica-5e", "r.pdf", SUPP_CFG)
+    stats = {c.entity_name for c in chunks if c.content_type == "monster"}
+    assert "Cloudchaser" in stats, f"got {stats}"
+
+
 def test_supplement_chunk_carries_book_slug():
     chunks = extract_supplement_chunks(_supp_stream(), "xge-5e", "xge.pdf", SUPP_CFG)
     assert all(c.book_slug == "xge-5e" for c in chunks)

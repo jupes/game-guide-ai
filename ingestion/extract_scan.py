@@ -789,8 +789,14 @@ def extract_supplement_chunks(
                     type_line_text, name = cand, cur_entity
                 else:
                     name = cand
-            elif cur_entity and is_type_line(cur_entity):
-                type_line_text = cur_entity
+            else:
+                # recovered a real name — fold the trailing type line into the stat
+                # block (so it isn't left as a lone chunk) whether it sits in
+                # cur_lines or is the current provisional entity.
+                if cur_lines and is_type_line(cur_lines[-1]):
+                    type_line_text = cur_lines.pop()
+                elif cur_entity and is_type_line(cur_entity):
+                    type_line_text = cur_entity
         else:
             name = cur_lines.pop() if cur_lines else cur_entity
             # a stat-field line (the prior spell's "Duration: …") is never the
@@ -842,11 +848,25 @@ def extract_supplement_chunks(
     # body 9pt vs min_body 8.0). Don't size-filter a line that looks like a spell
     # name and is only just under the body floor, or the spell is lost entirely.
     name_floor = min_body - 1.0
+    prev_li: LineItem | None = None
     for li in stream:
         if li.page < first_page:
             continue
         if li.size < min_body and not (li.size >= name_floor and is_spell_name_line(li.text)):
             continue
+        # Monster-name recovery: the line directly above a type line is the monster's
+        # name even when it's title-case / sub-threshold (fails is_heading). Capture
+        # it into recent_headings so a following statblock anchor recovers it. This
+        # only feeds recover_statblock_name (monsters); spells/feats are untouched.
+        if is_type_line(li.text) and prev_li is not None:
+            pt = prev_li.text.strip()
+            if (3 <= len(pt) <= 48 and not pt.endswith(".") and any(c.isalpha() for c in pt)
+                    and not is_type_line(pt) and pt.lower().rstrip(".") not in _STAT_FIELD_WORDS
+                    and not is_statblock_anchor(pt) and not is_casting_time(pt)
+                    and not is_spell_anchor(pt) and not is_feat_anchor(pt)):
+                recent_headings.append(prev_li)
+                del recent_headings[:-6]
+        prev_li = li
         if is_spell_anchor(li.text):
             open_anchored(li, "spell")
         elif is_feat_anchor(li.text):
