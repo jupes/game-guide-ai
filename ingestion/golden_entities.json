@@ -18,6 +18,10 @@
     {"entity": "Eldritch Blast",  "book_slug": "phb-5e", "content_type": "spell"},
     {"entity": "Lich",            "book_slug": "mm-5e",  "content_type": "monster"},
     {"entity": "Tarrasque",       "book_slug": "mm-5e",  "content_type": "monster"},
-    {"entity": "Mind Flayer",     "book_slug": "mm-5e",  "content_type": "monster"}
+    {"entity": "Mind Flayer",     "book_slug": "mm-5e",  "content_type": "monster"},
+    {"entity": "Fire Giant",      "book_slug": "mm-5e",  "content_type": "monster"},
+    {"entity": "Storm Giant",     "book_slug": "mm-5e",  "content_type": "monster"},
+    {"entity": "Kraken",          "book_slug": "mm-5e",  "content_type": "monster"},
+    {"entity": "Kuo-Toa",         "book_slug": "mm-5e",  "content_type": "monster"}
   ]
 }
