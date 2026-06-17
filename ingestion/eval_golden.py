@@ -227,8 +227,11 @@ def is_hit(chunk: RetrievedChunk, golden: GoldenQuery) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate retrieval quality against golden queries")
-    parser.add_argument("--mode", choices=["vector", "hybrid"], default="hybrid",
-                        help="Retrieval mode: vector (cosine only) or hybrid (vector + FTS via RRF)")
+    parser.add_argument("--mode", choices=["vector", "hybrid"], default="vector",
+                        help="Retrieval mode: vector (cosine only, the production default) or "
+                             "hybrid (vector + FTS via RRF). 3q3 (2026-06-15, 9,070 chunks): hybrid "
+                             "ties vector on Hit@1 (83.3%) and is marginally worse on Recall@10, so "
+                             "vector is the default and what RagRetriever uses.")
     parser.add_argument("--rerank", action="store_true",
                         help="Rerank prose-category results with a cross-encoder (bo4)")
     parser.add_argument("--rerank-topk", type=int, default=10,

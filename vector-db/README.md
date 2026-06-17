@@ -70,7 +70,7 @@ Applied on **first** container init via scripts in `vector-db/init/` (lexical or
 
 **Indexes:** HNSW (`vector_cosine_ops`) for ANN cosine search; GIN on `search_vector` for full-text search.
 
-**Hybrid search:** `dnd.hybrid_search(query_embedding, query_text, k)` — fuses vector ranking and FTS ranking via Reciprocal Rank Fusion (RRF, k=60). Returns `rrf_score`, `vector_rank`, `fts_rank` per result.
+**Hybrid search:** `dnd.hybrid_search(query_embedding, query_text, k)` — fuses vector ranking and FTS ranking via Reciprocal Rank Fusion (RRF, k=60). Returns `rrf_score`, `vector_rank`, `fts_rank` per result. **Built but not the default:** evaluated in agent-forge-harness-3q3 (2026-06-15, 9,070 chunks) — hybrid ties pure vector on Hit@1 (83.3%) and is marginally worse on Recall@10, so the retrieval path (`RagRetriever`) and the eval default use **pure filtered vector**. The function/FTS column are retained (harmless, available for future re-evaluation), not adopted.
 
 **Note:** `embedding` is fixed at 1536 dimensions for `text-embedding-3-small`. If you switch models, update `02-schema.sql` **before** first run — dimensions cannot be altered in place.
 
