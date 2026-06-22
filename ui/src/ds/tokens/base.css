@@ -1,0 +1,47 @@
+/* ── Base ──────────────────────────────────────────────────────────────
+   Minimal resets + the parchment ground that the Aetheril surface sits on.
+   Kept light: components style themselves; this just sets sensible page
+   defaults and the warm reading baseline. */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--aether-font-body);
+  font-size: var(--md-sys-typescale-body-large-size);
+  line-height: var(--md-sys-typescale-body-large-line-height);
+  color: var(--md-sys-color-on-surface);
+  background-color: var(--md-sys-color-surface);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Parchment ground — a faint warm vignette + grain feel via layered
+   radial gradients. No external image; cheap and tileable. */
+.aether-parchment {
+  background-color: var(--md-sys-color-surface);
+  background-image:
+    radial-gradient(circle at 18% 12%, rgba(156, 59, 27, 0.05), transparent 42%),
+    radial-gradient(circle at 84% 8%, rgba(199, 154, 59, 0.06), transparent 38%),
+    radial-gradient(circle at 50% 120%, rgba(63, 107, 78, 0.05), transparent 55%);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--aether-font-display);
+  color: var(--md-sys-color-on-surface);
+  margin: 0 0 0.4em;
+}
+
+a { color: var(--md-sys-color-primary); text-underline-offset: 2px; }
+
+::selection { background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); }
+
+/* Focus ring (M3) — used by interactive primitives */
+.aether-focus-ring:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+code, kbd, samp, pre { font-family: var(--aether-font-mono); }

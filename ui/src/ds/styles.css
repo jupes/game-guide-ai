@@ -1,0 +1,16 @@
+/* ════════════════════════════════════════════════════════════════════
+   Aetheril Design System — global entry point (rag-chat copy)
+   Mirrors aetheril-design-system/source/styles.css; tokens are
+   copied locally so the UI build has no dep on the sibling repo.
+   Import order is load-order-sensitive: fonts @imports must come
+   first because CDN @imports must precede all rules.
+   ════════════════════════════════════════════════════════════════════ */
+
+@import url('./tokens/fonts.css');
+@import url('./tokens/colors.css');
+@import url('./tokens/typography.css');
+@import url('./tokens/shape.css');
+@import url('./tokens/elevation.css');
+@import url('./tokens/spacing.css');
+@import url('./tokens/motion.css');
+@import url('./tokens/base.css');

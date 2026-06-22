@@ -1,0 +1,35 @@
+/* ── Elevation ─────────────────────────────────────────────────────────
+   Material 3 elevation levels expressed as warm-tinted box-shadows.
+   Shadows carry a faint umber cast (rather than neutral black) so cards
+   feel like paper on a wooden table rather than glass on white. */
+
+:root {
+  --md-sys-elevation-level0: none;
+  --md-sys-elevation-level1:
+    0 1px 2px 0 rgba(58, 34, 12, 0.28),
+    0 1px 3px 1px rgba(58, 34, 12, 0.12);
+  --md-sys-elevation-level2:
+    0 1px 2px 0 rgba(58, 34, 12, 0.28),
+    0 2px 6px 2px rgba(58, 34, 12, 0.14);
+  --md-sys-elevation-level3:
+    0 4px 8px 3px rgba(58, 34, 12, 0.14),
+    0 1px 3px 0 rgba(58, 34, 12, 0.30);
+  --md-sys-elevation-level4:
+    0 6px 10px 4px rgba(58, 34, 12, 0.14),
+    0 2px 3px 0 rgba(58, 34, 12, 0.30);
+  --md-sys-elevation-level5:
+    0 8px 12px 6px rgba(58, 34, 12, 0.14),
+    0 4px 4px 0 rgba(58, 34, 12, 0.30);
+
+  /* Aliases */
+  --aether-elevation-rest: var(--md-sys-elevation-level1);
+  --aether-elevation-raised: var(--md-sys-elevation-level2);
+  --aether-elevation-floating: var(--md-sys-elevation-level3);
+  --aether-elevation-overlay: var(--md-sys-elevation-level5);
+
+  /* State-layer opacities (M3 standard) */
+  --md-sys-state-hover-opacity: 0.08;   /* @kind other */
+  --md-sys-state-focus-opacity: 0.10;   /* @kind other */
+  --md-sys-state-pressed-opacity: 0.10; /* @kind other */
+  --md-sys-state-dragged-opacity: 0.16; /* @kind other */
+}
