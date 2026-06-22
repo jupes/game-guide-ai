@@ -5,6 +5,9 @@ import { SourceList } from './SourceList'
 import { ExchangeView } from './ExchangeView'
 import { ChatForm } from './ChatForm'
 import App from '../App'
+import { ThemeProvider } from '../ds/theme'
+import { AppNavProvider } from '../shell/AppNav'
+import { CurrentUserProvider } from '../shell/currentUser'
 import type { ChatResponse, Source } from '../api'
 import type { Exchange } from '../useChat'
 
@@ -84,13 +87,18 @@ describe('ChatForm', () => {
   })
 })
 
-describe('App (integration, mocked fetch)', () => {
-  it('runs the full flow: submit → loading → answer with sources', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(GROUNDED), { status: 200 })))
-    render(<App />)
-    await userEvent.type(screen.getByRole('textbox'), 'What is a Basilisk?{Enter}')
-    expect(await screen.findByText(/petrifies with its gaze/)).toBeInTheDocument()
-    expect(screen.getByText(/2 sources/i)).toBeInTheDocument()
-    vi.unstubAllGlobals()
+describe('App (integration — shell renders Landing)', () => {
+  it('renders the Landing screen by default', () => {
+    render(
+      <ThemeProvider>
+        <AppNavProvider>
+          <CurrentUserProvider>
+            <App />
+          </CurrentUserProvider>
+        </AppNavProvider>
+      </ThemeProvider>,
+    )
+    expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+    expect(screen.getByText('Aetheril')).toBeInTheDocument()
   })
 })
