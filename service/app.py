@@ -54,7 +54,7 @@ def healthz() -> dict[str, str]:
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, svc: RagService = Depends(get_service)) -> ChatResponse:
     try:
-        return svc.answer(req.prompt)
+        return svc.answer(req.prompt, mode=req.mode.value, conversation_id=req.conversation_id)
     except Exception as exc:  # retrieval/generation failure
         raise HTTPException(status_code=503, detail=f"upstream error: {exc}") from exc
 

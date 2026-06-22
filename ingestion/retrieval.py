@@ -143,14 +143,18 @@ def build_vector_sql(
     classes: set[str],
     entities: set[str],
     content_types: set[str] | None = None,
+    book_slugs: set[str] | None = None,
 ) -> tuple[str, tuple]:
     """
     Build the vector retrieval SQL + params. Filter composition:
-        (class_name ILIKE ANY OR entity_name ILIKE ANY) AND content_type = ANY
-    Returns the unfiltered _VECTOR_SQL when no filters are present.
+        (class_name ILIKE ANY OR entity_name ILIKE ANY)
+        AND content_type = ANY
+        AND book_slug = ANY  (when book_slugs provided)
+    Returns the unfiltered _VECTOR_SQL when no filters are present (including no books).
     """
     content_types = content_types or set()
-    if not classes and not entities and not content_types:
+    book_slugs = book_slugs or set()
+    if not classes and not entities and not content_types and not book_slugs:
         return _VECTOR_SQL, (emb_str, emb_str, k)
 
     params: list = [emb_str]
@@ -172,6 +176,9 @@ def build_vector_sql(
     if content_types:
         where_parts.append("content_type = ANY(%s)")
         params.append(list(content_types))
+    if book_slugs:
+        where_parts.append("book_slug = ANY(%s)")
+        params.append(list(book_slugs))
 
     where_clause = " AND ".join(where_parts)
     params.extend([emb_str, k])
@@ -331,13 +338,15 @@ def retrieve_top_k(
     classes: set[str] | None = None,
     entities: set[str] | None = None,
     content_types: set[str] | None = None,
+    book_slugs: set[str] | None = None,
     fallback: bool = False,
 ) -> list[RetrievedChunk]:
     emb_str = str(query_embedding)
     classes = classes or set()
     entities = entities or set()
     content_types = content_types or set()
-    has_filters = bool(classes or entities or content_types)
+    book_slugs = book_slugs or set()
+    has_filters = bool(classes or entities or content_types or book_slugs)
 
     def _run(sql: str, params) -> list[RetrievedChunk]:
         with conn.cursor() as cur:
@@ -355,7 +364,7 @@ def retrieve_top_k(
     if mode == "hybrid" and not has_filters:
         return _run(_HYBRID_SQL, (emb_str, query_text, k))
 
-    sql, params = build_vector_sql(emb_str, k, classes, entities, content_types)
+    sql, params = build_vector_sql(emb_str, k, classes, entities, content_types, book_slugs)
     chunks = _run(sql, params)
 
     if fallback and has_filters:
@@ -412,6 +421,43 @@ class RetrievalResult:
         return self.book_by_id.get(chunk.chunk_id)
 
 
+def _retrieval_scope_for_mode(
+    mode: str,
+    query_ctypes: set[str],
+) -> tuple[set[str] | None, set[str] | None]:
+    """Ingestion-layer copy of the mode→scope mapping (mirrors service/rag._scope_for_mode).
+
+    Kept here so RagRetriever remains self-contained without importing from service/.
+
+    Returns (effective_ctypes, allowed_books) — None means unscoped.
+    """
+    _SPELL_BOOKS: frozenset[str] = frozenset({
+        "phb-5e", "xge-5e", "tce-5e", "eepc-5e",
+        "scag-5e", "tortle-5e", "eberron-5e", "ravnica-5e",
+    })
+    _RULES_CTYPES: frozenset[str] = frozenset({
+        "rule", "class_feature", "condition", "race_feature", "background", "feat",
+    })
+    _GM_FORCED_CTYPES: frozenset[str] = frozenset({
+        "monster", "dm_guidance", "magic_item",
+    })
+
+    if mode == "spell":
+        return {"spell"}, set(_SPELL_BOOKS)
+
+    if mode == "rules":
+        intersection = query_ctypes & _RULES_CTYPES
+        effective = intersection if intersection else set(_RULES_CTYPES)
+        return effective, None
+
+    if mode == "gm":
+        effective = query_ctypes | set(_GM_FORCED_CTYPES)
+        return effective, None
+
+    # sage (default): pass query-derived ctypes through unchanged, no book filter.
+    return query_ctypes or None, None
+
+
 class RagRetriever:
     """Loads the corpus vocabulary once; `retrieve(prompt)` runs the full
     pipeline (embed → filter → vector search → full-text fetch → answerability)
@@ -423,15 +469,24 @@ class RagRetriever:
             (self.known_classes, self.known_entities,
              self.entity_to_ctype, self.class_to_ctype) = load_vocabulary(conn)
 
-    def retrieve(self, prompt: str, k: int = TOP_K, reranker=None) -> RetrievalResult:
+    def retrieve(
+        self, prompt: str, k: int = TOP_K, reranker=None, mode: str = "sage",
+    ) -> RetrievalResult:
         emb = embed_query(prompt)
         classes, entities = extract_query_entities(prompt, self.known_classes, self.known_entities)
         ctypes = extract_query_content_types(prompt, self.entity_to_ctype, self.class_to_ctype)
 
+        # Import lazily to avoid a circular dependency between retrieval ↔ rag.
+        # _scope_for_mode is a pure function in service/rag.py; we duplicate the
+        # logic here to keep ingestion/ self-contained.
+        effective_ctypes, allowed_books = _retrieval_scope_for_mode(mode, ctypes)
+
         with psycopg.connect(self.dsn) as conn:
             chunks = retrieve_top_k(
                 conn, emb, prompt, k, mode="vector",
-                classes=classes, entities=entities, content_types=ctypes,
+                classes=classes, entities=entities,
+                content_types=effective_ctypes,
+                book_slugs=allowed_books,
             )
             details = fetch_chunk_details(conn, [c.chunk_id for c in chunks])
 
