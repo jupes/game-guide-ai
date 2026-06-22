@@ -1,0 +1,182 @@
+/* ChatMessage — Aetheril campaign chat turn
+   ─────────────────────────────────────────────────────────────────────────────
+   Three roles:
+     dm      — left-aligned; avatar left; Spectral serif bubble (scroll feel)
+     player  — right-aligned; avatar right; ember-primary bubble
+     system  — centered muted pill notice
+
+   Asymmetric bubble radius:
+     The "tail corner" — the bubble corner closest to the avatar — is squared
+     (extra-small radius) to evoke a speech-bubble tail attachment point, while
+     the remaining three corners use the large radius for softness.
+
+     DM   (avatar left)  → top-left  corner is squared: border-radius TL variant
+     Player (avatar right) → top-right corner is squared: border-radius TR variant
+*/
+
+/* ── Root row ────────────────────────────────────────────────────────────── */
+
+.chat-message {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 14px 0;
+}
+
+.chat-message--dm {
+  flex-direction: row;
+}
+
+.chat-message--player {
+  flex-direction: row-reverse;
+}
+
+/* ── Avatar ──────────────────────────────────────────────────────────────── */
+
+.chat-message__avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--md-sys-shape-corner-full);
+  margin-top: 2px;
+  font-family: var(--aether-font-ui);
+  font-size: 16px;
+  font-weight: 700;
+  overflow: hidden;
+  background-color: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* DM avatar: ember tonal with gilt ring */
+.chat-message--dm .chat-message__avatar {
+  background-color: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  outline: 2px solid var(--aether-gold-leaf);
+  outline-offset: 2px;
+}
+
+/* Player avatar: arcane tonal */
+.chat-message--player .chat-message__avatar {
+  background-color: var(--aether-arcane-container);
+  color: var(--aether-on-arcane-container);
+}
+
+.chat-message__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.chat-message__avatar-icon {
+  font-family: 'Material Symbols Rounded', sans-serif;
+  font-size: 20px;
+  font-weight: normal;
+  line-height: 1;
+}
+
+/* ── Content column ──────────────────────────────────────────────────────── */
+
+.chat-message__content {
+  max-width: min(78%, 60ch);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-message--dm    .chat-message__content { align-items: flex-start; }
+.chat-message--player .chat-message__content { align-items: flex-end; }
+
+/* ── Author + time row ───────────────────────────────────────────────────── */
+
+.chat-message__meta {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.chat-message--dm     .chat-message__meta { flex-direction: row; }
+.chat-message--player .chat-message__meta { flex-direction: row-reverse; }
+
+.chat-message__author {
+  font-family: var(--aether-font-ui);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.chat-message--dm    .chat-message__author { color: var(--md-sys-color-primary); }
+.chat-message--player .chat-message__author { color: var(--md-sys-color-on-surface); }
+
+.chat-message__time {
+  font-family: var(--aether-font-ui);
+  font-size: 11px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ── Bubble ──────────────────────────────────────────────────────────────── */
+
+.chat-message__bubble {
+  padding: 12px 16px;
+  font-size: 16px;
+  line-height: 25px;
+  box-shadow: var(--md-sys-elevation-level1);
+}
+
+/* Asymmetric radius — tail corner squared toward the avatar
+   DM: avatar is on the LEFT → top-left corner is squared (extra-small)      */
+.chat-message__bubble--tail-left {
+  border-radius:
+    var(--md-sys-shape-corner-extra-small)   /* top-left  — tail */
+    var(--md-sys-shape-corner-large)          /* top-right */
+    var(--md-sys-shape-corner-large)          /* bottom-right */
+    var(--md-sys-shape-corner-large);         /* bottom-left */
+}
+
+/* Player: avatar is on the RIGHT → top-right corner is squared              */
+.chat-message__bubble--tail-right {
+  border-radius:
+    var(--md-sys-shape-corner-large)          /* top-left */
+    var(--md-sys-shape-corner-extra-small)   /* top-right — tail */
+    var(--md-sys-shape-corner-large)          /* bottom-right */
+    var(--md-sys-shape-corner-large);         /* bottom-left */
+}
+
+/* DM bubble — parchment scroll tonal, Spectral serif */
+.chat-message__bubble--body-serif {
+  font-family: var(--aether-font-body);
+  background-color: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface);
+  border: 1px solid var(--md-sys-color-outline-variant);
+}
+
+/* Player bubble — ember primary */
+.chat-message__bubble--ember {
+  font-family: var(--aether-font-ui);
+  background-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  border: none;
+}
+
+/* ── System notice ───────────────────────────────────────────────────────── */
+
+.chat-message--system {
+  justify-content: center;
+  margin: 8px 0;
+}
+
+.chat-message__system-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--md-sys-color-surface-container-high);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-full);
+  font-family: var(--aether-font-ui);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}

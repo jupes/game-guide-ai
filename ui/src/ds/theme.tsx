@@ -122,6 +122,7 @@ export function ThemeProvider({ children, initialTheme }: ThemeProviderProps) {
  * Access the active theme and controls.
  * Must be used inside a <ThemeProvider>; throws otherwise.
  */
+// eslint-disable-next-line react-refresh/only-export-components -- hook co-located with its provider; HMR-only rule, not a correctness issue
 export function useTheme(): ThemeContextValue {
   const ctx = useContext(ThemeContext)
   if (ctx === null) {

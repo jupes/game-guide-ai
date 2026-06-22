@@ -1,0 +1,164 @@
+/* DiceRoll — Aetheril signature dice chip
+   ─────────────────────────────────────────────────────────────────────────────
+   Bug patches vs. the DS source:
+   (a) clip-path bug: the hex polygon clip now lives on .dice-roll__pip-bg (the
+       filled background layer), NOT on .dice-roll__pip (the bordered ring).
+       This means the 2-px border is painted on the outer ring element and is
+       never clipped away.
+   (b) reduced-motion: the spin keyframe is defined normally and the animation
+       is applied only inside @media (prefers-reduced-motion: no-preference),
+       so users who have requested reduced motion never see it spin.
+*/
+
+/* ── Keyframe ────────────────────────────────────────────────────────────── */
+
+/* Only define (and use) the spin when the user has NOT requested
+   reduced motion.  This is the authoritative gating point — the
+   JS side looks at matchMedia to decide whether to add the class,
+   providing a belt-and-suspenders guarantee. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes aether-dice-spin {
+    0%   { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+}
+
+/* ── Root layout ─────────────────────────────────────────────────────────── */
+
+.dice-roll {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--aether-font-mono);
+}
+
+/* ── Die polygon chip ────────────────────────────────────────────────────── */
+
+/* .dice-roll__pip  — the outer bordered ring element.
+   No clip-path here; border must always be visible.                          */
+.dice-roll__pip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  /* border and background/color are applied via modifier classes below */
+  border-width: 2px;
+  border-style: solid;
+  border-radius: 22% 22% 22% 22% / 30% 30% 30% 30%;
+  font-weight: 600;
+  overflow: visible; /* never clip the border */
+  z-index: 0;
+}
+
+/* .dice-roll__pip-bg  — full-bleed background layer carrying the hex clip.
+   Sits behind the text; the border on .pip remains unclipped.                */
+.dice-roll__pip-bg {
+  position: absolute;
+  inset: 0;
+  clip-path: polygon(50% 0%, 95% 25%, 95% 75%, 50% 100%, 5% 75%, 5% 25%);
+  z-index: -1;
+  /* background-color set via JS inline style so it picks up tone values */
+}
+
+/* Face value / pip text */
+.dice-roll__pip-value {
+  position: relative;
+  z-index: 1;
+  line-height: 1;
+}
+
+/* Spin: only applied by JS when rolling=true AND reduced-motion allows it */
+@media (prefers-reduced-motion: no-preference) {
+  .dice-roll__pip--spinning {
+    animation: aether-dice-spin 600ms var(--md-sys-motion-easing-emphasized) infinite;
+  }
+}
+
+/* Size variants */
+.dice-roll--sm .dice-roll__pip { width: 36px; height: 36px; font-size: 15px; }
+.dice-roll--md .dice-roll__pip { width: 48px; height: 48px; font-size: 20px; }
+.dice-roll--lg .dice-roll__pip { width: 60px; height: 60px; font-size: 26px; }
+
+/* ── Crit / fumble tone ──────────────────────────────────────────────────── */
+
+.dice-roll--nat20 .dice-roll__pip {
+  border-color: var(--aether-nat20);
+  color: var(--aether-nat20);
+}
+.dice-roll--nat20 .dice-roll__pip-bg {
+  background-color: var(--aether-nat20-container);
+}
+.dice-roll--nat20 .dice-roll__total,
+.dice-roll--nat20 .dice-roll__crit-badge {
+  color: var(--aether-nat20);
+}
+
+.dice-roll--nat1 .dice-roll__pip {
+  border-color: var(--aether-nat1);
+  color: var(--aether-nat1);
+}
+.dice-roll--nat1 .dice-roll__pip-bg {
+  background-color: var(--aether-nat1-container);
+}
+.dice-roll--nat1 .dice-roll__total,
+.dice-roll--nat1 .dice-roll__crit-badge {
+  color: var(--aether-nat1);
+}
+
+/* Normal (non-crit) tone */
+.dice-roll--normal .dice-roll__pip {
+  border-color: var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface);
+}
+.dice-roll--normal .dice-roll__pip-bg {
+  background-color: var(--md-sys-color-surface-container-high);
+}
+.dice-roll--normal .dice-roll__total {
+  color: var(--md-sys-color-on-surface);
+}
+
+/* ── Info column ─────────────────────────────────────────────────────────── */
+
+.dice-roll__info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dice-roll__label {
+  font-family: var(--aether-font-ui);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.dice-roll__result-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.dice-roll__total {
+  font-weight: 600;
+}
+
+.dice-roll__notation {
+  font-family: var(--aether-font-ui);
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.dice-roll__crit-badge {
+  font-family: var(--aether-font-ui);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+}
+
+/* Size-scaled total font size (matches pip) */
+.dice-roll--sm .dice-roll__total { font-size: 19px; }
+.dice-roll--md .dice-roll__total { font-size: 24px; }
+.dice-roll--lg .dice-roll__total { font-size: 30px; }

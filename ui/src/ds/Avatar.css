@@ -1,0 +1,51 @@
+/* ── Avatar ──────────────────────────────────────────────────────────────────
+   Round portrait for players, characters, and the DM.
+   Tonal backgrounds use design-system color tokens.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  font-family: var(--aether-font-ui);
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  overflow: hidden;
+  box-sizing: border-box;
+  /* font-size and width/height are set inline from the `size` prop */
+}
+
+/* ── Tones ────────────────────────────────────────────────────────────────── */
+.avatar--gold {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.avatar--ember {
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+
+.avatar--verdigris {
+  background: var(--md-sys-color-tertiary-container);
+  color: var(--md-sys-color-on-tertiary-container);
+}
+
+.avatar--arcane {
+  background: var(--aether-arcane-container);
+  color: var(--aether-on-arcane-container);
+}
+
+/* ── Ring — gilt ring for the active speaker / DM ─────────────────────────── */
+.avatar--ring {
+  box-shadow: 0 0 0 2px var(--md-sys-color-surface),
+              0 0 0 4px var(--aether-gold-leaf);
+}
+
+/* ── Icon inside avatar ───────────────────────────────────────────────────── */
+.avatar__icon {
+  /* font-size is set inline proportionally to size */
+  line-height: 1;
+}

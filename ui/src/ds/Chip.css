@@ -1,0 +1,101 @@
+/* ── Chip ────────────────────────────────────────────────────────────────────
+   Material 3 chip — assist / filter / input / suggestion.
+   8px radius; filter-selected fills with ember/gold container.
+   All values from design-system tokens.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--aether-space-1); /* 6px — approximated with space-1 (4px); actual 6px inline */
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--aether-radius-chip); /* 8px */
+  border: 1px solid var(--md-sys-color-outline-variant);
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: var(--aether-font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  cursor: default;
+  user-select: none;
+  overflow: hidden;
+  transition: background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),
+              border-color var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+  box-sizing: border-box;
+}
+
+/* Input chip has tighter right padding for the close button */
+.chip--input {
+  padding: 0 6px 0 12px;
+}
+
+/* ── Filter selected ──────────────────────────────────────────────────────── */
+.chip--selected {
+  background: var(--md-sys-color-secondary-container);  /* ember/gold fill */
+  color: var(--md-sys-color-on-secondary-container);
+  border-color: transparent;
+}
+
+/* ── Disabled ─────────────────────────────────────────────────────────────── */
+.chip--disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Clickable ────────────────────────────────────────────────────────────── */
+.chip--clickable {
+  cursor: pointer;
+}
+
+/* ── State layer ──────────────────────────────────────────────────────────── */
+.chip__state-layer {
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+@media (hover: hover) {
+  .chip--clickable:not(.chip--disabled):hover .chip__state-layer {
+    opacity: var(--md-sys-state-hover-opacity); /* 0.08 */
+  }
+}
+
+/* ── Icon ─────────────────────────────────────────────────────────────────── */
+.chip__icon {
+  font-size: 18px;
+  position: relative;
+  line-height: 1;
+}
+
+/* ── Label ────────────────────────────────────────────────────────────────── */
+.chip__label {
+  position: relative;
+}
+
+/* ── Remove button (input chip) ───────────────────────────────────────────── */
+.chip__remove {
+  font-size: 18px;
+  position: relative;
+  cursor: pointer;
+  border-radius: 50%;
+  padding: 1px;
+  line-height: 1;
+  /* 44px touch area is on the chip itself; close is a secondary affordance */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip {
+    transition: none;
+  }
+
+  .chip__state-layer {
+    transition: none;
+  }
+}

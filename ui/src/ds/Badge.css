@@ -1,0 +1,76 @@
+/* ── Badge ───────────────────────────────────────────────────────────────────
+   Small status / count indicator with Aetheril semantic tones.
+   Extension: `nat1` tone (critical failure) added beyond the DS .d.ts spec.
+   All colour values come from design-system tokens.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--aether-space-1);   /* 4px */
+  min-width: 20px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--md-sys-shape-corner-full); /* 9999px */
+  font-family: var(--aether-font-ui);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  line-height: 1;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+/* ── Tones ────────────────────────────────────────────────────────────────── */
+.badge--primary {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+.badge--neutral {
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.badge--gold {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.badge--verdigris {
+  background: var(--md-sys-color-tertiary-container);
+  color: var(--md-sys-color-on-tertiary-container);
+}
+
+.badge--arcane {
+  background: var(--aether-arcane-container);
+  color: var(--aether-on-arcane-container);
+}
+
+.badge--error {
+  background: var(--md-sys-color-error);
+  color: var(--md-sys-color-on-error);
+}
+
+/* Critical success — green */
+.badge--nat20 {
+  background: var(--aether-nat20-container);
+  color: var(--aether-nat20);
+}
+
+/* Critical failure — error red (DS extension: not in upstream .d.ts) */
+.badge--nat1 {
+  background: var(--aether-nat1-container);
+  color: var(--aether-nat1);
+}
+
+/* ── Dot mode ─────────────────────────────────────────────────────────────── */
+.badge--dot {
+  display: inline-block;
+  min-width: unset;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border-radius: 50%;
+}

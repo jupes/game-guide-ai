@@ -1,0 +1,143 @@
+/* ── TextField ───────────────────────────────────────────────────────────────
+   Aetheril Material 3 text field — outlined (default) or filled.
+   4px corner radius (--aether-radius-field) for outlined.
+   Filled: extra-small top corners, flat bottom border only.
+   All values from tokens only. */
+
+.aether-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-1);
+}
+
+.aether-field[data-full-width="true"] {
+  width: 100%;
+}
+
+.aether-field--disabled {
+  opacity: 0.38;
+}
+
+/* ── Label ── */
+.aether-field__label {
+  font-family: var(--aether-font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  color: var(--md-sys-color-on-surface-variant);
+  transition: color var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+.aether-field__label--error {
+  color: var(--md-sys-color-error);
+}
+
+.aether-field__label--focus {
+  color: var(--md-sys-color-primary);
+}
+
+/* ── Field row (border + icons + input) ── */
+.aether-field__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 var(--aether-space-4);
+  height: var(--aether-touch-min);
+  min-height: var(--aether-touch-min);
+  transition:
+    border-color var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),
+    border-width var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+.aether-field__row--multiline {
+  align-items: flex-start;
+  padding: 12px var(--aether-space-4);
+  height: auto;
+}
+
+/* Outlined */
+.aether-field[data-variant="outlined"] .aether-field__row {
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--aether-radius-field);
+  background: transparent;
+}
+
+.aether-field[data-variant="outlined"] .aether-field__row--focus {
+  border-width: 2px;
+  border-color: var(--md-sys-color-primary);
+}
+
+.aether-field[data-error="true"][data-variant="outlined"] .aether-field__row {
+  border-color: var(--md-sys-color-error);
+}
+
+/* Filled */
+.aether-field[data-variant="filled"] .aether-field__row {
+  background: var(--md-sys-color-surface-container-highest);
+  border: none;
+  border-bottom: 1px solid var(--md-sys-color-outline);
+  border-radius:
+    var(--md-sys-shape-corner-extra-small)
+    var(--md-sys-shape-corner-extra-small)
+    0
+    0;
+}
+
+.aether-field[data-variant="filled"] .aether-field__row--focus {
+  border-bottom-width: 2px;
+  border-bottom-color: var(--md-sys-color-primary);
+}
+
+.aether-field[data-error="true"][data-variant="filled"] .aether-field__row {
+  border-bottom-color: var(--md-sys-color-error);
+}
+
+/* ── Native input / textarea ── */
+.aether-field__input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--aether-font-body);
+  font-size: 16px;
+  line-height: 24px;
+  color: var(--md-sys-color-on-surface);
+  padding: 8px 0;
+  width: 100%;
+  min-width: 0;
+}
+
+.aether-field__input--multiline {
+  padding: 0;
+  resize: vertical;
+}
+
+/* ── Icons ── */
+.aether-field__icon {
+  font-size: 20px;
+  color: var(--md-sys-color-on-surface-variant);
+  flex-shrink: 0;
+}
+
+.aether-field__icon--error {
+  color: var(--md-sys-color-error);
+}
+
+/* ── Supporting text ── */
+.aether-field__support {
+  font-family: var(--aether-font-ui);
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+  padding-inline: var(--aether-space-1);
+}
+
+.aether-field__support--error {
+  color: var(--md-sys-color-error);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aether-field__row,
+  .aether-field__label {
+    transition: none;
+  }
+}
