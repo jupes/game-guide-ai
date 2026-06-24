@@ -6,6 +6,8 @@
  * result so the UI never throws on a bad day.
  */
 
+export type ChatMode = 'sage' | 'spell' | 'rules' | 'gm'
+
 export interface Source {
   book: string
   chapter: string | null
@@ -19,6 +21,9 @@ export interface ChatResponse {
   answer: string
   sources: Source[]
   answerable: boolean
+  /** Optional echo fields from the service. */
+  mode?: string
+  conversation_id?: string | null
 }
 
 export type ChatResult =
@@ -27,6 +32,8 @@ export type ChatResult =
 
 export async function postChat(
   prompt: string,
+  mode: ChatMode = 'sage',
+  conversationId?: string | null,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ChatResult> {
   let res: Response
@@ -34,7 +41,7 @@ export async function postChat(
     res = await fetchImpl('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, mode, conversation_id: conversationId ?? null }),
     })
   } catch {
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }

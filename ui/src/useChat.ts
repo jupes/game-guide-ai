@@ -5,7 +5,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { postChat } from './api'
-import type { ChatResponse, ChatResult } from './api'
+import type { ChatResponse, ChatResult, ChatMode } from './api'
 
 export type ExchangeStatus = 'pending' | 'done' | 'error'
 
@@ -17,12 +17,28 @@ export interface Exchange {
   error?: string
 }
 
-type PostFn = (prompt: string) => Promise<ChatResult>
+export type PostFn = (prompt: string, mode: ChatMode, conversationId: string | null) => Promise<ChatResult>
 
-export function useChat(post: PostFn = postChat) {
-  const [exchanges, setExchanges] = useState<Exchange[]>([])
+export interface UseChatOptions {
+  post?: PostFn
+  mode: ChatMode
+  conversationId: string | null
+}
+
+interface ChatState {
+  /** The conversationId these exchanges belong to. */
+  scopeId: string | null
+  exchanges: Exchange[]
+}
+
+export function useChat({ post = postChat, mode, conversationId }: UseChatOptions) {
+  const [state, setState] = useState<ChatState>({ scopeId: conversationId, exchanges: [] })
   const pendingRef = useRef(false)
   const nextId = useRef(1)
+
+  // Derive the visible exchanges: if the scope has changed, treat as empty.
+  // This is a pure derivation — no effect needed.
+  const exchanges = state.scopeId === conversationId ? state.exchanges : []
 
   const pending = exchanges.some((e) => e.status === 'pending')
 
@@ -33,21 +49,28 @@ export function useChat(post: PostFn = postChat) {
       pendingRef.current = true
 
       const id = nextId.current++
-      setExchanges((prev) => [...prev, { id, prompt: trimmed, status: 'pending' }])
+      setState((prev) => ({
+        scopeId: conversationId,
+        exchanges: [
+          ...(prev.scopeId === conversationId ? prev.exchanges : []),
+          { id, prompt: trimmed, status: 'pending' },
+        ],
+      }))
 
-      void post(trimmed).then((result) => {
+      void post(trimmed, mode, conversationId).then((result) => {
         pendingRef.current = false
-        setExchanges((prev) =>
-          prev.map((e) => {
+        setState((prev) => ({
+          scopeId: conversationId,
+          exchanges: prev.exchanges.map((e) => {
             if (e.id !== id) return e
             return result.kind === 'ok'
               ? { ...e, status: 'done', response: result.response }
               : { ...e, status: 'error', error: result.message }
           }),
-        )
+        }))
       })
     },
-    [post],
+    [post, mode, conversationId],
   )
 
   return { exchanges, send, pending }

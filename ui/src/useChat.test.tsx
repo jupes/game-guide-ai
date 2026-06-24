@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useChat } from './useChat'
-import type { ChatResult } from './api'
+import type { ChatResult, ChatMode } from './api'
+import type { PostFn } from './useChat'
 
 const GROUNDED: ChatResult = {
   kind: 'ok',
@@ -17,14 +18,14 @@ function deferredPost() {
   const promise = new Promise<ChatResult>((r) => {
     resolve = r
   })
-  const post = () => promise
+  const post: PostFn = () => promise
   return { post, resolve }
 }
 
 describe('useChat', () => {
   it('appends a pending exchange then resolves it to done', async () => {
     const { post, resolve } = deferredPost()
-    const { result } = renderHook(() => useChat(post))
+    const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: null }))
 
     act(() => {
       result.current.send('What is a Basilisk?')
@@ -40,8 +41,8 @@ describe('useChat', () => {
   })
 
   it('resolves to error on a failed result', async () => {
-    const post = async (): Promise<ChatResult> => ({ kind: 'error', message: 'Service unavailable' })
-    const { result } = renderHook(() => useChat(post))
+    const post: PostFn = async () => ({ kind: 'error', message: 'Service unavailable' })
+    const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: null }))
 
     act(() => {
       result.current.send('Q')
@@ -52,7 +53,7 @@ describe('useChat', () => {
 
   it('ignores sends while a request is pending (no double-submit)', async () => {
     const { post, resolve } = deferredPost()
-    const { result } = renderHook(() => useChat(post))
+    const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: null }))
 
     act(() => {
       result.current.send('first')
@@ -65,11 +66,43 @@ describe('useChat', () => {
   })
 
   it('ignores empty / whitespace-only prompts', () => {
-    const post = async (): Promise<ChatResult> => GROUNDED
-    const { result } = renderHook(() => useChat(post))
+    const post: PostFn = async () => GROUNDED
+    const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: null }))
     act(() => {
       result.current.send('   ')
     })
     expect(result.current.exchanges).toHaveLength(0)
+  })
+
+  it('clears exchanges when conversationId changes', async () => {
+    const post: PostFn = async () => GROUNDED
+    const { result, rerender } = renderHook(
+      ({ convId }: { convId: string | null }) =>
+        useChat({ post, mode: 'sage', conversationId: convId }),
+      { initialProps: { convId: 'conv-1' } },
+    )
+
+    act(() => {
+      result.current.send('First question')
+    })
+    await waitFor(() => expect(result.current.exchanges).toHaveLength(1))
+
+    rerender({ convId: 'conv-2' })
+    await waitFor(() => expect(result.current.exchanges).toHaveLength(0))
+  })
+
+  it('calls post with the correct mode and conversationId', async () => {
+    const calls: Array<[string, ChatMode, string | null]> = []
+    const post: PostFn = async (prompt, mode, conversationId) => {
+      calls.push([prompt, mode, conversationId])
+      return GROUNDED
+    }
+    const { result } = renderHook(() => useChat({ post, mode: 'spell', conversationId: 'conv-xyz' }))
+
+    act(() => {
+      result.current.send('Cast fireball')
+    })
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0]).toEqual(['Cast fireball', 'spell', 'conv-xyz'])
   })
 })

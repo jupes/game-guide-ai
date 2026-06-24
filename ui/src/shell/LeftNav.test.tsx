@@ -5,6 +5,8 @@ import { AppNavContext } from './AppNav'
 import type { AppNavState } from './AppNav'
 import { CurrentUserContext } from './currentUser'
 import type { CurrentUserContextValue } from './currentUser'
+import { ConversationStoreProvider } from './ConversationStoreContext'
+import { MemoryConversationStore } from './conversationStore'
 import { ThemeProvider } from '../ds/theme'
 import { LeftNav } from './LeftNav'
 import { TopBar } from './TopBar'
@@ -37,6 +39,20 @@ function makeUserState(overrides: Partial<CurrentUserContextValue> = {}): Curren
   }
 }
 
+function renderLeftNav(navState: AppNavState, store = new MemoryConversationStore()) {
+  return render(
+    <ThemeProvider>
+      <AppNavContext.Provider value={navState}>
+        <CurrentUserContext.Provider value={makeUserState()}>
+          <ConversationStoreProvider store={store}>
+            <LeftNav />
+          </ConversationStoreProvider>
+        </CurrentUserContext.Provider>
+      </AppNavContext.Provider>
+    </ThemeProvider>,
+  )
+}
+
 describe('LeftNav (#13)', () => {
   it('renders all 4 mode labels', () => {
     const navState = makeNavState()
@@ -45,7 +61,9 @@ describe('LeftNav (#13)', () => {
       <ThemeProvider>
         <AppNavContext.Provider value={navState}>
           <CurrentUserContext.Provider value={userState}>
-            <LeftNav />
+            <ConversationStoreProvider store={new MemoryConversationStore()}>
+              <LeftNav />
+            </ConversationStoreProvider>
           </CurrentUserContext.Provider>
         </AppNavContext.Provider>
       </ThemeProvider>,
@@ -64,7 +82,9 @@ describe('LeftNav (#13)', () => {
       <ThemeProvider>
         <AppNavContext.Provider value={navState}>
           <CurrentUserContext.Provider value={userState}>
-            <LeftNav />
+            <ConversationStoreProvider store={new MemoryConversationStore()}>
+              <LeftNav />
+            </ConversationStoreProvider>
           </CurrentUserContext.Provider>
         </AppNavContext.Provider>
       </ThemeProvider>,
@@ -80,7 +100,9 @@ describe('LeftNav (#13)', () => {
       <ThemeProvider>
         <AppNavContext.Provider value={navState}>
           <CurrentUserContext.Provider value={userState}>
-            <LeftNav />
+            <ConversationStoreProvider store={new MemoryConversationStore()}>
+              <LeftNav />
+            </ConversationStoreProvider>
           </CurrentUserContext.Provider>
         </AppNavContext.Provider>
       </ThemeProvider>,
@@ -88,6 +110,58 @@ describe('LeftNav (#13)', () => {
     // The selected chip gets the chip--selected class
     const sageChip = screen.getByText('Sage').closest('.chip')
     expect(sageChip).toHaveClass('chip--selected')
+  })
+})
+
+// ── CP-F5.4 — LeftNav conversation list (#22) ────────────────────────────────
+
+describe('LeftNav conversation list (#22)', () => {
+  it('lists conversations for the active mode', () => {
+    const store = new MemoryConversationStore()
+    store.create('sage', 'Dragon Lore')
+    store.create('sage', 'Basilisk Info')
+    store.create('spell', 'Fireball details') // different mode — should not appear
+
+    renderLeftNav(makeNavState({ mode: 'sage' }), store)
+
+    expect(screen.getByText('Dragon Lore')).toBeInTheDocument()
+    expect(screen.getByText('Basilisk Info')).toBeInTheDocument()
+    expect(screen.queryByText('Fireball details')).not.toBeInTheDocument()
+  })
+
+  it('clicking a conversation calls setConversationId with its id', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', 'Dragon Lore')
+    const setConversationId = vi.fn()
+
+    renderLeftNav(makeNavState({ setConversationId }), store)
+
+    await userEvent.click(screen.getByText('Dragon Lore'))
+    expect(setConversationId).toHaveBeenCalledWith(conv.id)
+  })
+
+  it('clicking "New conversation" creates a conversation and calls setConversationId', async () => {
+    const store = new MemoryConversationStore()
+    const setConversationId = vi.fn()
+
+    renderLeftNav(makeNavState({ mode: 'sage', setConversationId }), store)
+
+    expect(store.list('sage')).toHaveLength(0)
+    await userEvent.click(screen.getByRole('button', { name: /new conversation/i }))
+
+    const sagConvs = store.list('sage')
+    expect(sagConvs).toHaveLength(1)
+    expect(setConversationId).toHaveBeenCalledWith(sagConvs[0].id)
+  })
+
+  it('marks the active conversation as aria-pressed=true', () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', 'Dragon Lore')
+
+    renderLeftNav(makeNavState({ conversationId: conv.id }), store)
+
+    const btn = screen.getByText('Dragon Lore').closest('button')
+    expect(btn).toHaveAttribute('aria-pressed', 'true')
   })
 })
 
