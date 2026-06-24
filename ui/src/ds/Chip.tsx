@@ -67,12 +67,29 @@ export function Chip({
     }
   }
 
+  // Interactive chips must be keyboard-reachable and expose a button role so
+  // assistive technology announces them correctly (a11y fix — CP-F6.1).
+  const isInteractive = Boolean(onClick) && !disabled
+  const interactiveProps = isInteractive
+    ? {
+        role: 'button' as const,
+        tabIndex: 0,
+        onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            handleClick()
+          }
+        },
+      }
+    : {}
+
   return (
     <div
       className={classes}
       onClick={handleClick}
       style={style}
       {...rest}
+      {...interactiveProps}
     >
       <span className="chip__state-layer" aria-hidden="true" />
 

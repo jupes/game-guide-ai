@@ -79,6 +79,12 @@
   position: relative;
 }
 
+/* ── Focus ring (a11y fix — CP-F6.1) ─────────────────────────────────────── */
+.chip:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
 /* ── Remove button (input chip) ───────────────────────────────────────────── */
 .chip__remove {
   font-size: 18px;
