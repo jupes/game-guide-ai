@@ -23,6 +23,9 @@ from pathlib import Path
 
 import psycopg
 
+# Canonical mode→scope mapping (same-directory leaf module; no project deps).
+from scope import scope_for_mode  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Load .env from repo root (shared by eval + service)
 # ---------------------------------------------------------------------------
@@ -421,43 +424,6 @@ class RetrievalResult:
         return self.book_by_id.get(chunk.chunk_id)
 
 
-def _retrieval_scope_for_mode(
-    mode: str,
-    query_ctypes: set[str],
-) -> tuple[set[str] | None, set[str] | None]:
-    """Ingestion-layer copy of the mode→scope mapping (mirrors service/rag._scope_for_mode).
-
-    Kept here so RagRetriever remains self-contained without importing from service/.
-
-    Returns (effective_ctypes, allowed_books) — None means unscoped.
-    """
-    _SPELL_BOOKS: frozenset[str] = frozenset({
-        "phb-5e", "xge-5e", "tce-5e", "eepc-5e",
-        "scag-5e", "tortle-5e", "eberron-5e", "ravnica-5e",
-    })
-    _RULES_CTYPES: frozenset[str] = frozenset({
-        "rule", "class_feature", "condition", "race_feature", "background", "feat",
-    })
-    _GM_FORCED_CTYPES: frozenset[str] = frozenset({
-        "monster", "dm_guidance", "magic_item",
-    })
-
-    if mode == "spell":
-        return {"spell"}, set(_SPELL_BOOKS)
-
-    if mode == "rules":
-        intersection = query_ctypes & _RULES_CTYPES
-        effective = intersection if intersection else set(_RULES_CTYPES)
-        return effective, None
-
-    if mode == "gm":
-        effective = query_ctypes | set(_GM_FORCED_CTYPES)
-        return effective, None
-
-    # sage (default): pass query-derived ctypes through unchanged, no book filter.
-    return query_ctypes or None, None
-
-
 class RagRetriever:
     """Loads the corpus vocabulary once; `retrieve(prompt)` runs the full
     pipeline (embed → filter → vector search → full-text fetch → answerability)
@@ -476,10 +442,7 @@ class RagRetriever:
         classes, entities = extract_query_entities(prompt, self.known_classes, self.known_entities)
         ctypes = extract_query_content_types(prompt, self.entity_to_ctype, self.class_to_ctype)
 
-        # Import lazily to avoid a circular dependency between retrieval ↔ rag.
-        # _scope_for_mode is a pure function in service/rag.py; we duplicate the
-        # logic here to keep ingestion/ self-contained.
-        effective_ctypes, allowed_books = _retrieval_scope_for_mode(mode, ctypes)
+        effective_ctypes, allowed_books = scope_for_mode(mode, ctypes)
 
         with psycopg.connect(self.dsn) as conn:
             chunks = retrieve_top_k(
