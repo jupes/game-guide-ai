@@ -13,8 +13,8 @@
  *  - DM role (ember tone with icon) is supported
  */
 
-import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { Avatar } from './Avatar'
 
 describe('Avatar — initials fallback', () => {
@@ -130,6 +130,17 @@ describe('Avatar — size', () => {
     const el = screen.getByTestId('avatar')
     expect(el.style.width).toBe('56px')
     expect(el.style.height).toBe('56px')
+  })
+})
+
+describe('Avatar — standard HTML attribute passthrough (02t.6)', () => {
+  it('forwards aria-label and onClick to the root element', () => {
+    const onClick = vi.fn()
+    render(<Avatar name="Thalia" aria-label="Open profile" onClick={onClick} data-testid="avatar" />)
+    const el = screen.getByTestId('avatar')
+    expect(el.getAttribute('aria-label')).toBe('Open profile')
+    fireEvent.click(el)
+    expect(onClick).toHaveBeenCalledTimes(1)
   })
 })
 
