@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir fastapi "uvicorn[standard]" openai "psycopg[binar
 
 # Copy only what the service imports at runtime
 COPY ingestion/retrieval.py ingestion/retrieval.py
+COPY ingestion/scope.py    ingestion/scope.py
 COPY ingestion/rerank.py   ingestion/rerank.py
 COPY service/              service/
 
