@@ -162,6 +162,39 @@ describe('ChatPane (#21)', () => {
     expect(screen.getByRole('button', { name: /export/i })).toBeInTheDocument()
   })
 
+  it('shows a creative marker for GM answers that are not grounded (answerable=false)', async () => {
+    const creative: ChatResult = {
+      kind: 'ok',
+      response: {
+        answer: 'The swamp hides a Mire Crone, a hag of my own devising.',
+        sources: [],
+        answerable: false,
+      },
+    }
+    const post: PostFn = async () => creative
+    render(<Wrapper navState={{ mode: 'gm' }} post={post} />)
+
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'Invent a swamp monster')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByText(/may include invented content/i)).toBeInTheDocument())
+  })
+
+  it('does not show the creative marker for grounded sage answers', async () => {
+    const post: PostFn = async () => GROUNDED
+    render(<Wrapper post={post} />)
+
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'What is a Basilisk?')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/may include invented content/i)).not.toBeInTheDocument()
+  })
+
   it('renders an error message in a system ChatMessage', async () => {
     const post: PostFn = async () => ({ kind: 'error', message: 'Service unavailable' })
     render(<Wrapper post={post} />)

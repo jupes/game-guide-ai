@@ -57,18 +57,28 @@ export function useChat({ post = postChat, mode, conversationId }: UseChatOption
         ],
       }))
 
-      void post(trimmed, mode, conversationId).then((result) => {
+      const settle = (update: Partial<Exchange>) => {
         pendingRef.current = false
         setState((prev) => ({
           scopeId: conversationId,
-          exchanges: prev.exchanges.map((e) => {
-            if (e.id !== id) return e
-            return result.kind === 'ok'
-              ? { ...e, status: 'done', response: result.response }
-              : { ...e, status: 'error', error: result.message }
-          }),
+          exchanges: prev.exchanges.map((e) => (e.id === id ? { ...e, ...update } : e)),
         }))
-      })
+      }
+
+      void post(trimmed, mode, conversationId).then(
+        (result) =>
+          settle(
+            result.kind === 'ok'
+              ? { status: 'done', response: result.response }
+              : { status: 'error', error: result.message },
+          ),
+        // A custom PostFn may reject; don't strand pendingRef (locks the composer).
+        (err: unknown) =>
+          settle({
+            status: 'error',
+            error: err instanceof Error ? err.message : 'Unexpected error — please try again.',
+          }),
+      )
     },
     [post, mode, conversationId],
   )

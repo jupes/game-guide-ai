@@ -378,6 +378,37 @@ def test_merge_results_primary_chunks_ranked_first():
         assert merged_ids.index(pid) < merged_ids.index("sec1")
 
 
+# ---------------------------------------------------------------------------
+# Scope-mapping parity — the mode→scope logic is duplicated across
+# service/rag._scope_for_mode and ingestion/retrieval._retrieval_scope_for_mode
+# (the latter is what actually runs in production). They must not drift.
+# ---------------------------------------------------------------------------
+
+def test_scope_mappings_agree_across_modes_and_inputs():
+    """The service copy and the ingestion (production) copy must return identical
+    (effective_ctypes, allowed_books) for every mode and a range of query ctypes."""
+    from service.rag import _scope_for_mode  # importing service.rag puts ingestion/ on sys.path
+    from retrieval import _retrieval_scope_for_mode
+
+    query_inputs = [
+        set(),
+        {"rule"},
+        {"monster"},
+        {"spell"},
+        {"class_feature", "rule"},
+        {"monster", "dm_guidance"},
+        {"spell", "feat", "background"},
+        {"unknown_ctype"},
+    ]
+    modes = ["sage", "spell", "rules", "gm", "unrecognised"]
+
+    for mode in modes:
+        for q in query_inputs:
+            svc = _scope_for_mode(mode, set(q))
+            ing = _retrieval_scope_for_mode(mode, set(q))
+            assert svc == ing, f"scope drift for mode={mode!r} q={q!r}: {svc} != {ing}"
+
+
 def _run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

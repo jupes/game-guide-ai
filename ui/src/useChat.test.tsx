@@ -51,6 +51,23 @@ describe('useChat', () => {
     expect(result.current.exchanges[0].error).toMatch(/unavailable/i)
   })
 
+  it('marks the exchange errored (and unlocks) if post() rejects', async () => {
+    const post: PostFn = () => Promise.reject(new Error('boom'))
+    const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: null }))
+
+    act(() => {
+      result.current.send('Q')
+    })
+    await waitFor(() => expect(result.current.exchanges[0].status).toBe('error'))
+    expect(result.current.pending).toBe(false)
+
+    // Composer must accept a follow-up send after the rejection.
+    act(() => {
+      result.current.send('second')
+    })
+    expect(result.current.exchanges).toHaveLength(2)
+  })
+
   it('ignores sends while a request is pending (no double-submit)', async () => {
     const { post, resolve } = deferredPost()
     const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: null }))

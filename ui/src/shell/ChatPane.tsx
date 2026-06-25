@@ -15,6 +15,7 @@ import { SourceList } from '../components/SourceList'
 import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { useAppNav } from './AppNav'
+import { parseDiceNotation } from './diceNotation'
 import type { ChatMode } from '../api'
 import type { PostFn } from '../useChat'
 
@@ -25,30 +26,6 @@ const EMPTY_LABELS: Record<ChatMode, string> = {
   spell: 'Ask the Spell Archivist…',
   rules: 'Ask the Rules Arbiter…',
   gm: 'Ask the Game Master…',
-}
-
-// ── Dice notation parser ──────────────────────────────────────────────────────
-
-interface DiceMatch {
-  die: number
-  value: number
-  modifier: number
-  total: number
-}
-
-function parseDiceNotation(text: string): DiceMatch | null {
-  try {
-    // Match patterns like "1d20+5=18" or "2d6 - 3 = 9"
-    const match = /(\d+)d(\d+)(?:\s*[+−-]\s*(\d+))?\s*=\s*(\d+)/i.exec(text)
-    if (!match) return null
-    const die = parseInt(match[2], 10)
-    const value = parseInt(match[1], 10) // rolled value (first number before d)
-    const modifier = match[3] ? parseInt(match[3], 10) : 0
-    const total = parseInt(match[4], 10)
-    return { die, value, modifier, total }
-  } catch {
-    return null
-  }
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -122,6 +99,13 @@ export function ChatPane({ post }: { post?: PostFn }): React.JSX.Element {
               {exchange.status === 'done' && exchange.response && (
                 <>
                   <ChatMessage role="dm">{exchange.response.answer}</ChatMessage>
+
+                  {/* GM creative notice — answer is invented/extrapolated, not grounded */}
+                  {mode === 'gm' && !exchange.response.answerable && (
+                    <ChatMessage role="system">
+                      ✦ Creative — may include invented content not drawn from the sources.
+                    </ChatMessage>
+                  )}
 
                   {/* Dice roll — parse answer for dice notation */}
                   {(() => {
