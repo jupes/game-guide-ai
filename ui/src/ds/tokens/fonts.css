@@ -1,0 +1,32 @@
+/* ── Fonts ─────────────────────────────────────────────────────────────
+   Aetheril DS pairs four Google families:
+   - Cinzel        : engraved fantasy display (titles, hero, character names)
+   - Spectral      : warm bookish serif (reading text, chat messages)
+   - Mulish        : clean humanist sans (UI, labels, buttons, metadata)
+   - JetBrains Mono : technical mono (dice math, stat blocks, code, tokens)
+   Loaded from Google Fonts. @import must precede all other rules. */
+
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700;800&family=Cinzel+Decorative:wght@400;700;900&family=Spectral:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,500&family=Mulish:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* Iconography — Material Symbols Rounded (Google's variable icon font).
+   Use: <span class="material-symbols-rounded">casino</span>. Rounded
+   optical for warmth; default weight 400, fill 0. */
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0&display=swap');
+
+.material-symbols-rounded {
+  font-family: 'Material Symbols Rounded';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+.material-symbols-rounded.fill { font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24; }

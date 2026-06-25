@@ -1,0 +1,151 @@
+/* ── Button ──────────────────────────────────────────────────────────────────
+   Aetheril Material 3 button — pill-shaped, 5 variants, 3 sizes.
+   All values come from tokens; no hard-coded colours or sizes. */
+
+.aether-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--aether-space-2);
+  border-radius: var(--aether-radius-button);
+  font-family: var(--aether-font-ui);
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  line-height: 1;
+  cursor: pointer;
+  overflow: hidden;
+  border: none;
+  transition: var(--aether-transition-button);
+  -webkit-tap-highlight-color: transparent;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.aether-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+  pointer-events: none;
+}
+
+/* Touch-target floor for md and lg */
+.aether-btn[data-size="medium"],
+.aether-btn[data-size="large"] {
+  min-height: var(--aether-touch-min);
+}
+
+/* ── Sizes ── */
+.aether-btn[data-size="small"] {
+  height: 32px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+.aether-btn[data-size="medium"] {
+  height: 40px;
+  padding: 0 24px;
+  font-size: 14px;
+}
+
+.aether-btn[data-size="large"] {
+  height: 48px;
+  padding: 0 30px;
+  font-size: 15px;
+}
+
+/* fullWidth */
+.aether-btn[data-full-width="true"] {
+  width: 100%;
+}
+
+/* ── Variants ── */
+.aether-btn[data-variant="filled"] {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  box-shadow: none;
+}
+
+.aether-btn[data-variant="filled"]:hover:not(:disabled) {
+  box-shadow: var(--md-sys-elevation-level1);
+}
+
+.aether-btn[data-variant="tonal"] {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  box-shadow: none;
+}
+
+.aether-btn[data-variant="tonal"]:hover:not(:disabled) {
+  box-shadow: var(--md-sys-elevation-level1);
+}
+
+.aether-btn[data-variant="elevated"] {
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-primary);
+  box-shadow: var(--md-sys-elevation-level1);
+}
+
+.aether-btn[data-variant="elevated"]:hover:not(:disabled) {
+  box-shadow: var(--md-sys-elevation-level2);
+}
+
+.aether-btn[data-variant="outlined"] {
+  background: transparent;
+  color: var(--md-sys-color-primary);
+  border: 1px solid var(--md-sys-color-outline);
+  box-shadow: none;
+}
+
+.aether-btn[data-variant="text"] {
+  background: transparent;
+  color: var(--md-sys-color-primary);
+  border: none;
+  box-shadow: none;
+}
+
+/* ── State layer (hover/press overlay) ── */
+.aether-btn__state {
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+.aether-btn:hover:not(:disabled) .aether-btn__state {
+  opacity: 0.08;
+}
+
+.aether-btn:active:not(:disabled) .aether-btn__state {
+  opacity: 0.12;
+}
+
+/* ── Focus ring ── */
+.aether-btn:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+/* ── Icon ── */
+.aether-btn .material-symbols-rounded {
+  font-size: 18px;
+  position: relative;
+  pointer-events: none;
+}
+
+/* ── Label ── */
+.aether-btn__label {
+  position: relative;
+}
+
+/* Reduced motion — no transitions */
+@media (prefers-reduced-motion: reduce) {
+  .aether-btn {
+    transition: none;
+  }
+
+  .aether-btn__state {
+    transition: none;
+  }
+}

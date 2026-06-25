@@ -1,0 +1,100 @@
+/**
+ * Avatar — round portrait for players, characters, and the DM.
+ *
+ * Behavior #8:
+ *  - Initials: derived from `name` — first letter of each word (max 2), uppercased
+ *  - Icon variant: when `icon` is given and `src` is absent
+ *  - Image variant: when `src` is given (background-image; no initials/icon rendered)
+ *  - Tones: gold (default), ember, verdigris, arcane
+ *  - `ring` adds a gilt ring (active speaker / DM indicator)
+ *  - `size` defaults to 40px (width, height, proportional font-size)
+ *  - DM role: ember tone + icon
+ */
+
+import React from 'react'
+import './Avatar.css'
+
+export interface AvatarProps {
+  /** Image URL. When absent, falls back to icon or initials. */
+  src?: string
+  /** Full name — first letters become the initials fallback. */
+  name?: string
+  /** Material Symbols Rounded ligature name used instead of initials. */
+  icon?: string
+  /** Pixel diameter. @default 40 */
+  size?: number
+  tone?: 'gold' | 'ember' | 'verdigris' | 'arcane'
+  /** Adds a gilt ring (use for the active speaker / DM). */
+  ring?: boolean
+  style?: React.CSSProperties
+  className?: string
+  [key: string]: unknown
+}
+
+/** Derive up to 2 uppercase initials from a full name string. */
+function deriveInitials(name: string): string {
+  return name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((word) => word[0])
+    .filter(Boolean)
+    .join('')
+    .toUpperCase()
+}
+
+export function Avatar({
+  src,
+  name = '',
+  icon,
+  size = 40,
+  tone = 'gold',
+  ring = false,
+  style,
+  className = '',
+  ...rest
+}: AvatarProps) {
+  const initials = deriveInitials(name)
+
+  const classes = [
+    'avatar',
+    `avatar--${tone}`,
+    ring ? 'avatar--ring' : '',
+    className,
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  const inlineStyle: React.CSSProperties = {
+    width: size,
+    height: size,
+    fontSize: size * 0.4,
+    ...(src
+      ? {
+          backgroundImage: `url(${src})`,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          backgroundRepeat: 'no-repeat',
+        }
+      : {}),
+    ...style,
+  }
+
+  return (
+    <div className={classes} style={inlineStyle} {...rest}>
+      {!src && (
+        icon
+          ? (
+            <span
+              className="material-symbols-rounded avatar__icon"
+              aria-hidden="true"
+              style={{ fontSize: size * 0.52 }}
+            >
+              {icon}
+            </span>
+          )
+          : initials
+      )}
+    </div>
+  )
+}

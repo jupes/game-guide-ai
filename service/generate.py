@@ -21,6 +21,7 @@ from .models import Source
 SNIPPET_MAX = 240
 DEFAULT_MODEL = "gpt-4o-mini"
 
+# Legacy constant kept for backward compatibility with any direct importers.
 GROUNDED_PROMPT = (
     "You are a Dungeons & Dragons 5th Edition rules assistant. "
     "Answer the user's question using ONLY the numbered sources below. "
@@ -29,6 +30,41 @@ GROUNDED_PROMPT = (
     "sources — do not use outside knowledge.\n\n"
     "Sources:\n{context}\n\nQuestion: {question}\n\nAnswer:"
 )
+
+# Shared grounding instruction appended to every grounded-mode system prompt.
+_GROUNDING_SUFFIX = (
+    "Answer the user's question using ONLY the numbered sources below. "
+    "Cite the sources you use inline as [1], [2], etc. "
+    "If the sources do not contain the answer, say you don't have that in your "
+    "sources — do not use outside knowledge."
+)
+
+PERSONA_PROMPTS: dict[str, str] = {
+    "sage": (
+        "You are the Sage — an all-knowing D&D 5th Edition assistant. "
+        + _GROUNDING_SUFFIX
+    ),
+    "spell": (
+        "You are a Spell Archivist specializing in D&D 5e spells and cantrips. "
+        "Be precise about components, ranges, durations, and upcasting. "
+        + _GROUNDING_SUFFIX
+    ),
+    "rules": (
+        "You are a Rules Arbiter for D&D 5e. Cite rules text exactly; "
+        "be clear when a rule has errata or is disputed. "
+        + _GROUNDING_SUFFIX
+    ),
+    "gm": (
+        "You are the GM Oracle — a creative Dungeon Master assistant. "
+        "Ground your answers in the D&D 5e sources provided, but you may "
+        "extrapolate, invent, and create (monsters, NPCs, plot hooks) "
+        "inspired by those sources. When inventing, say so explicitly. "
+        "Cite sources where you draw from them; note invented content."
+    ),
+}
+
+# Grounding template: sources block + question, sent as the user message.
+GROUNDED_TEMPLATE = "Sources:\n{context}\n\nQuestion: {question}\n\nAnswer:"
 
 
 def build_context(result: RetrievalResult, top_n: int = 5) -> str:
@@ -62,16 +98,25 @@ def build_sources(result: RetrievalResult, top_n: int = 5) -> list[Source]:
 
 
 def generate_answer(
-    question: str, context: str, *, model: str = DEFAULT_MODEL, client=None,
+    question: str, context: str, *, mode: str = "sage",
+    model: str = DEFAULT_MODEL, client=None,
 ) -> str:
-    """Call gpt-4o-mini with the grounded prompt. `client` injectable for tests."""
+    """Call gpt-4o-mini with a per-mode system prompt + grounded user message.
+
+    `mode` selects the persona from PERSONA_PROMPTS (defaults to 'sage').
+    `client` is injectable for tests.
+    """
     if client is None:
         from openai import OpenAI
         client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
-    prompt = GROUNDED_PROMPT.format(context=context, question=question)
+    system = PERSONA_PROMPTS.get(mode, PERSONA_PROMPTS["sage"])
+    user_content = GROUNDED_TEMPLATE.format(context=context, question=question)
     resp = client.chat.completions.create(
         model=model,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content},
+        ],
         temperature=0.2,
     )
     return resp.choices[0].message.content.strip()

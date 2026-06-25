@@ -1,0 +1,19 @@
+<svg width="240" height="240" viewBox="0 0 240 240" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Aetheril d20 seal">
+  
+  <circle cx="120" cy="120" r="116" fill="#9C3B1B"></circle>
+  <circle cx="120" cy="120" r="116" fill="none" stroke="#C79A3B" stroke-width="4"></circle>
+  <circle cx="120" cy="120" r="104" fill="none" stroke="#C79A3B" stroke-width="1.5" opacity="0.6"></circle>
+  
+  <polygon points="120,40 189,80 189,160 120,200 51,160 51,80" fill="#7C2C0D" stroke="#FBE1AD" stroke-width="3" stroke-linejoin="round"></polygon>
+  
+  <g stroke="#FBE1AD" stroke-width="2.2" stroke-linejoin="round" fill="none" opacity="0.92">
+    <polygon points="120,40 158,118 82,118"></polygon>
+    <polyline points="51,80 82,118 51,160"></polyline>
+    <polyline points="189,80 158,118 189,160"></polyline>
+    <polyline points="82,118 120,200 158,118"></polyline>
+    <polyline points="120,40 82,118 51,80"></polyline>
+    <polyline points="120,40 158,118 189,80"></polyline>
+  </g>
+  
+  <text x="120" y="132" text-anchor="middle" font-family="Cinzel, Georgia, serif" font-weight="700" font-size="46" fill="#FBE1AD">20</text>
+</svg>

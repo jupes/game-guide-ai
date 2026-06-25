@@ -2,9 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="/logo-mark.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>D&amp;D 5e Sage</title>
+    <title>Aetheril — D&amp;D 5e AI Companion</title>
+    <!-- Synchronously restore the saved theme before paint to avoid a
+         dark-to-light flash on reload (research doc risk #7). The React
+         ThemeProvider still owns the authoritative state; this just gets
+         data-theme onto <html> as early as possible. -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('aetheril-theme');
+          if (saved === 'dark') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+          }
+        } catch (_) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

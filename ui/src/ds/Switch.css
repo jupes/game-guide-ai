@@ -1,0 +1,113 @@
+/* ── Switch ──────────────────────────────────────────────────────────────────
+   Aetheril Material 3 switch — ember/gold when on.
+   The button has a 52x32 track; a transparent padding trick ensures the
+   44px touch target without adding visual height.
+   All values from tokens only. */
+
+/* Outer wrapper satisfies the 44px touch floor via padding. */
+.aether-switch-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* expand clickable area to 44px without changing visual size */
+  padding: calc((var(--aether-touch-min) - 32px) / 2) calc((var(--aether-touch-min) - 52px) / 2);
+  cursor: pointer;
+}
+
+.aether-switch-wrap--disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+  pointer-events: none;
+}
+
+/* Track (the <button> itself) */
+.aether-switch {
+  position: relative;
+  width: 52px;
+  height: 32px;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: var(--md-sys-shape-corner-full);
+  border: 2px solid var(--md-sys-color-outline);
+  background: var(--md-sys-color-surface-container-highest);
+  cursor: pointer;
+  transition:
+    background var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard),
+    border-color var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
+  -webkit-tap-highlight-color: transparent;
+  /* reset browser button styles */
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.aether-switch:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ON state — ember primary fill */
+.aether-switch[data-checked="true"] {
+  background: var(--md-sys-color-primary);
+  border-color: var(--md-sys-color-primary);
+}
+
+/* ── Handle (thumb) ── */
+.aether-switch__handle {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    left var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-emphasized),
+    width var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),
+    height var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),
+    background var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
+}
+
+/* OFF handle */
+.aether-switch[data-checked="false"] .aether-switch__handle {
+  left: 4px;
+  width: 16px;
+  height: 16px;
+  background: var(--md-sys-color-outline);
+}
+
+/* ON handle — on-primary colour, shifted right */
+.aether-switch[data-checked="true"] .aether-switch__handle {
+  left: 26px;
+  width: 22px;
+  height: 22px;
+  background: var(--md-sys-color-on-primary);
+}
+
+/* ── Icon inside handle ── */
+.aether-switch__icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* OFF icon colour matches track background */
+.aether-switch[data-checked="false"] .aether-switch__icon {
+  color: var(--md-sys-color-surface-container-highest);
+}
+
+/* ON icon colour matches primary track */
+.aether-switch[data-checked="true"] .aether-switch__icon {
+  color: var(--md-sys-color-primary);
+}
+
+/* ── Focus ring ── */
+.aether-switch:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aether-switch,
+  .aether-switch__handle {
+    transition: none;
+  }
+}

@@ -1,0 +1,43 @@
+/* ── Motion ────────────────────────────────────────────────────────────
+   Material 3 motion: emphasized easing for hero moments, standard easing
+   for everyday UI. Aetheril favours quick, grounded transitions — a soft
+   settle rather than a bounce, so the interface feels like turning pages
+   in a heavy tome, not a cartoon.
+   These are timing tokens, not visual scales — marked @kind other. */
+
+:root {
+  /* Easing */
+  --md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);                /* @kind other */
+  --md-sys-motion-easing-standard-accelerate: cubic-bezier(0.3, 0, 1, 1);     /* @kind other */
+  --md-sys-motion-easing-standard-decelerate: cubic-bezier(0, 0, 0, 1);       /* @kind other */
+  --md-sys-motion-easing-emphasized: cubic-bezier(0.2, 0, 0, 1);              /* @kind other */
+  --md-sys-motion-easing-emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15); /* @kind other */
+  --md-sys-motion-easing-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1); /* @kind other */
+
+  /* Duration */
+  --md-sys-motion-duration-short1: 50ms;    /* @kind other */
+  --md-sys-motion-duration-short2: 100ms;   /* @kind other */
+  --md-sys-motion-duration-short3: 150ms;   /* @kind other */
+  --md-sys-motion-duration-short4: 200ms;   /* @kind other */
+  --md-sys-motion-duration-medium1: 250ms;  /* @kind other */
+  --md-sys-motion-duration-medium2: 300ms;  /* @kind other */
+  --md-sys-motion-duration-long1: 400ms;    /* @kind other */
+  --md-sys-motion-duration-long2: 500ms;    /* @kind other */
+
+  /* Convenience composite transitions */
+  --aether-transition-button: background-color var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard), box-shadow var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard), transform var(--md-sys-motion-duration-short2) var(--md-sys-motion-easing-standard); /* @kind other */
+  --aether-transition-surface: background-color var(--md-sys-motion-duration-medium1) var(--md-sys-motion-easing-standard), box-shadow var(--md-sys-motion-duration-medium1) var(--md-sys-motion-easing-standard); /* @kind other */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --md-sys-motion-duration-short1: 0ms;   /* @kind other */
+    --md-sys-motion-duration-short2: 0ms;   /* @kind other */
+    --md-sys-motion-duration-short3: 0ms;   /* @kind other */
+    --md-sys-motion-duration-short4: 0ms;   /* @kind other */
+    --md-sys-motion-duration-medium1: 0ms;  /* @kind other */
+    --md-sys-motion-duration-medium2: 0ms;  /* @kind other */
+    --md-sys-motion-duration-long1: 0ms;    /* @kind other */
+    --md-sys-motion-duration-long2: 0ms;    /* @kind other */
+  }
+}

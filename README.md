@@ -1,26 +1,70 @@
-# rag-chat
+# Aetheril — D&D 5e RAG Chat
 
-A D&D 5e RAG (Retrieval-Augmented Generation) chat application. Ask questions about spells,
-monsters, rules, and lore — the Sage answers only from its sources, with citations, and
-tells you when it can't answer.
+Aetheril is a Retrieval-Augmented Generation chat assistant for D&D 5e. It answers questions grounded in rulebook text, with citations, and tells you plainly when it cannot find an answer.
+
+## Design System
+
+The UI is built on the **Aetheril design system** — a Material 3 token layer with a warm fantasy palette:
+
+- **Light theme (Parchment)** — warm aged-paper surface, ember primary, old-gold secondary, verdigris tertiary.
+- **Dark theme (Tavern)** — deep tavern-by-candlelight inversion. Toggle in the top bar.
+
+Ten DS components cover the full interface: Button, IconButton, TextField, Switch, Card, Chip, Avatar, Badge, DiceRoll, and ChatMessage. All values come from design tokens; no hard-coded hex colours.
+
+## Chat Modes
+
+The workspace hosts four chat personas, each with its own retrieval scope and system prompt:
+
+| Mode | Persona | Retrieval scope |
+| --- | --- | --- |
+| **Sage** | General D&D oracle | All sources |
+| **Spell** | Spell Archivist | Spell descriptions + spell books |
+| **Rules** | Rules Arbiter | Rules sections |
+| **GM** | Game Master | Monster / DM-focused content; relaxed creative gate. A seam for a future second "world" retrieval source is stubbed. |
+
+Sage is the default. The mode selector lives in the left navigation.
+
+## App Shell
+
+```text
+Landing screen
+  └─ "Enter the Tavern" CTA  →  Workspace
+       ├─ LeftNav  (mode chips, conversation list, user menu)
+       ├─ TopBar   (brand + dark-theme toggle)
+       └─ ChatPane (composer, exchange feed, sources, dice rolls)
+```
+
+**Users and conversation history are currently stubbed.** The guest "Adventurer" user is hard-coded; no real authentication or server-side persistence exists yet. Conversation titles are stored in `localStorage` for the current session only.
 
 ## Architecture
 
-```
+```text
 User
   ↓ prompt
-ui/  (React + Vite, dark grimoire theme)
-  ↓ POST /chat
-service/  (FastAPI — embed → filter → retrieve → rerank → gate → GPT-4o-mini)
-  ↓ pgvector similarity search
+ui/  (React 19 + Vite 8, Aetheril design system — light Parchment / dark Tavern)
+  ↓ POST /chat  { prompt, mode?, conversation_id? }
+service/  (FastAPI — embed → filter → retrieve → rerank → answerability gate → LLM)
+  ↓ pgvector similarity search  (with optional book-slug filter per mode)
 vector-db  (PostgreSQL + pgvector, 9,000+ chunks across 12 D&D 5e books)
+```
+
+### Response contract
+
+```json
+{
+  "answer": "...",
+  "sources": [{ "book": "...", "chapter": "...", "section": "...", "entity": "...", "page": 12, "snippet": "..." }],
+  "answerable": true,
+  "mode": "spell",
+  "conversation_id": null
+}
 ```
 
 ## Running E2E — one command
 
 **Prereq:** a `.env` file in this directory containing your OpenAI key:
 
-```
+```env
 OPENAI_API_KEY=sk-...
 ```
 
@@ -63,10 +107,10 @@ URL: <http://localhost:5173>
 ## Directory layout
 
 | Path | Description |
-| ---- | ----------- |
-| `service/` | FastAPI app — `POST /chat`, answerability gate, grounded generation |
+| --- | --- |
+| `service/` | FastAPI app — `POST /chat`, per-mode personas, answerability gate, grounded generation |
 | `ingestion/` | Chunking, embedding, retrieval pipeline, eval harness |
-| `ui/` | React + Vite chat interface |
+| `ui/` | React + Vite chat interface (Aetheril design system) |
 | `vector-db/` | DB init SQL and pgvector setup |
 | `docker-compose.yml` | Full stack: vector-db → service → ui |
 | `Dockerfile.service` | Python 3.12-slim image for the agent service |

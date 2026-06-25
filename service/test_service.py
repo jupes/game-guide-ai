@@ -19,7 +19,7 @@ from retrieval import RetrievalResult, RetrievedChunk  # noqa: E402
 
 from service.generate import build_context, build_sources, generate_answer, GROUNDED_PROMPT  # noqa: E402
 from service.rag import RagService, REFUSAL  # noqa: E402
-from service.models import ChatResponse  # noqa: E402
+from service.models import ChatMode, ChatResponse  # noqa: E402
 
 
 def _chunk(cid, entity, ctype="monster", section=None, chapter=None, page=1):
@@ -45,7 +45,7 @@ def _result(answerable=True):
 
 class _FakeRetriever:
     def __init__(self, result): self._r = result
-    def retrieve(self, prompt, reranker=None): return self._r
+    def retrieve(self, prompt, reranker=None, mode="sage"): return self._r
 
 
 class _FakeLLM:
@@ -121,6 +121,292 @@ def test_answer_refusal_skips_llm():
     assert resp.answer == REFUSAL
     assert resp.sources == []
     assert called["n"] == 0   # LLM never invoked on refusal
+
+
+# ---------------------------------------------------------------------------
+# CP-F4.2 — Per-mode persona (behavior #16)
+# ---------------------------------------------------------------------------
+
+class _CapturingLLM:
+    """Like _FakeLLM but records the last messages list passed to create()."""
+    def __init__(self, text):
+        self.text = text
+        self.last_messages = None
+        self.chat = self
+
+    @property
+    def completions(self): return self
+
+    def create(self, **kw):
+        self.last_messages = kw.get("messages", [])
+        class _M: pass
+        msg = _M(); msg.content = self.text
+        choice = _M(); choice.message = msg
+        resp = _M(); resp.choices = [choice]
+        return resp
+
+
+def test_sage_mode_uses_sage_persona():
+    """generate_answer with mode='sage' sends a system message containing 'Sage'."""
+    from service.generate import generate_answer as _ga
+    llm = _CapturingLLM("answer")
+    _ga("Q?", "ctx", mode="sage", client=llm)
+    system_msgs = [m for m in llm.last_messages if m["role"] == "system"]
+    assert system_msgs, "expected a system message"
+    assert "Sage" in system_msgs[0]["content"]
+
+
+def test_spell_mode_uses_spell_archivist_persona():
+    """generate_answer with mode='spell' sends the Spell Archivist system message."""
+    from service.generate import generate_answer as _ga
+    llm = _CapturingLLM("answer")
+    _ga("Q?", "ctx", mode="spell", client=llm)
+    system_msgs = [m for m in llm.last_messages if m["role"] == "system"]
+    assert system_msgs
+    assert "Spell Archivist" in system_msgs[0]["content"]
+
+
+def test_rules_mode_uses_rules_arbiter_persona():
+    """generate_answer with mode='rules' sends the Rules Arbiter system message."""
+    from service.generate import generate_answer as _ga
+    llm = _CapturingLLM("answer")
+    _ga("Q?", "ctx", mode="rules", client=llm)
+    system_msgs = [m for m in llm.last_messages if m["role"] == "system"]
+    assert system_msgs
+    assert "Rules Arbiter" in system_msgs[0]["content"]
+
+
+def test_gm_mode_uses_gm_oracle_persona():
+    """generate_answer with mode='gm' sends the GM Oracle system message."""
+    from service.generate import generate_answer as _ga
+    llm = _CapturingLLM("answer")
+    _ga("Q?", "ctx", mode="gm", client=llm)
+    system_msgs = [m for m in llm.last_messages if m["role"] == "system"]
+    assert system_msgs
+    assert "GM Oracle" in system_msgs[0]["content"]
+
+
+def test_grounded_template_in_user_message():
+    """The user message contains the sources block (not the persona)."""
+    from service.generate import generate_answer as _ga
+    llm = _CapturingLLM("answer")
+    _ga("My Q?", "src_block", mode="sage", client=llm)
+    user_msgs = [m for m in llm.last_messages if m["role"] == "user"]
+    assert user_msgs
+    assert "Sources:" in user_msgs[0]["content"]
+    assert "My Q?" in user_msgs[0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# CP-F4.3 — Per-mode retrieval scoping (behavior #17)
+# ---------------------------------------------------------------------------
+
+def test_spell_scope_forces_spell_ctype_and_limits_books():
+    from service.rag import _scope_for_mode
+    ctypes, books = _scope_for_mode("spell", set())
+    assert "spell" in ctypes
+    assert "monster" not in ctypes
+    assert "dmg-5e" not in books
+    assert "phb-5e" in books
+
+
+def test_spell_scope_overrides_query_derived_ctypes():
+    """spell mode forces only spell ctype, ignoring query-derived non-spell types."""
+    from service.rag import _scope_for_mode
+    ctypes, books = _scope_for_mode("spell", {"class_feature", "rule"})
+    assert ctypes == {"spell"}
+
+
+def test_rules_scope_excludes_monster_and_creative_ctypes():
+    from service.rag import _scope_for_mode
+    ctypes, books = _scope_for_mode("rules", {"monster"})
+    assert "monster" not in ctypes
+    assert "dm_guidance" not in ctypes
+    assert "magic_item" not in ctypes
+    # rules ctypes are present
+    assert "rule" in ctypes or "class_feature" in ctypes
+
+
+def test_rules_scope_books_is_none_or_all():
+    """rules mode doesn't restrict books (all books supply rules)."""
+    from service.rag import _scope_for_mode
+    ctypes, books = _scope_for_mode("rules", set())
+    assert books is None
+
+
+def test_gm_scope_includes_monster_dm_guidance_magic_item():
+    from service.rag import _scope_for_mode
+    ctypes, books = _scope_for_mode("gm", set())
+    assert "monster" in ctypes
+    assert "dm_guidance" in ctypes
+    assert "magic_item" in ctypes
+    assert books is None  # no book restriction for GM
+
+
+def test_gm_scope_merges_query_derived_ctypes():
+    """gm mode merges forced ctypes with query-derived ones."""
+    from service.rag import _scope_for_mode
+    ctypes, books = _scope_for_mode("gm", {"spell"})
+    assert "spell" in ctypes
+    assert "monster" in ctypes
+
+
+def test_sage_scope_passes_through_unmodified():
+    """sage mode returns query-derived ctypes unchanged, no book restriction."""
+    from service.rag import _scope_for_mode
+    query_ctypes = {"rule", "class_feature"}
+    ctypes, books = _scope_for_mode("sage", query_ctypes)
+    assert ctypes == query_ctypes
+    assert books is None
+
+
+# ---------------------------------------------------------------------------
+# CP-F4.4 — GM relaxed gate + StubSecondaryRetriever + _merge_results (behavior #18)
+# ---------------------------------------------------------------------------
+
+def test_gm_mode_answers_when_not_answerable_but_has_chunks():
+    """GM mode proceeds when chunks exist even if answerable=False."""
+    from service.rag import RagService, REFUSAL
+    svc = RagService(
+        retriever=_FakeRetriever(_result(answerable=False)),
+        llm_client=_FakeLLM("Here is a creative swamp monster idea [1]."),
+    )
+    resp = svc.answer("Invent a swamp monster", mode="gm")
+    assert resp.answer != REFUSAL
+    assert resp.answerable is False  # echoes the low-confidence flag
+
+
+def test_sage_refuses_when_not_answerable():
+    """sage mode still refuses when answerable=False."""
+    from service.rag import RagService, REFUSAL
+    svc = RagService(
+        retriever=_FakeRetriever(_result(answerable=False)),
+        llm_client=_FakeLLM("should not be called"),
+    )
+    resp = svc.answer("Invent a swamp monster", mode="sage")
+    assert resp.answer == REFUSAL
+
+
+def test_spell_refuses_when_not_answerable():
+    """spell mode still refuses when answerable=False."""
+    from service.rag import RagService, REFUSAL
+    svc = RagService(
+        retriever=_FakeRetriever(_result(answerable=False)),
+        llm_client=_FakeLLM("should not be called"),
+    )
+    resp = svc.answer("x", mode="spell")
+    assert resp.answer == REFUSAL
+
+
+def test_rules_refuses_when_not_answerable():
+    """rules mode still refuses when answerable=False."""
+    from service.rag import RagService, REFUSAL
+    svc = RagService(
+        retriever=_FakeRetriever(_result(answerable=False)),
+        llm_client=_FakeLLM("should not be called"),
+    )
+    resp = svc.answer("x", mode="rules")
+    assert resp.answer == REFUSAL
+
+
+def test_gm_refuses_when_no_chunks():
+    """Even GM mode refuses if no chunks are retrieved."""
+    from service.rag import RagService, REFUSAL
+    empty = RetrievalResult(
+        chunks=[], full_texts={}, top1_distance=None,
+        answerable=False, book_by_id={},
+    )
+    svc = RagService(
+        retriever=_FakeRetriever(empty),
+        llm_client=_FakeLLM("should not be called"),
+    )
+    resp = svc.answer("Xyz", mode="gm")
+    assert resp.answer == REFUSAL
+
+
+def test_stub_secondary_retriever_returns_empty():
+    """StubSecondaryRetriever.retrieve() always returns empty chunks."""
+    from service.rag import StubSecondaryRetriever
+    stub = StubSecondaryRetriever()
+    r = stub.retrieve("anything")
+    assert r.chunks == []
+    assert r.answerable is False
+
+
+def test_merge_results_with_empty_secondary_preserves_primary():
+    """_merge_results with an empty secondary leaves primary unchanged."""
+    from service.rag import RagService, StubSecondaryRetriever
+    primary = _result(answerable=True)
+    secondary = StubSecondaryRetriever().retrieve("x")
+    svc = RagService(
+        retriever=_FakeRetriever(primary),
+        llm_client=_FakeLLM("ans"),
+    )
+    merged = svc._merge_results(primary, secondary)
+    assert merged.chunks == primary.chunks
+    assert merged.full_texts == primary.full_texts
+
+
+def test_merge_results_primary_chunks_ranked_first():
+    """When secondary has chunks, primary chunks appear before secondary in merge."""
+    from service.rag import RagService, StubSecondaryRetriever
+    from dataclasses import dataclass
+
+    primary = _result(answerable=True)
+
+    @dataclass
+    class _SecResult:
+        chunks: list
+        full_texts: dict
+        book_by_id: dict
+        answerable: bool
+
+    sec_chunk = _chunk("sec1", "WorldMonster", ctype="monster")
+    secondary = _SecResult(
+        chunks=[sec_chunk],
+        full_texts={"sec1": "A world-unique monster."},
+        book_by_id={"sec1": "world"},
+        answerable=True,
+    )
+
+    svc = RagService(retriever=_FakeRetriever(primary), llm_client=_FakeLLM("ans"))
+    merged = svc._merge_results(primary, secondary)
+    # Primary chunks come first
+    primary_ids = {c.chunk_id for c in primary.chunks}
+    merged_ids = [c.chunk_id for c in merged.chunks]
+    for pid in primary_ids:
+        assert merged_ids.index(pid) < merged_ids.index("sec1")
+
+
+# ---------------------------------------------------------------------------
+# Scope-mapping parity — the mode→scope logic is duplicated across
+# service/rag._scope_for_mode and ingestion/retrieval._retrieval_scope_for_mode
+# (the latter is what actually runs in production). They must not drift.
+# ---------------------------------------------------------------------------
+
+def test_scope_mappings_agree_across_modes_and_inputs():
+    """The service copy and the ingestion (production) copy must return identical
+    (effective_ctypes, allowed_books) for every mode and a range of query ctypes."""
+    from service.rag import _scope_for_mode  # importing service.rag puts ingestion/ on sys.path
+    from retrieval import _retrieval_scope_for_mode
+
+    query_inputs = [
+        set(),
+        {"rule"},
+        {"monster"},
+        {"spell"},
+        {"class_feature", "rule"},
+        {"monster", "dm_guidance"},
+        {"spell", "feat", "background"},
+        {"unknown_ctype"},
+    ]
+    modes = ["sage", "spell", "rules", "gm", "unrecognised"]
+
+    for mode in modes:
+        for q in query_inputs:
+            svc = _scope_for_mode(mode, set(q))
+            ing = _retrieval_scope_for_mode(mode, set(q))
+            assert svc == ing, f"scope drift for mode={mode!r} q={q!r}: {svc} != {ing}"
 
 
 def _run():

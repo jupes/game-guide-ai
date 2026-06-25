@@ -1,0 +1,39 @@
+/* ── Spacing & Layout ──────────────────────────────────────────────────
+   Material 3 4dp grid. Aetheril exposes the raw scale plus named aliases. */
+
+:root {
+  --aether-space-0: 0px;
+  --aether-space-1: 4px;
+  --aether-space-2: 8px;
+  --aether-space-3: 12px;
+  --aether-space-4: 16px;
+  --aether-space-5: 20px;
+  --aether-space-6: 24px;
+  --aether-space-7: 28px;
+  --aether-space-8: 32px;
+  --aether-space-10: 40px;
+  --aether-space-12: 48px;
+  --aether-space-16: 64px;
+  --aether-space-20: 80px;
+  --aether-space-24: 96px;
+
+  /* Named layout aliases */
+  --aether-gutter: var(--aether-space-4);
+  --aether-section-gap: var(--aether-space-12);
+  --aether-card-padding: var(--aether-space-6);
+  --aether-inset-compact: var(--aether-space-3);
+
+  /* Touch target floor (accessibility) */
+  --aether-touch-min: 44px; /* @kind spacing */
+
+  /* Reading measure for chat / long-form */
+  --aether-measure: 68ch; /* @kind other */
+
+  /* Z-index ladder */
+  --aether-z-base: 0;       /* @kind other */
+  --aether-z-sticky: 100;   /* @kind other */
+  --aether-z-drawer: 200;   /* @kind other */
+  --aether-z-overlay: 300;  /* @kind other */
+  --aether-z-toast: 400;    /* @kind other */
+  --aether-z-tooltip: 500;  /* @kind other */
+}

@@ -1,0 +1,81 @@
+/* ── Card ───────────────────────────────────────────────────────────────────
+   Material 3 card surface — warm paper with umber shadow.
+   All colour / radius / elevation values come from design-system tokens;
+   no raw hex values are used here.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.card {
+  position: relative;
+  border-radius: var(--aether-radius-card); /* 16px */
+  color: var(--md-sys-color-on-surface);
+  overflow: hidden;
+  transition: var(--aether-transition-surface);
+  box-sizing: border-box;
+}
+
+/* ── Padding ──────────────────────────────────────────────────────────────── */
+.card--padded {
+  padding: var(--aether-card-padding); /* 24px */
+}
+
+/* ── Variants ─────────────────────────────────────────────────────────────── */
+.card--elevated {
+  background: var(--md-sys-color-surface-container-low);
+  border: none;
+  box-shadow: var(--md-sys-elevation-level1);
+}
+
+.card--filled {
+  background: var(--md-sys-color-surface-container-highest);
+  border: none;
+  box-shadow: var(--md-sys-elevation-level0);
+}
+
+.card--outlined {
+  background: var(--md-sys-color-surface);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  box-shadow: var(--md-sys-elevation-level0);
+}
+
+/* ── Interactive ──────────────────────────────────────────────────────────── */
+.card--interactive {
+  cursor: pointer;
+}
+
+/* Hover: elevated lifts to level2; filled/outlined lift to level1 */
+@media (hover: hover) {
+  .card--interactive.card--elevated:hover {
+    box-shadow: var(--md-sys-elevation-level2);
+  }
+
+  .card--interactive.card--filled:hover,
+  .card--interactive.card--outlined:hover {
+    box-shadow: var(--md-sys-elevation-level1);
+  }
+}
+
+/* ── State layer (interactive only) ──────────────────────────────────────── */
+.card__state-layer {
+  position: absolute;
+  inset: 0;
+  background: var(--md-sys-color-on-surface);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+@media (hover: hover) {
+  .card--interactive:hover .card__state-layer {
+    opacity: var(--md-sys-state-hover-opacity); /* 0.08 */
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    transition: none;
+  }
+
+  .card__state-layer {
+    transition: none;
+  }
+}
