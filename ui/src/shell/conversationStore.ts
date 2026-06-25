@@ -54,7 +54,14 @@ export class LocalStorageConversationStore implements ConversationStore {
   }
 
   private save(rows: Conversation[]): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(rows))
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(rows))
+    } catch (err) {
+      // setItem throws when the quota is exceeded (common on mobile) or storage
+      // is unavailable (private mode). Surface it as a warning rather than letting
+      // it bubble up and crash the create/rename/remove call that triggered it.
+      console.warn('[conversationStore] failed to persist conversations to localStorage:', err)
+    }
   }
 
   list(mode: ChatMode): Conversation[] {
