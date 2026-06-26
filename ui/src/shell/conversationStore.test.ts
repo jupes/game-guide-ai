@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { MemoryConversationStore } from './conversationStore'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { LocalStorageConversationStore, MemoryConversationStore } from './conversationStore'
 
 // ── CP-F5.2 — ConversationStore behaviors (#20) ───────────────────────────────
 
@@ -94,5 +94,80 @@ describe('MemoryConversationStore', () => {
     const list = store.list('sage')
     expect(list).toHaveLength(1)
     expect(list[0].id).toBe(b.id)
+  })
+})
+
+// ── 02t.7 — LocalStorageConversationStore robustness ──────────────────────────
+// jsdom 29 ships a localStorage that may not expose every method in the runner;
+// use an in-memory stub so these tests are hermetic (mirrors theme.test.tsx).
+
+describe('LocalStorageConversationStore', () => {
+  function makeLocalStorageStub() {
+    let store: Record<string, string> = {}
+    return {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => { store[key] = value },
+      removeItem: (key: string) => { delete store[key] },
+      clear: () => { store = {} },
+      get length() { return Object.keys(store).length },
+      key: (index: number) => Object.keys(store)[index] ?? null,
+    }
+  }
+  let lsMock: ReturnType<typeof makeLocalStorageStub>
+  let store: LocalStorageConversationStore
+
+  beforeEach(() => {
+    lsMock = makeLocalStorageStub()
+    vi.stubGlobal('localStorage', lsMock)
+    store = new LocalStorageConversationStore()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('persists conversations across instances (round-trips through localStorage)', () => {
+    const conv = store.create('sage', 'What is a basilisk?')
+    // A fresh instance reads the same backing store.
+    const reloaded = new LocalStorageConversationStore()
+    const list = reloaded.list('sage')
+    expect(list).toHaveLength(1)
+    expect(list[0].id).toBe(conv.id)
+    expect(list[0].title).toBe('What is a basilisk?')
+  })
+
+  it('list filters by mode', () => {
+    store.create('sage')
+    store.create('spell')
+    expect(store.list('sage')).toHaveLength(1)
+    expect(store.list('spell')).toHaveLength(1)
+    expect(store.list('gm')).toHaveLength(0)
+  })
+
+  it('rename and remove persist', () => {
+    const conv = store.create('sage', 'Original')
+    store.rename(conv.id, 'Renamed')
+    expect(new LocalStorageConversationStore().list('sage')[0].title).toBe('Renamed')
+    store.remove(conv.id)
+    expect(new LocalStorageConversationStore().list('sage')).toHaveLength(0)
+  })
+
+  it('load() tolerates corrupt JSON without throwing', () => {
+    lsMock.setItem('rag-chat:conversations', '{not valid json')
+    expect(() => store.list('sage')).not.toThrow()
+    expect(store.list('sage')).toEqual([])
+  })
+
+  it('create() does not throw when the write fails (quota exceeded) and warns instead', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    lsMock.setItem = () => {
+      throw new DOMException('quota exceeded', 'QuotaExceededError')
+    }
+
+    // The operation must not crash the caller (no silent unhandled exception).
+    expect(() => store.create('sage', 'overflow')).not.toThrow()
+    // The failure is surfaced, not swallowed silently.
+    expect(warn).toHaveBeenCalled()
   })
 })
