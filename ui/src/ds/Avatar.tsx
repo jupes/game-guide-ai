@@ -14,7 +14,7 @@
 import React from 'react'
 import './Avatar.css'
 
-export interface AvatarProps {
+export interface AvatarProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Image URL. When absent, falls back to icon or initials. */
   src?: string
   /** Full name — first letters become the initials fallback. */
@@ -26,9 +26,6 @@ export interface AvatarProps {
   tone?: 'gold' | 'ember' | 'verdigris' | 'arcane'
   /** Adds a gilt ring (use for the active speaker / DM). */
   ring?: boolean
-  style?: React.CSSProperties
-  className?: string
-  [key: string]: unknown
 }
 
 /** Derive up to 2 uppercase initials from a full name string. */

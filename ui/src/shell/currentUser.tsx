@@ -26,7 +26,7 @@ export interface CurrentUserContextValue {
 
 function noop(): void {}
 
-const STUB: CurrentUser = {
+export const STUB: CurrentUser = {
   id: 'guest',
   displayName: 'Adventurer',
   initials: 'AV',
@@ -36,8 +36,10 @@ const STUB: CurrentUser = {
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
+// Default is null so a hook call outside a provider is a hard error (matches
+// useTheme), rather than silently resolving to the STUB and masking a nesting bug.
 // eslint-disable-next-line react-refresh/only-export-components -- context co-located with provider; HMR-only rule
-export const CurrentUserContext = createContext<CurrentUserContextValue>({ user: STUB })
+export const CurrentUserContext = createContext<CurrentUserContextValue | null>(null)
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
@@ -54,5 +56,9 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
 
 // eslint-disable-next-line react-refresh/only-export-components -- hook co-located with provider
 export function useCurrentUser(): CurrentUserContextValue {
-  return useContext(CurrentUserContext)
+  const ctx = useContext(CurrentUserContext)
+  if (ctx === null) {
+    throw new Error('useCurrentUser must be used within a <CurrentUserProvider>.')
+  }
+  return ctx
 }

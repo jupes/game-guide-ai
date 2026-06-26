@@ -22,7 +22,7 @@ export interface ChatResponse {
   sources: Source[]
   answerable: boolean
   /** Optional echo fields from the service. */
-  mode?: string
+  mode?: ChatMode
   conversation_id?: string | null
 }
 
