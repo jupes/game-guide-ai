@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import {
   CurrentUserProvider,
   useCurrentUser,
+  STUB,
 } from './currentUser'
 
 // ── 02t.6 — useCurrentUser provider guard (matches useTheme's pattern) ─────────
@@ -24,6 +25,6 @@ describe('useCurrentUser', () => {
       <CurrentUserProvider>{children}</CurrentUserProvider>
     )
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
-    expect(result.current.user.displayName).toBe('Adventurer')
+    expect(result.current.user).toBe(STUB)
   })
 })

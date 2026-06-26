@@ -26,7 +26,7 @@ export interface CurrentUserContextValue {
 
 function noop(): void {}
 
-const STUB: CurrentUser = {
+export const STUB: CurrentUser = {
   id: 'guest',
   displayName: 'Adventurer',
   initials: 'AV',
