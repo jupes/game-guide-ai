@@ -12,6 +12,7 @@ Run:
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,6 +21,27 @@ from fastapi.staticfiles import StaticFiles
 
 from .models import ChatRequest, ChatResponse
 from .rag import RagService
+
+log = logging.getLogger(__name__)
+
+# Upstream error classes, mapped to distinct HTTP statuses so a failed LLM call
+# (502) is distinguishable from an unavailable retrieval backend (503) and from
+# an actual bug in our code (500). Guarded imports keep the app importable even
+# if a dependency is missing in a stripped-down test env; an empty tuple in an
+# `except` clause simply never matches and falls through to the 500 handler.
+try:
+    import openai
+
+    _LLM_ERRORS: tuple[type[BaseException], ...] = (openai.APIError,)
+except Exception:  # pragma: no cover - openai always present in service image
+    _LLM_ERRORS = ()
+
+try:
+    import psycopg
+
+    _DB_ERRORS: tuple[type[BaseException], ...] = (psycopg.Error,)
+except Exception:  # pragma: no cover - psycopg always present in service image
+    _DB_ERRORS = ()
 
 _state: dict[str, RagService] = {}
 
@@ -30,8 +52,10 @@ async def lifespan(app: FastAPI):
     # still start for endpoint tests that override the dependency without a DB.
     try:
         _state["rag"] = RagService()
-    except Exception as exc:  # pragma: no cover - depends on live DB
-        print(f"startup: RagService unavailable ({exc!r}); /chat will 503 until ready")
+    except Exception:  # pragma: no cover - depends on live DB
+        log.warning(
+            "startup: RagService unavailable; /chat will 503 until ready", exc_info=True
+        )
     yield
     _state.clear()
 
@@ -55,8 +79,24 @@ def healthz() -> dict[str, str]:
 def chat(req: ChatRequest, svc: RagService = Depends(get_service)) -> ChatResponse:
     try:
         return svc.answer(req.prompt, mode=req.mode.value, conversation_id=req.conversation_id)
-    except Exception as exc:  # retrieval/generation failure
-        raise HTTPException(status_code=503, detail=f"upstream error: {exc}") from exc
+    except _LLM_ERRORS as exc:
+        # LLM provider failed (timeout, rate limit, API error) — upstream, retryable.
+        log.warning(
+            "LLM upstream error on /chat (mode=%s, conversation_id=%s): %s: %s",
+            req.mode.value, req.conversation_id, type(exc).__name__, exc,
+        )
+        raise HTTPException(status_code=502, detail="LLM upstream error") from exc
+    except _DB_ERRORS as exc:
+        # Retrieval backend (Postgres/pgvector) unavailable — upstream, retryable.
+        log.warning(
+            "retrieval backend error on /chat (mode=%s, conversation_id=%s): %s: %s",
+            req.mode.value, req.conversation_id, type(exc).__name__, exc,
+        )
+        raise HTTPException(status_code=503, detail="retrieval backend unavailable") from exc
+    except Exception:
+        # Anything else is a bug in our code — log the full traceback, return 500.
+        log.exception("internal error on /chat (mode=%s)", req.mode.value)
+        raise HTTPException(status_code=500, detail="internal error") from None
 
 
 # Mount the pre-built UI at "/" — after route decorators so API routes always win.
