@@ -101,19 +101,18 @@ describe('MemoryConversationStore', () => {
 // jsdom 29 ships a localStorage that may not expose every method in the runner;
 // use an in-memory stub so these tests are hermetic (mirrors theme.test.tsx).
 
-function makeLocalStorageStub() {
-  let store: Record<string, string> = {}
-  return {
-    getItem: (key: string) => store[key] ?? null,
-    setItem: (key: string, value: string) => { store[key] = value },
-    removeItem: (key: string) => { delete store[key] },
-    clear: () => { store = {} },
-    get length() { return Object.keys(store).length },
-    key: (index: number) => Object.keys(store)[index] ?? null,
-  }
-}
-
 describe('LocalStorageConversationStore', () => {
+  function makeLocalStorageStub() {
+    let store: Record<string, string> = {}
+    return {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => { store[key] = value },
+      removeItem: (key: string) => { delete store[key] },
+      clear: () => { store = {} },
+      get length() { return Object.keys(store).length },
+      key: (index: number) => Object.keys(store)[index] ?? null,
+    }
+  }
   let lsMock: ReturnType<typeof makeLocalStorageStub>
   let store: LocalStorageConversationStore
 
