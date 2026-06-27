@@ -23,8 +23,10 @@ from pathlib import Path
 
 import psycopg
 
-# Canonical mode→scope mapping (same-directory leaf module; no project deps).
-from scope import scope_for_mode  # noqa: E402
+# Canonical mode→scope mapping + rerank gate (sibling package leaves; pure logic,
+# no heavy imports — the cross-encoder model lazy-loads only on instantiation).
+from ingestion.scope import scope_for_mode
+from ingestion.rerank import should_rerank
 
 # ---------------------------------------------------------------------------
 # Load .env from repo root (shared by eval + service)
@@ -460,7 +462,6 @@ class RagRetriever:
 
         # Gated cross-encoder rerank (prose categories only) — reuses the bo4 gate.
         if reranker is not None and chunks:
-            from rerank import should_rerank
             if should_rerank(ctypes):
                 texts = [full.get(c.chunk_id, c.text_preview) for c in chunks]
                 order = reranker.rerank(prompt, texts)

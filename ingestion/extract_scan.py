@@ -39,7 +39,7 @@ from dataclasses import asdict, dataclass
 from itertools import groupby
 from pathlib import Path
 
-from ocr_normalize import normalize_ocr
+from ingestion.ocr_normalize import normalize_ocr
 
 # ---------------------------------------------------------------------------
 # Shared schema (mirrors extract.py's DndChunk)
