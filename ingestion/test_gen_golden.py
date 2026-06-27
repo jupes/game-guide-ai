@@ -8,11 +8,8 @@ Run:
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from gen_golden import template_question, CATEGORY_FOR
+from ingestion.gen_golden import template_question, CATEGORY_FOR
 
 
 def test_spell_template():

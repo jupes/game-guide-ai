@@ -8,11 +8,8 @@ Run:
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from eval_golden import (
+from ingestion.eval_golden import (
     extract_query_entities,
     extract_query_content_types,
     build_vector_sql,
