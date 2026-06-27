@@ -44,7 +44,7 @@ if _ENV_PATH.exists():
 
 # The retrieval pipeline lives in retrieval.py (shared with the agent service).
 # Import its public surface so this module's callers + tests keep working.
-from retrieval import (  # noqa: E402
+from ingestion.retrieval import (  # noqa: E402
     DEFAULT_DSN,
     EMBED_MODEL,
     TOP_K,
@@ -266,7 +266,9 @@ def main() -> None:
     rerank_fixed: dict[str, int] = {}   # category → misses the rerank fixed
     rerank_broke: dict[str, int] = {}   # category → hits the rerank broke
     if args.rerank:
-        from rerank import CrossEncoderReranker, should_rerank
+        # Gated import: instantiating CrossEncoderReranker triggers the torch load,
+        # so keep it deferred to runs that actually pass --rerank.
+        from ingestion.rerank import CrossEncoderReranker, should_rerank
         reranker = CrossEncoderReranker()
         print(f"Reranker: ON (gated; top-{args.rerank_topk})")
     print()

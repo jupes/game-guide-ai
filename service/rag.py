@@ -7,13 +7,10 @@ injected so the FastAPI app can build them at startup and tests can mock them.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Protocol
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ingestion"))
-from retrieval import RagRetriever, RetrievalResult  # noqa: E402
+from ingestion.retrieval import RagRetriever, RetrievalResult
 
 from .generate import DEFAULT_MODEL, build_context, build_sources, generate_answer
 from .models import ChatMode, ChatResponse
