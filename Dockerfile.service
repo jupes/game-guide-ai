@@ -2,15 +2,17 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Sentence-transformers / torch are NOT installed here — the reranker is lazy-loaded
-# and the service defaults to reranker=None (no ML deps needed at runtime).
-RUN pip install --no-cache-dir fastapi "uvicorn[standard]" openai "psycopg[binary]"
-
-# Copy only what the service imports at runtime
-COPY ingestion/retrieval.py ingestion/retrieval.py
-COPY ingestion/scope.py    ingestion/scope.py
-COPY ingestion/rerank.py   ingestion/rerank.py
-COPY service/              service/
+# Install the rag-chat package (service + ingestion subpackages) and its runtime
+# deps straight from pyproject.toml. `pip install .` pulls in exactly the package
+# modules declared there — replacing the old hand-maintained per-file COPY manifest
+# that silently broke the image whenever a new ingestion module was imported.
+# .dockerignore still trims test files, data, and non-runtime ingestion modules.
+# torch / sentence-transformers stay out: the reranker is lazy-loaded and the
+# service defaults to reranker=None.
+COPY pyproject.toml ./
+COPY ingestion/ ingestion/
+COPY service/ service/
+RUN pip install --no-cache-dir .
 
 EXPOSE 8000
 CMD ["uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8000"]
