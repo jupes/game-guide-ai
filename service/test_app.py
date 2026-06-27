@@ -3,7 +3,7 @@ Endpoint tests for the FastAPI app — TestClient with a mocked RagService
 (no DB, no LLM). Overrides the get_service dependency.
 
 Run from repo root:
-    uv run --with fastapi --with pydantic python -m service.test_app
+    uv run --with '.[test]' python -m pytest service/test_app.py -q
 """
 
 from __future__ import annotations

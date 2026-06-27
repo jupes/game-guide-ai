@@ -89,11 +89,11 @@ docker compose up vector-db      # DB only — if you prefer running the service
 
 ### Local dev (two terminals, faster iteration)
 
-**Terminal 1 — service:**
+**Terminal 1 — service:** (the repo is an installable package — `--with .` pulls
+in the runtime deps from `pyproject.toml`)
 
 ```bash
-uv run --with fastapi --with uvicorn --with openai --with "psycopg[binary]" \
-    uvicorn service.app:app --port 8000 --reload
+uv run --with . uvicorn service.app:app --port 8000 --reload
 ```
 
 **Terminal 2 — UI dev server** (hot-reload, Vite proxy → :8000):
@@ -103,6 +103,15 @@ cd ui && bun run dev
 ```
 
 URL: <http://localhost:5173>
+
+### Tests
+
+Python imports are explicit (`from service... import ...` / `from ingestion... import ...`)
+with no `sys.path` hacks. Run pytest from the repo root with the `test` extra:
+
+```bash
+uv run --with '.[test]' python -m pytest -q     # whole suite
+```
 
 ## Directory layout
 

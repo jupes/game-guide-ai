@@ -2,7 +2,7 @@
 Unit tests for extract_scan.py — synthetic LineItem streams, no PDFs needed.
 
 Run:
-    uv run python ingestion/test_extract_scan.py
+    uv run --with '.[test]' python -m pytest ingestion/test_extract_scan.py -q
 """
 
 from __future__ import annotations

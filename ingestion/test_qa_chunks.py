@@ -6,7 +6,7 @@ expansion (Wayfinders PUA glyphs, Tortle CID codes, Xanathar's junk OCR layer,
 OCR-mangled entity names).
 
 Run:
-    uv run python ingestion/test_qa_chunks.py
+    uv run --with '.[test]' python -m pytest ingestion/test_qa_chunks.py -q
 """
 
 from __future__ import annotations
