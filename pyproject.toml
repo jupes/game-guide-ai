@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-chat"
+version = "1.0.0"
+description = "D&D 5e RAG chat — FastAPI service + ingestion pipeline"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "openai",
+    "psycopg[binary]",
+    "pydantic",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "httpx",
+]
+
+[tool.setuptools]
+# Explicit list — do NOT auto-discover (would pull ui/, vector-db/, spikes/, docs/).
+packages = ["service", "ingestion"]
+
+[tool.pytest.ini_options]
+# Puts the repo root on sys.path so `import service` / `import ingestion` resolve
+# from a plain checkout with no install (pytest >= 7). Covers "pytest from repo root".
+pythonpath = ["."]
