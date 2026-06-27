@@ -11,12 +11,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from fastapi.testclient import TestClient
 
-from fastapi.testclient import TestClient  # noqa: E402
-
-from service.app import app, get_service  # noqa: E402
-from service.models import ChatMode, ChatResponse, Source  # noqa: E402
+from service.app import app, get_service
+from service.models import ChatMode, ChatResponse, Source
 
 
 class _FakeService:

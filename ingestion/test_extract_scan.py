@@ -8,11 +8,8 @@ Run:
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from extract_scan import (
+from ingestion.extract_scan import (
     BOOK_CONFIGS,
     DndChunk,
     LineItem,

@@ -12,11 +12,8 @@ Run:
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from qa_chunks import (
+from ingestion.qa_chunks import (
     alpha_ratio,
     classify_chunk,
     detect_collapse,

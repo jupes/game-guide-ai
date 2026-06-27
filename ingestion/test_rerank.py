@@ -8,11 +8,8 @@ Run:
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from rerank import SKIP_RERANK_CTYPES, rerank_order, should_rerank
+from ingestion.rerank import SKIP_RERANK_CTYPES, rerank_order, should_rerank
 
 
 # ---------------------------------------------------------------------------

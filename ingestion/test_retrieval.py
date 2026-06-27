@@ -11,16 +11,11 @@ Run from repo root:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from retrieval import (  # noqa: E402
+from ingestion.retrieval import (
     build_vector_sql,
     retrieve_top_k,
 )
-from scope import scope_for_mode  # noqa: E402
+from ingestion.scope import scope_for_mode
 
 
 # ---------------------------------------------------------------------------
