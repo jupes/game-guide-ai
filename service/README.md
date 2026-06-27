@@ -91,9 +91,15 @@ Retrieval logic is shared with the eval via `ingestion/retrieval.py`
 
 ## Tests
 
+The repo is an installable package (`pyproject.toml`); imports are explicit
+(`from service... import ...`, `from ingestion... import ...`) with no `sys.path`
+hacks. Run pytest from the **repo root** with the `test` extra:
+
 ```bash
-uv run --with pydantic --with "psycopg[binary]" python -m service.test_service   # 6, pure + mocked
-uv run --with fastapi --with pydantic --with httpx python -m service.test_app     # 6, endpoint (mocked)
+# All service tests (pure + mocked endpoint):
+uv run --with '.[test]' python -m pytest service -q
+# Or the whole suite:
+uv run --with '.[test]' python -m pytest -q
 ```
 
 No DB or LLM is needed for the unit/endpoint tests (retriever + LLM are mocked).

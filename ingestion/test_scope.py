@@ -7,7 +7,7 @@ values that the two former copies (service/rag._scope_for_mode and
 ingestion/retrieval._retrieval_scope_for_mode) produced before consolidation.
 
 Run from repo root:
-    uv run --with pytest python -m pytest ingestion/test_scope.py -q
+    uv run --with '.[test]' python -m pytest ingestion/test_scope.py -q
 """
 
 from __future__ import annotations

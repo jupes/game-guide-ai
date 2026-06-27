@@ -2,7 +2,7 @@
 Unit tests for rerank.py — content-type gate + ordering (pure, no torch/DB).
 
 Run:
-    uv run python ingestion/test_rerank.py
+    uv run --with '.[test]' python -m pytest ingestion/test_rerank.py -q
 """
 
 from __future__ import annotations

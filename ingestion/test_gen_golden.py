@@ -2,7 +2,7 @@
 Unit tests for gen_golden.py — golden-query templating (pure, no DB).
 
 Run:
-    uv run python ingestion/test_gen_golden.py
+    uv run --with '.[test]' python -m pytest ingestion/test_gen_golden.py -q
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@ Unit tests for the agent service — pure context/source assembly + mocked
 RagService (no DB, no LLM, no network).
 
 Run from repo root:
-    uv run --with pydantic python -m service.test_service
+    uv run --with '.[test]' python -m pytest service/test_service.py -q
 """
 
 from __future__ import annotations

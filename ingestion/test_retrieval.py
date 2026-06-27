@@ -6,7 +6,7 @@ These tests are pure (no DB, no network).  They mock the DB cursor where
 needed (same pattern as other ingestion test files).
 
 Run from repo root:
-    uv run --with pytest --with "psycopg[binary]" python -m pytest ingestion/test_retrieval.py -q
+    uv run --with '.[test]' python -m pytest ingestion/test_retrieval.py -q
 """
 
 from __future__ import annotations
