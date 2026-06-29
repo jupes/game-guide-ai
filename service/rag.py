@@ -111,6 +111,14 @@ class RagService:
         except ValueError:
             raise ValueError(f"unknown mode: {mode!r}") from None
 
+        # Empty/whitespace prompt → refuse without spending retrieval or an LLM
+        # call (the API enforces min_length=1; this guards direct callers).
+        if not prompt.strip():
+            return ChatResponse(
+                answer=REFUSAL, sources=[], answerable=False,
+                mode=mode_enum, conversation_id=conversation_id,
+            )
+
         result = self.retriever.retrieve(prompt, reranker=self.reranker, mode=mode)
 
         # Second-source merge (GM mode only; stub is a no-op).

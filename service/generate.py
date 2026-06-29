@@ -124,6 +124,10 @@ def generate_answer(
     `mode` selects the persona from PERSONA_PROMPTS (defaults to 'sage').
     `client` is injectable for tests.
     """
+    # Defensive: callers reach here only past the grounding gate (non-empty
+    # context). An empty context or question is a programming error, not input.
+    if not context.strip() or not question.strip():
+        raise ValueError("generate_answer requires non-empty question and context")
     if client is None:
         from openai import OpenAI
         client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))

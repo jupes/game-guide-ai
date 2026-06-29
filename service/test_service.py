@@ -140,6 +140,26 @@ def test_answer_unknown_mode_raises_before_retrieval():
     assert retriever.calls == 0   # validated up front
 
 
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+def test_answer_empty_prompt_refuses(blank):
+    # An empty/whitespace prompt (only reachable by a non-API caller; the API
+    # enforces min_length=1) short-circuits to REFUSAL without retrieval or LLM.
+    retriever = _CountingRetriever(_result())
+    svc = RagService(retriever=retriever, llm_client=_FakeLLM("should not run"))
+    resp = svc.answer(blank)
+    assert resp.answerable is False
+    assert resp.answer == REFUSAL
+    assert resp.sources == []
+    assert retriever.calls == 0
+
+
+def test_generate_answer_empty_context_raises():
+    # Defensive guard: generate_answer is normally only reached with non-empty
+    # context (the grounding gate), so empty context is a programming error.
+    with pytest.raises(ValueError):
+        generate_answer("a question", "", client=_FakeLLM("x"))
+
+
 # ---------------------------------------------------------------------------
 # CP-F4.2 — Per-mode persona (behavior #16)
 # ---------------------------------------------------------------------------
