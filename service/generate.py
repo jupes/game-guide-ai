@@ -14,10 +14,11 @@ from typing import Any, Protocol
 
 from ingestion.retrieval import RetrievalResult
 
-from .models import Source
+# Env-overridable tuning knobs live in the single top-level config module.
+# DEFAULT_MODEL is re-exported here for `from .generate import DEFAULT_MODEL`.
+from config import CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX, TEMPERATURE
 
-SNIPPET_MAX = 240
-DEFAULT_MODEL = "gpt-4o-mini"
+from .models import Source
 
 
 # Minimal structural type for the injected LLM client. Captures only the call we
@@ -75,7 +76,7 @@ PERSONA_PROMPTS: dict[str, str] = {
 GROUNDED_TEMPLATE = "Sources:\n{context}\n\nQuestion: {question}\n\nAnswer:"
 
 
-def build_context(result: RetrievalResult, top_n: int = 5) -> str:
+def build_context(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> str:
     """Numbered source blocks with FULL chunk text, for the LLM context."""
     blocks: list[str] = []
     for i, c in enumerate(result.chunks[:top_n], start=1):
@@ -85,7 +86,7 @@ def build_context(result: RetrievalResult, top_n: int = 5) -> str:
     return "\n\n".join(blocks)
 
 
-def build_sources(result: RetrievalResult, top_n: int = 5) -> list[Source]:
+def build_sources(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> list[Source]:
     """One Source per contributing chunk, deduped by (entity/section), snippet
     truncated for display."""
     seen: set[str] = set()
@@ -129,6 +130,6 @@ def generate_answer(
             {"role": "system", "content": system},
             {"role": "user", "content": user_content},
         ],
-        temperature=0.2,
+        temperature=TEMPERATURE,
     )
     return resp.choices[0].message.content.strip()

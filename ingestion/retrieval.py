@@ -28,6 +28,11 @@ import psycopg
 from ingestion.scope import scope_for_mode
 from ingestion.rerank import should_rerank
 
+# Tuning knobs (env-overridable) live in the single top-level config module.
+# Re-exported here so existing `from ingestion.retrieval import TOP_K, ...`
+# importers (eval_golden) keep resolving.
+from config import TOP_K, IPL_FALLBACK_DISTANCE, KOZ_ANSWERABLE_DISTANCE
+
 # ---------------------------------------------------------------------------
 # Load .env from repo root (shared by eval + service)
 # ---------------------------------------------------------------------------
@@ -46,7 +51,7 @@ if _ENV_PATH.exists():
 
 DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat"
 EMBED_MODEL = "text-embedding-3-small"
-TOP_K = 10
+# TOP_K, IPL_FALLBACK_DISTANCE, KOZ_ANSWERABLE_DISTANCE now come from config (imported above).
 
 
 def embed_query(text: str) -> list[float]:
@@ -248,10 +253,9 @@ def extract_query_content_types(
 
 # ---------------------------------------------------------------------------
 # Retrieval-quality gates (ipl fallback, koz answerability)
+# Thresholds (IPL_FALLBACK_DISTANCE, KOZ_ANSWERABLE_DISTANCE) are imported from
+# config at the top of this module — env-overridable, documented there.
 # ---------------------------------------------------------------------------
-
-IPL_FALLBACK_DISTANCE = 0.42
-KOZ_ANSWERABLE_DISTANCE = 0.50
 
 
 def needs_unfiltered_fallback(

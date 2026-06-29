@@ -24,6 +24,9 @@ test = [
 [tool.setuptools]
 # Explicit list — do NOT auto-discover (would pull ui/, vector-db/, spikes/, docs/).
 packages = ["service", "ingestion"]
+# Top-level single-file module: the centralized RAG tuning config (02t.3),
+# imported by both service and ingestion. Must ship in `pip install .`.
+py-modules = ["config"]
 
 [tool.pytest.ini_options]
 # Puts the repo root on sys.path so `import service` / `import ingestion` resolve
