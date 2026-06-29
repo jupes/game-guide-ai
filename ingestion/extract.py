@@ -471,7 +471,6 @@ def _extract_column_chunks(
     entity_heading_pt = cfg["entity_heading_pt"]
     chapter_title_pt  = cfg["chapter_title_pt"]
     entity_name_pt    = cfg["entity_name_pt"]
-    spell_level_re    = cfg["spell_level_re"]
     header_line_re    = cfg.get("header_line_re")
 
     current_lines: list[str] = []

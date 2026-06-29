@@ -8,7 +8,6 @@ Run from repos/rag-chat:
 
 from __future__ import annotations
 
-import sys
 
 from ingestion.ocr_normalize import normalize_ocr
 
@@ -73,21 +72,3 @@ def test_preserves_ordinary_prose():
 def test_empty_and_clean_dice_unchanged():
     assert normalize_ocr("") == ""
     assert normalize_ocr("roll 1d10 + 4 fire damage") == "roll 1d10 + 4 fire damage"
-
-
-def _run():
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    failed = 0
-    for t in tests:
-        try:
-            t(); print(f"  PASS  {t.__name__}")
-        except AssertionError as e:
-            print(f"  FAIL  {t.__name__}: {e}"); failed += 1
-        except Exception as e:
-            print(f"  ERROR {t.__name__}: {type(e).__name__}: {e}"); failed += 1
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    sys.exit(0 if failed == 0 else 1)
-
-
-if __name__ == "__main__":
-    _run()

@@ -203,7 +203,7 @@ def run_qa(
     Split a chunks JSONL into clean + quarantine files and return a report dict
     (counts, per-reason tallies, sample offenders).
     """
-    chunks = [json.loads(l) for l in in_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    chunks = [json.loads(line) for line in in_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     clean: list[dict] = []
     quarantined: list[dict] = []
     reason_tally: dict[str, int] = {}
@@ -282,7 +282,7 @@ def main() -> None:
             if not args.chunks or not Path(args.chunks).exists():
                 print("ERROR: provide a chunks JSONL or --from-db", file=sys.stderr)
                 sys.exit(2)
-            chunks = [json.loads(l) for l in Path(args.chunks).read_text(encoding="utf-8").splitlines() if l.strip()]
+            chunks = [json.loads(line) for line in Path(args.chunks).read_text(encoding="utf-8").splitlines() if line.strip()]
         sys.exit(_run_collapse_check(chunks))
 
     in_path = Path(args.chunks) if args.chunks else None

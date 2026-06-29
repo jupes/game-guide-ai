@@ -7,15 +7,14 @@ Run:
 
 from __future__ import annotations
 
-import sys
 
-from ingestion.eval_golden import (
-    extract_query_entities,
-    extract_query_content_types,
+from ingestion.eval_golden import compute_metrics
+from ingestion.retrieval import (
     build_vector_sql,
-    compute_metrics,
-    needs_unfiltered_fallback,
+    extract_query_content_types,
+    extract_query_entities,
     is_answerable,
+    needs_unfiltered_fallback,
 )
 
 
@@ -389,24 +388,3 @@ def test_answerable_boundary():
 # ---------------------------------------------------------------------------
 # Test runner
 # ---------------------------------------------------------------------------
-
-def _run():
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    failed = 0
-    for t in tests:
-        try:
-            t()
-            print(f"  PASS  {t.__name__}")
-        except AssertionError as e:
-            print(f"  FAIL  {t.__name__}: {e}")
-            failed += 1
-        except Exception as e:
-            print(f"  ERROR {t.__name__}: {type(e).__name__}: {e}")
-            failed += 1
-    print()
-    print(f"{len(tests) - failed}/{len(tests)} passed")
-    sys.exit(0 if failed == 0 else 1)
-
-
-if __name__ == "__main__":
-    _run()

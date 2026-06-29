@@ -18,8 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,19 +46,13 @@ from ingestion.retrieval import (  # noqa: E402
     DEFAULT_DSN,
     EMBED_MODEL,
     TOP_K,
-    IPL_FALLBACK_DISTANCE,
     KOZ_ANSWERABLE_DISTANCE,
     RetrievedChunk,
-    _GENERIC_ENTITY_STOPLIST,
-    _stem,
-    build_vector_sql,
     embed_query,
     extract_query_content_types,
     extract_query_entities,
-    fetch_full_texts,
     is_answerable,
     load_vocabulary,
-    needs_unfiltered_fallback,
     retrieve_top_k,
 )
 

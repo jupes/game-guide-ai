@@ -8,7 +8,6 @@ Run from repo root:
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -289,21 +288,3 @@ def test_chat_error_is_logged_with_context_no_prompt_leak():
         assert secret_prompt not in blob, "raw prompt must not be logged"
     finally:
         app.dependency_overrides.clear()
-
-
-def _run():
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    failed = 0
-    for t in tests:
-        try:
-            t(); print(f"  PASS  {t.__name__}")
-        except AssertionError as e:
-            print(f"  FAIL  {t.__name__}: {e}"); failed += 1
-        except Exception as e:
-            print(f"  ERROR {t.__name__}: {type(e).__name__}: {e}"); failed += 1
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    sys.exit(0 if failed == 0 else 1)
-
-
-if __name__ == "__main__":
-    _run()
