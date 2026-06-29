@@ -20,7 +20,6 @@ import argparse
 import json
 import os
 import re
-import sys
 from pathlib import Path
 
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"

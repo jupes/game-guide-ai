@@ -7,7 +7,6 @@ Run:
 
 from __future__ import annotations
 
-import sys
 
 from ingestion.rerank import SKIP_RERANK_CTYPES, rerank_order, should_rerank
 
@@ -71,24 +70,3 @@ def test_order_empty():
 
 def test_order_single():
     assert rerank_order([0.42]) == [0]
-
-
-def _run():
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    failed = 0
-    for t in tests:
-        try:
-            t()
-            print(f"  PASS  {t.__name__}")
-        except AssertionError as e:
-            print(f"  FAIL  {t.__name__}: {e}")
-            failed += 1
-        except Exception as e:
-            print(f"  ERROR {t.__name__}: {type(e).__name__}: {e}")
-            failed += 1
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    sys.exit(0 if failed == 0 else 1)
-
-
-if __name__ == "__main__":
-    _run()

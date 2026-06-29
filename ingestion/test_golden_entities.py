@@ -15,7 +15,6 @@ Run from repos/rag-chat:
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 ING = Path(__file__).resolve().parent
@@ -50,24 +49,3 @@ def test_canonical_entities_present():
                 missing.append(f"{book}/{ctype}/{name}")
 
     assert not missing, f"canonical entities missing from extraction: {missing}"
-
-
-def _run():
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    failed = 0
-    for t in tests:
-        try:
-            t()
-            print(f"  PASS  {t.__name__}")
-        except AssertionError as e:
-            print(f"  FAIL  {t.__name__}: {e}")
-            failed += 1
-        except Exception as e:
-            print(f"  ERROR {t.__name__}: {type(e).__name__}: {e}")
-            failed += 1
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    sys.exit(0 if failed == 0 else 1)
-
-
-if __name__ == "__main__":
-    _run()

@@ -10,6 +10,7 @@ accepts an injected client for tests.
 from __future__ import annotations
 
 import os
+from typing import Any, Protocol
 
 from ingestion.retrieval import RetrievalResult
 
@@ -18,15 +19,25 @@ from .models import Source
 SNIPPET_MAX = 240
 DEFAULT_MODEL = "gpt-4o-mini"
 
-# Legacy constant kept for backward compatibility with any direct importers.
-GROUNDED_PROMPT = (
-    "You are a Dungeons & Dragons 5th Edition rules assistant. "
-    "Answer the user's question using ONLY the numbered sources below. "
-    "Cite the sources you use inline as [1], [2], etc. "
-    "If the sources do not contain the answer, say you don't have that in your "
-    "sources — do not use outside knowledge.\n\n"
-    "Sources:\n{context}\n\nQuestion: {question}\n\nAnswer:"
-)
+
+# Minimal structural type for the injected LLM client. Captures only the call we
+# make — `client.chat.completions.create(...)` — so an OpenAI client (or a test
+# fake) satisfies it without mirroring the full SDK surface. The response is typed
+# loosely (`Any`) on purpose: we only read `.choices[0].message.content`.
+class _Completions(Protocol):
+    def create(
+        self, *, model: str, messages: list[dict[str, str]], temperature: float
+    ) -> Any: ...  # pragma: no cover - structural type
+
+
+class _Chat(Protocol):
+    @property
+    def completions(self) -> _Completions: ...  # pragma: no cover - structural type
+
+
+class LLMClient(Protocol):
+    @property
+    def chat(self) -> _Chat: ...  # pragma: no cover - structural type
 
 # Shared grounding instruction appended to every grounded-mode system prompt.
 _GROUNDING_SUFFIX = (
@@ -80,7 +91,7 @@ def build_sources(result: RetrievalResult, top_n: int = 5) -> list[Source]:
     seen: set[str] = set()
     sources: list[Source] = []
     for c in result.chunks[:top_n]:
-        key = (c.entity_name or c.section or c.chunk_id).lower()
+        key = c.entity_name or c.section or c.chunk_id
         if key in seen:
             continue
         seen.add(key)
@@ -96,13 +107,17 @@ def build_sources(result: RetrievalResult, top_n: int = 5) -> list[Source]:
 
 def generate_answer(
     question: str, context: str, *, mode: str = "sage",
-    model: str = DEFAULT_MODEL, client=None,
+    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
 ) -> str:
     """Call gpt-4o-mini with a per-mode system prompt + grounded user message.
 
     `mode` selects the persona from PERSONA_PROMPTS (defaults to 'sage').
     `client` is injectable for tests.
     """
+    # Defensive: callers reach here only past the grounding gate (non-empty
+    # context). An empty context or question is a programming error, not input.
+    if not context.strip() or not question.strip():
+        raise ValueError("generate_answer requires non-empty question and context")
     if client is None:
         from openai import OpenAI
         client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))

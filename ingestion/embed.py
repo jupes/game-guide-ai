@@ -139,7 +139,7 @@ def embed_and_upsert(
     ollama_url: str,
     replace_book: bool = False,
 ) -> None:
-    chunks = [json.loads(l) for l in chunks_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    chunks = [json.loads(line) for line in chunks_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     total = len(chunks)
     print(f"Chunks to embed: {total}  (backend: {backend}, model: {model})")
 

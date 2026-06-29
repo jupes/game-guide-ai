@@ -8,13 +8,14 @@ Run from repo root:
 
 from __future__ import annotations
 
-import sys
+
+import pytest
 
 from ingestion.retrieval import RetrievalResult, RetrievedChunk
 
-from service.generate import build_context, build_sources, generate_answer, GROUNDED_PROMPT
+from service.generate import build_context, build_sources, generate_answer
 from service.rag import RagService, REFUSAL
-from service.models import ChatMode, ChatResponse
+from service.models import ChatResponse
 
 
 def _chunk(cid, entity, ctype="monster", section=None, chapter=None, page=1):
@@ -43,17 +44,28 @@ class _FakeRetriever:
     def retrieve(self, prompt, reranker=None, mode="sage"): return self._r
 
 
+def _fake_completion(text):
+    """Build a minimal object shaped like an OpenAI chat completion response."""
+    class _M:
+        pass
+    msg = _M()
+    msg.content = text
+    choice = _M()
+    choice.message = msg
+    resp = _M()
+    resp.choices = [choice]
+    return resp
+
+
 class _FakeLLM:
     """Mimics openai client.chat.completions.create(...).choices[0].message.content"""
-    def __init__(self, text): self.text = text; self.chat = self
+    def __init__(self, text):
+        self.text = text
+        self.chat = self
     @property
     def completions(self): return self
     def create(self, **kw):
-        class _M: pass
-        msg = _M(); msg.content = self.text
-        choice = _M(); choice.message = msg
-        resp = _M(); resp.choices = [choice]
-        return resp
+        return _fake_completion(self.text)
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +93,15 @@ def test_build_sources_dedup_same_entity():
     r = RetrievalResult(chunks=chunks, full_texts={"a": "x" * 10, "b": "y" * 10},
                         top1_distance=0.3, answerable=True, book_by_id={"a": "vgm-5e", "b": "vgm-5e"})
     assert len(build_sources(r)) == 1   # deduped by entity
+
+
+def test_build_sources_keeps_distinct_cased_entities():
+    # Dedup is case-sensitive: entities differing only by case are distinct and
+    # both kept (lowercasing would silently drop one).
+    chunks = [_chunk("a", "Fireball"), _chunk("b", "fireball")]
+    r = RetrievalResult(chunks=chunks, full_texts={"a": "x" * 10, "b": "y" * 10},
+                        top1_distance=0.3, answerable=True, book_by_id={"a": "phb-5e", "b": "phb-5e"})
+    assert len(build_sources(r)) == 2
 
 
 def test_generate_answer_uses_injected_client():
@@ -118,6 +139,46 @@ def test_answer_refusal_skips_llm():
     assert called["n"] == 0   # LLM never invoked on refusal
 
 
+class _CountingRetriever(_FakeRetriever):
+    """Tracks how many times retrieve() is called."""
+    def __init__(self, result):
+        super().__init__(result)
+        self.calls = 0
+    def retrieve(self, prompt, reranker=None, mode="sage"):
+        self.calls += 1
+        return super().retrieve(prompt, reranker=reranker, mode=mode)
+
+
+def test_answer_unknown_mode_raises_before_retrieval():
+    # An invalid mode (only reachable by a non-API caller) fails fast with a
+    # ValueError, BEFORE any retrieval work — not a late crash at response build.
+    retriever = _CountingRetriever(_result())
+    svc = RagService(retriever=retriever, llm_client=_FakeLLM("x"))
+    with pytest.raises(ValueError):
+        svc.answer("anything", mode="bogus")
+    assert retriever.calls == 0   # validated up front
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+def test_answer_empty_prompt_refuses(blank):
+    # An empty/whitespace prompt (only reachable by a non-API caller; the API
+    # enforces min_length=1) short-circuits to REFUSAL without retrieval or LLM.
+    retriever = _CountingRetriever(_result())
+    svc = RagService(retriever=retriever, llm_client=_FakeLLM("should not run"))
+    resp = svc.answer(blank)
+    assert resp.answerable is False
+    assert resp.answer == REFUSAL
+    assert resp.sources == []
+    assert retriever.calls == 0
+
+
+def test_generate_answer_empty_context_raises():
+    # Defensive guard: generate_answer is normally only reached with non-empty
+    # context (the grounding gate), so empty context is a programming error.
+    with pytest.raises(ValueError):
+        generate_answer("a question", "", client=_FakeLLM("x"))
+
+
 # ---------------------------------------------------------------------------
 # CP-F4.2 — Per-mode persona (behavior #16)
 # ---------------------------------------------------------------------------
@@ -134,11 +195,7 @@ class _CapturingLLM:
 
     def create(self, **kw):
         self.last_messages = kw.get("messages", [])
-        class _M: pass
-        msg = _M(); msg.content = self.text
-        choice = _M(); choice.message = msg
-        resp = _M(); resp.choices = [choice]
-        return resp
+        return _fake_completion(self.text)
 
 
 def test_sage_mode_uses_sage_persona():
@@ -344,7 +401,7 @@ def test_merge_results_with_empty_secondary_preserves_primary():
 
 def test_merge_results_primary_chunks_ranked_first():
     """When secondary has chunks, primary chunks appear before secondary in merge."""
-    from service.rag import RagService, StubSecondaryRetriever
+    from service.rag import RagService
     from dataclasses import dataclass
 
     primary = _result(answerable=True)
@@ -371,21 +428,3 @@ def test_merge_results_primary_chunks_ranked_first():
     merged_ids = [c.chunk_id for c in merged.chunks]
     for pid in primary_ids:
         assert merged_ids.index(pid) < merged_ids.index("sec1")
-
-
-def _run():
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    failed = 0
-    for t in tests:
-        try:
-            t(); print(f"  PASS  {t.__name__}")
-        except AssertionError as e:
-            print(f"  FAIL  {t.__name__}: {e}"); failed += 1
-        except Exception as e:
-            print(f"  ERROR {t.__name__}: {type(e).__name__}: {e}"); failed += 1
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    sys.exit(0 if failed == 0 else 1)
-
-
-if __name__ == "__main__":
-    _run()
