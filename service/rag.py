@@ -10,9 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from ingestion.retrieval import RagRetriever, RetrievalResult
+from ingestion.retrieval import RagRetriever, RetrievalResult, RetrievedChunk
 
-from .generate import DEFAULT_MODEL, build_context, build_sources, generate_answer
+from .generate import (
+    DEFAULT_MODEL,
+    LLMClient,
+    build_context,
+    build_sources,
+    generate_answer,
+)
 from .models import ChatMode, ChatResponse
 
 REFUSAL = "I couldn't find that in the D&D 5e sources I have."
@@ -29,9 +35,9 @@ CONTEXT_TOP_N = 5
 @dataclass
 class SecondaryResult:
     """Minimal result type returned by a secondary retriever."""
-    chunks: list = field(default_factory=list)
-    full_texts: dict = field(default_factory=dict)
-    book_by_id: dict = field(default_factory=dict)
+    chunks: list[RetrievedChunk] = field(default_factory=list)
+    full_texts: dict[str, str] = field(default_factory=dict)
+    book_by_id: dict[str, str] = field(default_factory=dict)
     answerable: bool = False
 
 
@@ -57,13 +63,13 @@ class StubSecondaryRetriever:
 class RagService:
     def __init__(
         self, retriever=None, *, reranker=None, dsn: str | None = None,
-        model: str = DEFAULT_MODEL, llm_client=None,
+        model: str = DEFAULT_MODEL, llm_client: LLMClient | None = None,
         secondary_retriever=None,
     ):
         self.retriever = retriever or RagRetriever(dsn)
         self.reranker = reranker
         self.model = model
-        self.llm_client = llm_client  # injected OpenAI-like client (tests)
+        self.llm_client: LLMClient | None = llm_client  # injected OpenAI-like client (tests)
         self.secondary = secondary_retriever or StubSecondaryRetriever()
 
     def _merge_results(

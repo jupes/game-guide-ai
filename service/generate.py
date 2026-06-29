@@ -10,6 +10,7 @@ accepts an injected client for tests.
 from __future__ import annotations
 
 import os
+from typing import Any, Protocol
 
 from ingestion.retrieval import RetrievalResult
 
@@ -17,6 +18,26 @@ from .models import Source
 
 SNIPPET_MAX = 240
 DEFAULT_MODEL = "gpt-4o-mini"
+
+
+# Minimal structural type for the injected LLM client. Captures only the call we
+# make — `client.chat.completions.create(...)` — so an OpenAI client (or a test
+# fake) satisfies it without mirroring the full SDK surface. The response is typed
+# loosely (`Any`) on purpose: we only read `.choices[0].message.content`.
+class _Completions(Protocol):
+    def create(
+        self, *, model: str, messages: list[dict[str, str]], temperature: float
+    ) -> Any: ...  # pragma: no cover - structural type
+
+
+class _Chat(Protocol):
+    @property
+    def completions(self) -> _Completions: ...  # pragma: no cover - structural type
+
+
+class LLMClient(Protocol):
+    @property
+    def chat(self) -> _Chat: ...  # pragma: no cover - structural type
 
 # Legacy constant kept for backward compatibility with any direct importers.
 GROUNDED_PROMPT = (
@@ -96,7 +117,7 @@ def build_sources(result: RetrievalResult, top_n: int = 5) -> list[Source]:
 
 def generate_answer(
     question: str, context: str, *, mode: str = "sage",
-    model: str = DEFAULT_MODEL, client=None,
+    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
 ) -> str:
     """Call gpt-4o-mini with a per-mode system prompt + grounded user message.
 
