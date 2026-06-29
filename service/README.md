@@ -111,6 +111,22 @@ No DB or LLM is needed for the unit/endpoint tests (retriever + LLM are mocked).
 | `OPENAI_API_KEY` | embeddings + generation (required) |
 | `DATABASE_URL` | pgvector DSN (defaults to the local compose DSN) |
 
+### RAG tuning knobs
+
+All optional and env-overridable; the canonical defaults + rationale live in the
+top-level [`config.py`](../config.py). Tune retrieval/generation without a code
+change or redeploy.
+
+| var | default | purpose |
+| --- | --- | --- |
+| `RAG_TOP_K` | `10` | chunks the vector search returns per query (pre-rerank) |
+| `RAG_CONTEXT_TOP_N` | `5` | top chunks fed to the LLM context + cited sources |
+| `RAG_SNIPPET_MAX` | `240` | max chars of each source's display snippet |
+| `RAG_FALLBACK_DISTANCE` | `0.42` | ipl: top-1 distance above which a filtered query retries unfiltered |
+| `RAG_ANSWERABLE_DISTANCE` | `0.50` | koz: top-1 distance within which the corpus is judged answerable |
+| `RAG_DEFAULT_MODEL` | `gpt-4o-mini` | OpenAI chat model for answer generation |
+| `RAG_TEMPERATURE` | `0.2` | answer-generation sampling temperature |
+
 ## Not in v1 (follow-ups)
 
 - Streaming (SSE) for the UI epic (`3zs`).

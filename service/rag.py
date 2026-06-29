@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from config import CONTEXT_TOP_N
 from ingestion.retrieval import RagRetriever, RetrievalResult, RetrievedChunk
 
 from .generate import (
@@ -22,7 +23,6 @@ from .generate import (
 from .models import ChatMode, ChatResponse
 
 REFUSAL = "I couldn't find that in the D&D 5e sources I have."
-CONTEXT_TOP_N = 5
 
 # Mode → retrieval scope mapping lives in the canonical leaf module
 # `ingestion/scope.py` (`scope_for_mode`); the retriever applies it. The service
