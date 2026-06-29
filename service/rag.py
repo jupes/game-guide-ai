@@ -103,6 +103,14 @@ class RagService:
     def answer(
         self, prompt: str, mode: str = "sage", conversation_id: str | None = None,
     ) -> ChatResponse:
+        # Validate the mode up front so an invalid value fails fast with a clear
+        # error instead of silently scoping-as-sage and then raising at response
+        # build (the API layer already 422s real users via the ChatMode enum).
+        try:
+            mode_enum = ChatMode(mode)
+        except ValueError:
+            raise ValueError(f"unknown mode: {mode!r}") from None
+
         result = self.retriever.retrieve(prompt, reranker=self.reranker, mode=mode)
 
         # Second-source merge (GM mode only; stub is a no-op).
@@ -117,14 +125,14 @@ class RagService:
             if not result.chunks:
                 return ChatResponse(
                     answer=REFUSAL, sources=[], answerable=False,
-                    mode=ChatMode(mode), conversation_id=conversation_id,
+                    mode=mode_enum, conversation_id=conversation_id,
                 )
         else:
             # sage / spell / rules: strict koz gate.
             if not result.answerable or not result.chunks:
                 return ChatResponse(
                     answer=REFUSAL, sources=[], answerable=False,
-                    mode=ChatMode(mode), conversation_id=conversation_id,
+                    mode=mode_enum, conversation_id=conversation_id,
                 )
 
         context = build_context(result, top_n=CONTEXT_TOP_N)
@@ -134,5 +142,5 @@ class RagService:
         sources = build_sources(result, top_n=CONTEXT_TOP_N)
         return ChatResponse(
             answer=answer, sources=sources, answerable=result.answerable,
-            mode=ChatMode(mode), conversation_id=conversation_id,
+            mode=mode_enum, conversation_id=conversation_id,
         )

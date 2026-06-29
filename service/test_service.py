@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from ingestion.retrieval import RetrievalResult, RetrievedChunk
 
 from service.generate import build_context, build_sources, generate_answer, GROUNDED_PROMPT
@@ -116,6 +118,26 @@ def test_answer_refusal_skips_llm():
     assert resp.answer == REFUSAL
     assert resp.sources == []
     assert called["n"] == 0   # LLM never invoked on refusal
+
+
+class _CountingRetriever(_FakeRetriever):
+    """Tracks how many times retrieve() is called."""
+    def __init__(self, result):
+        super().__init__(result)
+        self.calls = 0
+    def retrieve(self, prompt, reranker=None, mode="sage"):
+        self.calls += 1
+        return super().retrieve(prompt, reranker=reranker, mode=mode)
+
+
+def test_answer_unknown_mode_raises_before_retrieval():
+    # An invalid mode (only reachable by a non-API caller) fails fast with a
+    # ValueError, BEFORE any retrieval work — not a late crash at response build.
+    retriever = _CountingRetriever(_result())
+    svc = RagService(retriever=retriever, llm_client=_FakeLLM("x"))
+    with pytest.raises(ValueError):
+        svc.answer("anything", mode="bogus")
+    assert retriever.calls == 0   # validated up front
 
 
 # ---------------------------------------------------------------------------
