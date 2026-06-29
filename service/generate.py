@@ -91,7 +91,7 @@ def build_sources(result: RetrievalResult, top_n: int = 5) -> list[Source]:
     seen: set[str] = set()
     sources: list[Source] = []
     for c in result.chunks[:top_n]:
-        key = (c.entity_name or c.section or c.chunk_id).lower()
+        key = c.entity_name or c.section or c.chunk_id
         if key in seen:
             continue
         seen.add(key)

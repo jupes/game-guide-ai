@@ -85,6 +85,15 @@ def test_build_sources_dedup_same_entity():
     assert len(build_sources(r)) == 1   # deduped by entity
 
 
+def test_build_sources_keeps_distinct_cased_entities():
+    # Dedup is case-sensitive: entities differing only by case are distinct and
+    # both kept (lowercasing would silently drop one).
+    chunks = [_chunk("a", "Fireball"), _chunk("b", "fireball")]
+    r = RetrievalResult(chunks=chunks, full_texts={"a": "x" * 10, "b": "y" * 10},
+                        top1_distance=0.3, answerable=True, book_by_id={"a": "phb-5e", "b": "phb-5e"})
+    assert len(build_sources(r)) == 2
+
+
 def test_generate_answer_uses_injected_client():
     out = generate_answer("Q?", "ctx", client=_FakeLLM("the answer [1]"))
     assert out == "the answer [1]"
