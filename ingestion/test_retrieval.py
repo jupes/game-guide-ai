@@ -1,26 +1,21 @@
 """
 Unit tests for ingestion/retrieval.py — book-filter SQL generation and the
-per-mode scope helper (_retrieval_scope_for_mode).
+per-mode scope helper (scope_for_mode).
 
 These tests are pure (no DB, no network).  They mock the DB cursor where
 needed (same pattern as other ingestion test files).
 
 Run from repo root:
-    uv run --with pytest --with "psycopg[binary]" python -m pytest ingestion/test_retrieval.py -q
+    uv run --with '.[test]' python -m pytest ingestion/test_retrieval.py -q
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from retrieval import (  # noqa: E402
-    _retrieval_scope_for_mode,
+from ingestion.retrieval import (
     build_vector_sql,
     retrieve_top_k,
 )
+from ingestion.scope import scope_for_mode
 
 
 # ---------------------------------------------------------------------------
@@ -78,23 +73,23 @@ def test_book_slugs_none_does_not_add_clause():
 
 
 # ---------------------------------------------------------------------------
-# _retrieval_scope_for_mode — mode→scope mapping (CP-F4.3)
+# scope_for_mode — mode→scope mapping (CP-F4.3)
 # ---------------------------------------------------------------------------
 
 def test_sage_scope_returns_query_ctypes_and_no_book_limit():
-    ctypes, books = _retrieval_scope_for_mode("sage", {"rule"})
+    ctypes, books = scope_for_mode("sage", {"rule"})
     assert ctypes == {"rule"}
     assert books is None
 
 
 def test_sage_scope_no_query_ctypes_is_none():
-    ctypes, books = _retrieval_scope_for_mode("sage", set())
+    ctypes, books = scope_for_mode("sage", set())
     assert ctypes is None
     assert books is None
 
 
 def test_spell_scope_forces_spell_ctype_and_limits_books():
-    ctypes, books = _retrieval_scope_for_mode("spell", set())
+    ctypes, books = scope_for_mode("spell", set())
     assert ctypes == {"spell"}
     assert "phb-5e" in books
     assert "dmg-5e" not in books
@@ -103,13 +98,13 @@ def test_spell_scope_forces_spell_ctype_and_limits_books():
 
 def test_spell_scope_overrides_query_derived_ctypes():
     """spell mode forces exactly {"spell"}, ignoring query-derived types."""
-    ctypes, books = _retrieval_scope_for_mode("spell", {"class_feature", "monster"})
+    ctypes, books = scope_for_mode("spell", {"class_feature", "monster"})
     assert ctypes == {"spell"}
 
 
 def test_rules_scope_uses_intersection_when_non_empty():
     """rules mode: intersection of query ctypes and rules allowlist when non-empty."""
-    ctypes, books = _retrieval_scope_for_mode("rules", {"rule", "monster"})
+    ctypes, books = scope_for_mode("rules", {"rule", "monster"})
     assert "rule" in ctypes
     assert "monster" not in ctypes
     assert books is None
@@ -117,7 +112,7 @@ def test_rules_scope_uses_intersection_when_non_empty():
 
 def test_rules_scope_falls_back_to_full_allowlist_when_intersection_empty():
     """rules mode: full allowlist when query ctypes don't overlap allowlist."""
-    ctypes, books = _retrieval_scope_for_mode("rules", {"monster", "dm_guidance"})
+    ctypes, books = scope_for_mode("rules", {"monster", "dm_guidance"})
     assert "rule" in ctypes
     assert "class_feature" in ctypes
     assert "monster" not in ctypes
@@ -125,7 +120,7 @@ def test_rules_scope_falls_back_to_full_allowlist_when_intersection_empty():
 
 
 def test_gm_scope_merges_forced_ctypes_with_query_derived():
-    ctypes, books = _retrieval_scope_for_mode("gm", {"spell"})
+    ctypes, books = scope_for_mode("gm", {"spell"})
     assert "spell" in ctypes
     assert "monster" in ctypes
     assert "dm_guidance" in ctypes
@@ -134,7 +129,7 @@ def test_gm_scope_merges_forced_ctypes_with_query_derived():
 
 
 def test_gm_scope_includes_forced_ctypes_when_no_query_ctypes():
-    ctypes, books = _retrieval_scope_for_mode("gm", set())
+    ctypes, books = scope_for_mode("gm", set())
     assert "monster" in ctypes
     assert "dm_guidance" in ctypes
     assert "magic_item" in ctypes

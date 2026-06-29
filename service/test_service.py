@@ -3,23 +3,18 @@ Unit tests for the agent service — pure context/source assembly + mocked
 RagService (no DB, no LLM, no network).
 
 Run from repo root:
-    uv run --with pydantic python -m service.test_service
+    uv run --with '.[test]' python -m pytest service/test_service.py -q
 """
 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "ingestion"))
+from ingestion.retrieval import RetrievalResult, RetrievedChunk
 
-from retrieval import RetrievalResult, RetrievedChunk  # noqa: E402
-
-from service.generate import build_context, build_sources, generate_answer, GROUNDED_PROMPT  # noqa: E402
-from service.rag import RagService, REFUSAL  # noqa: E402
-from service.models import ChatMode, ChatResponse  # noqa: E402
+from service.generate import build_context, build_sources, generate_answer, GROUNDED_PROMPT
+from service.rag import RagService, REFUSAL
+from service.models import ChatMode, ChatResponse
 
 
 def _chunk(cid, entity, ctype="monster", section=None, chapter=None, page=1):
@@ -202,8 +197,8 @@ def test_grounded_template_in_user_message():
 # ---------------------------------------------------------------------------
 
 def test_spell_scope_forces_spell_ctype_and_limits_books():
-    from service.rag import _scope_for_mode
-    ctypes, books = _scope_for_mode("spell", set())
+    from ingestion.scope import scope_for_mode
+    ctypes, books = scope_for_mode("spell", set())
     assert "spell" in ctypes
     assert "monster" not in ctypes
     assert "dmg-5e" not in books
@@ -212,14 +207,14 @@ def test_spell_scope_forces_spell_ctype_and_limits_books():
 
 def test_spell_scope_overrides_query_derived_ctypes():
     """spell mode forces only spell ctype, ignoring query-derived non-spell types."""
-    from service.rag import _scope_for_mode
-    ctypes, books = _scope_for_mode("spell", {"class_feature", "rule"})
+    from ingestion.scope import scope_for_mode
+    ctypes, books = scope_for_mode("spell", {"class_feature", "rule"})
     assert ctypes == {"spell"}
 
 
 def test_rules_scope_excludes_monster_and_creative_ctypes():
-    from service.rag import _scope_for_mode
-    ctypes, books = _scope_for_mode("rules", {"monster"})
+    from ingestion.scope import scope_for_mode
+    ctypes, books = scope_for_mode("rules", {"monster"})
     assert "monster" not in ctypes
     assert "dm_guidance" not in ctypes
     assert "magic_item" not in ctypes
@@ -229,14 +224,14 @@ def test_rules_scope_excludes_monster_and_creative_ctypes():
 
 def test_rules_scope_books_is_none_or_all():
     """rules mode doesn't restrict books (all books supply rules)."""
-    from service.rag import _scope_for_mode
-    ctypes, books = _scope_for_mode("rules", set())
+    from ingestion.scope import scope_for_mode
+    ctypes, books = scope_for_mode("rules", set())
     assert books is None
 
 
 def test_gm_scope_includes_monster_dm_guidance_magic_item():
-    from service.rag import _scope_for_mode
-    ctypes, books = _scope_for_mode("gm", set())
+    from ingestion.scope import scope_for_mode
+    ctypes, books = scope_for_mode("gm", set())
     assert "monster" in ctypes
     assert "dm_guidance" in ctypes
     assert "magic_item" in ctypes
@@ -245,17 +240,17 @@ def test_gm_scope_includes_monster_dm_guidance_magic_item():
 
 def test_gm_scope_merges_query_derived_ctypes():
     """gm mode merges forced ctypes with query-derived ones."""
-    from service.rag import _scope_for_mode
-    ctypes, books = _scope_for_mode("gm", {"spell"})
+    from ingestion.scope import scope_for_mode
+    ctypes, books = scope_for_mode("gm", {"spell"})
     assert "spell" in ctypes
     assert "monster" in ctypes
 
 
 def test_sage_scope_passes_through_unmodified():
     """sage mode returns query-derived ctypes unchanged, no book restriction."""
-    from service.rag import _scope_for_mode
+    from ingestion.scope import scope_for_mode
     query_ctypes = {"rule", "class_feature"}
-    ctypes, books = _scope_for_mode("sage", query_ctypes)
+    ctypes, books = scope_for_mode("sage", query_ctypes)
     assert ctypes == query_ctypes
     assert books is None
 
@@ -376,37 +371,6 @@ def test_merge_results_primary_chunks_ranked_first():
     merged_ids = [c.chunk_id for c in merged.chunks]
     for pid in primary_ids:
         assert merged_ids.index(pid) < merged_ids.index("sec1")
-
-
-# ---------------------------------------------------------------------------
-# Scope-mapping parity — the mode→scope logic is duplicated across
-# service/rag._scope_for_mode and ingestion/retrieval._retrieval_scope_for_mode
-# (the latter is what actually runs in production). They must not drift.
-# ---------------------------------------------------------------------------
-
-def test_scope_mappings_agree_across_modes_and_inputs():
-    """The service copy and the ingestion (production) copy must return identical
-    (effective_ctypes, allowed_books) for every mode and a range of query ctypes."""
-    from service.rag import _scope_for_mode  # importing service.rag puts ingestion/ on sys.path
-    from retrieval import _retrieval_scope_for_mode
-
-    query_inputs = [
-        set(),
-        {"rule"},
-        {"monster"},
-        {"spell"},
-        {"class_feature", "rule"},
-        {"monster", "dm_guidance"},
-        {"spell", "feat", "background"},
-        {"unknown_ctype"},
-    ]
-    modes = ["sage", "spell", "rules", "gm", "unrecognised"]
-
-    for mode in modes:
-        for q in query_inputs:
-            svc = _scope_for_mode(mode, set(q))
-            ing = _retrieval_scope_for_mode(mode, set(q))
-            assert svc == ing, f"scope drift for mode={mode!r} q={q!r}: {svc} != {ing}"
 
 
 def _run():

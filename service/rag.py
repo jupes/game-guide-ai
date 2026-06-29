@@ -7,13 +7,10 @@ injected so the FastAPI app can build them at startup and tests can mock them.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Protocol
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ingestion"))
-from retrieval import RagRetriever, RetrievalResult  # noqa: E402
+from ingestion.retrieval import RagRetriever, RetrievalResult
 
 from .generate import DEFAULT_MODEL, build_context, build_sources, generate_answer
 from .models import ChatMode, ChatResponse
@@ -21,60 +18,9 @@ from .models import ChatMode, ChatResponse
 REFUSAL = "I couldn't find that in the D&D 5e sources I have."
 CONTEXT_TOP_N = 5
 
-# ---------------------------------------------------------------------------
-# Mode → retrieval scope mapping
-# ---------------------------------------------------------------------------
-
-_SPELL_BOOKS: frozenset[str] = frozenset({
-    "phb-5e", "xge-5e", "tce-5e", "eepc-5e",
-    "scag-5e", "tortle-5e", "eberron-5e", "ravnica-5e",
-})
-
-_RULES_CTYPES: frozenset[str] = frozenset({
-    "rule", "class_feature", "condition", "race_feature", "background", "feat",
-})
-
-_GM_FORCED_CTYPES: frozenset[str] = frozenset({
-    "monster", "dm_guidance", "magic_item",
-})
-
-
-def _scope_for_mode(
-    mode: str,
-    query_ctypes: set[str],
-) -> tuple[set[str] | None, set[str] | None]:
-    """Pure function: map (mode, query-derived ctypes) → (effective_ctypes, allowed_books).
-
-    Returns:
-        effective_ctypes: set passed to the retriever's content_types filter,
-                          or None for unscoped (all content types).
-        allowed_books:    set passed to the retriever's book_slugs filter,
-                          or None for unscoped (all books).
-
-    Modes:
-        sage  — unscoped; query-derived ctypes + no book restriction.
-        spell — forces content_types={"spell"}, restricts to spell-bearing books.
-        rules — forces content_types=rules allowlist (merges with query-derived,
-                 but strips out non-rules types).
-        gm    — merges forced creative ctypes with query-derived; no book restriction.
-    """
-    if mode == "spell":
-        return {"spell"}, set(_SPELL_BOOKS)
-
-    if mode == "rules":
-        # Intersection of query-derived and rules allowlist; fall back to full allowlist.
-        intersection = query_ctypes & _RULES_CTYPES
-        effective = intersection if intersection else set(_RULES_CTYPES)
-        return effective, None
-
-    if mode == "gm":
-        # Union of query-derived ctypes with the GM forced set.
-        effective = query_ctypes | set(_GM_FORCED_CTYPES)
-        return effective, None
-
-    # sage (and any unrecognised mode) — pass through query-derived, no book limit.
-    return query_ctypes or None, None
-
+# Mode → retrieval scope mapping lives in the canonical leaf module
+# `ingestion/scope.py` (`scope_for_mode`); the retriever applies it. The service
+# does not scope directly, so it no longer carries its own copy.
 
 # ---------------------------------------------------------------------------
 # Secondary retriever seam (stubbed now; drop-in for a future world corpus)

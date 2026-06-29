@@ -3,17 +3,14 @@ Tests for ocr_normalize (agent-forge-harness-6om). The critical property: it fix
 the known PHB garbles WITHOUT corrupting clean English/D&D text.
 
 Run from repos/rag-chat:
-    uv run python ingestion/test_ocr_normalize.py
+    uv run --with '.[test]' python -m pytest ingestion/test_ocr_normalize.py -q
 """
 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from ocr_normalize import normalize_ocr  # noqa: E402
+from ingestion.ocr_normalize import normalize_ocr
 
 
 def test_fixes_level_variants():

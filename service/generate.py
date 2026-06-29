@@ -10,11 +10,8 @@ accepts an injected client for tests.
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ingestion"))
-from retrieval import RetrievalResult  # noqa: E402
+from ingestion.retrieval import RetrievalResult
 
 from .models import Source
 

@@ -22,12 +22,11 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-import extract_scan as ex
-import qa_chunks
-from embed import embed_and_upsert, DEFAULT_DSN, DEFAULT_BACKEND, DEFAULT_MODEL_OAI
 import os
+
+from ingestion import extract_scan as ex
+from ingestion import qa_chunks
+from ingestion.embed import embed_and_upsert, DEFAULT_DSN, DEFAULT_BACKEND, DEFAULT_MODEL_OAI
 
 BOOKS_DIR = Path(__file__).resolve().parent.parent.parent / "DnD-Books" / "5e" / "Books"
 

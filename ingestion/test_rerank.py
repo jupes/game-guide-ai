@@ -2,17 +2,14 @@
 Unit tests for rerank.py — content-type gate + ordering (pure, no torch/DB).
 
 Run:
-    uv run python ingestion/test_rerank.py
+    uv run --with '.[test]' python -m pytest ingestion/test_rerank.py -q
 """
 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from rerank import SKIP_RERANK_CTYPES, rerank_order, should_rerank
+from ingestion.rerank import SKIP_RERANK_CTYPES, rerank_order, should_rerank
 
 
 # ---------------------------------------------------------------------------

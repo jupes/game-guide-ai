@@ -9,7 +9,7 @@ or mis-names one of these, this test goes red.
 Pure — reads the committed JSONLs, no DB / no PDF / no network.
 
 Run from repos/rag-chat:
-    uv run python ingestion/test_golden_entities.py
+    uv run --with '.[test]' python -m pytest ingestion/test_golden_entities.py -q
 """
 
 from __future__ import annotations

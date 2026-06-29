@@ -2,17 +2,14 @@
 Unit tests for gen_golden.py — golden-query templating (pure, no DB).
 
 Run:
-    uv run python ingestion/test_gen_golden.py
+    uv run --with '.[test]' python -m pytest ingestion/test_gen_golden.py -q
 """
 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from gen_golden import template_question, CATEGORY_FOR
+from ingestion.gen_golden import template_question, CATEGORY_FOR
 
 
 def test_spell_template():
