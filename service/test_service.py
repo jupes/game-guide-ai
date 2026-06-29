@@ -14,7 +14,7 @@ import pytest
 
 from ingestion.retrieval import RetrievalResult, RetrievedChunk
 
-from service.generate import build_context, build_sources, generate_answer, GROUNDED_PROMPT
+from service.generate import build_context, build_sources, generate_answer
 from service.rag import RagService, REFUSAL
 from service.models import ChatMode, ChatResponse
 

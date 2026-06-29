@@ -39,16 +39,6 @@ class LLMClient(Protocol):
     @property
     def chat(self) -> _Chat: ...  # pragma: no cover - structural type
 
-# Legacy constant kept for backward compatibility with any direct importers.
-GROUNDED_PROMPT = (
-    "You are a Dungeons & Dragons 5th Edition rules assistant. "
-    "Answer the user's question using ONLY the numbered sources below. "
-    "Cite the sources you use inline as [1], [2], etc. "
-    "If the sources do not contain the answer, say you don't have that in your "
-    "sources — do not use outside knowledge.\n\n"
-    "Sources:\n{context}\n\nQuestion: {question}\n\nAnswer:"
-)
-
 # Shared grounding instruction appended to every grounded-mode system prompt.
 _GROUNDING_SUFFIX = (
     "Answer the user's question using ONLY the numbered sources below. "
