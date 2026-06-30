@@ -1,0 +1,7 @@
+# Phase 0 spike deps (epic ziw / ziw.1) — LangGraph + Langfuse integration proof.
+# Spike-only; the migration (ziw.2) will add the pinned subset to pyproject.toml.
+# Install:  pip install -r spikes/requirements-spike.txt
+langgraph>=0.2,<0.4
+langchain-core>=0.3,<0.4
+langchain-openai>=0.2,<0.4
+langfuse>=3,<4
