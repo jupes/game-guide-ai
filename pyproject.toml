@@ -13,6 +13,9 @@ dependencies = [
     "openai",
     "psycopg[binary]",
     "pydantic",
+    # LangGraph orchestration of the RAG pipeline (ziw.2 / Phase 1). The LLM node
+    # moves to langchain-openai in CP2; langfuse tracing is added in CP3.
+    "langgraph>=0.2,<0.4",
 ]
 
 [project.optional-dependencies]

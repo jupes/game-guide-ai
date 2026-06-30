@@ -8,18 +8,11 @@ injected so the FastAPI app can build them at startup and tests can mock them.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
-from config import CONTEXT_TOP_N
 from ingestion.retrieval import RagRetriever, RetrievalResult, RetrievedChunk
 
-from .generate import (
-    DEFAULT_MODEL,
-    LLMClient,
-    build_context,
-    build_sources,
-    generate_answer,
-)
+from .generate import DEFAULT_MODEL, LLMClient
 from .models import ChatMode, ChatResponse
 
 REFUSAL = "I couldn't find that in the D&D 5e sources I have."
@@ -71,6 +64,7 @@ class RagService:
         self.model = model
         self.llm_client: LLMClient | None = llm_client  # injected OpenAI-like client (tests)
         self.secondary = secondary_retriever or StubSecondaryRetriever()
+        self._graph: Any = None  # compiled LangGraph pipeline (lazy; see _compiled_graph)
 
     def _merge_results(
         self, primary: RetrievalResult, secondary: SecondaryResult,
@@ -119,36 +113,21 @@ class RagService:
                 mode=mode_enum, conversation_id=conversation_id,
             )
 
-        result = self.retriever.retrieve(prompt, reranker=self.reranker, mode=mode)
-
-        # Second-source merge (GM mode only; stub is a no-op).
-        if mode == "gm":
-            secondary = self.secondary.retrieve(prompt)
-            result = self._merge_results(result, secondary)
-
-        # Grounding gate: strict for sage/spell/rules; relaxed for gm.
-        if mode == "gm":
-            # GM: proceed when any chunks exist; answerable=False is allowed
-            # (marks creative/partly-inventive output for the client).
-            if not result.chunks:
-                return ChatResponse(
-                    answer=REFUSAL, sources=[], answerable=False,
-                    mode=mode_enum, conversation_id=conversation_id,
-                )
-        else:
-            # sage / spell / rules: strict koz gate.
-            if not result.answerable or not result.chunks:
-                return ChatResponse(
-                    answer=REFUSAL, sources=[], answerable=False,
-                    mode=mode_enum, conversation_id=conversation_id,
-                )
-
-        context = build_context(result, top_n=CONTEXT_TOP_N)
-        answer = generate_answer(
-            prompt, context, mode=mode, model=self.model, client=self.llm_client,
-        )
-        sources = build_sources(result, top_n=CONTEXT_TOP_N)
+        # The retrieve -> grounding gate -> generate|refuse core now runs as a
+        # LangGraph graph (ziw.2 / Phase 1). Behavior is identical to the prior
+        # imperative flow; the graph orchestrates the same building blocks.
+        final = self._compiled_graph().invoke({"prompt": prompt, "mode": mode})
         return ChatResponse(
-            answer=answer, sources=sources, answerable=result.answerable,
+            answer=final["answer"], sources=final["sources"],
+            answerable=final["answerable"],
             mode=mode_enum, conversation_id=conversation_id,
         )
+
+    def _compiled_graph(self):
+        """Lazily build + cache the pipeline graph (langgraph imported on first use
+        so constructing a RagService stays cheap)."""
+        if self._graph is None:
+            from .graph import build_rag_graph
+
+            self._graph = build_rag_graph(self)
+        return self._graph
