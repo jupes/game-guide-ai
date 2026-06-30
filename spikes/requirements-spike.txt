@@ -4,4 +4,7 @@
 langgraph>=0.2,<0.4
 langchain-core>=0.3,<0.4
 langchain-openai>=0.2,<0.4
+# langfuse's LangChain callback integration imports the `langchain` meta-package
+# (not just langchain-core), so it's required for the real (non --dry) run.
+langchain>=0.3,<0.4
 langfuse>=3,<4
