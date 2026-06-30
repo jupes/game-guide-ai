@@ -58,26 +58,31 @@ using `langchain-openai` `ChatOpenAI` — the wrapper the migration adopts. The 
 
 ### How to run
 
+The spike **auto-loads the repo-root `.env`** (the same file docker `env_file` uses), so if your
+`.env` already holds `OPENAI_API_KEY` + `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY`
+(+ `LANGFUSE_BASE_URL` for self-host) you don't need to export anything. Explicit process env still
+wins over `.env`.
+
 ```bash
 # 1. Deps (spike-only; the migration adds the pinned subset to pyproject.toml)
-pip install -r spikes/requirements-spike.txt
+pip install -r spikes/requirements-spike.txt        # or: uv pip install -r spikes/requirements-spike.txt
 
 # 2a. Headless wiring check — no network, no Langfuse, no keys. Proves the graph runs.
 python spikes/langgraph_langfuse_spike.py --dry
 
-# 2b. Real trace — pick ONE backend, then run:
-#   Cloud free tier:  set LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY (host defaults to cloud)
-#   Self-host:        clone github.com/langfuse/langfuse, `docker compose up`, create a project
-#                     in the UI (http://localhost:3000) to get keys, set LANGFUSE_HOST too.
-export OPENAI_API_KEY=...           # real generation call (gpt-4o-mini, cheap)
-export LANGFUSE_PUBLIC_KEY=pk-...
-export LANGFUSE_SECRET_KEY=sk-...
-# export LANGFUSE_HOST=http://localhost:3000   # self-host only
+# 2b. Real trace — backend creds come from .env (self-host or cloud). For self-host,
+#     have Langfuse running first (github.com/langfuse/langfuse → docker compose up).
 python spikes/langgraph_langfuse_spike.py --mode sage --prompt "What is a beholder?"
 ```
 
+`LANGFUSE_BASE_URL` is the canonical host var (e.g. `http://localhost:3000` for self-host);
+`LANGFUSE_HOST` is the deprecated alias.
+
 **Expected (real run):** one trace in Langfuse with child spans `retrieve`, `gate`, `generate`, an
 LLM generation showing token counts + cost, and trace tags `model`, `service_version`, `mode`.
+
+**Verified 2026-06-29:** real run succeeded end-to-end against self-hosted Langfuse
+(`localhost:3000`) — `gpt-4o-mini`, `service_version=23e7ce3`, `mode=sage`, trace accepted.
 
 ## Acceptance mapping (ziw.1)
 
@@ -86,5 +91,6 @@ LLM generation showing token counts + cost, and trace tags `model`, `service_ver
 - [x] Retention/PII note recorded → above.
 - [~] Self-host run docs → documented (upstream compose + commands); compose intentionally not
   vendored (noted gap).
-- [ ] **A few real traces visible tagged with model + git SHA** → run step 2b on a machine with
-  Langfuse keys + `OPENAI_API_KEY` and confirm in the dashboard. *(Interactive — owner verifies.)*
+- [x] **A real trace emitted tagged with model + git SHA** → verified 2026-06-29: real run sent a
+  trace to self-hosted Langfuse (`localhost:3000`). Final step for the owner: open the Langfuse
+  dashboard and eyeball the `retrieve`/`gate`/`generate` spans + tags, then close `ziw.1`.

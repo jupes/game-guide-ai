@@ -71,6 +71,30 @@ def _git_sha() -> str:
         return os.environ.get("SERVICE_VERSION", "unknown")
 
 
+def _load_dotenv() -> None:
+    """Best-effort load of the repo-root .env into os.environ (no extra dependency).
+
+    The service normally receives OPENAI_API_KEY / LANGFUSE_* via docker `env_file`;
+    this spike is run directly, so we load the same .env here. Existing process env
+    wins (never overrides), so `$env:VAR` / `export VAR` still take precedence.
+    Note: the Langfuse SDK reads LANGFUSE_BASE_URL (canonical) — no aliasing needed.
+    """
+    from pathlib import Path
+
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.is_file():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = val
+
+
 # ── Nodes (mirror the real seams) ─────────────────────────────────────────────
 
 
@@ -183,6 +207,7 @@ def main() -> None:
     parser.add_argument("--dry", action="store_true", help="No network/Langfuse; prove graph wiring")
     args = parser.parse_args()
 
+    _load_dotenv()  # pull OPENAI_API_KEY / LANGFUSE_* from repo-root .env if present
     sha = _git_sha()
     initial: GraphState = {"prompt": args.prompt, "mode": args.mode}
 
