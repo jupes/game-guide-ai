@@ -67,12 +67,14 @@ def build_rag_graph(svc: RagService) -> Any:
         # sage / spell / rules: strict koz gate — need answerable AND chunks.
         return "generate" if (result.answerable and result.chunks) else "refuse"
 
-    def generate_node(state: GraphState) -> GraphState:
+    def generate_node(state: GraphState, config: Any = None) -> GraphState:
+        # LangGraph injects the run `config` (Langfuse callbacks) as the 2nd arg;
+        # forward it to the LLM call so the generation emits a token/cost span.
         result = state["result"]
         context = build_context(result, top_n=CONTEXT_TOP_N)
         answer = generate_answer(
             state["prompt"], context, mode=state["mode"],
-            model=svc.model, client=svc.llm_client,
+            model=svc.model, client=svc.llm_client, config=config,
         )
         sources = build_sources(result, top_n=CONTEXT_TOP_N)
         return {"answer": answer, "sources": sources, "answerable": result.answerable}

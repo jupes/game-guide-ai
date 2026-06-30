@@ -100,11 +100,13 @@ def build_sources(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> list[S
 def generate_answer(
     question: str, context: str, *, mode: str = "sage",
     model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    config: Any | None = None,
 ) -> str:
     """Call gpt-4o-mini with a per-mode system prompt + grounded user message.
 
     `mode` selects the persona from PERSONA_PROMPTS (defaults to 'sage').
-    `client` is injectable for tests.
+    `client` is injectable for tests. `config` is the LangChain RunnableConfig
+    (Langfuse callbacks); forwarded to the model so the LLM call is traced (CP3).
     """
     # Defensive: callers reach here only past the grounding gate (non-empty
     # context). An empty context or question is a programming error, not input.
@@ -120,6 +122,7 @@ def generate_answer(
     user_content = GROUNDED_TEMPLATE.format(context=context, question=question)
     resp = client.invoke(
         [SystemMessage(content=system), HumanMessage(content=user_content)],
+        config=config,
     )
     content = resp.content
     return content.strip() if isinstance(content, str) else str(content).strip()

@@ -116,7 +116,13 @@ class RagService:
         # The retrieve -> grounding gate -> generate|refuse core now runs as a
         # LangGraph graph (ziw.2 / Phase 1). Behavior is identical to the prior
         # imperative flow; the graph orchestrates the same building blocks.
-        final = self._compiled_graph().invoke({"prompt": prompt, "mode": mode})
+        # Langfuse tracing is attached here, env-gated + off by default (CP3).
+        from .tracing import build_trace_config
+
+        config = build_trace_config(model=self.model, mode=mode) or None
+        final = self._compiled_graph().invoke(
+            {"prompt": prompt, "mode": mode}, config=config,
+        )
         return ChatResponse(
             answer=final["answer"], sources=final["sources"],
             answerable=final["answerable"],
