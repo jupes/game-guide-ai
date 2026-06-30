@@ -30,11 +30,24 @@ license posture later outweighs Langfuse's version-tracking + dashboard edge.
 
 ## Self-host vs cloud
 
-- **Production: self-host** (free, MIT) via Langfuse's official compose (Postgres + ClickHouse +
-  Redis + object store). Adds services to the local stack — acceptable; stood up separately from
+> **Direction update (2026-06-30): using Langfuse Cloud (free Hobby tier), not self-host — for now.**
+> We trialled the self-host compose locally, then switched to **Langfuse Cloud** to drop the local
+> infra (Postgres + ClickHouse + Redis + MinIO) and operational upkeep. The Hobby tier is **free, no
+> credit card** (~50k trace units/month), which comfortably covers dev + the eval phases; the only
+> real spend is OpenAI tokens (`gpt-4o-mini`, fractions of a cent per call). The code is identical
+> either way — it just reads `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` from
+> `.env`, where `LANGFUSE_BASE_URL` is the cloud region URL (e.g. `https://us.cloud.langfuse.com`)
+> instead of `http://localhost:3000`. **Revisit self-host only if scale/cost/data-residency demands
+> it** (e.g. if we outgrow the free tier or need traces to stay on our own infra) — the original
+> self-host plan below stays valid as the fallback.
+
+The original self-host plan (retained as the at-scale fallback):
+
+- **Production (fallback): self-host** (free, MIT) via Langfuse's official compose (Postgres +
+  ClickHouse + Redis + object store). Adds services to the local stack — stood up separately from
   rag-chat's `docker-compose.yml` so the app stack stays lean.
-- **Spike / first validation: Langfuse Cloud free tier is acceptable** to see traces fast (set 3 env
-  vars, no infra). The spike script works against either — it only needs `LANGFUSE_*` env.
+- **Spike / first validation: Langfuse Cloud free tier** to see traces fast (set 3 env vars, no
+  infra). The spike script works against either — it only needs `LANGFUSE_*` env.
 
 > Self-host compose is **not vendored** into this repo to avoid drift from Langfuse's maintained
 > multi-service v3 compose (ClickHouse/Redis/MinIO). Run it from upstream — see "How to run" — and we
