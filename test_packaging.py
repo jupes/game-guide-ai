@@ -28,6 +28,10 @@ RUNTIME_MODULES = (
     "ingestion.rerank",
     "service.rag",
     "service.app",
+    # LangGraph migration (ziw.2): the graph + env-gated tracing are now part of
+    # the service runtime path and must resolve cleanly via package imports.
+    "service.graph",
+    "service.tracing",
 )
 
 

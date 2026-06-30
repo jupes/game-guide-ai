@@ -13,6 +13,18 @@ dependencies = [
     "openai",
     "psycopg[binary]",
     "pydantic",
+    # Observability migration (ziw.2 / Phase 1). All declared explicitly so a clean
+    # `pip install .` can actually trace (env-gated via RAG_TRACING, off by default):
+    #   - langgraph: the RAG pipeline graph
+    #   - langchain-core: SystemMessage/HumanMessage used directly in generate.py
+    #   - langchain-openai: ChatOpenAI generate node
+    #   - langchain (meta) + langfuse: REQUIRED by `from langfuse.langchain import
+    #     CallbackHandler` in service/tracing.py — langchain-core alone is NOT enough.
+    "langgraph>=0.2,<0.4",
+    "langchain-core>=0.3,<0.4",
+    "langchain-openai>=0.2,<0.4",
+    "langchain>=0.3,<0.4",
+    "langfuse>=3,<4",
 ]
 
 [project.optional-dependencies]
