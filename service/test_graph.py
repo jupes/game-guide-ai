@@ -11,6 +11,8 @@ Run from repo root:
 
 from __future__ import annotations
 
+from langchain_core.messages import AIMessage
+
 from ingestion.retrieval import RetrievalResult, RetrievedChunk
 
 from service.graph import build_rag_graph
@@ -47,28 +49,15 @@ class _FakeRetriever:
         return self._r
 
 
-def _fake_completion(text):
-    class _M:
-        pass
-    msg = _M(); msg.content = text
-    choice = _M(); choice.message = msg
-    resp = _M(); resp.choices = [choice]
-    return resp
-
-
 class _FakeLLM:
+    """LangChain-shaped fake chat model: .invoke(messages) -> AIMessage, counts calls."""
     def __init__(self, text):
         self.text = text
-        self.chat = self
         self.calls = 0
 
-    @property
-    def completions(self):
-        return self
-
-    def create(self, **kw):
+    def invoke(self, messages, config=None, **kw):
         self.calls += 1
-        return _fake_completion(self.text)
+        return AIMessage(content=self.text)
 
 
 def _svc(result, llm):

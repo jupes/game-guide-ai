@@ -9,8 +9,9 @@ accepts an injected client for tests.
 
 from __future__ import annotations
 
-import os
 from typing import Any, Protocol
+
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from ingestion.retrieval import RetrievalResult
 
@@ -21,24 +22,14 @@ from config import CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX, TEMPERATURE
 from .models import Source
 
 
-# Minimal structural type for the injected LLM client. Captures only the call we
-# make — `client.chat.completions.create(...)` — so an OpenAI client (or a test
-# fake) satisfies it without mirroring the full SDK surface. The response is typed
-# loosely (`Any`) on purpose: we only read `.choices[0].message.content`.
-class _Completions(Protocol):
-    def create(
-        self, *, model: str, messages: list[dict[str, str]], temperature: float
-    ) -> Any: ...  # pragma: no cover - structural type
-
-
-class _Chat(Protocol):
-    @property
-    def completions(self) -> _Completions: ...  # pragma: no cover - structural type
-
-
+# Minimal structural type for the injected chat model (ziw.2 / CP2). We call a
+# LangChain-style `client.invoke(messages)` and read `.content` off the result, so
+# a `langchain_openai.ChatOpenAI` (or a test fake) satisfies it without depending on
+# the concrete class. Response typed loosely (`Any`): we only read `.content`.
 class LLMClient(Protocol):
-    @property
-    def chat(self) -> _Chat: ...  # pragma: no cover - structural type
+    def invoke(
+        self, input: Any, config: Any = None, **kwargs: Any
+    ) -> Any: ...  # pragma: no cover - structural type
 
 # Shared grounding instruction appended to every grounded-mode system prompt.
 _GROUNDING_SUFFIX = (
@@ -120,16 +111,15 @@ def generate_answer(
     if not context.strip() or not question.strip():
         raise ValueError("generate_answer requires non-empty question and context")
     if client is None:
-        from openai import OpenAI
-        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        # langchain-openai ChatOpenAI — the wrapper that lets Langfuse (CP3)
+        # capture tokens/cost natively. Imported lazily so tests stay offline.
+        from langchain_openai import ChatOpenAI
+
+        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
     system = PERSONA_PROMPTS.get(mode, PERSONA_PROMPTS["sage"])
     user_content = GROUNDED_TEMPLATE.format(context=context, question=question)
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_content},
-        ],
-        temperature=TEMPERATURE,
+    resp = client.invoke(
+        [SystemMessage(content=system), HumanMessage(content=user_content)],
     )
-    return resp.choices[0].message.content.strip()
+    content = resp.content
+    return content.strip() if isinstance(content, str) else str(content).strip()

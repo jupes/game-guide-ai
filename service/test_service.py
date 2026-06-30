@@ -10,6 +10,7 @@ from __future__ import annotations
 
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from ingestion.retrieval import RetrievalResult, RetrievedChunk
 
@@ -44,28 +45,19 @@ class _FakeRetriever:
     def retrieve(self, prompt, reranker=None, mode="sage"): return self._r
 
 
-def _fake_completion(text):
-    """Build a minimal object shaped like an OpenAI chat completion response."""
-    class _M:
-        pass
-    msg = _M()
-    msg.content = text
-    choice = _M()
-    choice.message = msg
-    resp = _M()
-    resp.choices = [choice]
-    return resp
-
-
 class _FakeLLM:
-    """Mimics openai client.chat.completions.create(...).choices[0].message.content"""
+    """LangChain-shaped fake chat model (ziw.2 / CP2): `.invoke(messages)` returns
+    an AIMessage and records the messages it was called with + the call count.
+    Replaced the OpenAI-client-shaped fake when the LLM node moved to ChatOpenAI."""
     def __init__(self, text):
         self.text = text
-        self.chat = self
-    @property
-    def completions(self): return self
-    def create(self, **kw):
-        return _fake_completion(self.text)
+        self.last_messages = None
+        self.calls = 0
+
+    def invoke(self, messages, config=None, **kw):
+        self.calls += 1
+        self.last_messages = messages
+        return AIMessage(content=self.text)
 
 
 # ---------------------------------------------------------------------------
@@ -125,18 +117,14 @@ def test_answer_happy_path():
 
 def test_answer_refusal_skips_llm():
     # answerable=False → refusal, no LLM call, empty sources
-    called = {"n": 0}
-    class _Boom(_FakeLLM):
-        def create(self, **kw):
-            called["n"] += 1
-            return super().create(**kw)
+    llm = _FakeLLM("should not be called")
     svc = RagService(retriever=_FakeRetriever(_result(answerable=False)),
-                     llm_client=_Boom("should not be called"))
+                     llm_client=llm)
     resp = svc.answer("How do I evolve my Pokemon?")
     assert resp.answerable is False
     assert resp.answer == REFUSAL
     assert resp.sources == []
-    assert called["n"] == 0   # LLM never invoked on refusal
+    assert llm.calls == 0   # LLM never invoked on refusal
 
 
 class _CountingRetriever(_FakeRetriever):
@@ -183,70 +171,55 @@ def test_generate_answer_empty_context_raises():
 # CP-F4.2 — Per-mode persona (behavior #16)
 # ---------------------------------------------------------------------------
 
-class _CapturingLLM:
-    """Like _FakeLLM but records the last messages list passed to create()."""
-    def __init__(self, text):
-        self.text = text
-        self.last_messages = None
-        self.chat = self
-
-    @property
-    def completions(self): return self
-
-    def create(self, **kw):
-        self.last_messages = kw.get("messages", [])
-        return _fake_completion(self.text)
-
-
 def test_sage_mode_uses_sage_persona():
     """generate_answer with mode='sage' sends a system message containing 'Sage'."""
     from service.generate import generate_answer as _ga
-    llm = _CapturingLLM("answer")
+    llm = _FakeLLM("answer")
     _ga("Q?", "ctx", mode="sage", client=llm)
-    system_msgs = [m for m in llm.last_messages if m["role"] == "system"]
+    system_msgs = [m for m in llm.last_messages if isinstance(m, SystemMessage)]
     assert system_msgs, "expected a system message"
-    assert "Sage" in system_msgs[0]["content"]
+    assert "Sage" in system_msgs[0].content
 
 
 def test_spell_mode_uses_spell_archivist_persona():
     """generate_answer with mode='spell' sends the Spell Archivist system message."""
     from service.generate import generate_answer as _ga
-    llm = _CapturingLLM("answer")
+    llm = _FakeLLM("answer")
     _ga("Q?", "ctx", mode="spell", client=llm)
-    system_msgs = [m for m in llm.last_messages if m["role"] == "system"]
+    system_msgs = [m for m in llm.last_messages if isinstance(m, SystemMessage)]
     assert system_msgs
-    assert "Spell Archivist" in system_msgs[0]["content"]
+    assert "Spell Archivist" in system_msgs[0].content
 
 
 def test_rules_mode_uses_rules_arbiter_persona():
     """generate_answer with mode='rules' sends the Rules Arbiter system message."""
     from service.generate import generate_answer as _ga
-    llm = _CapturingLLM("answer")
+    llm = _FakeLLM("answer")
     _ga("Q?", "ctx", mode="rules", client=llm)
-    system_msgs = [m for m in llm.last_messages if m["role"] == "system"]
+    system_msgs = [m for m in llm.last_messages if isinstance(m, SystemMessage)]
     assert system_msgs
-    assert "Rules Arbiter" in system_msgs[0]["content"]
+    assert "Rules Arbiter" in system_msgs[0].content
 
 
 def test_gm_mode_uses_gm_oracle_persona():
     """generate_answer with mode='gm' sends the GM Oracle system message."""
     from service.generate import generate_answer as _ga
-    llm = _CapturingLLM("answer")
+    llm = _FakeLLM("answer")
     _ga("Q?", "ctx", mode="gm", client=llm)
-    system_msgs = [m for m in llm.last_messages if m["role"] == "system"]
+    system_msgs = [m for m in llm.last_messages if isinstance(m, SystemMessage)]
     assert system_msgs
-    assert "GM Oracle" in system_msgs[0]["content"]
+    assert "GM Oracle" in system_msgs[0].content
 
 
 def test_grounded_template_in_user_message():
     """The user message contains the sources block (not the persona)."""
     from service.generate import generate_answer as _ga
-    llm = _CapturingLLM("answer")
+    llm = _FakeLLM("answer")
     _ga("My Q?", "src_block", mode="sage", client=llm)
-    user_msgs = [m for m in llm.last_messages if m["role"] == "user"]
+    user_msgs = [m for m in llm.last_messages if isinstance(m, HumanMessage)]
     assert user_msgs
-    assert "Sources:" in user_msgs[0]["content"]
-    assert "My Q?" in user_msgs[0]["content"]
+    assert "Sources:" in user_msgs[0].content
+    assert "My Q?" in user_msgs[0].content
 
 
 # ---------------------------------------------------------------------------
