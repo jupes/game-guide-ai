@@ -12,9 +12,12 @@ token/cost span. Credentials are read from the environment (`LANGFUSE_PUBLIC_KEY
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -64,6 +67,10 @@ def build_trace_config(*, model: str, mode: str, version: str | None = None) -> 
 
         config["callbacks"] = [CallbackHandler()]
     except Exception:
-        # langfuse missing/misconfigured: keep serving, just without live traces.
-        pass
+        # langfuse missing/misconfigured: keep serving, just without live traces —
+        # but log it, so an enabled-but-silent trace gap is diagnosable (not lost).
+        logger.warning(
+            "RAG_TRACING is on but Langfuse is unavailable; serving without traces.",
+            exc_info=True,
+        )
     return config
