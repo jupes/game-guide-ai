@@ -38,6 +38,10 @@ test = [
 # nothing here.
 eval = [
     "ragas>=0.4,<0.5",
+    # Local generator for the model A/B (ziw.4): gpt-4o-mini (API) vs gemma4:12b
+    # (Ollama). ChatOllama construction needs no server; only running the
+    # comparison does. `ollama pull gemma4:12b` (~8GB) + Ollama 0.22+.
+    "langchain-ollama>=0.2,<0.4",
 ]
 
 [tool.setuptools]

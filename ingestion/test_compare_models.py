@@ -12,7 +12,9 @@ Run from repo root:
 
 from __future__ import annotations
 
-from ingestion.compare_models import gate, known_models, scorecard
+import pytest
+
+from ingestion.compare_models import build_generator, gate, known_models, scorecard
 
 
 def _agg(**rates):
@@ -73,3 +75,21 @@ def test_known_models_includes_the_first_ab_pair():
     labels = known_models()
     assert "gpt-4o-mini" in labels
     assert "gemma4:12b" in labels
+
+
+def test_build_generator_unknown_label_raises():
+    with pytest.raises(KeyError):
+        build_generator("no-such-model")
+
+
+def test_build_generator_constructs_right_types(monkeypatch):
+    # Needs the [eval] extra (langchain-ollama); skips in a clean [test] env.
+    # Construction only — no Ollama server / no .invoke.
+    pytest.importorskip("langchain_ollama")
+    pytest.importorskip("langchain_openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    from langchain_ollama import ChatOllama
+    from langchain_openai import ChatOpenAI
+    assert isinstance(build_generator("gpt-4o-mini"), ChatOpenAI)
+    gemma = build_generator("gemma4:12b")
+    assert isinstance(gemma, ChatOllama) and gemma.model == "gemma4:12b"
