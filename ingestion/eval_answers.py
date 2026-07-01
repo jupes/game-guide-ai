@@ -6,6 +6,10 @@ path and scores **generation** quality — deterministic graders first, Ragas
 LLM-judge where needed — attaching scores to the Langfuse trace and recording
 token cost. Sibling to `eval_golden.py` (retrieval-only); that file is untouched.
 
+Run (see docs/observability/answer-eval.md for detail):
+    docker compose up -d vector-db
+    uv run --with '.[eval]' python ingestion/eval_answers.py --limit 5
+
 Design: see `plans/drafts/rag-chat-answer-quality-eval.md` and the eval-stack ADR
 `docs/observability/eval-strategy.md` (Langfuse + Ragas; key-facts reference data).
 

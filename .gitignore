@@ -1,6 +1,9 @@
 .env
 ingestion/*.clean.jsonl
 ingestion/*.quarantine.jsonl
+# Generated eval outputs (retrieval + answer-quality)
+ingestion/eval_results.json
+ingestion/eval_answers_results.json
 
 # Python build / cache artifacts
 __pycache__/
