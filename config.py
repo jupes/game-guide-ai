@@ -27,7 +27,13 @@ if _ENV_PATH.exists():
         _line = _line.strip()
         if _line and not _line.startswith("#") and "=" in _line:
             _k, _, _v = _line.partition("=")
-            os.environ.setdefault(_k.strip(), _v.strip())
+            _v = _v.strip()
+            # Strip one layer of matched surrounding quotes (standard .env syntax);
+            # otherwise a quoted value like LANGFUSE_BASE_URL="https://..." keeps its
+            # quotes and breaks consumers (e.g. the Langfuse OTEL endpoint URL).
+            if len(_v) >= 2 and _v[0] == _v[-1] and _v[0] in ("'", '"'):
+                _v = _v[1:-1]
+            os.environ.setdefault(_k.strip(), _v)
 
 
 def _int(name: str, default: int) -> int:
