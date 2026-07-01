@@ -106,10 +106,14 @@ def compare(services: dict, cases, *, evaluator, langfuse=None) -> dict:
     `services` maps label -> a RagService built with that generator. Injectable +
     offline-testable (fake services + fake evaluator). Returns {label: run_eval result}."""
     from ingestion.eval_answers import run_eval
-    return {
-        label: run_eval(list(cases), svc, evaluator=evaluator, langfuse=langfuse)
-        for label, svc in services.items()
-    }
+    results: dict = {}
+    for label, svc in services.items():
+        res = run_eval(list(cases), svc, evaluator=evaluator, langfuse=langfuse)
+        # The judge is shared, so capture its per-model token usage right after each run
+        # (otherwise only the final model's cost survives on the evaluator).
+        res["judge_tokens"] = getattr(evaluator, "last_total_tokens", None)
+        results[label] = res
+    return results
 
 
 def build_services(labels) -> dict:
@@ -178,7 +182,7 @@ def main() -> None:  # pragma: no cover - integration entry (needs DB + LLM + Ol
     baseline = labels[0]
     base_agg = results[baseline]["aggregates"]
     out = {"baseline": baseline, "models": {}, "gate": {},
-           "judge_total_tokens": getattr(evaluator, "last_total_tokens", None)}
+           "judge_tokens_per_model": {lbl: results[lbl].get("judge_tokens") for lbl in labels}}
     print("=" * 72)
     print(f"Model comparison -- baseline: {baseline} ({len(cases)} case(s))")
     overall_ok = True
@@ -198,7 +202,7 @@ def main() -> None:  # pragma: no cover - integration entry (needs DB + LLM + Ol
 
     Path(__file__).parent.joinpath("compare_results.json").write_text(
         json.dumps(out, indent=2, default=str, ensure_ascii=False))
-    print(f"\n  judge tokens: {out['judge_total_tokens']}")
+    print(f"\n  judge tokens/model: {out['judge_tokens_per_model']}")
     print("Results -> ingestion/compare_results.json")
     if langfuse is not None:
         try:
