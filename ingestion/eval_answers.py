@@ -19,9 +19,10 @@ The graders **grade the output, not the path** (robust to pipeline refactors).
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Protocol, Sequence
 
 from service.rag import REFUSAL
 
@@ -72,6 +73,74 @@ def pass_at_k(results: Sequence[bool]) -> bool:
 def pass_hat_k(results: Sequence[bool]) -> bool:
     """pass^k: all k trials passed (empty → False)."""
     return bool(results) and all(results)
+
+
+# --- Ragas layer (injectable evaluator; "Unknown" escape hatch) ---------------
+# We define our OWN canonical row shape and score dict so the eval is decoupled
+# from Ragas's evolving schema; the real evaluator (CP3) adapts our rows to the
+# installed Ragas API. Tests inject a fake evaluator — no LLM/network here.
+
+def build_row(case: AnswerCase, answer: str, contexts: Sequence[str]) -> dict:
+    """Canonical eval row: the key-facts join as the reference/ground-truth used
+    for answer-correctness; contexts are the retrieved chunk texts the LLM saw."""
+    return {
+        "question": case.question,
+        "answer": answer,
+        "contexts": list(contexts),
+        "ground_truth": " ".join(case.key_facts),
+    }
+
+
+def normalize_metric(value: float | None) -> float | None:
+    """Map an unusable judge score to None ("Unknown"): None stays None, NaN → None,
+    a real number passes through. Keeps a judge that can't decide from faking a fail."""
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return float(value)
+
+
+def verdict(value: float | None, threshold: float = 0.5) -> str:
+    """"pass" / "fail" / "unknown" for a normalized metric value."""
+    if value is None:
+        return "unknown"
+    return "pass" if value >= threshold else "fail"
+
+
+class Evaluator(Protocol):
+    """Scores eval rows. `score(rows)` returns one metric dict per row (values may be
+    None/NaN when the judge is unsure). The real impl wraps Ragas; tests inject a fake."""
+    def score(self, rows: list[dict]) -> list[dict]: ...  # pragma: no cover - structural type
+
+
+def score_rows(rows: list[dict], *, evaluator: Evaluator) -> list[dict]:
+    """Run the injected evaluator over rows and normalize each metric (NaN/None →
+    Unknown). Returns one normalized metric dict per row (aligned with `rows`)."""
+    raw = evaluator.score(rows)
+    return [{metric: normalize_metric(v) for metric, v in row_scores.items()} for row_scores in raw]
+
+
+def aggregate_metric(scored: Sequence[dict], metric: str, threshold: float = 0.5) -> dict:
+    """Aggregate one metric across cases. Unknown is excluded from `pass_rate`
+    (rate = passed / (passed+failed)); `pass_rate` is None when nothing was scored."""
+    passed = failed = unknown = 0
+    for row in scored:
+        v = verdict(row.get(metric), threshold)
+        if v == "pass":
+            passed += 1
+        elif v == "fail":
+            failed += 1
+        else:
+            unknown += 1
+    n_scored = passed + failed
+    return {
+        "passed": passed,
+        "failed": failed,
+        "unknown": unknown,
+        "n_scored": n_scored,
+        "pass_rate": (passed / n_scored) if n_scored else None,
+    }
 
 
 # --- Curated key-facts subset (seed; expand toward ~20-30 per the roadmap) ----
