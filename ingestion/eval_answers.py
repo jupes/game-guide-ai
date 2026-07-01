@@ -143,6 +143,189 @@ def aggregate_metric(scored: Sequence[dict], metric: str, threshold: float = 0.5
     }
 
 
+# --- Runner (CP3): orchestrate answer -> grade -> Ragas -> Langfuse scores -----
+
+def _answer_with_trace(svc, case: AnswerCase, langfuse):
+    """Run one case through the graph. When langfuse is provided, wrap it in a span
+    we own so we can capture the trace_id (the graph's callback nests under it via
+    contextvars) to attach scores to. Returns (ChatResponse, trace_id|None)."""
+    if langfuse is None:
+        return svc.answer(case.question, mode=case.mode), None
+    with langfuse.start_as_current_span(name=f"eval:{case.question[:60]}") as span:
+        resp = svc.answer(case.question, mode=case.mode)
+        trace_id = getattr(span, "trace_id", None)
+    return resp, trace_id
+
+
+def _push_scores(langfuse, trace_id: str, scored: dict) -> None:
+    """Attach normalized Ragas scores to a trace (skips Unknown/None). Best-effort:
+    a scoring hiccup must not fail the eval run."""
+    for name, value in scored.items():
+        if value is None:
+            continue
+        try:
+            langfuse.create_score(trace_id=trace_id, name=f"ragas_{name}", value=float(value))
+        except Exception:  # pragma: no cover - network/SDK edge
+            pass
+
+
+def run_eval(cases: Sequence[AnswerCase], svc, *, evaluator: Evaluator,
+             langfuse=None, threshold: float = 0.5) -> dict:
+    """Run positive answer-quality cases through the graph and score them.
+
+    Injectable `svc` (has `.answer`) and `evaluator` (has `.score`) keep this
+    offline-testable; `langfuse` is optional (attach scores when present). Returns
+    {cases: [...per-case...], aggregates: {metric: aggregate_metric(...)}}.
+    """
+    per_case: list[dict] = []
+    rows: list[dict] = []
+    for case in cases:
+        resp, trace_id = _answer_with_trace(svc, case, langfuse)
+        contexts = [s.snippet for s in resp.sources]
+        rows.append(build_row(case, resp.answer, contexts))
+        per_case.append({
+            "question": case.question,
+            "answer": resp.answer,
+            "answerable": bool(getattr(resp, "answerable", False)),
+            "refused": is_refusal(resp.answer),
+            "key_fact_hits": key_fact_hits(resp.answer, case.key_facts),
+            "citation_ok": citation_ok(resp.answer, len(resp.sources)),
+            "trace_id": trace_id,
+        })
+
+    scored = score_rows(rows, evaluator=evaluator) if rows else []
+    for pc, sc in zip(per_case, scored):
+        pc["ragas"] = sc
+        if langfuse is not None and pc["trace_id"]:
+            _push_scores(langfuse, pc["trace_id"], sc)
+
+    metric_names = sorted({m for s in scored for m in s})
+    aggregates = {m: aggregate_metric(scored, m, threshold) for m in metric_names}
+    return {"cases": per_case, "aggregates": aggregates}
+
+
+# --- Real Ragas evaluator (lazy import; only used in live runs) ----------------
+
+class RagasEvaluator:
+    """Adapts our canonical rows to the installed Ragas API (0.4.x) and returns
+    per-row metric dicts under our stable keys. Ragas is imported lazily so unit
+    tests (which inject a fake evaluator) never load the heavy path. Records judge
+    token usage/cost on `last_total_tokens` / `last_total_cost`."""
+
+    def __init__(self, model: str | None = None, embed_model: str | None = None):
+        from config import DEFAULT_MODEL
+        from ingestion.retrieval import EMBED_MODEL
+        self.model = model or DEFAULT_MODEL
+        self.embed_model = embed_model or EMBED_MODEL
+        self.last_total_tokens = None
+        self.last_total_cost = None
+
+    def _metrics(self):
+        # Classic pre-bound metric singletons: evaluate() binds them with the llm/
+        # embeddings we pass. (collections/* is the future API but its classes need
+        # llm at construction and have diverged names in 0.4.x — these are stable.)
+        from ragas.metrics import (
+            answer_correctness, answer_relevancy, context_precision,
+            context_recall, faithfulness,
+        )
+        return [faithfulness, answer_relevancy, answer_correctness,
+                context_precision, context_recall]
+
+    def score(self, rows: list[dict]) -> list[dict]:
+        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+        from ragas import EvaluationDataset, SingleTurnSample, evaluate
+        from ragas.cost import get_token_usage_for_openai
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from ragas.llms import LangchainLLMWrapper
+
+        llm = LangchainLLMWrapper(ChatOpenAI(model=self.model, temperature=0))
+        emb = LangchainEmbeddingsWrapper(OpenAIEmbeddings(model=self.embed_model))
+        metrics = self._metrics()
+        samples = [
+            SingleTurnSample(
+                user_input=r["question"], response=r["answer"],
+                retrieved_contexts=r["contexts"] or [""], reference=r["ground_truth"],
+            )
+            for r in rows
+        ]
+        result = evaluate(
+            EvaluationDataset(samples=samples), metrics=metrics,
+            llm=llm, embeddings=emb, token_usage_parser=get_token_usage_for_openai,
+            show_progress=False, raise_exceptions=False,
+        )
+        try:  # pragma: no cover - live-only
+            self.last_total_tokens = result.total_tokens()
+        except Exception:
+            pass
+        df = result.to_pandas()
+        return [
+            {m.name: (row[m.name] if m.name in row else None) for m in metrics}
+            for _, row in df.iterrows()
+        ]
+
+
+def _load_dotenv() -> None:  # pragma: no cover - convenience I/O
+    """Best-effort load of repo-root .env (OPENAI_API_KEY + LANGFUSE_*); existing env wins."""
+    from pathlib import Path
+    import os
+    env = Path(__file__).resolve().parent.parent / ".env"
+    if not env.is_file():
+        return
+    for line in env.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if s and not s.startswith("#") and "=" in s:
+            k, _, v = s.partition("=")
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+def main() -> None:  # pragma: no cover - integration entry (needs DB + LLM)
+    import argparse
+    import json
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description="rag-chat answer-quality eval (Ragas over the golden subset)")
+    parser.add_argument("--limit", type=int, default=None, help="only the first N cases (PR subset)")
+    parser.add_argument("--no-langfuse", action="store_true", help="don't attach scores to Langfuse")
+    args = parser.parse_args()
+
+    _load_dotenv()
+    from service.rag import RagService
+
+    cases = CURATED_ANSWERS[: args.limit] if args.limit else CURATED_ANSWERS
+    langfuse = None
+    if not args.no_langfuse:
+        try:
+            from langfuse import get_client
+            langfuse = get_client()
+        except Exception:
+            langfuse = None
+
+    svc = RagService()
+    evaluator = RagasEvaluator()
+    result = run_eval(list(cases), svc, evaluator=evaluator, langfuse=langfuse)
+    result["judge_total_tokens"] = getattr(evaluator, "last_total_tokens", None)
+
+    out_path = Path(__file__).parent / "eval_answers_results.json"
+    out_path.write_text(json.dumps(result, indent=2, default=str, ensure_ascii=False))
+
+    print("=" * 72)
+    print(f"Answer-quality eval — {len(cases)} case(s)")
+    for m, agg in result["aggregates"].items():
+        rate = f"{agg['pass_rate']:.0%}" if agg["pass_rate"] is not None else "n/a"
+        print(f"  {m:22s} pass {agg['passed']}/{agg['n_scored']} ({rate})  unknown={agg['unknown']}")
+    print(f"  judge tokens: {result['judge_total_tokens']}")
+    print(f"Results → {out_path}")
+    if langfuse is not None:
+        try:
+            langfuse.flush()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
+
+
 # --- Curated key-facts subset (seed; expand toward ~20-30 per the roadmap) ----
 # Facts are high-level and conservative on purpose; REVIEW/EXPAND before treating
 # the scores as authoritative (Anthropic step 2: two experts should agree pass/fail).

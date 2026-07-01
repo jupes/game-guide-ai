@@ -21,6 +21,7 @@ from ingestion.eval_answers import (
     normalize_metric,
     pass_at_k,
     pass_hat_k,
+    run_eval,
     score_rows,
     verdict,
 )
@@ -162,3 +163,59 @@ def test_aggregate_metric_all_unknown_has_no_rate():
     agg = aggregate_metric(scored, "faithfulness", threshold=0.5)
     assert agg["unknown"] == 2
     assert agg["pass_rate"] is None   # nothing scored -> no rate
+
+
+# --- CP3: runner orchestration (fake svc + fake evaluator, langfuse off) ------
+
+class _FakeSource:
+    def __init__(self, snippet):
+        self.snippet = snippet
+
+
+class _FakeResp:
+    def __init__(self, answer, snippets, answerable=True):
+        self.answer = answer
+        self.answerable = answerable
+        self.sources = [_FakeSource(s) for s in snippets]
+
+
+class _FakeSvc:
+    def __init__(self, resp_by_q):
+        self._m = resp_by_q
+        self.calls = []
+
+    def answer(self, question, mode="sage", conversation_id=None):
+        self.calls.append((question, mode))
+        return self._m[question]
+
+
+def test_run_eval_orchestrates_positive_case():
+    case = AnswerCase("What is a Beholder?", ("aberration", "eyestalks"))
+    svc = _FakeSvc({
+        "What is a Beholder?": _FakeResp(
+            "A beholder is an aberration with ten eyestalks [1].", ["ctx a", "ctx b"]),
+    })
+    ev = _FakeEvaluator([{"faithfulness": 0.9, "answer_correctness": 0.8}])
+    out = run_eval([case], svc, evaluator=ev)   # langfuse off by default
+
+    assert svc.calls == [("What is a Beholder?", "sage")]
+    c0 = out["cases"][0]
+    assert c0["refused"] is False
+    assert c0["key_fact_hits"] == (2, 2)
+    assert c0["citation_ok"] is True
+    assert c0["trace_id"] is None                    # no langfuse -> no trace id
+    assert c0["ragas"]["faithfulness"] == 0.9
+    # aggregates roll up the ragas metrics
+    assert out["aggregates"]["faithfulness"]["passed"] == 1
+
+
+def test_run_eval_flags_missing_key_facts_and_bad_citation():
+    case = AnswerCase("What is a Meazel?", ("teleport", "shadow"))
+    svc = _FakeSvc({
+        "What is a Meazel?": _FakeResp("A meazel lurks in shadow [4].", ["ctx"]),  # only 1 source, cites [4]
+    })
+    ev = _FakeEvaluator([{"faithfulness": 0.4}])
+    out = run_eval([case], svc, evaluator=ev)
+    c0 = out["cases"][0]
+    assert c0["key_fact_hits"] == (1, 2)   # "shadow" present, "teleport" missing
+    assert c0["citation_ok"] is False      # [4] out of range for 1 source
