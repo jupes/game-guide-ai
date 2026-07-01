@@ -309,21 +309,17 @@ def main() -> None:  # pragma: no cover - integration entry (needs DB + LLM)
     out_path.write_text(json.dumps(result, indent=2, default=str, ensure_ascii=False))
 
     print("=" * 72)
-    print(f"Answer-quality eval — {len(cases)} case(s)")
+    print(f"Answer-quality eval -- {len(cases)} case(s)")
     for m, agg in result["aggregates"].items():
         rate = f"{agg['pass_rate']:.0%}" if agg["pass_rate"] is not None else "n/a"
         print(f"  {m:22s} pass {agg['passed']}/{agg['n_scored']} ({rate})  unknown={agg['unknown']}")
     print(f"  judge tokens: {result['judge_total_tokens']}")
-    print(f"Results → {out_path}")
+    print(f"Results -> {out_path}")
     if langfuse is not None:
         try:
             langfuse.flush()
         except Exception:
             pass
-
-
-if __name__ == "__main__":  # pragma: no cover
-    main()
 
 
 # --- Curated key-facts subset (seed; expand toward ~20-30 per the roadmap) ----
@@ -344,3 +340,7 @@ CURATED_ANSWERS: tuple[AnswerCase, ...] = (
     AnswerCase("How strong does a Potion of Giant Strength make you?",
                ("Strength",)),
 )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
