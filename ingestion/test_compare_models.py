@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import pytest
 
-from ingestion.compare_models import build_generator, gate, known_models, scorecard
+from ingestion.compare_models import build_generator, compare, gate, known_models, scorecard
+from ingestion.eval_answers import AnswerCase
 
 
 def _agg(**rates):
@@ -77,12 +78,7 @@ def test_known_models_includes_the_first_ab_pair():
     assert "gemma4:12b" in labels
 
 
-def test_build_generator_unknown_label_raises():
-    with pytest.raises(KeyError):
-        build_generator("no-such-model")
-
-
-def test_build_generator_constructs_right_types(monkeypatch):
+def test_build_generator_constructs_and_resolves_by_convention(monkeypatch):
     # Needs the [eval] extra (langchain-ollama); skips in a clean [test] env.
     # Construction only — no Ollama server / no .invoke.
     pytest.importorskip("langchain_ollama")
@@ -90,6 +86,52 @@ def test_build_generator_constructs_right_types(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     from langchain_ollama import ChatOllama
     from langchain_openai import ChatOpenAI
+    # featured registry labels
     assert isinstance(build_generator("gpt-4o-mini"), ChatOpenAI)
     gemma = build_generator("gemma4:12b")
     assert isinstance(gemma, ChatOllama) and gemma.model == "gemma4:12b"
+    # arbitrary labels resolve by convention (":" -> Ollama, else -> OpenAI)
+    assert isinstance(build_generator("llama3.2:latest"), ChatOllama)
+    assert isinstance(build_generator("gpt-4.1-nano"), ChatOpenAI)
+
+
+# --- compare() orchestration (offline: fake services + fake evaluator) --------
+
+class _FakeSource:
+    def __init__(self, snippet): self.snippet = snippet
+
+
+class _FakeResp:
+    def __init__(self, answer, snippets, answerable=True):
+        self.answer = answer
+        self.answerable = answerable
+        self.sources = [_FakeSource(s) for s in snippets]
+
+
+class _FakeSvc:
+    def __init__(self, resp): self._resp = resp
+    def answer(self, question, mode="sage", conversation_id=None): return self._resp
+
+
+class _FakeEvaluator:
+    def __init__(self, per_row): self._per_row = per_row
+    def score(self, rows): return [self._per_row for _ in rows]
+
+
+def test_compare_runs_each_model_and_returns_aggregates():
+    case = AnswerCase("What is a Beholder?", ("aberration", "eyestalks"))
+    services = {
+        "gpt-4o-mini": _FakeSvc(_FakeResp("A beholder is an aberration with eyestalks [1].", ["c1", "c2"])),
+        "gemma4:12b": _FakeSvc(_FakeResp("A beholder floats around [1].", ["c1"])),
+    }
+    ev = _FakeEvaluator({"faithfulness": 0.9, "answer_correctness": 0.7})
+    out = compare(services, [case], evaluator=ev)   # langfuse off
+
+    assert set(out) == {"gpt-4o-mini", "gemma4:12b"}
+    assert out["gpt-4o-mini"]["aggregates"]["faithfulness"]["passed"] == 1
+    # scorecard + gate compose over the two models' aggregates
+    rows = {r["metric"]: r for r in scorecard(out["gpt-4o-mini"]["aggregates"], out["gemma4:12b"]["aggregates"])}
+    assert "faithfulness" in rows
+    ok, _ = gate(out["gpt-4o-mini"]["aggregates"], out["gemma4:12b"]["aggregates"],
+                 metric="faithfulness", threshold=0.05)
+    assert ok is True

@@ -51,13 +51,19 @@ MODEL_REGISTRY: dict[str, Callable[[], object]] = {
 
 
 def known_models() -> tuple[str, ...]:
-    """Labels the comparison recognizes (does not build anything)."""
+    """The featured/default labels (does not build anything). `build_generator` also
+    resolves arbitrary labels via the heuristic below, so comparison isn't limited to these."""
     return tuple(MODEL_REGISTRY)
 
 
 def build_generator(label: str) -> object:
-    """Construct the generator chat model for a label (raises KeyError if unknown)."""
-    return MODEL_REGISTRY[label]()
+    """Construct the generator chat model for a label. Featured labels come from the
+    registry; any other label resolves by convention so any model can be compared:
+    an Ollama-style `name:tag` (e.g. `llama3.2:latest`) -> ChatOllama; otherwise
+    (e.g. `gpt-4.1-nano`) -> ChatOpenAI."""
+    if label in MODEL_REGISTRY:
+        return MODEL_REGISTRY[label]()
+    return (_ollama(label) if ":" in label else _openai(label))()
 
 
 # --- Pure comparison logic ----------------------------------------------------
@@ -91,3 +97,117 @@ def gate(baseline: dict, candidate: dict, *, metric: str, threshold: float) -> t
     ok = drop <= threshold
     return ok, {"metric": metric, "baseline": b, "candidate": c,
                 "drop": drop, "threshold": threshold, "ok": ok}
+
+
+# --- Orchestration ------------------------------------------------------------
+
+def compare(services: dict, cases, *, evaluator, langfuse=None) -> dict:
+    """Run the answer-quality eval once per generator (same cases, same fixed judge).
+    `services` maps label -> a RagService built with that generator. Injectable +
+    offline-testable (fake services + fake evaluator). Returns {label: run_eval result}."""
+    from ingestion.eval_answers import run_eval
+    return {
+        label: run_eval(list(cases), svc, evaluator=evaluator, langfuse=langfuse)
+        for label, svc in services.items()
+    }
+
+
+def build_services(labels) -> dict:
+    """label -> RagService(model=label, llm_client=<that generator>). `model=label` tags
+    the Langfuse traces with the real generator (the injected client is what actually runs)."""
+    from service.rag import RagService
+    return {label: RagService(model=label, llm_client=build_generator(label)) for label in labels}
+
+
+def ensure_dataset(langfuse, name: str, cases) -> None:  # pragma: no cover - live-only
+    """Seed a Langfuse dataset from the golden cases (idempotent by a question-derived id)."""
+    import hashlib
+    try:
+        langfuse.create_dataset(name=name, description="rag-chat answer-quality golden subset")
+    except Exception:
+        pass  # already exists
+    for c in cases:
+        item_id = hashlib.md5(c.question.encode("utf-8")).hexdigest()[:16]
+        try:
+            langfuse.create_dataset_item(
+                dataset_name=name, id=item_id,
+                input={"question": c.question, "mode": c.mode},
+                expected_output={"key_facts": list(c.key_facts)},
+            )
+        except Exception:
+            pass
+
+
+def _fmt(x) -> str:
+    return f"{x:.0%}" if isinstance(x, (int, float)) else "n/a"
+
+
+def main() -> None:  # pragma: no cover - integration entry (needs DB + LLM + Ollama)
+    import argparse
+    import json
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description="rag-chat model comparison + CI regression gate")
+    parser.add_argument("--models", default="gpt-4o-mini,gemma4:12b",
+                        help="comma-separated labels; the first is the baseline")
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--gate-metric", default="answer_correctness")
+    parser.add_argument("--gate-threshold", type=float, default=0.05)
+    parser.add_argument("--dataset", default="rag-chat-answers")
+    parser.add_argument("--no-langfuse", action="store_true")
+    args = parser.parse_args()
+
+    from ingestion.eval_answers import CURATED_ANSWERS, RagasEvaluator, _load_dotenv
+    _load_dotenv()
+
+    labels = [m.strip() for m in args.models.split(",") if m.strip()]
+    cases = list(CURATED_ANSWERS[: args.limit] if args.limit else CURATED_ANSWERS)
+
+    langfuse = None
+    if not args.no_langfuse:
+        try:
+            from langfuse import get_client
+            langfuse = get_client()
+            ensure_dataset(langfuse, args.dataset, cases)
+        except Exception:
+            langfuse = None
+
+    evaluator = RagasEvaluator()  # FIXED, independent judge across all models
+    results = compare(build_services(labels), cases, evaluator=evaluator, langfuse=langfuse)
+
+    baseline = labels[0]
+    base_agg = results[baseline]["aggregates"]
+    out = {"baseline": baseline, "models": {}, "gate": {},
+           "judge_total_tokens": getattr(evaluator, "last_total_tokens", None)}
+    print("=" * 72)
+    print(f"Model comparison -- baseline: {baseline} ({len(cases)} case(s))")
+    overall_ok = True
+    for label in labels:
+        out["models"][label] = results[label]["aggregates"]
+        if label == baseline:
+            continue
+        print(f"\n-- {label} vs {baseline} --")
+        for row in scorecard(base_agg, results[label]["aggregates"]):
+            print(f"  {row['metric']:22s} base {_fmt(row['baseline'])}  "
+                  f"cand {_fmt(row['candidate'])}  delta {_fmt(row['delta'])}")
+        ok, detail = gate(base_agg, results[label]["aggregates"],
+                          metric=args.gate_metric, threshold=args.gate_threshold)
+        out["gate"][label] = detail
+        print(f"  GATE [{args.gate_metric}]: {'PASS' if ok else 'FAIL'}")
+        overall_ok = overall_ok and ok
+
+    Path(__file__).parent.joinpath("compare_results.json").write_text(
+        json.dumps(out, indent=2, default=str, ensure_ascii=False))
+    print(f"\n  judge tokens: {out['judge_total_tokens']}")
+    print("Results -> ingestion/compare_results.json")
+    if langfuse is not None:
+        try:
+            langfuse.flush()
+        except Exception:
+            pass
+    if not overall_ok:
+        raise SystemExit(1)  # CI regression gate failed
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
