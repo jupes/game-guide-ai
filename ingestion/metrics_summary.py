@@ -72,3 +72,68 @@ def summary_from_results(results: dict) -> list[dict]:
         row["judge_tokens"] = tokens.get(label)
         table.append(row)
     return sorted(table, key=lambda x: str(x["group"]))
+
+
+# --- Live Metrics API ---------------------------------------------------------
+# Discovered against Langfuse v3 (2026-07): cost/latency group by MODEL only in the
+# `observations` view via the `providedModelName` dimension (trace metadata like our
+# `model`/`service_version` is NOT a queryable dimension — only id/name/tags/version/
+# release/environment are). Response rows key metrics as `<aggregation>_<measure>`.
+
+# The generator model (cost/latency) lives on observations under this dimension.
+MODEL_DIMENSION = "providedModelName"
+_COST_MEASURES = [("totalCost", "sum"), ("latency", "p95"), ("totalTokens", "sum")]
+_COST_KEYS = ("sum_totalCost", "p95_latency", "sum_totalTokens")
+
+
+def fetch(langfuse, query: dict) -> list[dict]:  # pragma: no cover - live-only
+    """Run a Metrics API query and return its `data` rows (list of dicts)."""
+    import json
+    resp = langfuse.api.metrics.metrics(query=json.dumps(query))
+    return [dict(r) for r in resp.data]
+
+
+def cost_latency_by_model(langfuse, *, since: str, now_iso: str) -> list[dict]:  # pragma: no cover - live
+    """Per-model cost / p95 latency / tokens from the observations view."""
+    q = build_query(view="observations", measures=_COST_MEASURES,
+                    group_by=MODEL_DIMENSION, since=since, now_iso=now_iso)
+    rows = fetch(langfuse, q)
+    return summarize(rows, group_key=MODEL_DIMENSION, metric_keys=_COST_KEYS)
+
+
+def main() -> None:  # pragma: no cover - integration entry
+    import argparse
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description="rag-chat quality/cost metrics summary (Langfuse Metrics API)")
+    parser.add_argument("--since", default="7d", help="window: 7d / 24h / 30m")
+    parser.add_argument("--from-results", default=None,
+                        help="offline: summarize a compare_results.json instead of querying Langfuse")
+    args = parser.parse_args()
+
+    if args.from_results:
+        results = json.loads(Path(args.from_results).read_text(encoding="utf-8"))
+        table = summary_from_results(results)
+        source = f"results:{args.from_results}"
+    else:
+        import config  # loads .env (LANGFUSE_*)  # noqa: F401
+        from langfuse import get_client
+        now_iso = datetime.now(timezone.utc).isoformat()
+        table = cost_latency_by_model(get_client(), since=args.since, now_iso=now_iso)
+        source = f"langfuse:observations (since {args.since})"
+
+    print("=" * 72)
+    print(f"Quality/cost summary by model -- {source}")
+    for row in table:
+        cols = "  ".join(f"{k}={row[k]}" for k in row if k != "group")
+        print(f"  {str(row['group']):28s} {cols}")
+    out = {"source": source, "table": table}
+    Path(__file__).parent.joinpath("metrics_summary.json").write_text(
+        json.dumps(out, indent=2, default=str, ensure_ascii=False))
+    print("Results -> ingestion/metrics_summary.json")
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
