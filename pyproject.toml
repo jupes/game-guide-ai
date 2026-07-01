@@ -32,6 +32,13 @@ test = [
     "pytest",
     "httpx",
 ]
+# Answer-quality eval (ziw.3) — heavy + dev/CI-only, so NOT a core dependency
+# (the FastAPI service must not pull it). Run: uv run --with '.[eval]' python
+# ingestion/eval_answers.py. The offline unit tests use a fake evaluator and need
+# nothing here.
+eval = [
+    "ragas>=0.4,<0.5",
+]
 
 [tool.setuptools]
 # Explicit list — do NOT auto-discover (would pull ui/, vector-db/, spikes/, docs/).
