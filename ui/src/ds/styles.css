@@ -1,5 +1,5 @@
 /* ════════════════════════════════════════════════════════════════════
-   Aetheril Design System — global entry point (rag-chat copy)
+   Aetheril Design System — global entry point (game-guide-ai copy)
    Mirrors aetheril-design-system/source/styles.css; tokens are
    copied locally so the UI build has no dep on the sibling repo.
    Import order is load-order-sensitive: fonts @imports must come

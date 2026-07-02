@@ -10,7 +10,7 @@ What it does:
      (the index discriminates — it isn't returning the sentinel unconditionally).
   4. Always deletes the sentinel afterwards (finally), leaving the corpus untouched.
 
-Run from repos/rag-chat (DB must be up: `docker compose up -d vector-db`):
+Run from repos/game-guide-ai (DB must be up: `docker compose up -d vector-db`):
     uv run --with "psycopg[binary]" python vector-db/verify_db.py
 
 Connection: DATABASE_URL env var, else the local compose DSN (same as retrieval.py).
@@ -34,7 +34,7 @@ if _ENV_PATH.exists():
             _k, _, _v = _line.partition("=")
             os.environ.setdefault(_k.strip(), _v.strip())
 
-DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat"
+DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai"
 DSN = os.environ.get("DATABASE_URL", DEFAULT_DSN)
 
 SENTINEL_ID = "__verify_db_smoke__"

@@ -145,7 +145,7 @@ scans are damaged (mixed-case OCR, dropped/garbled characters, two-column layout
 ## Running it
 
 ```bash
-cd repos/rag-chat
+cd repos/game-guide-ai
 docker compose up --build          # full stack → http://localhost:5173
 # or, single process:
 cd ui && bun run build && cd ..

@@ -154,9 +154,18 @@ describe('LocalStorageConversationStore', () => {
   })
 
   it('load() tolerates corrupt JSON without throwing', () => {
-    lsMock.setItem('rag-chat:conversations', '{not valid json')
+    lsMock.setItem('game-guide-ai:conversations', '{not valid json')
     expect(() => store.list('sage')).not.toThrow()
     expect(store.list('sage')).toEqual([])
+  })
+
+  it('migrates conversations from the pre-rename key (rag-chat:conversations)', () => {
+    const legacy = [{ id: 'x', mode: 'sage', title: 'Old chat', createdAt: '2026-01-01T00:00:00.000Z' }]
+    lsMock.setItem('rag-chat:conversations', JSON.stringify(legacy))
+    // A fresh store reads the legacy key, returns its rows, and moves them over.
+    expect(new LocalStorageConversationStore().list('sage')).toHaveLength(1)
+    expect(lsMock.getItem('game-guide-ai:conversations')).toBe(JSON.stringify(legacy))
+    expect(lsMock.getItem('rag-chat:conversations')).toBeNull()
   })
 
   it('create() does not throw when the write fails (quota exceeded) and warns instead', () => {

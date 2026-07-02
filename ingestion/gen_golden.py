@@ -30,7 +30,7 @@ if _ENV_PATH.exists():
             _k, _, _v = _line.partition("=")
             os.environ.setdefault(_k.strip(), _v.strip())
 
-DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat"
+DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai"
 
 # content_type → reporting category (matches eval_golden's stratification)
 CATEGORY_FOR = {

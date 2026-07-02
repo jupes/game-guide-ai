@@ -4,7 +4,7 @@ This service uses the official Docker image **[pgvector/pgvector](https://hub.do
 
 ## Quick start
 
-From `repos/rag-chat/`:
+From `repos/game-guide-ai/`:
 
 ```bash
 # Optional: copy and edit for non-default credentials / port.
@@ -15,7 +15,7 @@ docker compose ps
 docker compose logs -f vector-db
 ```
 
-Wait until health shows healthy (or run `docker compose exec vector-db pg_isready -U rag -d rag_chat` if you use the defaults).
+Wait until health shows healthy (or run `docker compose exec vector-db pg_isready -U rag -d game_guide_ai` if you use the defaults).
 
 ## Connection
 
@@ -23,13 +23,13 @@ Wait until health shows healthy (or run `docker compose exec vector-db pg_isread
 |------|--------|
 | Host (from your machine) | `localhost` |
 | Port | `POSTGRES_PORT` from `.env` (default `5432`) |
-| Database | `POSTGRES_DB` (default `rag_chat`) |
+| Database | `POSTGRES_DB` (default `game_guide_ai`) |
 | User / password | `POSTGRES_USER` / `POSTGRES_PASSWORD` |
 
 Connection URI (example):
 
 ```text
-postgresql://rag:YOUR_PASSWORD@localhost:5432/rag_chat
+postgresql://rag:YOUR_PASSWORD@localhost:5432/game_guide_ai
 ```
 
 From a future Compose service on the same Docker network, use hostname **`vector-db`** and port **`5432`** (internal).
@@ -79,7 +79,7 @@ Applied on **first** container init via scripts in `vector-db/init/` (lexical or
 The repeatable check is **`verify_db.py`** — it inserts a sentinel row into
 `dnd.chunks`, runs a cosine-kNN query, asserts the sentinel ranks #1 at distance
 ~0 (and that an orthogonal query does *not* return it first), then deletes the
-sentinel so the corpus is left untouched. Run from `repos/rag-chat/` with the DB up:
+sentinel so the corpus is left untouched. Run from `repos/game-guide-ai/` with the DB up:
 
 ```bash
 uv run --with "psycopg[binary]" python vector-db/verify_db.py
@@ -103,7 +103,7 @@ To poke it by hand — note the real schema is **`dnd.chunks`** (not `chunks`), 
 the table's NOT-NULL columns must all be supplied:
 
 ```bash
-docker compose exec vector-db psql -U rag -d rag_chat -v ON_ERROR_STOP=1 -c "
+docker compose exec vector-db psql -U rag -d game_guide_ai -v ON_ERROR_STOP=1 -c "
 INSERT INTO dnd.chunks (chunk_id, book_slug, source_file, page_start, page_end, content_type, text, embedding)
 VALUES ('smoke-test', 'verify', '/dev/null', 0, 0, 'rule', 'smoke',
         (SELECT ARRAY(SELECT 0.01::float4 FROM generate_series(1,1536))::vector))

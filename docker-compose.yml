@@ -12,11 +12,11 @@
 services:
   vector-db:
     image: pgvector/pgvector:pg17-bookworm
-    container_name: rag-chat-vector-db
+    container_name: game-guide-ai-vector-db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-rag}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_dev_change_me}
-      POSTGRES_DB: ${POSTGRES_DB:-rag_chat}
+      POSTGRES_DB: ${POSTGRES_DB:-game_guide_ai}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -37,11 +37,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.service
-    container_name: rag-chat-service
+    container_name: game-guide-ai-service
     env_file: .env          # loads OPENAI_API_KEY
     environment:
       # Override localhost default — service connects to the DB container by name
-      DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_dev_change_me}@vector-db:5432/${POSTGRES_DB:-rag_chat}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag_dev_change_me}@vector-db:5432/${POSTGRES_DB:-game_guide_ai}
     ports:
       - "8000:8000"
     depends_on:
@@ -51,7 +51,7 @@ services:
   ui:
     build:
       context: ./ui         # Dockerfile + nginx.conf live in ui/
-    container_name: rag-chat-ui
+    container_name: game-guide-ai-ui
     ports:
       - "5173:80"           # same port as the Vite dev server for muscle memory
     depends_on:

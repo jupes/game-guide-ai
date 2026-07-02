@@ -47,7 +47,7 @@ def trace_metadata(*, model: str, mode: str, version: str | None = None) -> dict
     service_version + mode (the epic's core comparison axes)."""
     version = version or service_version()
     return {
-        "langfuse_tags": ["rag-chat", f"mode:{mode}"],
+        "langfuse_tags": ["game-guide-ai", f"mode:{mode}"],
         "model": model,
         "service_version": version,
         "mode": mode,
