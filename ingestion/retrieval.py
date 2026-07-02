@@ -49,7 +49,7 @@ if _ENV_PATH.exists():
 # Config
 # ---------------------------------------------------------------------------
 
-DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat"
+DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai"
 EMBED_MODEL = "text-embedding-3-small"
 # TOP_K, IPL_FALLBACK_DISTANCE, KOZ_ANSWERABLE_DISTANCE now come from config (imported above).
 

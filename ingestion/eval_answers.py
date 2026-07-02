@@ -1,5 +1,5 @@
 """
-Answer-quality eval for rag-chat (ziw.3 / Phase 2).
+Answer-quality eval for game-guide-ai (ziw.3 / Phase 2).
 
 Runs the golden *positives* end-to-end through the LangGraph `RagService.answer`
 path and scores **generation** quality — deterministic graders first, Ragas
@@ -287,7 +287,7 @@ def main() -> None:  # pragma: no cover - integration entry (needs DB + LLM)
     import json
     from pathlib import Path
 
-    parser = argparse.ArgumentParser(description="rag-chat answer-quality eval (Ragas over the golden subset)")
+    parser = argparse.ArgumentParser(description="game-guide-ai answer-quality eval (Ragas over the golden subset)")
     parser.add_argument("--limit", type=int, default=None, help="only the first N cases (PR subset)")
     parser.add_argument("--no-langfuse", action="store_true", help="don't attach scores to Langfuse")
     args = parser.parse_args()

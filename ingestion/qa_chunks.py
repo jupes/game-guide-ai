@@ -241,7 +241,7 @@ def run_qa(
     }
 
 
-_DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat"
+_DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai"
 
 
 def _load_chunks_from_db(dsn: str) -> list[dict]:

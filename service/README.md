@@ -9,7 +9,7 @@ hallucinated.
 ## Run
 
 ```bash
-cd repos/rag-chat
+cd repos/game-guide-ai
 docker compose up -d        # pgvector with the ingested corpus
 # .env must provide OPENAI_API_KEY (embeddings + generation) and optionally DATABASE_URL
 uv run --with fastapi --with uvicorn --with openai --with "psycopg[binary]" \

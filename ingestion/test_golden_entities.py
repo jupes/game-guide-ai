@@ -8,7 +8,7 @@ or mis-names one of these, this test goes red.
 
 Pure — reads the committed JSONLs, no DB / no PDF / no network.
 
-Run from repos/rag-chat:
+Run from repos/game-guide-ai:
     uv run --with '.[test]' python -m pytest ingestion/test_golden_entities.py -q
 """
 

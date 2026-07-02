@@ -5,7 +5,7 @@ Usage:
     uv run --with "psycopg[binary]" --with openai python ingestion/embed.py
 
 Env vars:
-    DATABASE_URL      postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat
+    DATABASE_URL      postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai
     OPENAI_API_KEY    sk-...  (required for OpenAI backend)
     EMBED_BACKEND     openai | ollama  (default: openai)
     EMBED_MODEL       default depends on backend:
@@ -46,7 +46,7 @@ if _ENV_PATH.exists():
 # Defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_DSN         = "postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat"
+DEFAULT_DSN         = "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai"
 DEFAULT_BACKEND     = "openai"
 DEFAULT_MODEL_OAI   = "text-embedding-3-small"
 DEFAULT_MODEL_OLLAMA = "nomic-embed-text"

@@ -32,7 +32,7 @@ if _ENV.exists():
             k, _, v = ln.partition("=")
             os.environ.setdefault(k.strip(), v.strip())
 
-DSN = os.environ.get("DATABASE_URL", "postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat")
+DSN = os.environ.get("DATABASE_URL", "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai")
 MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"   # ~80MB, CPU-friendly
 
 

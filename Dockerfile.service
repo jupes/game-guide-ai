@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install the rag-chat package (service + ingestion subpackages) and its runtime
+# Install the game-guide-ai package (service + ingestion subpackages) and its runtime
 # deps straight from pyproject.toml. `pip install .` pulls in exactly the package
 # modules declared there — replacing the old hand-maintained per-file COPY manifest
 # that silently broke the image whenever a new ingestion module was imported.

@@ -42,15 +42,32 @@ export class MemoryConversationStore implements ConversationStore {
   }
 }
 
-const STORAGE_KEY = 'rag-chat:conversations'
+const STORAGE_KEY = 'game-guide-ai:conversations'
+// Pre-rename key (project was "rag-chat"). Migrated on first load so existing
+// users keep their saved conversations. Safe to remove once no clients hold it.
+const LEGACY_STORAGE_KEY = 'rag-chat:conversations'
 
 export class LocalStorageConversationStore implements ConversationStore {
   private load(): Conversation[] {
     try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as Conversation[]
+      return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? this.migrateLegacy() ?? '[]') as Conversation[]
     } catch {
       return []
     }
+  }
+
+  // One-time move of conversations stored under the old key onto the new one.
+  // Returns the legacy payload (if any) so the caller can parse it immediately.
+  private migrateLegacy(): string | null {
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY)
+    if (legacy === null) return null
+    try {
+      localStorage.setItem(STORAGE_KEY, legacy)
+      localStorage.removeItem(LEGACY_STORAGE_KEY)
+    } catch {
+      // Quota/availability errors: still return the payload so this session reads it.
+    }
+    return legacy
   }
 
   private save(rows: Conversation[]): void {

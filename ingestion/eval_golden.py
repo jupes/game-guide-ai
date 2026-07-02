@@ -7,7 +7,7 @@ Usage:
     uv run --with "psycopg[binary]" --with openai python ingestion/eval_golden.py --mode vector
 
 Env vars (reads from .env automatically):
-    DATABASE_URL      postgresql://rag:rag_dev_change_me@localhost:5432/rag_chat
+    DATABASE_URL      postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai
     OPENAI_API_KEY    sk-...
 
 Reports Precision@K, Hit@1, and per-query breakdown with top-5 results.
