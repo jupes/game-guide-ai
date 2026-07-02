@@ -16,17 +16,8 @@ import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { useAppNav } from './AppNav'
 import { parseDiceNotation } from './diceNotation'
-import type { ChatMode } from '../api'
+import { EMPTY_LABELS } from './modes'
 import type { PostFn } from '../useChat'
-
-// ── Empty-state labels by mode ────────────────────────────────────────────────
-
-const EMPTY_LABELS: Record<ChatMode, string> = {
-  sage: 'Ask the Sage…',
-  spell: 'Ask the Spell Archivist…',
-  rules: 'Ask the Rules Arbiter…',
-  gm: 'Ask the Game Master…',
-}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 

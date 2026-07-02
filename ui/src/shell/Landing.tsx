@@ -9,20 +9,7 @@ import { Button } from '../ds/Button'
 import { Card } from '../ds/Card'
 import { Chip } from '../ds/Chip'
 import { useAppNav } from './AppNav'
-import type { ChatMode } from './AppNav'
-
-interface ModeEntry {
-  mode: ChatMode
-  icon: string
-  label: string
-}
-
-const MODES: ModeEntry[] = [
-  { mode: 'sage', icon: 'auto_stories', label: 'Sage' },
-  { mode: 'spell', icon: 'auto_awesome', label: 'Spell' },
-  { mode: 'rules', icon: 'gavel', label: 'Rules' },
-  { mode: 'gm', icon: 'castle', label: 'GM' },
-]
+import { MODES } from './modes'
 
 export function Landing(): React.JSX.Element {
   const { enterWorkspace } = useAppNav()

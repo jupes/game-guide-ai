@@ -29,7 +29,7 @@ export interface AvatarProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 /** Derive up to 2 uppercase initials from a full name string. */
-function deriveInitials(name: string): string {
+export function deriveInitials(name: string): string {
   return name
     .trim()
     .split(/\s+/)

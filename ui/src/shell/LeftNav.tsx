@@ -8,23 +8,10 @@ import * as React from 'react'
 import { Chip } from '../ds/Chip'
 import { IconButton } from '../ds/IconButton'
 import { useAppNav } from './AppNav'
-import type { ChatMode } from './AppNav'
 import { UserMenu } from './UserMenu'
 import { useConversationStore } from './ConversationStoreContext'
 import type { Conversation } from './conversationStore'
-
-interface ModeEntry {
-  mode: ChatMode
-  icon: string
-  label: string
-}
-
-const MODES: ModeEntry[] = [
-  { mode: 'sage', icon: 'auto_stories', label: 'Sage' },
-  { mode: 'spell', icon: 'auto_awesome', label: 'Spell' },
-  { mode: 'rules', icon: 'gavel', label: 'Rules' },
-  { mode: 'gm', icon: 'castle', label: 'GM' },
-]
+import { MODES } from './modes'
 
 export function LeftNav(): React.JSX.Element {
   const { mode, setMode, conversationId, setConversationId } = useAppNav()
