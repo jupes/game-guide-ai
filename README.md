@@ -104,6 +104,17 @@ cd ui && bun run dev
 
 URL: <http://localhost:5173>
 
+**Storybook — Aetheril design-system workbench** (browse `ui/src/ds/` components in
+isolation, with a light/dark theme toolbar and interactive controls):
+
+```bash
+cd ui && bun run storybook
+```
+
+URL: <http://localhost:6006>. Stories live next to their components
+(`ui/src/ds/*.stories.tsx`) and also run as vitest browser tests via
+`@storybook/addon-vitest` (part of `bun run test`).
+
 ### Tests
 
 Python imports are explicit (`from service... import ...` / `from ingestion... import ...`)
