@@ -1,0 +1,58 @@
+/* ── Landing ─────────────────────────────────────────────────────────────────
+   Aetheril-branded entry screen: centered card with brand, tagline, CTA,
+   and mode entry chips.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.landing {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--aether-surface);
+  padding: 24px;
+}
+
+.landing__card {
+  max-width: 480px;
+  width: 100%;
+  text-align: center;
+}
+
+.landing__brand {
+  margin-bottom: 8px;
+}
+
+.landing__brand-icon {
+  font-size: 48px;
+  color: var(--aether-primary);
+}
+
+.landing__title {
+  margin: 0 0 4px;
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--aether-on-surface);
+}
+
+.landing__tagline {
+  margin: 0 0 32px;
+  font-size: 16px;
+  color: var(--aether-on-surface-variant);
+}
+
+.landing__cta {
+  margin-bottom: 24px;
+}
+
+.landing__modes {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* 44px touch-target floor for the CTA button and mode chips */
+.landing__cta-button,
+.landing__mode-chip {
+  min-height: 44px;
+}

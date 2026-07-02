@@ -18,21 +18,8 @@ import { Switch } from './Switch'
 import { Chip } from './Chip'
 import { TextField } from './TextField'
 import { DiceRoll } from './DiceRoll'
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * Return the computed min-height in px for an element.
- * jsdom doesn't run CSS so we read inline styles / data attributes as proxies
- * where CSS cannot be evaluated. For inline-style cases we read element.style.
- * For CSS-class-driven cases we assert the attribute / prop instead.
- */
-function getInlineMinHeight(el: HTMLElement): number | null {
-  const raw = el.style.minHeight
-  if (!raw) return null
-  const px = parseFloat(raw)
-  return isNaN(px) ? null : px
-}
+import { UserMenu } from '../shell/UserMenu'
+import { CurrentUserProvider } from '../shell/currentUser'
 
 // ── 44px touch floor ──────────────────────────────────────────────────────────
 
@@ -59,20 +46,16 @@ describe('44px touch floor', () => {
     expect(btn).toHaveAttribute('data-touch-target', 'true')
   })
 
-  it('UserMenu trigger button in LeftNav carries minHeight 44 inline style', () => {
-    // Verify the UserMenu button construction principle: the button wrapping
-    // the Avatar sets minHeight / minWidth to 44 via inline style.
+  it('UserMenu trigger button meets the 44px floor via its CSS class', () => {
+    // jsdom does not evaluate stylesheets, so assert the class contract:
+    // .user-menu__trigger (UserMenu.css) sets min-height/min-width to 44px.
     render(
-      <button
-        type="button"
-        aria-label="Open user menu"
-        style={{ minHeight: 44, minWidth: 44 }}
-      >
-        AV
-      </button>,
+      <CurrentUserProvider>
+        <UserMenu />
+      </CurrentUserProvider>,
     )
     const btn = screen.getByRole('button', { name: 'Open user menu' })
-    expect(getInlineMinHeight(btn)).toBe(44)
+    expect(btn).toHaveClass('user-menu__trigger')
   })
 
   it('Chip with onClick exposes role=button and is keyboard-reachable (tabIndex=0)', () => {

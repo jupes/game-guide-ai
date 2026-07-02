@@ -9,6 +9,7 @@ import * as React from 'react'
 import { useState } from 'react'
 import { Avatar } from '../ds/Avatar'
 import { useCurrentUser } from './currentUser'
+import './UserMenu.css'
 
 export function UserMenu(): React.JSX.Element {
   const { user } = useCurrentUser()
@@ -29,61 +30,25 @@ export function UserMenu(): React.JSX.Element {
   }
 
   return (
-    <div style={{ position: 'relative', display: 'inline-block' }}>
+    <div className="user-menu">
       <button
         type="button"
         aria-label="Open user menu"
         aria-expanded={open}
         aria-haspopup="menu"
         onClick={toggleMenu}
-        style={{
-          background: 'none',
-          border: 'none',
-          cursor: 'pointer',
-          padding: 0,
-          borderRadius: '50%',
-          minHeight: 44,
-          minWidth: 44,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
+        className="user-menu__trigger"
       >
         <Avatar name={user.displayName} tone="gold" />
       </button>
 
       {open && (
-        <div
-          role="menu"
-          style={{
-            position: 'absolute',
-            bottom: '100%',
-            left: 0,
-            background: 'var(--aether-surface)',
-            border: '1px solid var(--aether-outline)',
-            borderRadius: 'var(--aether-radius-card, 16px)',
-            padding: '8px 0',
-            minWidth: 160,
-            boxShadow: 'var(--aether-elevation-2, 0 2px 8px rgba(0,0,0,0.15))',
-            zIndex: 100,
-          }}
-        >
+        <div role="menu" className="user-menu__popover">
           <button
             type="button"
             role="menuitem"
             onClick={handleEditProfile}
-            style={{
-              display: 'block',
-              width: '100%',
-              padding: '10px 16px',
-              background: 'none',
-              border: 'none',
-              textAlign: 'left',
-              cursor: 'pointer',
-              color: 'var(--aether-on-surface)',
-              font: 'inherit',
-              minHeight: 44,
-            }}
+            className="user-menu__item"
           >
             Profile
           </button>
@@ -91,18 +56,7 @@ export function UserMenu(): React.JSX.Element {
             type="button"
             role="menuitem"
             onClick={handleSignOut}
-            style={{
-              display: 'block',
-              width: '100%',
-              padding: '10px 16px',
-              background: 'none',
-              border: 'none',
-              textAlign: 'left',
-              cursor: 'pointer',
-              color: 'var(--aether-on-surface)',
-              font: 'inherit',
-              minHeight: 44,
-            }}
+            className="user-menu__item"
           >
             Sign out
           </button>

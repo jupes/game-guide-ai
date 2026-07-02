@@ -1,0 +1,49 @@
+/* ── ChatPane ────────────────────────────────────────────────────────────────
+   Mode-aware chat interface: exchange list, export toolbar, composer.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.chat-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 8px;
+}
+
+.chat-pane__exchanges {
+  flex: 1;
+  overflow: hidden auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.chat-pane__empty {
+  margin: auto;
+  font-size: 18px;
+  color: var(--aether-on-surface-variant);
+  text-align: center;
+}
+
+/* Indent dice/source attachments to align with the DM bubble (avatar width). */
+.chat-pane__dice {
+  align-self: flex-start;
+  margin-left: 56px;
+}
+
+.chat-pane__sources {
+  margin-left: 56px;
+}
+
+.chat-pane__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.chat-pane__composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}

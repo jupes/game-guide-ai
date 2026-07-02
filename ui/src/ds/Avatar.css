@@ -44,8 +44,16 @@
               0 0 0 4px var(--aether-gold-leaf);
 }
 
+/* ── Image variant — backgroundImage itself is set inline from `src` ──────── */
+.avatar--image {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
 /* ── Icon inside avatar ───────────────────────────────────────────────────── */
 .avatar__icon {
-  /* font-size is set inline proportionally to size */
+  /* root font-size is size*0.4 (inline); 1.3em ≙ size*0.52 — the icon scale */
+  font-size: 1.3em;
   line-height: 1;
 }

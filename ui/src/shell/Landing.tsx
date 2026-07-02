@@ -10,82 +10,43 @@ import { Card } from '../ds/Card'
 import { Chip } from '../ds/Chip'
 import { useAppNav } from './AppNav'
 import { MODES } from './modes'
+import './Landing.css'
 
 export function Landing(): React.JSX.Element {
   const { enterWorkspace } = useAppNav()
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--aether-surface)',
-        padding: 24,
-      }}
-    >
-      <Card
-        style={{
-          maxWidth: 480,
-          width: '100%',
-          textAlign: 'center',
-        }}
-      >
+    <div className="landing">
+      <Card className="landing__card">
         {/* Brand */}
-        <div style={{ marginBottom: 8 }}>
+        <div className="landing__brand">
           <span
-            className="material-symbols-rounded"
+            className="material-symbols-rounded landing__brand-icon"
             aria-hidden="true"
-            style={{ fontSize: 48, color: 'var(--aether-primary)' }}
           >
             auto_stories
           </span>
         </div>
 
-        <h1
-          style={{
-            margin: '0 0 4px',
-            fontSize: 32,
-            fontWeight: 700,
-            color: 'var(--aether-on-surface)',
-          }}
-        >
-          Aetheril
-        </h1>
+        <h1 className="landing__title">Aetheril</h1>
 
-        <p
-          style={{
-            margin: '0 0 32px',
-            fontSize: 16,
-            color: 'var(--aether-on-surface-variant)',
-          }}
-        >
-          Grounded answers from the rulebooks
-        </p>
+        <p className="landing__tagline">Grounded answers from the rulebooks</p>
 
         {/* Primary CTA */}
-        <div style={{ marginBottom: 24 }}>
+        <div className="landing__cta">
           <Button
             variant="filled"
             size="large"
             icon="login"
             onClick={() => enterWorkspace()}
-            style={{ minHeight: 44 }}
+            className="landing__cta-button"
           >
             Enter the Tavern
           </Button>
         </div>
 
         {/* Mode entry chips */}
-        <div
-          style={{
-            display: 'flex',
-            gap: 8,
-            justifyContent: 'center',
-            flexWrap: 'wrap',
-          }}
-        >
+        <div className="landing__modes">
           {MODES.map(({ mode, icon, label }) => (
             <Chip
               key={mode}
@@ -93,7 +54,7 @@ export function Landing(): React.JSX.Element {
               icon={icon}
               label={label}
               onClick={() => enterWorkspace(mode)}
-              style={{ minHeight: 44 }}
+              className="landing__mode-chip"
             />
           ))}
         </div>

@@ -18,6 +18,7 @@ import { useAppNav } from './AppNav'
 import { parseDiceNotation } from './diceNotation'
 import { EMPTY_LABELS } from './modes'
 import type { PostFn } from '../useChat'
+import './ChatPane.css'
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -44,36 +45,11 @@ export function ChatPane({ post }: { post?: PostFn }): React.JSX.Element {
   )
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        gap: 8,
-      }}
-    >
+    <div className="chat-pane">
       {/* Exchange list */}
-      <div
-        style={{
-          flex: 1,
-          overflow: 'hidden auto',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 16,
-          padding: '8px 0',
-        }}
-      >
+      <div className="chat-pane__exchanges">
         {exchanges.length === 0 ? (
-          <p
-            style={{
-              margin: 'auto',
-              fontSize: 18,
-              color: 'var(--aether-on-surface-variant)',
-              textAlign: 'center',
-            }}
-          >
-            {EMPTY_LABELS[mode]}
-          </p>
+          <p className="chat-pane__empty">{EMPTY_LABELS[mode]}</p>
         ) : (
           exchanges.map((exchange) => (
             <React.Fragment key={exchange.id}>
@@ -103,18 +79,19 @@ export function ChatPane({ post }: { post?: PostFn }): React.JSX.Element {
                     const dice = parseDiceNotation(exchange.response.answer)
                     if (!dice || !exchange.response.answerable) return null
                     return (
-                      <DiceRoll
-                        die={dice.die}
-                        value={dice.value}
-                        modifier={dice.modifier}
-                        style={{ alignSelf: 'flex-start', marginLeft: 56 }}
-                      />
+                      <div className="chat-pane__dice">
+                        <DiceRoll
+                          die={dice.die}
+                          value={dice.value}
+                          modifier={dice.modifier}
+                        />
+                      </div>
                     )
                   })()}
 
                   {/* Sources */}
                   {exchange.response.answerable && exchange.response.sources.length > 0 && (
-                    <Card variant="outlined" padded={false} style={{ marginLeft: 56 }}>
+                    <Card variant="outlined" padded={false} className="chat-pane__sources">
                       <SourceList sources={exchange.response.sources} />
                     </Card>
                   )}
@@ -130,7 +107,7 @@ export function ChatPane({ post }: { post?: PostFn }): React.JSX.Element {
       </div>
 
       {/* Toolbar: export button */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', flexShrink: 0 }}>
+      <div className="chat-pane__toolbar">
         <IconButton
           icon="download"
           ariaLabel="Export chat"
@@ -139,14 +116,7 @@ export function ChatPane({ post }: { post?: PostFn }): React.JSX.Element {
       </div>
 
       {/* Composer */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'flex-end',
-          gap: 8,
-          flexShrink: 0,
-        }}
-      >
+      <div className="chat-pane__composer">
         <TextField
           multiline
           rows={2}

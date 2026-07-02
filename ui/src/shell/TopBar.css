@@ -1,0 +1,31 @@
+/* ── TopBar ──────────────────────────────────────────────────────────────────
+   Brand header with the dark/light theme toggle.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  height: 64px;
+  border-bottom: 1px solid var(--aether-outline-variant);
+  background: var(--aether-surface);
+  flex-shrink: 0;
+}
+
+.top-bar__brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.top-bar__brand-icon {
+  font-size: 24px;
+  color: var(--aether-primary);
+}
+
+.top-bar__brand-name {
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--aether-on-surface);
+}

@@ -8,32 +8,17 @@ import * as React from 'react'
 import { LeftNav } from './LeftNav'
 import { TopBar } from './TopBar'
 import { ChatPane } from './ChatPane'
+import './WorkspaceShell.css'
 
 export function WorkspaceShell(): React.JSX.Element {
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100vh',
-        overflow: 'hidden',
-        background: 'var(--aether-surface)',
-      }}
-    >
+    <div className="workspace-shell">
       <TopBar />
 
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <div className="workspace-shell__body">
         <LeftNav />
 
-        <main
-          style={{
-            flex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-            padding: 24,
-          }}
-        >
+        <main className="workspace-shell__main">
           <ChatPane />
         </main>
       </div>

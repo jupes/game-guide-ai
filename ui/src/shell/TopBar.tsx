@@ -5,6 +5,7 @@
 import * as React from 'react'
 import { Switch } from '../ds/Switch'
 import { useTheme } from '../ds/theme'
+import './TopBar.css'
 
 export function TopBar(): React.JSX.Element {
   const { theme, setTheme } = useTheme()
@@ -14,29 +15,15 @@ export function TopBar(): React.JSX.Element {
   }
 
   return (
-    <header
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '0 16px',
-        height: 64,
-        borderBottom: '1px solid var(--aether-outline-variant)',
-        background: 'var(--aether-surface)',
-        flexShrink: 0,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+    <header className="top-bar">
+      <div className="top-bar__brand">
         <span
-          className="material-symbols-rounded"
+          className="material-symbols-rounded top-bar__brand-icon"
           aria-hidden="true"
-          style={{ fontSize: 24, color: 'var(--aether-primary)' }}
         >
           auto_stories
         </span>
-        <span style={{ fontWeight: 700, fontSize: 18, color: 'var(--aether-on-surface)' }}>
-          Aetheril
-        </span>
+        <span className="top-bar__brand-name">Aetheril</span>
       </div>
 
       <Switch
