@@ -29,7 +29,8 @@ export interface AvatarProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 /** Derive up to 2 uppercase initials from a full name string. */
-function deriveInitials(name: string): string {
+// eslint-disable-next-line react-refresh/only-export-components -- helper co-located with Avatar; HMR-only rule
+export function deriveInitials(name: string): string {
   return name
     .trim()
     .split(/\s+/)
@@ -57,23 +58,19 @@ export function Avatar({
     'avatar',
     `avatar--${tone}`,
     ring ? 'avatar--ring' : '',
+    src ? 'avatar--image' : '',
     className,
   ]
     .filter(Boolean)
     .join(' ')
 
+  // width/height/font-size are genuinely dynamic (driven by the size prop);
+  // everything else lives in Avatar.css.
   const inlineStyle: React.CSSProperties = {
     width: size,
     height: size,
     fontSize: size * 0.4,
-    ...(src
-      ? {
-          backgroundImage: `url(${src})`,
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          backgroundRepeat: 'no-repeat',
-        }
-      : {}),
+    ...(src ? { backgroundImage: `url(${src})` } : {}),
     ...style,
   }
 
@@ -85,7 +82,6 @@ export function Avatar({
             <span
               className="material-symbols-rounded avatar__icon"
               aria-hidden="true"
-              style={{ fontSize: size * 0.52 }}
             >
               {icon}
             </span>

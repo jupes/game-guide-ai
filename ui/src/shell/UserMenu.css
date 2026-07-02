@@ -1,0 +1,48 @@
+/* ── UserMenu ────────────────────────────────────────────────────────────────
+   Avatar trigger button + popover menu (Profile / Sign out).
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.user-menu {
+  position: relative;
+  display: inline-block;
+}
+
+/* Trigger keeps the 44px touch-target floor around the 40px Avatar. */
+.user-menu__trigger {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 50%;
+  min-height: 44px;
+  min-width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.user-menu__popover {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  background: var(--aether-surface);
+  border: 1px solid var(--aether-outline);
+  border-radius: var(--aether-radius-card, 16px);
+  padding: 8px 0;
+  min-width: 160px;
+  box-shadow: var(--aether-elevation-2, 0 2px 8px rgba(0, 0, 0, 0.15));
+  z-index: 100;
+}
+
+.user-menu__item {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--aether-on-surface);
+  font: inherit;
+  min-height: 44px;
+}

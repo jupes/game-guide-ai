@@ -26,6 +26,7 @@ export interface CurrentUserContextValue {
 
 function noop(): void {}
 
+// eslint-disable-next-line react-refresh/only-export-components -- stub constant co-located with provider; HMR-only rule
 export const STUB: CurrentUser = {
   id: 'guest',
   displayName: 'Adventurer',

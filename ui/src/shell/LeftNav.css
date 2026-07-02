@@ -1,0 +1,98 @@
+/* ── LeftNav ─────────────────────────────────────────────────────────────────
+   Fixed 268px sidebar: brand, mode filter chips, conversation list, UserMenu.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.left-nav {
+  width: 268px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--aether-surface-container);
+  border-right: 1px solid var(--aether-outline-variant);
+}
+
+.left-nav__brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 16px 8px;
+  flex-shrink: 0;
+}
+
+.left-nav__brand-icon {
+  font-size: 28px;
+  color: var(--aether-primary);
+}
+
+.left-nav__brand-name {
+  font-weight: 700;
+  font-size: 20px;
+  color: var(--aether-on-surface);
+}
+
+.left-nav__modes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  flex-shrink: 0;
+}
+
+/* 44px touch-target floor for the mode chips */
+.left-nav__mode-chip {
+  min-height: 44px;
+}
+
+.left-nav__conversations {
+  flex: 1;
+  padding: 16px 16px 8px;
+  overflow: hidden auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.left-nav__conversations-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.left-nav__conversations-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--aether-on-surface-variant);
+}
+
+.left-nav__conversation {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  text-align: left;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--aether-on-surface);
+  cursor: pointer;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.left-nav__conversation--selected {
+  background: var(--aether-secondary-container);
+  color: var(--aether-on-secondary-container);
+}
+
+.left-nav__footer {
+  padding: 8px 16px 16px;
+  border-top: 1px solid var(--aether-outline-variant);
+  flex-shrink: 0;
+}

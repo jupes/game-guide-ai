@@ -8,23 +8,11 @@ import * as React from 'react'
 import { Chip } from '../ds/Chip'
 import { IconButton } from '../ds/IconButton'
 import { useAppNav } from './AppNav'
-import type { ChatMode } from './AppNav'
 import { UserMenu } from './UserMenu'
 import { useConversationStore } from './ConversationStoreContext'
 import type { Conversation } from './conversationStore'
-
-interface ModeEntry {
-  mode: ChatMode
-  icon: string
-  label: string
-}
-
-const MODES: ModeEntry[] = [
-  { mode: 'sage', icon: 'auto_stories', label: 'Sage' },
-  { mode: 'spell', icon: 'auto_awesome', label: 'Spell' },
-  { mode: 'rules', icon: 'gavel', label: 'Rules' },
-  { mode: 'gm', icon: 'castle', label: 'GM' },
-]
+import { MODES } from './modes'
+import './LeftNav.css'
 
 export function LeftNav(): React.JSX.Element {
   const { mode, setMode, conversationId, setConversationId } = useAppNav()
@@ -43,50 +31,20 @@ export function LeftNav(): React.JSX.Element {
   }, [mode, store, setConversationId])
 
   return (
-    <nav
-      style={{
-        width: 268,
-        flexShrink: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        background: 'var(--aether-surface-container)',
-        borderRight: '1px solid var(--aether-outline-variant)',
-      }}
-      aria-label="Main navigation"
-    >
+    <nav className="left-nav" aria-label="Main navigation">
       {/* Brand logo area */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '16px 16px 8px',
-          flexShrink: 0,
-        }}
-      >
+      <div className="left-nav__brand">
         <span
-          className="material-symbols-rounded"
+          className="material-symbols-rounded left-nav__brand-icon"
           aria-hidden="true"
-          style={{ fontSize: 28, color: 'var(--aether-primary)' }}
         >
           auto_stories
         </span>
-        <span style={{ fontWeight: 700, fontSize: 20, color: 'var(--aether-on-surface)' }}>
-          Aetheril
-        </span>
+        <span className="left-nav__brand-name">Aetheril</span>
       </div>
 
       {/* Mode chips */}
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 4,
-          padding: '8px 8px',
-          flexShrink: 0,
-        }}
-      >
+      <div className="left-nav__modes">
         {MODES.map(({ mode: m, icon, label }) => (
           <Chip
             key={m}
@@ -95,42 +53,15 @@ export function LeftNav(): React.JSX.Element {
             label={label}
             selected={mode === m}
             onClick={() => setMode(m)}
-            style={{ minHeight: 44 }}
+            className="left-nav__mode-chip"
           />
         ))}
       </div>
 
       {/* Conversation list */}
-      <div
-        style={{
-          flex: 1,
-          padding: '16px 16px 8px',
-          overflow: 'hidden auto',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 4,
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: 4,
-          }}
-        >
-          <p
-            style={{
-              margin: 0,
-              fontSize: 12,
-              fontWeight: 600,
-              letterSpacing: '0.08em',
-              textTransform: 'uppercase',
-              color: 'var(--aether-on-surface-variant)',
-            }}
-          >
-            Conversations
-          </p>
+      <div className="left-nav__conversations">
+        <div className="left-nav__conversations-header">
+          <p className="left-nav__conversations-title">Conversations</p>
           <IconButton
             icon="add"
             ariaLabel="New conversation"
@@ -144,29 +75,12 @@ export function LeftNav(): React.JSX.Element {
             key={conv.id}
             type="button"
             onClick={() => setConversationId(conv.id)}
-            aria-pressed={conversationId === conv.id ? true : false}
-            style={{
-              display: 'block',
-              width: '100%',
-              minHeight: 44,
-              textAlign: 'left',
-              padding: '8px 12px',
-              border: 'none',
-              borderRadius: 8,
-              background:
-                conversationId === conv.id
-                  ? 'var(--aether-secondary-container)'
-                  : 'transparent',
-              color:
-                conversationId === conv.id
-                  ? 'var(--aether-on-secondary-container)'
-                  : 'var(--aether-on-surface)',
-              cursor: 'pointer',
-              fontSize: 14,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
+            aria-pressed={conversationId === conv.id}
+            className={
+              conversationId === conv.id
+                ? 'left-nav__conversation left-nav__conversation--selected'
+                : 'left-nav__conversation'
+            }
           >
             {conv.title}
           </button>
@@ -174,13 +88,7 @@ export function LeftNav(): React.JSX.Element {
       </div>
 
       {/* Bottom row: UserMenu */}
-      <div
-        style={{
-          padding: '8px 16px 16px',
-          borderTop: '1px solid var(--aether-outline-variant)',
-          flexShrink: 0,
-        }}
-      >
+      <div className="left-nav__footer">
         <UserMenu />
       </div>
     </nav>

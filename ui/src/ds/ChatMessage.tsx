@@ -15,6 +15,7 @@
  */
 
 import React from 'react'
+import { deriveInitials } from './Avatar'
 import './ChatMessage.css'
 
 // ── Props (mirrors the DS d.ts exactly) ──────────────────────────────────────
@@ -43,13 +44,8 @@ interface AvatarProps {
 }
 
 function MessageAvatar({ role, author, avatar, avatarIcon }: AvatarProps) {
-  // Initials fallback
-  const initials = (author ?? (role === 'dm' ? 'Dungeon Master' : 'You'))
-    .split(' ')
-    .slice(0, 2)
-    .map((w) => w[0] ?? '')
-    .join('')
-    .toUpperCase()
+  // Initials fallback — shared with the Avatar DS component
+  const initials = deriveInitials(author ?? (role === 'dm' ? 'Dungeon Master' : 'You'))
 
   return (
     <div className="chat-message__avatar" aria-hidden="true">
