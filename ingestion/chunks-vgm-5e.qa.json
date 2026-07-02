@@ -1,22 +1,22 @@
 {
   "source": "chunks-vgm-5e.jsonl",
-  "total": 1515,
-  "clean": 1339,
-  "quarantined": 176,
-  "pass_rate": 0.8838,
+  "total": 1531,
+  "clean": 1156,
+  "quarantined": 375,
+  "pass_rate": 0.7551,
   "reasons": {
-    "bad_entity": 154,
-    "low_alpha": 43
+    "bad_entity": 356,
+    "low_alpha": 39
   },
   "samples": {
     "bad_entity": [
+      "the best one.\n-Volo\nBest",
       "21-25 3d6 hook horrors\n41-55 6d6 ogres\n56-70 2d4 trolls\n71-75 3d6 wights\n76-00 R",
-      "CH PTER 1 :\n18\nthat Annam took a number of consorts in addition to his\nmate Othe",
-      "shifting its weight. An ox that strays too close to a\nsleeping giant could wind "
+      "Well, I know w I am. -Volo\nDIVISION OF LABOR\nThanks to its superior intelligence"
     ],
     "low_alpha": [
       "cultists nobles\n21-30 2d6 cult 61-72 ld4\n31-34 2d4 73-86 2d6\n35-50 2d10 87-00 ld",
-      "STR\n20 (+5) 12 (+l) 20 (+5) 11 (+O) 14 (+2) 8 (-1)\nSkills Athletics +8, Stealth ",
+      "STR DEX\n13 8 (-1) 5 (-3)",
       "&:2 - · ¥ -- ¥¼ M h WfF#& E kW 4"
     ]
   }
