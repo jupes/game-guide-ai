@@ -54,3 +54,47 @@ comparisons stay valid and free of self-enhancement bias (see the eval-strategy 
 Langfuse: free tier. Real cost = OpenAI judge tokens over the subset (`gpt-4o-mini`, a few cents
 for a small run; the per-run token count is printed and stored). Cap via `--limit` for PR runs;
 run the full subset on a nightly cadence.
+
+---
+
+## Model comparison + CI gate (Phase 3 / ziw.4)
+
+`ingestion/compare_models.py` runs the eval above **once per generator model**, holding everything
+else constant (same golden subset, same graph version, same **fixed independent judge** — gpt-4o-mini),
+then prints a per-metric scorecard and **gates CI** on a chosen metric. Only the generator varies, so
+it's a valid A/B. First comparison: **gpt-4o-mini (API) vs gemma4:12b (local)**.
+
+### Run the comparison
+
+```bash
+docker compose up -d vector-db            # retrieval
+ollama pull gemma4:12b                     # local generator (~8GB, 4-bit; Ollama 0.22+; fits a 3080)
+
+# baseline is the FIRST --models entry; the rest are candidates.
+uv run --with '.[eval]' python ingestion/compare_models.py \
+  --models gpt-4o-mini,gemma4:12b --limit 5 \
+  --gate-metric answer_correctness --gate-threshold 0.05
+```
+
+- Any label works: `name:tag` resolves to an Ollama model (e.g. `llama3.2:latest`), otherwise to an
+  OpenAI model (e.g. `gpt-4.1-nano`). So you can A/B any pair.
+- **Exit code is the CI gate:** non-zero when a candidate's pass-rate for `--gate-metric` drops more
+  than `--gate-threshold` below the baseline. Wire it as a PR check (`--limit` subset); full subset
+  nightly.
+- **Outputs:** scorecard (per-metric base/candidate/delta), `ingestion/compare_results.json`
+  (aggregates + gate detail + per-model judge tokens), a seeded Langfuse **dataset**, and — with
+  tracing — model-tagged traces + scores.
+
+### Cost & fairness (comparison)
+
+- **Local generation (Gemma) is free** (your GPU); only the fixed judge spends tokens (~2x the eval
+  since both models are judged). Cap via `--limit`.
+- Judge stays gpt-4o-mini across all models (independent, >= the generator) so scores are comparable
+  and free of self-enhancement bias.
+
+### Known limitations / refinements (comparison)
+
+- Langfuse **dataset is seeded** and traces are model-tagged, but full `item.run()` dataset-run
+  grouping (the native side-by-side experiment UI) is a follow-up — scorecard + gate + tagged traces
+  already deliver the comparison.
+- Inherits the eval's data-quality follow-ups (expand key-facts; full-context for context metrics).
