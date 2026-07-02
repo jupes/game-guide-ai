@@ -13,3 +13,4 @@ __pycache__/
 build/
 dist/
 uv.lock
+ingestion/metrics_summary.json
