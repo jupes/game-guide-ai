@@ -40,6 +40,7 @@ from itertools import groupby
 from pathlib import Path
 
 from ingestion.ocr_normalize import normalize_ocr
+from ingestion.qa_chunks import entity_name_ok
 
 # ---------------------------------------------------------------------------
 # Shared schema (mirrors extract.py's DndChunk)
@@ -752,11 +753,14 @@ def extract_supplement_chunks(
         return None
 
     def flush(end_page: int) -> None:
+        # cur_entity may be None (a prose block that never earned a name-shaped
+        # heading) — it still emits with entity_name=None rather than being lost.
         nonlocal cur_ctype, cur_entity, cur_lines, cur_start
-        if cur_entity and cur_lines and cur_start:
+        if cur_lines and cur_start:
             body_full = "\n".join(cur_lines).strip()
             ctype = cur_ctype or classify_content_type(cur_entity, body_full)
-            for part in split_paragraph_chunks([cur_entity] + cur_lines, max_chars):
+            lead = [cur_entity] if cur_entity else []
+            for part in split_paragraph_chunks(lead + cur_lines, max_chars):
                 if len(part.split()) < 5:
                     continue
                 counter[0] += 1
@@ -766,7 +770,7 @@ def extract_supplement_chunks(
                     page_start=cur_start[0], page_end=end_page,
                     part=None, chapter=None, section=None,
                     content_type=ctype,
-                    entity_name=normalize_entity_name(cur_entity),
+                    entity_name=normalize_entity_name(cur_entity) if cur_entity else None,
                     class_name=None, feature_name=None,
                     text=part,
                 ))
@@ -878,21 +882,38 @@ def extract_supplement_chunks(
             # name sits in the recent tail (a shredded spell), else appends as body.
             open_spell_via_casting(li)
         elif is_heading(li):
-            flush(li.page)
-            recent_headings.append(li)
-            del recent_headings[:-6]   # keep the last 6
-            cur_ctype = None
-            cur_entity = li.text
-            cur_start = (li.page, li.col)
-            cur_lines = []
-        else:
-            if cur_entity is None:
-                # No open chunk yet — treat this line as a provisional name so a
-                # following anchor can claim it (handles spell name → level line
-                # with no preceding heading).
+            # A heading-shaped line (bold, or ALL-CAPS per is_caps_heading) only
+            # opens a new named chunk if it actually looks like a name/section
+            # label (agent-forge-harness-wu1) — margin quotes, random-encounter
+            # table rows, and garbled chapter dividers are also bold/caps but
+            # fail entity_name_ok, so they fall through to ordinary body text
+            # instead of becoming (and poisoning) entity_name.
+            if entity_name_ok(li.text):
+                flush(li.page)
+                recent_headings.append(li)
+                del recent_headings[:-6]   # keep the last 6
+                cur_ctype = None
                 cur_entity = li.text
                 cur_start = (li.page, li.col)
                 cur_lines = []
+            elif cur_start is None:
+                cur_start = (li.page, li.col)
+                cur_lines = [li.text]
+            else:
+                cur_lines.append(li.text)
+        else:
+            if cur_start is None:
+                # No open chunk yet. A provisional name is only captured when it
+                # looks name-shaped, so a following anchor can claim it (handles
+                # spell name → level line with no preceding heading); otherwise
+                # this opens an unnamed prose block (entity_name=None at flush)
+                # rather than losing the line or poisoning entity_name with it.
+                if entity_name_ok(li.text):
+                    cur_entity = li.text
+                    cur_lines = []
+                else:
+                    cur_lines = [li.text]
+                cur_start = (li.page, li.col)
             else:
                 cur_lines.append(li.text)
 
