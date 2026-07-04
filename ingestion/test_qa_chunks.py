@@ -11,6 +11,7 @@ Run:
 
 from __future__ import annotations
 
+import json
 
 from ingestion.qa_chunks import (
     alpha_ratio,
@@ -20,6 +21,8 @@ from ingestion.qa_chunks import (
     has_cid_marker,
     length_ok,
     pua_control_ratio,
+    run_qa,
+    salvage_entity_name,
 )
 
 
@@ -221,6 +224,73 @@ def test_detect_collapse_clean_corpus_has_no_offenders():
         _chunk("Goblin\nSmall humanoid\nArmor Class 15 (leather armor)", entity_name="Goblin"),
     ]
     assert detect_collapse(chunks) == []
+
+
+# ---------------------------------------------------------------------------
+# salvage_entity_name (agent-forge-harness-wu1) — a chunk failing ONLY
+# bad_entity keeps its otherwise-clean text with entity_name nulled, instead
+# of the whole chunk being discarded. Multi-reason failures (Tortle's
+# cipher-garbage class) must never be salvaged.
+# ---------------------------------------------------------------------------
+
+def test_salvage_recovers_bad_entity_only_chunk():
+    salvaged = salvage_entity_name(_chunk(GOOD, entity_name="0Rog"))
+    assert salvaged is not None
+    assert salvaged["entity_name"] is None
+    ok, reasons = classify_chunk(salvaged)
+    assert ok is True and reasons == []
+
+
+def test_salvage_refuses_multi_reason_failure():
+    # Tortle-class cipher garbage: bad_entity AND low_alpha together — the QA
+    # gate must keep quarantining this, not salvage it away.
+    junk = "\\. 1 , .,. c, .,.,.o~sl<r. Ar< \"\\o\"'° ~oi\"'~ lo lr\"\\ lo kil("
+    assert salvage_entity_name(_chunk(junk, entity_name="0Rog")) is None
+
+
+def test_salvage_refuses_already_clean_chunk():
+    assert salvage_entity_name(_chunk(GOOD)) is None
+
+
+def test_salvage_refuses_other_single_reason_failure():
+    # A chunk failing only on length (a fragment) is not a bad_entity case —
+    # salvage must not paper over unrelated failures.
+    assert salvage_entity_name(_chunk("Two words")) is None
+
+
+# ---------------------------------------------------------------------------
+# run_qa — salvage wired into the file-level QA runner
+# ---------------------------------------------------------------------------
+
+def test_run_qa_writes_salvaged_chunk_to_clean_with_null_entity(tmp_path):
+    in_path = tmp_path / "chunks-test.jsonl"
+    lines = [
+        json.dumps(_chunk(GOOD, entity_name="0Rog")),   # bad_entity only -> salvaged
+        json.dumps(_chunk(GOOD)),                        # already clean
+    ]
+    in_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    clean_path = tmp_path / "chunks-test.clean.jsonl"
+    quarantine_path = tmp_path / "chunks-test.quarantine.jsonl"
+
+    report = run_qa(in_path, clean_path, quarantine_path)
+
+    assert report["clean"] == 2
+    assert report["quarantined"] == 0
+    clean_chunks = [json.loads(line) for line in clean_path.read_text(encoding="utf-8").splitlines()]
+    assert any(c["entity_name"] is None for c in clean_chunks)
+
+
+def test_run_qa_still_quarantines_multi_reason_failure(tmp_path):
+    in_path = tmp_path / "chunks-test.jsonl"
+    junk = "\\. 1 , .,. c, .,.,.o~sl<r. Ar< \"\\o\"'° ~oi\"'~ lo lr\"\\ lo kil("
+    in_path.write_text(json.dumps(_chunk(junk, entity_name="0Rog")) + "\n", encoding="utf-8")
+    clean_path = tmp_path / "chunks-test.clean.jsonl"
+    quarantine_path = tmp_path / "chunks-test.quarantine.jsonl"
+
+    report = run_qa(in_path, clean_path, quarantine_path)
+
+    assert report["clean"] == 0
+    assert report["quarantined"] == 1
 
 
 # ---------------------------------------------------------------------------
