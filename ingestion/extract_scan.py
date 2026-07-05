@@ -21,8 +21,8 @@ Engine: pymupdf (fitz) by default — it decodes books pdfplumber can't read
 old pdfplumber reader stays available via --engine pdfplumber.
 
 Usage:
-    uv run --with pymupdf python ingestion/extract_scan.py <pdf> --book-slug mm-5e
-    uv run --with pymupdf python ingestion/extract_scan.py <pdf> --book-slug dmg-5e
+    uv run --with '.[extract]' python ingestion/extract_scan.py <pdf> --book-slug mm-5e
+    uv run --with '.[extract]' python ingestion/extract_scan.py <pdf> --book-slug dmg-5e
     uv run --with pdfplumber python ingestion/extract_scan.py <pdf> --book-slug mm-5e --engine pdfplumber
 
 Output: JSONL with the same DndChunk schema as extract.py (embed.py-ready).
