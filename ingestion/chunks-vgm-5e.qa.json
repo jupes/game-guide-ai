@@ -1,23 +1,17 @@
 {
   "source": "chunks-vgm-5e.jsonl",
-  "total": 1515,
-  "clean": 1339,
-  "quarantined": 176,
-  "pass_rate": 0.8838,
+  "total": 1329,
+  "clean": 1306,
+  "quarantined": 23,
+  "pass_rate": 0.9827,
   "reasons": {
-    "bad_entity": 154,
-    "low_alpha": 43
+    "low_alpha": 23
   },
   "samples": {
-    "bad_entity": [
-      "21-25 3d6 hook horrors\n41-55 6d6 ogres\n56-70 2d4 trolls\n71-75 3d6 wights\n76-00 R",
-      "CH PTER 1 :\n18\nthat Annam took a number of consorts in addition to his\nmate Othe",
-      "shifting its weight. An ox that strays too close to a\nsleeping giant could wind "
-    ],
     "low_alpha": [
       "cultists nobles\n21-30 2d6 cult 61-72 ld4\n31-34 2d4 73-86 2d6\n35-50 2d10 87-00 ld",
-      "STR\n20 (+5) 12 (+l) 20 (+5) 11 (+O) 14 (+2) 8 (-1)\nSkills Athletics +8, Stealth ",
-      "&:2 - · ¥ -- ¥¼ M h WfF#& E kW 4"
+      "STR DEX\n13 8 (-1) 5 (-3)",
+      "CON INT WIS CHA\n15 (+2) 13 (+l) 13 (+1) 2 (-4) 10 (+0) 5 (-3)\nSkills Perception "
     ]
   }
 }
