@@ -1,9 +1,9 @@
 {
   "source": "chunks-eberron-5e.jsonl",
-  "total": 1074,
-  "clean": 1047,
+  "total": 1070,
+  "clean": 1043,
   "quarantined": 27,
-  "pass_rate": 0.9749,
+  "pass_rate": 0.9748,
   "reasons": {
     "bad_entity": 25,
     "low_alpha": 2

@@ -1,21 +1,23 @@
 {
   "source": "chunks-tortle-5e.jsonl",
   "total": 97,
-  "clean": 90,
-  "quarantined": 7,
-  "pass_rate": 0.9278,
+  "clean": 72,
+  "quarantined": 25,
+  "pass_rate": 0.7423,
   "reasons": {
-    "low_alpha": 6,
-    "bad_entity": 1
+    "bad_entity": 19,
+    "low_alpha": 6
   },
   "samples": {
+    "bad_entity": [
+      "Ability Score Increase. Your Strength score in-\n[j]Yk]kZq*$Yf\\qgmjOak\\gek[gj]af[",
+      "Yf\\qgm`Yn]Y\\nYflY_]gfKlj]f_l`Yf\\;gfklalmlagf\nkYnaf_l`jgok&O`ad]afqgmjk`]dd$qgmYj",
+      "Stone Basin.\nL`][d]ja[g^MeZ]jd]]mk]\\l`akZYkaf\nYkYk[jqaf_hggd&Hah]kZmadlaflgalkZY"
+    ],
     "low_alpha": [
       "Hit Points\n75 (10d10 + 20)",
       "STR DEX CON INT WIS CHA\n15 (+2) 14 (+2) 14 (+2) 4 (–3) 10 (+0) 7 (–2)",
       "STR DEX CON INT WIS CHA\n12 (+1) 10 (+0) 16 (+3) 9 (–1) 14 (+2) 11 (+0)"
-    ],
-    "bad_entity": [
-      "ce.\nrt\ne\nk.\nmudgraw mudgraw\nTHE TORTLE PACKAGE\n25\nk:L]DUGVRIWKH&RDVW//&3HUPLVVLR"
     ]
   }
 }
