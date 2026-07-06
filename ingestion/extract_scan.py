@@ -1097,9 +1097,9 @@ def main() -> None:
 
     # Normalize OCR text errors (no-op on clean books; fixes the phb-5e scan — 6om)
     for chunk in chunks:
-        chunk.text = normalize_ocr(chunk.text)
+        chunk.text = normalize_ocr(chunk.text, book=args.book_slug)
         if chunk.entity_name:
-            chunk.entity_name = normalize_ocr(chunk.entity_name)
+            chunk.entity_name = normalize_ocr(chunk.entity_name, book=args.book_slug)
 
     type_counts: dict[str, int] = {}
     section_counts: dict[str, int] = {}

@@ -27,6 +27,7 @@ import os
 from ingestion import extract_scan as ex
 from ingestion import qa_chunks
 from ingestion.embed import embed_and_upsert, DEFAULT_DSN, DEFAULT_BACKEND, DEFAULT_MODEL_OAI
+from ingestion.ocr_normalize import normalize_ocr
 
 BOOKS_DIR = Path(__file__).resolve().parent.parent.parent / "DnD-Books" / "5e" / "Books"
 
@@ -57,6 +58,12 @@ def extract_book(slug: str, pdf_path: Path, out_path: Path) -> dict[str, int]:
         chunks = ex.extract_dmg_chunks(stream, slug, pdf_path.name, cfg)
     else:
         chunks = ex.extract_supplement_chunks(stream, slug, pdf_path.name, cfg)
+    # Same normalize step as the extract_scan CLI path — without it, orchestrated
+    # ingests ship the raw OCR garbles (t->l, I->l, ...) straight to embed.
+    for c in chunks:
+        c.text = normalize_ocr(c.text, book=slug)
+        if c.entity_name:
+            c.entity_name = normalize_ocr(c.entity_name, book=slug)
     with out_path.open("w", encoding="utf-8") as f:
         for c in chunks:
             f.write(json.dumps(asdict(c), ensure_ascii=False) + "\n")
