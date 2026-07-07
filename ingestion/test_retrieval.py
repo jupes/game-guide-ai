@@ -203,3 +203,69 @@ def test_retrieve_top_k_without_book_slugs_backward_compatible():
     sql = conn.cursor_obj.last_sql
     assert "book_slug" not in sql
     assert "content_type = ANY(%s)" in sql
+
+
+# ---------------------------------------------------------------------------
+# 1em.3 / CP-C — embed error contract + pure result assembly
+# ---------------------------------------------------------------------------
+
+import pytest
+
+from ingestion.retrieval import (
+    EmbeddingUnavailableError,
+    RetrievedChunk,
+    assemble_result,
+    embed_query,
+)
+
+
+def _chunk(cid, dist, entity="X"):
+    return RetrievedChunk(
+        chunk_id=cid, content_type="rule", entity_name=entity, class_name=None,
+        feature_name=None, chapter=None, section=None, page_start=1,
+        text_preview="preview", cosine_distance=dist,
+    )
+
+
+@pytest.mark.parametrize("key", [None, "", "sk-replace-me"])
+def test_embed_query_missing_key_raises_not_exits(monkeypatch, key):
+    """A missing/placeholder OPENAI_API_KEY raises EmbeddingUnavailableError —
+    previously sys.exit(1), a BaseException that killed the serving worker."""
+    if key is None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("OPENAI_API_KEY", key)
+    with pytest.raises(EmbeddingUnavailableError):
+        embed_query("what is a basilisk?")
+
+
+def test_assemble_result_computes_top1_and_answerable():
+    """assemble_result derives top1 from the first chunk and judges
+    answerability by the koz threshold — the same maths the old monolithic
+    retrieve() did inline."""
+    chunks = [_chunk("a", 0.30), _chunk("b", 0.45)]
+    r = assemble_result(
+        chunks, full_texts={"a": "A text", "b": "B text"},
+        book_by_id={"a": "phb-5e", "b": "phb-5e"},
+        classes={"Wizard"}, entities=set(), ctypes={"rule"},
+    )
+    assert r.top1_distance == 0.30
+    assert r.answerable is True
+    assert r.matched_classes == {"Wizard"}
+    assert r.matched_content_types == {"rule"}
+    assert r.text_for(chunks[0]) == "A text"
+
+
+def test_assemble_result_empty_chunks_not_answerable():
+    r = assemble_result([], full_texts={}, book_by_id={},
+                        classes=set(), entities=set(), ctypes=set())
+    assert r.top1_distance is None
+    assert r.answerable is False
+    assert r.chunks == []
+
+
+def test_assemble_result_beyond_threshold_not_answerable():
+    r = assemble_result([_chunk("a", 0.70)], full_texts={"a": "t"},
+                        book_by_id={"a": "mm-5e"},
+                        classes=set(), entities=set(), ctypes=set())
+    assert r.answerable is False

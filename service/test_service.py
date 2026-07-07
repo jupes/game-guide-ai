@@ -19,21 +19,25 @@ from service.rag import RagService, REFUSAL
 from service.models import ChatResponse
 
 
-def _chunk(cid, entity, ctype="monster", section=None, chapter=None, page=1):
+def _chunk(cid, entity, ctype="monster", section=None, chapter=None, page=1, dist=0.3):
     return RetrievedChunk(
         chunk_id=cid, content_type=ctype, entity_name=entity, class_name=None,
         feature_name=None, chapter=chapter, section=section, page_start=page,
-        text_preview="preview", cosine_distance=0.3,
+        text_preview="preview", cosine_distance=dist,
     )
 
 
 def _result(answerable=True):
-    chunks = [_chunk("c1", "Froghemoth"), _chunk("c2", "Basilisk")]
+    # Chunk distances must match the intended answerability — the pipeline
+    # derives answerable from the top-1 distance (koz gate), not from the
+    # canned flag (1em.3).
+    d = 0.30 if answerable else 0.70
+    chunks = [_chunk("c1", "Froghemoth", dist=d), _chunk("c2", "Basilisk", dist=d)]
     return RetrievalResult(
         chunks=chunks,
         full_texts={"c1": "A froghemoth is an amphibious monster that lurks in swamps." * 6,
                     "c2": "A basilisk's gaze can petrify."},
-        top1_distance=0.30 if answerable else 0.70,
+        top1_distance=d,
         answerable=answerable,
         book_by_id={"c1": "vgm-5e", "c2": "mm-5e"},
         matched_content_types={"monster"},
@@ -41,8 +45,19 @@ def _result(answerable=True):
 
 
 class _FakeRetriever:
+    """Granular stage-method fake (1em.3) — the graph drives embed/analyze/
+    search/fetch as separate nodes; the canned RetrievalResult supplies each
+    stage's output. answerable is recomputed from top1 by the graph's assembly,
+    so canned results must keep top1 consistent with their answerable flag."""
+
     def __init__(self, result): self._r = result
-    def retrieve(self, prompt, reranker=None, mode="sage"): return self._r
+    def embed(self, prompt): return [0.1, 0.2, 0.3]
+    def analyze(self, prompt):
+        return set(), set(), set(self._r.matched_content_types)
+    def search(self, emb, prompt, k, classes, entities, content_types, book_slugs):
+        return list(self._r.chunks)
+    def fetch(self, chunks):
+        return dict(self._r.full_texts), dict(self._r.book_by_id)
 
 
 class _FakeLLM:
@@ -128,13 +143,14 @@ def test_answer_refusal_skips_llm():
 
 
 class _CountingRetriever(_FakeRetriever):
-    """Tracks how many times retrieve() is called."""
+    """Tracks whether the retrieval pipeline was touched at all (embed is the
+    first stage the graph runs)."""
     def __init__(self, result):
         super().__init__(result)
         self.calls = 0
-    def retrieve(self, prompt, reranker=None, mode="sage"):
+    def embed(self, prompt):
         self.calls += 1
-        return super().retrieve(prompt, reranker=reranker, mode=mode)
+        return super().embed(prompt)
 
 
 def test_answer_unknown_mode_raises_before_retrieval():

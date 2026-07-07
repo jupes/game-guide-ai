@@ -20,20 +20,24 @@ from service.graph import build_rag_graph
 from service.rag import RagService, REFUSAL
 
 
-def _chunk(cid, entity):
+def _chunk(cid, entity, dist=0.3):
     return RetrievedChunk(
         chunk_id=cid, content_type="monster", entity_name=entity, class_name=None,
         feature_name=None, chapter=None, section=None, page_start=1,
-        text_preview="preview", cosine_distance=0.3,
+        text_preview="preview", cosine_distance=dist,
     )
 
 
 def _result(answerable=True, chunks=True):
-    cs = [_chunk("c1", "Froghemoth"), _chunk("c2", "Basilisk")] if chunks else []
+    # Chunk distances must be consistent with the intended answerability: the
+    # pipeline derives answerable from the top-1 distance (koz gate), it does
+    # not trust a canned flag (1em.3).
+    d = 0.30 if answerable else 0.70
+    cs = [_chunk("c1", "Froghemoth", d), _chunk("c2", "Basilisk", d)] if chunks else []
     return RetrievalResult(
         chunks=cs,
         full_texts={"c1": "A froghemoth lurks in swamps." * 6, "c2": "A basilisk petrifies."},
-        top1_distance=0.30 if answerable else 0.70,
+        top1_distance=d if chunks else None,
         answerable=answerable,
         book_by_id={"c1": "vgm-5e", "c2": "mm-5e"},
         matched_content_types={"monster"},
@@ -41,13 +45,29 @@ def _result(answerable=True, chunks=True):
 
 
 class _FakeRetriever:
+    """Granular stage-method fake (1em.3): the graph drives embed → analyze →
+    search → fetch as separate nodes. `calls` counts embed() — the first
+    pipeline touch — preserving the old 'retrieval never ran' assertions.
+    Records the filters search() received so scope behavior is observable."""
+
     def __init__(self, result):
         self._r = result
         self.calls = 0
+        self.search_filters: dict | None = None
 
-    def retrieve(self, prompt, reranker=None, mode="sage"):
+    def embed(self, prompt):
         self.calls += 1
-        return self._r
+        return [0.1, 0.2, 0.3]
+
+    def analyze(self, prompt):
+        return set(), set(), set(self._r.matched_content_types)
+
+    def search(self, emb, prompt, k, classes, entities, content_types, book_slugs):
+        self.search_filters = {"content_types": content_types, "book_slugs": book_slugs}
+        return list(self._r.chunks)
+
+    def fetch(self, chunks):
+        return dict(self._r.full_texts), dict(self._r.book_by_id)
 
 
 class _FakeLLM:
@@ -134,3 +154,72 @@ def test_graph_unknown_mode_raises_before_retrieval():
         graph.invoke({"prompt": "anything", "mode": "bogus"})
     assert svc.retriever.calls == 0
     assert llm.calls == 0
+
+
+# ---------------------------------------------------------------------------
+# 1em.3 / CP-C — retrieval stages as first-class nodes
+# ---------------------------------------------------------------------------
+
+
+def test_graph_spell_mode_scopes_search_to_spell_books():
+    """Tracer (Track A): a spell-mode question flows through the exploded
+    pipeline and the SEARCH stage receives the spell scope — content_types
+    forced to {'spell'} and the book filter restricted to spell-bearing books."""
+    llm = _FakeLLM("Fireball deals 8d6 fire damage [1].")
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    assert "Fireball" in out["answer"]
+    filters = svc.retriever.search_filters
+    assert filters is not None, "search stage never ran"
+    assert filters["content_types"] == {"spell"}
+    assert "phb-5e" in filters["book_slugs"]
+    assert "mm-5e" not in filters["book_slugs"]
+
+
+class _ReversingReranker:
+    """Fake reranker: reverses whatever order it is given, counts calls."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def rerank(self, query, texts):
+        self.calls += 1
+        return list(range(len(texts)))[::-1]
+
+
+def _result_with_ctypes(ctypes):
+    r = _result(answerable=True)
+    r.matched_content_types.clear()
+    r.matched_content_types.update(ctypes)
+    return r
+
+
+def test_graph_rerank_reorders_prose_queries():
+    """With a reranker configured and prose-like query content types, the
+    rerank node reorders the chunks — visible in the cited sources order."""
+    llm = _FakeLLM("answer [1]")
+    reranker = _ReversingReranker()
+    svc = RagService(
+        retriever=_FakeRetriever(_result_with_ctypes({"rule"})),
+        llm_client=llm, reranker=reranker,
+    )
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "How does grappling work?", "mode": "sage"})
+    assert reranker.calls == 1
+    assert out["sources"][0].entity == "Basilisk"  # reversed: c2 first
+
+
+def test_graph_rerank_skips_structured_queries():
+    """Structured content types (monster) skip the rerank node entirely —
+    the should_rerank gate, now as graph routing."""
+    llm = _FakeLLM("answer [1]")
+    reranker = _ReversingReranker()
+    svc = RagService(
+        retriever=_FakeRetriever(_result_with_ctypes({"monster"})),
+        llm_client=llm, reranker=reranker,
+    )
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What is a Froghemoth?", "mode": "sage"})
+    assert reranker.calls == 0
+    assert out["sources"][0].entity == "Froghemoth"  # original order kept

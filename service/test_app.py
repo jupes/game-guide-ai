@@ -275,6 +275,19 @@ def test_chat_internal_error_500():
         app.dependency_overrides.clear()
 
 
+def test_chat_embedding_unavailable_503():
+    """EmbeddingUnavailableError (e.g. missing OPENAI_API_KEY) maps to 503 —
+    a service-side availability problem, not a crash (1em.3)."""
+    from ingestion.retrieval import EmbeddingUnavailableError
+
+    c = _client_raising(EmbeddingUnavailableError("OPENAI_API_KEY is not set"))
+    try:
+        r = c.post("/chat", json={"prompt": "What is a Basilisk?"})
+        assert r.status_code == 503
+    finally:
+        app.dependency_overrides.clear()
+
+
 # ---------------------------------------------------------------------------
 # 1em.1 / CP-A — env-gated reranker wiring (RAG_RERANK, default off)
 # ---------------------------------------------------------------------------

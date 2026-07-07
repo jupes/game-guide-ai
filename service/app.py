@@ -23,6 +23,8 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 
+from ingestion.retrieval import EmbeddingUnavailableError
+
 from .models import ChatRequest, ChatResponse
 from .rag import RagService
 
@@ -120,6 +122,14 @@ def chat(req: ChatRequest, svc: RagService = Depends(get_service)) -> ChatRespon
             req.mode.value, req.conversation_id, type(exc).__name__, exc,
         )
         raise HTTPException(status_code=503, detail="retrieval backend unavailable") from exc
+    except EmbeddingUnavailableError as exc:
+        # Embedding can't run (missing OPENAI_API_KEY) — service-side
+        # unavailability, not a crash (1em.3; previously sys.exit killed the worker).
+        log.warning(
+            "embedding unavailable on /chat (mode=%s, conversation_id=%s): %s",
+            req.mode.value, req.conversation_id, exc,
+        )
+        raise HTTPException(status_code=503, detail="embedding backend unavailable") from exc
     except Exception:
         # Anything else is a bug in our code — log the full traceback, return 500.
         log.exception("internal error on /chat (mode=%s)", req.mode.value)

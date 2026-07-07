@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,14 +53,30 @@ EMBED_MODEL = "text-embedding-3-small"
 # TOP_K, IPL_FALLBACK_DISTANCE, KOZ_ANSWERABLE_DISTANCE now come from config (imported above).
 
 
-def embed_query(text: str) -> list[float]:
+class EmbeddingUnavailableError(RuntimeError):
+    """Query embedding cannot run — missing/placeholder OPENAI_API_KEY.
+
+    Raised (1em.3) instead of the old sys.exit(1): SystemExit is a
+    BaseException that sailed past the service's error handlers and killed the
+    serving worker. The API layer maps this to a 503.
+    """
+
+
+def _openai_client():
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key or api_key == "sk-replace-me":
-        print("ERROR: OPENAI_API_KEY not set. Add it to .env.", file=sys.stderr)
-        sys.exit(1)
-
+        raise EmbeddingUnavailableError(
+            "OPENAI_API_KEY is not set (add it to .env); query embedding unavailable."
+        )
     from openai import OpenAI
-    client = OpenAI(api_key=api_key)
+    return OpenAI(api_key=api_key)
+
+
+def embed_query(text: str, client=None) -> list[float]:
+    """Embed one query. `client` lets callers (RagRetriever) reuse a single
+    OpenAI client instead of constructing one per call."""
+    if client is None:
+        client = _openai_client()
     resp = client.embeddings.create(model=EMBED_MODEL, input=[text])
     return resp.data[0].embedding
 
@@ -430,49 +445,97 @@ class RetrievalResult:
         return self.book_by_id.get(chunk.chunk_id)
 
 
+def assemble_result(
+    chunks: list[RetrievedChunk],
+    full_texts: dict[str, str],
+    book_by_id: dict[str, str],
+    classes: set[str] | None = None,
+    entities: set[str] | None = None,
+    ctypes: set[str] | None = None,
+) -> RetrievalResult:
+    """Pure assembly of a RetrievalResult from the pipeline stages' outputs:
+    top-1 distance from the (pre-rerank) chunk order, answerability by the koz
+    threshold — the same maths retrieve() previously did inline. Shared by the
+    composed retrieve() and the service graph's fetch_texts node."""
+    top1 = chunks[0].cosine_distance if chunks else None
+    return RetrievalResult(
+        chunks=chunks, full_texts=full_texts, top1_distance=top1,
+        answerable=is_answerable(top1), book_by_id=book_by_id,
+        matched_classes=classes or set(), matched_entities=entities or set(),
+        matched_content_types=ctypes or set(),
+    )
+
+
 class RagRetriever:
-    """Loads the corpus vocabulary once; `retrieve(prompt)` runs the full
-    pipeline (embed → filter → vector search → full-text fetch → answerability)
-    and an optional gated cross-encoder rerank."""
+    """Loads the corpus vocabulary once and exposes the pipeline as granular
+    stage methods (1em.3) — `embed`, `analyze`, `search`, `fetch` — which the
+    service graph drives as individual nodes for per-stage tracing.
+    `retrieve(prompt)` remains the composed pipeline for direct callers, with
+    the optional gated cross-encoder rerank."""
 
     def __init__(self, dsn: str | None = None):
         self.dsn = dsn or os.environ.get("DATABASE_URL", DEFAULT_DSN)
+        self._openai = None  # shared embeddings client, built on first embed()
         with psycopg.connect(self.dsn) as conn:
             (self.known_classes, self.known_entities,
              self.entity_to_ctype, self.class_to_ctype) = load_vocabulary(conn)
 
+    def embed(self, prompt: str) -> list[float]:
+        """Stage 1 — embed the query (one OpenAI client reused across calls)."""
+        if self._openai is None:
+            self._openai = _openai_client()
+        return embed_query(prompt, client=self._openai)
+
+    def analyze(self, prompt: str) -> tuple[set[str], set[str], set[str]]:
+        """Stage 2 — vocabulary hints: (classes, entities, content_types)."""
+        classes, entities = extract_query_entities(
+            prompt, self.known_classes, self.known_entities,
+        )
+        ctypes = extract_query_content_types(
+            prompt, self.entity_to_ctype, self.class_to_ctype,
+        )
+        return classes, entities, ctypes
+
+    def search(
+        self, emb: list[float], prompt: str, k: int,
+        classes: set[str], entities: set[str],
+        content_types: set[str] | None, book_slugs: set[str] | None,
+    ) -> list[RetrievedChunk]:
+        """Stage 3 — filtered vector search (content_types/book_slugs come from
+        scope_for_mode; None means unscoped for that dimension)."""
+        with psycopg.connect(self.dsn) as conn:
+            return retrieve_top_k(
+                conn, emb, prompt, k, mode="vector",
+                classes=classes, entities=entities,
+                content_types=content_types, book_slugs=book_slugs,
+            )
+
+    def fetch(
+        self, chunks: list[RetrievedChunk],
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Stage 4 — (full_texts, book_by_id) for the retrieved chunks."""
+        with psycopg.connect(self.dsn) as conn:
+            details = fetch_chunk_details(conn, [c.chunk_id for c in chunks])
+        full = {cid: t for cid, (t, _b) in details.items()}
+        book_by_id = {cid: b for cid, (_t, b) in details.items()}
+        return full, book_by_id
+
     def retrieve(
         self, prompt: str, k: int = TOP_K, reranker=None, mode: str = "sage",
     ) -> RetrievalResult:
-        emb = embed_query(prompt)
-        classes, entities = extract_query_entities(prompt, self.known_classes, self.known_entities)
-        ctypes = extract_query_content_types(prompt, self.entity_to_ctype, self.class_to_ctype)
-
+        emb = self.embed(prompt)
+        classes, entities, ctypes = self.analyze(prompt)
         effective_ctypes, allowed_books = scope_for_mode(mode, ctypes)
-
-        with psycopg.connect(self.dsn) as conn:
-            chunks = retrieve_top_k(
-                conn, emb, prompt, k, mode="vector",
-                classes=classes, entities=entities,
-                content_types=effective_ctypes,
-                book_slugs=allowed_books,
-            )
-            details = fetch_chunk_details(conn, [c.chunk_id for c in chunks])
-
-        full = {cid: t for cid, (t, _b) in details.items()}
-        book_by_id = {cid: b for cid, (_t, b) in details.items()}
-        top1 = chunks[0].cosine_distance if chunks else None
-        answerable = is_answerable(top1)
+        chunks = self.search(
+            emb, prompt, k, classes, entities, effective_ctypes, allowed_books,
+        )
+        full, book_by_id = self.fetch(chunks)
+        result = assemble_result(chunks, full, book_by_id, classes, entities, ctypes)
 
         # Gated cross-encoder rerank (prose categories only) — reuses the bo4 gate.
-        if reranker is not None and chunks:
-            if should_rerank(ctypes):
-                texts = [full.get(c.chunk_id, c.text_preview) for c in chunks]
-                order = reranker.rerank(prompt, texts)
-                chunks = [chunks[i] for i in order]
-
-        return RetrievalResult(
-            chunks=chunks, full_texts=full, top1_distance=top1, answerable=answerable,
-            book_by_id=book_by_id,
-            matched_classes=classes, matched_entities=entities, matched_content_types=ctypes,
-        )
+        # top1/answerable stay pre-rerank, matching the original inline maths.
+        if reranker is not None and result.chunks and should_rerank(ctypes):
+            texts = [result.text_for(c) for c in result.chunks]
+            order = reranker.rerank(prompt, texts)
+            result.chunks = [result.chunks[i] for i in order]
+        return result
