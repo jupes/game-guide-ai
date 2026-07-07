@@ -223,3 +223,79 @@ def test_graph_rerank_skips_structured_queries():
     out = graph.invoke({"prompt": "What is a Froghemoth?", "mode": "sage"})
     assert reranker.calls == 0
     assert out["sources"][0].entity == "Froghemoth"  # original order kept
+
+
+# ---------------------------------------------------------------------------
+# 1em.4 / CP-D — GM secondary retrieval as a parallel branch
+# ---------------------------------------------------------------------------
+
+
+class _FakeSecondary:
+    """Counting secondary retriever; returns a canned SecondaryResult."""
+
+    def __init__(self, result=None):
+        from service.rag import SecondaryResult
+
+        self.calls = 0
+        self._r = result if result is not None else SecondaryResult()
+
+    def retrieve(self, prompt, k=5):
+        self.calls += 1
+        return self._r
+
+
+def _world_secondary():
+    from service.rag import SecondaryResult
+
+    sec = _chunk("sec1", "WorldMonster", 0.3)
+    return SecondaryResult(
+        chunks=[sec],
+        full_texts={"sec1": "A monster unique to this campaign world."},
+        book_by_id={"sec1": "world"},
+        answerable=True,
+    )
+
+
+def test_graph_gm_secondary_is_a_parallel_branch():
+    """The secondary retrieval is its own node fanned out from scope alongside
+    the primary search branch (not a sequential step inside merge). The join is
+    by state at merge — no secondary->merge edge (langgraph <0.4 would
+    double-trigger merge on the shorter branch)."""
+    svc = _svc(_result(answerable=True), _FakeLLM("x"))
+    graph = build_rag_graph(svc)
+    drawable = graph.get_graph()
+    assert "secondary" in drawable.nodes
+    assert any(
+        e.source == "scope" and e.target == "secondary" for e in drawable.edges
+    ), "expected a scope -> secondary fan-out edge"
+
+
+def test_graph_gm_merges_secondary_chunks_after_primary():
+    """In GM mode the secondary corpus chunks are merged (deduped) AFTER the
+    primary chunks and show up in the cited sources."""
+    llm = _FakeLLM("A world-flavored tavern tale [1].")
+    secondary = _FakeSecondary(_world_secondary())
+    svc = RagService(
+        retriever=_FakeRetriever(_result(answerable=True)),
+        llm_client=llm, secondary_retriever=secondary,
+    )
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe a tavern", "mode": "gm"})
+    assert secondary.calls == 1
+    entities = [s.entity for s in out["sources"]]
+    assert entities[:2] == ["Froghemoth", "Basilisk"]  # primary first
+    assert "WorldMonster" in entities                   # secondary appended
+
+
+def test_graph_non_gm_never_calls_secondary():
+    """Only GM mode fans out to the secondary branch; sage/spell/rules do not."""
+    secondary = _FakeSecondary(_world_secondary())
+    svc = RagService(
+        retriever=_FakeRetriever(_result(answerable=True)),
+        llm_client=_FakeLLM("x"), secondary_retriever=secondary,
+    )
+    graph = build_rag_graph(svc)
+    for mode in ("sage", "spell", "rules"):
+        out = graph.invoke({"prompt": "What is a Basilisk?", "mode": mode})
+        assert "WorldMonster" not in [s.entity for s in out["sources"]]
+    assert secondary.calls == 0

@@ -9,10 +9,10 @@ mapping and each stage gets its own trace span:
                 | (valid)
                 v
              embed -> extract_hints -> scope -> search -> fetch_texts
-                                                              |
-                                    (reranker ∧ prose query)? rerank
-                                                              v
-                                                            merge   (GM second source)
+                                          |                   |
+                                (gm) secondary      (reranker ∧ prose)? rerank
+                                          :                   v
+                                          :.....(by state)> merge
                                                               v
                                           gate --(refuse)--> refuse -> END
                                              \\--(generate)--> generate -> cite -> END
@@ -22,13 +22,15 @@ the old service-layer contract) and routes empty/whitespace prompts straight to
 `refuse` without spending retrieval or an LLM call. The retrieval stages call
 `RagRetriever`'s granular stage methods (1em.3); `rerank` runs only when a
 reranker is configured AND the query's content types are prose-like
-(`should_rerank`, the bo4 gate). `merge` folds in the GM secondary corpus
-(stubbed; no-op for other modes — 1em.4 makes it a parallel branch). `gate` is
-the grounding gate as a first-class node; `cite` builds the Sources list apart
-from `generate` so answer generation and citation assembly trace separately.
-The LLM flows through `generate_answer` (`langchain-openai` `ChatOpenAI` or an
-injected fake); Langfuse tracing attaches via the run config passed to `invoke`
-(env-gated, off by default — see tracing.py).
+(`should_rerank`, the bo4 gate). In GM mode, `scope` FANS OUT to the secondary
+(world/campaign) corpus in parallel with the primary search branch (1em.4);
+the branches join BY STATE at `merge` (primary chunks first, deduped — the
+stub secondary is a no-op). `gate` is the grounding gate as a first-class
+node; `cite` builds the Sources list apart from `generate` so answer
+generation and citation assembly trace separately. The LLM flows through
+`generate_answer` (`langchain-openai` `ChatOpenAI` or an injected fake);
+Langfuse tracing attaches via the run config passed to `invoke` (env-gated,
+off by default — see tracing.py).
 """
 
 from __future__ import annotations
@@ -43,6 +45,11 @@ from ingestion.scope import scope_for_mode
 
 from .generate import build_context, build_sources, generate_answer
 from .models import ChatMode, REFUSAL, Source
+
+# Runtime import (not TYPE_CHECKING): LangGraph resolves GraphState's
+# annotations when building the state schema. No cycle — service.rag imports
+# this module lazily (inside _compiled_graph), never at module load.
+from .rag import SecondaryResult
 
 if TYPE_CHECKING:
     from .rag import RagService
@@ -61,6 +68,7 @@ class GraphState(TypedDict, total=False):
     allowed_books: set[str] | None
     chunks: list[RetrievedChunk]
     result: RetrievalResult
+    secondary_result: SecondaryResult     # GM parallel branch output (gm only)
     # gate + output
     route: Literal["generate", "refuse"]  # the gate node's decision
     answer: str
@@ -99,6 +107,16 @@ def build_rag_graph(svc: RagService) -> Any:
         effective_ctypes, allowed_books = scope_for_mode(state["mode"], state["ctypes"])
         return {"effective_ctypes": effective_ctypes, "allowed_books": allowed_books}
 
+    def scope_route(state: GraphState) -> list[str]:
+        # GM fans out to the secondary (world/campaign) corpus IN PARALLEL with
+        # the primary search branch; other modes run the primary branch only.
+        if state["mode"] == "gm":
+            return ["search", "secondary"]
+        return ["search"]
+
+    def secondary_node(state: GraphState) -> GraphState:
+        return {"secondary_result": svc.secondary.retrieve(state["prompt"])}
+
     def search_node(state: GraphState) -> GraphState:
         chunks = svc.retriever.search(
             state["emb"], state["prompt"], TOP_K,
@@ -134,11 +152,14 @@ def build_rag_graph(svc: RagService) -> Any:
         return {"result": result}
 
     def merge_node(state: GraphState) -> GraphState:
-        # Second-source merge (GM mode only; stub is a no-op). Runs post-rerank,
-        # matching the pre-split pipeline order.
+        # Join point of the parallel branches. The secondary branch (one hop,
+        # gm only) finishes in an earlier superstep than the primary chain and
+        # joins by state: its secondary_result is visible here. Merge keeps
+        # primary chunks first and dedupes by chunk_id; the stub secondary is
+        # a no-op. Runs post-rerank, matching the pre-split order.
         result = state["result"]
-        if state["mode"] == "gm":
-            secondary = svc.secondary.retrieve(state["prompt"])
+        secondary = state.get("secondary_result")
+        if secondary is not None:
             result = svc._merge_results(result, secondary)
         return {"result": result}
 
@@ -182,6 +203,7 @@ def build_rag_graph(svc: RagService) -> Any:
     g.add_node("scope", scope_node)
     g.add_node("search", search_node)
     g.add_node("fetch_texts", fetch_texts_node)
+    g.add_node("secondary", secondary_node)
     g.add_node("rerank", rerank_node)
     g.add_node("merge", merge_node)
     g.add_node("gate", gate_node)
@@ -195,12 +217,19 @@ def build_rag_graph(svc: RagService) -> Any:
     )
     g.add_edge("embed", "extract_hints")
     g.add_edge("extract_hints", "scope")
-    g.add_edge("scope", "search")
+    g.add_conditional_edges(
+        "scope", scope_route, {"search": "search", "secondary": "secondary"},
+    )
     g.add_edge("search", "fetch_texts")
     g.add_conditional_edges(
         "fetch_texts", rerank_route, {"rerank": "rerank", "merge": "merge"},
     )
     g.add_edge("rerank", "merge")
+    # NOTE deliberate: no secondary -> merge edge. The branches join BY STATE —
+    # `secondary` runs in the same superstep as `search` (true fan-out) and
+    # ends after writing secondary_result; `merge` on the primary chain reads
+    # it. An explicit edge would double-trigger merge on the shorter branch
+    # (langgraph <0.4 has no defer= to barrier unequal-length branches).
     g.add_edge("merge", "gate")
     g.add_conditional_edges(
         "gate", gate_route, {"generate": "generate", "refuse": "refuse"},
