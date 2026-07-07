@@ -11,6 +11,7 @@ Run from repo root:
 
 from __future__ import annotations
 
+import pytest
 from langchain_core.messages import AIMessage
 
 from ingestion.retrieval import RetrievalResult, RetrievedChunk
@@ -100,4 +101,36 @@ def test_graph_gm_mode_refuses_with_no_chunks():
     graph = build_rag_graph(svc)
     out = graph.invoke({"prompt": "Describe a void", "mode": "gm"})
     assert out["answer"] == REFUSAL
+    assert llm.calls == 0
+
+
+# ---------------------------------------------------------------------------
+# 1em.2 / CP-B — pre-flight lives inside the graph
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+def test_graph_empty_prompt_refuses_without_retrieval_or_llm(blank):
+    """An empty/whitespace prompt refuses INSIDE the graph — the retrieve node
+    and the LLM never run (previously guarded outside in RagService.answer)."""
+    llm = _FakeLLM("should not run")
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": blank, "mode": "sage"})
+    assert out["answer"] == REFUSAL
+    assert out["sources"] == []
+    assert out["answerable"] is False
+    assert svc.retriever.calls == 0
+    assert llm.calls == 0
+
+
+def test_graph_unknown_mode_raises_before_retrieval():
+    """An invalid mode raises ValueError from the graph's preflight node,
+    before any retrieval work (same contract RagService.answer had)."""
+    llm = _FakeLLM("x")
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    with pytest.raises(ValueError, match="bogus"):
+        graph.invoke({"prompt": "anything", "mode": "bogus"})
+    assert svc.retriever.calls == 0
     assert llm.calls == 0
