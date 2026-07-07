@@ -1,8 +1,12 @@
 """
-RagService — orchestrates retrieve → answerability gate → generate → cite.
+RagService — thin invoke wrapper around the pipeline graph (service/graph.py).
 
-Stateless per call. The retriever (vocab loaded once) and optional reranker are
-injected so the FastAPI app can build them at startup and tests can mock them.
+The whole request pipeline — pre-flight, retrieval stages, grounding gate,
+generation, citations — runs as the LangGraph graph; `answer()` builds the
+trace config, invokes it, and maps the final state to a ChatResponse.
+Stateless per call. The retriever (vocab loaded once), optional reranker,
+LLM client, and secondary retriever are injected so the FastAPI app can build
+them at startup and tests can fake them.
 """
 
 from __future__ import annotations
