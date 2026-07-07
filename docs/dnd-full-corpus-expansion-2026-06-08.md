@@ -167,7 +167,7 @@ instrumentation localizes where (monster, cross_book). **bo4 should be reopened.
 cd repos/rag-chat
 docker compose up -d
 # Extract → QA → embed all 10 Tier-A books (per-book engine from BOOK_CONFIGS):
-uv run --with pymupdf --with pdfplumber --with "psycopg[binary]" --with openai \
+uv run --with '.[extract]' --with pdfplumber --with "psycopg[binary]" --with openai \
     python ingestion/ingest_books.py
 # Retire PHB Basic:
 docker exec rag-chat-vector-db psql -U rag -d rag_chat \

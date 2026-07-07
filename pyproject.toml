@@ -43,6 +43,19 @@ eval = [
     # comparison does. `ollama pull gemma4:12b` (~8GB) + Ollama 0.22+.
     "langchain-ollama>=0.2,<0.4",
 ]
+# PDF extraction (fitz engine) — dev/CI-only, so NOT a core dependency (the
+# FastAPI service must not pull it). Pinned to an EXACT version (not a range):
+# every extraction run was previously `uv run --with pymupdf ...` with no
+# constraint at all, so `uv` could silently resolve a different pymupdf
+# release each run — confirmed on disk (two different cached releases,
+# 1.27.2.3 and 1.28.0) and a likely contributor to the VGM/Tortle bad_entity
+# quarantine drift (agent-forge-harness-wu1). Run:
+#   uv run --with '.[extract]' python ingestion/extract_scan.py <pdf> --book-slug <slug>
+# pdfplumber (the mm-5e/dmg-5e engine) stays ad-hoc via `--with pdfplumber` —
+# out of scope for this pin.
+extract = [
+    "pymupdf==1.28.0",
+]
 
 [tool.setuptools]
 # Explicit list — do NOT auto-discover (would pull ui/, vector-db/, spikes/, docs/).
