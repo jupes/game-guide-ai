@@ -10,6 +10,7 @@ WORKDIR /app
 # torch / sentence-transformers stay out: the reranker is lazy-loaded and the
 # service defaults to reranker=None.
 COPY pyproject.toml ./
+COPY config.py ./
 COPY ingestion/ ingestion/
 COPY service/ service/
 RUN pip install --no-cache-dir .

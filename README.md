@@ -71,17 +71,24 @@ OPENAI_API_KEY=sk-...
 The vector DB already holds the embedded corpus. Start everything with:
 
 ```bash
-docker compose up --build
+./scripts/up.sh
 ```
+
+This builds, starts detached, waits for the stack to be healthy, then prints the UI link.
+(Equivalent to `docker compose up --build -d --wait` — use that directly if you want to
+follow logs yourself with `docker compose up --build` instead.)
 
 **URL: <http://localhost:5173>**
 
 First build pulls images and compiles the Vite app (a few minutes). Subsequent starts are fast.
 
+> `POSTGRES_PORT` in `.env` controls the DB's *host* port (default `5432`) — bump it if
+> another Postgres/pgvector container already has that port bound.
+
 ### Other compose commands
 
 ```bash
-docker compose up --build -d     # detached (background)
+docker compose up --build        # foreground, follow logs
 docker compose logs -f           # tail all logs
 docker compose down              # stop + remove containers (volumes/data preserved)
 docker compose up vector-db      # DB only — if you prefer running the service locally
