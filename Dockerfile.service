@@ -7,13 +7,21 @@ WORKDIR /app
 # modules declared there — replacing the old hand-maintained per-file COPY manifest
 # that silently broke the image whenever a new ingestion module was imported.
 # .dockerignore still trims test files, data, and non-runtime ingestion modules.
-# torch / sentence-transformers stay out: the reranker is lazy-loaded and the
-# service defaults to reranker=None.
+# torch / sentence-transformers stay out of the DEFAULT image: the reranker is
+# opt-in (RAG_RERANK=1 at runtime) and needs the [rerank] extra baked in via
+#   docker compose build --build-arg INSTALL_RERANK=1 service
+# The default build keeps the slim image; RAG_RERANK=1 without the extra just
+# logs a warning and serves unreranked.
 COPY pyproject.toml ./
 COPY config.py ./
 COPY ingestion/ ingestion/
 COPY service/ service/
-RUN pip install --no-cache-dir .
+ARG INSTALL_RERANK=0
+RUN if [ "$INSTALL_RERANK" = "1" ]; then \
+        pip install --no-cache-dir '.[rerank]'; \
+    else \
+        pip install --no-cache-dir .; \
+    fi
 
 EXPOSE 8000
 CMD ["uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8000"]

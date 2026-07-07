@@ -48,16 +48,30 @@ def _str(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+# Truthy set shared with service/tracing.py's RAG_TRACING parsing — boolean
+# knobs across the service accept the same spellings.
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in _TRUTHY
+
+
 # --- Retrieval (ingestion.retrieval) ---------------------------------------
 
 # How many chunks the vector search returns per query before reranking + answer
 # assembly. 10 balances recall against prompt size; the reranker trims further.
 TOP_K: int = _int("RAG_TOP_K", 10)
 
-# ipl gate: a *filtered* retrieval whose top-1 cosine distance exceeds this looks
-# over-restricted, so the retriever retries unfiltered. 0.42 was tuned on the
-# golden set as the point where filtered results start missing better unfiltered
-# matches. (Name kept stable for ingestion.retrieval / eval_golden importers.)
+# ipl gate threshold — **eval-only**: a *filtered* retrieval whose top-1 cosine
+# distance exceeds this looks over-restricted, and `eval_golden.py --ipl-fallback`
+# retries unfiltered past it. The A/B showed that fallback is net-harmful, so the
+# LIVE SERVICE never uses it (the generic-entity stoplist in ingestion/retrieval.py
+# is the production fix for filter over-restriction). 0.42 was tuned on the golden
+# set. (Name kept stable for ingestion.retrieval / eval_golden importers.)
 IPL_FALLBACK_DISTANCE: float = _float("RAG_FALLBACK_DISTANCE", 0.42)
 
 # koz gate: the corpus is judged to plausibly contain an answer only when top-1
@@ -85,3 +99,10 @@ DEFAULT_MODEL: str = _str("RAG_DEFAULT_MODEL", "gpt-4o-mini")
 # cited sources and largely deterministic while allowing minor phrasing
 # variation; higher values drift away from the source text.
 TEMPERATURE: float = _float("RAG_TEMPERATURE", 0.2)
+
+# Gated cross-encoder rerank in the live service (bo4 model, prose categories
+# only via ingestion.rerank.should_rerank). OFF by default: it needs the
+# `[rerank]` extra (torch — several hundred MB) and adds ~234ms per reranked
+# query; the +6pt prose Hit@1 should be confirmed via a Langfuse experiment A/B
+# before flipping this on in an environment.
+RAG_RERANK: bool = _bool("RAG_RERANK", False)
