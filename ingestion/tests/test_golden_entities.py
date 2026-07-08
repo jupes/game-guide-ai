@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-ING = Path(__file__).resolve().parent
+ING = Path(__file__).resolve().parent.parent
 GOLDEN = json.loads((ING / "golden_entities.json").read_text(encoding="utf-8"))["entities"]
 
 
