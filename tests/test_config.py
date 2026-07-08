@@ -26,6 +26,7 @@ KNOBS = (
     ("RAG_DEFAULT_MODEL", "DEFAULT_MODEL", "gpt-4o-mini"),
     ("RAG_TEMPERATURE", "TEMPERATURE", 0.2),
     ("RAG_RERANK", "RAG_RERANK", False),
+    ("RAG_HISTORY_LIMIT", "HISTORY_LIMIT", 50),
 )
 
 OVERRIDES = {
@@ -37,6 +38,7 @@ OVERRIDES = {
     "RAG_DEFAULT_MODEL": ("gpt-4o", "DEFAULT_MODEL", "gpt-4o"),
     "RAG_TEMPERATURE": ("0.9", "TEMPERATURE", 0.9),
     "RAG_RERANK": ("1", "RAG_RERANK", True),
+    "RAG_HISTORY_LIMIT": ("200", "HISTORY_LIMIT", 200),
 }
 
 
