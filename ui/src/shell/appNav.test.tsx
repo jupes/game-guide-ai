@@ -3,7 +3,23 @@ import { renderHook, act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppNavProvider, AppNavContext, useAppNav } from './AppNav'
 import type { AppNavState } from './AppNav'
+import { CurrentUserContext } from './currentUser'
+import type { CurrentUserContextValue } from './currentUser'
 import { Landing } from './Landing'
+
+function makeUserState(role: 'dm' | 'player' = 'player'): CurrentUserContextValue {
+  return {
+    user: {
+      id: 'guest',
+      displayName: 'Adventurer',
+      initials: 'AV',
+      role,
+      signOut: vi.fn(),
+      editProfile: vi.fn(),
+    },
+    setRole: vi.fn(),
+  }
+}
 
 // ── CP-F3.1 — AppNav context behaviors (#12) ──────────────────────────────────
 
@@ -68,7 +84,9 @@ describe('Landing component', () => {
 
     render(
       <AppNavContext.Provider value={mockState}>
-        <Landing />
+        <CurrentUserContext.Provider value={makeUserState()}>
+          <Landing />
+        </CurrentUserContext.Provider>
       </AppNavContext.Provider>,
     )
 
@@ -91,11 +109,46 @@ describe('Landing component', () => {
 
     render(
       <AppNavContext.Provider value={mockState}>
-        <Landing />
+        <CurrentUserContext.Provider value={makeUserState()}>
+          <Landing />
+        </CurrentUserContext.Provider>
       </AppNavContext.Provider>,
     )
 
     await userEvent.click(screen.getByRole('button', { name: /Enter the Tavern/i }))
     expect(enterWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  // channel-chats CP-D — the GM entry chip is DM-only
+  it('shows the GM entry chip to a dm and hides it from a player', () => {
+    const mockState: AppNavState = {
+      screen: 'landing',
+      mode: 'sage',
+      conversationId: null,
+      enterWorkspace: vi.fn(),
+      setMode: vi.fn(),
+      setConversationId: vi.fn(),
+      backToLanding: vi.fn(),
+    }
+
+    const { unmount } = render(
+      <AppNavContext.Provider value={mockState}>
+        <CurrentUserContext.Provider value={makeUserState('dm')}>
+          <Landing />
+        </CurrentUserContext.Provider>
+      </AppNavContext.Provider>,
+    )
+    expect(screen.getByText('GM')).toBeInTheDocument()
+    unmount()
+
+    render(
+      <AppNavContext.Provider value={mockState}>
+        <CurrentUserContext.Provider value={makeUserState('player')}>
+          <Landing />
+        </CurrentUserContext.Provider>
+      </AppNavContext.Provider>,
+    )
+    expect(screen.queryByText('GM')).not.toBeInTheDocument()
+    expect(screen.getByText('Sage')).toBeInTheDocument()
   })
 })

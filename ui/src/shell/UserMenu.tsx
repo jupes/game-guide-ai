@@ -8,15 +8,28 @@
 import * as React from 'react'
 import { useState } from 'react'
 import { Avatar } from '../ds/Avatar'
+import { Switch } from '../ds/Switch'
+import { useAppNav } from './AppNav'
 import { useCurrentUser } from './currentUser'
 import './UserMenu.css'
 
 export function UserMenu(): React.JSX.Element {
-  const { user } = useCurrentUser()
+  const { user, setRole } = useCurrentUser()
+  const { mode, setMode } = useAppNav()
   const [open, setOpen] = useState(false)
 
   function toggleMenu(): void {
     setOpen((prev) => !prev)
+  }
+
+  function handleRoleToggle(next: boolean): void {
+    const role = next ? 'dm' : 'player'
+    setRole(role)
+    // The GM channel is DM-only: giving up the DM role while sitting in it
+    // falls back to the sage channel (channel-chats CP-D).
+    if (role === 'player' && mode === 'gm') {
+      setMode('sage')
+    }
   }
 
   function handleSignOut(): void {
@@ -44,6 +57,14 @@ export function UserMenu(): React.JSX.Element {
 
       {open && (
         <div role="menu" className="user-menu__popover">
+          <div className="user-menu__item user-menu__role">
+            <span id="user-menu-role-label">Dungeon Master</span>
+            <Switch
+              checked={user.role === 'dm'}
+              onChange={handleRoleToggle}
+              ariaLabel="Dungeon Master role"
+            />
+          </div>
           <button
             type="button"
             role="menuitem"
