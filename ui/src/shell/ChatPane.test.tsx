@@ -247,6 +247,74 @@ describe('ChatPane (#21)', () => {
     )
   })
 
+  // ── channel-chats CP-C — spell suggestion cards ────────────────────────────
+
+  const SUGGESTIONS = [
+    { style: 'practical' as const, text: 'Clear a room of enemies.' },
+    { style: 'roleplay' as const, text: 'Light the beacon at the festival.' },
+    { style: 'wacky' as const, text: 'Instantly roast a feast.' },
+  ]
+
+  it('renders three labeled suggestion cards under a spell answer', async () => {
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: {
+        answer: 'Fireball: 8d6 fire damage in a 20-foot radius.',
+        sources: [],
+        answerable: true,
+        suggestions: SUGGESTIONS,
+      },
+    })
+    render(<Wrapper navState={{ mode: 'spell' }} post={post} />)
+
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'What does Fireball do?')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByText(/8d6 fire damage/)).toBeInTheDocument())
+    expect(screen.getByText('Practical')).toBeInTheDocument()
+    expect(screen.getByText('Roleplay')).toBeInTheDocument()
+    expect(screen.getByText('Wacky')).toBeInTheDocument()
+    expect(screen.getByText('Clear a room of enemies.')).toBeInTheDocument()
+    expect(screen.getByText('Instantly roast a feast.')).toBeInTheDocument()
+  })
+
+  it('renders no suggestion cards when the response has none', async () => {
+    const post: PostFn = async () => GROUNDED
+    render(<Wrapper post={post} />)
+
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'What is a Basilisk?')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
+    expect(screen.queryByText('Practical')).not.toBeInTheDocument()
+  })
+
+  it('renders suggestion cards on recalled spell history', async () => {
+    const loadHistory: LoadHistoryFn = async () => ({
+      kind: 'ok',
+      messages: [
+        { id: 1, role: 'user', content: 'What does Fireball do?', mode: 'spell', created_at: '2026-07-08T12:00:00Z' },
+        {
+          id: 2,
+          role: 'assistant',
+          content: 'Fireball: 8d6 fire damage.',
+          mode: 'spell',
+          created_at: '2026-07-08T12:00:01Z',
+          suggestions: SUGGESTIONS,
+        },
+      ],
+    })
+    render(<Wrapper navState={{ mode: 'spell', conversationId: 'conv-1' }} loadHistory={loadHistory} />)
+
+    await waitFor(() => expect(screen.getByText('Fireball: 8d6 fire damage.')).toBeInTheDocument())
+    expect(screen.getByText('Practical')).toBeInTheDocument()
+    expect(screen.getByText('Light the beacon at the festival.')).toBeInTheDocument()
+  })
+
   it('shows a recall status while history loads', async () => {
     let resolveHistory!: (r: MessagesResult) => void
     const loadHistory: LoadHistoryFn = () =>

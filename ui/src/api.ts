@@ -17,10 +17,18 @@ export interface Source {
   snippet: string
 }
 
+/** One LLM-invented spell-usage idea (spell mode only). */
+export interface Suggestion {
+  style: 'practical' | 'roleplay' | 'wacky'
+  text: string
+}
+
 export interface ChatResponse {
   answer: string
   sources: Source[]
   answerable: boolean
+  /** Spell mode only; null/absent elsewhere or when generation failed. */
+  suggestions?: Suggestion[] | null
   /** Optional echo fields from the service. */
   mode?: ChatMode
   conversation_id?: string | null
@@ -37,6 +45,8 @@ export interface StoredMessage {
   content: string
   mode: ChatMode
   created_at: string
+  /** Assistant turns from spell mode carry their suggestions. */
+  suggestions?: Suggestion[] | null
 }
 
 export type MessagesResult =

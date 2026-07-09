@@ -35,7 +35,7 @@ class _FakeService:
         return ChatResponse(
             answer=self._r.answer, sources=self._r.sources,
             answerable=self._r.answerable, mode=ChatMode(mode),
-            conversation_id=conversation_id,
+            conversation_id=conversation_id, suggestions=self._r.suggestions,
         )
 
 
@@ -160,5 +160,37 @@ def test_chat_persists_turns_and_get_returns_them_oldest_first():
         assert msgs[0]["content"] == "What is a Basilisk?"
         assert "basilisk" in msgs[1]["content"].lower()
         assert all(m["mode"] == "sage" for m in msgs)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_assistant_suggestions_persist_and_recall():
+    """Spell-mode suggestions ride along with the assistant turn (CP-C)."""
+    from service.models import Suggestion, SuggestionStyle
+
+    suggestions = [
+        Suggestion(style=SuggestionStyle.practical, text="Clear a room."),
+        Suggestion(style=SuggestionStyle.roleplay, text="Light the beacon."),
+        Suggestion(style=SuggestionStyle.wacky, text="Roast a feast."),
+    ]
+    spell_response = ChatResponse(
+        answer="Fireball: 8d6 fire damage [1].", sources=[], answerable=True,
+        mode=ChatMode.spell, conversation_id=None, suggestions=suggestions,
+    )
+    store = InMemoryMessageStore()
+    c = _client(store, response=spell_response)
+    try:
+        r = c.post("/chat", json={
+            "prompt": "What does Fireball do?", "mode": "spell",
+            "conversation_id": "conv-1",
+        })
+        assert r.status_code == 200
+        assert [s["style"] for s in r.json()["suggestions"]] == ["practical", "roleplay", "wacky"]
+
+        msgs = c.get("/conversations/conv-1/messages").json()["messages"]
+        assert msgs[0]["suggestions"] is None                       # user turn
+        assert [s["style"] for s in msgs[1]["suggestions"]] == [    # assistant turn
+            "practical", "roleplay", "wacky",
+        ]
     finally:
         app.dependency_overrides.clear()

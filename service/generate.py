@@ -19,7 +19,7 @@ from ingestion.retrieval import RetrievalResult
 # DEFAULT_MODEL is re-exported here for `from .generate import DEFAULT_MODEL`.
 from config import CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX, TEMPERATURE
 
-from .models import Source
+from .models import Source, Suggestion, SuggestionStyle
 
 
 # Minimal structural type for the injected chat model (ziw.2 / CP2). We call a
@@ -45,8 +45,11 @@ PERSONA_PROMPTS: dict[str, str] = {
         + _GROUNDING_SUFFIX
     ),
     "spell": (
-        "You are a Spell Archivist specializing in D&D 5e spells and cantrips. "
-        "Be precise about components, ranges, durations, and upcasting. "
+        "You are a Spell Archivist for D&D 5e. Reproduce the spell's rules "
+        "text and description faithfully from the numbered sources: quote the "
+        "casting time, range, components, duration, and effect text as "
+        "written, including at-higher-levels text when present. Do not "
+        "paraphrase, summarize, or embellish the rules text. "
         + _GROUNDING_SUFFIX
     ),
     "rules": (
@@ -95,6 +98,75 @@ def build_sources(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> list[S
             page=c.page_start, snippet=snippet,
         ))
     return sources
+
+
+# Spell-usage suggestions (channel-chats CP-C). One extra LLM call in spell
+# mode; the graph node degrades to no suggestions on any failure.
+SUGGESTIONS_SYSTEM = (
+    "You are a creative D&D 5e assistant. Given a spell's rules text, propose "
+    "exactly three ways a character might use the spell: one practical "
+    "(tactically effective), one roleplay (social or story flavor), and one "
+    "wacky (unexpected, rule-bending fun). Respond with ONLY a JSON array of "
+    'three objects, e.g. [{"style": "practical", "text": "..."}, '
+    '{"style": "roleplay", "text": "..."}, {"style": "wacky", "text": "..."}]. '
+    "No prose outside the JSON."
+)
+
+SUGGESTIONS_TEMPLATE = "Spell sources:\n{context}\n\nSpell question: {question}"
+
+_CANONICAL_STYLES = (
+    SuggestionStyle.practical, SuggestionStyle.roleplay, SuggestionStyle.wacky,
+)
+
+
+def parse_suggestions(text: str) -> list[Suggestion]:
+    """Parse the suggestions JSON, tolerating a markdown code fence. Requires
+    exactly one suggestion per canonical style; returns them in canonical
+    order. Raises ValueError on anything else."""
+    import json
+
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`").strip()
+        if raw.startswith("json"):
+            raw = raw[len("json"):]
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"suggestions are not valid JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise ValueError("suggestions JSON must be an array")
+    by_style: dict[SuggestionStyle, Suggestion] = {}
+    for item in data:
+        s = Suggestion.model_validate(item)
+        by_style[s.style] = s
+    if set(by_style) != set(_CANONICAL_STYLES):
+        raise ValueError(
+            f"need exactly one suggestion per style, got {sorted(s.value for s in by_style)}"
+        )
+    return [by_style[style] for style in _CANONICAL_STYLES]
+
+
+def generate_suggestions(
+    question: str, context: str, *,
+    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    config: Any | None = None,
+) -> list[Suggestion]:
+    """One structured LLM call for the three spell-usage ideas. Raises on any
+    LLM or parse failure — the caller (graph suggest node) degrades to None."""
+    if client is None:  # pragma: no cover - live path mirrors generate_answer
+        from langchain_openai import ChatOpenAI
+
+        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
+    resp = client.invoke(
+        [
+            SystemMessage(content=SUGGESTIONS_SYSTEM),
+            HumanMessage(content=SUGGESTIONS_TEMPLATE.format(context=context, question=question)),
+        ],
+        config=config,
+    )
+    content = resp.content
+    return parse_suggestions(content if isinstance(content, str) else str(content))
 
 
 def generate_answer(

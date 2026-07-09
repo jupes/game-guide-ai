@@ -119,6 +119,7 @@ def get_message_store() -> MessageStore | None:
 def _persist_turn(
     store: MessageStore | None, conversation_id: str | None,
     mode: str, role: str, content: str,
+    suggestions: list[dict[str, Any]] | None = None,
 ) -> None:
     """Best-effort history write: a failure is logged, never raised — a chat
     answer must not fail because persistence did (deliberately outside the
@@ -126,7 +127,7 @@ def _persist_turn(
     if store is None or conversation_id is None:
         return
     try:
-        store.append(conversation_id, mode, role, content)
+        store.append(conversation_id, mode, role, content, suggestions=suggestions)
     except Exception:
         log.warning(
             "history write failed (mode=%s, conversation_id=%s, role=%s)",
@@ -148,7 +149,13 @@ def chat(
     try:
         resp = svc.answer(req.prompt, mode=req.mode.value, conversation_id=req.conversation_id)
         _persist_turn(store, req.conversation_id, req.mode.value, "user", req.prompt)
-        _persist_turn(store, req.conversation_id, req.mode.value, "assistant", resp.answer)
+        _persist_turn(
+            store, req.conversation_id, req.mode.value, "assistant", resp.answer,
+            suggestions=(
+                [s.model_dump(mode="json") for s in resp.suggestions]
+                if resp.suggestions else None
+            ),
+        )
         return resp
     except _LLM_ERRORS as exc:
         # LLM provider failed (timeout, rate limit, API error) — upstream, retryable.

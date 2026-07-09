@@ -51,7 +51,12 @@ function toExchanges(messages: StoredMessage[], nextId: { current: number }): Ex
     } else {
       const last = out[out.length - 1]
       if (last && last.response === undefined && last.status === 'done') {
-        last.response = { answer: m.content, sources: [], answerable: true }
+        last.response = {
+          answer: m.content,
+          sources: [],
+          answerable: true,
+          suggestions: m.suggestions ?? null,
+        }
       }
     }
   }

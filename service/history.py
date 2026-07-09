@@ -94,6 +94,7 @@ def _to_message(r: _Row) -> StoredMessage:
     return StoredMessage(
         id=r.id, role=MessageRole(r.role), content=r.content,
         mode=ChatMode(r.mode), created_at=r.created_at,
+        suggestions=r.suggestions,  # pydantic validates the raw dicts
     )
 
 
@@ -130,15 +131,16 @@ class PostgresMessageStore:
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, mode, role, content, created_at FROM chat.messages "
+                "SELECT id, mode, role, content, suggestions, created_at FROM chat.messages "
                 "WHERE conversation_id = %s ORDER BY created_at DESC, id DESC LIMIT %s",
                 (conversation_id, limit),
             ).fetchall()
         # Query grabs the most recent N (DESC); display order is oldest-first.
+        # psycopg deserializes jsonb to Python lists/dicts natively.
         return [
             StoredMessage(
                 id=row[0], mode=ChatMode(row[1]), role=MessageRole(row[2]),
-                content=row[3], created_at=row[4],
+                content=row[3], suggestions=row[4], created_at=row[5],
             )
             for row in reversed(rows)
         ]

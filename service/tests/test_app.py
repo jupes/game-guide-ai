@@ -107,7 +107,9 @@ def test_response_schema():
     c = _client(_GROUNDED)
     try:
         body = c.post("/chat", json={"prompt": "x"}).json()
-        assert set(body.keys()) == {"answer", "sources", "answerable", "mode", "conversation_id"}
+        assert set(body.keys()) == {
+            "answer", "sources", "answerable", "mode", "conversation_id", "suggestions",
+        }
         assert set(body["sources"][0].keys()) == {"book", "chapter", "section", "entity", "page", "snippet"}
     finally:
         app.dependency_overrides.clear()
