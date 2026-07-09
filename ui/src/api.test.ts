@@ -97,3 +97,48 @@ describe('postChat', () => {
     expect(JSON.parse(String(captured!.init?.body))).toMatchObject({ conversation_id: 'conv-abc' })
   })
 })
+
+// ── channel-chats CP-B — getMessages ──────────────────────────────────────────
+
+import { getMessages } from './api'
+import type { StoredMessage } from './api'
+
+const STORED: StoredMessage[] = [
+  { id: 1, role: 'user', content: 'What is a goblin?', mode: 'sage', created_at: '2026-07-08T12:00:00Z' },
+  { id: 2, role: 'assistant', content: 'A small green menace.', mode: 'sage', created_at: '2026-07-08T12:00:01Z' },
+]
+
+describe('getMessages', () => {
+  it('returns ok with the stored messages on 200', async () => {
+    const result = await getMessages(
+      'conv-1',
+      fakeFetch(200, { conversation_id: 'conv-1', messages: STORED }),
+    )
+    expect(result).toEqual({ kind: 'ok', messages: STORED })
+  })
+
+  it('GETs /conversations/{id}/messages with the id URL-encoded', async () => {
+    let captured: string | null = null
+    const spy: typeof fetch = (async (url: RequestInfo | URL) => {
+      captured = String(url)
+      return new Response(JSON.stringify({ conversation_id: 'a/b', messages: [] }), { status: 200 })
+    }) as typeof fetch
+    await getMessages('a/b', spy)
+    expect(captured).toBe('/conversations/a%2Fb/messages')
+  })
+
+  it('maps a 503 to an error result', async () => {
+    const result = await getMessages('conv-1', fakeFetch(503))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/503/)
+  })
+
+  it('maps a network failure to an error result', async () => {
+    const failing: typeof fetch = (async () => {
+      throw new TypeError('fetch failed')
+    }) as typeof fetch
+    const result = await getMessages('conv-1', failing)
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/reach|network/i)
+  })
+})

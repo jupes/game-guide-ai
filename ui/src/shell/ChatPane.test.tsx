@@ -10,8 +10,8 @@ import { ConversationStoreProvider } from './ConversationStoreContext'
 import { MemoryConversationStore } from './conversationStore'
 import { ThemeProvider } from '../ds/theme'
 import { ChatPane } from './ChatPane'
-import type { ChatResult } from '../api'
-import type { PostFn } from '../useChat'
+import type { ChatResult, MessagesResult } from '../api'
+import type { LoadHistoryFn, PostFn } from '../useChat'
 
 // ── CP-F5.3 — ChatPane behaviors (#21) ────────────────────────────────────────
 
@@ -44,9 +44,11 @@ function makeUserState(overrides: Partial<CurrentUserContextValue> = {}): Curren
 function Wrapper({
   navState,
   post,
+  loadHistory,
 }: {
   navState?: Partial<AppNavState>
   post?: PostFn
+  loadHistory?: LoadHistoryFn
 }): React.JSX.Element {
   const store = new MemoryConversationStore()
   return (
@@ -54,7 +56,7 @@ function Wrapper({
       <AppNavContext.Provider value={makeNavState(navState)}>
         <CurrentUserContext.Provider value={makeUserState()}>
           <ConversationStoreProvider store={store}>
-            <ChatPane post={post} />
+            <ChatPane post={post} loadHistory={loadHistory} />
           </ConversationStoreProvider>
         </CurrentUserContext.Provider>
       </AppNavContext.Provider>
@@ -206,5 +208,56 @@ describe('ChatPane (#21)', () => {
     await waitFor(() =>
       expect(screen.getByText(/service unavailable/i)).toBeInTheDocument(),
     )
+  })
+
+  // ── channel-chats CP-B — history recall ─────────────────────────────────────
+
+  it('renders recalled history when a conversation opens', async () => {
+    const loadHistory: LoadHistoryFn = async () => ({
+      kind: 'ok',
+      messages: [
+        { id: 1, role: 'user', content: 'What is a goblin?', mode: 'sage', created_at: '2026-07-08T12:00:00Z' },
+        { id: 2, role: 'assistant', content: 'A small green menace.', mode: 'sage', created_at: '2026-07-08T12:00:01Z' },
+      ],
+    })
+    render(<Wrapper navState={{ conversationId: 'conv-1' }} loadHistory={loadHistory} />)
+
+    await waitFor(() => expect(screen.getByText('What is a goblin?')).toBeInTheDocument())
+    expect(screen.getByText('A small green menace.')).toBeInTheDocument()
+    // The mode empty-state must not show under recalled history.
+    expect(screen.queryByText('Ask the Sage…')).not.toBeInTheDocument()
+  })
+
+  it('shows a notice when history recall fails, composer still usable', async () => {
+    const loadHistory: LoadHistoryFn = async () => ({
+      kind: 'error',
+      message: 'Message history unavailable (503).',
+    })
+    const post: PostFn = async () => GROUNDED
+    render(<Wrapper navState={{ conversationId: 'conv-1' }} post={post} loadHistory={loadHistory} />)
+
+    await waitFor(() =>
+      expect(screen.getByText(/message history unavailable/i)).toBeInTheDocument(),
+    )
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'Still works?')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
+  })
+
+  it('shows a recall status while history loads', async () => {
+    let resolveHistory!: (r: MessagesResult) => void
+    const loadHistory: LoadHistoryFn = () =>
+      new Promise<MessagesResult>((res) => {
+        resolveHistory = res
+      })
+    render(<Wrapper navState={{ conversationId: 'conv-1' }} loadHistory={loadHistory} />)
+
+    expect(screen.getByText(/recalling/i)).toBeInTheDocument()
+    act(() => resolveHistory({ kind: 'ok', messages: [] }))
+    await waitFor(() => expect(screen.queryByText(/recalling/i)).not.toBeInTheDocument())
+    expect(screen.getByText('Ask the Sage…')).toBeInTheDocument()
   })
 })

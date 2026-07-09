@@ -17,14 +17,25 @@ import { exportChat } from '../exportChat'
 import { useAppNav } from './AppNav'
 import { parseDiceNotation } from './diceNotation'
 import { EMPTY_LABELS } from './modes'
-import type { PostFn } from '../useChat'
+import type { LoadHistoryFn, PostFn } from '../useChat'
 import './ChatPane.css'
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function ChatPane({ post }: { post?: PostFn }): React.JSX.Element {
+export function ChatPane({
+  post,
+  loadHistory,
+}: {
+  post?: PostFn
+  loadHistory?: LoadHistoryFn
+}): React.JSX.Element {
   const { mode, conversationId } = useAppNav()
-  const { exchanges, send, pending } = useChat({ post, mode, conversationId })
+  const { exchanges, send, pending, historyError, loadingHistory } = useChat({
+    post,
+    loadHistory,
+    mode,
+    conversationId,
+  })
   const [draft, setDraft] = React.useState('')
 
   const handleSend = React.useCallback(() => {
@@ -48,8 +59,15 @@ export function ChatPane({ post }: { post?: PostFn }): React.JSX.Element {
     <div className="chat-pane">
       {/* Exchange list */}
       <div className="chat-pane__exchanges">
-        {exchanges.length === 0 ? (
-          <p className="chat-pane__empty">{EMPTY_LABELS[mode]}</p>
+        {/* History recall failed — recoverable: the thread starts empty. */}
+        {historyError && <ChatMessage role="system">{historyError}</ChatMessage>}
+
+        {exchanges.length === 0 && loadingHistory ? (
+          <p className="chat-pane__empty" role="status">
+            Recalling the conversation…
+          </p>
+        ) : exchanges.length === 0 ? (
+          !historyError && <p className="chat-pane__empty">{EMPTY_LABELS[mode]}</p>
         ) : (
           exchanges.map((exchange) => (
             <React.Fragment key={exchange.id}>

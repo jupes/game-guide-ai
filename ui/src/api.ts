@@ -30,6 +30,39 @@ export type ChatResult =
   | { kind: 'ok'; response: ChatResponse }
   | { kind: 'error'; message: string }
 
+/** One persisted chat turn — mirrors service StoredMessage. */
+export interface StoredMessage {
+  id: number
+  role: 'user' | 'assistant'
+  content: string
+  mode: ChatMode
+  created_at: string
+}
+
+export type MessagesResult =
+  | { kind: 'ok'; messages: StoredMessage[] }
+  | { kind: 'error'; message: string }
+
+/** Recall a conversation's stored history (most recent window, oldest-first). */
+export async function getMessages(
+  conversationId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<MessagesResult> {
+  let res: Response
+  try {
+    res = await fetchImpl(`/conversations/${encodeURIComponent(conversationId)}/messages`)
+  } catch {
+    return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
+  }
+
+  if (!res.ok) {
+    return { kind: 'error', message: `Message history unavailable (${res.status}).` }
+  }
+
+  const body = (await res.json()) as { messages: StoredMessage[] }
+  return { kind: 'ok', messages: body.messages }
+}
+
 export async function postChat(
   prompt: string,
   mode: ChatMode = 'sage',
