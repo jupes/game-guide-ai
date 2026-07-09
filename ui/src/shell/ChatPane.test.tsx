@@ -34,9 +34,11 @@ function makeUserState(overrides: Partial<CurrentUserContextValue> = {}): Curren
       id: 'guest',
       displayName: 'Adventurer',
       initials: 'AV',
+      role: 'player',
       signOut: vi.fn(),
       editProfile: vi.fn(),
     },
+    setRole: vi.fn(),
     ...overrides,
   }
 }
