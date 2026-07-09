@@ -1,6 +1,6 @@
 # Ship Report: game-guide-channel-chats — Multi-channel chat: history recall + channel-tailored outputs + DM gating
 Shipped: 2026-07-09
-Epic/Feature: agent-forge-harness-b0k · Branch: feat/channel-chats (stacked on feat/1em-unified-rag-graph, PR #22) · PR: (filled after gh pr create)
+Epic/Feature: agent-forge-harness-b0k · Branch: feat/channel-chats (stacked on feat/1em-unified-rag-graph, PR #22) · PR: https://github.com/jupes/game-guide-ai/pull/23
 
 ## What Shipped
 
