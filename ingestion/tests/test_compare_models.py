@@ -106,11 +106,13 @@ class _FakeResp:
         self.answer = answer
         self.answerable = answerable
         self.sources = [_FakeSource(s) for s in snippets]
+        self.contexts = list(snippets)  # full texts == snippets in these fakes
 
 
 class _FakeSvc:
     def __init__(self, resp): self._resp = resp
-    def answer(self, question, mode="sage", conversation_id=None): return self._resp
+    def answer_with_contexts(self, question, mode="sage", conversation_id=None):
+        return self._resp, self._resp.contexts
 
 
 class _FakeEvaluator:

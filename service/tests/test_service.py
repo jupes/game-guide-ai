@@ -14,7 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from ingestion.retrieval import RetrievalResult, RetrievedChunk
 
-from service.generate import build_context, build_sources, generate_answer
+from service.generate import build_context, build_sources, context_texts, generate_answer
 from service.rag import RagService, REFUSAL
 from service.models import ChatResponse
 
@@ -111,6 +111,19 @@ def test_build_sources_keeps_distinct_cased_entities():
     assert len(build_sources(r)) == 2
 
 
+def test_context_texts_full_untruncated_in_chunk_order():
+    # The eval feeds these to Ragas as `contexts` — they must be the FULL chunk
+    # texts generation saw (zgm), not the display snippets.
+    r = _result()
+    texts = context_texts(r, top_n=5)
+    assert texts == [r.full_texts["c1"].strip(), r.full_texts["c2"].strip()]
+    assert len(texts[0]) > 240  # beyond SNIPPET_MAX — proves no truncation
+
+
+def test_context_texts_respects_top_n():
+    assert context_texts(_result(), top_n=1) == [_result().full_texts["c1"].strip()]
+
+
 def test_generate_answer_uses_injected_client():
     out = generate_answer("Q?", "ctx", client=_FakeLLM("the answer [1]"))
     assert out == "the answer [1]"
@@ -140,6 +153,45 @@ def test_answer_refusal_skips_llm():
     assert resp.answer == REFUSAL
     assert resp.sources == []
     assert llm.calls == 0   # LLM never invoked on refusal
+
+
+def test_answer_with_contexts_returns_full_texts():
+    # zgm: the eval needs the full retrieved chunk texts the LLM saw, not the
+    # 240-char display snippets — exposed alongside the normal response.
+    r = _result(answerable=True)
+    svc = RagService(retriever=_FakeRetriever(r),
+                     llm_client=_FakeLLM("Froghemoths lurk in swamps [1]."))
+    resp, contexts = svc.answer_with_contexts("What is a Froghemoth?")
+    assert isinstance(resp, ChatResponse)
+    assert contexts == [r.full_texts["c1"].strip(), r.full_texts["c2"].strip()]
+    assert len(contexts[0]) > 240  # full text, not the truncated snippet
+
+
+def test_answer_with_contexts_empty_on_refusal():
+    # On refusal the LLM saw no context — contexts must be empty, mirroring sources.
+    svc = RagService(retriever=_FakeRetriever(_result(answerable=False)),
+                     llm_client=_FakeLLM("should not be called"))
+    resp, contexts = svc.answer_with_contexts("How do I evolve my Pokemon?")
+    assert resp.answer == REFUSAL
+    assert contexts == []
+
+
+def test_answer_with_contexts_empty_on_blank_prompt():
+    # Preflight refuse path: retrieval never ran, so there is no result at all.
+    svc = RagService(retriever=_FakeRetriever(_result()),
+                     llm_client=_FakeLLM("should not run"))
+    resp, contexts = svc.answer_with_contexts("   ")
+    assert resp.answer == REFUSAL
+    assert contexts == []
+
+
+def test_answer_delegates_to_answer_with_contexts():
+    # answer() keeps its exact contract while sharing the invoke path.
+    svc = RagService(retriever=_FakeRetriever(_result(answerable=True)),
+                     llm_client=_FakeLLM("Froghemoths lurk in swamps [1]."))
+    resp = svc.answer("What is a Froghemoth?")
+    assert isinstance(resp, ChatResponse)
+    assert len(resp.sources) == 2
 
 
 class _CountingRetriever(_FakeRetriever):

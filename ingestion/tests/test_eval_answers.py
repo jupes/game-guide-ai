@@ -131,12 +131,15 @@ def test_verdict_pass_fail_unknown():
 
 class _FakeEvaluator:
     """Injectable stand-in for the real Ragas evaluator: returns canned per-row
-    metric dicts (incl. a NaN to exercise the Unknown path)."""
+    metric dicts (incl. a NaN to exercise the Unknown path). Captures the rows
+    it was scored with so tests can assert what the runner fed it."""
     def __init__(self, rows_scores):
         self._scores = rows_scores
+        self.rows = None
 
     def score(self, rows):
         assert len(rows) == len(self._scores)
+        self.rows = rows
         return self._scores
 
 
@@ -173,10 +176,13 @@ class _FakeSource:
 
 
 class _FakeResp:
-    def __init__(self, answer, snippets, answerable=True):
+    def __init__(self, answer, snippets, answerable=True, contexts=None):
         self.answer = answer
         self.answerable = answerable
         self.sources = [_FakeSource(s) for s in snippets]
+        # Full retrieved chunk texts (what answer_with_contexts returns beside
+        # the response); defaults to the snippets for tests that don't care.
+        self.contexts = list(snippets) if contexts is None else contexts
 
 
 class _FakeSvc:
@@ -184,9 +190,10 @@ class _FakeSvc:
         self._m = resp_by_q
         self.calls = []
 
-    def answer(self, question, mode="sage", conversation_id=None):
+    def answer_with_contexts(self, question, mode="sage", conversation_id=None):
         self.calls.append((question, mode))
-        return self._m[question]
+        resp = self._m[question]
+        return resp, resp.contexts
 
 
 def test_run_eval_orchestrates_positive_case():
@@ -207,6 +214,23 @@ def test_run_eval_orchestrates_positive_case():
     assert c0["ragas"]["faithfulness"] == 0.9
     # aggregates roll up the ragas metrics
     assert out["aggregates"]["faithfulness"]["passed"] == 1
+
+
+def test_run_eval_feeds_full_contexts_not_snippets_to_ragas():
+    # zgm: Ragas context_precision/recall must score the FULL retrieved chunk
+    # texts the LLM saw, not the 240-char display snippets on resp.sources.
+    full_text = "A froghemoth is an amphibious monster that lurks in swamps. " * 6
+    case = AnswerCase("What is a Froghemoth?", ("amphibious", "swamps"))
+    svc = _FakeSvc({
+        "What is a Froghemoth?": _FakeResp(
+            "A froghemoth lurks in swamps [1].",
+            snippets=[full_text[:240] + "…"],       # what the API shows users
+            contexts=[full_text],                    # what the LLM actually saw
+        ),
+    })
+    ev = _FakeEvaluator([{"context_precision": 0.9}])
+    run_eval([case], svc, evaluator=ev)
+    assert ev.rows[0]["contexts"] == [full_text]     # full text, no truncation
 
 
 def test_run_eval_flags_missing_key_facts_and_bad_citation():
