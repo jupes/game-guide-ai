@@ -147,7 +147,7 @@
         "content_type": "rule",
         "entity_name": "Inspiration",
         "class_name": null,
-        "cosine_distance": 0.509714,
+        "cosine_distance": 0.50968,
         "is_hit": false
       },
       {
@@ -156,7 +156,7 @@
         "content_type": "dm_guidance",
         "entity_name": "N Master Inspiration",
         "class_name": null,
-        "cosine_distance": 0.564944,
+        "cosine_distance": 0.564949,
         "is_hit": true
       },
       {
@@ -165,7 +165,7 @@
         "content_type": "dm_guidance",
         "entity_name": "N Master Inspiration",
         "class_name": null,
-        "cosine_distance": 0.568718,
+        "cosine_distance": 0.568715,
         "is_hit": true
       },
       {
@@ -174,7 +174,7 @@
         "content_type": "rule",
         "entity_name": "Inspiration",
         "class_name": null,
-        "cosine_distance": 0.597712,
+        "cosine_distance": 0.597692,
         "is_hit": false
       },
       {
@@ -183,7 +183,7 @@
         "content_type": "dm_guidance",
         "entity_name": "N Master Inspiration",
         "class_name": null,
-        "cosine_distance": 0.603186,
+        "cosine_distance": 0.603197,
         "is_hit": true
       },
       {
@@ -192,7 +192,7 @@
         "content_type": "rule",
         "entity_name": "Mastermind F E Atures",
         "class_name": null,
-        "cosine_distance": 0.603855,
+        "cosine_distance": 0.603867,
         "is_hit": false
       },
       {
@@ -201,7 +201,7 @@
         "content_type": "rule",
         "entity_name": "Masters",
         "class_name": null,
-        "cosine_distance": 0.604263,
+        "cosine_distance": 0.604221,
         "is_hit": false
       },
       {
@@ -210,7 +210,7 @@
         "content_type": "rule",
         "entity_name": "Master",
         "class_name": null,
-        "cosine_distance": 0.614028,
+        "cosine_distance": 0.614038,
         "is_hit": false
       },
       {
@@ -219,7 +219,7 @@
         "content_type": "dm_guidance",
         "entity_name": "N Master Inspiration",
         "class_name": null,
-        "cosine_distance": 0.614865,
+        "cosine_distance": 0.614889,
         "is_hit": true
       },
       {
@@ -228,7 +228,7 @@
         "content_type": "rule",
         "entity_name": "Mastermind",
         "class_name": null,
-        "cosine_distance": 0.62174,
+        "cosine_distance": 0.621781,
         "is_hit": false
       }
     ]
@@ -761,7 +761,7 @@
       },
       {
         "rank": 5,
-        "chunk_id": "09ca4f4c703306433c0c",
+        "chunk_id": "04dfdb3173e4aac3dbc8",
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
@@ -797,7 +797,7 @@
         "content_type": "monster",
         "entity_name": "Homunculus Servant",
         "class_name": null,
-        "cosine_distance": 0.330709,
+        "cosine_distance": 0.330723,
         "is_hit": false
       },
       {
@@ -806,7 +806,7 @@
         "content_type": "monster",
         "entity_name": "Homunculus Servant",
         "class_name": null,
-        "cosine_distance": 0.376761,
+        "cosine_distance": 0.376804,
         "is_hit": false
       },
       {
@@ -815,7 +815,7 @@
         "content_type": "monster",
         "entity_name": "Homunculus Servant",
         "class_name": null,
-        "cosine_distance": 0.457256,
+        "cosine_distance": 0.457234,
         "is_hit": false
       }
     ]
@@ -959,20 +959,20 @@
       },
       {
         "rank": 9,
-        "chunk_id": "dd943d9efa60e4ea18f2",
-        "content_type": "rule",
-        "entity_name": "Armor Cl Ass",
-        "class_name": null,
-        "cosine_distance": 0.563636,
-        "is_hit": false
-      },
-      {
-        "rank": 10,
-        "chunk_id": "81c01567709785244c21",
+        "chunk_id": "2dd9dcc5d2d9c486cdc0",
         "content_type": "rule",
         "entity_name": "Armor",
         "class_name": null,
         "cosine_distance": 0.581549,
+        "is_hit": false
+      },
+      {
+        "rank": 10,
+        "chunk_id": "01cd1db6d0fed7727757",
+        "content_type": "rule",
+        "entity_name": "Armor Class",
+        "class_name": null,
+        "cosine_distance": 0.582452,
         "is_hit": false
       }
     ]
@@ -1081,7 +1081,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "09ca4f4c703306433c0c",
+        "chunk_id": "04dfdb3173e4aac3dbc8",
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
@@ -1124,7 +1124,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "09ca4f4c703306433c0c",
+        "chunk_id": "04dfdb3173e4aac3dbc8",
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
@@ -1262,7 +1262,7 @@
         "content_type": "feat",
         "entity_name": "Grappler",
         "class_name": null,
-        "cosine_distance": 0.391725,
+        "cosine_distance": 0.391711,
         "is_hit": true
       },
       {
@@ -1271,16 +1271,16 @@
         "content_type": "feat",
         "entity_name": "Grappler",
         "class_name": null,
-        "cosine_distance": 0.712428,
+        "cosine_distance": 0.712397,
         "is_hit": true
       },
       {
         "rank": 3,
-        "chunk_id": "09ca4f4c703306433c0c",
+        "chunk_id": "04dfdb3173e4aac3dbc8",
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
-        "cosine_distance": 0.804327,
+        "cosine_distance": 0.804352,
         "is_hit": false
       }
     ]
@@ -1356,15 +1356,24 @@
       },
       {
         "rank": 6,
-        "chunk_id": "75d7265b9a0dc0004c5a",
+        "chunk_id": "78ee88dd5a4a32aa4cd2",
         "content_type": "rule",
         "entity_name": "A Psionic Secret. One",
         "class_name": null,
-        "cosine_distance": 0.664967,
+        "cosine_distance": 0.667135,
         "is_hit": false
       },
       {
         "rank": 7,
+        "chunk_id": "b80222029eddc0a8da93",
+        "content_type": "rule",
+        "entity_name": "A Psionic Secret. One",
+        "class_name": null,
+        "cosine_distance": 0.724743,
+        "is_hit": false
+      },
+      {
+        "rank": 8,
         "chunk_id": "d7bfeb479d9f65672e4c",
         "content_type": "rule",
         "entity_name": "Secrets",
@@ -1401,7 +1410,7 @@
         "content_type": "feat",
         "entity_name": "Eldritch Spear",
         "class_name": null,
-        "cosine_distance": 0.431828,
+        "cosine_distance": 0.431794,
         "is_hit": true
       }
     ]
@@ -1449,7 +1458,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "09ca4f4c703306433c0c",
+        "chunk_id": "04dfdb3173e4aac3dbc8",
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
@@ -1485,7 +1494,7 @@
         "content_type": "feat",
         "entity_name": "Proven",
         "class_name": null,
-        "cosine_distance": 0.637544,
+        "cosine_distance": 0.637464,
         "is_hit": true
       }
     ]
@@ -1720,7 +1729,7 @@
         "content_type": "feat",
         "entity_name": "Rank Commander",
         "class_name": null,
-        "cosine_distance": 0.492663,
+        "cosine_distance": 0.492708,
         "is_hit": true
       },
       {
@@ -1729,7 +1738,7 @@
         "content_type": "rule",
         "entity_name": "Githyanki Supreme Commander",
         "class_name": null,
-        "cosine_distance": 0.579787,
+        "cosine_distance": 0.579765,
         "is_hit": false
       },
       {
@@ -1738,7 +1747,7 @@
         "content_type": "rule",
         "entity_name": "Commander",
         "class_name": null,
-        "cosine_distance": 0.725835,
+        "cosine_distance": 0.725903,
         "is_hit": false
       },
       {
@@ -1747,7 +1756,7 @@
         "content_type": "feat",
         "entity_name": "Rank Commander",
         "class_name": null,
-        "cosine_distance": 0.787479,
+        "cosine_distance": 0.787522,
         "is_hit": true
       },
       {
@@ -1756,7 +1765,7 @@
         "content_type": "rule",
         "entity_name": "Commander",
         "class_name": null,
-        "cosine_distance": 0.813257,
+        "cosine_distance": 0.813318,
         "is_hit": false
       },
       {
@@ -1765,7 +1774,7 @@
         "content_type": "feat",
         "entity_name": "Rank Commander",
         "class_name": null,
-        "cosine_distance": 0.820789,
+        "cosine_distance": 0.820858,
         "is_hit": true
       }
     ]
@@ -1799,7 +1808,7 @@
         "content_type": "feat",
         "entity_name": "Metamagic Adept",
         "class_name": null,
-        "cosine_distance": 0.369694,
+        "cosine_distance": 0.369693,
         "is_hit": true
       },
       {
@@ -1808,7 +1817,7 @@
         "content_type": "feat",
         "entity_name": "Metamagic Adept",
         "class_name": null,
-        "cosine_distance": 0.431055,
+        "cosine_distance": 0.431052,
         "is_hit": true
       },
       {
@@ -1817,7 +1826,7 @@
         "content_type": "feat",
         "entity_name": "Metamagic Adept",
         "class_name": null,
-        "cosine_distance": 0.530037,
+        "cosine_distance": 0.530041,
         "is_hit": true
       },
       {
@@ -1826,16 +1835,16 @@
         "content_type": "feat",
         "entity_name": "Metamagic Adept",
         "class_name": null,
-        "cosine_distance": 0.551357,
+        "cosine_distance": 0.551396,
         "is_hit": true
       },
       {
         "rank": 5,
-        "chunk_id": "09ca4f4c703306433c0c",
+        "chunk_id": "04dfdb3173e4aac3dbc8",
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
-        "cosine_distance": 0.69335,
+        "cosine_distance": 0.693344,
         "is_hit": false
       }
     ]
@@ -1870,7 +1879,7 @@
         "content_type": "feat",
         "entity_name": "Arcane Propulsion Armor",
         "class_name": null,
-        "cosine_distance": 0.313806,
+        "cosine_distance": 0.313781,
         "is_hit": true
       },
       {
@@ -1879,7 +1888,7 @@
         "content_type": "feat",
         "entity_name": "Heavy Armor Master",
         "class_name": null,
-        "cosine_distance": 0.451033,
+        "cosine_distance": 0.45102,
         "is_hit": false
       },
       {
@@ -1888,7 +1897,7 @@
         "content_type": "feat",
         "entity_name": "Moderately Armored",
         "class_name": null,
-        "cosine_distance": 0.468248,
+        "cosine_distance": 0.468258,
         "is_hit": false
       },
       {
@@ -1897,7 +1906,7 @@
         "content_type": "feat",
         "entity_name": "Medium Armor Master",
         "class_name": null,
-        "cosine_distance": 0.469942,
+        "cosine_distance": 0.469931,
         "is_hit": false
       },
       {
@@ -1906,16 +1915,16 @@
         "content_type": "feat",
         "entity_name": "Heavily Armored",
         "class_name": null,
-        "cosine_distance": 0.472885,
+        "cosine_distance": 0.472899,
         "is_hit": false
       },
       {
         "rank": 6,
-        "chunk_id": "709de48e84f0cd59bfa4",
+        "chunk_id": "1de7f093be7c64371f89",
         "content_type": "rule",
         "entity_name": "Arcane",
         "class_name": null,
-        "cosine_distance": 0.481468,
+        "cosine_distance": 0.481425,
         "is_hit": false
       },
       {
@@ -1924,7 +1933,7 @@
         "content_type": "feat",
         "entity_name": "Resistant Armor",
         "class_name": null,
-        "cosine_distance": 0.491709,
+        "cosine_distance": 0.491676,
         "is_hit": false
       },
       {
@@ -1933,7 +1942,7 @@
         "content_type": "feat",
         "entity_name": "Resistant Armor",
         "class_name": null,
-        "cosine_distance": 0.495353,
+        "cosine_distance": 0.495322,
         "is_hit": false
       },
       {
@@ -1942,7 +1951,7 @@
         "content_type": "rule",
         "entity_name": "Arcane Grimoire",
         "class_name": null,
-        "cosine_distance": 0.504982,
+        "cosine_distance": 0.504956,
         "is_hit": false
       },
       {
@@ -1951,7 +1960,7 @@
         "content_type": "rule",
         "entity_name": "Arcana Domain Spells",
         "class_name": null,
-        "cosine_distance": 0.513992,
+        "cosine_distance": 0.513991,
         "is_hit": false
       }
     ]
@@ -1983,7 +1992,7 @@
         "content_type": "feat",
         "entity_name": "Eldritch Adept",
         "class_name": null,
-        "cosine_distance": 0.39362,
+        "cosine_distance": 0.393647,
         "is_hit": true
       }
     ]
@@ -2041,7 +2050,7 @@
       },
       {
         "rank": 4,
-        "chunk_id": "09ca4f4c703306433c0c",
+        "chunk_id": "04dfdb3173e4aac3dbc8",
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
@@ -2134,7 +2143,7 @@
       },
       {
         "rank": 4,
-        "chunk_id": "ec88e765518c59b8cb66",
+        "chunk_id": "8048e92eeb7a7e1cc8c0",
         "content_type": "rule",
         "entity_name": "Master Thief",
         "class_name": null,
@@ -2231,7 +2240,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "09ca4f4c703306433c0c",
+        "chunk_id": "04dfdb3173e4aac3dbc8",
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
@@ -2339,7 +2348,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "09ca4f4c703306433c0c",
+        "chunk_id": "04dfdb3173e4aac3dbc8",
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
@@ -2348,7 +2357,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "5b3cd4c4914c4f4e80fb",
+        "chunk_id": "e59f5c14e048bf89c93d",
         "content_type": "rule",
         "entity_name": "Away",
         "class_name": null,
@@ -2386,7 +2395,7 @@
         "content_type": "feat",
         "entity_name": "Maddening Hex",
         "class_name": null,
-        "cosine_distance": 0.317453,
+        "cosine_distance": 0.317475,
         "is_hit": true
       },
       {
@@ -2395,7 +2404,7 @@
         "content_type": "feat",
         "entity_name": "Hex",
         "class_name": null,
-        "cosine_distance": 0.508357,
+        "cosine_distance": 0.50844,
         "is_hit": false
       },
       {
@@ -2404,7 +2413,7 @@
         "content_type": "spell",
         "entity_name": "Hex",
         "class_name": null,
-        "cosine_distance": 0.531714,
+        "cosine_distance": 0.531772,
         "is_hit": false
       }
     ]
@@ -2470,7 +2479,7 @@
         "content_type": "magic_item",
         "entity_name": "Deck Of Many Things",
         "class_name": null,
-        "cosine_distance": 0.410011,
+        "cosine_distance": 0.409528,
         "is_hit": true
       },
       {
@@ -2479,25 +2488,34 @@
         "content_type": "magic_item",
         "entity_name": "Well Of Many Worlds",
         "class_name": null,
-        "cosine_distance": 0.539401,
+        "cosine_distance": 0.538552,
         "is_hit": false
       },
       {
         "rank": 3,
-        "chunk_id": "22646ea8e727945a2a3e",
+        "chunk_id": "ca8e8283959ad69696cb",
         "content_type": "rule",
         "entity_name": "Many",
         "class_name": null,
-        "cosine_distance": 0.716077,
+        "cosine_distance": 0.716794,
         "is_hit": false
       },
       {
         "rank": 4,
-        "chunk_id": "6cff0f0037534f2bd84b",
+        "chunk_id": "5e730f362a1b9c2fd26a",
+        "content_type": "rule",
+        "entity_name": "Many Astounding Sights And Visited",
+        "class_name": null,
+        "cosine_distance": 0.794617,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "0c1bb2ab461faace3cea",
         "content_type": "rule",
         "entity_name": "One Race , Many Forms",
         "class_name": null,
-        "cosine_distance": 0.847904,
+        "cosine_distance": 0.850521,
         "is_hit": false
       }
     ]
@@ -2531,7 +2549,7 @@
         "content_type": "magic_item",
         "entity_name": "Book Of Vile Darkness",
         "class_name": null,
-        "cosine_distance": 0.258233,
+        "cosine_distance": 0.258236,
         "is_hit": true
       },
       {
@@ -2540,7 +2558,7 @@
         "content_type": "spell",
         "entity_name": "Darkness",
         "class_name": null,
-        "cosine_distance": 0.51754,
+        "cosine_distance": 0.517612,
         "is_hit": false
       }
     ]
@@ -2579,7 +2597,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "be541a1f031ad60e33d1",
+        "chunk_id": "607323db77514f308c03",
         "content_type": "rule",
         "entity_name": "Eye",
         "class_name": null,
@@ -2606,11 +2624,11 @@
       },
       {
         "rank": 5,
-        "chunk_id": "cb2ba6204bcc45122127",
+        "chunk_id": "4d80447a53992b2e18bb",
         "content_type": "rule",
         "entity_name": "Archer's Eye (3/Day). As A",
         "class_name": null,
-        "cosine_distance": 0.584761,
+        "cosine_distance": 0.585069,
         "is_hit": false
       },
       {
@@ -2721,61 +2739,61 @@
         "content_type": "magic_item",
         "entity_name": "Ron Of Lordly Might",
         "class_name": null,
-        "cosine_distance": 0.530832,
+        "cosine_distance": 0.530852,
         "is_hit": true
       },
       {
         "rank": 2,
-        "chunk_id": "e48322f069b772e2c499",
+        "chunk_id": "7a812095e05a638a841e",
         "content_type": "rule",
         "entity_name": "Might",
         "class_name": null,
-        "cosine_distance": 0.661877,
+        "cosine_distance": 0.661874,
         "is_hit": false
       },
       {
         "rank": 3,
-        "chunk_id": "3a8c79a3d492a1cb9c72",
+        "chunk_id": "b75fd2e2901b3b2e496c",
         "content_type": "rule",
         "entity_name": "Might",
         "class_name": null,
-        "cosine_distance": 0.677589,
+        "cosine_distance": 0.677608,
         "is_hit": false
       },
       {
         "rank": 4,
-        "chunk_id": "4d772291c793573587e9",
-        "content_type": "rule",
-        "entity_name": "Mighty Fighters, Poor Planners",
-        "class_name": null,
-        "cosine_distance": 0.718844,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "312d61ddb190e41498e3",
-        "content_type": "rule",
-        "entity_name": "Thrym's Fricid Might",
-        "class_name": null,
-        "cosine_distance": 0.731358,
-        "is_hit": false
-      },
-      {
-        "rank": 6,
         "chunk_id": "bee61685b29df312c589",
         "content_type": "rule",
         "entity_name": "Mighty Fighters, Poor Planners",
         "class_name": null,
-        "cosine_distance": 0.831665,
+        "cosine_distance": 0.718868,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "767dd81066630a0bbd25",
+        "content_type": "rule",
+        "entity_name": "Thrym's Fricid Might",
+        "class_name": null,
+        "cosine_distance": 0.731383,
+        "is_hit": false
+      },
+      {
+        "rank": 6,
+        "chunk_id": "1be70a679aa024db6fda",
+        "content_type": "rule",
+        "entity_name": "Mighty Fighters, Poor Planners",
+        "class_name": null,
+        "cosine_distance": 0.83167,
         "is_hit": false
       },
       {
         "rank": 7,
-        "chunk_id": "92037bfb93136bb2b873",
+        "chunk_id": "dd1151f0ad5c703a9d64",
         "content_type": "rule",
         "entity_name": "Might",
         "class_name": null,
-        "cosine_distance": 0.96786,
+        "cosine_distance": 0.967875,
         "is_hit": false
       }
     ]
@@ -2807,7 +2825,7 @@
         "content_type": "magic_item",
         "entity_name": "Wand Of Wonder",
         "class_name": null,
-        "cosine_distance": 0.380713,
+        "cosine_distance": 0.380745,
         "is_hit": true
       }
     ]
@@ -2858,7 +2876,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "0e1643d6b6a486015861",
+        "chunk_id": "a82ec565f3616f29e469",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -2867,7 +2885,7 @@
       },
       {
         "rank": 4,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -2876,7 +2894,7 @@
       },
       {
         "rank": 5,
-        "chunk_id": "c140c67f56be58e227e9",
+        "chunk_id": "01cd1db6d0fed7727757",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -2894,11 +2912,11 @@
       },
       {
         "rank": 7,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.544347,
+        "cosine_distance": 0.544371,
         "is_hit": false
       },
       {
@@ -2912,7 +2930,7 @@
       },
       {
         "rank": 9,
-        "chunk_id": "f86fd342253858bb8d2a",
+        "chunk_id": "3454483bdcba59845e35",
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
@@ -3028,20 +3046,20 @@
       },
       {
         "rank": 9,
-        "chunk_id": "f009c456e5b3ee771097",
+        "chunk_id": "6fd003a83bcecb677151",
         "content_type": "rule",
-        "entity_name": "Makes Their Charac-",
+        "entity_name": "Make",
         "class_name": null,
-        "cosine_distance": 0.6915,
+        "cosine_distance": 0.646055,
         "is_hit": false
       },
       {
         "rank": 10,
-        "chunk_id": "12af53a9cc2e94b944a0",
+        "chunk_id": "9054a6f9c7a4b738ed4c",
         "content_type": "rule",
-        "entity_name": "Celestial Toymakers",
+        "entity_name": "Makes Their Charac-",
         "class_name": null,
-        "cosine_distance": 0.740227,
+        "cosine_distance": 0.6915,
         "is_hit": false
       }
     ]
@@ -3257,7 +3275,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "0e1643d6b6a486015861",
+        "chunk_id": "a82ec565f3616f29e469",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -3266,7 +3284,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -3275,16 +3293,16 @@
       },
       {
         "rank": 4,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.508215,
+        "cosine_distance": 0.508214,
         "is_hit": false
       },
       {
         "rank": 5,
-        "chunk_id": "c140c67f56be58e227e9",
+        "chunk_id": "01cd1db6d0fed7727757",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -3293,7 +3311,7 @@
       },
       {
         "rank": 6,
-        "chunk_id": "f86fd342253858bb8d2a",
+        "chunk_id": "3454483bdcba59845e35",
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
@@ -3311,7 +3329,7 @@
       },
       {
         "rank": 8,
-        "chunk_id": "98e46be063960cc26c2f",
+        "chunk_id": "37e2edb3b67f225cbdfe",
         "content_type": "rule",
         "entity_name": "Armor Class L 0",
         "class_name": null,
@@ -3320,11 +3338,11 @@
       },
       {
         "rank": 9,
-        "chunk_id": "dd943d9efa60e4ea18f2",
+        "chunk_id": "17ba239882ed38450d72",
         "content_type": "rule",
         "entity_name": "Armor Cl Ass",
         "class_name": null,
-        "cosine_distance": 0.542527,
+        "cosine_distance": 0.57126,
         "is_hit": false
       },
       {
@@ -3399,6 +3417,15 @@
       },
       {
         "rank": 5,
+        "chunk_id": "6fd003a83bcecb677151",
+        "content_type": "rule",
+        "entity_name": "Make",
+        "class_name": null,
+        "cosine_distance": 0.669775,
+        "is_hit": false
+      },
+      {
+        "rank": 6,
         "chunk_id": "cf7b5c7e5e56d884f9fa",
         "content_type": "rule",
         "entity_name": "Rhythm-Maker's Drum",
@@ -3407,7 +3434,7 @@
         "is_hit": false
       },
       {
-        "rank": 6,
+        "rank": 7,
         "chunk_id": "12af53a9cc2e94b944a0",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -3416,7 +3443,7 @@
         "is_hit": false
       },
       {
-        "rank": 7,
+        "rank": 8,
         "chunk_id": "10f33364d34199f35c49",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -3425,8 +3452,8 @@
         "is_hit": false
       },
       {
-        "rank": 8,
-        "chunk_id": "f009c456e5b3ee771097",
+        "rank": 9,
+        "chunk_id": "9054a6f9c7a4b738ed4c",
         "content_type": "rule",
         "entity_name": "Makes Their Charac-",
         "class_name": null,
@@ -3434,21 +3461,12 @@
         "is_hit": false
       },
       {
-        "rank": 9,
+        "rank": 10,
         "chunk_id": "102570fe22c3673c98f8",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
         "class_name": null,
         "cosine_distance": 0.790643,
-        "is_hit": false
-      },
-      {
-        "rank": 10,
-        "chunk_id": "9a44a684d7abfc0ea184",
-        "content_type": "rule",
-        "entity_name": "Celestial Toymakers",
-        "class_name": null,
-        "cosine_distance": 0.801719,
         "is_hit": false
       }
     ]
@@ -3499,7 +3517,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "f86fd342253858bb8d2a",
+        "chunk_id": "3454483bdcba59845e35",
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
@@ -3508,7 +3526,7 @@
       },
       {
         "rank": 4,
-        "chunk_id": "0e1643d6b6a486015861",
+        "chunk_id": "a82ec565f3616f29e469",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -3517,7 +3535,7 @@
       },
       {
         "rank": 5,
-        "chunk_id": "98e46be063960cc26c2f",
+        "chunk_id": "37e2edb3b67f225cbdfe",
         "content_type": "rule",
         "entity_name": "Armor Class L 0",
         "class_name": null,
@@ -3526,16 +3544,7 @@
       },
       {
         "rank": 6,
-        "chunk_id": "dd943d9efa60e4ea18f2",
-        "content_type": "rule",
-        "entity_name": "Armor Cl Ass",
-        "class_name": null,
-        "cosine_distance": 0.504549,
-        "is_hit": false
-      },
-      {
-        "rank": 7,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -3543,16 +3552,16 @@
         "is_hit": false
       },
       {
-        "rank": 8,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "rank": 7,
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.517207,
+        "cosine_distance": 0.517209,
         "is_hit": false
       },
       {
-        "rank": 9,
+        "rank": 8,
         "chunk_id": "4476975d5b79b683a18a",
         "content_type": "monster",
         "entity_name": "Animated Armor",
@@ -3561,13 +3570,22 @@
         "is_hit": false
       },
       {
-        "rank": 10,
-        "chunk_id": "c140c67f56be58e227e9",
+        "rank": 9,
+        "chunk_id": "01cd1db6d0fed7727757",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
         "cosine_distance": 0.531544,
         "is_hit": false
+      },
+      {
+        "rank": 10,
+        "chunk_id": "009b1991d2ca12edbc4f",
+        "content_type": "monster",
+        "entity_name": "Lizardf Olk",
+        "class_name": null,
+        "cosine_distance": 0.546163,
+        "is_hit": true
       }
     ]
   },
@@ -3623,7 +3641,16 @@
       },
       {
         "rank": 4,
-        "chunk_id": "f009c456e5b3ee771097",
+        "chunk_id": "6fd003a83bcecb677151",
+        "content_type": "rule",
+        "entity_name": "Make",
+        "class_name": null,
+        "cosine_distance": 0.673331,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
+        "chunk_id": "9054a6f9c7a4b738ed4c",
         "content_type": "rule",
         "entity_name": "Makes Their Charac-",
         "class_name": null,
@@ -3631,7 +3658,7 @@
         "is_hit": false
       },
       {
-        "rank": 5,
+        "rank": 6,
         "chunk_id": "12af53a9cc2e94b944a0",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -3640,7 +3667,7 @@
         "is_hit": false
       },
       {
-        "rank": 6,
+        "rank": 7,
         "chunk_id": "10f33364d34199f35c49",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -3649,7 +3676,7 @@
         "is_hit": false
       },
       {
-        "rank": 7,
+        "rank": 8,
         "chunk_id": "102570fe22c3673c98f8",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -3658,7 +3685,7 @@
         "is_hit": false
       },
       {
-        "rank": 8,
+        "rank": 9,
         "chunk_id": "cf7b5c7e5e56d884f9fa",
         "content_type": "rule",
         "entity_name": "Rhythm-Maker's Drum",
@@ -3667,21 +3694,12 @@
         "is_hit": false
       },
       {
-        "rank": 9,
+        "rank": 10,
         "chunk_id": "9a44a684d7abfc0ea184",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
         "class_name": null,
         "cosine_distance": 0.802898,
-        "is_hit": false
-      },
-      {
-        "rank": 10,
-        "chunk_id": "d427039c2446b60d334d",
-        "content_type": "rule",
-        "entity_name": "Make",
-        "class_name": null,
-        "cosine_distance": 0.834842,
         "is_hit": false
       }
     ]
@@ -3851,16 +3869,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "dd943d9efa60e4ea18f2",
-        "content_type": "rule",
-        "entity_name": "Armor Cl Ass",
-        "class_name": null,
-        "cosine_distance": 0.504502,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "0e1643d6b6a486015861",
+        "chunk_id": "a82ec565f3616f29e469",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -3868,8 +3877,8 @@
         "is_hit": false
       },
       {
-        "rank": 5,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "rank": 4,
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -3877,16 +3886,16 @@
         "is_hit": false
       },
       {
-        "rank": 6,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "rank": 5,
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.518848,
+        "cosine_distance": 0.518846,
         "is_hit": false
       },
       {
-        "rank": 7,
+        "rank": 6,
         "chunk_id": "4476975d5b79b683a18a",
         "content_type": "monster",
         "entity_name": "Animated Armor",
@@ -3895,7 +3904,7 @@
         "is_hit": false
       },
       {
-        "rank": 8,
+        "rank": 7,
         "chunk_id": "7b38f7dd20b0bbee4efa",
         "content_type": "rule",
         "entity_name": "Armor And Shields",
@@ -3904,8 +3913,8 @@
         "is_hit": false
       },
       {
-        "rank": 9,
-        "chunk_id": "f86fd342253858bb8d2a",
+        "rank": 8,
+        "chunk_id": "3454483bdcba59845e35",
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
@@ -3913,12 +3922,21 @@
         "is_hit": false
       },
       {
-        "rank": 10,
-        "chunk_id": "c140c67f56be58e227e9",
+        "rank": 9,
+        "chunk_id": "01cd1db6d0fed7727757",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
         "cosine_distance": 0.546107,
+        "is_hit": false
+      },
+      {
+        "rank": 10,
+        "chunk_id": "fba478c6379bd4250d0e",
+        "content_type": "feat",
+        "entity_name": "Heavy Armor Master",
+        "class_name": null,
+        "cosine_distance": 0.549489,
         "is_hit": false
       }
     ]
@@ -3975,7 +3993,7 @@
       },
       {
         "rank": 4,
-        "chunk_id": "f009c456e5b3ee771097",
+        "chunk_id": "9054a6f9c7a4b738ed4c",
         "content_type": "rule",
         "entity_name": "Makes Their Charac-",
         "class_name": null,
@@ -3984,6 +4002,15 @@
       },
       {
         "rank": 5,
+        "chunk_id": "6fd003a83bcecb677151",
+        "content_type": "rule",
+        "entity_name": "Make",
+        "class_name": null,
+        "cosine_distance": 0.665169,
+        "is_hit": false
+      },
+      {
+        "rank": 6,
         "chunk_id": "10f33364d34199f35c49",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -3992,7 +4019,7 @@
         "is_hit": false
       },
       {
-        "rank": 6,
+        "rank": 7,
         "chunk_id": "12af53a9cc2e94b944a0",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -4001,7 +4028,7 @@
         "is_hit": false
       },
       {
-        "rank": 7,
+        "rank": 8,
         "chunk_id": "102570fe22c3673c98f8",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -4010,7 +4037,7 @@
         "is_hit": false
       },
       {
-        "rank": 8,
+        "rank": 9,
         "chunk_id": "9a44a684d7abfc0ea184",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -4019,21 +4046,12 @@
         "is_hit": false
       },
       {
-        "rank": 9,
+        "rank": 10,
         "chunk_id": "cf7b5c7e5e56d884f9fa",
         "content_type": "rule",
         "entity_name": "Rhythm-Maker's Drum",
         "class_name": null,
         "cosine_distance": 0.758685,
-        "is_hit": false
-      },
-      {
-        "rank": 10,
-        "chunk_id": "d427039c2446b60d334d",
-        "content_type": "rule",
-        "entity_name": "Make",
-        "class_name": null,
-        "cosine_distance": 0.786009,
         "is_hit": false
       }
     ]
@@ -4065,16 +4083,16 @@
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.519396,
+        "cosine_distance": 0.519358,
         "is_hit": false
       },
       {
         "rank": 2,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -4083,7 +4101,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "0e1643d6b6a486015861",
+        "chunk_id": "a82ec565f3616f29e469",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -4092,16 +4110,7 @@
       },
       {
         "rank": 4,
-        "chunk_id": "dd943d9efa60e4ea18f2",
-        "content_type": "rule",
-        "entity_name": "Armor Cl Ass",
-        "class_name": null,
-        "cosine_distance": 0.530847,
-        "is_hit": false
-      },
-      {
-        "rank": 5,
-        "chunk_id": "c140c67f56be58e227e9",
+        "chunk_id": "01cd1db6d0fed7727757",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -4109,8 +4118,8 @@
         "is_hit": false
       },
       {
-        "rank": 6,
-        "chunk_id": "f86fd342253858bb8d2a",
+        "rank": 5,
+        "chunk_id": "3454483bdcba59845e35",
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
@@ -4118,7 +4127,7 @@
         "is_hit": false
       },
       {
-        "rank": 7,
+        "rank": 6,
         "chunk_id": "bcd10ec8864edd852a8d",
         "content_type": "rule",
         "entity_name": "Elder Evil Blessings",
@@ -4127,7 +4136,7 @@
         "is_hit": false
       },
       {
-        "rank": 8,
+        "rank": 7,
         "chunk_id": "6316848eca2b9a17ba85",
         "content_type": "feat",
         "entity_name": "Resistant Armor",
@@ -4136,7 +4145,7 @@
         "is_hit": false
       },
       {
-        "rank": 9,
+        "rank": 8,
         "chunk_id": "f91c98005f0d571ce409",
         "content_type": "feat",
         "entity_name": "Resistant Armor",
@@ -4145,12 +4154,21 @@
         "is_hit": false
       },
       {
-        "rank": 10,
-        "chunk_id": "98e46be063960cc26c2f",
+        "rank": 9,
+        "chunk_id": "37e2edb3b67f225cbdfe",
         "content_type": "rule",
         "entity_name": "Armor Class L 0",
         "class_name": null,
         "cosine_distance": 0.556735,
+        "is_hit": false
+      },
+      {
+        "rank": 10,
+        "chunk_id": "729af02ff5ef0d338931",
+        "content_type": "feat",
+        "entity_name": "Arcane Propulsion Armor",
+        "class_name": null,
+        "cosine_distance": 0.558784,
         "is_hit": false
       }
     ]
@@ -4186,7 +4204,7 @@
         "content_type": "monster",
         "entity_name": "Star Spawn Hulk",
         "class_name": null,
-        "cosine_distance": 0.313851,
+        "cosine_distance": 0.311196,
         "is_hit": true
       },
       {
@@ -4195,7 +4213,7 @@
         "content_type": "monster",
         "entity_name": "Umber Hulk",
         "class_name": null,
-        "cosine_distance": 0.390818,
+        "cosine_distance": 0.391526,
         "is_hit": false
       },
       {
@@ -4204,7 +4222,7 @@
         "content_type": "rule",
         "entity_name": "Star Spawn Seer",
         "class_name": null,
-        "cosine_distance": 0.404403,
+        "cosine_distance": 0.40341,
         "is_hit": false
       },
       {
@@ -4213,7 +4231,7 @@
         "content_type": "monster",
         "entity_name": "Hulk",
         "class_name": null,
-        "cosine_distance": 0.444001,
+        "cosine_distance": 0.441278,
         "is_hit": false
       },
       {
@@ -4222,25 +4240,25 @@
         "content_type": "rule",
         "entity_name": "Star Spawn",
         "class_name": null,
-        "cosine_distance": 0.492838,
+        "cosine_distance": 0.493851,
         "is_hit": false
       },
       {
         "rank": 6,
-        "chunk_id": "6eb0b01c56cb7a0b67bd",
-        "content_type": "monster",
-        "entity_name": "Star Spawn Mangler",
-        "class_name": null,
-        "cosine_distance": 0.4969,
-        "is_hit": false
-      },
-      {
-        "rank": 7,
         "chunk_id": "145d486f99fbed0a7d59",
         "content_type": "monster",
         "entity_name": "Umber Hulk",
         "class_name": null,
-        "cosine_distance": 0.496941,
+        "cosine_distance": 0.497842,
+        "is_hit": false
+      },
+      {
+        "rank": 7,
+        "chunk_id": "6eb0b01c56cb7a0b67bd",
+        "content_type": "monster",
+        "entity_name": "Star Spawn Mangler",
+        "class_name": null,
+        "cosine_distance": 0.501779,
         "is_hit": false
       },
       {
@@ -4249,7 +4267,7 @@
         "content_type": "rule",
         "entity_name": "Star Spawn Grue",
         "class_name": null,
-        "cosine_distance": 0.516089,
+        "cosine_distance": 0.514841,
         "is_hit": false
       },
       {
@@ -4258,7 +4276,7 @@
         "content_type": "monster",
         "entity_name": "Star Spawn Larva Mage",
         "class_name": null,
-        "cosine_distance": 0.53942,
+        "cosine_distance": 0.541729,
         "is_hit": false
       },
       {
@@ -4267,7 +4285,7 @@
         "content_type": "rule",
         "entity_name": "Star Spawn Seer",
         "class_name": null,
-        "cosine_distance": 0.562283,
+        "cosine_distance": 0.562872,
         "is_hit": false
       }
     ]
@@ -4295,7 +4313,7 @@
         "content_type": "rule",
         "entity_name": "Challenge Ratings",
         "class_name": null,
-        "cosine_distance": 0.483006,
+        "cosine_distance": 0.483068,
         "is_hit": false
       },
       {
@@ -4304,7 +4322,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating A Monster",
         "class_name": null,
-        "cosine_distance": 0.485813,
+        "cosine_distance": 0.48587,
         "is_hit": false
       },
       {
@@ -4313,7 +4331,7 @@
         "content_type": "spell",
         "entity_name": "Conjure Elemental",
         "class_name": null,
-        "cosine_distance": 0.488978,
+        "cosine_distance": 0.489041,
         "is_hit": false
       },
       {
@@ -4322,7 +4340,7 @@
         "content_type": "rule",
         "entity_name": "Challenge Ratings",
         "class_name": null,
-        "cosine_distance": 0.504796,
+        "cosine_distance": 0.504863,
         "is_hit": false
       },
       {
@@ -4331,7 +4349,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating A Monster",
         "class_name": null,
-        "cosine_distance": 0.526185,
+        "cosine_distance": 0.526242,
         "is_hit": false
       },
       {
@@ -4340,7 +4358,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating A Monster",
         "class_name": null,
-        "cosine_distance": 0.537637,
+        "cosine_distance": 0.537711,
         "is_hit": false
       },
       {
@@ -4349,7 +4367,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating Encounters",
         "class_name": null,
-        "cosine_distance": 0.53791,
+        "cosine_distance": 0.537988,
         "is_hit": false
       },
       {
@@ -4358,7 +4376,7 @@
         "content_type": "rule",
         "entity_name": "Multiple Monsters : 16Th-20Th Level",
         "class_name": null,
-        "cosine_distance": 0.541251,
+        "cosine_distance": 0.541311,
         "is_hit": false
       },
       {
@@ -4367,7 +4385,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating A Monster",
         "class_name": null,
-        "cosine_distance": 0.544876,
+        "cosine_distance": 0.544952,
         "is_hit": false
       },
       {
@@ -4376,7 +4394,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating A Monster",
         "class_name": null,
-        "cosine_distance": 0.547405,
+        "cosine_distance": 0.547461,
         "is_hit": false
       }
     ]
@@ -4408,7 +4426,7 @@
         "content_type": "monster",
         "entity_name": "Skulk",
         "class_name": null,
-        "cosine_distance": 0.280465,
+        "cosine_distance": 0.280424,
         "is_hit": true
       },
       {
@@ -4417,7 +4435,7 @@
         "content_type": "monster",
         "entity_name": "Skulk",
         "class_name": null,
-        "cosine_distance": 0.321726,
+        "cosine_distance": 0.321742,
         "is_hit": true
       }
     ]
@@ -4449,65 +4467,65 @@
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.495917,
+        "cosine_distance": 0.495898,
         "is_hit": false
       },
       {
         "rank": 2,
-        "chunk_id": "dd943d9efa60e4ea18f2",
+        "chunk_id": "a82ec565f3616f29e469",
         "content_type": "rule",
-        "entity_name": "Armor Cl Ass",
+        "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.501915,
+        "cosine_distance": 0.504279,
         "is_hit": false
       },
       {
         "rank": 3,
-        "chunk_id": "0e1643d6b6a486015861",
+        "chunk_id": "3454483bdcba59845e35",
         "content_type": "rule",
-        "entity_name": "Armor Class",
+        "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
-        "cosine_distance": 0.504292,
+        "cosine_distance": 0.507611,
         "is_hit": false
       },
       {
         "rank": 4,
-        "chunk_id": "f86fd342253858bb8d2a",
+        "chunk_id": "37e2edb3b67f225cbdfe",
         "content_type": "rule",
-        "entity_name": "Armor Class (Natural Armor)",
+        "entity_name": "Armor Class L 0",
         "class_name": null,
-        "cosine_distance": 0.507649,
+        "cosine_distance": 0.50863,
         "is_hit": false
       },
       {
         "rank": 5,
-        "chunk_id": "98e46be063960cc26c2f",
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
-        "entity_name": "Armor Class L 0",
+        "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.508667,
+        "cosine_distance": 0.508792,
         "is_hit": false
       },
       {
         "rank": 6,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "chunk_id": "01cd1db6d0fed7727757",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.508806,
+        "cosine_distance": 0.51578,
         "is_hit": false
       },
       {
         "rank": 7,
-        "chunk_id": "c140c67f56be58e227e9",
+        "chunk_id": "17ba239882ed38450d72",
         "content_type": "rule",
-        "entity_name": "Armor Class",
+        "entity_name": "Armor Cl Ass",
         "class_name": null,
-        "cosine_distance": 0.515807,
+        "cosine_distance": 0.539912,
         "is_hit": false
       },
       {
@@ -4516,7 +4534,7 @@
         "content_type": "feat",
         "entity_name": "Arcane Propulsion Armor",
         "class_name": null,
-        "cosine_distance": 0.561619,
+        "cosine_distance": 0.561613,
         "is_hit": false
       },
       {
@@ -4525,7 +4543,7 @@
         "content_type": "rule",
         "entity_name": "Class Features",
         "class_name": null,
-        "cosine_distance": 0.577814,
+        "cosine_distance": 0.577758,
         "is_hit": false
       },
       {
@@ -4534,7 +4552,7 @@
         "content_type": "feat",
         "entity_name": "Resistant Armor",
         "class_name": null,
-        "cosine_distance": 0.586352,
+        "cosine_distance": 0.58636,
         "is_hit": false
       }
     ]
@@ -4576,7 +4594,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "0e1643d6b6a486015861",
+        "chunk_id": "a82ec565f3616f29e469",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -4585,16 +4603,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "dd943d9efa60e4ea18f2",
-        "content_type": "rule",
-        "entity_name": "Armor Cl Ass",
-        "class_name": null,
-        "cosine_distance": 0.500665,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -4602,8 +4611,8 @@
         "is_hit": false
       },
       {
-        "rank": 5,
-        "chunk_id": "f86fd342253858bb8d2a",
+        "rank": 4,
+        "chunk_id": "3454483bdcba59845e35",
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
@@ -4611,17 +4620,17 @@
         "is_hit": false
       },
       {
-        "rank": 6,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "rank": 5,
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.512945,
+        "cosine_distance": 0.512974,
         "is_hit": false
       },
       {
-        "rank": 7,
-        "chunk_id": "c140c67f56be58e227e9",
+        "rank": 6,
+        "chunk_id": "01cd1db6d0fed7727757",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -4629,7 +4638,7 @@
         "is_hit": false
       },
       {
-        "rank": 8,
+        "rank": 7,
         "chunk_id": "729af02ff5ef0d338931",
         "content_type": "feat",
         "entity_name": "Arcane Propulsion Armor",
@@ -4638,7 +4647,7 @@
         "is_hit": false
       },
       {
-        "rank": 9,
+        "rank": 8,
         "chunk_id": "42c43441f742fcc215dc",
         "content_type": "monster",
         "entity_name": "Animated Armor",
@@ -4647,12 +4656,21 @@
         "is_hit": false
       },
       {
-        "rank": 10,
+        "rank": 9,
         "chunk_id": "6316848eca2b9a17ba85",
         "content_type": "feat",
         "entity_name": "Resistant Armor",
         "class_name": null,
         "cosine_distance": 0.533852,
+        "is_hit": false
+      },
+      {
+        "rank": 10,
+        "chunk_id": "17ba239882ed38450d72",
+        "content_type": "rule",
+        "entity_name": "Armor Cl Ass",
+        "class_name": null,
+        "cosine_distance": 0.533985,
         "is_hit": false
       }
     ]
@@ -4841,7 +4859,7 @@
         "content_type": "monster",
         "entity_name": "The Environment",
         "class_name": null,
-        "cosine_distance": 0.542927,
+        "cosine_distance": 0.542948,
         "is_hit": true
       },
       {
@@ -4859,7 +4877,7 @@
         "content_type": "monster",
         "entity_name": "The Environment",
         "class_name": null,
-        "cosine_distance": 0.660842,
+        "cosine_distance": 0.660853,
         "is_hit": true
       },
       {
@@ -4868,7 +4886,7 @@
         "content_type": "monster",
         "entity_name": "The Environment",
         "class_name": null,
-        "cosine_distance": 0.700419,
+        "cosine_distance": 0.700385,
         "is_hit": true
       },
       {
@@ -4877,7 +4895,7 @@
         "content_type": "monster",
         "entity_name": "The Environment",
         "class_name": null,
-        "cosine_distance": 0.739689,
+        "cosine_distance": 0.739669,
         "is_hit": true
       }
     ]
@@ -4928,16 +4946,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "dd943d9efa60e4ea18f2",
-        "content_type": "rule",
-        "entity_name": "Armor Cl Ass",
-        "class_name": null,
-        "cosine_distance": 0.493936,
-        "is_hit": false
-      },
-      {
-        "rank": 4,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -4945,17 +4954,17 @@
         "is_hit": false
       },
       {
-        "rank": 5,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "rank": 4,
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.508402,
+        "cosine_distance": 0.508423,
         "is_hit": false
       },
       {
-        "rank": 6,
-        "chunk_id": "0e1643d6b6a486015861",
+        "rank": 5,
+        "chunk_id": "a82ec565f3616f29e469",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -4963,8 +4972,8 @@
         "is_hit": false
       },
       {
-        "rank": 7,
-        "chunk_id": "c140c67f56be58e227e9",
+        "rank": 6,
+        "chunk_id": "01cd1db6d0fed7727757",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -4972,8 +4981,8 @@
         "is_hit": false
       },
       {
-        "rank": 8,
-        "chunk_id": "f86fd342253858bb8d2a",
+        "rank": 7,
+        "chunk_id": "3454483bdcba59845e35",
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
@@ -4981,8 +4990,8 @@
         "is_hit": false
       },
       {
-        "rank": 9,
-        "chunk_id": "98e46be063960cc26c2f",
+        "rank": 8,
+        "chunk_id": "37e2edb3b67f225cbdfe",
         "content_type": "rule",
         "entity_name": "Armor Class L 0",
         "class_name": null,
@@ -4990,12 +4999,21 @@
         "is_hit": false
       },
       {
-        "rank": 10,
+        "rank": 9,
         "chunk_id": "4476975d5b79b683a18a",
         "content_type": "monster",
         "entity_name": "Animated Armor",
         "class_name": null,
         "cosine_distance": 0.548689,
+        "is_hit": false
+      },
+      {
+        "rank": 10,
+        "chunk_id": "17ba239882ed38450d72",
+        "content_type": "rule",
+        "entity_name": "Armor Cl Ass",
+        "class_name": null,
+        "cosine_distance": 0.555795,
         "is_hit": false
       }
     ]
@@ -5029,7 +5047,7 @@
         "content_type": "monster",
         "entity_name": "Tiger",
         "class_name": null,
-        "cosine_distance": 0.31237,
+        "cosine_distance": 0.312348,
         "is_hit": true
       },
       {
@@ -5038,7 +5056,7 @@
         "content_type": "monster",
         "entity_name": "Saber-Toothed Tiger",
         "class_name": null,
-        "cosine_distance": 0.377644,
+        "cosine_distance": 0.377651,
         "is_hit": true
       },
       {
@@ -5047,34 +5065,34 @@
         "content_type": "monster",
         "entity_name": "Weretiger",
         "class_name": null,
-        "cosine_distance": 0.521536,
+        "cosine_distance": 0.521532,
         "is_hit": true
       },
       {
         "rank": 4,
-        "chunk_id": "f009c456e5b3ee771097",
+        "chunk_id": "6fd003a83bcecb677151",
         "content_type": "rule",
-        "entity_name": "Makes Their Charac-",
+        "entity_name": "Make",
         "class_name": null,
-        "cosine_distance": 0.734645,
+        "cosine_distance": 0.719283,
         "is_hit": false
       },
       {
         "rank": 5,
-        "chunk_id": "cf7b5c7e5e56d884f9fa",
+        "chunk_id": "9054a6f9c7a4b738ed4c",
         "content_type": "rule",
-        "entity_name": "Rhythm-Maker's Drum",
+        "entity_name": "Makes Their Charac-",
         "class_name": null,
-        "cosine_distance": 0.790669,
+        "cosine_distance": 0.73463,
         "is_hit": false
       },
       {
         "rank": 6,
-        "chunk_id": "d427039c2446b60d334d",
+        "chunk_id": "cf7b5c7e5e56d884f9fa",
         "content_type": "rule",
-        "entity_name": "Make",
+        "entity_name": "Rhythm-Maker's Drum",
         "class_name": null,
-        "cosine_distance": 0.817436,
+        "cosine_distance": 0.790647,
         "is_hit": false
       },
       {
@@ -5083,7 +5101,7 @@
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
         "class_name": null,
-        "cosine_distance": 0.829497,
+        "cosine_distance": 0.829461,
         "is_hit": false
       },
       {
@@ -5092,7 +5110,7 @@
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
         "class_name": null,
-        "cosine_distance": 0.834159,
+        "cosine_distance": 0.834113,
         "is_hit": false
       },
       {
@@ -5101,7 +5119,7 @@
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
         "class_name": null,
-        "cosine_distance": 0.84638,
+        "cosine_distance": 0.846344,
         "is_hit": false
       },
       {
@@ -5110,7 +5128,7 @@
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
         "class_name": null,
-        "cosine_distance": 0.897721,
+        "cosine_distance": 0.897707,
         "is_hit": false
       }
     ]
@@ -5179,7 +5197,7 @@
       },
       {
         "rank": 5,
-        "chunk_id": "c140c67f56be58e227e9",
+        "chunk_id": "01cd1db6d0fed7727757",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -5188,7 +5206,7 @@
       },
       {
         "rank": 6,
-        "chunk_id": "0e1643d6b6a486015861",
+        "chunk_id": "a82ec565f3616f29e469",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -5206,16 +5224,16 @@
       },
       {
         "rank": 8,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.511352,
+        "cosine_distance": 0.511331,
         "is_hit": false
       },
       {
         "rank": 9,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -5224,7 +5242,7 @@
       },
       {
         "rank": 10,
-        "chunk_id": "98e46be063960cc26c2f",
+        "chunk_id": "37e2edb3b67f225cbdfe",
         "content_type": "rule",
         "entity_name": "Armor Class L 0",
         "class_name": null,
@@ -5270,7 +5288,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "0e1643d6b6a486015861",
+        "chunk_id": "a82ec565f3616f29e469",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -5279,7 +5297,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -5288,7 +5306,7 @@
       },
       {
         "rank": 4,
-        "chunk_id": "c140c67f56be58e227e9",
+        "chunk_id": "01cd1db6d0fed7727757",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -5297,25 +5315,16 @@
       },
       {
         "rank": 5,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.543395,
+        "cosine_distance": 0.543413,
         "is_hit": false
       },
       {
         "rank": 6,
-        "chunk_id": "dd943d9efa60e4ea18f2",
-        "content_type": "rule",
-        "entity_name": "Armor Cl Ass",
-        "class_name": null,
-        "cosine_distance": 0.544235,
-        "is_hit": false
-      },
-      {
-        "rank": 7,
-        "chunk_id": "f86fd342253858bb8d2a",
+        "chunk_id": "3454483bdcba59845e35",
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
@@ -5323,12 +5332,21 @@
         "is_hit": false
       },
       {
-        "rank": 8,
-        "chunk_id": "98e46be063960cc26c2f",
+        "rank": 7,
+        "chunk_id": "37e2edb3b67f225cbdfe",
         "content_type": "rule",
         "entity_name": "Armor Class L 0",
         "class_name": null,
         "cosine_distance": 0.567397,
+        "is_hit": false
+      },
+      {
+        "rank": 8,
+        "chunk_id": "17ba239882ed38450d72",
+        "content_type": "rule",
+        "entity_name": "Armor Cl Ass",
+        "class_name": null,
+        "cosine_distance": 0.569523,
         "is_hit": false
       },
       {
@@ -5385,6 +5403,15 @@
       },
       {
         "rank": 2,
+        "chunk_id": "6fd003a83bcecb677151",
+        "content_type": "rule",
+        "entity_name": "Make",
+        "class_name": null,
+        "cosine_distance": 0.631776,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
         "chunk_id": "10f33364d34199f35c49",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -5393,8 +5420,8 @@
         "is_hit": false
       },
       {
-        "rank": 3,
-        "chunk_id": "f009c456e5b3ee771097",
+        "rank": 4,
+        "chunk_id": "9054a6f9c7a4b738ed4c",
         "content_type": "rule",
         "entity_name": "Makes Their Charac-",
         "class_name": null,
@@ -5402,7 +5429,7 @@
         "is_hit": false
       },
       {
-        "rank": 4,
+        "rank": 5,
         "chunk_id": "12af53a9cc2e94b944a0",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -5411,7 +5438,7 @@
         "is_hit": false
       },
       {
-        "rank": 5,
+        "rank": 6,
         "chunk_id": "cf7b5c7e5e56d884f9fa",
         "content_type": "rule",
         "entity_name": "Rhythm-Maker's Drum",
@@ -5420,7 +5447,7 @@
         "is_hit": false
       },
       {
-        "rank": 6,
+        "rank": 7,
         "chunk_id": "102570fe22c3673c98f8",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -5429,7 +5456,7 @@
         "is_hit": false
       },
       {
-        "rank": 7,
+        "rank": 8,
         "chunk_id": "9a44a684d7abfc0ea184",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -5438,22 +5465,13 @@
         "is_hit": false
       },
       {
-        "rank": 8,
+        "rank": 9,
         "chunk_id": "ac643513a192681b81a8",
         "content_type": "monster",
         "entity_name": "Construct Spirit",
         "class_name": null,
         "cosine_distance": 0.738717,
         "is_hit": true
-      },
-      {
-        "rank": 9,
-        "chunk_id": "d427039c2446b60d334d",
-        "content_type": "rule",
-        "entity_name": "Make",
-        "class_name": null,
-        "cosine_distance": 0.755675,
-        "is_hit": false
       }
     ]
   },
@@ -5484,7 +5502,7 @@
         "content_type": "monster",
         "entity_name": "Wildfire Spirit",
         "class_name": null,
-        "cosine_distance": 0.417084,
+        "cosine_distance": 0.417132,
         "is_hit": true
       },
       {
@@ -5493,7 +5511,7 @@
         "content_type": "monster",
         "entity_name": "Wildfire Spirit",
         "class_name": null,
-        "cosine_distance": 0.427203,
+        "cosine_distance": 0.427269,
         "is_hit": true
       },
       {
@@ -5502,7 +5520,7 @@
         "content_type": "monster",
         "entity_name": "Wildfire Spirit",
         "class_name": null,
-        "cosine_distance": 0.670334,
+        "cosine_distance": 0.670418,
         "is_hit": true
       }
     ]
@@ -5631,7 +5649,7 @@
       },
       {
         "rank": 6,
-        "chunk_id": "f86fd342253858bb8d2a",
+        "chunk_id": "3454483bdcba59845e35",
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
@@ -5640,7 +5658,7 @@
       },
       {
         "rank": 7,
-        "chunk_id": "98e46be063960cc26c2f",
+        "chunk_id": "37e2edb3b67f225cbdfe",
         "content_type": "rule",
         "entity_name": "Armor Class L 0",
         "class_name": null,
@@ -5658,16 +5676,16 @@
       },
       {
         "rank": 9,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.575047,
+        "cosine_distance": 0.575042,
         "is_hit": false
       },
       {
         "rank": 10,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -5757,7 +5775,16 @@
       },
       {
         "rank": 7,
-        "chunk_id": "f009c456e5b3ee771097",
+        "chunk_id": "6fd003a83bcecb677151",
+        "content_type": "rule",
+        "entity_name": "Make",
+        "class_name": null,
+        "cosine_distance": 0.707662,
+        "is_hit": false
+      },
+      {
+        "rank": 8,
+        "chunk_id": "9054a6f9c7a4b738ed4c",
         "content_type": "rule",
         "entity_name": "Makes Their Charac-",
         "class_name": null,
@@ -5765,7 +5792,7 @@
         "is_hit": false
       },
       {
-        "rank": 8,
+        "rank": 9,
         "chunk_id": "10f33364d34199f35c49",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -5774,21 +5801,12 @@
         "is_hit": false
       },
       {
-        "rank": 9,
+        "rank": 10,
         "chunk_id": "cf7b5c7e5e56d884f9fa",
         "content_type": "rule",
         "entity_name": "Rhythm-Maker's Drum",
         "class_name": null,
         "cosine_distance": 0.754147,
-        "is_hit": false
-      },
-      {
-        "rank": 10,
-        "chunk_id": "12af53a9cc2e94b944a0",
-        "content_type": "rule",
-        "entity_name": "Celestial Toymakers",
-        "class_name": null,
-        "cosine_distance": 0.775261,
         "is_hit": false
       }
     ]
@@ -5821,7 +5839,7 @@
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "de213b2219c2b4245312",
+        "chunk_id": "f9e38074d2e7aec475b6",
         "content_type": "monster",
         "entity_name": "Yethhound",
         "class_name": null,
@@ -5830,7 +5848,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "0e1643d6b6a486015861",
+        "chunk_id": "a82ec565f3616f29e469",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -5839,7 +5857,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "b78e17654da6bd3dbf03",
+        "chunk_id": "dd13a336d01cf8742439",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -5848,7 +5866,7 @@
       },
       {
         "rank": 4,
-        "chunk_id": "f86fd342253858bb8d2a",
+        "chunk_id": "3454483bdcba59845e35",
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
@@ -5857,16 +5875,16 @@
       },
       {
         "rank": 5,
-        "chunk_id": "c7377f662d0da3943e8e",
+        "chunk_id": "91aa28b4f3998272eb50",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.500631,
+        "cosine_distance": 0.500624,
         "is_hit": false
       },
       {
         "rank": 6,
-        "chunk_id": "98e46be063960cc26c2f",
+        "chunk_id": "37e2edb3b67f225cbdfe",
         "content_type": "rule",
         "entity_name": "Armor Class L 0",
         "class_name": null,
@@ -5875,16 +5893,7 @@
       },
       {
         "rank": 7,
-        "chunk_id": "dd943d9efa60e4ea18f2",
-        "content_type": "rule",
-        "entity_name": "Armor Cl Ass",
-        "class_name": null,
-        "cosine_distance": 0.533074,
-        "is_hit": false
-      },
-      {
-        "rank": 8,
-        "chunk_id": "c140c67f56be58e227e9",
+        "chunk_id": "01cd1db6d0fed7727757",
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
@@ -5892,8 +5901,8 @@
         "is_hit": false
       },
       {
-        "rank": 9,
-        "chunk_id": "d48184d3be07f3f4a5d0",
+        "rank": 8,
+        "chunk_id": "d5f5d920deacc4492c1d",
         "content_type": "rule",
         "entity_name": "Armor",
         "class_name": null,
@@ -5901,12 +5910,21 @@
         "is_hit": false
       },
       {
-        "rank": 10,
+        "rank": 9,
         "chunk_id": "4476975d5b79b683a18a",
         "content_type": "monster",
         "entity_name": "Animated Armor",
         "class_name": null,
         "cosine_distance": 0.555348,
+        "is_hit": false
+      },
+      {
+        "rank": 10,
+        "chunk_id": "2dd9dcc5d2d9c486cdc0",
+        "content_type": "rule",
+        "entity_name": "Armor",
+        "class_name": null,
+        "cosine_distance": 0.555727,
         "is_hit": false
       }
     ]
@@ -5936,7 +5954,7 @@
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "76e993a25b4a0b658fdb",
+        "chunk_id": "e75105dcfb7ec9fe50d3",
         "content_type": "monster",
         "entity_name": "Sea Spawn",
         "class_name": null,
@@ -5945,7 +5963,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "dee0e621bc20200f4ed0",
+        "chunk_id": "83478cd77634e60b4ad9",
         "content_type": "monster",
         "entity_name": "Sea Spawn",
         "class_name": null,
@@ -5954,7 +5972,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "aaa6c12adb2f3ff190c0",
+        "chunk_id": "01fc6ea35ce3a3037769",
         "content_type": "monster",
         "entity_name": "Sea Spawn",
         "class_name": null,
@@ -5963,7 +5981,7 @@
       },
       {
         "rank": 4,
-        "chunk_id": "513d90fc1549d3840fdc",
+        "chunk_id": "ec614bcc19a9390bdd66",
         "content_type": "rule",
         "entity_name": "The Sea Spawn Of Purple Rocks",
         "class_name": null,
@@ -5972,7 +5990,16 @@
       },
       {
         "rank": 5,
-        "chunk_id": "f009c456e5b3ee771097",
+        "chunk_id": "6fd003a83bcecb677151",
+        "content_type": "rule",
+        "entity_name": "Make",
+        "class_name": null,
+        "cosine_distance": 0.684403,
+        "is_hit": false
+      },
+      {
+        "rank": 6,
+        "chunk_id": "9054a6f9c7a4b738ed4c",
         "content_type": "rule",
         "entity_name": "Makes Their Charac-",
         "class_name": null,
@@ -5980,7 +6007,7 @@
         "is_hit": false
       },
       {
-        "rank": 6,
+        "rank": 7,
         "chunk_id": "12af53a9cc2e94b944a0",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -5989,7 +6016,7 @@
         "is_hit": false
       },
       {
-        "rank": 7,
+        "rank": 8,
         "chunk_id": "10f33364d34199f35c49",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -5998,21 +6025,12 @@
         "is_hit": false
       },
       {
-        "rank": 8,
+        "rank": 9,
         "chunk_id": "cf7b5c7e5e56d884f9fa",
         "content_type": "rule",
         "entity_name": "Rhythm-Maker's Drum",
         "class_name": null,
         "cosine_distance": 0.790783,
-        "is_hit": false
-      },
-      {
-        "rank": 9,
-        "chunk_id": "d427039c2446b60d334d",
-        "content_type": "rule",
-        "entity_name": "Make",
-        "class_name": null,
-        "cosine_distance": 0.800521,
         "is_hit": false
       },
       {
@@ -6280,7 +6298,7 @@
       },
       {
         "rank": 8,
-        "chunk_id": "360bd35a01b850ed2456",
+        "chunk_id": "47fc989a823cde89ecb8",
         "content_type": "rule",
         "entity_name": "Tabaxi In The Forciotten Realms",
         "class_name": null,
@@ -6448,11 +6466,11 @@
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "8ec3b0987339111620e9",
+        "chunk_id": "4812244906c3f4231294",
         "content_type": "rule",
         "entity_name": "Goblinoid War Camp",
         "class_name": null,
-        "cosine_distance": 0.458518,
+        "cosine_distance": 0.458593,
         "is_hit": false
       },
       {
@@ -6461,16 +6479,16 @@
         "content_type": "rule",
         "entity_name": "Goblinoids",
         "class_name": null,
-        "cosine_distance": 0.460368,
+        "cosine_distance": 0.460415,
         "is_hit": true
       },
       {
         "rank": 3,
-        "chunk_id": "b4fda431d4e26049fffe",
+        "chunk_id": "0039d7b34d43ee6e265f",
         "content_type": "rule",
         "entity_name": "Goblinoid Quarters",
         "class_name": null,
-        "cosine_distance": 0.469441,
+        "cosine_distance": 0.469498,
         "is_hit": false
       },
       {
@@ -6479,7 +6497,7 @@
         "content_type": "rule",
         "entity_name": "Goblinoids",
         "class_name": null,
-        "cosine_distance": 0.474887,
+        "cosine_distance": 0.474941,
         "is_hit": true
       },
       {
@@ -6488,7 +6506,7 @@
         "content_type": "rule",
         "entity_name": "Goblinoids",
         "class_name": null,
-        "cosine_distance": 0.475812,
+        "cosine_distance": 0.475857,
         "is_hit": true
       },
       {
@@ -6497,7 +6515,7 @@
         "content_type": "rule",
         "entity_name": "Goblinoids",
         "class_name": null,
-        "cosine_distance": 0.497544,
+        "cosine_distance": 0.497618,
         "is_hit": true
       },
       {
@@ -6506,7 +6524,7 @@
         "content_type": "rule",
         "entity_name": "Goblinoid Campaign Themes",
         "class_name": null,
-        "cosine_distance": 0.502044,
+        "cosine_distance": 0.502081,
         "is_hit": false
       },
       {
@@ -6515,7 +6533,7 @@
         "content_type": "rule",
         "entity_name": "Goblinoid Npcs",
         "class_name": null,
-        "cosine_distance": 0.510655,
+        "cosine_distance": 0.510688,
         "is_hit": false
       },
       {
@@ -6524,16 +6542,16 @@
         "content_type": "rule",
         "entity_name": "Goblinoids",
         "class_name": null,
-        "cosine_distance": 0.5201,
+        "cosine_distance": 0.520121,
         "is_hit": true
       },
       {
         "rank": 10,
-        "chunk_id": "fd7ab85ba0daa8a14aba",
+        "chunk_id": "25d57f272622cf74cb63",
         "content_type": "rule",
         "entity_name": "Goblinoid War Camp",
         "class_name": null,
-        "cosine_distance": 0.561854,
+        "cosine_distance": 0.561841,
         "is_hit": false
       }
     ]
@@ -6811,7 +6829,7 @@
         "content_type": "rule",
         "entity_name": "Cover",
         "class_name": null,
-        "cosine_distance": 0.55728,
+        "cosine_distance": 0.557352,
         "is_hit": false
       },
       {
@@ -6820,7 +6838,7 @@
         "content_type": "rule",
         "entity_name": "On The Cover",
         "class_name": null,
-        "cosine_distance": 0.62875,
+        "cosine_distance": 0.628791,
         "is_hit": true
       },
       {
@@ -6829,7 +6847,7 @@
         "content_type": "rule",
         "entity_name": "On The Cover",
         "class_name": null,
-        "cosine_distance": 0.799566,
+        "cosine_distance": 0.79959,
         "is_hit": true
       },
       {
@@ -6838,7 +6856,7 @@
         "content_type": "rule",
         "entity_name": "On The Cover",
         "class_name": null,
-        "cosine_distance": 0.813096,
+        "cosine_distance": 0.81308,
         "is_hit": true
       },
       {
@@ -6847,16 +6865,16 @@
         "content_type": "rule",
         "entity_name": "On The Cover",
         "class_name": null,
-        "cosine_distance": 0.829381,
+        "cosine_distance": 0.82942,
         "is_hit": true
       },
       {
         "rank": 6,
-        "chunk_id": "fcb716815b1fa4685ce7",
+        "chunk_id": "036d5ee01a11b2ca92ff",
         "content_type": "rule",
         "entity_name": "Undercover Empire",
         "class_name": null,
-        "cosine_distance": 0.9228,
+        "cosine_distance": 0.922795,
         "is_hit": false
       }
     ]
@@ -7068,7 +7086,7 @@
         "content_type": "rule",
         "entity_name": "Fierna And Belial",
         "class_name": null,
-        "cosine_distance": 0.331351,
+        "cosine_distance": 0.331345,
         "is_hit": true
       },
       {
@@ -7077,7 +7095,7 @@
         "content_type": "rule",
         "entity_name": "Fierna And Belial",
         "class_name": null,
-        "cosine_distance": 0.420941,
+        "cosine_distance": 0.420963,
         "is_hit": true
       },
       {
@@ -7086,7 +7104,7 @@
         "content_type": "rule",
         "entity_name": "Fierna And Belial",
         "class_name": null,
-        "cosine_distance": 0.428315,
+        "cosine_distance": 0.428328,
         "is_hit": true
       },
       {
@@ -7095,7 +7113,7 @@
         "content_type": "rule",
         "entity_name": "Fierna And Belial",
         "class_name": null,
-        "cosine_distance": 0.484878,
+        "cosine_distance": 0.484892,
         "is_hit": true
       },
       {
@@ -7104,7 +7122,7 @@
         "content_type": "rule",
         "entity_name": "Fierna And Belial",
         "class_name": null,
-        "cosine_distance": 0.575376,
+        "cosine_distance": 0.575352,
         "is_hit": true
       },
       {
@@ -7113,7 +7131,7 @@
         "content_type": "rule",
         "entity_name": "Fierna And Belial",
         "class_name": null,
-        "cosine_distance": 0.629303,
+        "cosine_distance": 0.629286,
         "is_hit": true
       },
       {
@@ -7122,7 +7140,7 @@
         "content_type": "rule",
         "entity_name": "Fierna And Belial",
         "class_name": null,
-        "cosine_distance": 0.634815,
+        "cosine_distance": 0.63482,
         "is_hit": true
       },
       {
@@ -7131,7 +7149,7 @@
         "content_type": "rule",
         "entity_name": "Fierna And Belial",
         "class_name": null,
-        "cosine_distance": 0.645998,
+        "cosine_distance": 0.646024,
         "is_hit": true
       }
     ]
@@ -7281,7 +7299,7 @@
         "content_type": "rule",
         "entity_name": "Githyanki Kith '",
         "class_name": null,
-        "cosine_distance": 0.312039,
+        "cosine_distance": 0.312001,
         "is_hit": true
       },
       {
@@ -7290,7 +7308,7 @@
         "content_type": "rule",
         "entity_name": "Githyanki",
         "class_name": null,
-        "cosine_distance": 0.335312,
+        "cosine_distance": 0.335259,
         "is_hit": true
       },
       {
@@ -7299,7 +7317,7 @@
         "content_type": "rule",
         "entity_name": "Githyanki",
         "class_name": null,
-        "cosine_distance": 0.385806,
+        "cosine_distance": 0.385701,
         "is_hit": true
       },
       {
@@ -7308,7 +7326,7 @@
         "content_type": "rule",
         "entity_name": "Githyanki",
         "class_name": null,
-        "cosine_distance": 0.403118,
+        "cosine_distance": 0.403024,
         "is_hit": true
       },
       {
@@ -7317,7 +7335,7 @@
         "content_type": "rule",
         "entity_name": "Githyanki",
         "class_name": null,
-        "cosine_distance": 0.404747,
+        "cosine_distance": 0.404623,
         "is_hit": true
       },
       {
@@ -7326,7 +7344,7 @@
         "content_type": "rule",
         "entity_name": "Githyanki",
         "class_name": null,
-        "cosine_distance": 0.446027,
+        "cosine_distance": 0.445876,
         "is_hit": true
       },
       {
@@ -7335,7 +7353,7 @@
         "content_type": "rule",
         "entity_name": "Githyanki",
         "class_name": null,
-        "cosine_distance": 0.456706,
+        "cosine_distance": 0.456577,
         "is_hit": true
       },
       {
@@ -7344,7 +7362,7 @@
         "content_type": "rule",
         "entity_name": "Githyanki Supreme Commander",
         "class_name": null,
-        "cosine_distance": 0.475766,
+        "cosine_distance": 0.475648,
         "is_hit": true
       }
     ]
@@ -7376,7 +7394,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.324807,
+        "cosine_distance": 0.324816,
         "is_hit": true
       },
       {
@@ -7385,7 +7403,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.32814,
+        "cosine_distance": 0.328185,
         "is_hit": true
       },
       {
@@ -7394,7 +7412,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.411424,
+        "cosine_distance": 0.411467,
         "is_hit": true
       },
       {
@@ -7403,7 +7421,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.422004,
+        "cosine_distance": 0.422039,
         "is_hit": true
       },
       {
@@ -7412,7 +7430,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.519072,
+        "cosine_distance": 0.519091,
         "is_hit": true
       },
       {
@@ -7421,7 +7439,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.625386,
+        "cosine_distance": 0.625361,
         "is_hit": true
       },
       {
@@ -7430,7 +7448,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.658582,
+        "cosine_distance": 0.658586,
         "is_hit": true
       },
       {
@@ -7439,7 +7457,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.742097,
+        "cosine_distance": 0.742033,
         "is_hit": true
       }
     ]
@@ -7545,25 +7563,25 @@
       },
       {
         "rank": 4,
-        "chunk_id": "63cd4ec7d0724e83beda",
+        "chunk_id": "4c63cdb4370d7f0fafb9",
         "content_type": "rule",
         "entity_name": "Hit Points",
         "class_name": null,
-        "cosine_distance": 0.405564,
+        "cosine_distance": 0.405561,
         "is_hit": true
       },
       {
         "rank": 5,
-        "chunk_id": "97c59abdc9fe5c9707ef",
+        "chunk_id": "2d30e36114ab8419b33b",
         "content_type": "rule",
         "entity_name": "Hit Points",
         "class_name": null,
-        "cosine_distance": 0.407356,
+        "cosine_distance": 0.407355,
         "is_hit": true
       },
       {
         "rank": 6,
-        "chunk_id": "d3f242969c5d31c627bc",
+        "chunk_id": "340728741e97881c6a76",
         "content_type": "rule",
         "entity_name": "Hit Points",
         "class_name": null,
@@ -7576,7 +7594,7 @@
         "content_type": "rule",
         "entity_name": "Hit Points",
         "class_name": null,
-        "cosine_distance": 0.417005,
+        "cosine_distance": 0.417,
         "is_hit": true
       },
       {
@@ -8160,7 +8178,7 @@
       },
       {
         "rank": 10,
-        "chunk_id": "5581d2b2956a96bffe7e",
+        "chunk_id": "6d6bbc1027772362534e",
         "content_type": "rule",
         "entity_name": "Special Enemies",
         "class_name": null,
@@ -8428,7 +8446,7 @@
         "content_type": "rule",
         "entity_name": "Rakdos Lampooner",
         "class_name": null,
-        "cosine_distance": 0.379396,
+        "cosine_distance": 0.379385,
         "is_hit": true
       },
       {
@@ -8437,7 +8455,7 @@
         "content_type": "rule",
         "entity_name": "Cult Of Rakdos",
         "class_name": null,
-        "cosine_distance": 0.463079,
+        "cosine_distance": 0.463089,
         "is_hit": false
       },
       {
@@ -8446,7 +8464,7 @@
         "content_type": "rule",
         "entity_name": "Background: Rakdos Cultist",
         "class_name": null,
-        "cosine_distance": 0.464585,
+        "cosine_distance": 0.46462,
         "is_hit": false
       },
       {
@@ -8455,7 +8473,7 @@
         "content_type": "rule",
         "entity_name": "Rakdos Guild Sp El Ls",
         "class_name": null,
-        "cosine_distance": 0.469173,
+        "cosine_distance": 0.469243,
         "is_hit": false
       },
       {
@@ -8464,7 +8482,7 @@
         "content_type": "monster",
         "entity_name": "Rakdos",
         "class_name": null,
-        "cosine_distance": 0.476323,
+        "cosine_distance": 0.47635,
         "is_hit": false
       },
       {
@@ -8473,7 +8491,7 @@
         "content_type": "monster",
         "entity_name": "Rakdos",
         "class_name": null,
-        "cosine_distance": 0.477087,
+        "cosine_distance": 0.477123,
         "is_hit": false
       },
       {
@@ -8482,7 +8500,7 @@
         "content_type": "rule",
         "entity_name": "Goals Of The Rakdo S",
         "class_name": null,
-        "cosine_distance": 0.485722,
+        "cosine_distance": 0.485737,
         "is_hit": false
       },
       {
@@ -8491,7 +8509,7 @@
         "content_type": "rule",
         "entity_name": "Rakdos Lampooner",
         "class_name": null,
-        "cosine_distance": 0.492562,
+        "cosine_distance": 0.492571,
         "is_hit": true
       },
       {
@@ -8500,7 +8518,7 @@
         "content_type": "rule",
         "entity_name": "Rakdos V I Llain S",
         "class_name": null,
-        "cosine_distance": 0.492606,
+        "cosine_distance": 0.492627,
         "is_hit": false
       },
       {
@@ -8509,7 +8527,7 @@
         "content_type": "rule",
         "entity_name": "Cult Of Rakdos",
         "class_name": null,
-        "cosine_distance": 0.495702,
+        "cosine_distance": 0.495721,
         "is_hit": false
       }
     ]
@@ -8632,7 +8650,7 @@
         "content_type": "rule",
         "entity_name": "Mira Bar",
         "class_name": null,
-        "cosine_distance": 0.462821,
+        "cosine_distance": 0.462751,
         "is_hit": true
       },
       {
@@ -8641,7 +8659,7 @@
         "content_type": "rule",
         "entity_name": "Mira Bar",
         "class_name": null,
-        "cosine_distance": 0.540705,
+        "cosine_distance": 0.540636,
         "is_hit": true
       }
     ]
@@ -8719,20 +8737,20 @@
       },
       {
         "rank": 7,
-        "chunk_id": "7b5df9099c2fefef41eb",
+        "chunk_id": "6ee30ddfee3c5ddd72e9",
         "content_type": "rule",
-        "entity_name": "Have Two Options: And Fire",
+        "entity_name": "Non ·I Zzet Contacts",
         "class_name": null,
-        "cosine_distance": 0.687872,
+        "cosine_distance": 0.69286,
         "is_hit": false
       },
       {
         "rank": 8,
-        "chunk_id": "6ee30ddfee3c5ddd72e9",
+        "chunk_id": "4d772291c793573587e9",
         "content_type": "rule",
-        "entity_name": "Non Â·I Zzet Contacts",
+        "entity_name": "Have Two Options: And Fire",
         "class_name": null,
-        "cosine_distance": 0.69286,
+        "cosine_distance": 0.704639,
         "is_hit": false
       },
       {
@@ -8782,7 +8800,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.439502,
+        "cosine_distance": 0.439422,
         "is_hit": true
       },
       {
@@ -8791,7 +8809,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.559037,
+        "cosine_distance": 0.558957,
         "is_hit": true
       },
       {
@@ -8800,7 +8818,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.589982,
+        "cosine_distance": 0.589929,
         "is_hit": true
       },
       {
@@ -8809,7 +8827,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.686363,
+        "cosine_distance": 0.686316,
         "is_hit": true
       },
       {
@@ -8818,7 +8836,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.704967,
+        "cosine_distance": 0.704909,
         "is_hit": true
       },
       {
@@ -8827,7 +8845,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.736337,
+        "cosine_distance": 0.736266,
         "is_hit": true
       }
     ]
@@ -9636,7 +9654,7 @@
         "rank": 1,
         "chunk_id": "d2faca5334e4f96212c8",
         "content_type": "rule",
-        "entity_name": "Tortle â€¢",
+        "entity_name": "Tortle •",
         "class_name": null,
         "cosine_distance": 0.349695,
         "is_hit": true
@@ -9747,6 +9765,15 @@
       },
       {
         "rank": 2,
+        "chunk_id": "5bfece6923a1779300ba",
+        "content_type": "rule",
+        "entity_name": "Container Contents",
+        "class_name": null,
+        "cosine_distance": 0.775738,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
         "chunk_id": "941dea92f246f0175def",
         "content_type": "rule",
         "entity_name": "Container Contents",
@@ -9755,7 +9782,34 @@
         "is_hit": true
       },
       {
-        "rank": 3,
+        "rank": 4,
+        "chunk_id": "62c6abce658d39c93bb8",
+        "content_type": "rule",
+        "entity_name": "Container Contents",
+        "class_name": null,
+        "cosine_distance": 0.796168,
+        "is_hit": true
+      },
+      {
+        "rank": 5,
+        "chunk_id": "481df40cad55704e8298",
+        "content_type": "rule",
+        "entity_name": "Container Contents",
+        "class_name": null,
+        "cosine_distance": 0.80212,
+        "is_hit": true
+      },
+      {
+        "rank": 6,
+        "chunk_id": "b1f8ecc37257522731ee",
+        "content_type": "rule",
+        "entity_name": "Container Contents",
+        "class_name": null,
+        "cosine_distance": 0.808652,
+        "is_hit": true
+      },
+      {
+        "rank": 7,
         "chunk_id": "f8f9b1861d76dd737d2b",
         "content_type": "rule",
         "entity_name": "Container Contents",
@@ -9764,7 +9818,7 @@
         "is_hit": true
       },
       {
-        "rank": 4,
+        "rank": 8,
         "chunk_id": "127d8c7236bb429965df",
         "content_type": "rule",
         "entity_name": "Container Contents",
@@ -9773,21 +9827,21 @@
         "is_hit": true
       },
       {
-        "rank": 5,
-        "chunk_id": "7b75972fbdc057451d49",
+        "rank": 9,
+        "chunk_id": "03a57152f1858d8618e4",
         "content_type": "rule",
         "entity_name": "Container Contents",
         "class_name": null,
-        "cosine_distance": 0.846047,
+        "cosine_distance": 0.832508,
         "is_hit": true
       },
       {
-        "rank": 6,
-        "chunk_id": "df39f374f957743ba864",
+        "rank": 10,
+        "chunk_id": "fe64b6cc096425401b66",
         "content_type": "rule",
         "entity_name": "Container Contents",
         "class_name": null,
-        "cosine_distance": 0.863976,
+        "cosine_distance": 0.834596,
         "is_hit": true
       }
     ]
@@ -9846,7 +9900,7 @@
         "content_type": "rule",
         "entity_name": "Axe Beak",
         "class_name": null,
-        "cosine_distance": 0.707241,
+        "cosine_distance": 0.707068,
         "is_hit": true
       },
       {
@@ -10032,6 +10086,24 @@
       },
       {
         "rank": 6,
+        "chunk_id": "f5762d4bd825730d1f1a",
+        "content_type": "rule",
+        "entity_name": "Introduction",
+        "class_name": null,
+        "cosine_distance": 0.762311,
+        "is_hit": true
+      },
+      {
+        "rank": 7,
+        "chunk_id": "51b6375258e50ea2dffc",
+        "content_type": "rule",
+        "entity_name": "Introduction",
+        "class_name": null,
+        "cosine_distance": 0.783043,
+        "is_hit": true
+      },
+      {
+        "rank": 8,
         "chunk_id": "579fc8e881df5299d192",
         "content_type": "rule",
         "entity_name": "Introduction",
@@ -10040,7 +10112,7 @@
         "is_hit": true
       },
       {
-        "rank": 7,
+        "rank": 9,
         "chunk_id": "6ed3a374f9bef0a06bd4",
         "content_type": "rule",
         "entity_name": "Introduction",
@@ -10049,30 +10121,12 @@
         "is_hit": true
       },
       {
-        "rank": 8,
-        "chunk_id": "fb59ba6ea92f6d4026ab",
-        "content_type": "rule",
-        "entity_name": "Introduction",
-        "class_name": null,
-        "cosine_distance": 0.814055,
-        "is_hit": true
-      },
-      {
-        "rank": 9,
+        "rank": 10,
         "chunk_id": "7447bb46dbf977087283",
         "content_type": "rule",
         "entity_name": "Introduction",
         "class_name": null,
-        "cosine_distance": 0.822392,
-        "is_hit": true
-      },
-      {
-        "rank": 10,
-        "chunk_id": "570c85ccbc5a71e0d730",
-        "content_type": "rule",
-        "entity_name": "Introduction",
-        "class_name": null,
-        "cosine_distance": 0.842348,
+        "cosine_distance": 0.811341,
         "is_hit": true
       }
     ]
@@ -10090,13 +10144,13 @@
     "matched_entities": [],
     "matched_content_types": [],
     "hit_at_1": false,
-    "precision_at_5": 0.2,
-    "mrr": 0.5,
-    "recall_at_10": true,
+    "precision_at_5": 0.0,
+    "mrr": 0.0,
+    "recall_at_10": false,
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "f16fb84ad8b981b579b8",
+        "chunk_id": "ecc48f282b39acd20940",
         "content_type": "rule",
         "entity_name": "Str Con Int Wis",
         "class_name": null,
@@ -10105,15 +10159,6 @@
       },
       {
         "rank": 2,
-        "chunk_id": "827fcac73534d153316a",
-        "content_type": "rule",
-        "entity_name": "Senses Passive Perception 10",
-        "class_name": null,
-        "cosine_distance": 0.515489,
-        "is_hit": true
-      },
-      {
-        "rank": 3,
         "chunk_id": "229f5eb4773a3e249765",
         "content_type": "spell",
         "entity_name": "Beast Sense",
@@ -10122,7 +10167,7 @@
         "is_hit": false
       },
       {
-        "rank": 4,
+        "rank": 3,
         "chunk_id": "cc096c4d6ea30eec8715",
         "content_type": "monster",
         "entity_name": "The Environment",
@@ -10131,16 +10176,16 @@
         "is_hit": false
       },
       {
-        "rank": 5,
-        "chunk_id": "7e6190b964cf7722a43f",
+        "rank": 4,
+        "chunk_id": "a79f4ab6dc47fbd8d2c9",
         "content_type": "rule",
         "entity_name": "Condition Immunities Poisoned",
         "class_name": null,
-        "cosine_distance": 0.537373,
+        "cosine_distance": 0.537514,
         "is_hit": false
       },
       {
-        "rank": 6,
+        "rank": 5,
         "chunk_id": "bdc96a1ddbb45789d607",
         "content_type": "spell",
         "entity_name": "Clairvoyance",
@@ -10149,7 +10194,7 @@
         "is_hit": false
       },
       {
-        "rank": 7,
+        "rank": 6,
         "chunk_id": "9e971ae45b9eabc60deb",
         "content_type": "monster",
         "entity_name": "Sing Each Ability",
@@ -10158,8 +10203,8 @@
         "is_hit": false
       },
       {
-        "rank": 8,
-        "chunk_id": "38dfb1a36ee57e0b3071",
+        "rank": 7,
+        "chunk_id": "85169259348878c3bf67",
         "content_type": "monster",
         "entity_name": "Str Dex Con Int Wis Cha",
         "class_name": null,
@@ -10167,8 +10212,8 @@
         "is_hit": false
       },
       {
-        "rank": 9,
-        "chunk_id": "47922a38b6ab5cf299f3",
+        "rank": 8,
+        "chunk_id": "711fe7afc51523192462",
         "content_type": "monster",
         "entity_name": "Str Dex Con Int Wis Cha",
         "class_name": null,
@@ -10176,12 +10221,21 @@
         "is_hit": false
       },
       {
-        "rank": 10,
+        "rank": 9,
         "chunk_id": "41f9ddaaa850c6d6176b",
         "content_type": "monster",
         "entity_name": "Sing Each Ability",
         "class_name": null,
         "cosine_distance": 0.563208,
+        "is_hit": false
+      },
+      {
+        "rank": 10,
+        "chunk_id": "38406c4666a2ef7cc995",
+        "content_type": "dm_guidance",
+        "entity_name": "Creating A Monster",
+        "class_name": null,
+        "cosine_distance": 0.563269,
         "is_hit": false
       }
     ]
@@ -10324,7 +10378,7 @@
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "1499b49f27958b32b631",
+        "chunk_id": "7b2b61e4059ad2846f10",
         "content_type": "rule",
         "entity_name": "Expert T'Unnelers",
         "class_name": null,
@@ -10333,7 +10387,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "f1570bd28a58122e4b8a",
+        "chunk_id": "75c20f83277b242a04d5",
         "content_type": "rule",
         "entity_name": "Expert T'Unnelers",
         "class_name": null,
@@ -10411,7 +10465,7 @@
       },
       {
         "rank": 6,
-        "chunk_id": "78989a9f40a772d3193d",
+        "chunk_id": "e3f25be28f9c0e55d18f",
         "content_type": "rule",
         "entity_name": "Lair",
         "class_name": null,
@@ -10420,7 +10474,7 @@
       },
       {
         "rank": 7,
-        "chunk_id": "304514aeb724344a4886",
+        "chunk_id": "e2f6f8f3fa84d77ae687",
         "content_type": "rule",
         "entity_name": "Lair",
         "class_name": null,
@@ -10429,16 +10483,16 @@
       },
       {
         "rank": 8,
-        "chunk_id": "2288266c8765a0435a8a",
+        "chunk_id": "d93cb38ef966fbb6fb54",
         "content_type": "rule",
         "entity_name": "Lair Of Luxury",
         "class_name": null,
-        "cosine_distance": 0.615617,
+        "cosine_distance": 0.623305,
         "is_hit": false
       },
       {
         "rank": 9,
-        "chunk_id": "e935233052cec42ee0ef",
+        "chunk_id": "19393c9ef212ecf3c519",
         "content_type": "rule",
         "entity_name": "0Rc Lairs",
         "class_name": null,
@@ -10451,7 +10505,7 @@
         "content_type": "rule",
         "entity_name": "Leaving The Lair",
         "class_name": null,
-        "cosine_distance": 0.657058,
+        "cosine_distance": 0.657669,
         "is_hit": true
       }
     ]
@@ -10491,7 +10545,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "caaf17688464e575550a",
+        "chunk_id": "60f6ebac4fc18b131ea5",
         "content_type": "rule",
         "entity_name": "Mind Flayer Flaws",
         "class_name": null,
@@ -10500,25 +10554,34 @@
       },
       {
         "rank": 3,
-        "chunk_id": "38d0ebba92321e8ea8f1",
+        "chunk_id": "a133f92ee55d86d19a68",
         "content_type": "rule",
-        "entity_name": "Roleplaying A Mind Flayer",
+        "entity_name": "Variant: Mind Flayer Psion",
         "class_name": null,
-        "cosine_distance": 0.36419,
+        "cosine_distance": 0.362696,
         "is_hit": false
       },
       {
         "rank": 4,
-        "chunk_id": "1f3fe37e65e4ec1d5424",
+        "chunk_id": "0a93ae40cb556e15a8bf",
         "content_type": "rule",
-        "entity_name": "Mind Flayer Thralls",
+        "entity_name": "Roleplaying A Mind Flayer",
         "class_name": null,
-        "cosine_distance": 0.367926,
+        "cosine_distance": 0.364288,
         "is_hit": false
       },
       {
         "rank": 5,
-        "chunk_id": "9b635741111335ab4d0d",
+        "chunk_id": "5dde0fb219269ab90f72",
+        "content_type": "rule",
+        "entity_name": "Mind Flayer Thralls",
+        "class_name": null,
+        "cosine_distance": 0.36797,
+        "is_hit": false
+      },
+      {
+        "rank": 6,
+        "chunk_id": "8e1005d7e881e82c7b8d",
         "content_type": "rule",
         "entity_name": "Mind Flayers",
         "class_name": null,
@@ -10526,7 +10589,7 @@
         "is_hit": false
       },
       {
-        "rank": 6,
+        "rank": 7,
         "chunk_id": "f722bd26e19f346c917c",
         "content_type": "monster",
         "entity_name": "Mind Flayer",
@@ -10535,17 +10598,8 @@
         "is_hit": false
       },
       {
-        "rank": 7,
-        "chunk_id": "0196508dc86bdcd3580d",
-        "content_type": "rule",
-        "entity_name": "Variant: Mind Flayer Psion",
-        "class_name": null,
-        "cosine_distance": 0.402488,
-        "is_hit": false
-      },
-      {
         "rank": 8,
-        "chunk_id": "5dff6fe150f310fe6184",
+        "chunk_id": "23e9c60757b11863fc03",
         "content_type": "rule",
         "entity_name": "Mind Flayer Ideals",
         "class_name": null,
@@ -10554,20 +10608,20 @@
       },
       {
         "rank": 9,
-        "chunk_id": "ab5f2de895eefbdea469",
+        "chunk_id": "e6acfc79bc978b5e20b6",
         "content_type": "rule",
-        "entity_name": "Variant: Mind Flayer Lich (Illithilich)",
+        "entity_name": "Mind Flayer Names",
         "class_name": null,
-        "cosine_distance": 0.425368,
+        "cosine_distance": 0.420796,
         "is_hit": false
       },
       {
         "rank": 10,
-        "chunk_id": "95217c08113efadea447",
-        "content_type": "monster",
-        "entity_name": "Mind Flayer",
+        "chunk_id": "64cf8da8a79cf494a924",
+        "content_type": "rule",
+        "entity_name": "Variant: Mind Flayer Lich (Illithilich)",
         "class_name": null,
-        "cosine_distance": 0.430269,
+        "cosine_distance": 0.425368,
         "is_hit": false
       }
     ]
@@ -10592,8 +10646,8 @@
       "rule"
     ],
     "hit_at_1": false,
-    "precision_at_5": 0.0,
-    "mrr": 0.166667,
+    "precision_at_5": 0.2,
+    "mrr": 0.25,
     "recall_at_10": true,
     "top_k": [
       {
@@ -10625,12 +10679,12 @@
       },
       {
         "rank": 4,
-        "chunk_id": "f03c815e46690b089a00",
+        "chunk_id": "8570e4fdd43676ed1b24",
         "content_type": "rule",
-        "entity_name": "Gentle Giants?",
+        "entity_name": "Stone Giants",
         "class_name": null,
-        "cosine_distance": 0.346122,
-        "is_hit": false
+        "cosine_distance": 0.344639,
+        "is_hit": true
       },
       {
         "rank": 5,
@@ -10638,30 +10692,30 @@
         "content_type": "rule",
         "entity_name": "Gentle Giants?",
         "class_name": null,
-        "cosine_distance": 0.358397,
+        "cosine_distance": 0.346122,
         "is_hit": false
       },
       {
         "rank": 6,
-        "chunk_id": "e573a16c55d0fa0ba091",
+        "chunk_id": "bb7a686e42a76f80242e",
         "content_type": "rule",
-        "entity_name": "Stone Giants",
+        "entity_name": "Gentle Giants?",
         "class_name": null,
-        "cosine_distance": 0.371458,
-        "is_hit": true
+        "cosine_distance": 0.358397,
+        "is_hit": false
       },
       {
         "rank": 7,
-        "chunk_id": "25fde44457e61d541e54",
+        "chunk_id": "811d814ea853f70db8e3",
         "content_type": "rule",
         "entity_name": "Giants And Magic",
         "class_name": null,
-        "cosine_distance": 0.401619,
+        "cosine_distance": 0.401602,
         "is_hit": false
       },
       {
         "rank": 8,
-        "chunk_id": "bb7a686e42a76f80242e",
+        "chunk_id": "ec9b80e99bcface6c515",
         "content_type": "rule",
         "entity_name": "Gentle Giants?",
         "class_name": null,
@@ -10679,7 +10733,7 @@
       },
       {
         "rank": 10,
-        "chunk_id": "5f6b66a8efb31f1fa9df",
+        "chunk_id": "479b2e42a874ee5f01b1",
         "content_type": "rule",
         "entity_name": "Living The Giant Life",
         "class_name": null,
@@ -10788,12 +10842,12 @@
       },
       {
         "rank": 10,
-        "chunk_id": "52a97cc9372da45cd3dc",
+        "chunk_id": "1d49f5a506e2727b4c29",
         "content_type": "rule",
-        "entity_name": "Actions",
+        "entity_name": "Using This Book",
         "class_name": null,
-        "cosine_distance": 0.531725,
-        "is_hit": true
+        "cosine_distance": 0.533213,
+        "is_hit": false
       }
     ]
   },
@@ -10938,7 +10992,7 @@
         "content_type": "rule",
         "entity_name": "Tool Descriptions",
         "class_name": null,
-        "cosine_distance": 0.525072,
+        "cosine_distance": 0.524971,
         "is_hit": true
       },
       {
@@ -10947,7 +11001,7 @@
         "content_type": "rule",
         "entity_name": "Tool Descriptions",
         "class_name": null,
-        "cosine_distance": 0.632435,
+        "cosine_distance": 0.632343,
         "is_hit": true
       },
       {
@@ -10956,7 +11010,7 @@
         "content_type": "rule",
         "entity_name": "Tool Descriptions",
         "class_name": null,
-        "cosine_distance": 0.633945,
+        "cosine_distance": 0.633878,
         "is_hit": true
       },
       {
@@ -10965,7 +11019,7 @@
         "content_type": "rule",
         "entity_name": "Tool Descriptions",
         "class_name": null,
-        "cosine_distance": 0.638665,
+        "cosine_distance": 0.638588,
         "is_hit": true
       },
       {
@@ -10974,7 +11028,7 @@
         "content_type": "rule",
         "entity_name": "Tool Descriptions",
         "class_name": null,
-        "cosine_distance": 0.643668,
+        "cosine_distance": 0.643587,
         "is_hit": true
       },
       {
@@ -10983,7 +11037,7 @@
         "content_type": "rule",
         "entity_name": "Tool Descriptions",
         "class_name": null,
-        "cosine_distance": 0.647187,
+        "cosine_distance": 0.647158,
         "is_hit": true
       },
       {
@@ -10992,7 +11046,7 @@
         "content_type": "rule",
         "entity_name": "Tool Descriptions",
         "class_name": null,
-        "cosine_distance": 0.649196,
+        "cosine_distance": 0.649117,
         "is_hit": true
       },
       {
@@ -11001,7 +11055,7 @@
         "content_type": "rule",
         "entity_name": "Tool Descriptions",
         "class_name": null,
-        "cosine_distance": 0.651502,
+        "cosine_distance": 0.651415,
         "is_hit": true
       },
       {
@@ -11010,7 +11064,7 @@
         "content_type": "rule",
         "entity_name": "Tool Descriptions",
         "class_name": null,
-        "cosine_distance": 0.661056,
+        "cosine_distance": 0.661009,
         "is_hit": true
       },
       {
@@ -11019,7 +11073,7 @@
         "content_type": "rule",
         "entity_name": "Tool Descriptions",
         "class_name": null,
-        "cosine_distance": 0.664555,
+        "cosine_distance": 0.664485,
         "is_hit": true
       }
     ]
@@ -11209,11 +11263,11 @@
       },
       {
         "rank": 6,
-        "chunk_id": "1fcbc885e0b5e21726b5",
+        "chunk_id": "e3ff462714156db085ba",
         "content_type": "rule",
         "entity_name": "And Distract. Rival Adventurers Are Always",
         "class_name": null,
-        "cosine_distance": 0.581205,
+        "cosine_distance": 0.593423,
         "is_hit": false
       },
       {
@@ -11376,7 +11430,7 @@
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "51509b52797015a4fc3d",
+        "chunk_id": "a8f6213e3e2cd447b0b5",
         "content_type": "rule",
         "entity_name": "Dloo",
         "class_name": null,
@@ -11385,7 +11439,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "75de7bd11e403813118f",
+        "chunk_id": "0a632c6ba830e0310a0c",
         "content_type": "rule",
         "entity_name": "Gnoll Names",
         "class_name": null,
@@ -11394,7 +11448,7 @@
       },
       {
         "rank": 3,
-        "chunk_id": "6cde85f47d4bf7d32b10",
+        "chunk_id": "5971804e2f7c508c668b",
         "content_type": "rule",
         "entity_name": "0Rc Names",
         "class_name": null,
@@ -11412,7 +11466,7 @@
       },
       {
         "rank": 5,
-        "chunk_id": "8539f4f18e8b5289ff62",
+        "chunk_id": "5d13599caabc8eb8842e",
         "content_type": "rule",
         "entity_name": "Goliath Names",
         "class_name": null,
@@ -11430,7 +11484,7 @@
       },
       {
         "rank": 7,
-        "chunk_id": "69b2257e8ae7084ae51f",
+        "chunk_id": "7e94753ffcfe7cd23c92",
         "content_type": "rule",
         "entity_name": "Kobold Names",
         "class_name": null,
@@ -11439,7 +11493,7 @@
       },
       {
         "rank": 8,
-        "chunk_id": "a911eb3de44efa052bae",
+        "chunk_id": "9e894b771393cc32ec63",
         "content_type": "rule",
         "entity_name": "Gnollnames",
         "class_name": null,
@@ -11726,7 +11780,7 @@
         "content_type": "spell",
         "entity_name": "Investiture Of Stone",
         "class_name": null,
-        "cosine_distance": 0.292022,
+        "cosine_distance": 0.291986,
         "is_hit": true
       },
       {
@@ -11735,7 +11789,7 @@
         "content_type": "spell",
         "entity_name": "Investiture Of Stone",
         "class_name": null,
-        "cosine_distance": 0.432132,
+        "cosine_distance": 0.432119,
         "is_hit": true
       }
     ]
@@ -11767,7 +11821,7 @@
         "content_type": "spell",
         "entity_name": "Investiture Of Flame",
         "class_name": null,
-        "cosine_distance": 0.323087,
+        "cosine_distance": 0.323124,
         "is_hit": true
       }
     ]
@@ -11916,7 +11970,7 @@
         "content_type": "spell",
         "entity_name": "Bones Of The Earth",
         "class_name": null,
-        "cosine_distance": 0.344251,
+        "cosine_distance": 0.344292,
         "is_hit": true
       },
       {
@@ -11925,7 +11979,7 @@
         "content_type": "rule",
         "entity_name": "Timeless Body",
         "class_name": null,
-        "cosine_distance": 0.658065,
+        "cosine_distance": 0.658051,
         "is_hit": false
       },
       {
@@ -11934,7 +11988,7 @@
         "content_type": "rule",
         "entity_name": "Time",
         "class_name": null,
-        "cosine_distance": 0.672971,
+        "cosine_distance": 0.672905,
         "is_hit": false
       },
       {
@@ -11943,7 +11997,7 @@
         "content_type": "spell",
         "entity_name": "Time Stop",
         "class_name": null,
-        "cosine_distance": 0.674238,
+        "cosine_distance": 0.67418,
         "is_hit": false
       },
       {
@@ -11961,7 +12015,7 @@
         "content_type": "rule",
         "entity_name": "Example Downtime Activities ----",
         "class_name": null,
-        "cosine_distance": 0.737173,
+        "cosine_distance": 0.737164,
         "is_hit": false
       },
       {
@@ -11970,7 +12024,7 @@
         "content_type": "rule",
         "entity_name": "Downtime Activities",
         "class_name": null,
-        "cosine_distance": 0.767243,
+        "cosine_distance": 0.767204,
         "is_hit": false
       },
       {
@@ -11979,7 +12033,7 @@
         "content_type": "rule",
         "entity_name": "Example Downtime Activities ----",
         "class_name": null,
-        "cosine_distance": 0.772891,
+        "cosine_distance": 0.772888,
         "is_hit": false
       },
       {
@@ -11988,7 +12042,7 @@
         "content_type": "rule",
         "entity_name": "Downtime Revisited",
         "class_name": null,
-        "cosine_distance": 0.77371,
+        "cosine_distance": 0.773675,
         "is_hit": false
       },
       {
@@ -11997,7 +12051,7 @@
         "content_type": "rule",
         "entity_name": "Downtime Activities",
         "class_name": null,
-        "cosine_distance": 0.775215,
+        "cosine_distance": 0.77521,
         "is_hit": false
       }
     ]
@@ -12238,7 +12292,7 @@
         "content_type": "spell",
         "entity_name": "Delayed Blast Fireball",
         "class_name": null,
-        "cosine_distance": 0.504563,
+        "cosine_distance": 0.504534,
         "is_hit": false
       },
       {
@@ -12247,7 +12301,7 @@
         "content_type": "spell",
         "entity_name": "Mass Suggestion",
         "class_name": null,
-        "cosine_distance": 0.506187,
+        "cosine_distance": 0.506103,
         "is_hit": false
       },
       {
@@ -12256,7 +12310,7 @@
         "content_type": "spell",
         "entity_name": "Glyph Of Warding",
         "class_name": null,
-        "cosine_distance": 0.531963,
+        "cosine_distance": 0.53192,
         "is_hit": false
       },
       {
@@ -12265,7 +12319,7 @@
         "content_type": "spell",
         "entity_name": "Tran",
         "class_name": null,
-        "cosine_distance": 0.537922,
+        "cosine_distance": 0.537899,
         "is_hit": false
       },
       {
@@ -12274,7 +12328,7 @@
         "content_type": "spell",
         "entity_name": "Wish",
         "class_name": null,
-        "cosine_distance": 0.542558,
+        "cosine_distance": 0.542542,
         "is_hit": false
       },
       {
@@ -12283,7 +12337,7 @@
         "content_type": "spell",
         "entity_name": "Major Image",
         "class_name": null,
-        "cosine_distance": 0.544971,
+        "cosine_distance": 0.544927,
         "is_hit": false
       },
       {
@@ -12292,7 +12346,7 @@
         "content_type": "spell",
         "entity_name": "Imprisonment",
         "class_name": null,
-        "cosine_distance": 0.546488,
+        "cosine_distance": 0.546459,
         "is_hit": false
       },
       {
@@ -12301,7 +12355,7 @@
         "content_type": "spell",
         "entity_name": "Antipathy/Sympathy",
         "class_name": null,
-        "cosine_distance": 0.546804,
+        "cosine_distance": 0.546765,
         "is_hit": false
       },
       {
@@ -12310,7 +12364,7 @@
         "content_type": "spell",
         "entity_name": "Dissonant Whispers",
         "class_name": null,
-        "cosine_distance": 0.55008,
+        "cosine_distance": 0.550038,
         "is_hit": false
       },
       {
@@ -12319,7 +12373,7 @@
         "content_type": "spell",
         "entity_name": "Legend Lore",
         "class_name": null,
-        "cosine_distance": 0.551317,
+        "cosine_distance": 0.551264,
         "is_hit": false
       }
     ]
@@ -12814,7 +12868,7 @@
         "content_type": "spell",
         "entity_name": "Summon Beast",
         "class_name": null,
-        "cosine_distance": 0.341217,
+        "cosine_distance": 0.341168,
         "is_hit": true
       }
     ]
@@ -13045,11 +13099,11 @@
       },
       {
         "rank": 7,
-        "chunk_id": "4bd7fd823559493b3fd9",
+        "chunk_id": "ffe823f7512381216aed",
         "content_type": "rule",
         "entity_name": "Temple Mount",
         "class_name": null,
-        "cosine_distance": 0.550905,
+        "cosine_distance": 0.550857,
         "is_hit": false
       },
       {
@@ -13110,7 +13164,7 @@
         "content_type": "spell",
         "entity_name": "Bo Nes Of The Earth",
         "class_name": null,
-        "cosine_distance": 0.529895,
+        "cosine_distance": 0.529981,
         "is_hit": true
       },
       {
@@ -13119,7 +13173,7 @@
         "content_type": "spell",
         "entity_name": "Time Stop",
         "class_name": null,
-        "cosine_distance": 0.661095,
+        "cosine_distance": 0.661063,
         "is_hit": false
       },
       {
@@ -13128,7 +13182,7 @@
         "content_type": "rule",
         "entity_name": "Timeless Body",
         "class_name": null,
-        "cosine_distance": 0.69903,
+        "cosine_distance": 0.699071,
         "is_hit": false
       },
       {
@@ -13137,7 +13191,7 @@
         "content_type": "rule",
         "entity_name": "Time",
         "class_name": null,
-        "cosine_distance": 0.711173,
+        "cosine_distance": 0.711122,
         "is_hit": false
       },
       {
@@ -13146,7 +13200,7 @@
         "content_type": "rule",
         "entity_name": "Time In The Realms",
         "class_name": null,
-        "cosine_distance": 0.711528,
+        "cosine_distance": 0.711518,
         "is_hit": false
       },
       {
@@ -13155,7 +13209,7 @@
         "content_type": "rule",
         "entity_name": "Example Downtime Activities ----",
         "class_name": null,
-        "cosine_distance": 0.742961,
+        "cosine_distance": 0.742983,
         "is_hit": false
       },
       {
@@ -13164,7 +13218,7 @@
         "content_type": "rule",
         "entity_name": "Example Downtime Activities ----",
         "class_name": null,
-        "cosine_distance": 0.782578,
+        "cosine_distance": 0.782605,
         "is_hit": false
       },
       {
@@ -13173,7 +13227,7 @@
         "content_type": "rule",
         "entity_name": "Keeping Time From Day To Day",
         "class_name": null,
-        "cosine_distance": 0.782647,
+        "cosine_distance": 0.782639,
         "is_hit": false
       },
       {
@@ -13182,7 +13236,7 @@
         "content_type": "rule",
         "entity_name": "Example Downtime Activities ----",
         "class_name": null,
-        "cosine_distance": 0.783838,
+        "cosine_distance": 0.783867,
         "is_hit": false
       },
       {
@@ -13191,7 +13245,7 @@
         "content_type": "rule",
         "entity_name": "Example Downtime Activities ----",
         "class_name": null,
-        "cosine_distance": 0.78729,
+        "cosine_distance": 0.787301,
         "is_hit": false
       }
     ]
@@ -13431,7 +13485,7 @@
         "content_type": "spell",
         "entity_name": "Word Of Radiance",
         "class_name": null,
-        "cosine_distance": 0.395622,
+        "cosine_distance": 0.395601,
         "is_hit": true
       },
       {
@@ -13440,7 +13494,7 @@
         "content_type": "rule",
         "entity_name": "Time",
         "class_name": null,
-        "cosine_distance": 0.61717,
+        "cosine_distance": 0.617214,
         "is_hit": false
       },
       {
@@ -13449,7 +13503,7 @@
         "content_type": "spell",
         "entity_name": "Time Stop",
         "class_name": null,
-        "cosine_distance": 0.656422,
+        "cosine_distance": 0.656353,
         "is_hit": false
       },
       {
@@ -13458,7 +13512,7 @@
         "content_type": "rule",
         "entity_name": "Downtime Revisited",
         "class_name": null,
-        "cosine_distance": 0.68695,
+        "cosine_distance": 0.68703,
         "is_hit": false
       },
       {
@@ -13467,7 +13521,7 @@
         "content_type": "rule",
         "entity_name": "Timeless Body",
         "class_name": null,
-        "cosine_distance": 0.689197,
+        "cosine_distance": 0.689205,
         "is_hit": false
       },
       {
@@ -13476,7 +13530,7 @@
         "content_type": "rule",
         "entity_name": "Downtime Activities",
         "class_name": null,
-        "cosine_distance": 0.695424,
+        "cosine_distance": 0.695485,
         "is_hit": false
       },
       {
@@ -13485,7 +13539,7 @@
         "content_type": "rule",
         "entity_name": "Example Downtime Activities ----",
         "class_name": null,
-        "cosine_distance": 0.717514,
+        "cosine_distance": 0.717634,
         "is_hit": false
       },
       {
@@ -13494,7 +13548,7 @@
         "content_type": "rule",
         "entity_name": "Time In The Realms",
         "class_name": null,
-        "cosine_distance": 0.721309,
+        "cosine_distance": 0.72131,
         "is_hit": false
       },
       {
@@ -13503,7 +13557,7 @@
         "content_type": "rule",
         "entity_name": "Example Downtime Activities ----",
         "class_name": null,
-        "cosine_distance": 0.732295,
+        "cosine_distance": 0.732388,
         "is_hit": false
       },
       {
@@ -13512,7 +13566,7 @@
         "content_type": "rule",
         "entity_name": "Example Downtime Activities ----",
         "class_name": null,
-        "cosine_distance": 0.735873,
+        "cosine_distance": 0.735987,
         "is_hit": false
       }
     ]
@@ -13601,6 +13655,15 @@
       },
       {
         "rank": 2,
+        "chunk_id": "3cae10791c1fbd2e8e48",
+        "content_type": "rule",
+        "entity_name": "Ha• Aom• Potion Or Amulet That",
+        "class_name": null,
+        "cosine_distance": 0.685055,
+        "is_hit": false
+      },
+      {
+        "rank": 3,
         "chunk_id": "4cfd77564f159cd7052e",
         "content_type": "rule",
         "entity_name": "All That Glitters",
@@ -13609,7 +13672,16 @@
         "is_hit": false
       },
       {
-        "rank": 3,
+        "rank": 4,
+        "chunk_id": "6fd003a83bcecb677151",
+        "content_type": "rule",
+        "entity_name": "Make",
+        "class_name": null,
+        "cosine_distance": 0.719047,
+        "is_hit": false
+      },
+      {
+        "rank": 5,
         "chunk_id": "12af53a9cc2e94b944a0",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -13618,7 +13690,7 @@
         "is_hit": false
       },
       {
-        "rank": 4,
+        "rank": 6,
         "chunk_id": "cf7b5c7e5e56d884f9fa",
         "content_type": "rule",
         "entity_name": "Rhythm-Maker's Drum",
@@ -13627,7 +13699,7 @@
         "is_hit": false
       },
       {
-        "rank": 5,
+        "rank": 7,
         "chunk_id": "9a44a684d7abfc0ea184",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -13636,8 +13708,8 @@
         "is_hit": false
       },
       {
-        "rank": 6,
-        "chunk_id": "f009c456e5b3ee771097",
+        "rank": 8,
+        "chunk_id": "9054a6f9c7a4b738ed4c",
         "content_type": "rule",
         "entity_name": "Makes Their Charac-",
         "class_name": null,
@@ -13645,7 +13717,7 @@
         "is_hit": false
       },
       {
-        "rank": 7,
+        "rank": 9,
         "chunk_id": "102570fe22c3673c98f8",
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
@@ -13654,30 +13726,12 @@
         "is_hit": false
       },
       {
-        "rank": 8,
-        "chunk_id": "912fa08d2027a903569e",
+        "rank": 10,
+        "chunk_id": "7d0d16cad4c8367ccaa6",
         "content_type": "rule",
         "entity_name": "That",
         "class_name": null,
         "cosine_distance": 0.834013,
-        "is_hit": false
-      },
-      {
-        "rank": 9,
-        "chunk_id": "dd3d05803168126b7601",
-        "content_type": "rule",
-        "entity_name": "That",
-        "class_name": null,
-        "cosine_distance": 0.843235,
-        "is_hit": false
-      },
-      {
-        "rank": 10,
-        "chunk_id": "d427039c2446b60d334d",
-        "content_type": "rule",
-        "entity_name": "Make",
-        "class_name": null,
-        "cosine_distance": 0.854725,
         "is_hit": false
       }
     ]
@@ -13716,11 +13770,11 @@
       },
       {
         "rank": 2,
-        "chunk_id": "d427039c2446b60d334d",
+        "chunk_id": "6fd003a83bcecb677151",
         "content_type": "rule",
         "entity_name": "Make",
         "class_name": null,
-        "cosine_distance": 0.652617,
+        "cosine_distance": 0.572531,
         "is_hit": false
       },
       {
@@ -13761,7 +13815,7 @@
       },
       {
         "rank": 7,
-        "chunk_id": "f009c456e5b3ee771097",
+        "chunk_id": "9054a6f9c7a4b738ed4c",
         "content_type": "rule",
         "entity_name": "Makes Their Charac-",
         "class_name": null,
@@ -13918,7 +13972,7 @@
         "content_type": "monster",
         "entity_name": "Shield Guardian",
         "class_name": null,
-        "cosine_distance": 0.299902,
+        "cosine_distance": 0.299906,
         "is_hit": true
       },
       {
@@ -13927,7 +13981,7 @@
         "content_type": "monster",
         "entity_name": "Shield Guardian",
         "class_name": null,
-        "cosine_distance": 0.311444,
+        "cosine_distance": 0.311433,
         "is_hit": true
       },
       {
@@ -13936,7 +13990,7 @@
         "content_type": "spell",
         "entity_name": "Fire Shield",
         "class_name": null,
-        "cosine_distance": 0.522082,
+        "cosine_distance": 0.522029,
         "is_hit": false
       },
       {
@@ -13945,7 +13999,7 @@
         "content_type": "spell",
         "entity_name": "Shield",
         "class_name": null,
-        "cosine_distance": 0.541386,
+        "cosine_distance": 0.541383,
         "is_hit": false
       },
       {
@@ -13954,7 +14008,7 @@
         "content_type": "monster",
         "entity_name": "Shield Guardian",
         "class_name": null,
-        "cosine_distance": 0.545385,
+        "cosine_distance": 0.545352,
         "is_hit": true
       },
       {
@@ -13963,7 +14017,7 @@
         "content_type": "spell",
         "entity_name": "Shield Of Faith",
         "class_name": null,
-        "cosine_distance": 0.585227,
+        "cosine_distance": 0.585196,
         "is_hit": false
       }
     ]
@@ -13985,26 +14039,35 @@
       "monster"
     ],
     "hit_at_1": true,
-    "precision_at_5": 0.4,
+    "precision_at_5": 0.6,
     "mrr": 1.0,
     "recall_at_10": true,
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "7a7f6ab7b1e34cd97101",
+        "chunk_id": "d4ed8d24d391181673d1",
         "content_type": "monster",
         "entity_name": "Froghemoth",
         "class_name": null,
-        "cosine_distance": 0.280623,
+        "cosine_distance": 0.293611,
         "is_hit": true
       },
       {
         "rank": 2,
-        "chunk_id": "a8f908370d71d17f799d",
+        "chunk_id": "44fbf049f0307771b4c1",
         "content_type": "monster",
         "entity_name": "Froghemoth",
         "class_name": null,
-        "cosine_distance": 0.46387,
+        "cosine_distance": 0.415583,
+        "is_hit": true
+      },
+      {
+        "rank": 3,
+        "chunk_id": "d577cc477d3117e3bda4",
+        "content_type": "monster",
+        "entity_name": "Froghemoth",
+        "class_name": null,
+        "cosine_distance": 0.463762,
         "is_hit": true
       }
     ]
@@ -14034,7 +14097,7 @@
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "b8059531b41088f3c862",
+        "chunk_id": "7e53bc37d362ce8ef594",
         "content_type": "rule",
         "entity_name": "Death",
         "class_name": null,
@@ -14043,7 +14106,7 @@
       },
       {
         "rank": 2,
-        "chunk_id": "bc0783e49404c9b2d910",
+        "chunk_id": "5cdf035e0d1ba644490a",
         "content_type": "monster",
         "entity_name": "Death Kiss",
         "class_name": null,
@@ -14147,7 +14210,7 @@
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "8913d2fc9ef95e41fcd8",
+        "chunk_id": "31561cb4ef1a2b8d16c5",
         "content_type": "monster",
         "entity_name": "Babau",
         "class_name": null,
@@ -14179,20 +14242,20 @@
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "6582d03635a5f3b22b04",
+        "chunk_id": "fffe79d59922861d7d94",
         "content_type": "monster",
         "entity_name": "Draegloth",
         "class_name": null,
-        "cosine_distance": 0.216633,
+        "cosine_distance": 0.233298,
         "is_hit": true
       },
       {
         "rank": 2,
-        "chunk_id": "3a3a5b36678f1a7d6690",
+        "chunk_id": "e453538d053edd974dc6",
         "content_type": "monster",
         "entity_name": "Draegloth",
         "class_name": null,
-        "cosine_distance": 0.383175,
+        "cosine_distance": 0.383215,
         "is_hit": true
       }
     ]
@@ -14220,29 +14283,29 @@
     "top_k": [
       {
         "rank": 1,
-        "chunk_id": "56826d0ab5d7765b6bfb",
+        "chunk_id": "c29325d8afdc21e032e8",
         "content_type": "monster",
         "entity_name": "Flail Snail",
         "class_name": null,
-        "cosine_distance": 0.264922,
+        "cosine_distance": 0.264914,
         "is_hit": true
       },
       {
         "rank": 2,
-        "chunk_id": "d9d4c1a35fae2d870c0b",
+        "chunk_id": "bf4dd6b21122a376e8aa",
         "content_type": "monster",
         "entity_name": "Flail Snail",
         "class_name": null,
-        "cosine_distance": 0.349841,
+        "cosine_distance": 0.349884,
         "is_hit": true
       },
       {
         "rank": 3,
-        "chunk_id": "57e13174755272341afb",
+        "chunk_id": "62c59ae552f445988b10",
         "content_type": "monster",
         "entity_name": "Flail Snail",
         "class_name": null,
-        "cosine_distance": 0.442688,
+        "cosine_distance": 0.442686,
         "is_hit": true
       }
     ]
@@ -14324,7 +14387,7 @@
         "content_type": "monster",
         "entity_name": "Allip",
         "class_name": null,
-        "cosine_distance": 0.388677,
+        "cosine_distance": 0.388646,
         "is_hit": true
       },
       {
@@ -14333,7 +14396,7 @@
         "content_type": "monster",
         "entity_name": "Allip",
         "class_name": null,
-        "cosine_distance": 0.407274,
+        "cosine_distance": 0.407304,
         "is_hit": true
       },
       {
@@ -14342,7 +14405,7 @@
         "content_type": "monster",
         "entity_name": "Allip",
         "class_name": null,
-        "cosine_distance": 0.43462,
+        "cosine_distance": 0.434655,
         "is_hit": true
       },
       {
@@ -14351,7 +14414,7 @@
         "content_type": "monster",
         "entity_name": "Allip",
         "class_name": null,
-        "cosine_distance": 0.526547,
+        "cosine_distance": 0.526515,
         "is_hit": true
       },
       {
@@ -14360,7 +14423,7 @@
         "content_type": "monster",
         "entity_name": "Allip",
         "class_name": null,
-        "cosine_distance": 0.609991,
+        "cosine_distance": 0.609994,
         "is_hit": true
       }
     ]
@@ -14439,7 +14502,7 @@
     "category": "negative",
     "book": "phb",
     "negative": true,
-    "top1_distance": 0.510049,
+    "top1_distance": 0.510021,
     "top1_entity": "Izzet Creatures"
   },
   {

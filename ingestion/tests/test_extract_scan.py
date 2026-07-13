@@ -788,5 +788,76 @@ def test_retag_noop_without_statblocks():
 
 
 # ---------------------------------------------------------------------------
-# Runner
+# Entity-name capture guard (agent-forge-harness-wu1) — margin quotes, table
+# rows, and garbled dividers must not become entity_name. Samples below are
+# pulled verbatim from the real bad_entity quarantine data (chunks-vgm-5e /
+# chunks-tortle-5e .quarantine.jsonl) captured during research.
 # ---------------------------------------------------------------------------
+
+def test_supplement_margin_quote_not_captured_as_entity_name():
+    L = LineItem
+    stream = [
+        L(1, 0, 12.0, "MONSTER LORE", bold=True),
+        L(1, 0, 9.5, "The gathering storm brought terrors never before seen in the North.", bold=False),
+        L(1, 0, 10.0, "Well, I Know W I Am. -Volo", bold=True),
+        L(1, 0, 9.5, "Travelers spoke only in hushed whispers of the horrors beyond the tree line.", bold=False),
+    ]
+    chunks = extract_supplement_chunks(stream, "vgm-5e", "vgm.pdf", SUPP_CFG)
+    assert not any(c.entity_name == "Well, I Know W I Am. -Volo" for c in chunks), \
+        f"margin quote leaked as entity_name: {[c.entity_name for c in chunks]}"
+    assert any("Well, I Know W I Am. -Volo" in c.text for c in chunks), \
+        "quote text should still be preserved as body content, not dropped"
+
+
+def test_supplement_table_row_not_captured_as_entity_name():
+    L = LineItem
+    stream = [
+        L(1, 0, 12.0, "RANDOM ENCOUNTERS", bold=True),
+        L(1, 0, 9.5, "Roll on the table below to determine what the party meets.", bold=False),
+        L(1, 0, 10.0, "21-25 3D6 Hook Horrors", bold=True),
+        L(1, 0, 9.5, "41-55 6D6 Ogres", bold=False),
+    ]
+    chunks = extract_supplement_chunks(stream, "vgm-5e", "vgm.pdf", SUPP_CFG)
+    assert not any(c.entity_name == "21-25 3D6 Hook Horrors" for c in chunks), \
+        f"table row leaked as entity_name: {[c.entity_name for c in chunks]}"
+
+
+def test_supplement_garbled_chapter_divider_not_captured_as_entity_name():
+    L = LineItem
+    stream = [
+        L(1, 0, 9.5, "The tome closes with a final accounting of the realm's beasts.", bold=False),
+        L(1, 0, 12.0, "Ch Pter 1 :", bold=True),
+        L(1, 0, 9.5, "Monster Lore begins with the smallest of creatures.", bold=False),
+    ]
+    chunks = extract_supplement_chunks(stream, "vgm-5e", "vgm.pdf", SUPP_CFG)
+    assert not any(c.entity_name == "Ch Pter 1 :" for c in chunks), \
+        f"garbled divider leaked as entity_name: {[c.entity_name for c in chunks]}"
+
+
+def test_supplement_genuine_bold_heading_still_becomes_entity_name():
+    # Regression guard: the fix must reject garbage, not headings in general.
+    L = LineItem
+    stream = [
+        L(1, 0, 12.0, "MONSTER LORE", bold=True),
+        L(1, 0, 9.5, "Some intro prose about the region.", bold=False),
+        L(1, 0, 12.0, "Grolantor", bold=True),
+        L(1, 0, 9.5, "Grolantor is a legendary hill giant chieftain of great renown.", bold=False),
+    ]
+    chunks = extract_supplement_chunks(stream, "vgm-5e", "vgm.pdf", SUPP_CFG)
+    assert any(c.entity_name == "Grolantor" for c in chunks), \
+        f"genuine heading was wrongly rejected: {[c.entity_name for c in chunks]}"
+
+
+def test_supplement_unnamed_prose_block_still_emits_not_dropped():
+    # A prose block that never earns a name-shaped heading must still be
+    # emitted (entity_name=None), not silently dropped by flush().
+    L = LineItem
+    stream = [
+        L(1, 0, 10.0, "Well, I Know W I Am. -Volo", bold=True),
+        L(1, 0, 9.5, "The gathering storm brought terrors never before seen in the North.", bold=False),
+        L(1, 0, 9.5, "Travelers spoke only in hushed whispers of the horrors beyond the tree line.", bold=False),
+    ]
+    chunks = extract_supplement_chunks(stream, "vgm-5e", "vgm.pdf", SUPP_CFG)
+    assert chunks, "prose-only block must still be emitted, not dropped"
+    assert any("gathering storm" in c.text for c in chunks)
+    assert all(c.entity_name is None for c in chunks if "gathering storm" in c.text)
