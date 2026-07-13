@@ -96,6 +96,32 @@ def test_generic_stoplist_entities_dropped():
     assert "Combat" not in entities and "Equipment" not in entities and "The" not in entities
 
 
+def test_one_char_ocr_noise_entity_never_matches():
+    # eue: the 1-char OCR-noise entity 'I' (typed monster in vocab) compiles to
+    # \bi(?:e?s)?\b via the plural-aware pattern, which matches the word "is" in
+    # almost any question and forced a bogus content_type=monster filter
+    # ("What is the range of Fireball?" returned Firefist, answerable=False).
+    classes, entities = extract_query_entities(
+        "What is the range of Fireball?",
+        KNOWN_CLASSES | {"I"}, KNOWN_ENTITIES | {"I", "A"},
+    )
+    assert "I" not in entities and "A" not in entities, (
+        f"Short junk entities must be dropped, got {entities}"
+    )
+    assert "I" not in classes, f"Short junk classes must be dropped, got {classes}"
+    assert "Fireball" in entities
+
+
+def test_two_char_entities_dropped_even_on_exact_word_match():
+    # eue: the guard is on name length, not match quality — a 2-char name is
+    # dropped before matching even when the query contains it verbatim.
+    _, entities = extract_query_entities(
+        "How much weight can an ox pull?",
+        KNOWN_CLASSES, KNOWN_ENTITIES | {"Ox"},
+    )
+    assert "Ox" not in entities, f"2-char entity must be dropped, got {entities}"
+
+
 def test_multiword_entity_match():
     classes, entities = extract_query_entities(
         "What are the components of Cure Wounds?",
