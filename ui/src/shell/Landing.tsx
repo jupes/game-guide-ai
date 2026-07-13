@@ -9,11 +9,13 @@ import { Button } from '../ds/Button'
 import { Card } from '../ds/Card'
 import { Chip } from '../ds/Chip'
 import { useAppNav } from './AppNav'
-import { MODES } from './modes'
+import { useCurrentUser } from './currentUser'
+import { modesForRole } from './modes'
 import './Landing.css'
 
 export function Landing(): React.JSX.Element {
   const { enterWorkspace } = useAppNav()
+  const { user } = useCurrentUser()
 
   return (
     <div className="landing">
@@ -47,7 +49,7 @@ export function Landing(): React.JSX.Element {
 
         {/* Mode entry chips */}
         <div className="landing__modes">
-          {MODES.map(({ mode, icon, label }) => (
+          {modesForRole(user.role).map(({ mode, icon, label }) => (
             <Chip
               key={mode}
               type="suggestion"

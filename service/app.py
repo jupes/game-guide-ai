@@ -25,7 +25,8 @@ import config
 
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from .models import ChatRequest, ChatResponse
+from .history import MessageStore, PostgresMessageStore
+from .models import ChatRequest, ChatResponse, MessagesResponse
 from .rag import RagService
 
 log = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ try:
 except Exception:  # pragma: no cover - psycopg always present in service image
     _DB_ERRORS = ()
 
-_state: dict[str, RagService] = {}
+_state: dict[str, Any] = {}
 
 
 def build_reranker(enabled: bool | None = None) -> Any | None:
@@ -85,6 +86,16 @@ async def lifespan(app: FastAPI):
         log.warning(
             "startup: RagService unavailable; /chat will 503 until ready", exc_info=True
         )
+    # Message history store — best-effort: chat answers work without it.
+    # ensure_schema() is the migration path for volumes that predate chat.*.
+    try:
+        store = PostgresMessageStore()
+        store.ensure_schema()
+        _state["store"] = store
+    except Exception:  # pragma: no cover - depends on live DB
+        log.warning(
+            "startup: message store unavailable; history is disabled", exc_info=True
+        )
     yield
     _state.clear()
 
@@ -99,15 +110,53 @@ def get_service() -> RagService:
     return svc
 
 
+def get_message_store() -> MessageStore | None:
+    # None is a valid state (history disabled) — /chat degrades gracefully;
+    # only the history endpoint itself hard-fails without a store.
+    return _state.get("store")
+
+
+def _persist_turn(
+    store: MessageStore | None, conversation_id: str | None,
+    mode: str, role: str, content: str,
+    suggestions: list[dict[str, Any]] | None = None,
+) -> None:
+    """Best-effort history write: a failure is logged, never raised — a chat
+    answer must not fail because persistence did (deliberately outside the
+    _DB_ERRORS → 503 taxonomy, which is reserved for retrieval)."""
+    if store is None or conversation_id is None:
+        return
+    try:
+        store.append(conversation_id, mode, role, content, suggestions=suggestions)
+    except Exception:
+        log.warning(
+            "history write failed (mode=%s, conversation_id=%s, role=%s)",
+            mode, conversation_id, role, exc_info=True,
+        )
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok", "ready": str("rag" in _state)}
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest, svc: RagService = Depends(get_service)) -> ChatResponse:
+def chat(
+    req: ChatRequest,
+    svc: RagService = Depends(get_service),
+    store: MessageStore | None = Depends(get_message_store),
+) -> ChatResponse:
     try:
-        return svc.answer(req.prompt, mode=req.mode.value, conversation_id=req.conversation_id)
+        resp = svc.answer(req.prompt, mode=req.mode.value, conversation_id=req.conversation_id)
+        _persist_turn(store, req.conversation_id, req.mode.value, "user", req.prompt)
+        _persist_turn(
+            store, req.conversation_id, req.mode.value, "assistant", resp.answer,
+            suggestions=(
+                [s.model_dump(mode="json") for s in resp.suggestions]
+                if resp.suggestions else None
+            ),
+        )
+        return resp
     except _LLM_ERRORS as exc:
         # LLM provider failed (timeout, rate limit, API error) — upstream, retryable.
         log.warning(
@@ -134,6 +183,29 @@ def chat(req: ChatRequest, svc: RagService = Depends(get_service)) -> ChatRespon
         # Anything else is a bug in our code — log the full traceback, return 500.
         log.exception("internal error on /chat (mode=%s)", req.mode.value)
         raise HTTPException(status_code=500, detail="internal error") from None
+
+
+@app.get("/conversations/{conversation_id}/messages", response_model=MessagesResponse)
+def conversation_messages(
+    conversation_id: str,
+    limit: int | None = None,
+    store: MessageStore | None = Depends(get_message_store),
+) -> MessagesResponse:
+    if store is None:
+        raise HTTPException(status_code=503, detail="message history unavailable")
+    # config.HISTORY_LIMIT read at request time (not import) so env/test
+    # overrides of the knob take effect; client may ask for fewer, never more.
+    cap = config.HISTORY_LIMIT
+    effective = cap if limit is None else max(1, min(limit, cap))
+    try:
+        messages = store.recent(conversation_id, effective)
+    except _DB_ERRORS as exc:
+        log.warning(
+            "history read failed (conversation_id=%s): %s: %s",
+            conversation_id, type(exc).__name__, exc,
+        )
+        raise HTTPException(status_code=503, detail="message history unavailable") from exc
+    return MessagesResponse(conversation_id=conversation_id, messages=messages)
 
 
 # Mount the pre-built UI at "/" — after route decorators so API routes always win.

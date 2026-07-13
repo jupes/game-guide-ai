@@ -10,12 +10,14 @@ import { IconButton } from '../ds/IconButton'
 import { useAppNav } from './AppNav'
 import { UserMenu } from './UserMenu'
 import { useConversationStore } from './ConversationStoreContext'
+import { useCurrentUser } from './currentUser'
 import type { Conversation } from './conversationStore'
-import { MODES } from './modes'
+import { modesForRole } from './modes'
 import './LeftNav.css'
 
 export function LeftNav(): React.JSX.Element {
   const { mode, setMode, conversationId, setConversationId } = useAppNav()
+  const { user } = useCurrentUser()
   const store = useConversationStore()
 
   // Conversation list is derived from the store on each render — no local state needed.
@@ -45,7 +47,7 @@ export function LeftNav(): React.JSX.Element {
 
       {/* Mode chips */}
       <div className="left-nav__modes">
-        {MODES.map(({ mode: m, icon, label }) => (
+        {modesForRole(user.role).map(({ mode: m, icon, label }) => (
           <Chip
             key={m}
             type="filter"

@@ -43,8 +43,12 @@ from ingestion.rerank import should_rerank
 from ingestion.retrieval import RetrievalResult, RetrievedChunk, assemble_result
 from ingestion.scope import scope_for_mode
 
-from .generate import build_context, build_sources, generate_answer
-from .models import ChatMode, REFUSAL, Source
+import logging
+
+from .generate import build_context, build_sources, generate_answer, generate_suggestions
+from .models import ChatMode, REFUSAL, Source, Suggestion
+
+log = logging.getLogger(__name__)
 
 # Runtime import (not TYPE_CHECKING): LangGraph resolves GraphState's
 # annotations when building the state schema. No cycle — service.rag imports
@@ -74,6 +78,7 @@ class GraphState(TypedDict, total=False):
     answer: str
     sources: list[Source]
     answerable: bool
+    suggestions: list[Suggestion] | None   # spell mode only; None on failure
 
 
 def build_rag_graph(svc: RagService) -> Any:
@@ -190,6 +195,24 @@ def build_rag_graph(svc: RagService) -> Any:
         )
         return {"answer": answer, "answerable": result.answerable}
 
+    def generate_route(state: GraphState) -> Literal["suggest", "cite"]:
+        # Spell mode detours through the suggestions node; everyone else cites.
+        return "suggest" if state["mode"] == "spell" else "cite"
+
+    def suggest_node(state: GraphState, config: Any = None) -> GraphState:
+        # Best-effort garnish: any LLM/parse failure degrades to no suggestions
+        # rather than failing an answer that already generated.
+        context = build_context(state["result"], top_n=CONTEXT_TOP_N)
+        try:
+            suggestions = generate_suggestions(
+                state["prompt"], context,
+                model=svc.model, client=svc.llm_client, config=config,
+            )
+        except Exception:
+            log.warning("spell suggestions failed; answering without them", exc_info=True)
+            return {"suggestions": None}
+        return {"suggestions": suggestions}
+
     def cite_node(state: GraphState) -> GraphState:
         return {"sources": build_sources(state["result"], top_n=CONTEXT_TOP_N)}
 
@@ -208,6 +231,7 @@ def build_rag_graph(svc: RagService) -> Any:
     g.add_node("merge", merge_node)
     g.add_node("gate", gate_node)
     g.add_node("generate", generate_node)
+    g.add_node("suggest", suggest_node)
     g.add_node("cite", cite_node)
     g.add_node("refuse", refuse_node)
 
@@ -234,7 +258,10 @@ def build_rag_graph(svc: RagService) -> Any:
     g.add_conditional_edges(
         "gate", gate_route, {"generate": "generate", "refuse": "refuse"},
     )
-    g.add_edge("generate", "cite")
+    g.add_conditional_edges(
+        "generate", generate_route, {"suggest": "suggest", "cite": "cite"},
+    )
+    g.add_edge("suggest", "cite")
     g.add_edge("cite", END)
     g.add_edge("refuse", END)
     return g.compile()

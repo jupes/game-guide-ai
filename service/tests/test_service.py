@@ -417,3 +417,17 @@ def test_merge_results_primary_chunks_ranked_first():
     merged_ids = [c.chunk_id for c in merged.chunks]
     for pid in primary_ids:
         assert merged_ids.index(pid) < merged_ids.index("sec1")
+
+
+def test_rules_persona_is_raw_only():
+    """channel-chats CP-D: the rules persona answers strictly by the rules as
+    written — quote exact text, surface errata, refuse interpretation/homebrew."""
+    from service.generate import generate_answer as _ga
+    llm = _FakeLLM("answer")
+    _ga("Q?", "ctx", mode="rules", client=llm)
+    system_msgs = [m for m in llm.last_messages if isinstance(m, SystemMessage)]
+    assert system_msgs
+    content = system_msgs[0].content
+    assert "as written" in content
+    assert "errata" in content
+    assert "homebrew" in content  # explicitly declined

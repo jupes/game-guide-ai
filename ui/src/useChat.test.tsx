@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useChat } from './useChat'
-import type { ChatResult, ChatMode } from './api'
-import type { PostFn } from './useChat'
+import type { ChatResult, ChatMode, MessagesResult, StoredMessage } from './api'
+import type { LoadHistoryFn, PostFn } from './useChat'
 
 const GROUNDED: ChatResult = {
   kind: 'ok',
@@ -91,21 +91,118 @@ describe('useChat', () => {
     expect(result.current.exchanges).toHaveLength(0)
   })
 
-  it('clears exchanges when conversationId changes', async () => {
+  // ── channel-chats CP-B — history recall ────────────────────────────────────
+
+  const stored = (id: number, role: 'user' | 'assistant', content: string): StoredMessage => ({
+    id,
+    role,
+    content,
+    mode: 'sage',
+    created_at: '2026-07-08T12:00:00Z',
+  })
+
+  const historyOf =
+    (byConv: Record<string, StoredMessage[]>): LoadHistoryFn =>
+    async (conversationId) => ({ kind: 'ok', messages: byConv[conversationId] ?? [] })
+
+  it('loads stored history when a conversation opens', async () => {
     const post: PostFn = async () => GROUNDED
+    const loadHistory = historyOf({
+      'conv-1': [stored(1, 'user', 'First question'), stored(2, 'assistant', 'First answer')],
+    })
+    const { result } = renderHook(() =>
+      useChat({ post, loadHistory, mode: 'sage', conversationId: 'conv-1' }),
+    )
+
+    await waitFor(() => expect(result.current.exchanges).toHaveLength(1))
+    expect(result.current.exchanges[0].prompt).toBe('First question')
+    expect(result.current.exchanges[0].status).toBe('done')
+    expect(result.current.exchanges[0].response?.answer).toBe('First answer')
+  })
+
+  it('swaps history when conversationId changes', async () => {
+    const post: PostFn = async () => GROUNDED
+    const loadHistory = historyOf({
+      'conv-1': [stored(1, 'user', 'About goblins'), stored(2, 'assistant', 'Goblins…')],
+      'conv-2': [stored(3, 'user', 'About dragons'), stored(4, 'assistant', 'Dragons…')],
+    })
     const { result, rerender } = renderHook(
       ({ convId }: { convId: string | null }) =>
-        useChat({ post, mode: 'sage', conversationId: convId }),
-      { initialProps: { convId: 'conv-1' } },
+        useChat({ post, loadHistory, mode: 'sage', conversationId: convId }),
+      { initialProps: { convId: 'conv-1' as string | null } },
+    )
+
+    await waitFor(() => expect(result.current.exchanges[0]?.prompt).toBe('About goblins'))
+
+    rerender({ convId: 'conv-2' })
+    await waitFor(() => expect(result.current.exchanges[0]?.prompt).toBe('About dragons'))
+    expect(result.current.exchanges).toHaveLength(1)
+  })
+
+  it('degrades to an empty thread with a notice when the history fetch fails', async () => {
+    const post: PostFn = async () => GROUNDED
+    const loadHistory: LoadHistoryFn = async () => ({
+      kind: 'error',
+      message: 'Message history unavailable',
+    })
+    const { result } = renderHook(() =>
+      useChat({ post, loadHistory, mode: 'sage', conversationId: 'conv-1' }),
+    )
+
+    await waitFor(() => expect(result.current.historyError).toMatch(/unavailable/i))
+    expect(result.current.exchanges).toHaveLength(0)
+
+    // Composer still works: a send goes through as usual.
+    act(() => {
+      result.current.send('Still works?')
+    })
+    await waitFor(() => expect(result.current.exchanges).toHaveLength(1))
+    expect(result.current.exchanges[0].status).toBe('done')
+  })
+
+  it('does not clobber a live exchange sent while history is loading', async () => {
+    const post: PostFn = async () => GROUNDED
+    let resolveHistory!: (r: MessagesResult) => void
+    const loadHistory: LoadHistoryFn = () =>
+      new Promise<MessagesResult>((res) => {
+        resolveHistory = res
+      })
+    const { result } = renderHook(() =>
+      useChat({ post, loadHistory, mode: 'sage', conversationId: 'conv-1' }),
     )
 
     act(() => {
-      result.current.send('First question')
+      result.current.send('Live question')
     })
     await waitFor(() => expect(result.current.exchanges).toHaveLength(1))
 
-    rerender({ convId: 'conv-2' })
-    await waitFor(() => expect(result.current.exchanges).toHaveLength(0))
+    act(() =>
+      resolveHistory({
+        kind: 'ok',
+        messages: [stored(1, 'user', 'Old question'), stored(2, 'assistant', 'Old answer')],
+      }),
+    )
+    // Seeded history lands BEFORE the live exchange; nothing is lost.
+    await waitFor(() => expect(result.current.exchanges).toHaveLength(2))
+    expect(result.current.exchanges[0].prompt).toBe('Old question')
+    expect(result.current.exchanges[1].prompt).toBe('Live question')
+  })
+
+  it('skips an orphan assistant row (user turn cut off by the load limit)', async () => {
+    const post: PostFn = async () => GROUNDED
+    const loadHistory = historyOf({
+      'conv-1': [
+        stored(1, 'assistant', 'Orphan answer'),
+        stored(2, 'user', 'Question'),
+        stored(3, 'assistant', 'Answer'),
+      ],
+    })
+    const { result } = renderHook(() =>
+      useChat({ post, loadHistory, mode: 'sage', conversationId: 'conv-1' }),
+    )
+
+    await waitFor(() => expect(result.current.exchanges).toHaveLength(1))
+    expect(result.current.exchanges[0].prompt).toBe('Question')
   })
 
   it('calls post with the correct mode and conversationId', async () => {

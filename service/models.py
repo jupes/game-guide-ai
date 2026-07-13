@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -12,6 +13,39 @@ class ChatMode(str, Enum):
     spell = "spell"
     rules = "rules"
     gm    = "gm"
+
+
+class MessageRole(str, Enum):
+    user = "user"
+    assistant = "assistant"
+
+
+class SuggestionStyle(str, Enum):
+    practical = "practical"
+    roleplay = "roleplay"
+    wacky = "wacky"
+
+
+class Suggestion(BaseModel):
+    """One LLM-invented spell-usage idea (spell mode only)."""
+    style: SuggestionStyle
+    text: str
+
+
+class StoredMessage(BaseModel):
+    """One persisted chat turn, as returned by GET /conversations/{id}/messages."""
+    id: int
+    role: MessageRole
+    content: str
+    mode: ChatMode
+    created_at: datetime
+    # Assistant turns from spell mode carry their suggestions (CP-C).
+    suggestions: list[Suggestion] | None = None
+
+
+class MessagesResponse(BaseModel):
+    conversation_id: str
+    messages: list[StoredMessage]
 
 
 # Response-contract constant (not a Pydantic model, but part of the contract):
@@ -43,3 +77,7 @@ class ChatResponse(BaseModel):
     answerable: bool
     mode: ChatMode = ChatMode.sage
     conversation_id: str | None = None
+    # Spell mode only: exactly three usage ideas (practical/roleplay/wacky);
+    # None everywhere else — and in spell mode when suggestion generation
+    # failed (the answer must never fail because the garnish did).
+    suggestions: list[Suggestion] | None = None

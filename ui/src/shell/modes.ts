@@ -6,6 +6,7 @@
  */
 
 import type { ChatMode } from './AppNav'
+import type { UserRole } from './currentUser'
 
 export interface ModeEntry {
   mode: ChatMode
@@ -22,6 +23,12 @@ export const MODES: readonly ModeEntry[] = [
   { mode: 'rules', icon: 'gavel', label: 'Rules', emptyLabel: 'Ask the Rules Arbiter…' },
   { mode: 'gm', icon: 'castle', label: 'GM', emptyLabel: 'Ask the Game Master…' },
 ]
+
+/** The modes a user of the given role may see: the GM channel is DM-only
+ * (channel-chats CP-D — UI gating; server enforcement waits for real auth). */
+export function modesForRole(role: UserRole): readonly ModeEntry[] {
+  return role === 'dm' ? MODES : MODES.filter((m) => m.mode !== 'gm')
+}
 
 /** Per-mode empty-state labels, derived from MODES. */
 export const EMPTY_LABELS: Record<ChatMode, string> = Object.fromEntries(

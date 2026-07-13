@@ -26,16 +26,17 @@ function makeNavState(overrides: Partial<AppNavState> = {}): AppNavState {
   }
 }
 
-function makeUserState(overrides: Partial<CurrentUserContextValue> = {}): CurrentUserContextValue {
+function makeUserState(role: 'dm' | 'player' = 'player'): CurrentUserContextValue {
   return {
     user: {
       id: 'guest',
       displayName: 'Adventurer',
       initials: 'AV',
+      role,
       signOut: vi.fn(),
       editProfile: vi.fn(),
     },
-    ...overrides,
+    setRole: vi.fn(),
   }
 }
 
@@ -54,9 +55,11 @@ function renderLeftNav(navState: AppNavState, store = new MemoryConversationStor
 }
 
 describe('LeftNav (#13)', () => {
-  it('renders all 4 mode labels', () => {
+  // channel-chats CP-D: the GM channel is DM-only, so the mode list is
+  // role-aware — 4 labels for a dm, 3 for a player.
+  it('renders all 4 mode labels for a dm-role user', () => {
     const navState = makeNavState()
-    const userState = makeUserState()
+    const userState = makeUserState('dm')
     render(
       <ThemeProvider>
         <AppNavContext.Provider value={navState}>
@@ -72,6 +75,26 @@ describe('LeftNav (#13)', () => {
     expect(screen.getByText('Spell')).toBeInTheDocument()
     expect(screen.getByText('Rules')).toBeInTheDocument()
     expect(screen.getByText('GM')).toBeInTheDocument()
+  })
+
+  it('hides the GM mode chip from a player-role user', () => {
+    const navState = makeNavState()
+    const userState = makeUserState('player')
+    render(
+      <ThemeProvider>
+        <AppNavContext.Provider value={navState}>
+          <CurrentUserContext.Provider value={userState}>
+            <ConversationStoreProvider store={new MemoryConversationStore()}>
+              <LeftNav />
+            </ConversationStoreProvider>
+          </CurrentUserContext.Provider>
+        </AppNavContext.Provider>
+      </ThemeProvider>,
+    )
+    expect(screen.getByText('Sage')).toBeInTheDocument()
+    expect(screen.getByText('Spell')).toBeInTheDocument()
+    expect(screen.getByText('Rules')).toBeInTheDocument()
+    expect(screen.queryByText('GM')).not.toBeInTheDocument()
   })
 
   it('clicking the Spell chip calls setMode("spell")', async () => {

@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach, vi } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
+import { act, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import {
   CurrentUserProvider,
@@ -25,6 +25,63 @@ describe('useCurrentUser', () => {
       <CurrentUserProvider>{children}</CurrentUserProvider>
     )
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
-    expect(result.current.user).toBe(STUB)
+    expect(result.current.user).toEqual({ ...STUB, role: 'player' })
+  })
+})
+
+// ── channel-chats CP-D — DM/player role on the current user ───────────────────
+// jsdom 29's localStorage may not expose every method in the runner; use an
+// in-memory stub so these tests are hermetic (mirrors conversationStore.test.ts).
+
+describe('user role', () => {
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <CurrentUserProvider>{children}</CurrentUserProvider>
+  )
+
+  function makeLocalStorageStub() {
+    let store: Record<string, string> = {}
+    return {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => { store[key] = value },
+      removeItem: (key: string) => { delete store[key] },
+      clear: () => { store = {} },
+      get length() { return Object.keys(store).length },
+      key: (index: number) => Object.keys(store)[index] ?? null,
+    }
+  }
+  let lsMock: ReturnType<typeof makeLocalStorageStub>
+
+  beforeEach(() => {
+    lsMock = makeLocalStorageStub()
+    vi.stubGlobal('localStorage', lsMock)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('defaults to player', () => {
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    expect(result.current.user.role).toBe('player')
+  })
+
+  it('setRole updates the role and persists it', () => {
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    act(() => result.current.setRole('dm'))
+    expect(result.current.user.role).toBe('dm')
+    expect(localStorage.getItem('game-guide-ai:role')).toBe('dm')
+  })
+
+  it('seeds the role from localStorage (survives reload)', () => {
+    localStorage.setItem('game-guide-ai:role', 'dm')
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    expect(result.current.user.role).toBe('dm')
+  })
+
+  it('falls back to player on an unrecognized stored value', () => {
+    localStorage.setItem('game-guide-ai:role', 'archlich')
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    expect(result.current.user.role).toBe('player')
   })
 })

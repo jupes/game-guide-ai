@@ -10,6 +10,7 @@ import { ChatMessage } from '../ds/ChatMessage'
 import { TextField } from '../ds/TextField'
 import { IconButton } from '../ds/IconButton'
 import { Card } from '../ds/Card'
+import { Chip } from '../ds/Chip'
 import { DiceRoll } from '../ds/DiceRoll'
 import { SourceList } from '../components/SourceList'
 import { useChat } from '../useChat'
@@ -17,14 +18,55 @@ import { exportChat } from '../exportChat'
 import { useAppNav } from './AppNav'
 import { parseDiceNotation } from './diceNotation'
 import { EMPTY_LABELS } from './modes'
-import type { PostFn } from '../useChat'
+import type { Suggestion } from '../api'
+import type { LoadHistoryFn, PostFn } from '../useChat'
 import './ChatPane.css'
+
+// Spell-usage suggestion cards (channel-chats CP-C) — LLM inventions rendered
+// apart from the literal spell text so quoted rules stay visibly verbatim.
+const SUGGESTION_LABELS: Record<Suggestion['style'], string> = {
+  practical: 'Practical',
+  roleplay: 'Roleplay',
+  wacky: 'Wacky',
+}
+
+const SUGGESTION_ICONS: Record<Suggestion['style'], string> = {
+  practical: 'target',
+  roleplay: 'theater_comedy',
+  wacky: 'celebration',
+}
+
+function SuggestionCards({ suggestions }: { suggestions: Suggestion[] }): React.JSX.Element {
+  return (
+    <Card variant="outlined" className="chat-pane__suggestions">
+      <ul className="chat-pane__suggestion-list">
+        {suggestions.map((s) => (
+          <li key={s.style} className="chat-pane__suggestion">
+            <Chip type="suggestion" label={SUGGESTION_LABELS[s.style]} icon={SUGGESTION_ICONS[s.style]} />
+            <span>{s.text}</span>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )
+}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function ChatPane({ post }: { post?: PostFn }): React.JSX.Element {
+export function ChatPane({
+  post,
+  loadHistory,
+}: {
+  post?: PostFn
+  loadHistory?: LoadHistoryFn
+}): React.JSX.Element {
   const { mode, conversationId } = useAppNav()
-  const { exchanges, send, pending } = useChat({ post, mode, conversationId })
+  const { exchanges, send, pending, historyError, loadingHistory } = useChat({
+    post,
+    loadHistory,
+    mode,
+    conversationId,
+  })
   const [draft, setDraft] = React.useState('')
 
   const handleSend = React.useCallback(() => {
@@ -48,8 +90,15 @@ export function ChatPane({ post }: { post?: PostFn }): React.JSX.Element {
     <div className="chat-pane">
       {/* Exchange list */}
       <div className="chat-pane__exchanges">
-        {exchanges.length === 0 ? (
-          <p className="chat-pane__empty">{EMPTY_LABELS[mode]}</p>
+        {/* History recall failed — recoverable: the thread starts empty. */}
+        {historyError && <ChatMessage role="system">{historyError}</ChatMessage>}
+
+        {exchanges.length === 0 && loadingHistory ? (
+          <p className="chat-pane__empty" role="status">
+            Recalling the conversation…
+          </p>
+        ) : exchanges.length === 0 ? (
+          !historyError && <p className="chat-pane__empty">{EMPTY_LABELS[mode]}</p>
         ) : (
           exchanges.map((exchange) => (
             <React.Fragment key={exchange.id}>
@@ -88,6 +137,11 @@ export function ChatPane({ post }: { post?: PostFn }): React.JSX.Element {
                       </div>
                     )
                   })()}
+
+                  {/* Spell-usage suggestions — rendered apart from the answer */}
+                  {exchange.response.suggestions && exchange.response.suggestions.length > 0 && (
+                    <SuggestionCards suggestions={exchange.response.suggestions} />
+                  )}
 
                   {/* Sources */}
                   {exchange.response.answerable && exchange.response.sources.length > 0 && (

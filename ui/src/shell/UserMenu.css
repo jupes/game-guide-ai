@@ -46,3 +46,12 @@
   font: inherit;
   min-height: 44px;
 }
+
+/* DM role toggle row (channel-chats CP-D) */
+.user-menu__role {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-3, 0.75rem);
+  cursor: default;
+}

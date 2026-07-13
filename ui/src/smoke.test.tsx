@@ -150,9 +150,11 @@ describe('App-flow smoke test (CP-F6.2)', () => {
         id: 'guest',
         displayName: 'Adventurer',
         initials: 'AV',
+        role: 'player',
         signOut: () => {},
         editProfile: () => {},
       },
+      setRole: () => {},
     }
 
     rerender(
@@ -238,17 +240,20 @@ describe('Landing component', () => {
     render(
       <ThemeProvider>
         <AppNavContext.Provider value={navState}>
-          <Landing />
+          <CurrentUserProvider>
+            <Landing />
+          </CurrentUserProvider>
         </AppNavContext.Provider>
       </ThemeProvider>,
     )
 
     expect(screen.getByText('Aetheril')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Enter the Tavern' })).toBeInTheDocument()
-    // Mode chips render as buttons because Landing's Chip elements have onClick
+    // Mode chips render as buttons because Landing's Chip elements have onClick.
+    // The default role is player, so the DM-only GM chip is hidden (CP-D).
     expect(screen.getByRole('button', { name: 'Sage' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Spell' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Rules' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'GM' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'GM' })).not.toBeInTheDocument()
   })
 })

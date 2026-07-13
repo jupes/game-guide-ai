@@ -10,8 +10,8 @@ import { ConversationStoreProvider } from './ConversationStoreContext'
 import { MemoryConversationStore } from './conversationStore'
 import { ThemeProvider } from '../ds/theme'
 import { ChatPane } from './ChatPane'
-import type { ChatResult } from '../api'
-import type { PostFn } from '../useChat'
+import type { ChatResult, MessagesResult } from '../api'
+import type { LoadHistoryFn, PostFn } from '../useChat'
 
 // ── CP-F5.3 — ChatPane behaviors (#21) ────────────────────────────────────────
 
@@ -34,9 +34,11 @@ function makeUserState(overrides: Partial<CurrentUserContextValue> = {}): Curren
       id: 'guest',
       displayName: 'Adventurer',
       initials: 'AV',
+      role: 'player',
       signOut: vi.fn(),
       editProfile: vi.fn(),
     },
+    setRole: vi.fn(),
     ...overrides,
   }
 }
@@ -44,9 +46,11 @@ function makeUserState(overrides: Partial<CurrentUserContextValue> = {}): Curren
 function Wrapper({
   navState,
   post,
+  loadHistory,
 }: {
   navState?: Partial<AppNavState>
   post?: PostFn
+  loadHistory?: LoadHistoryFn
 }): React.JSX.Element {
   const store = new MemoryConversationStore()
   return (
@@ -54,7 +58,7 @@ function Wrapper({
       <AppNavContext.Provider value={makeNavState(navState)}>
         <CurrentUserContext.Provider value={makeUserState()}>
           <ConversationStoreProvider store={store}>
-            <ChatPane post={post} />
+            <ChatPane post={post} loadHistory={loadHistory} />
           </ConversationStoreProvider>
         </CurrentUserContext.Provider>
       </AppNavContext.Provider>
@@ -206,5 +210,124 @@ describe('ChatPane (#21)', () => {
     await waitFor(() =>
       expect(screen.getByText(/service unavailable/i)).toBeInTheDocument(),
     )
+  })
+
+  // ── channel-chats CP-B — history recall ─────────────────────────────────────
+
+  it('renders recalled history when a conversation opens', async () => {
+    const loadHistory: LoadHistoryFn = async () => ({
+      kind: 'ok',
+      messages: [
+        { id: 1, role: 'user', content: 'What is a goblin?', mode: 'sage', created_at: '2026-07-08T12:00:00Z' },
+        { id: 2, role: 'assistant', content: 'A small green menace.', mode: 'sage', created_at: '2026-07-08T12:00:01Z' },
+      ],
+    })
+    render(<Wrapper navState={{ conversationId: 'conv-1' }} loadHistory={loadHistory} />)
+
+    await waitFor(() => expect(screen.getByText('What is a goblin?')).toBeInTheDocument())
+    expect(screen.getByText('A small green menace.')).toBeInTheDocument()
+    // The mode empty-state must not show under recalled history.
+    expect(screen.queryByText('Ask the Sage…')).not.toBeInTheDocument()
+  })
+
+  it('shows a notice when history recall fails, composer still usable', async () => {
+    const loadHistory: LoadHistoryFn = async () => ({
+      kind: 'error',
+      message: 'Message history unavailable (503).',
+    })
+    const post: PostFn = async () => GROUNDED
+    render(<Wrapper navState={{ conversationId: 'conv-1' }} post={post} loadHistory={loadHistory} />)
+
+    await waitFor(() =>
+      expect(screen.getByText(/message history unavailable/i)).toBeInTheDocument(),
+    )
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'Still works?')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
+  })
+
+  // ── channel-chats CP-C — spell suggestion cards ────────────────────────────
+
+  const SUGGESTIONS = [
+    { style: 'practical' as const, text: 'Clear a room of enemies.' },
+    { style: 'roleplay' as const, text: 'Light the beacon at the festival.' },
+    { style: 'wacky' as const, text: 'Instantly roast a feast.' },
+  ]
+
+  it('renders three labeled suggestion cards under a spell answer', async () => {
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: {
+        answer: 'Fireball: 8d6 fire damage in a 20-foot radius.',
+        sources: [],
+        answerable: true,
+        suggestions: SUGGESTIONS,
+      },
+    })
+    render(<Wrapper navState={{ mode: 'spell' }} post={post} />)
+
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'What does Fireball do?')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByText(/8d6 fire damage/)).toBeInTheDocument())
+    expect(screen.getByText('Practical')).toBeInTheDocument()
+    expect(screen.getByText('Roleplay')).toBeInTheDocument()
+    expect(screen.getByText('Wacky')).toBeInTheDocument()
+    expect(screen.getByText('Clear a room of enemies.')).toBeInTheDocument()
+    expect(screen.getByText('Instantly roast a feast.')).toBeInTheDocument()
+  })
+
+  it('renders no suggestion cards when the response has none', async () => {
+    const post: PostFn = async () => GROUNDED
+    render(<Wrapper post={post} />)
+
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'What is a Basilisk?')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
+    expect(screen.queryByText('Practical')).not.toBeInTheDocument()
+  })
+
+  it('renders suggestion cards on recalled spell history', async () => {
+    const loadHistory: LoadHistoryFn = async () => ({
+      kind: 'ok',
+      messages: [
+        { id: 1, role: 'user', content: 'What does Fireball do?', mode: 'spell', created_at: '2026-07-08T12:00:00Z' },
+        {
+          id: 2,
+          role: 'assistant',
+          content: 'Fireball: 8d6 fire damage.',
+          mode: 'spell',
+          created_at: '2026-07-08T12:00:01Z',
+          suggestions: SUGGESTIONS,
+        },
+      ],
+    })
+    render(<Wrapper navState={{ mode: 'spell', conversationId: 'conv-1' }} loadHistory={loadHistory} />)
+
+    await waitFor(() => expect(screen.getByText('Fireball: 8d6 fire damage.')).toBeInTheDocument())
+    expect(screen.getByText('Practical')).toBeInTheDocument()
+    expect(screen.getByText('Light the beacon at the festival.')).toBeInTheDocument()
+  })
+
+  it('shows a recall status while history loads', async () => {
+    let resolveHistory!: (r: MessagesResult) => void
+    const loadHistory: LoadHistoryFn = () =>
+      new Promise<MessagesResult>((res) => {
+        resolveHistory = res
+      })
+    render(<Wrapper navState={{ conversationId: 'conv-1' }} loadHistory={loadHistory} />)
+
+    expect(screen.getByText(/recalling/i)).toBeInTheDocument()
+    act(() => resolveHistory({ kind: 'ok', messages: [] }))
+    await waitFor(() => expect(screen.queryByText(/recalling/i)).not.toBeInTheDocument())
+    expect(screen.getByText('Ask the Sage…')).toBeInTheDocument()
   })
 })

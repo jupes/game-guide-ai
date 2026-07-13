@@ -119,6 +119,7 @@ class RagService:
             answer=final["answer"], sources=final["sources"],
             answerable=final["answerable"],
             mode=ChatMode(mode), conversation_id=conversation_id,
+            suggestions=final.get("suggestions"),
         )
 
     def _compiled_graph(self):

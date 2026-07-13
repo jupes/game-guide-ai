@@ -299,3 +299,103 @@ def test_graph_non_gm_never_calls_secondary():
         out = graph.invoke({"prompt": "What is a Basilisk?", "mode": mode})
         assert "WorldMonster" not in [s.entity for s in out["sources"]]
     assert secondary.calls == 0
+
+
+# ---------------------------------------------------------------------------
+# channel-chats CP-C — spell suggestions as a graph branch
+# ---------------------------------------------------------------------------
+
+
+class _SeqLLM:
+    """LangChain-shaped fake returning a different canned text per call —
+    call 1 is the answer, call 2 the suggestions JSON."""
+
+    def __init__(self, texts):
+        self.texts = list(texts)
+        self.calls = 0
+
+    def invoke(self, messages, config=None, **kw):
+        self.calls += 1
+        return AIMessage(content=self.texts[min(self.calls - 1, len(self.texts) - 1)])
+
+
+_SUGG_JSON = (
+    '[{"style": "practical", "text": "Clear a room of enemies."},'
+    ' {"style": "roleplay", "text": "Light the beacon at the festival."},'
+    ' {"style": "wacky", "text": "Instantly roast a feast for the party."}]'
+)
+
+
+def test_graph_spell_mode_attaches_three_typed_suggestions():
+    llm = _SeqLLM(["Fireball: 8d6 fire damage in a 20-foot radius [1].", _SUGG_JSON])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    suggs = out["suggestions"]
+    assert suggs is not None
+    assert [s.style.value for s in suggs] == ["practical", "roleplay", "wacky"]
+    assert all(s.text for s in suggs)
+    assert "8d6" in out["answer"]
+    assert llm.calls == 2  # answer + suggestions
+
+
+def test_graph_non_spell_modes_have_no_suggestions():
+    for mode in ("sage", "rules", "gm"):
+        llm = _FakeLLM("answer [1]")
+        svc = _svc(_result(answerable=True), llm)
+        graph = build_rag_graph(svc)
+        out = graph.invoke({"prompt": "What is a Basilisk?", "mode": mode})
+        assert out.get("suggestions") is None, mode
+        assert llm.calls == 1, mode  # no second (suggestions) call
+
+
+def test_graph_malformed_suggestions_degrade_to_none():
+    """A non-JSON suggestions reply must not fail the answer (behavior 7)."""
+    llm = _SeqLLM(["Fireball: 8d6 fire damage [1].", "sorry, I cannot do JSON today"])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    assert out["suggestions"] is None
+    assert "8d6" in out["answer"]
+
+
+def test_graph_suggestions_llm_error_degrades_to_none():
+    """The suggestions call raising must not fail the answer (behavior 7)."""
+
+    class _AnswerThenBoom:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, messages, config=None, **kw):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("LLM on fire")
+            return AIMessage(content="Fireball: 8d6 fire damage [1].")
+
+    svc = _svc(_result(answerable=True), _AnswerThenBoom())
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    assert out["suggestions"] is None
+    assert "8d6" in out["answer"]
+
+
+def test_graph_spell_refusal_skips_suggestions():
+    """Unanswerable spell query refuses before generate — no LLM calls at all."""
+    llm = _SeqLLM(["nope", _SUGG_JSON])
+    svc = _svc(_result(answerable=False, chunks=False), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Zorbo's Zapper do?", "mode": "spell"})
+    assert out["answer"] == REFUSAL
+    assert out.get("suggestions") is None
+    assert llm.calls == 0
+
+
+def test_graph_suggestions_json_in_code_fence_parses():
+    """Tolerant parsing: the model wrapping JSON in a ```json fence still works."""
+    fenced = "```json\n" + _SUGG_JSON + "\n```"
+    llm = _SeqLLM(["Fireball: 8d6 fire damage [1].", fenced])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    assert out["suggestions"] is not None
+    assert [s.style.value for s in out["suggestions"]] == ["practical", "roleplay", "wacky"]

@@ -100,6 +100,14 @@ DEFAULT_MODEL: str = _str("RAG_DEFAULT_MODEL", "gpt-4o-mini")
 # variation; higher values drift away from the source text.
 TEMPERATURE: float = _float("RAG_TEMPERATURE", 0.2)
 
+# --- Chat history (service) -------------------------------------------------
+
+# How many stored messages GET /conversations/{id}/messages returns per
+# conversation (the most recent N, served oldest-first for display). Bounds the
+# startup payload when the UI recalls a conversation; older messages stay in
+# the DB, just unloaded. 50 ≈ 25 exchanges — beyond what a Q&A thread scrolls.
+HISTORY_LIMIT: int = _int("RAG_HISTORY_LIMIT", 50)
+
 # Gated cross-encoder rerank in the live service (bo4 model, prose categories
 # only via ingestion.rerank.should_rerank). OFF by default: it needs the
 # `[rerank]` extra (torch — several hundred MB) and adds ~234ms per reranked
