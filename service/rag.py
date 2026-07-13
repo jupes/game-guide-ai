@@ -103,11 +103,26 @@ class RagService:
     def answer(
         self, prompt: str, mode: str = "sage", conversation_id: str | None = None,
     ) -> ChatResponse:
-        # The WHOLE pipeline runs as the LangGraph graph — pre-flight included
-        # (1em.2): the graph's preflight node raises ValueError on an unknown
-        # mode before retrieval and routes empty prompts to refuse. This method
-        # is invoke + response mapping only. Langfuse tracing is attached here,
-        # env-gated + off by default (see tracing.py).
+        resp, _ = self.answer_with_contexts(
+            prompt, mode=mode, conversation_id=conversation_id,
+        )
+        return resp
+
+    def answer_with_contexts(
+        self, prompt: str, mode: str = "sage", conversation_id: str | None = None,
+    ) -> tuple[ChatResponse, list[str]]:
+        """Like `answer`, but also returns the full retrieved chunk texts the
+        generation context was built from (empty on any refuse path — the LLM
+        saw nothing). Eval consumers (Ragas `contexts`, zgm) need the full
+        texts, not the truncated display snippets on `ChatResponse.sources`.
+
+        The WHOLE pipeline runs as the LangGraph graph — pre-flight included
+        (1em.2): the graph's preflight node raises ValueError on an unknown
+        mode before retrieval and routes empty prompts to refuse. This method
+        is invoke + response mapping only. Langfuse tracing is attached here,
+        env-gated + off by default (see tracing.py).
+        """
+        from .generate import context_texts
         from .tracing import build_trace_config
 
         config = build_trace_config(model=self.model, mode=mode) or None
@@ -115,12 +130,18 @@ class RagService:
             {"prompt": prompt, "mode": mode}, config=config,
         )
         # Past a successful invoke the mode is guaranteed valid.
-        return ChatResponse(
+        resp = ChatResponse(
             answer=final["answer"], sources=final["sources"],
             answerable=final["answerable"],
             mode=ChatMode(mode), conversation_id=conversation_id,
             suggestions=final.get("suggestions"),
         )
+        # Only the generate route built an LLM context; the preflight refuse
+        # path never even produced a retrieval result.
+        contexts: list[str] = []
+        if final.get("route") == "generate" and final.get("result") is not None:
+            contexts = context_texts(final["result"])
+        return resp, contexts
 
     def _compiled_graph(self):
         """Lazily build + cache the pipeline graph (langgraph imported on first use

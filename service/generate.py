@@ -74,11 +74,19 @@ PERSONA_PROMPTS: dict[str, str] = {
 GROUNDED_TEMPLATE = "Sources:\n{context}\n\nQuestion: {question}\n\nAnswer:"
 
 
+def context_texts(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> list[str]:
+    """The full chunk texts generation builds its context from, in chunk order.
+    Single source of truth shared with `build_context`, so eval consumers (the
+    Ragas `contexts`) score exactly what the LLM saw — never display snippets."""
+    return [result.text_for(c).strip() for c in result.chunks[:top_n]]
+
+
 def build_context(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> str:
     """Numbered source blocks with FULL chunk text, for the LLM context."""
     blocks: list[str] = []
-    for i, c in enumerate(result.chunks[:top_n], start=1):
-        text = result.text_for(c).strip()
+    for i, (c, text) in enumerate(
+        zip(result.chunks, context_texts(result, top_n)), start=1,
+    ):
         label = c.entity_name or c.section or c.chapter or c.content_type
         blocks.append(f"[{i}] ({label}): {text}")
     return "\n\n".join(blocks)

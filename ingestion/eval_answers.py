@@ -152,13 +152,16 @@ def aggregate_metric(scored: Sequence[dict], metric: str, threshold: float = 0.5
 def _answer_with_trace(svc, case: AnswerCase, langfuse):
     """Run one case through the graph. When langfuse is provided, wrap it in a span
     we own so we can capture the trace_id (the graph's callback nests under it via
-    contextvars) to attach scores to. Returns (ChatResponse, trace_id|None)."""
+    contextvars) to attach scores to. Returns (ChatResponse, contexts, trace_id|None);
+    contexts are the FULL retrieved chunk texts the LLM saw (zgm) — the Ragas
+    context metrics must score those, not the truncated display snippets."""
     if langfuse is None:
-        return svc.answer(case.question, mode=case.mode), None
+        resp, contexts = svc.answer_with_contexts(case.question, mode=case.mode)
+        return resp, contexts, None
     with langfuse.start_as_current_span(name=f"eval:{case.question[:60]}") as span:
-        resp = svc.answer(case.question, mode=case.mode)
+        resp, contexts = svc.answer_with_contexts(case.question, mode=case.mode)
         trace_id = getattr(span, "trace_id", None)
-    return resp, trace_id
+    return resp, contexts, trace_id
 
 
 def _push_scores(langfuse, trace_id: str, scored: dict) -> None:
@@ -177,15 +180,15 @@ def run_eval(cases: Sequence[AnswerCase], svc, *, evaluator: Evaluator,
              langfuse=None, threshold: float = 0.5) -> dict:
     """Run positive answer-quality cases through the graph and score them.
 
-    Injectable `svc` (has `.answer`) and `evaluator` (has `.score`) keep this
-    offline-testable; `langfuse` is optional (attach scores when present). Returns
-    {cases: [...per-case...], aggregates: {metric: aggregate_metric(...)}}.
+    Injectable `svc` (has `.answer_with_contexts`) and `evaluator` (has `.score`)
+    keep this offline-testable; `langfuse` is optional (attach scores when
+    present). Returns {cases: [...per-case...], aggregates: {metric:
+    aggregate_metric(...)}}.
     """
     per_case: list[dict] = []
     rows: list[dict] = []
     for case in cases:
-        resp, trace_id = _answer_with_trace(svc, case, langfuse)
-        contexts = [s.snippet for s in resp.sources]
+        resp, contexts, trace_id = _answer_with_trace(svc, case, langfuse)
         rows.append(build_row(case, resp.answer, contexts))
         per_case.append({
             "question": case.question,
