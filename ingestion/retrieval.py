@@ -112,6 +112,12 @@ _GENERIC_ENTITY_STOPLIST: frozenset[str] = frozenset({
     "skills", "size", "creatures", "creature", "monsters", "items", "magic",
 })
 
+# eue: 1-2 char entity_name values are OCR noise (a bare 'I' typed as a
+# monster in the vocab), and the plural-aware pattern makes them explosive —
+# 'I' compiles to \bi(?:e?s)?\b, which matches the word "is" in almost any
+# question and forces a bogus content-type filter. Real 5e names are ≥3 chars.
+_MIN_ENTITY_NAME_LEN = 3
+
 
 def extract_query_entities(
     text: str,
@@ -120,8 +126,8 @@ def extract_query_entities(
 ) -> tuple[set[str], set[str]]:
     """
     Return (matched_classes, matched_entities) found in `text`. Case-insensitive,
-    word-boundary, plural-aware (s/es + f→ves). Generic stoplist terms are never
-    returned (ipl).
+    word-boundary, plural-aware (s/es + f→ves). Generic stoplist terms (ipl) and
+    names shorter than 3 chars (eue) are never returned.
     """
     lowered = text.lower()
     classes: set[str] = set()
@@ -137,11 +143,15 @@ def extract_query_entities(
         return re.search(pattern, lowered) is not None
 
     for name in known_classes:
+        if len(name.strip()) < _MIN_ENTITY_NAME_LEN:
+            continue
         if name.lower() in _GENERIC_ENTITY_STOPLIST:
             continue
         if _match(name):
             classes.add(name)
     for name in known_entities:
+        if len(name.strip()) < _MIN_ENTITY_NAME_LEN:
+            continue
         if name.lower() in _GENERIC_ENTITY_STOPLIST:
             continue
         if _match(name):
