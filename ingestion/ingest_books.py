@@ -8,7 +8,7 @@ For each book it writes chunks-<slug>.jsonl + .clean.jsonl + .quarantine.jsonl
 low pass-rate flags a book whose config needs tuning before its data lands.
 
 Usage:
-    uv run --with pymupdf --with pdfplumber --with "psycopg[binary]" --with openai \
+    uv run --with '.[extract]' --with pdfplumber --with "psycopg[binary]" --with openai \
         python ingestion/ingest_books.py                # all books
     ... python ingestion/ingest_books.py --only xge-5e tce-5e   # subset
     ... python ingestion/ingest_books.py --no-embed             # extract+QA only

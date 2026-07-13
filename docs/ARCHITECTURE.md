@@ -153,7 +153,7 @@ uv run --with fastapi --with uvicorn --with openai --with "psycopg[binary]" \
     uvicorn service.app:app --port 8000        # → http://localhost:8000
 
 # offline pipeline (per book)
-uv run --with pymupdf python ingestion/extract_scan.py "<pdf>" --book-slug <slug> --out ingestion/chunks-<slug>.jsonl
+uv run --with '.[extract]' python ingestion/extract_scan.py "<pdf>" --book-slug <slug> --out ingestion/chunks-<slug>.jsonl
 uv run python ingestion/qa_chunks.py ingestion/chunks-<slug>.jsonl                 # → .clean.jsonl
 uv run --with "psycopg[binary]" --with openai python ingestion/embed.py --chunks ingestion/chunks-<slug>.clean.jsonl --replace-book
 
