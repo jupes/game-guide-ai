@@ -189,6 +189,24 @@ def classify_chunk(chunk: dict, max_chars: int = MAX_CHUNK_CHARS) -> tuple[bool,
     return (len(reasons) == 0, reasons)
 
 
+def salvage_entity_name(chunk: dict, max_chars: int = MAX_CHUNK_CHARS) -> dict | None:
+    """
+    Recover a chunk whose ONLY failing reason is `bad_entity` by nulling its
+    entity_name, so otherwise-clean lore/rule text isn't discarded just
+    because a heading/table/quote line was mistakenly captured as a name
+    upstream (agent-forge-harness-wu1). Returns the salvaged copy (a new
+    dict) if it now classifies clean, else None — a chunk failing on
+    `bad_entity` alongside another reason (e.g. Tortle's cipher-garbage
+    class, which also fails `low_alpha`) is never salvaged.
+    """
+    ok, reasons = classify_chunk(chunk, max_chars)
+    if ok or reasons != ["bad_entity"]:
+        return None
+    salvaged = {**chunk, "entity_name": None}
+    ok2, _ = classify_chunk(salvaged, max_chars)
+    return salvaged if ok2 else None
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -213,12 +231,17 @@ def run_qa(
         ok, reasons = classify_chunk(c, max_chars)
         if ok:
             clean.append(c)
-        else:
-            quarantined.append(c)
-            for r in reasons:
-                reason_tally[r] = reason_tally.get(r, 0) + 1
-                if len(samples.setdefault(r, [])) < 3:
-                    samples[r].append((c.get("text", "") or "")[:80])
+            continue
+        salvaged = salvage_entity_name(c, max_chars) if reasons == ["bad_entity"] else None
+        if salvaged is not None:
+            clean.append(salvaged)
+            reason_tally["bad_entity_salvaged"] = reason_tally.get("bad_entity_salvaged", 0) + 1
+            continue
+        quarantined.append(c)
+        for r in reasons:
+            reason_tally[r] = reason_tally.get(r, 0) + 1
+            if len(samples.setdefault(r, [])) < 3:
+                samples[r].append((c.get("text", "") or "")[:80])
 
     clean_path.write_text(
         "\n".join(json.dumps(c, ensure_ascii=False) for c in clean) + ("\n" if clean else ""),
