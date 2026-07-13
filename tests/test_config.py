@@ -25,6 +25,7 @@ KNOBS = (
     ("RAG_ANSWERABLE_DISTANCE", "KOZ_ANSWERABLE_DISTANCE", 0.50),
     ("RAG_DEFAULT_MODEL", "DEFAULT_MODEL", "gpt-4o-mini"),
     ("RAG_TEMPERATURE", "TEMPERATURE", 0.2),
+    ("RAG_RERANK", "RAG_RERANK", False),
 )
 
 OVERRIDES = {
@@ -35,6 +36,7 @@ OVERRIDES = {
     "RAG_ANSWERABLE_DISTANCE": ("0.66", "KOZ_ANSWERABLE_DISTANCE", 0.66),
     "RAG_DEFAULT_MODEL": ("gpt-4o", "DEFAULT_MODEL", "gpt-4o"),
     "RAG_TEMPERATURE": ("0.9", "TEMPERATURE", 0.9),
+    "RAG_RERANK": ("1", "RAG_RERANK", True),
 }
 
 
@@ -54,6 +56,18 @@ def test_env_overrides_every_knob(monkeypatch):
     cfg = importlib.reload(config)
     for _var, (_raw, attr, value) in OVERRIDES.items():
         assert getattr(cfg, attr) == value, attr
+
+
+def test_bool_knob_truthy_set(monkeypatch):
+    """RAG_RERANK parses the same truthy set as RAG_TRACING (tracing.py):
+    {"1", "true", "yes", "on"} case-insensitively; everything else is False."""
+    for raw, expected in (
+        ("1", True), ("true", True), ("YES", True), ("on", True),
+        ("0", False), ("false", False), ("off", False), ("", False), ("bogus", False),
+    ):
+        monkeypatch.setenv("RAG_RERANK", raw)
+        cfg = importlib.reload(config)
+        assert cfg.RAG_RERANK is expected, f"RAG_RERANK={raw!r}"
 
 
 def teardown_module(_module):

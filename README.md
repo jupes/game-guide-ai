@@ -43,10 +43,17 @@ User
   ↓ prompt
 ui/  (React 19 + Vite 8, Aetheril design system — light Parchment / dark Tavern)
   ↓ POST /chat  { prompt, mode?, conversation_id? }
-service/  (FastAPI — embed → filter → retrieve → rerank → answerability gate → LLM)
+service/  (FastAPI — embed → filter → retrieve → [rerank*] → answerability gate → LLM)
   ↓ pgvector similarity search  (with optional book-slug filter per mode)
 vector-db  (PostgreSQL + pgvector, 9,000+ chunks across 12 D&D 5e books)
 ```
+
+*\*rerank is opt-in:* set `RAG_RERANK=1` **and** install the `[rerank]` extra
+(`pip install '.[rerank]'`, or `--build-arg INSTALL_RERANK=1` for the Docker image). The
+cross-encoder lifts prose Hit@1 in eval but costs torch in the image and ~234 ms per reranked
+query, so it ships off by default. Plain **vector** search is the production retrieval mode by
+eval decision — hybrid (vector+FTS RRF) tied Hit@1 and slightly lost Recall@10 in the 3q3 A/B, and
+the eval-only ipl filter→unfiltered fallback was net-harmful (see `config.py` for both verdicts).
 
 ### Response contract
 
@@ -71,17 +78,24 @@ OPENAI_API_KEY=sk-...
 The vector DB already holds the embedded corpus. Start everything with:
 
 ```bash
-docker compose up --build
+./scripts/up.sh
 ```
+
+This builds, starts detached, waits for the stack to be healthy, then prints the UI link.
+(Equivalent to `docker compose up --build -d --wait` — use that directly if you want to
+follow logs yourself with `docker compose up --build` instead.)
 
 **URL: <http://localhost:5173>**
 
 First build pulls images and compiles the Vite app (a few minutes). Subsequent starts are fast.
 
+> `POSTGRES_PORT` in `.env` controls the DB's *host* port (default `5432`) — bump it if
+> another Postgres/pgvector container already has that port bound.
+
 ### Other compose commands
 
 ```bash
-docker compose up --build -d     # detached (background)
+docker compose up --build        # foreground, follow logs
 docker compose logs -f           # tail all logs
 docker compose down              # stop + remove containers (volumes/data preserved)
 docker compose up vector-db      # DB only — if you prefer running the service locally

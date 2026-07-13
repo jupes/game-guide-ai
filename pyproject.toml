@@ -43,6 +43,12 @@ eval = [
     # comparison does. `ollama pull gemma4:12b` (~8GB) + Ollama 0.22+.
     "langchain-ollama>=0.2,<0.4",
 ]
+# Gated cross-encoder rerank in the live service (1em.1). Heavy (pulls torch),
+# so opt-in twice: install this extra AND set RAG_RERANK=1 (see config.py).
+# Without the extra, RAG_RERANK=1 degrades to no reranker with a warning.
+rerank = [
+    "sentence-transformers>=3,<6",
+]
 # PDF extraction (fitz engine) — dev/CI-only, so NOT a core dependency (the
 # FastAPI service must not pull it). Pinned to an EXACT version (not a range):
 # every extraction run was previously `uv run --with pymupdf ...` with no

@@ -1,8 +1,12 @@
 """
-RagService — orchestrates retrieve → answerability gate → generate → cite.
+RagService — thin invoke wrapper around the pipeline graph (service/graph.py).
 
-Stateless per call. The retriever (vocab loaded once) and optional reranker are
-injected so the FastAPI app can build them at startup and tests can mock them.
+The whole request pipeline — pre-flight, retrieval stages, grounding gate,
+generation, citations — runs as the LangGraph graph; `answer()` builds the
+trace config, invokes it, and maps the final state to a ChatResponse.
+Stateless per call. The retriever (vocab loaded once), optional reranker,
+LLM client, and secondary retriever are injected so the FastAPI app can build
+them at startup and tests can fake them.
 """
 
 from __future__ import annotations
@@ -15,7 +19,9 @@ from ingestion.retrieval import RagRetriever, RetrievalResult, RetrievedChunk
 from .generate import DEFAULT_MODEL, LLMClient
 from .models import ChatMode, ChatResponse
 
-REFUSAL = "I couldn't find that in the D&D 5e sources I have."
+# Canonical home is service/models.py (response-contract constant); re-exported
+# here so existing importers (ingestion/eval_answers.py, tests) keep resolving.
+from .models import REFUSAL as REFUSAL  # noqa: F401
 
 # Mode → retrieval scope mapping lives in the canonical leaf module
 # `ingestion/scope.py` (`scope_for_mode`); the retriever applies it. The service
@@ -97,36 +103,22 @@ class RagService:
     def answer(
         self, prompt: str, mode: str = "sage", conversation_id: str | None = None,
     ) -> ChatResponse:
-        # Validate the mode up front so an invalid value fails fast with a clear
-        # error instead of silently scoping-as-sage and then raising at response
-        # build (the API layer already 422s real users via the ChatMode enum).
-        try:
-            mode_enum = ChatMode(mode)
-        except ValueError:
-            raise ValueError(f"unknown mode: {mode!r}") from None
-
-        # Empty/whitespace prompt → refuse without spending retrieval or an LLM
-        # call (the API enforces min_length=1; this guards direct callers).
-        if not prompt.strip():
-            return ChatResponse(
-                answer=REFUSAL, sources=[], answerable=False,
-                mode=mode_enum, conversation_id=conversation_id,
-            )
-
-        # The retrieve -> grounding gate -> generate|refuse core now runs as a
-        # LangGraph graph (ziw.2 / Phase 1). Behavior is identical to the prior
-        # imperative flow; the graph orchestrates the same building blocks.
-        # Langfuse tracing is attached here, env-gated + off by default (CP3).
+        # The WHOLE pipeline runs as the LangGraph graph — pre-flight included
+        # (1em.2): the graph's preflight node raises ValueError on an unknown
+        # mode before retrieval and routes empty prompts to refuse. This method
+        # is invoke + response mapping only. Langfuse tracing is attached here,
+        # env-gated + off by default (see tracing.py).
         from .tracing import build_trace_config
 
         config = build_trace_config(model=self.model, mode=mode) or None
         final = self._compiled_graph().invoke(
             {"prompt": prompt, "mode": mode}, config=config,
         )
+        # Past a successful invoke the mode is guaranteed valid.
         return ChatResponse(
             answer=final["answer"], sources=final["sources"],
             answerable=final["answerable"],
-            mode=mode_enum, conversation_id=conversation_id,
+            mode=ChatMode(mode), conversation_id=conversation_id,
         )
 
     def _compiled_graph(self):

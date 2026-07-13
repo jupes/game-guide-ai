@@ -14,10 +14,16 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from importlib.util import find_spec
 from pathlib import Path
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+
+import config
+
+from ingestion.retrieval import EmbeddingUnavailableError
 
 from .models import ChatRequest, ChatResponse
 from .rag import RagService
@@ -46,12 +52,35 @@ except Exception:  # pragma: no cover - psycopg always present in service image
 _state: dict[str, RagService] = {}
 
 
+def build_reranker(enabled: bool | None = None) -> Any | None:
+    """The gated cross-encoder reranker for the live service, or None.
+
+    Off unless RAG_RERANK is truthy (see config.py). When enabled but the
+    `[rerank]` extra isn't installed, degrade to no reranker with a warning
+    instead of failing startup — the same posture as tracing.py's missing
+    Langfuse. The model itself still lazy-loads on first reranked query.
+    """
+    if enabled is None:
+        enabled = config.RAG_RERANK
+    if not enabled:
+        return None
+    if find_spec("sentence_transformers") is None:
+        log.warning(
+            "RAG_RERANK is on but sentence-transformers is not installed "
+            "(pip install '.[rerank]'); serving without a reranker."
+        )
+        return None
+    from ingestion.rerank import CrossEncoderReranker
+
+    return CrossEncoderReranker()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Build the service once (loads corpus vocabulary). Guarded so the app can
     # still start for endpoint tests that override the dependency without a DB.
     try:
-        _state["rag"] = RagService()
+        _state["rag"] = RagService(reranker=build_reranker())
     except Exception:  # pragma: no cover - depends on live DB
         log.warning(
             "startup: RagService unavailable; /chat will 503 until ready", exc_info=True
@@ -93,6 +122,14 @@ def chat(req: ChatRequest, svc: RagService = Depends(get_service)) -> ChatRespon
             req.mode.value, req.conversation_id, type(exc).__name__, exc,
         )
         raise HTTPException(status_code=503, detail="retrieval backend unavailable") from exc
+    except EmbeddingUnavailableError as exc:
+        # Embedding can't run (missing OPENAI_API_KEY) — service-side
+        # unavailability, not a crash (1em.3; previously sys.exit killed the worker).
+        log.warning(
+            "embedding unavailable on /chat (mode=%s, conversation_id=%s): %s",
+            req.mode.value, req.conversation_id, exc,
+        )
+        raise HTTPException(status_code=503, detail="embedding backend unavailable") from exc
     except Exception:
         # Anything else is a bug in our code — log the full traceback, return 500.
         log.exception("internal error on /chat (mode=%s)", req.mode.value)

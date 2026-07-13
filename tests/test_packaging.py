@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGES = ("service", "ingestion")
 
 # The modules the FastAPI service actually imports at runtime — must resolve

@@ -275,6 +275,60 @@ def test_chat_internal_error_500():
         app.dependency_overrides.clear()
 
 
+def test_chat_embedding_unavailable_503():
+    """EmbeddingUnavailableError (e.g. missing OPENAI_API_KEY) maps to 503 —
+    a service-side availability problem, not a crash (1em.3)."""
+    from ingestion.retrieval import EmbeddingUnavailableError
+
+    c = _client_raising(EmbeddingUnavailableError("OPENAI_API_KEY is not set"))
+    try:
+        r = c.post("/chat", json={"prompt": "What is a Basilisk?"})
+        assert r.status_code == 503
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# 1em.1 / CP-A — env-gated reranker wiring (RAG_RERANK, default off)
+# ---------------------------------------------------------------------------
+
+
+def test_reranker_off_by_default():
+    """With RAG_RERANK unset/false (the documented default), the app wires no
+    reranker — production keeps today's behavior unless explicitly opted in."""
+    import config
+    from service.app import build_reranker
+
+    assert config.RAG_RERANK is False  # documented default
+    assert build_reranker() is None
+
+
+def test_reranker_built_when_enabled(monkeypatch):
+    """RAG_RERANK=1 at startup builds the gated cross-encoder (constructor is
+    cheap — torch only loads lazily on first use). The extra-availability probe
+    is stubbed present so the test runs in the extras-free CI env."""
+    import service.app as appmod
+    from ingestion.rerank import CrossEncoderReranker
+
+    monkeypatch.setattr(appmod, "find_spec", lambda name: object())
+    reranker = appmod.build_reranker(enabled=True)
+    assert isinstance(reranker, CrossEncoderReranker)
+
+
+def test_reranker_missing_extra_degrades_with_warning(monkeypatch):
+    """RAG_RERANK=1 without the [rerank] extra installed must not break startup:
+    the app serves without a reranker and logs a warning (tracing.py pattern)."""
+    import service.app as appmod
+
+    monkeypatch.setattr(appmod, "find_spec", lambda name: None)
+    with _CaptureLogs() as cap:
+        reranker = appmod.build_reranker(enabled=True)
+    assert reranker is None
+    blob = "\n".join(r.getMessage() for r in cap.records)
+    assert "RAG_RERANK" in blob and "sentence-transformers" in blob
+    assert any(r.levelno >= logging.WARNING for r in cap.records)
+
+
 def test_chat_error_is_logged_with_context_no_prompt_leak():
     """Failures are logged with mode context; the raw prompt is not leaked."""
     secret_prompt = "my-secret-prompt-text-123"
