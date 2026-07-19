@@ -8,7 +8,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--aether-surface);
+  background: var(--md-sys-color-surface);
   padding: 24px;
 }
 
@@ -24,20 +24,20 @@
 
 .landing__brand-icon {
   font-size: 48px;
-  color: var(--aether-primary);
+  color: var(--md-sys-color-primary);
 }
 
 .landing__title {
   margin: 0 0 4px;
   font-size: 32px;
   font-weight: 700;
-  color: var(--aether-on-surface);
+  color: var(--md-sys-color-on-surface);
 }
 
 .landing__tagline {
   margin: 0 0 32px;
   font-size: 16px;
-  color: var(--aether-on-surface-variant);
+  color: var(--md-sys-color-on-surface-variant);
 }
 
 .landing__cta {

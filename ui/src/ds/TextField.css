@@ -112,6 +112,14 @@
   resize: vertical;
 }
 
+/* Placeholder — explicit AA-compliant color. Without this the browser default
+   (a low-contrast gray, further dimmed by Firefox's default 0.54 opacity) fails
+   WCAG against the parchment surface. on-surface-variant is >=4.5:1 in both themes. */
+.aether-field__input::placeholder {
+  color: var(--md-sys-color-on-surface-variant);
+  opacity: 1;
+}
+
 /* ── Icons ── */
 .aether-field__icon {
   font-size: 20px;

@@ -21,7 +21,7 @@
 .chat-pane__empty {
   margin: auto;
   font-size: 18px;
-  color: var(--aether-on-surface-variant);
+  color: var(--md-sys-color-on-surface-variant);
   text-align: center;
 }
 
