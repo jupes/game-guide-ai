@@ -9,6 +9,7 @@ import * as React from 'react'
 import { useState } from 'react'
 import { Avatar } from '../ds/Avatar'
 import { Switch } from '../ds/Switch'
+import { useAppNav } from './AppNav'
 import { useCurrentUser } from './currentUser'
 import { useRoleToggle } from './useRoleToggle'
 import { useTheme } from '../ds/theme'
@@ -16,6 +17,7 @@ import './UserMenu.css'
 
 export function UserMenu(): React.JSX.Element {
   const { user } = useCurrentUser()
+  const { openProfile } = useAppNav()
   const toggleRole = useRoleToggle()
   const { theme, setTheme } = useTheme()
   const [open, setOpen] = useState(false)
@@ -29,9 +31,9 @@ export function UserMenu(): React.JSX.Element {
     user.signOut()
   }
 
-  function handleEditProfile(): void {
+  function handleOpenProfile(): void {
     setOpen(false)
-    user.editProfile()
+    openProfile()
   }
 
   return (
@@ -44,7 +46,7 @@ export function UserMenu(): React.JSX.Element {
         onClick={toggleMenu}
         className="user-menu__trigger"
       >
-        <Avatar name={user.displayName} tone="gold" />
+        <Avatar name={user.displayName} tone={user.avatarTone ?? 'gold'} />
       </button>
 
       {open && (
@@ -68,7 +70,7 @@ export function UserMenu(): React.JSX.Element {
           <button
             type="button"
             role="menuitem"
-            onClick={handleEditProfile}
+            onClick={handleOpenProfile}
             className="user-menu__item"
           >
             Profile

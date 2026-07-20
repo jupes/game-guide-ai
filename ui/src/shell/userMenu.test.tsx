@@ -204,3 +204,32 @@ describe('UserMenu theme toggle (swe1.11)', () => {
     expect(document.documentElement.getAttribute('data-theme')).not.toBe('dark')
   })
 })
+
+// ── swe1.7 — Profile item opens the page + avatar reflects the chosen tone ─────
+
+describe('UserMenu profile (swe1.7)', () => {
+  it('the Profile item opens the profile screen', async () => {
+    const openProfile = vi.fn()
+    renderWithTheme(
+      <AppNavContext.Provider value={makeNavState({ openProfile })}>
+        <CurrentUserContext.Provider value={makeUserState()}>
+          <UserMenu />
+        </CurrentUserContext.Provider>
+      </AppNavContext.Provider>,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /open user menu/i }))
+    await userEvent.click(screen.getByRole('menuitem', { name: /profile/i }))
+    expect(openProfile).toHaveBeenCalledTimes(1)
+  })
+
+  it('the avatar reflects the user chosen tone', () => {
+    const userState = makeUserState()
+    userState.user.avatarTone = 'arcane'
+    renderWithTheme(
+      <CurrentUserContext.Provider value={userState}>
+        <UserMenu />
+      </CurrentUserContext.Provider>,
+    )
+    expect(document.querySelector('.avatar--arcane')).toBeInTheDocument()
+  })
+})
