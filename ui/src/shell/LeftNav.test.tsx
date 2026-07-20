@@ -23,6 +23,8 @@ function makeNavState(overrides: Partial<AppNavState> = {}): AppNavState {
     setMode: vi.fn(),
     setConversationId: vi.fn(),
     backToLanding: vi.fn(),
+    openProfile: vi.fn(),
+    backToWorkspace: vi.fn(),
     ...overrides,
   }
 }

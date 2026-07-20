@@ -82,6 +82,8 @@ describe('Landing component', () => {
       setMode: vi.fn(),
       setConversationId: vi.fn(),
       backToLanding: vi.fn(),
+      openProfile: vi.fn(),
+      backToWorkspace: vi.fn(),
     }
 
     render(
@@ -107,6 +109,8 @@ describe('Landing component', () => {
       setMode: vi.fn(),
       setConversationId: vi.fn(),
       backToLanding: vi.fn(),
+      openProfile: vi.fn(),
+      backToWorkspace: vi.fn(),
     }
 
     render(
@@ -131,6 +135,8 @@ describe('Landing component', () => {
       setMode: vi.fn(),
       setConversationId: vi.fn(),
       backToLanding: vi.fn(),
+      openProfile: vi.fn(),
+      backToWorkspace: vi.fn(),
     }
 
     const { unmount } = render(
