@@ -39,6 +39,8 @@ function makeUserState(overrides: Partial<CurrentUserContextValue> = {}): Curren
       editProfile: vi.fn(),
     },
     setRole: vi.fn(),
+    setDisplayName: vi.fn(),
+    setAvatarTone: vi.fn(),
     ...overrides,
   }
 }

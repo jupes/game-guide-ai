@@ -38,6 +38,8 @@ function makeUserState(role: 'dm' | 'player' = 'player'): CurrentUserContextValu
       editProfile: vi.fn(),
     },
     setRole: vi.fn(),
+    setDisplayName: vi.fn(),
+    setAvatarTone: vi.fn(),
   }
 }
 

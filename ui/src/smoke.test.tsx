@@ -157,6 +157,8 @@ describe('App-flow smoke test (CP-F6.2)', () => {
         editProfile: () => {},
       },
       setRole: () => {},
+      setDisplayName: () => {},
+      setAvatarTone: () => {},
     }
 
     rerender(
