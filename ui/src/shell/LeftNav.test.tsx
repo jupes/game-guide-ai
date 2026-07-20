@@ -135,6 +135,29 @@ describe('LeftNav (#13)', () => {
     const sageChip = screen.getByText('Sage').closest('.chip')
     expect(sageChip).toHaveClass('chip--selected')
   })
+
+  // swe1.3 — each channel chip carries its distinct accent class so the
+  // selected fill / icon tint differs per mode.
+  it('applies each mode its accent modifier class', () => {
+    const navState = makeNavState({ mode: 'spell' })
+    render(
+      <ThemeProvider>
+        <AppNavContext.Provider value={navState}>
+          <CurrentUserContext.Provider value={makeUserState('dm')}>
+            <ConversationStoreProvider store={new MemoryConversationStore()}>
+              <LeftNav />
+            </ConversationStoreProvider>
+          </CurrentUserContext.Provider>
+        </AppNavContext.Provider>
+      </ThemeProvider>,
+    )
+    expect(screen.getByText('Sage').closest('.chip')).toHaveClass('mode-accent--verdigris')
+    const spellChip = screen.getByText('Spell').closest('.chip')
+    expect(spellChip).toHaveClass('mode-accent--arcane')
+    expect(spellChip).toHaveClass('chip--selected') // active mode fills with its accent
+    expect(screen.getByText('Rules').closest('.chip')).toHaveClass('mode-accent--gold')
+    expect(screen.getByText('GM').closest('.chip')).toHaveClass('mode-accent--ember')
+  })
 })
 
 // ── CP-F5.4 — LeftNav conversation list (#22) ────────────────────────────────

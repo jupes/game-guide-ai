@@ -19,11 +19,12 @@ const COLORS_CSS = join(dirname(fileURLToPath(import.meta.url)), 'tokens', 'colo
 
 type Tokens = Record<string, string>
 
-/** Pull `--md-sys-color-*: #hex;` pairs out of a single CSS rule block. */
+/** Pull `--md-sys-color-*` / `--aether-*: #hex;` pairs out of a single CSS rule
+ * block. The `(?:…)` is non-capturing so m[1]=token name, m[2]=hex stay put. */
 function parseBlock(css: string, selector: RegExp): Tokens {
   const block = css.match(selector)?.[1] ?? ''
   const tokens: Tokens = {}
-  for (const m of block.matchAll(/(--md-sys-color-[a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{3,8})/g)) {
+  for (const m of block.matchAll(/(--(?:md-sys-color|aether)-[a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{3,8})/g)) {
     tokens[m[1]] = m[2]
   }
   return tokens
@@ -59,6 +60,11 @@ const PAIRS: [string, string, string][] = [
   ["'Ask…' placeholder / tagline on the app surface", '--md-sys-color-on-surface-variant', '--md-sys-color-surface'],
   ["'Aetheril' brand + menu items on the app surface", '--md-sys-color-on-surface', '--md-sys-color-surface'],
   ['selected conversation row (swe1.2)', '--md-sys-color-on-secondary-container', '--md-sys-color-secondary-container'],
+  // swe1.3 — each channel's selected mode chip fills with its accent container.
+  ['Sage chip fill (verdigris)', '--md-sys-color-on-tertiary-container', '--md-sys-color-tertiary-container'],
+  ['Spell chip fill (arcane)', '--aether-on-arcane-container', '--aether-arcane-container'],
+  ['Rules chip fill (gold)', '--md-sys-color-on-secondary-container', '--md-sys-color-secondary-container'],
+  ['GM chip fill (ember)', '--md-sys-color-on-primary-container', '--md-sys-color-primary-container'],
 ]
 
 describe('shell text tokens meet WCAG AA (4.5:1)', () => {

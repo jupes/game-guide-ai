@@ -12,8 +12,9 @@ import { UserMenu } from './UserMenu'
 import { useConversationStore } from './ConversationStoreContext'
 import { useCurrentUser } from './currentUser'
 import type { Conversation } from './conversationStore'
-import { modesForRole } from './modes'
+import { modesForRole, accentClass } from './modes'
 import './LeftNav.css'
+import './modeAccents.css'
 
 export function LeftNav(): React.JSX.Element {
   const { mode, setMode, conversationId, setConversationId } = useAppNav()
@@ -47,7 +48,7 @@ export function LeftNav(): React.JSX.Element {
             label={label}
             selected={mode === m}
             onClick={() => setMode(m)}
-            className="left-nav__mode-chip"
+            className={`left-nav__mode-chip ${accentClass(m)}`}
           />
         ))}
       </div>
