@@ -2,50 +2,48 @@
 
 Aetheril is a Retrieval-Augmented Generation chat assistant for D&D 5e. It answers questions grounded in rulebook text, with citations, and tells you plainly when it cannot find an answer.
 
-## Design System
+New to the repo? Each folder has its own README written to get you contributing in that area fast: [`service/`](service/README.md) (API + RAG pipeline), [`ingestion/`](ingestion/README.md) (corpus pipeline + evals), [`ui/`](ui/README.md) (React front-end), [`vector-db/`](vector-db/README.md) (schema). The living architecture doc is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the observability/eval layer is documented in [`docs/observability/`](docs/observability/OVERVIEW.md).
 
-The UI is built on the **Aetheril design system** — a Material 3 token layer with a warm fantasy palette:
+## Chat channels
 
-- **Light theme (Parchment)** — warm aged-paper surface, ember primary, old-gold secondary, verdigris tertiary.
-- **Dark theme (Tavern)** — deep tavern-by-candlelight inversion. Toggle in the top bar.
+The workspace hosts four chat channels (personas), each with its own accent color, retrieval scope, and system prompt — switch in the app-header band:
 
-Ten DS components cover the full interface: Button, IconButton, TextField, Switch, Card, Chip, Avatar, Badge, DiceRoll, and ChatMessage. All values come from design tokens; no hard-coded hex colours.
-
-## Chat Modes
-
-The workspace hosts four chat personas, each with its own retrieval scope and system prompt:
-
-| Mode | Persona | Retrieval scope |
+| Channel | Persona | Retrieval scope |
 | --- | --- | --- |
-| **Sage** | General D&D oracle | All sources |
-| **Spell** | Spell Archivist | Spell descriptions + spell books |
-| **Rules** | Rules Arbiter | Rules sections |
-| **GM** | Game Master | Monster / DM-focused content; relaxed creative gate. A seam for a future second "world" retrieval source is stubbed. |
+| **Sage** | General D&D oracle | All sources (default) |
+| **Spell** | Spell Archivist — quotes rules text verbatim, adds three usage-suggestion cards | Spell chunks in spell-bearing books |
+| **Rules** | Rules Arbiter — rules-as-written only | Rules-type chunks |
+| **GM** | Game Master — may invent, says so, relaxed grounding gate | Monster / DM content; a seam for a future second "world" corpus is stubbed |
 
-Sage is the default. The mode selector lives in the left navigation.
+The **GM channel is DM-only**: it appears only when the user's role is `dm` (a profile toggle — UI gating until real auth exists).
 
-## App Shell
+## App shell
 
 ```text
 Landing screen
   └─ "Enter the Tavern" CTA  →  Workspace
-       ├─ LeftNav  (mode chips, conversation list, user menu)
-       ├─ TopBar   (brand + dark-theme toggle)
-       └─ ChatPane (composer, exchange feed, sources, dice rolls)
+       ├─ TopBar     (brand)
+       ├─ AppHeader  (channel switcher — accented chips)
+       ├─ LeftNav    (conversation list, user menu — theme toggle + profile)
+       └─ ChatPane   (composer + attach, exchange feed, sources, suggestions, dice rolls)
+  Profile screen — display name, avatar tone, DM/player role
 ```
 
-**Users and conversation history are currently stubbed.** The guest "Adventurer" user is hard-coded; no real authentication or server-side persistence exists yet. Conversation titles are stored in `localStorage` for the current session only.
+**What persists where:** message content is stored **server-side** per conversation (`chat.messages`), and uploaded **file attachments** (`.txt`/`.md`/`.pdf`) ground that conversation's answers from then on. The conversation *list/titles* and the user identity are still client-side stubs — a hard-coded "Adventurer" guest with `localStorage`-persisted name/avatar/role. Real auth is a follow-up.
 
 ## Architecture
 
 ```text
 User
   ↓ prompt
-ui/  (React 19 + Vite 8, Aetheril design system — light Parchment / dark Tavern)
+ui/  (React 19 + Vite, Aetheril design system — light Parchment / dark Tavern)
   ↓ POST /chat  { prompt, mode?, conversation_id? }
-service/  (FastAPI — embed → filter → retrieve → [rerank*] → answerability gate → LLM)
-  ↓ pgvector similarity search  (with optional book-slug filter per mode)
-vector-db  (PostgreSQL + pgvector, 9,000+ chunks across 12 D&D 5e books)
+service/  (FastAPI + LangGraph pipeline:
+           preflight → embed → hints → scope → search → fetch → [rerank*] → gate
+           → per-persona generate → cite;  history + attachments per conversation)
+  ↓ pgvector similarity search  (mode-scoped filters)
+vector-db  (PostgreSQL + pgvector — dnd.chunks: 9,000+ chunks across 12 D&D 5e books;
+            chat.messages / chat.attachments for history)
 ```
 
 *\*rerank is opt-in:* set `RAG_RERANK=1` **and** install the `[rerank]` extra
@@ -63,9 +61,12 @@ the eval-only ipl filter→unfiltered fallback was net-harmful (see `config.py` 
   "sources": [{ "book": "...", "chapter": "...", "section": "...", "entity": "...", "page": 12, "snippet": "..." }],
   "answerable": true,
   "mode": "spell",
-  "conversation_id": null
+  "conversation_id": "...",
+  "suggestions": [{ "style": "practical", "text": "..." }]
 }
 ```
+
+`suggestions` is spell-mode-only (exactly three: practical/roleplay/wacky; `null` elsewhere or when that garnish failed). A refusal is a **200** with `answerable: false` — never an error. The service also exposes `GET /conversations/{id}/messages` (history recall) and `POST`/`GET /conversations/{id}/attachments` (see [`service/README.md`](service/README.md)).
 
 ## Running E2E — one command
 
@@ -91,6 +92,10 @@ First build pulls images and compiles the Vite app (a few minutes). Subsequent s
 
 > `POSTGRES_PORT` in `.env` controls the DB's *host* port (default `5432`) — bump it if
 > another Postgres/pgvector container already has that port bound.
+>
+> **Known gap:** nginx and the Vite dev proxy currently forward only `/chat` + `/healthz`,
+> so conversation **history recall and attachments** work end-to-end only in the
+> single-process mode below (uvicorn on :8000). Tracked as `agent-forge-harness-cnqf`.
 
 ### Other compose commands
 
@@ -100,6 +105,15 @@ docker compose logs -f           # tail all logs
 docker compose down              # stop + remove containers (volumes/data preserved)
 docker compose up vector-db      # DB only — if you prefer running the service locally
 ```
+
+### Single process (UI + API on :8000)
+
+```bash
+cd ui && bun run build && cd ..
+uv run --with . uvicorn service.app:app --port 8000
+```
+
+Open **<http://localhost:8000>** — the service mounts `ui/dist/` when it exists.
 
 ### Local dev (two terminals, faster iteration)
 
@@ -135,17 +149,21 @@ Python imports are explicit (`from service... import ...` / `from ingestion... i
 with no `sys.path` hacks. Run pytest from the repo root with the `test` extra:
 
 ```bash
-uv run --with '.[test]' python -m pytest -q     # whole suite
+uv run --with '.[test]' python -m pytest -q     # whole suite (service/tests + ingestion/tests + tests/)
+cd ui && bun run test                            # UI: jsdom unit tests + storybook browser tests
 ```
 
 ## Directory layout
 
 | Path | Description |
 | --- | --- |
-| `service/` | FastAPI app — `POST /chat`, per-mode personas, answerability gate, grounded generation |
-| `ingestion/` | Chunking, embedding, retrieval pipeline, eval harness |
-| `ui/` | React + Vite chat interface (Aetheril design system) |
-| `vector-db/` | DB init SQL and pgvector setup |
+| `service/` | FastAPI app — LangGraph RAG pipeline, per-channel personas, history, attachments ([README](service/README.md)) |
+| `ingestion/` | PDF→chunks→embeddings pipeline, shared retrieval core, eval harness ([README](ingestion/README.md)) |
+| `ui/` | React + Vite chat interface, Aetheril design system ([README](ui/README.md)) |
+| `vector-db/` | DB init SQL (corpus + chat schema) and pgvector setup ([README](vector-db/README.md)) |
+| `config.py` | Single home of every RAG tuning knob — env-overridable (`RAG_*`), documented defaults |
+| `tests/` | Repo-level guards: packaging invariant, config knobs |
+| `docs/` | Architecture, observability/eval layer, ingestion research + eval reports |
 | `docker-compose.yml` | Full stack: vector-db → service → ui |
 | `Dockerfile.service` | Python 3.12-slim image for the agent service |
 | `ui/Dockerfile` | Multi-stage bun build + nginx serve |

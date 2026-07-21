@@ -1,83 +1,115 @@
 # Aetheril — UI
 
-React 19 + Vite 8 front-end for the Aetheril D&D 5e RAG chat assistant.
-
-## Design system
-
-The Aetheril design system lives in `src/ds/`. It provides:
-
-- **Token layer** (`src/ds/tokens/`) — Material 3 color roles, typography, shape, elevation, spacing, and motion, all re-toned for a warm fantasy palette (Ember primary, Old Gold secondary, Verdigris tertiary).
-- **Light theme (Parchment)** — warm aged-paper surface; the default.
-- **Dark theme (Tavern)** — deep candlelit inversion. Toggle exposed in the `TopBar` via a `Switch` component. Persisted to `localStorage`.
-- **10 DS components** — Button, IconButton, TextField, Switch, Card, Chip, Avatar, Badge, DiceRoll, ChatMessage. All values from tokens; no hard-coded hex.
+React 19 + Vite front-end for the Aetheril D&D 5e RAG chat assistant. Bun is the package
+manager / script runner; state is plain React context + hooks (no router, no state library).
 
 ## App shell
 
 ```text
-Landing screen
-  └─ "Enter the Tavern" CTA  →  Workspace
-       ├─ LeftNav  (mode chips, conversation list, user menu)
-       ├─ TopBar   (brand + dark-theme toggle Switch)
-       └─ ChatPane (TextField composer, exchange feed, DiceRoll, sources Card)
+Landing ── "Enter the Tavern" ─▶ Workspace                    Profile (swe1.7)
+                                   ├─ TopBar     brand only     edit display name
+                                   ├─ AppHeader  channel switcher (accented chips)
+                                   └─ body       ├─ LeftNav   conversations · UserMenu
+                                                 └─ ChatPane  composer · exchanges · attachments
 ```
 
-Navigation state (screen, mode, conversationId) lives in `AppNavContext` (`src/shell/AppNav.tsx`).
+- **Navigation** is `AppNavContext` (`src/shell/AppNav.tsx`): `screen`
+  (`landing | workspace | profile`), `mode`, `conversationId`. No URL routing.
+- **Channel switching** lives in the **AppHeader** band (swe1.4), not the LeftNav; each
+  channel has a distinct accent color (swe1.3, `modes.ts` + `modeAccents.css`). The header
+  reserves an empty slot for future note-taking / GM-lore nav (swe1.5).
+- **Theme toggle** (light Parchment / dark Tavern) sits in the **UserMenu** popover
+  (swe1.11), persisted to `localStorage`.
+- **Profile page** (swe1.7): editable display name + avatar tone, DM/player role toggle —
+  all client-side, persisted to `localStorage` via `currentUser.tsx` / `useRoleToggle.ts`.
 
-## Chat modes
+## Channels (chat modes)
 
-| Mode | Persona | Notes |
+Defined once in `src/shell/modes.ts`; the service applies the matching retrieval scope.
+
+| Channel | Accent | Notes |
 | --- | --- | --- |
-| **Sage** | General oracle | All sources; default mode |
-| **Spell** | Spell Archivist | Spell descriptions + spell books |
-| **Rules** | Rules Arbiter | Rules sections |
-| **GM** | Game Master | Monster / DM content; relaxed creative gate; seam for a future second "world" retrieval source (stubbed) |
+| **Sage** | verdigris | General oracle; default |
+| **Spell** | arcane | Spell Archivist; answers arrive with 3 usage-suggestion cards |
+| **Rules** | gold | Rules-as-written arbiter |
+| **GM** | ember | **DM-only** — hidden unless the user's role is `dm` (`modesForRole`). UI gating only until real auth exists. |
 
-## Stub data
+## Chat features
 
-**Users and conversation history are currently stubbed:**
+- **Exchanges** — `useChat.ts` owns the exchange list; one in-flight request at a time.
+  Opening a conversation **recalls its stored history** from
+  `GET /conversations/{id}/messages` and seeds it ahead of live sends.
+- **Attachments** (swe1.6) — attach a `.txt`/`.md`/`.pdf` from the composer; it uploads
+  base64 to `POST /conversations/{id}/attachments` and from then on grounds that
+  conversation's answers (the extracted text stays server-side; the UI only shows metadata chips).
+- **Suggestions** — spell-mode answers may carry three usage ideas
+  (practical/roleplay/wacky), rendered as `SuggestionCards`.
+- **Dice** — `diceNotation.ts` parses notation like `2d6+3` in answers into `DiceRoll` components.
+- **Sources** — collapsible citation list (`SourceList`); **Export** dumps the conversation
+  as Markdown (`exportChat.ts`).
 
-- The current user is a hard-coded guest ("Adventurer"). No real authentication exists.
-- Conversation titles persist in `localStorage` for the current browser session. No server-side persistence.
+## Client-side state & stubs
+
+- **Conversation list/titles** live in `localStorage`
+  (`conversationStore.ts`, key `game-guide-ai:conversations`, with a one-time migration from
+  the legacy `rag-chat:conversations` key). Message *content* is persisted server-side.
+- **The user is still a stub** — hard-coded guest "Adventurer" (`currentUser.tsx`); display
+  name / avatar tone / DM-player role are localStorage-persisted client state. Real auth is
+  a follow-up (x5bz.2).
+
+## API client
+
+`src/api.ts` mirrors `service/models.py` exactly and returns discriminated results —
+refusals are 200s with `answerable: false`, **not** errors; 422/413/415/503/network map to
+`{ kind: 'error', message }` so the UI never throws on a bad day.
+
+> **Known gap:** the Vite dev proxy and nginx only forward `/chat` and `/healthz` — the
+> `/conversations/*` history + attachment calls only work in single-process mode
+> (uvicorn :8000 serving the built `ui/dist`). Tracked as `agent-forge-harness-cnqf`.
+
+## Design system
+
+The Aetheril design system lives in `src/ds/`:
+
+- **Token layer** (`src/ds/tokens/`) — Material 3 color roles, typography, shape, elevation,
+  spacing, motion; warm fantasy palette (Ember primary, Old Gold secondary, Verdigris tertiary).
+- **Themes** — light **Parchment** (default) and dark **Tavern**; `theme.tsx` applies and
+  persists the choice.
+- **10 components** — Button, IconButton, TextField, Switch, Card, Chip, Avatar, Badge,
+  DiceRoll, ChatMessage. All values come from tokens; no hard-coded hex
+  (`tokenIntegrity.test.ts` and `contrast.test.ts` enforce this).
+
+Browse them in **Storybook**: `bun run storybook` → <http://localhost:6006>. Stories live
+next to their components (`src/ds/*.stories.tsx`).
 
 ## Development
 
 ```bash
-bun install      # install deps (run once)
-bun run dev      # start Vite dev server — hot reload, proxy /chat → :8000
-bun run test     # run all Vitest tests headlessly
+bun install        # once
+bun run dev        # Vite dev server on :5173 (proxies /chat + /healthz → :8000)
 bun run typecheck  # tsc --noEmit
-bun run lint     # ESLint
-bun run build    # production build → dist/
+bun run lint       # ESLint
+bun run test       # Vitest — see below
+bun run build      # tsc -b && vite build → dist/
 ```
 
-The dev server proxies `/chat` and `/healthz` to `http://localhost:8000` (the FastAPI service). See the top-level `README.md` for how to start the full stack.
+`bun run test` runs **two Vitest projects** (see `vite.config.ts`):
+
+1. **jsdom** — all `*.test.ts(x)` unit/behavior tests; headless, no browser needed.
+2. **storybook** — every story runs as a browser test via `@storybook/addon-vitest`
+   (headless Chromium through Playwright; first run may need
+   `bunx playwright install chromium`).
 
 ## Directory layout
 
 | Path | Purpose |
 | --- | --- |
-| `src/ds/` | Aetheril design system (tokens + 10 components) |
-| `src/ds/tokens/` | CSS custom-property token files |
-| `src/shell/` | App shell: AppNav, Landing, WorkspaceShell, LeftNav, TopBar, ChatPane, UserMenu, currentUser (stub), conversationStore |
-| `src/components/` | Legacy utility: SourceList (kept), ExchangeView + ChatForm (removed in F5) |
-| `src/api.ts` | Typed `postChat` client — `POST /chat` |
-| `src/useChat.ts` | Exchange state hook — mode- and conversationId-aware |
-| `src/exportChat.ts` | Markdown export utility |
-| `src/smoke.test.tsx` | End-to-end app-flow smoke test |
-| `src/ds/a11y.test.tsx` | Accessibility + reduced-motion tests (behavior #22) |
-
-## Test suite
-
-Tests run with Vitest + Testing Library under jsdom. All tests are headless — no browser or dev server needed.
-
-```bash
-bun run test
-```
-
-Key test files:
-
-- `src/ds/*.test.tsx` — DS component behaviors (#1–11, #22)
-- `src/shell/*.test.tsx` — shell behaviors (#12–14, #20–21)
-- `src/useChat.test.tsx` — hook behavior (#19)
-- `src/smoke.test.tsx` — end-to-end app flow (CP-F6.2)
-- `src/ds/a11y.test.tsx` — 44px touch floor, accessible names, reduced-motion (behavior #22)
+| `src/ds/` | Aetheril design system (tokens + components + stories + theme) |
+| `src/shell/` | App shell: AppNav, Landing, WorkspaceShell, TopBar, AppHeader, LeftNav, ChatPane, UserMenu, ProfilePage, modes, currentUser, conversationStore, diceNotation |
+| `src/components/` | `SourceList` (legacy utility, still used by ChatPane) |
+| `src/api.ts` | Typed service client: chat, message history, attachments |
+| `src/useChat.ts` | Exchange state + history recall hook |
+| `src/exportChat.ts` | Markdown export |
+| `src/smoke.test.tsx` | End-to-end app-flow smoke test (mocked fetch) |
+| `src/ds/a11y.test.tsx` | 44px touch floor, accessible names, reduced-motion |
+| `Dockerfile` / `nginx.conf` | Multi-stage bun build + nginx serve (compose `ui` service, :5173) |

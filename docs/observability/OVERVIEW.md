@@ -59,6 +59,11 @@ flowchart TB
 **The runtime path** (solid, top) is unchanged in behavior — it's just modeled as a graph now. **The
 observability/eval tooling** (bottom) is dev/CI-only and reads/scores what the graph produces.
 
+> **Since this epic:** the graph was unified into a full multi-node pipeline (1em, PR #22 — preflight,
+> embed, hints, scope, search, fetch, gated rerank, merge, gate, generate, suggest, cite), and channels /
+> history / attachments landed on top. The diagram above is the Phase-1 shape, kept as the epic record;
+> the current pipeline is documented in [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) and `service/graph.py`.
+
 ### Before → after
 
 | | Before | After |
