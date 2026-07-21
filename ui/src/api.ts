@@ -103,3 +103,95 @@ export async function postChat(
   const response = (await res.json()) as ChatResponse
   return { kind: 'ok', response }
 }
+
+// ── File attachments (swe1.6) ─────────────────────────────────────────────────
+
+/** UI-facing attachment metadata — mirrors service Attachment (extracted text
+ * stays server-side and is never sent to the client). */
+export interface Attachment {
+  id: number
+  filename: string
+  content_type: string
+  chars: number
+  created_at: string
+}
+
+export type UploadAttachmentResult =
+  | { kind: 'ok'; attachment: Attachment }
+  | { kind: 'error'; message: string }
+
+export type AttachmentsResult =
+  | { kind: 'ok'; attachments: Attachment[] }
+  | { kind: 'error'; message: string }
+
+/** Read a File's bytes and base64-encode them (no multipart dependency — the
+ * upload endpoint accepts a JSON body, matching postChat's pattern). */
+async function fileToBase64(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer()
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+/** Upload a file as an attachment to a conversation; its text is extracted
+ * server-side and, from then on, grounds answers in that conversation. */
+export async function uploadAttachment(
+  conversationId: string,
+  file: File,
+  fetchImpl: typeof fetch = fetch,
+): Promise<UploadAttachmentResult> {
+  let data: string
+  try {
+    data = await fileToBase64(file)
+  } catch {
+    return { kind: 'error', message: "Couldn't read the file — please try again." }
+  }
+
+  let res: Response
+  try {
+    res = await fetchImpl(`/conversations/${encodeURIComponent(conversationId)}/attachments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: file.name, content_type: file.type, data }),
+    })
+  } catch {
+    return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
+  }
+
+  if (res.status === 415) {
+    return { kind: 'error', message: "That file type isn't supported." }
+  }
+  if (res.status === 413) {
+    return { kind: 'error', message: 'That file is too large.' }
+  }
+  if (res.status === 422) {
+    return { kind: 'error', message: 'The attachment was rejected — please try a different file.' }
+  }
+  if (!res.ok) {
+    return { kind: 'error', message: `Unexpected response (${res.status}).` }
+  }
+
+  const body = (await res.json()) as { attachment: Attachment }
+  return { kind: 'ok', attachment: body.attachment }
+}
+
+/** List a conversation's attachments (metadata only). */
+export async function getAttachments(
+  conversationId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AttachmentsResult> {
+  let res: Response
+  try {
+    res = await fetchImpl(`/conversations/${encodeURIComponent(conversationId)}/attachments`)
+  } catch {
+    return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
+  }
+
+  if (!res.ok) {
+    return { kind: 'error', message: `Attachments unavailable (${res.status}).` }
+  }
+
+  const body = (await res.json()) as { attachments: Attachment[] }
+  return { kind: 'ok', attachments: body.attachments }
+}

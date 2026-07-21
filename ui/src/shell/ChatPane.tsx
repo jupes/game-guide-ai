@@ -18,9 +18,18 @@ import { exportChat } from '../exportChat'
 import { useAppNav } from './AppNav'
 import { parseDiceNotation } from './diceNotation'
 import { EMPTY_LABELS } from './modes'
-import type { Suggestion } from '../api'
+import {
+  getAttachments as defaultGetAttachments,
+  uploadAttachment as defaultUploadAttachment,
+} from '../api'
+import type { Attachment, AttachmentsResult, Suggestion, UploadAttachmentResult } from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
 import './ChatPane.css'
+
+// ── File attachments (swe1.6) ────────────────────────────────────────────────
+
+export type UploadAttachmentFn = (conversationId: string, file: File) => Promise<UploadAttachmentResult>
+export type GetAttachmentsFn = (conversationId: string) => Promise<AttachmentsResult>
 
 // Spell-usage suggestion cards (channel-chats CP-C) — LLM inventions rendered
 // apart from the literal spell text so quoted rules stay visibly verbatim.
@@ -56,9 +65,13 @@ function SuggestionCards({ suggestions }: { suggestions: Suggestion[] }): React.
 export function ChatPane({
   post,
   loadHistory,
+  uploadAttachment = defaultUploadAttachment,
+  getAttachments = defaultGetAttachments,
 }: {
   post?: PostFn
   loadHistory?: LoadHistoryFn
+  uploadAttachment?: UploadAttachmentFn
+  getAttachments?: GetAttachmentsFn
 }): React.JSX.Element {
   const { mode, conversationId } = useAppNav()
   const { exchanges, send, pending, historyError, loadingHistory } = useChat({
@@ -68,6 +81,16 @@ export function ChatPane({
     conversationId,
   })
   const [draft, setDraft] = React.useState('')
+  // Scoped like useChat's history state: derive "this scope's attachments" from
+  // scopeId===conversationId rather than resetting via setState-in-effect (a
+  // synchronous setState in an effect body triggers cascading renders).
+  const [attachmentState, setAttachmentState] = React.useState<{
+    scopeId: string | null
+    attachments: Attachment[]
+  }>({ scopeId: conversationId, attachments: [] })
+  const attachments = attachmentState.scopeId === conversationId ? attachmentState.attachments : []
+  const [attachmentError, setAttachmentError] = React.useState<string | null>(null)
+  const fileInputRef = React.useRef<HTMLInputElement>(null)
 
   const handleSend = React.useCallback(() => {
     const trimmed = draft.trim()
@@ -84,6 +107,46 @@ export function ChatPane({
       }
     },
     [handleSend],
+  )
+
+  // Load a conversation's previously-attached files when it opens. Pure
+  // derivation above already shows an empty row for a new/no scope; the
+  // effect only does the async fetch, never a synchronous setState.
+  React.useEffect(() => {
+    if (conversationId === null) return
+    let cancelled = false
+    void getAttachments(conversationId).then((result) => {
+      if (cancelled) return
+      if (result.kind === 'ok') {
+        setAttachmentState({ scopeId: conversationId, attachments: result.attachments })
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [conversationId, getAttachments])
+
+  const handleFileSelected = React.useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      e.target.value = '' // allow re-selecting the same file later
+      if (!file || conversationId === null) return
+      setAttachmentError(null)
+      void uploadAttachment(conversationId, file).then((result) => {
+        if (result.kind === 'ok') {
+          setAttachmentState((prev) => ({
+            scopeId: conversationId,
+            attachments: [
+              ...(prev.scopeId === conversationId ? prev.attachments : []),
+              result.attachment,
+            ],
+          }))
+        } else {
+          setAttachmentError(result.message)
+        }
+      })
+    },
+    [conversationId, uploadAttachment],
   )
 
   return (
@@ -160,6 +223,16 @@ export function ChatPane({
         )}
       </div>
 
+      {/* Attachments — files attached to this conversation (swe1.6) */}
+      {attachments.length > 0 && (
+        <div className="chat-pane__attachments">
+          {attachments.map((a) => (
+            <Chip key={a.id} type="assist" icon="description" label={a.filename} />
+          ))}
+        </div>
+      )}
+      {attachmentError && <ChatMessage role="system">{attachmentError}</ChatMessage>}
+
       {/* Toolbar: export button */}
       <div className="chat-pane__toolbar">
         <IconButton
@@ -171,6 +244,19 @@ export function ChatPane({
 
       {/* Composer */}
       <div className="chat-pane__composer">
+        <input
+          ref={fileInputRef}
+          type="file"
+          aria-label="Attach file"
+          className="chat-pane__file-input"
+          onChange={handleFileSelected}
+        />
+        <IconButton
+          icon="attach_file"
+          ariaLabel="Attach file"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={conversationId === null}
+        />
         <TextField
           multiline
           rows={2}

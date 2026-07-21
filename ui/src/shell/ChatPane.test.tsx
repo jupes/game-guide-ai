@@ -10,8 +10,9 @@ import { ConversationStoreProvider } from './ConversationStoreContext'
 import { MemoryConversationStore } from './conversationStore'
 import { ThemeProvider } from '../ds/theme'
 import { ChatPane } from './ChatPane'
-import type { ChatResult, MessagesResult } from '../api'
+import type { Attachment, AttachmentsResult, ChatResult, MessagesResult, UploadAttachmentResult } from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
+import type { GetAttachmentsFn, UploadAttachmentFn } from './ChatPane'
 
 // ── CP-F5.3 — ChatPane behaviors (#21) ────────────────────────────────────────
 
@@ -51,10 +52,14 @@ function Wrapper({
   navState,
   post,
   loadHistory,
+  uploadAttachment,
+  getAttachments,
 }: {
   navState?: Partial<AppNavState>
   post?: PostFn
   loadHistory?: LoadHistoryFn
+  uploadAttachment?: UploadAttachmentFn
+  getAttachments?: GetAttachmentsFn
 }): React.JSX.Element {
   const store = new MemoryConversationStore()
   return (
@@ -62,7 +67,12 @@ function Wrapper({
       <AppNavContext.Provider value={makeNavState(navState)}>
         <CurrentUserContext.Provider value={makeUserState()}>
           <ConversationStoreProvider store={store}>
-            <ChatPane post={post} loadHistory={loadHistory} />
+            <ChatPane
+              post={post}
+              loadHistory={loadHistory}
+              uploadAttachment={uploadAttachment}
+              getAttachments={getAttachments}
+            />
           </ConversationStoreProvider>
         </CurrentUserContext.Provider>
       </AppNavContext.Provider>
@@ -333,5 +343,75 @@ describe('ChatPane (#21)', () => {
     act(() => resolveHistory({ kind: 'ok', messages: [] }))
     await waitFor(() => expect(screen.queryByText(/recalling/i)).not.toBeInTheDocument())
     expect(screen.getByText('Ask the Sage…')).toBeInTheDocument()
+  })
+
+  // ── swe1.6 — file attachments ────────────────────────────────────────────
+
+  const ATTACHMENT: Attachment = {
+    id: 1, filename: 'notes.txt', content_type: 'text/plain', chars: 12,
+    created_at: '2026-07-20T12:00:00Z',
+  }
+
+  // conversationId is set in all three specs below (an attachment needs a
+  // conversation to belong to), which means useChat's history-recall effect
+  // fires too — supply a no-op loadHistory so it doesn't hit the real network.
+  const emptyHistory: LoadHistoryFn = async () => ({ kind: 'ok', messages: [] })
+
+  it('shows a conversation\'s existing attachments on load', async () => {
+    const getAttachments: GetAttachmentsFn = async (): Promise<AttachmentsResult> => ({
+      kind: 'ok', attachments: [ATTACHMENT],
+    })
+    render(
+      <Wrapper
+        navState={{ conversationId: 'conv-1' }}
+        loadHistory={emptyHistory}
+        getAttachments={getAttachments}
+      />,
+    )
+    await waitFor(() => expect(screen.getByText('notes.txt')).toBeInTheDocument())
+  })
+
+  it('uploads a file via the attach button and shows it as a chip', async () => {
+    let resolveUpload!: (r: UploadAttachmentResult) => void
+    const uploadAttachment: UploadAttachmentFn = () =>
+      new Promise<UploadAttachmentResult>((res) => {
+        resolveUpload = res
+      })
+    render(
+      <Wrapper
+        navState={{ conversationId: 'conv-1' }}
+        loadHistory={emptyHistory}
+        uploadAttachment={uploadAttachment}
+      />,
+    )
+
+    const input = screen.getByLabelText(/attach file/i, { selector: 'input' }) as HTMLInputElement
+    const file = new File(['the orb is cursed'], 'notes.txt', { type: 'text/plain' })
+    await userEvent.upload(input, file)
+
+    act(() => resolveUpload({ kind: 'ok', attachment: ATTACHMENT }))
+    await waitFor(() => expect(screen.getByText('notes.txt')).toBeInTheDocument())
+  })
+
+  it('surfaces an upload error without losing the composer', async () => {
+    const uploadAttachment: UploadAttachmentFn = async () => ({
+      kind: 'error', message: "That file type isn't supported.",
+    })
+    render(
+      <Wrapper
+        navState={{ conversationId: 'conv-1' }}
+        loadHistory={emptyHistory}
+        uploadAttachment={uploadAttachment}
+      />,
+    )
+
+    const input = screen.getByLabelText(/attach file/i, { selector: 'input' }) as HTMLInputElement
+    const file = new File(['x'], 'art.png', { type: 'image/png' })
+    await userEvent.upload(input, file)
+
+    await waitFor(() =>
+      expect(screen.getByText(/isn't supported/i)).toBeInTheDocument(),
+    )
+    expect(screen.getByPlaceholderText('Ask…')).toBeInTheDocument()
   })
 })
