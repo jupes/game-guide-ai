@@ -12,6 +12,8 @@ Run:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 from contextlib import asynccontextmanager
 from importlib.util import find_spec
@@ -25,8 +27,17 @@ import config
 
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from .history import MessageStore, PostgresMessageStore
-from .models import ChatRequest, ChatResponse, MessagesResponse
+from .attachments import UnsupportedAttachmentError, extract_text
+from .history import MessageStore, PostgresMessageStore, StoredAttachment
+from .models import (
+    Attachment,
+    AttachmentResponse,
+    AttachmentsResponse,
+    AttachmentUploadRequest,
+    ChatRequest,
+    ChatResponse,
+    MessagesResponse,
+)
 from .rag import RagService
 
 log = logging.getLogger(__name__)
@@ -206,6 +217,61 @@ def conversation_messages(
         )
         raise HTTPException(status_code=503, detail="message history unavailable") from exc
     return MessagesResponse(conversation_id=conversation_id, messages=messages)
+
+
+def _to_attachment(sa: StoredAttachment) -> Attachment:
+    """Map a stored attachment to UI-facing metadata (extracted text omitted)."""
+    return Attachment(
+        id=sa.id, filename=sa.filename, content_type=sa.content_type,
+        chars=len(sa.extracted_text), created_at=sa.created_at,
+    )
+
+
+@app.post("/conversations/{conversation_id}/attachments", response_model=AttachmentResponse)
+def upload_attachment(
+    conversation_id: str,
+    req: AttachmentUploadRequest,
+    store: MessageStore | None = Depends(get_message_store),
+) -> AttachmentResponse:
+    if store is None:
+        raise HTTPException(status_code=503, detail="attachments unavailable")
+    try:
+        data = base64.b64decode(req.data, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="attachment data is not valid base64") from exc
+    if len(data) > config.ATTACHMENT_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"attachment exceeds the {config.ATTACHMENT_MAX_BYTES}-byte limit",
+        )
+    try:
+        text = extract_text(data, req.filename)
+    except UnsupportedAttachmentError as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    try:
+        stored = store.append_attachment(conversation_id, req.filename, req.content_type, text)
+    except _DB_ERRORS as exc:
+        log.warning("attachment write failed (conversation_id=%s): %s", conversation_id, exc)
+        raise HTTPException(status_code=503, detail="attachment storage unavailable") from exc
+    return AttachmentResponse(conversation_id=conversation_id, attachment=_to_attachment(stored))
+
+
+@app.get("/conversations/{conversation_id}/attachments", response_model=AttachmentsResponse)
+def conversation_attachments(
+    conversation_id: str,
+    store: MessageStore | None = Depends(get_message_store),
+) -> AttachmentsResponse:
+    if store is None:
+        raise HTTPException(status_code=503, detail="attachments unavailable")
+    try:
+        stored = store.attachments_for(conversation_id)
+    except _DB_ERRORS as exc:
+        log.warning("attachment read failed (conversation_id=%s): %s", conversation_id, exc)
+        raise HTTPException(status_code=503, detail="attachments unavailable") from exc
+    return AttachmentsResponse(
+        conversation_id=conversation_id,
+        attachments=[_to_attachment(a) for a in stored],
+    )
 
 
 # Mount the pre-built UI at "/" — after route decorators so API routes always win.
