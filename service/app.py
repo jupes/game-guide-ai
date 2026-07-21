@@ -146,6 +146,28 @@ def _persist_turn(
         )
 
 
+def _fetch_attachment_context(
+    store: MessageStore | None, conversation_id: str | None,
+) -> tuple[str | None, str | None]:
+    """Best-effort: join a conversation's stored attachment texts for the RAG
+    prompt. Mirrors `_persist_turn` — a fetch failure must never fail the chat
+    answer (deliberately swallowed, not the _DB_ERRORS → 503 taxonomy)."""
+    if store is None or conversation_id is None:
+        return None, None
+    try:
+        attachments = store.attachments_for(conversation_id)
+    except Exception:
+        log.warning(
+            "attachment fetch failed (conversation_id=%s)", conversation_id, exc_info=True,
+        )
+        return None, None
+    if not attachments:
+        return None, None
+    context = "\n\n".join(a.extracted_text for a in attachments)
+    label = ", ".join(a.filename for a in attachments)
+    return context, label
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok", "ready": str("rag" in _state)}
@@ -158,7 +180,13 @@ def chat(
     store: MessageStore | None = Depends(get_message_store),
 ) -> ChatResponse:
     try:
-        resp = svc.answer(req.prompt, mode=req.mode.value, conversation_id=req.conversation_id)
+        attachment_context, attachment_label = _fetch_attachment_context(
+            store, req.conversation_id,
+        )
+        resp = svc.answer(
+            req.prompt, mode=req.mode.value, conversation_id=req.conversation_id,
+            attachment_context=attachment_context, attachment_label=attachment_label,
+        )
         _persist_turn(store, req.conversation_id, req.mode.value, "user", req.prompt)
         _persist_turn(
             store, req.conversation_id, req.mode.value, "assistant", resp.answer,

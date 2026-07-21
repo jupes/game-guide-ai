@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from config import CONTEXT_TOP_N, TOP_K
+from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, TOP_K
 
 from ingestion.rerank import should_rerank
 from ingestion.retrieval import RetrievalResult, RetrievedChunk, assemble_result
@@ -45,6 +45,7 @@ from ingestion.scope import scope_for_mode
 
 import logging
 
+from .attachments import cap_text
 from .generate import build_context, build_sources, generate_answer, generate_suggestions
 from .models import ChatMode, REFUSAL, Source, Suggestion
 
@@ -73,6 +74,11 @@ class GraphState(TypedDict, total=False):
     chunks: list[RetrievedChunk]
     result: RetrievalResult
     secondary_result: SecondaryResult     # GM parallel branch output (gm only)
+    # File attachments (swe1.6) — a conversation's uploaded-file text, injected
+    # as a sibling context source. Present ⇒ the gate relaxes (an off-corpus
+    # "ask about my file" question must still generate, not refuse).
+    attachment_context: str | None
+    attachment_label: str | None
     # gate + output
     route: Literal["generate", "refuse"]  # the gate node's decision
     answer: str
@@ -170,12 +176,16 @@ def build_rag_graph(svc: RagService) -> Any:
 
     def gate_node(state: GraphState) -> GraphState:
         result = state["result"]
-        if state["mode"] == "gm":
+        if state.get("attachment_context"):
+            # swe1.6: an attachment can ground the answer even when the D&D
+            # corpus can't — e.g. "what does my homebrew doc say?" is entirely
+            # off-corpus. Route to generate regardless of corpus answerability;
+            # generate_node (not here) sets the final `answerable` flag.
+            route: Literal["generate", "refuse"] = "generate"
+        elif state["mode"] == "gm":
             # GM: proceed when any chunks exist; answerable=False is allowed
             # (marks creative/partly-inventive output for the client).
-            route: Literal["generate", "refuse"] = (
-                "generate" if result.chunks else "refuse"
-            )
+            route = "generate" if result.chunks else "refuse"
         else:
             # sage / spell / rules: strict koz gate — need answerable AND chunks.
             route = "generate" if (result.answerable and result.chunks) else "refuse"
@@ -189,11 +199,23 @@ def build_rag_graph(svc: RagService) -> Any:
         # forward it to the LLM call so the generation emits a token/cost span.
         result = state["result"]
         context = build_context(result, top_n=CONTEXT_TOP_N)
+        attachment_context = state.get("attachment_context")
+        if attachment_context:
+            # Capped HERE (not upstream) so the limit is observable through
+            # RagService.answer regardless of who set attachment_context.
+            capped = cap_text(attachment_context, ATTACHMENT_MAX_CHARS)
+            label = state.get("attachment_label") or "your attachment"
+            context = f"{context}\n\n[Attachment — {label}]: {capped}" if context else (
+                f"[Attachment — {label}]: {capped}"
+            )
         answer = generate_answer(
             state["prompt"], context, mode=state["mode"],
             model=svc.model, client=svc.llm_client, config=config,
         )
-        return {"answer": answer, "answerable": result.answerable}
+        # An attachment can ground an answer the corpus alone couldn't — treat
+        # the response as answerable even when corpus retrieval wasn't.
+        answerable = result.answerable or bool(attachment_context)
+        return {"answer": answer, "answerable": answerable}
 
     def generate_route(state: GraphState) -> Literal["suggest", "cite"]:
         # Spell mode detours through the suggestions node; everyone else cites.
@@ -214,7 +236,15 @@ def build_rag_graph(svc: RagService) -> Any:
         return {"suggestions": suggestions}
 
     def cite_node(state: GraphState) -> GraphState:
-        return {"sources": build_sources(state["result"], top_n=CONTEXT_TOP_N)}
+        sources = build_sources(state["result"], top_n=CONTEXT_TOP_N)
+        attachment_context = state.get("attachment_context")
+        if attachment_context:
+            label = state.get("attachment_label") or "your attachment"
+            snippet = cap_text(attachment_context, 240)
+            sources.append(Source(
+                book=label, section="Attachment", snippet=snippet,
+            ))
+        return {"sources": sources}
 
     def refuse_node(state: GraphState) -> GraphState:
         return {"answer": REFUSAL, "sources": [], "answerable": False}

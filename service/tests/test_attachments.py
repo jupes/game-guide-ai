@@ -125,3 +125,71 @@ def test_upload_rejects_bad_base64() -> None:
         json={"filename": "notes.txt", "content_type": "text/plain", "data": "!!! not base64 !!!"},
     )
     assert r.status_code == 422
+
+
+# ── Checkpoint C: /chat fetches + forwards attachment context (best-effort) ───
+
+class _CapturingService:
+    """Stands in for RagService on /chat — records the attachment_context and
+    attachment_label it was called with, so the handler's fetch/join/pass
+    behavior can be asserted without the real graph."""
+
+    def __init__(self):
+        self.received: dict = {}
+
+    def answer(self, prompt, mode="sage", conversation_id=None,
+               attachment_context=None, attachment_label=None):
+        self.received = {
+            "attachment_context": attachment_context, "attachment_label": attachment_label,
+        }
+        from service.models import ChatResponse
+        return ChatResponse(answer="ok", sources=[], answerable=True,
+                             mode=mode, conversation_id=conversation_id)
+
+
+def test_chat_forwards_stored_attachment_text_to_the_service() -> None:
+    from service.app import get_service
+
+    store = InMemoryMessageStore()
+    store.append_attachment("c1", "notes.txt", "text/plain", "The orb is cursed.")
+    svc = _CapturingService()
+    app.dependency_overrides[get_service] = lambda: svc
+    app.dependency_overrides[get_message_store] = lambda: store
+    client = TestClient(app)
+
+    r = client.post("/chat", json={"prompt": "What does my file say?", "conversation_id": "c1"})
+    assert r.status_code == 200, r.text
+    assert svc.received["attachment_context"] == "The orb is cursed."
+    assert "notes.txt" in svc.received["attachment_label"]
+
+
+def test_chat_answers_normally_with_no_stored_attachments() -> None:
+    from service.app import get_service
+
+    svc = _CapturingService()
+    app.dependency_overrides[get_service] = lambda: svc
+    app.dependency_overrides[get_message_store] = lambda: InMemoryMessageStore()
+    client = TestClient(app)
+
+    r = client.post("/chat", json={"prompt": "hello", "conversation_id": "c1"})
+    assert r.status_code == 200
+    assert svc.received["attachment_context"] is None
+
+
+def test_chat_attachment_fetch_failure_never_fails_the_answer() -> None:
+    """The store may explode fetching attachments — /chat must still answer
+    (best-effort, mirroring _persist_turn)."""
+    from service.app import get_service
+
+    class _ExplodingAttachmentsStore(InMemoryMessageStore):
+        def attachments_for(self, conversation_id):
+            raise RuntimeError("boom")
+
+    svc = _CapturingService()
+    app.dependency_overrides[get_service] = lambda: svc
+    app.dependency_overrides[get_message_store] = lambda: _ExplodingAttachmentsStore()
+    client = TestClient(app)
+
+    r = client.post("/chat", json={"prompt": "hello", "conversation_id": "c1"})
+    assert r.status_code == 200
+    assert svc.received["attachment_context"] is None

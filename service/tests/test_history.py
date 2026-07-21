@@ -31,7 +31,8 @@ _GROUNDED = ChatResponse(
 
 class _FakeService:
     def __init__(self, response): self._r = response
-    def answer(self, prompt, mode="sage", conversation_id=None):
+    def answer(self, prompt, mode="sage", conversation_id=None,
+               attachment_context=None, attachment_label=None):
         return ChatResponse(
             answer=self._r.answer, sources=self._r.sources,
             answerable=self._r.answerable, mode=ChatMode(mode),
@@ -53,6 +54,9 @@ class _ExplodingStore:
 
     def recent(self, conversation_id, limit):
         return []
+
+    def attachments_for(self, conversation_id):
+        raise RuntimeError("disk on fire")
 
 
 def test_history_limit_caps_get_keeping_most_recent(monkeypatch):
