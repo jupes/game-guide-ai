@@ -170,7 +170,7 @@ py-module `config`; extras `test` / `eval` / `rerank` / `extract`). `docker comp
 ```bash
 cd repos/game-guide-ai
 ./scripts/up.sh                    # full stack → http://localhost:5173
-# or single process (required today for history + attachments — see gaps below):
+# or single process (uvicorn serves the built UI + API together):
 cd ui && bun run build && cd ..
 uv run --with . uvicorn service.app:app --port 8000    # → http://localhost:8000
 
@@ -201,8 +201,6 @@ browser tests (Playwright Chromium); `bun run typecheck` / `lint`.
 
 ## Known gaps / follow-ups (Beads)
 
-- **agent-forge-harness-cnqf** — `/conversations/*` (history, attachments) not proxied by Vite
-  dev server or nginx; those features currently need single-process serving on :8000.
 - **x5bz.2** — real authentication (invite links); until then users/roles are client-side stubs
   and the GM channel is UI-gated only. Blocks **swe1.5** (notes/GM-lore nav — AppHeader slot reserved).
 - **agent-forge-harness-17u** — GCP deployment (not started).

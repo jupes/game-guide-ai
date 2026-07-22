@@ -92,10 +92,6 @@ First build pulls images and compiles the Vite app (a few minutes). Subsequent s
 
 > `POSTGRES_PORT` in `.env` controls the DB's *host* port (default `5432`) — bump it if
 > another Postgres/pgvector container already has that port bound.
->
-> **Known gap:** nginx and the Vite dev proxy currently forward only `/chat` + `/healthz`,
-> so conversation **history recall and attachments** work end-to-end only in the
-> single-process mode below (uvicorn on :8000). Tracked as `agent-forge-harness-cnqf`.
 
 ### Other compose commands
 

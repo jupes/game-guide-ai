@@ -63,9 +63,11 @@ Defined once in `src/shell/modes.ts`; the service applies the matching retrieval
 refusals are 200s with `answerable: false`, **not** errors; 422/413/415/503/network map to
 `{ kind: 'error', message }` so the UI never throws on a bad day.
 
-> **Known gap:** the Vite dev proxy and nginx only forward `/chat` and `/healthz` — the
-> `/conversations/*` history + attachment calls only work in single-process mode
-> (uvicorn :8000 serving the built `ui/dist`). Tracked as `agent-forge-harness-cnqf`.
+> **Proxy invariant:** the Vite dev proxy (`vite.config.ts`) and nginx (`nginx.conf`)
+> each forward `/chat`, `/healthz`, and `/conversations` to the service — a new service
+> API prefix must be added to **both**, or the SPA fallback silently swallows it
+> (that was bug `agent-forge-harness-cnqf`). nginx also raises `client_max_body_size`
+> for `/conversations` so base64 attachment uploads aren't 413'd below the service's cap.
 
 ## Design system
 
@@ -86,7 +88,7 @@ next to their components (`src/ds/*.stories.tsx`).
 
 ```bash
 bun install        # once
-bun run dev        # Vite dev server on :5173 (proxies /chat + /healthz → :8000)
+bun run dev        # Vite dev server on :5173 (proxies /chat, /healthz, /conversations → :8000)
 bun run typecheck  # tsc --noEmit
 bun run lint       # ESLint
 bun run test       # Vitest — see below

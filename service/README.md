@@ -130,9 +130,9 @@ uv run --with . uvicorn service.app:app --port 8000 --reload
 
 **Single-process serving (UI + API):** `cd ui && bun run build`, then start uvicorn as
 above and open <http://localhost:8000> — `app.py` mounts `ui/dist/` when it exists.
-This is currently the only mode where history + attachments work end-to-end: the Vite
-dev proxy and nginx forward `/chat` + `/healthz` but **not `/conversations/*`**
-(tracked as `agent-forge-harness-cnqf`).
+In the proxied modes (:5173 dev or compose), every service API prefix — `/chat`,
+`/healthz`, `/conversations` — must be listed in **both** `ui/vite.config.ts` and
+`ui/nginx.conf` when you add an endpoint (see the proxy invariant in `ui/README.md`).
 
 ## Config
 
