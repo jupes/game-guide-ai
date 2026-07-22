@@ -14,9 +14,12 @@ export default defineConfig({
   plugins: [react()],
   server: {
     // Dev wiring: same-origin in the browser, no CORS changes to the service.
+    // Keep in sync with nginx.conf (the compose-mode proxy) — every service
+    // API prefix must appear in BOTH, or the SPA fallback swallows it (cnqf).
     proxy: {
       '/chat': 'http://localhost:8000',
-      '/healthz': 'http://localhost:8000'
+      '/healthz': 'http://localhost:8000',
+      '/conversations': 'http://localhost:8000'
     }
   },
   test: {
