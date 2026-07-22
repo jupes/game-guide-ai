@@ -47,6 +47,21 @@ services:
     depends_on:
       vector-db:
         condition: service_healthy
+    # `ready` goes true once the RagService (corpus vocabulary) is built —
+    # gives `docker compose up --wait` / scripts/up.sh a real readiness signal
+    # (previously only the DB had a healthcheck, so --wait proved nothing).
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json,sys,urllib.request; b=json.load(urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)); sys.exit(0 if b.get('ready') is True else 1)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   ui:
     build:

@@ -169,8 +169,8 @@ def _fetch_attachment_context(
 
 
 @app.get("/healthz")
-def healthz() -> dict[str, str]:
-    return {"status": "ok", "ready": str("rag" in _state)}
+def healthz() -> dict[str, str | bool]:
+    return {"status": "ok", "ready": "rag" in _state}
 
 
 @app.post("/chat", response_model=ChatResponse)
