@@ -1,7 +1,7 @@
 /* ── AppHeader (swe1.4) ───────────────────────────────────────────────────────
    Persistent channel switcher band under the TopBar. A horizontal row of
-   channel chips plus a reserved slot for future notes / GM-lore nav. On narrow
-   viewports the channel row scrolls rather than wrapping the chrome.
+   channel chips plus the shared theme control. On narrow viewports the channel
+   row scrolls while the theme control remains anchored at the right edge.
    ─────────────────────────────────────────────────────────────────────────── */
 
 .app-header {
@@ -31,8 +31,20 @@
   flex-shrink: 0;
 }
 
-/* Reserved space for future note / GM-lore nav items (swe1.5). Empty today;
-   documented anchor so adding items later does not reflow the header. */
-.app-header__future-slot {
+.app-header__theme {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex-shrink: 0;
+  padding-left: 12px;
+  border-left: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.app-header__theme-label {
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: var(--md-sys-typescale-label-large-font);
+  font-size: var(--md-sys-typescale-label-large-size);
+  font-weight: var(--md-sys-typescale-label-large-weight);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  white-space: nowrap;
 }

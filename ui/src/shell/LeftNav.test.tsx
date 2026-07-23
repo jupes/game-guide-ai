@@ -316,10 +316,10 @@ describe('workspace chrome brand (swe1.10)', () => {
   })
 })
 
-// ── TopBar — no theme toggle (swe1.11 moved it to the UserMenu) ───────────────
+// ── TopBar — theme control belongs to AppHeader ───────────────────────────────
 
-describe('TopBar (swe1.11)', () => {
-  it('no longer renders a theme switch (moved to the UserMenu)', () => {
+describe('TopBar theme ownership (eiio.3)', () => {
+  it('does not render the theme switch owned by AppHeader', () => {
     render(
       <ThemeProvider initialTheme="light">
         <TopBar />

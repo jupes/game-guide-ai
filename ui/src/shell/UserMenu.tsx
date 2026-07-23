@@ -12,14 +12,12 @@ import { Switch } from '../ds/Switch'
 import { useAppNav } from './AppNav'
 import { useCurrentUser } from './currentUser'
 import { useRoleToggle } from './useRoleToggle'
-import { useTheme } from '../ds/theme'
 import './UserMenu.css'
 
 export function UserMenu(): React.JSX.Element {
   const { user } = useCurrentUser()
   const { openProfile } = useAppNav()
   const toggleRole = useRoleToggle()
-  const { theme, setTheme } = useTheme()
   const [open, setOpen] = useState(false)
 
   function toggleMenu(): void {
@@ -57,14 +55,6 @@ export function UserMenu(): React.JSX.Element {
               checked={user.role === 'dm'}
               onChange={toggleRole}
               ariaLabel="Dungeon Master role"
-            />
-          </div>
-          <div className="user-menu__item user-menu__role">
-            <span id="user-menu-theme-label">Dark theme</span>
-            <Switch
-              checked={theme === 'dark'}
-              onChange={(next) => setTheme(next ? 'dark' : 'light')}
-              ariaLabel="Dark theme"
             />
           </div>
           <button

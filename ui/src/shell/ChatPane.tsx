@@ -16,6 +16,7 @@ import { SourceList } from '../components/SourceList'
 import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { useAppNav } from './AppNav'
+import { useConversationStore } from './ConversationStoreContext'
 import { parseDiceNotation } from './diceNotation'
 import { EMPTY_LABELS } from './modes'
 import {
@@ -74,6 +75,7 @@ export function ChatPane({
   getAttachments?: GetAttachmentsFn
 }): React.JSX.Element {
   const { mode, conversationId } = useAppNav()
+  const conversationStore = useConversationStore()
   const { exchanges, send, pending, historyError, loadingHistory } = useChat({
     post,
     loadHistory,
@@ -95,9 +97,12 @@ export function ChatPane({
   const handleSend = React.useCallback(() => {
     const trimmed = draft.trim()
     if (!trimmed || pending) return
+    if (conversationId !== null) {
+      conversationStore.recordFirstPrompt(conversationId, trimmed)
+    }
     send(trimmed)
     setDraft('')
-  }, [draft, pending, send])
+  }, [conversationId, conversationStore, draft, pending, send])
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {

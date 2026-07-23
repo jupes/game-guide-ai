@@ -20,18 +20,22 @@ export function LeftNav(): React.JSX.Element {
   const { mode, setMode, conversationId, setConversationId } = useAppNav()
   const { user } = useCurrentUser()
   const store = useConversationStore()
-
-  // Conversation list is derived from the store on each render — no local state needed.
-  // A forceUpdate counter is used only to trigger re-render after mutations.
-  const [_tick, setTick] = React.useState(0)
-  void _tick // read to satisfy exhaustive-deps; value is intentionally unused
+  const [renameState, setRenameState] = React.useState<{
+    id: string
+    title: string
+  } | null>(null)
   const convs: Conversation[] = store.list(mode)
 
   const handleNew = React.useCallback(() => {
     const conv = store.create(mode)
-    setTick((t) => t + 1) // trigger re-render to pick up new conversation
     setConversationId(conv.id)
   }, [mode, store, setConversationId])
+
+  const saveRename = React.useCallback((id: string) => {
+    if (renameState?.id !== id) return
+    store.rename(id, renameState.title)
+    setRenameState(null)
+  }, [renameState, store])
 
   return (
     <nav className="left-nav" aria-label="Main navigation">
@@ -65,21 +69,56 @@ export function LeftNav(): React.JSX.Element {
           />
         </div>
 
-        {convs.map((conv) => (
-          <button
-            key={conv.id}
-            type="button"
-            onClick={() => setConversationId(conv.id)}
-            aria-pressed={conversationId === conv.id}
-            className={
-              conversationId === conv.id
-                ? 'left-nav__conversation left-nav__conversation--selected'
-                : 'left-nav__conversation'
-            }
-          >
-            {conv.title}
-          </button>
-        ))}
+        {convs.map((conv) => {
+          const isRenaming = renameState?.id === conv.id
+          return (
+            <div className="left-nav__conversation-row" key={conv.id}>
+              {isRenaming ? (
+                <input
+                  className="left-nav__conversation-input"
+                  aria-label={`Conversation title for ${conv.title}`}
+                  value={renameState.title}
+                  autoFocus
+                  onChange={(event) => {
+                    setRenameState({ id: conv.id, title: event.target.value })
+                  }}
+                  onBlur={() => saveRename(conv.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      saveRename(conv.id)
+                    } else if (event.key === 'Escape') {
+                      event.preventDefault()
+                      setRenameState(null)
+                    }
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConversationId(conv.id)}
+                  aria-pressed={conversationId === conv.id}
+                  className={
+                    conversationId === conv.id
+                      ? 'left-nav__conversation left-nav__conversation--selected'
+                      : 'left-nav__conversation'
+                  }
+                >
+                  {conv.title}
+                </button>
+              )}
+              <IconButton
+                icon="edit"
+                ariaLabel={`Rename ${conv.title}`}
+                size="small"
+                className="left-nav__conversation-rename"
+                onClick={() => {
+                  setRenameState({ id: conv.id, title: conv.title })
+                }}
+              />
+            </div>
+          )
+        })}
       </div>
 
       {/* Bottom row: UserMenu */}
