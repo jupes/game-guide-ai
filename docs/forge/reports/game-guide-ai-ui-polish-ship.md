@@ -1,7 +1,7 @@
 # Ship Report: game-guide-ai UI polish
 
 Shipped: 2026-07-23
-Epic: `agent-forge-harness-eiio` · Branch: `fix/eiio-ui-polish` · PR: pending
+Epic: `agent-forge-harness-eiio` · Branch: `fix/eiio-ui-polish` · PR: [#36](https://github.com/jupes/game-guide-ai/pull/36)
 
 ## Summary
 
