@@ -68,3 +68,23 @@
   align-items: center;
   gap: var(--spacing-3, 0.75rem);
 }
+
+/* File attachments (swe1.6) */
+.chat-pane__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* The real control is the attach IconButton; the input is triggered
+   programmatically and stays visually + AT hidden via off-screen clipping
+   (not display:none, so it remains focusable/operable for automation). */
+.chat-pane__file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}

@@ -167,6 +167,60 @@ def test_answer_with_contexts_returns_full_texts():
     assert len(contexts[0]) > 240  # full text, not the truncated snippet
 
 
+def test_answer_puts_attachment_context_into_the_llm_prompt():
+    # swe1.6 — attachment text is a sibling context source, injected regardless
+    # of corpus relevance.
+    llm = _FakeLLM("Per your file, the orb is cursed.")
+    svc = RagService(retriever=_FakeRetriever(_result(answerable=True)), llm_client=llm)
+    svc.answer("What does my file say about the orb?", attachment_context="The orb is cursed.")
+    assert llm.last_messages is not None
+    prompt_text = "\n".join(m.content for m in llm.last_messages)
+    assert "The orb is cursed." in prompt_text
+
+
+def test_attachment_context_relaxes_the_gate_and_still_answers():
+    # swe1.6 — the headline use case: an off-corpus "ask about my file"
+    # question must NOT hit the canned refusal when an attachment is present.
+    llm = _FakeLLM("Per your file, the orb is cursed.")
+    svc = RagService(retriever=_FakeRetriever(_result(answerable=False)), llm_client=llm)
+    resp = svc.answer("What does my file say?", attachment_context="The orb is cursed.")
+    assert resp.answer != REFUSAL
+    assert resp.answerable is True
+    assert llm.calls == 1
+
+
+def test_attachment_adds_a_synthetic_source():
+    llm = _FakeLLM("Per your file, the orb is cursed.")
+    svc = RagService(retriever=_FakeRetriever(_result(answerable=True)), llm_client=llm)
+    resp = svc.answer(
+        "What does my file say?", attachment_context="The orb is cursed.",
+        attachment_label="notes.txt",
+    )
+    attachment_sources = [s for s in resp.sources if s.section == "Attachment"]
+    assert len(attachment_sources) == 1
+    assert attachment_sources[0].book == "notes.txt"
+
+
+def test_no_attachment_context_leaves_the_refuse_path_intact():
+    # Regression: without an attachment, an unanswerable corpus question still refuses.
+    llm = _FakeLLM("should not be called")
+    svc = RagService(retriever=_FakeRetriever(_result(answerable=False)), llm_client=llm)
+    resp = svc.answer("How do I evolve my Pokemon?")
+    assert resp.answer == REFUSAL
+    assert llm.calls == 0
+
+
+def test_attachment_context_is_capped_at_the_configured_limit():
+    import config
+
+    llm = _FakeLLM("ok")
+    svc = RagService(retriever=_FakeRetriever(_result(answerable=True)), llm_client=llm)
+    long_text = "x" * (config.ATTACHMENT_MAX_CHARS + 500)
+    svc.answer("Summarize my file", attachment_context=long_text)
+    prompt_text = "\n".join(m.content for m in llm.last_messages)
+    assert prompt_text.count("x") <= config.ATTACHMENT_MAX_CHARS
+
+
 def test_answer_with_contexts_empty_on_refusal():
     # On refusal the LLM saw no context — contexts must be empty, mirroring sources.
     svc = RagService(retriever=_FakeRetriever(_result(answerable=False)),

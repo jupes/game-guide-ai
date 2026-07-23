@@ -81,3 +81,32 @@ class ChatResponse(BaseModel):
     # None everywhere else — and in spell mode when suggestion generation
     # failed (the answer must never fail because the garnish did).
     suggestions: list[Suggestion] | None = None
+
+
+# ── File attachments (swe1.6) ────────────────────────────────────────────────
+
+
+class Attachment(BaseModel):
+    """UI-facing metadata for one uploaded attachment (extracted text stays server-side)."""
+    id: int
+    filename: str
+    content_type: str
+    chars: int  # length of the extracted text
+    created_at: datetime
+
+
+class AttachmentUploadRequest(BaseModel):
+    """base64 upload body (no multipart dep). `data` is the base64 file content."""
+    filename: str = Field(..., min_length=1)
+    content_type: str = Field("", description="Client-reported MIME type")
+    data: str = Field(..., min_length=1, description="base64-encoded file content")
+
+
+class AttachmentResponse(BaseModel):
+    conversation_id: str
+    attachment: Attachment
+
+
+class AttachmentsResponse(BaseModel):
+    conversation_id: str
+    attachments: list[Attachment]

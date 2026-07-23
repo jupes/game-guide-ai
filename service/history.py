@@ -43,7 +43,31 @@ CREATE TABLE IF NOT EXISTS chat.messages (
 
 CREATE INDEX IF NOT EXISTS chat_messages_conv_created_idx
   ON chat.messages (conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS chat.attachments (
+  id              BIGSERIAL PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  filename        TEXT NOT NULL,
+  content_type    TEXT NOT NULL DEFAULT '',
+  extracted_text  TEXT NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS chat_attachments_conv_created_idx
+  ON chat.attachments (conversation_id, created_at);
 """
+
+
+@dataclass
+class StoredAttachment:
+    """One stored attachment incl. its extracted text (server-side; the RAG
+    injection reads `.extracted_text`, the GET endpoint returns metadata only)."""
+    id: int
+    conversation_id: str
+    filename: str
+    content_type: str
+    extracted_text: str
+    created_at: datetime
 
 
 class MessageStore(Protocol):
@@ -55,6 +79,13 @@ class MessageStore(Protocol):
     ) -> None: ...  # pragma: no cover - structural type
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
+        ...  # pragma: no cover - structural type
+
+    def append_attachment(
+        self, conversation_id: str, filename: str, content_type: str, extracted_text: str,
+    ) -> StoredAttachment: ...  # pragma: no cover - structural type
+
+    def attachments_for(self, conversation_id: str) -> list[StoredAttachment]:
         ...  # pragma: no cover - structural type
 
 
@@ -74,6 +105,7 @@ class InMemoryMessageStore:
     """Fake with the real store's ordering + limit semantics (tests/dev)."""
 
     _rows: list[_Row] = field(default_factory=list)
+    _attachments: list[StoredAttachment] = field(default_factory=list)
 
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
@@ -88,6 +120,20 @@ class InMemoryMessageStore:
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         rows = [r for r in self._rows if r.conversation_id == conversation_id]
         return [_to_message(r) for r in rows[-limit:]]
+
+    def append_attachment(
+        self, conversation_id: str, filename: str, content_type: str, extracted_text: str,
+    ) -> StoredAttachment:
+        att = StoredAttachment(
+            id=len(self._attachments) + 1, conversation_id=conversation_id,
+            filename=filename, content_type=content_type, extracted_text=extracted_text,
+            created_at=datetime.now(timezone.utc),
+        )
+        self._attachments.append(att)
+        return att
+
+    def attachments_for(self, conversation_id: str) -> list[StoredAttachment]:
+        return [a for a in self._attachments if a.conversation_id == conversation_id]
 
 
 def _to_message(r: _Row) -> StoredMessage:
@@ -143,4 +189,33 @@ class PostgresMessageStore:
                 content=row[3], suggestions=row[4], created_at=row[5],
             )
             for row in reversed(rows)
+        ]
+
+    def append_attachment(
+        self, conversation_id: str, filename: str, content_type: str, extracted_text: str,
+    ) -> StoredAttachment:
+        with self._connect() as conn:
+            row = conn.execute(
+                "INSERT INTO chat.attachments (conversation_id, filename, content_type, extracted_text) "
+                "VALUES (%s, %s, %s, %s) RETURNING id, created_at",
+                (conversation_id, filename, content_type, extracted_text),
+            ).fetchone()
+        return StoredAttachment(
+            id=row[0], conversation_id=conversation_id, filename=filename,
+            content_type=content_type, extracted_text=extracted_text, created_at=row[1],
+        )
+
+    def attachments_for(self, conversation_id: str) -> list[StoredAttachment]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, filename, content_type, extracted_text, created_at "
+                "FROM chat.attachments WHERE conversation_id = %s ORDER BY created_at, id",
+                (conversation_id,),
+            ).fetchall()
+        return [
+            StoredAttachment(
+                id=row[0], conversation_id=conversation_id, filename=row[1],
+                content_type=row[2], extracted_text=row[3], created_at=row[4],
+            )
+            for row in rows
         ]

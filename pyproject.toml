@@ -25,6 +25,9 @@ dependencies = [
     "langchain-openai>=0.2,<0.4",
     "langchain>=0.3,<0.4",
     "langfuse>=3,<4",
+    # PDF text extraction for chat file attachments (swe1.6). Core (not the
+    # [extract] extra) because the live upload endpoint imports it at runtime.
+    "pymupdf==1.28.0",
 ]
 
 [project.optional-dependencies]
