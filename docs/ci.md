@@ -1,18 +1,50 @@
 # CI / CD pipeline
 
-GitHub Actions, defined in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
-Runs on every **push to `master`** (which is what a PR merge is — note the default
-branch here is `master`, not `main`) and on manual dispatch.
+GitHub Actions, defined in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml),
+runs on pull requests targeting `master`, every push to `master` (the default
+branch is `master`, not `main`), and manual dispatch. Pull requests run every
+quality gate but never deploy.
 
 ```text
-merge to master
-   ├─ python-tests        pytest — service, ingestion, repo guards
-   ├─ ui-tests            typecheck · lint · vitest (jsdom + storybook browser)
+pull request / push to master
+   ├─ python-tests        pytest — service, ingestion, repo guards ─┐
+   ├─ ui-tests            typecheck · lint · vitest ───────────────┤
+   │                                                              ▼
+   │                    ui-e2e — production Compose + perf budgets
    └─ retrieval-metrics   eval_golden vs live corpus DB → regression gate
           │                    (skips loudly until secrets are configured)
           ▼
-       deploy             auto when all green — no-op until hosting exists
+       deploy             push/manual only; requires every gate to pass
+                          (no-op until hosting exists)
 ```
+
+## Browser release tracer and UI performance gate
+
+`ui-e2e` uses Playwright against the same production Nginx UI image used for
+deployment. Its global setup owns a two-service
+[`docker-compose.e2e.yml`](../docker-compose.e2e.yml) stack: the production UI
+and a deterministic FastAPI adapter. It deliberately needs no database, LLM
+key, Langfuse account, or network font service.
+
+The release tracer enters the app, changes channels, creates and sends a
+conversation, reloads, reselects the persisted conversation, recalls its
+history, and uploads an attachment. It also verifies that UI fonts are
+self-hosted.
+
+Performance observers are installed before navigation and enforce the versioned
+budgets in [`ui/e2e/performance-budget.json`](../ui/e2e/performance-budget.json):
+
+| Metric | Unit | Budget |
+| --- | --- | ---: |
+| TTFB | milliseconds | ≤ 1500 |
+| FCP | milliseconds | ≤ 2000 |
+| LCP | milliseconds | ≤ 2500 |
+| CLS | score | ≤ 0.1 |
+
+Every run writes machine-readable `ui/e2e-results/performance.json` and a human
+summary at `ui/e2e-results/performance.md`. CI adds the Markdown table to the
+run summary and retains the directory as a 30-day artifact even when the gate
+fails.
 
 ## The regression gate ("flag, then proceed or back out")
 
@@ -54,13 +86,6 @@ into click-to-approve, independent of the metrics gate.
 
 ## Planned next stages (tracked in Beads)
 
-- **Playwright E2E + UI performance** — real-browser end-to-end tests against the
-  compose stack (they do not exist yet; today's browser tests are Storybook
-  component tests), capturing **TTFB and Lighthouse-style metrics** (FCP/LCP/CLS)
-  per merge with their own regression thresholds. Names, units, labels, and
-  privacy constraints come from the
-  [service/UI metrics standard](observability/metrics-standard.md). The natural
-  seam is a fourth job between the test jobs and `deploy`.
 - **Answer-quality eval on a schedule** — `eval_answers.py` / `compare_models.py`
   (Ragas judge, real LLM cost) as a nightly/weekly `schedule:` job rather than
   per merge; its CI gate already exists in `compare_models.py`.
@@ -72,6 +97,8 @@ Everything CI runs works locally, same commands:
 ```bash
 uv run --with '.[test]' python -m pytest -q                 # python-tests
 cd ui && bun run typecheck && bun run lint && bun run test  # ui-tests
+cd ui && bun run test:e2e                                   # production Compose E2E
+docker compose -f docker-compose.e2e.yml config             # validate stack wiring
 PYTHONUTF8=1 uv run --with "psycopg[binary]" --with openai \
     python ingestion/eval_golden.py                          # metrics (needs DB + key)
 uv run python scripts/ci/eval_gate.py \
