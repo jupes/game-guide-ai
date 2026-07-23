@@ -1,5 +1,9 @@
 # Quality/cost dashboard (Phase 4 / ziw.5)
 
+Runtime service/UI names, labels, privacy rules, and storage semantics are defined in
+[`metrics-standard.md`](metrics-standard.md). Dashboard widgets and scriptable summaries must use
+that catalog unchanged.
+
 Surfaces the quality + cost/latency trends captured in Phases 1-3 (traces tagged
 `model`/`service_version`/`mode`, latency/tokens/cost, `ragas_*` scores, the comparison
 dataset) — filterable by model, for A/B decisions. Two ways to read it: the **Langfuse

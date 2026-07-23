@@ -57,8 +57,10 @@ into click-to-approve, independent of the metrics gate.
 - **Playwright E2E + UI performance** — real-browser end-to-end tests against the
   compose stack (they do not exist yet; today's browser tests are Storybook
   component tests), capturing **TTFB and Lighthouse-style metrics** (FCP/LCP/CLS)
-  per merge with their own regression thresholds. The natural seam is a fourth
-  job between the test jobs and `deploy`.
+  per merge with their own regression thresholds. Names, units, labels, and
+  privacy constraints come from the
+  [service/UI metrics standard](observability/metrics-standard.md). The natural
+  seam is a fourth job between the test jobs and `deploy`.
 - **Answer-quality eval on a schedule** — `eval_answers.py` / `compare_models.py`
   (Ragas judge, real LLM cost) as a nightly/weekly `schedule:` job rather than
   per merge; its CI gate already exists in `compare_models.py`.
