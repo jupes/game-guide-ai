@@ -108,6 +108,22 @@ TEMPERATURE: float = _float("RAG_TEMPERATURE", 0.2)
 # the DB, just unloaded. 50 ≈ 25 exchanges — beyond what a Q&A thread scrolls.
 HISTORY_LIMIT: int = _int("RAG_HISTORY_LIMIT", 50)
 
+# --- File attachments (service; swe1.6) ------------------------------------
+
+# Max size (bytes) of an uploaded attachment's decoded content. base64 in the
+# JSON body inflates the request ~33%; this caps the decoded file. 2 MB ≈ a
+# long homebrew PDF.
+ATTACHMENT_MAX_BYTES: int = _int("RAG_ATTACHMENT_MAX_BYTES", 2_000_000)
+
+# Max characters of extracted attachment text injected into the RAG context.
+# Bounds token cost (x5bz.3) — a big file must not blow up the prompt. ~6000
+# chars ≈ 1500 tokens.
+ATTACHMENT_MAX_CHARS: int = _int("RAG_ATTACHMENT_MAX_CHARS", 6000)
+
+# Supported attachment extensions. Policy, not a tuning knob (config has no _set
+# helper) — image OCR is out of scope (no OCR lib in the runtime).
+ATTACHMENT_TYPES: frozenset[str] = frozenset({"txt", "md", "pdf"})
+
 # Gated cross-encoder rerank in the live service (bo4 model, prose categories
 # only via ingestion.rerank.should_rerank). OFF by default: it needs the
 # `[rerank]` extra (torch — several hundred MB) and adds ~234ms per reranked

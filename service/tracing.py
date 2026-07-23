@@ -27,19 +27,28 @@ def tracing_enabled() -> bool:
     return os.environ.get("RAG_TRACING", "").strip().lower() in _TRUTHY
 
 
+_VERSION_CACHE: str | None = None
+
+
 def service_version() -> str:
     """Version tag for traces: SERVICE_VERSION env if set (e.g. baked into the
-    image), else the short git SHA, else 'unknown'."""
+    image), else the short git SHA, else 'unknown'. The git lookup is cached —
+    build_trace_config calls this per request when tracing is on, and spawning
+    a subprocess per /chat (that always fails inside the git-less container)
+    is pure overhead. The env var is re-read each call so tests can override it."""
     env = os.environ.get("SERVICE_VERSION")
     if env:
         return env
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            text=True, stderr=subprocess.DEVNULL,
-        ).strip()
-    except Exception:
-        return "unknown"
+    global _VERSION_CACHE
+    if _VERSION_CACHE is None:
+        try:
+            _VERSION_CACHE = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                text=True, stderr=subprocess.DEVNULL,
+            ).strip() or "unknown"
+        except Exception:
+            _VERSION_CACHE = "unknown"
+    return _VERSION_CACHE
 
 
 def trace_metadata(*, model: str, mode: str, version: str | None = None) -> dict[str, Any]:

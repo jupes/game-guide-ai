@@ -1,0 +1,49 @@
+/* ── Mode accents (swe1.3) ────────────────────────────────────────────────────
+   Per-channel accent, keyed off the `mode-accent--<accent>` class from
+   modes.ts (accentClass). Each class binds the three accent slots to a palette
+   family; the chip rules below consume them. NOTE arcane lives in the
+   --aether-arcane-* namespace, not --md-sys-color-*.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.mode-accent--verdigris {
+  --mode-accent: var(--md-sys-color-tertiary);
+  --mode-accent-container: var(--md-sys-color-tertiary-container);
+  --mode-accent-on-container: var(--md-sys-color-on-tertiary-container);
+}
+
+.mode-accent--gold {
+  --mode-accent: var(--md-sys-color-secondary);
+  --mode-accent-container: var(--md-sys-color-secondary-container);
+  --mode-accent-on-container: var(--md-sys-color-on-secondary-container);
+}
+
+.mode-accent--ember {
+  --mode-accent: var(--md-sys-color-primary);
+  --mode-accent-container: var(--md-sys-color-primary-container);
+  --mode-accent-on-container: var(--md-sys-color-on-primary-container);
+}
+
+.mode-accent--arcane {
+  --mode-accent: var(--aether-arcane);
+  --mode-accent-container: var(--aether-arcane-container);
+  --mode-accent-on-container: var(--aether-on-arcane-container);
+}
+
+/* Selected mode chip fills with its channel accent instead of the generic gold.
+   Two-class specificity (0,2,0) beats Chip.css's .chip--selected (0,1,0). */
+.chip.chip--selected.mode-accent--verdigris,
+.chip.chip--selected.mode-accent--gold,
+.chip.chip--selected.mode-accent--ember,
+.chip.chip--selected.mode-accent--arcane {
+  background: var(--mode-accent-container);
+  color: var(--mode-accent-on-container);
+}
+
+/* Unselected mode chip: tint the (decorative) leading icon with the accent so
+   the channel is identifiable before it is selected. */
+.chip:not(.chip--selected).mode-accent--verdigris .chip__icon,
+.chip:not(.chip--selected).mode-accent--gold .chip__icon,
+.chip:not(.chip--selected).mode-accent--ember .chip__icon,
+.chip:not(.chip--selected).mode-accent--arcane .chip__icon {
+  color: var(--mode-accent);
+}

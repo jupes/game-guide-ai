@@ -102,14 +102,17 @@ class RagService:
 
     def answer(
         self, prompt: str, mode: str = "sage", conversation_id: str | None = None,
+        attachment_context: str | None = None, attachment_label: str | None = None,
     ) -> ChatResponse:
         resp, _ = self.answer_with_contexts(
             prompt, mode=mode, conversation_id=conversation_id,
+            attachment_context=attachment_context, attachment_label=attachment_label,
         )
         return resp
 
     def answer_with_contexts(
         self, prompt: str, mode: str = "sage", conversation_id: str | None = None,
+        attachment_context: str | None = None, attachment_label: str | None = None,
     ) -> tuple[ChatResponse, list[str]]:
         """Like `answer`, but also returns the full retrieved chunk texts the
         generation context was built from (empty on any refuse path — the LLM
@@ -127,7 +130,11 @@ class RagService:
 
         config = build_trace_config(model=self.model, mode=mode) or None
         final = self._compiled_graph().invoke(
-            {"prompt": prompt, "mode": mode}, config=config,
+            {
+                "prompt": prompt, "mode": mode,
+                "attachment_context": attachment_context, "attachment_label": attachment_label,
+            },
+            config=config,
         )
         # Past a successful invoke the mode is guaranteed valid.
         resp = ChatResponse(

@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import { ThemeProvider } from './ds/theme'
@@ -120,9 +120,11 @@ describe('App-flow smoke test (CP-F6.2)', () => {
     // The empty-state label for the default sage mode should be visible.
     expect(screen.getByText('Ask the Sage…')).toBeInTheDocument()
 
-    // Step 3: Switch to Spell mode via the LeftNav chip.
-    // The LeftNav renders Chip elements for each mode.
-    const spellChip = screen.getByRole('button', { name: 'Spell' })
+    // Step 3: Switch to Spell mode via the header channel switcher.
+    // Both the AppHeader (swe1.4) and the LeftNav render a "Spell" chip, so
+    // scope the query to the header's "Channels" nav to avoid an ambiguous match.
+    const channelBar = screen.getByRole('navigation', { name: 'Channels' })
+    const spellChip = within(channelBar).getByRole('button', { name: 'Spell' })
     await userEvent.click(spellChip)
 
     // Empty-state label should update to Spell mode.
@@ -143,6 +145,8 @@ describe('App-flow smoke test (CP-F6.2)', () => {
       setMode: () => {},
       setConversationId: () => {},
       backToLanding: () => {},
+      openProfile: () => {},
+      backToWorkspace: () => {},
     }
 
     const userState: CurrentUserContextValue = {
@@ -155,6 +159,8 @@ describe('App-flow smoke test (CP-F6.2)', () => {
         editProfile: () => {},
       },
       setRole: () => {},
+      setDisplayName: () => {},
+      setAvatarTone: () => {},
     }
 
     rerender(
@@ -235,6 +241,8 @@ describe('Landing component', () => {
       setMode: () => {},
       setConversationId: () => {},
       backToLanding: () => {},
+      openProfile: () => {},
+      backToWorkspace: () => {},
     }
 
     render(

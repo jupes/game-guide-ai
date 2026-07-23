@@ -1,0 +1,38 @@
+/* ── AppHeader (swe1.4) ───────────────────────────────────────────────────────
+   Persistent channel switcher band under the TopBar. A horizontal row of
+   channel chips plus a reserved slot for future notes / GM-lore nav. On narrow
+   viewports the channel row scrolls rather than wrapping the chrome.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  min-height: 52px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container-low);
+  flex-shrink: 0;
+}
+
+.app-header__channels {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0; /* allow the row to shrink and scroll at narrow widths */
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+/* 44px touch-target floor for the channel chips */
+.app-header__channel {
+  min-height: 44px;
+  flex-shrink: 0;
+}
+
+/* Reserved space for future note / GM-lore nav items (swe1.5). Empty today;
+   documented anchor so adding items later does not reflow the header. */
+.app-header__future-slot {
+  flex-shrink: 0;
+}

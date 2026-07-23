@@ -10,8 +10,9 @@ import { Card } from '../ds/Card'
 import { Chip } from '../ds/Chip'
 import { useAppNav } from './AppNav'
 import { useCurrentUser } from './currentUser'
-import { modesForRole } from './modes'
+import { modesForRole, accentClass } from './modes'
 import './Landing.css'
+import './modeAccents.css'
 
 export function Landing(): React.JSX.Element {
   const { enterWorkspace } = useAppNav()
@@ -56,7 +57,7 @@ export function Landing(): React.JSX.Element {
               icon={icon}
               label={label}
               onClick={() => enterWorkspace(mode)}
-              className="landing__mode-chip"
+              className={`landing__mode-chip ${accentClass(mode)}`}
             />
           ))}
         </div>

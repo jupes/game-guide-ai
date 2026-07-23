@@ -150,6 +150,43 @@ describe('ThemeProvider — persistence across reload', () => {
   })
 })
 
+// ── swe1.11: first-visit default follows prefers-color-scheme ────────────────
+
+describe('ThemeProvider — prefers-color-scheme default (swe1.11)', () => {
+  function stubMatchMedia(prefersDark: boolean) {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: prefersDark && query.includes('dark'),
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }))
+  }
+
+  it('follows the OS dark preference on first visit when nothing is stored', () => {
+    stubMatchMedia(true)
+    renderTheme()
+    expect(screen.getByTestId('current-theme').textContent).toBe('dark')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+  })
+
+  it('follows the OS light preference on first visit', () => {
+    stubMatchMedia(false)
+    renderTheme()
+    expect(screen.getByTestId('current-theme').textContent).toBe('light')
+  })
+
+  it('a stored choice still wins over the OS preference', () => {
+    stubMatchMedia(true) // OS prefers dark…
+    lsMock.setItem('aetheril-theme', 'light') // …but the user chose light
+    renderTheme()
+    expect(screen.getByTestId('current-theme').textContent).toBe('light')
+  })
+})
+
 // ── useTheme throws when used outside the provider ───────────────────────────
 
 describe('useTheme — guard', () => {

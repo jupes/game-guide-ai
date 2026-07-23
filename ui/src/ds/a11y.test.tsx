@@ -20,6 +20,7 @@ import { TextField } from './TextField'
 import { DiceRoll } from './DiceRoll'
 import { UserMenu } from '../shell/UserMenu'
 import { CurrentUserProvider } from '../shell/currentUser'
+import { ThemeProvider } from './theme'
 
 // ── 44px touch floor ──────────────────────────────────────────────────────────
 
@@ -50,9 +51,11 @@ describe('44px touch floor', () => {
     // jsdom does not evaluate stylesheets, so assert the class contract:
     // .user-menu__trigger (UserMenu.css) sets min-height/min-width to 44px.
     render(
-      <CurrentUserProvider>
-        <UserMenu />
-      </CurrentUserProvider>,
+      <ThemeProvider>
+        <CurrentUserProvider>
+          <UserMenu />
+        </CurrentUserProvider>
+      </ThemeProvider>,
     )
     const btn = screen.getByRole('button', { name: 'Open user menu' })
     expect(btn).toHaveClass('user-menu__trigger')

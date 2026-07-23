@@ -49,6 +49,7 @@ Applied on **first** container init via scripts in `vector-db/init/` (lexical or
 - **`01-extensions.sql`** — enables the `vector` extension; creates the `dnd` schema.
 - **`02-schema.sql`** — `dnd.chunks` table (see below) + B-tree indexes + HNSW vector index + `search_vector` tsvector + GIN FTS index.
 - **`03-hybrid-search.sql`** — the `dnd.hybrid_search()` function (vector + FTS fused via RRF). Kept separate so the retrieval function can be iterated without touching the table DDL.
+- **`04-chat-schema.sql`** — the `chat` schema: `chat.messages` (persisted conversation turns, incl. spell-mode suggestions as JSONB) and `chat.attachments` (uploaded-file extracted text that grounds a conversation's answers). The same DDL is applied idempotently by `service/history.py::ensure_schema()` at service startup, which is the migration path for volumes that predate the chat schema (init scripts only run on first container init).
 
 ### `dnd.chunks`
 

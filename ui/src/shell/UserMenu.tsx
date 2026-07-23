@@ -11,25 +11,19 @@ import { Avatar } from '../ds/Avatar'
 import { Switch } from '../ds/Switch'
 import { useAppNav } from './AppNav'
 import { useCurrentUser } from './currentUser'
+import { useRoleToggle } from './useRoleToggle'
+import { useTheme } from '../ds/theme'
 import './UserMenu.css'
 
 export function UserMenu(): React.JSX.Element {
-  const { user, setRole } = useCurrentUser()
-  const { mode, setMode } = useAppNav()
+  const { user } = useCurrentUser()
+  const { openProfile } = useAppNav()
+  const toggleRole = useRoleToggle()
+  const { theme, setTheme } = useTheme()
   const [open, setOpen] = useState(false)
 
   function toggleMenu(): void {
     setOpen((prev) => !prev)
-  }
-
-  function handleRoleToggle(next: boolean): void {
-    const role = next ? 'dm' : 'player'
-    setRole(role)
-    // The GM channel is DM-only: giving up the DM role while sitting in it
-    // falls back to the sage channel (channel-chats CP-D).
-    if (role === 'player' && mode === 'gm') {
-      setMode('sage')
-    }
   }
 
   function handleSignOut(): void {
@@ -37,9 +31,9 @@ export function UserMenu(): React.JSX.Element {
     user.signOut()
   }
 
-  function handleEditProfile(): void {
+  function handleOpenProfile(): void {
     setOpen(false)
-    user.editProfile()
+    openProfile()
   }
 
   return (
@@ -52,7 +46,7 @@ export function UserMenu(): React.JSX.Element {
         onClick={toggleMenu}
         className="user-menu__trigger"
       >
-        <Avatar name={user.displayName} tone="gold" />
+        <Avatar name={user.displayName} tone={user.avatarTone ?? 'gold'} />
       </button>
 
       {open && (
@@ -61,14 +55,22 @@ export function UserMenu(): React.JSX.Element {
             <span id="user-menu-role-label">Dungeon Master</span>
             <Switch
               checked={user.role === 'dm'}
-              onChange={handleRoleToggle}
+              onChange={toggleRole}
               ariaLabel="Dungeon Master role"
+            />
+          </div>
+          <div className="user-menu__item user-menu__role">
+            <span id="user-menu-theme-label">Dark theme</span>
+            <Switch
+              checked={theme === 'dark'}
+              onChange={(next) => setTheme(next ? 'dark' : 'light')}
+              ariaLabel="Dark theme"
             />
           </div>
           <button
             type="button"
             role="menuitem"
-            onClick={handleEditProfile}
+            onClick={handleOpenProfile}
             className="user-menu__item"
           >
             Profile

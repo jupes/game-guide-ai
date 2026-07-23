@@ -1,5 +1,9 @@
 # D&D 5e Ruleset RAG — Implementation Plan
 
+> **ARCHIVED** (2026-07-21): the original pre-build draft, kept for provenance. It predates the
+> rag-chat → game-guide-ai rename and much of what shipped; the living docs are
+> [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) and the folder READMEs. Formerly the repo-root `plan.md`.
+>
 > **Status**: Draft — **product track**: semantic search and RAG over **Dungeons & Dragons 5th Edition** rules text  
 > **Last updated**: 2026-05-03  
 > **Repo**: **rag-chat** (this repository)

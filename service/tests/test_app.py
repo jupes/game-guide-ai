@@ -18,7 +18,8 @@ from service.models import ChatMode, ChatResponse, Source
 
 class _FakeService:
     def __init__(self, response): self._r = response
-    def answer(self, prompt, mode="sage", conversation_id=None):
+    def answer(self, prompt, mode="sage", conversation_id=None,
+               attachment_context=None, attachment_label=None):
         # Echo mode and conversation_id back onto the canned response so tests can assert them.
         resp = self._r
         if mode != resp.mode.value or conversation_id != resp.conversation_id:
@@ -101,6 +102,18 @@ def test_service_not_ready_503():
     c = TestClient(app)
     r = c.post("/chat", json={"prompt": "What is a Basilisk?"})
     assert r.status_code == 503
+
+
+def test_healthz_ready_is_a_json_boolean():
+    """`ready` is a real boolean, not the stringified "True"/"False" it once
+    was — machine consumers (healthchecks, --wait) must not string-match."""
+    c = _client(_GROUNDED)
+    try:
+        body = c.get("/healthz").json()
+        assert body["status"] == "ok"
+        assert isinstance(body["ready"], bool)
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_response_schema():
@@ -195,7 +208,8 @@ class _RaisingService:
     """Fake RagService whose answer() always raises a supplied exception."""
 
     def __init__(self, exc): self._exc = exc
-    def answer(self, prompt, mode="sage", conversation_id=None):
+    def answer(self, prompt, mode="sage", conversation_id=None,
+               attachment_context=None, attachment_label=None):
         raise self._exc
 
 

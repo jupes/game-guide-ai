@@ -17,7 +17,7 @@ import * as React from 'react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type Screen = 'landing' | 'workspace'
+export type Screen = 'landing' | 'workspace' | 'profile'
 export type ChatMode = 'sage' | 'spell' | 'rules' | 'gm'
 
 export interface AppNavState {
@@ -28,6 +28,10 @@ export interface AppNavState {
   setMode: (mode: ChatMode) => void
   setConversationId: (id: string | null) => void
   backToLanding: () => void
+  /** Open the profile screen (swe1.7). */
+  openProfile: () => void
+  /** Return to the workspace without disturbing the active mode (swe1.7). */
+  backToWorkspace: () => void
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -40,6 +44,8 @@ const defaultState: AppNavState = {
   setMode: () => {},
   setConversationId: () => {},
   backToLanding: () => {},
+  openProfile: () => {},
+  backToWorkspace: () => {},
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- context co-located with provider; HMR-only rule
@@ -73,6 +79,16 @@ export function AppNavProvider({ children }: AppNavProviderProps): React.JSX.Ele
     setScreen('landing')
   }, [])
 
+  const openProfile = useCallback(() => {
+    setScreen('profile')
+  }, [])
+
+  // Return to the workspace without touching `mode` (unlike enterWorkspace,
+  // which resets it to sage) — a DM opening Profile from the GM channel returns to GM.
+  const backToWorkspace = useCallback(() => {
+    setScreen('workspace')
+  }, [])
+
   const value = useMemo<AppNavState>(
     () => ({
       screen,
@@ -82,8 +98,20 @@ export function AppNavProvider({ children }: AppNavProviderProps): React.JSX.Ele
       setMode,
       setConversationId,
       backToLanding,
+      openProfile,
+      backToWorkspace,
     }),
-    [screen, mode, conversationId, enterWorkspace, setMode, setConversationId, backToLanding],
+    [
+      screen,
+      mode,
+      conversationId,
+      enterWorkspace,
+      setMode,
+      setConversationId,
+      backToLanding,
+      openProfile,
+      backToWorkspace,
+    ],
   )
 
   return <AppNavContext.Provider value={value}>{children}</AppNavContext.Provider>

@@ -3,9 +3,26 @@ import { renderHook, act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppNavProvider, AppNavContext, useAppNav } from './AppNav'
 import type { AppNavState } from './AppNav'
-import { CurrentUserContext } from './currentUser'
+import { CurrentUserContext, CurrentUserProvider } from './currentUser'
 import type { CurrentUserContextValue } from './currentUser'
+import { ThemeProvider } from '../ds/theme'
 import { Landing } from './Landing'
+import App from '../App'
+
+function makeNavState(overrides: Partial<AppNavState> = {}): AppNavState {
+  return {
+    screen: 'workspace',
+    mode: 'sage',
+    conversationId: null,
+    enterWorkspace: vi.fn(),
+    setMode: vi.fn(),
+    setConversationId: vi.fn(),
+    backToLanding: vi.fn(),
+    openProfile: vi.fn(),
+    backToWorkspace: vi.fn(),
+    ...overrides,
+  }
+}
 
 function makeUserState(role: 'dm' | 'player' = 'player'): CurrentUserContextValue {
   return {
@@ -18,6 +35,8 @@ function makeUserState(role: 'dm' | 'player' = 'player'): CurrentUserContextValu
       editProfile: vi.fn(),
     },
     setRole: vi.fn(),
+    setDisplayName: vi.fn(),
+    setAvatarTone: vi.fn(),
   }
 }
 
@@ -65,6 +84,38 @@ describe('AppNav context (#12)', () => {
     })
     expect(result.current.screen).toBe('landing')
   })
+
+  // ── swe1.7 — profile screen ────────────────────────────────────────────────
+
+  it('openProfile() sets screen to profile', () => {
+    const { result } = renderHook(() => useAppNav(), { wrapper: AppNavProvider })
+    act(() => result.current.openProfile())
+    expect(result.current.screen).toBe('profile')
+  })
+
+  it('backToWorkspace() returns to the workspace and preserves the mode', () => {
+    const { result } = renderHook(() => useAppNav(), { wrapper: AppNavProvider })
+    act(() => result.current.enterWorkspace('gm'))
+    act(() => result.current.openProfile())
+    act(() => result.current.backToWorkspace())
+    expect(result.current.screen).toBe('workspace')
+    expect(result.current.mode).toBe('gm') // unlike enterWorkspace, mode is untouched
+  })
+})
+
+describe('App profile screen (swe1.7)', () => {
+  it('renders the ProfilePage when screen is profile', () => {
+    render(
+      <ThemeProvider>
+        <AppNavContext.Provider value={makeNavState({ screen: 'profile' })}>
+          <CurrentUserProvider>
+            <App />
+          </CurrentUserProvider>
+        </AppNavContext.Provider>
+      </ThemeProvider>,
+    )
+    expect(screen.getByRole('heading', { name: 'Profile' })).toBeInTheDocument()
+  })
 })
 
 // ── CP-F3.2 — Landing component ───────────────────────────────────────────────
@@ -80,6 +131,8 @@ describe('Landing component', () => {
       setMode: vi.fn(),
       setConversationId: vi.fn(),
       backToLanding: vi.fn(),
+      openProfile: vi.fn(),
+      backToWorkspace: vi.fn(),
     }
 
     render(
@@ -105,6 +158,8 @@ describe('Landing component', () => {
       setMode: vi.fn(),
       setConversationId: vi.fn(),
       backToLanding: vi.fn(),
+      openProfile: vi.fn(),
+      backToWorkspace: vi.fn(),
     }
 
     render(
@@ -129,6 +184,8 @@ describe('Landing component', () => {
       setMode: vi.fn(),
       setConversationId: vi.fn(),
       backToLanding: vi.fn(),
+      openProfile: vi.fn(),
+      backToWorkspace: vi.fn(),
     }
 
     const { unmount } = render(
