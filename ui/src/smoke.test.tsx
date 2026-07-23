@@ -145,6 +145,8 @@ describe('App-flow smoke test (CP-F6.2)', () => {
       setMode: () => {},
       setConversationId: () => {},
       backToLanding: () => {},
+      openProfile: () => {},
+      backToWorkspace: () => {},
     }
 
     const userState: CurrentUserContextValue = {
@@ -157,6 +159,8 @@ describe('App-flow smoke test (CP-F6.2)', () => {
         editProfile: () => {},
       },
       setRole: () => {},
+      setDisplayName: () => {},
+      setAvatarTone: () => {},
     }
 
     rerender(
@@ -237,6 +241,8 @@ describe('Landing component', () => {
       setMode: () => {},
       setConversationId: () => {},
       backToLanding: () => {},
+      openProfile: () => {},
+      backToWorkspace: () => {},
     }
 
     render(

@@ -23,6 +23,8 @@ function makeNavState(overrides: Partial<AppNavState> = {}): AppNavState {
     setMode: vi.fn(),
     setConversationId: vi.fn(),
     backToLanding: vi.fn(),
+    openProfile: vi.fn(),
+    backToWorkspace: vi.fn(),
     ...overrides,
   }
 }
@@ -38,6 +40,8 @@ function makeUserState(role: 'dm' | 'player' = 'player'): CurrentUserContextValu
       editProfile: vi.fn(),
     },
     setRole: vi.fn(),
+    setDisplayName: vi.fn(),
+    setAvatarTone: vi.fn(),
   }
 }
 

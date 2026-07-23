@@ -25,7 +25,9 @@ describe('useCurrentUser', () => {
       <CurrentUserProvider>{children}</CurrentUserProvider>
     )
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
-    expect(result.current.user).toEqual({ ...STUB, role: 'player' })
+    // avatarTone defaults to STUB's 'gold'; initials are derived from the live
+    // displayName ('Adventurer' -> 'A'), overriding STUB's static 'AV'.
+    expect(result.current.user).toEqual({ ...STUB, role: 'player', initials: 'A' })
   })
 })
 
@@ -83,5 +85,25 @@ describe('user role', () => {
     localStorage.setItem('game-guide-ai:role', 'archlich')
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     expect(result.current.user.role).toBe('player')
+  })
+
+  // ── swe1.7 — editable + persisted display name and avatar tone ──────────────
+
+  it('setDisplayName updates the name and persists across a fresh provider', () => {
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    act(() => result.current.setDisplayName('Astra Vail'))
+    expect(result.current.user.displayName).toBe('Astra Vail')
+    expect(result.current.user.initials).toBe('AV') // derived from the new name
+    const again = renderHook(() => useCurrentUser(), { wrapper })
+    expect(again.result.current.user.displayName).toBe('Astra Vail')
+  })
+
+  it('setAvatarTone updates the tone and persists it; default is gold', () => {
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    expect(result.current.user.avatarTone).toBe('gold')
+    act(() => result.current.setAvatarTone('arcane'))
+    expect(result.current.user.avatarTone).toBe('arcane')
+    const again = renderHook(() => useCurrentUser(), { wrapper })
+    expect(again.result.current.user.avatarTone).toBe('arcane')
   })
 })

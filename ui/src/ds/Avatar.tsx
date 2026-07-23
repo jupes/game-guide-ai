@@ -14,6 +14,9 @@
 import React from 'react'
 import './Avatar.css'
 
+/** Avatar palette tone — the four Aetheril accent families. */
+export type AvatarTone = 'gold' | 'ember' | 'verdigris' | 'arcane'
+
 export interface AvatarProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Image URL. When absent, falls back to icon or initials. */
   src?: string
@@ -23,7 +26,7 @@ export interface AvatarProps extends React.HTMLAttributes<HTMLDivElement> {
   icon?: string
   /** Pixel diameter. @default 40 */
   size?: number
-  tone?: 'gold' | 'ember' | 'verdigris' | 'arcane'
+  tone?: AvatarTone
   /** Adds a gilt ring (use for the active speaker / DM). */
   ring?: boolean
 }
