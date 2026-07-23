@@ -65,6 +65,8 @@ for debugging belong in access-controlled structured logs, not metric values or 
 - Service producers call an injected server-side metrics sink.
 - Browser producers send same-origin batches to `POST /metrics/ui`; the browser never receives a
   Langfuse secret.
+- The browser buffers at most 50 points per request, prefers `sendBeacon` during page exit, and
+  falls back to a keepalive fetch. Web Vital collection uses buffered performance observers.
 - The service validates the batch against this allowlist, then records numeric, boolean, or
   categorical Langfuse scores. Invalid input receives `422`.
 - Telemetry is off/no-op without configured credentials. Sink or transport failures are logged as
@@ -99,8 +101,9 @@ together.
 }
 ```
 
-The handler validates this point, records it server-side as a Langfuse boolean score, and the
-dashboard groups it by time/environment/mode. Failure to record is fail-open.
+The handler validates this point and records it server-side as a Langfuse boolean score. The
+dashboard trends its true-rate by time and the bounded labels remain score metadata for
+record-level inspection. Failure to record is fail-open.
 
 ## Worked UI example
 

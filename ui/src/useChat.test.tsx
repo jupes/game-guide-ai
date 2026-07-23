@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useChat } from './useChat'
 import type { ChatResult, ChatMode, MessagesResult, StoredMessage } from './api'
+import type { MetricPoint } from './metrics/metrics'
 import type { LoadHistoryFn, PostFn } from './useChat'
 
 const GROUNDED: ChatResult = {
@@ -38,6 +39,33 @@ describe('useChat', () => {
     await waitFor(() => expect(result.current.exchanges[0].status).toBe('done'))
     expect(result.current.exchanges[0].response?.answer).toMatch(/basilisk/i)
     expect(result.current.pending).toBe(false)
+  })
+
+  it('records chat round-trip and outcome without conversation content', async () => {
+    const points: MetricPoint[] = []
+    const now = vi.fn().mockReturnValueOnce(10).mockReturnValueOnce(42)
+    const { result } = renderHook(() =>
+      useChat({
+        post: async () => GROUNDED,
+        loadHistory: async () => ({ kind: 'ok', messages: [] }),
+        mode: 'spell',
+        conversationId: 'private-conversation-id',
+        now,
+        recordMetric: (point) => points.push(point),
+      }),
+    )
+
+    act(() => {
+      result.current.send('private prompt text')
+    })
+    await waitFor(() => expect(result.current.pending).toBe(false))
+
+    expect(points.map(({ name, value }) => [name, value])).toEqual([
+      ['ui.interaction.chat_round_trip_ms', 32],
+      ['ui.interaction.chat_outcome', 'success'],
+    ])
+    expect(points[0].labels.mode).toBe('spell')
+    expect(JSON.stringify(points)).not.toMatch(/private prompt|private-conversation/)
   })
 
   it('resolves to error on a failed result', async () => {
@@ -156,8 +184,8 @@ describe('useChat', () => {
     act(() => {
       result.current.send('Still works?')
     })
-    await waitFor(() => expect(result.current.exchanges).toHaveLength(1))
-    expect(result.current.exchanges[0].status).toBe('done')
+    await waitFor(() => expect(result.current.exchanges[0]?.status).toBe('done'))
+    expect(result.current.exchanges).toHaveLength(1)
   })
 
   it('does not clobber a live exchange sent while history is loading', async () => {

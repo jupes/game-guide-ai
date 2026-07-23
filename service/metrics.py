@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+import logging
+from collections.abc import Callable
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import (
     BaseModel,
@@ -12,6 +14,8 @@ from pydantic import (
     StrictBool,
     model_validator,
 )
+
+log = logging.getLogger(__name__)
 
 
 class MetricLabels(BaseModel):
@@ -168,3 +172,86 @@ class MetricBatch(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     points: list[MetricPoint] = Field(min_length=1, max_length=50)
+
+
+class MetricsSink(Protocol):
+    def record(self, point: MetricPoint) -> None: ...
+
+
+class NoopMetricsSink:
+    def record(self, point: MetricPoint) -> None:
+        return None
+
+
+class LangfuseMetricsSink:
+    """Persist validated points as typed Langfuse v3 scores."""
+
+    _DATA_TYPES = {
+        "numeric": "NUMERIC",
+        "boolean": "BOOLEAN",
+        "categorical": "CATEGORICAL",
+    }
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def record(self, point: MetricPoint) -> None:
+        labels = point.labels.model_dump(exclude_none=True)
+        observation = self._client.start_observation(
+            name=f"metric:{point.name}",
+            as_type="span",
+            metadata={"metric_name": point.name, "unit": point.unit, **labels},
+        )
+        value: float | str | bool
+        if point.kind == "numeric":
+            value = float(point.value)
+        elif point.kind == "boolean":
+            value = point.value
+        else:
+            value = point.value
+        try:
+            self._client.create_score(
+                name=point.name,
+                value=value,
+                data_type=self._DATA_TYPES[point.kind],
+                trace_id=observation.trace_id,
+                observation_id=observation.id,
+                metadata={"unit": point.unit, **labels},
+            )
+        finally:
+            observation.end()
+
+
+def build_metrics_sink(
+    *,
+    enabled: bool | None = None,
+    client_factory: Callable[[], Any] | None = None,
+) -> MetricsSink:
+    """Build the runtime sink, reusing the service's opt-in tracing switch."""
+    if enabled is None:
+        from .tracing import tracing_enabled
+
+        enabled = tracing_enabled()
+    if not enabled:
+        return NoopMetricsSink()
+
+    try:
+        if client_factory is None:
+            from langfuse import get_client
+
+            client_factory = get_client
+        return LangfuseMetricsSink(client_factory())
+    except Exception:
+        log.warning(
+            "metrics enabled but Langfuse is unavailable; serving without metrics",
+            exc_info=True,
+        )
+        return NoopMetricsSink()
+
+
+def record_safely(sink: MetricsSink, point: MetricPoint) -> None:
+    """Telemetry is best-effort and must never escape into a product request."""
+    try:
+        sink.record(point)
+    except Exception:
+        log.warning("metric recording failed (name=%s)", point.name, exc_info=True)

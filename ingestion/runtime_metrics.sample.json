@@ -1,0 +1,73 @@
+{
+  "numeric": [
+    {
+      "name": "service.chat.duration_ms",
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "avg_value": 842.4
+    },
+    {
+      "name": "ui.web_vital.ttfb_ms",
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "avg_value": 118.2
+    },
+    {
+      "name": "ui.web_vital.fcp_ms",
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "avg_value": 462.8
+    },
+    {
+      "name": "ui.web_vital.lcp_ms",
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "avg_value": 911.5
+    },
+    {
+      "name": "ui.web_vital.cls",
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "avg_value": 0.012
+    },
+    {
+      "name": "ui.interaction.chat_round_trip_ms",
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "avg_value": 901.7
+    },
+    {
+      "name": "ui.client.error_count",
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "avg_value": 0.04
+    }
+  ],
+  "boolean": [
+    {
+      "name": "service.chat.gate.answerable",
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "avg_value": 0.88
+    },
+    {
+      "name": "service.chat.error",
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "avg_value": 0.03
+    }
+  ],
+  "categorical": [
+    {
+      "name": "service.chat.error_category",
+      "stringValue": "dependency",
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "count_count": 3
+    },
+    {
+      "name": "ui.interaction.chat_outcome",
+      "stringValue": "success",
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "count_count": 97
+    }
+  ],
+  "observations": [
+    {
+      "time_dimension": "2026-07-22T00:00:00Z",
+      "p95_latency": 1240.3,
+      "sum_totalCost": 0.0184,
+      "sum_totalTokens": 18420
+    }
+  ]
+}

@@ -74,7 +74,7 @@ Retrieval hygiene worth knowing before you "fix" something:
 | `eval_golden.py` | **Retrieval** quality on the golden set: Precision@K, Hit@1, Recall@10, per-query breakdown. `--mode vector|hybrid` A/Bs the search mode. |
 | `eval_answers.py` | **Generation** quality: runs golden positives end-to-end through `RagService.answer`, scores with deterministic graders + Ragas LLM-judge, attaches scores to Langfuse traces. Needs the `[eval]` extra. See `docs/observability/answer-eval.md`. |
 | `compare_models.py` | Model/version A/B with a fixed judge + **CI regression gate** (e.g. gpt-4o-mini vs a local Ollama model). See `docs/observability/eval-strategy.md`. |
-| `metrics_summary.py` | Scriptable quality/cost summary via the Langfuse Metrics API (or a stored-results fallback). See `docs/observability/dashboard.md`. |
+| `metrics_summary.py` | Scriptable quality/cost and timestamped runtime summary via the Langfuse Metrics API, a stored-results fallback, or `runtime_metrics.sample.json`. See `docs/observability/dashboard.md`. |
 | `spike_rerank.py` | Historical research spike that justified the gated reranker (kept for provenance). |
 
 ```bash

@@ -4,24 +4,30 @@ Runtime service/UI names, labels, privacy rules, and storage semantics are defin
 [`metrics-standard.md`](metrics-standard.md). Dashboard widgets and scriptable summaries must use
 that catalog unchanged.
 
-Surfaces the quality + cost/latency trends captured in Phases 1-3 (traces tagged
+Surfaces runtime health plus the quality + cost/latency trends captured in Phases 1-3 (traces tagged
 `model`/`service_version`/`mode`, latency/tokens/cost, `ragas_*` scores, the comparison
-dataset) — filterable by model, for A/B decisions. Two ways to read it: the **Langfuse
+dataset). Two ways to read it: the **Langfuse
 dashboard** (trends over time, in the UI) and a **scriptable summary** (`ingestion/metrics_summary.py`,
 reproducible / CI-able).
 
 ## Scriptable summary (`metrics_summary.py`)
 
 ```bash
-# live: cost / p95 latency / tokens by model, from Langfuse (Metrics API)
+# live: model cost/latency/tokens plus timestamped runtime score series
 python ingestion/metrics_summary.py --since 30d
 
 # offline: quality by model from a comparison run (no Langfuse)
 python ingestion/metrics_summary.py --from-results ingestion/compare_results.json
+
+# offline: the same runtime-series formatter against the committed fixture
+python ingestion/metrics_summary.py \
+  --from-runtime-metrics ingestion/runtime_metrics.sample.json
 ```
 
 Example (live): `gpt-4o-mini` cost $0.0011 / p95 1963ms vs `llama3.2:latest` free / p95 28903ms — the
 fast-and-cheap-API vs free-but-slow-local tradeoff at a glance. Writes `ingestion/metrics_summary.json`.
+The runtime fixture path writes the same JSON envelope with `source` and timestamped `series`, so
+the dashboard contract is reproducible without credentials.
 
 ## Langfuse dashboard (trends, in the UI)
 
@@ -36,6 +42,16 @@ grouping dimension matters** (discovered live):
 | Token usage by model | observations | `totalTokens` / sum | `providedModelName` | |
 | Request volume | traces | `count` / count | `tags` or time | `tags` = `mode:*`, `rag-chat` |
 | Answer quality | scores | `value` / avg | score `name` | `ragas_faithfulness`, `ragas_answer_correctness`, … |
+| Chat + Web Vital latency | scores-numeric | `value` / avg or p95 | `name` + time | `service.chat.duration_ms`, `ui.*_ms` |
+| Gate/error rate | scores-boolean | `value` / avg | `name` + time | average is the true-rate |
+| Error/outcome mix | scores-categorical | `count` / count | `name`, `stringValue`, time | bounded categories only |
+| Client errors | scores-numeric | `value` / sum | `name` + time | `ui.client.error_count` |
+
+Use a daily time bucket for long windows and hourly for incident windows. The repository's pinned
+Langfuse v3 client uses the legacy Metrics API query with
+`timeDimension: {"granularity": "day"}`. Numeric, boolean, and categorical scores use their
+matching typed score views. Labels are retained as bounded score/observation metadata for
+record-level inspection; dashboard aggregations use the native dimensions above.
 
 > **Gotcha (important):** trace **metadata** (`model`, `service_version`, `mode`) is **not** a
 > queryable dashboard dimension — Langfuse only exposes `id/name/tags/userId/sessionId/release/
