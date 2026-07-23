@@ -1,135 +1,172 @@
-# D&D 5e Agent Service (`POST /chat`)
+# Service — FastAPI + LangGraph RAG API
 
-A stateless REST API that answers D&D 5th Edition questions, grounded in the
-ingested rules corpus (9,000+ chunks across 12 books in pgvector). Embed the
-prompt → filtered + gated vector retrieval → grounded answer via `gpt-4o-mini`
-→ response with source citations. Out-of-corpus questions are refused, not
-hallucinated.
+The REST API that answers D&D 5th Edition questions grounded in the ingested corpus
+(9,000+ chunks across 12 books in pgvector). Every `/chat` request runs a **LangGraph
+pipeline**: embed → hint extraction → mode scoping → filtered vector search → (gated
+rerank) → grounding gate → per-persona generation (`gpt-4o-mini`) → citations.
+Out-of-corpus questions are refused, not hallucinated. Beyond chat it persists
+**message history** and **file attachments** per conversation.
 
-## Run
+## File map
 
-```bash
-cd repos/game-guide-ai
-docker compose up -d        # pgvector with the ingested corpus
-# .env must provide OPENAI_API_KEY (embeddings + generation) and optionally DATABASE_URL
-uv run --with fastapi --with uvicorn --with openai --with "psycopg[binary]" \
-    uvicorn service.app:app --port 8000
+| File | Role |
+| --- | --- |
+| `app.py` | FastAPI app: endpoints, startup wiring (RagService + message store), error taxonomy, static `ui/dist` mount. |
+| `graph.py` | The whole request pipeline as a LangGraph `StateGraph` — every stage is a node (see below). |
+| `rag.py` | `RagService` — thin invoke wrapper around the graph; dependency injection seams (retriever, reranker, LLM client, secondary retriever). Home of the stubbed **secondary world-corpus retriever** seam for GM mode. |
+| `generate.py` | Context assembly (full chunk texts, never previews), per-mode persona prompts, grounded answer + spell-suggestion LLM calls, `Source` building. |
+| `models.py` | Pydantic request/response contract (mirrored by `ui/src/api.ts`). Home of the canonical `REFUSAL` string. |
+| `history.py` | `MessageStore` protocol + Postgres/in-memory impls — `chat.messages` / `chat.attachments` in the same DB as the corpus; idempotent `ensure_schema()` at startup. |
+| `attachments.py` | Pure text extraction for uploaded files (`.txt`/`.md` decode, `.pdf` via PyMuPDF) + `cap_text`. Deliberately separate from `ingestion/extract*.py` (those are whole-book, path-based). |
+| `tracing.py` | Env-gated Langfuse tracing (`RAG_TRACING`, off by default) — node-level trace + token/cost span per request. |
+
+Retrieval logic itself lives in `ingestion/retrieval.py` (`RagRetriever`) and is shared
+with the evals; mode→scope mapping is `ingestion/scope.py`. Tuning knobs live in the
+top-level [`config.py`](../config.py).
+
+## The pipeline graph (`graph.py`)
+
+```text
+START → preflight ──(empty prompt)──────────────────────────▶ refuse → END
+           │ (valid)
+           ▼
+        embed → extract_hints → scope ──(gm: fan-out)──▶ secondary
+                                  │                          :
+                                  ▼                          : (joins by state)
+                               search → fetch_texts ──▶ [rerank?] → merge
+                                                                      │
+                                                                      ▼
+                                          refuse ◀──(refuse)── gate ──(generate)─▶ generate
+                                             │                                       │
+                                             ▼                    (spell) suggest ◀──┤
+                                            END                              └─▶ cite → END
 ```
 
-The service loads the corpus vocabulary once at startup; each request is
-independent (stateless).
+- **preflight** validates the mode (unknown → `ValueError` for direct callers; the API layer
+  already 422s via the `ChatMode` enum) and short-circuits empty prompts to `refuse`.
+- **rerank** runs only when a reranker is configured (`RAG_RERANK=1` + `[rerank]` extra)
+  **and** the query looks prose-like (`should_rerank`).
+- **gate** is the grounding decision: `sage`/`spell`/`rules` need `answerable` (top-1 cosine
+  distance ≤ 0.50) *and* chunks; `gm` proceeds with any chunks (creative mode, `answerable`
+  may stay false); a conversation **attachment** relaxes the gate entirely — "what does my
+  homebrew doc say?" must generate even when the corpus can't answer.
+- **suggest** (spell mode only) adds three spell-usage ideas (practical/roleplay/wacky) via a
+  second LLM call — best-effort: failure degrades to `suggestions: null`, never a failed answer.
+- In **gm** mode, `scope` fans out to a **secondary retriever** (future world/campaign corpus —
+  currently a stub returning nothing) in parallel with the primary search; `merge` dedupes.
 
-### Single-process serving (UI + API, no nginx)
+## Chat modes
 
-Build the UI first, then start uvicorn — it will serve both:
-
-```bash
-cd ui && bun run build      # writes ui/dist/
-cd ..
-uv run --with fastapi --with uvicorn --with openai --with "psycopg[binary]" \
-    uvicorn service.app:app --port 8000
-```
-
-Open **<http://localhost:8000>**. The `ui/dist/` mount fires automatically at startup
-(guarded — skipped when the directory is absent, e.g. inside the Docker service
-container where nginx handles static files instead).
+| Mode | Persona / system prompt | Retrieval scope |
+| --- | --- | --- |
+| `sage` (default) | General oracle, strict grounding | Unscoped |
+| `spell` | Spell Archivist — quotes rules text verbatim; adds 3 usage suggestions | `spell` chunks, spell-bearing books only |
+| `rules` | Rules Arbiter — RAW only, no table rulings | Rules-type chunks (rule, class/race_feature, condition, background, feat) |
+| `gm` | GM Oracle — may invent, must say so | Query types ∪ {monster, dm_guidance, magic_item}; relaxed gate; secondary-corpus seam |
 
 ## Endpoints
 
 ### `POST /chat`
 
-Request:
-
 ```json
-{ "prompt": "What does a Mind Flayer do with its tentacles?" }
+{ "prompt": "What does a Mind Flayer do with its tentacles?", "mode": "sage", "conversation_id": "abc" }
 ```
 
-Response (`200`):
+`mode` defaults to `sage`; `conversation_id` is optional — when present, the turn is
+persisted and any stored attachments of that conversation are injected as extra context.
 
 ```json
 {
-  "answer": "A Mind Flayer uses its tentacles to make a melee weapon attack, dealing 15 (2d10 + 4) psychic damage. If the target is Medium or smaller, it is grappled (escape DC 15) and must succeed on a DC 15 Intelligence saving throw or be stunned until the grapple ends [1].",
-  "sources": [
-    { "book": "mm-5e", "chapter": "Bestiary", "section": "Stat Block",
-      "entity": "Mind Flayer", "page": 223, "snippet": "Mind Flayer Medium aberration ..." }
-  ],
-  "answerable": true
+  "answer": "… dealing 15 (2d10 + 4) psychic damage … [1]",
+  "sources": [ { "book": "mm-5e", "chapter": "Bestiary", "section": "Stat Block",
+                 "entity": "Mind Flayer", "page": 223, "snippet": "…" } ],
+  "answerable": true,
+  "mode": "sage",
+  "conversation_id": "abc",
+  "suggestions": null
 }
 ```
 
-Out-of-corpus prompt → grounded refusal (no LLM call):
+Out-of-corpus → grounded refusal (**200**, no LLM call): fixed `REFUSAL` answer, empty
+sources, `answerable: false`. In spell mode, `suggestions` carries exactly three
+`{style, text}` objects (`practical` / `roleplay` / `wacky`) or `null` if that garnish failed.
 
-```json
-{ "answer": "I couldn't find that in the D&D 5e sources I have.", "sources": [], "answerable": false }
-```
+### `GET /conversations/{id}/messages`
 
-Errors: empty/missing `prompt` → `422`; retrieval/generation failure → `503`.
+Stored history, most recent `RAG_HISTORY_LIMIT` (50) turns, served oldest-first;
+`?limit=` may lower, never raise, the cap. Assistant turns from spell mode carry their
+suggestions. 503 when the store is unavailable.
 
-### `GET /healthz`
+### `POST /conversations/{id}/attachments`
 
-```json
-{ "status": "ok", "ready": "True" }
-```
+JSON body `{ "filename", "content_type", "data" }` with **base64** file content (no
+multipart). Text is extracted server-side (`.txt`/`.md`/`.pdf`) and stored; from then on it
+grounds every answer in that conversation (capped at `RAG_ATTACHMENT_MAX_CHARS`) and is
+cited as an extra source. Errors: `413` over `RAG_ATTACHMENT_MAX_BYTES` (2 MB), `415`
+unsupported type, `422` bad base64.
 
-## How it works
+### `GET /conversations/{id}/attachments` · `GET /healthz`
 
-1. **Embed** the prompt (`text-embedding-3-small`).
-2. **Detect** class/entity/content-type hints against the corpus vocabulary
-   (with the generic-entity stoplist so junk terms don't over-restrict).
-3. **Retrieve** top-K via filtered vector search; fetch **full** chunk text by id
-   (the row preview is only 120 chars).
-4. **Gate** answerability by top-1 cosine distance (`is_answerable`, ~0.50). If
-   not answerable → refuse.
-5. **(Optional) rerank** prose-category results with a gated cross-encoder.
-6. **Generate** with `gpt-4o-mini` under a grounding prompt ("answer only from the
-   numbered sources, cite as [n]").
-7. **Cite** — one `Source` per contributing chunk (book/chapter/section/entity/
-   page + snippet), deduped.
+Attachment **metadata** only (extracted text never leaves the server); health + readiness.
 
-Retrieval logic is shared with the eval via `ingestion/retrieval.py`
-(`RagRetriever`).
+### Error taxonomy
 
-## Tests
+| Status | Meaning |
+| --- | --- |
+| `422` | Validation (empty prompt, unknown mode, bad upload body) |
+| `502` | LLM upstream failed (timeout/rate limit) — retryable |
+| `503` | Retrieval backend, embedding (missing `OPENAI_API_KEY`), or store unavailable |
+| `500` | Bug in our code (full traceback logged) |
 
-The repo is an installable package (`pyproject.toml`); imports are explicit
-(`from service... import ...`, `from ingestion... import ...`) with no `sys.path`
-hacks. Run pytest from the **repo root** with the `test` extra:
+History writes are **best-effort by design**: a failed persist logs a warning and never
+fails an answer.
+
+## Run
 
 ```bash
-# All service tests (pure + mocked endpoint):
-uv run --with '.[test]' python -m pytest service -q
-# Or the whole suite:
-uv run --with '.[test]' python -m pytest -q
+docker compose up -d vector-db          # corpus DB; .env needs OPENAI_API_KEY
+uv run --with . uvicorn service.app:app --port 8000 --reload
 ```
 
-No DB or LLM is needed for the unit/endpoint tests (retriever + LLM are mocked).
+**Single-process serving (UI + API):** `cd ui && bun run build`, then start uvicorn as
+above and open <http://localhost:8000> — `app.py` mounts `ui/dist/` when it exists.
+In the proxied modes (:5173 dev or compose), every service API prefix — `/chat`,
+`/healthz`, `/conversations` — must be listed in **both** `ui/vite.config.ts` and
+`ui/nginx.conf` when you add an endpoint (see the proxy invariant in `ui/README.md`).
 
 ## Config
 
-| var | purpose |
-|-----|---------|
-| `OPENAI_API_KEY` | embeddings + generation (required) |
-| `DATABASE_URL` | pgvector DSN (defaults to the local compose DSN) |
-
-### RAG tuning knobs
-
-All optional and env-overridable; the canonical defaults + rationale live in the
-top-level [`config.py`](../config.py). Tune retrieval/generation without a code
-change or redeploy.
+`OPENAI_API_KEY` (required), `DATABASE_URL` (defaults to the local compose DSN), and the
+`RAG_*` knobs — canonical defaults + rationale in [`config.py`](../config.py):
 
 | var | default | purpose |
 | --- | --- | --- |
-| `RAG_TOP_K` | `10` | chunks the vector search returns per query (pre-rerank) |
-| `RAG_CONTEXT_TOP_N` | `5` | top chunks fed to the LLM context + cited sources |
-| `RAG_SNIPPET_MAX` | `240` | max chars of each source's display snippet |
-| `RAG_FALLBACK_DISTANCE` | `0.42` | ipl: top-1 distance above which a filtered query retries unfiltered |
-| `RAG_ANSWERABLE_DISTANCE` | `0.50` | koz: top-1 distance within which the corpus is judged answerable |
-| `RAG_DEFAULT_MODEL` | `gpt-4o-mini` | OpenAI chat model for answer generation |
-| `RAG_TEMPERATURE` | `0.2` | answer-generation sampling temperature |
+| `RAG_TOP_K` | `10` | chunks returned per vector search (pre-rerank) |
+| `RAG_CONTEXT_TOP_N` | `5` | chunks fed to the LLM + cited |
+| `RAG_SNIPPET_MAX` | `240` | display-snippet length |
+| `RAG_ANSWERABLE_DISTANCE` | `0.50` | koz grounding gate (top-1 cosine distance) |
+| `RAG_FALLBACK_DISTANCE` | `0.42` | ipl filtered→unfiltered retry — **eval-only**, never used live |
+| `RAG_DEFAULT_MODEL` | `gpt-4o-mini` | generation model |
+| `RAG_TEMPERATURE` | `0.2` | generation temperature |
+| `RAG_HISTORY_LIMIT` | `50` | messages returned per conversation |
+| `RAG_ATTACHMENT_MAX_BYTES` | `2000000` | max decoded upload size |
+| `RAG_ATTACHMENT_MAX_CHARS` | `6000` | max attachment chars injected into the prompt |
+| `RAG_RERANK` | `0` | gated cross-encoder rerank (needs `pip install '.[rerank]'`) |
+| `RAG_TRACING` | `0` | Langfuse tracing (`LANGFUSE_PUBLIC_KEY`/`SECRET_KEY`/`BASE_URL` when on) |
 
-## Not in v1 (follow-ups)
+## Tests
 
-- Streaming (SSE) for the UI epic (`3zs`).
-- Connection pooling (per-request connect for now).
-- Optional reranker wired in by default (it's pluggable; off by default to avoid
-  the torch dependency in the running service).
+Pure unit + endpoint tests (retriever, LLM, and store are faked — no DB or network), in
+`service/tests/`. From the **repo root**:
+
+```bash
+uv run --with '.[test]' python -m pytest service -q     # service only
+uv run --with '.[test]' python -m pytest -q             # whole suite
+```
+
+## Not yet built (follow-ups)
+
+- Streaming (SSE) answers.
+- Connection pooling (per-request connect today).
+- Real auth / server-side role enforcement (the GM channel is UI-gated only until then).
+- A real secondary world-corpus retriever behind the GM seam.
