@@ -34,16 +34,8 @@ export function LeftNav(): React.JSX.Element {
 
   return (
     <nav className="left-nav" aria-label="Main navigation">
-      {/* Brand logo area */}
-      <div className="left-nav__brand">
-        <span
-          className="material-symbols-rounded left-nav__brand-icon"
-          aria-hidden="true"
-        >
-          auto_stories
-        </span>
-        <span className="left-nav__brand-name">Aetheril</span>
-      </div>
+      {/* Brand lives once in the TopBar header (swe1.10) — the sidebar starts
+          straight at the mode chips to avoid a duplicate 'Aetheril'. */}
 
       {/* Mode chips */}
       <div className="left-nav__modes">

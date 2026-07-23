@@ -7,7 +7,7 @@
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
-  background: var(--aether-surface);
+  background: var(--md-sys-color-surface);
 }
 
 .workspace-shell__body {

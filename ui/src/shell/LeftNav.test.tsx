@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useState } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppNavContext } from './AppNav'
@@ -185,6 +186,106 @@ describe('LeftNav conversation list (#22)', () => {
 
     const btn = screen.getByText('Dragon Lore').closest('button')
     expect(btn).toHaveAttribute('aria-pressed', 'true')
+  })
+})
+
+// ── swe1.2 — selection is applied and visibly distinct ───────────────────────
+// The mocked-callback tests above prove LeftNav *calls* setConversationId, but
+// the reported bug was that selecting a conversation showed no visual change
+// (the --selected style resolved to an undefined token). These tests drive real
+// nav state so the selected class actually toggles, covering the click and
+// keyboard (Enter/Space) paths end to end within LeftNav.
+
+const SELECTED = 'left-nav__conversation--selected'
+
+/** LeftNav wired to real conversationId state (not a vi.fn). */
+function StatefulLeftNav({
+  store,
+  initialId = null,
+}: {
+  store: MemoryConversationStore
+  initialId?: string | null
+}) {
+  const [conversationId, setConversationId] = useState<string | null>(initialId)
+  return (
+    <ThemeProvider>
+      <AppNavContext.Provider value={makeNavState({ conversationId, setConversationId })}>
+        <CurrentUserContext.Provider value={makeUserState()}>
+          <ConversationStoreProvider store={store}>
+            <LeftNav />
+          </ConversationStoreProvider>
+        </CurrentUserContext.Provider>
+      </AppNavContext.Provider>
+    </ThemeProvider>
+  )
+}
+
+describe('LeftNav conversation selection (swe1.2)', () => {
+  function twoConversations() {
+    const store = new MemoryConversationStore()
+    store.create('sage', 'Dragon Lore')
+    store.create('sage', 'Basilisk Info')
+    return store
+  }
+
+  const rowFor = (title: string) => screen.getByText(title).closest('button')
+
+  it('applies the selected style + aria-pressed to the clicked row only', async () => {
+    render(<StatefulLeftNav store={twoConversations()} />)
+
+    // Nothing selected before a click.
+    expect(rowFor('Dragon Lore')).not.toHaveClass(SELECTED)
+    expect(rowFor('Basilisk Info')).not.toHaveClass(SELECTED)
+
+    await userEvent.click(screen.getByText('Dragon Lore'))
+
+    expect(rowFor('Dragon Lore')).toHaveClass(SELECTED)
+    expect(rowFor('Dragon Lore')).toHaveAttribute('aria-pressed', 'true')
+    expect(rowFor('Basilisk Info')).not.toHaveClass(SELECTED)
+    expect(rowFor('Basilisk Info')).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('moves the selected style when a different row is clicked', async () => {
+    render(<StatefulLeftNav store={twoConversations()} />)
+
+    await userEvent.click(screen.getByText('Dragon Lore'))
+    await userEvent.click(screen.getByText('Basilisk Info'))
+
+    expect(rowFor('Basilisk Info')).toHaveClass(SELECTED)
+    expect(rowFor('Dragon Lore')).not.toHaveClass(SELECTED)
+  })
+
+  it('selects via keyboard — Enter and Space activate a focused row', async () => {
+    render(<StatefulLeftNav store={twoConversations()} />)
+
+    rowFor('Dragon Lore')!.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(rowFor('Dragon Lore')).toHaveClass(SELECTED)
+
+    rowFor('Basilisk Info')!.focus()
+    await userEvent.keyboard(' ')
+    expect(rowFor('Basilisk Info')).toHaveClass(SELECTED)
+    expect(rowFor('Dragon Lore')).not.toHaveClass(SELECTED)
+  })
+})
+
+// ── swe1.10 — brand appears once in the workspace chrome ─────────────────────
+
+describe('workspace chrome brand (swe1.10)', () => {
+  it('renders "Aetheril" exactly once across TopBar + LeftNav', () => {
+    render(
+      <ThemeProvider>
+        <AppNavContext.Provider value={makeNavState()}>
+          <CurrentUserContext.Provider value={makeUserState()}>
+            <ConversationStoreProvider store={new MemoryConversationStore()}>
+              <TopBar />
+              <LeftNav />
+            </ConversationStoreProvider>
+          </CurrentUserContext.Provider>
+        </AppNavContext.Provider>
+      </ThemeProvider>,
+    )
+    expect(screen.getAllByText('Aetheril')).toHaveLength(1)
   })
 })
 
