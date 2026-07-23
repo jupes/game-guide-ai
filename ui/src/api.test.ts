@@ -27,6 +27,15 @@ function fakeFetch(status: number, body?: unknown): typeof fetch {
     })) as typeof fetch
 }
 
+/** A 200 whose body is HTML, not JSON — what a misrouted proxy serves (cnqf). */
+function htmlFetch(): typeof fetch {
+  return (async () =>
+    new Response('<!doctype html><html><body>SPA</body></html>', {
+      status: 200,
+      headers: { 'Content-Type': 'text/html' },
+    })) as typeof fetch
+}
+
 describe('postChat', () => {
   it('returns ok with the grounded response on 200', async () => {
     const result = await postChat('What is a Basilisk?', 'sage', null, fakeFetch(200, GROUNDED))
@@ -58,6 +67,12 @@ describe('postChat', () => {
     const result = await postChat('Q', 'sage', null, boom)
     expect(result.kind).toBe('error')
     if (result.kind === 'error') expect(result.message).toMatch(/reach|network/i)
+  })
+
+  it('maps a 200 with a non-JSON body to an error result, not a throw', async () => {
+    const result = await postChat('Q', 'sage', null, htmlFetch())
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/unreadable/i)
   })
 
   it('POSTs the prompt as JSON to /chat with mode and conversation_id', async () => {
@@ -141,6 +156,12 @@ describe('getMessages', () => {
     expect(result.kind).toBe('error')
     if (result.kind === 'error') expect(result.message).toMatch(/reach|network/i)
   })
+
+  it('maps a 200 with a non-JSON body to an error result, not a throw', async () => {
+    const result = await getMessages('conv-1', htmlFetch())
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/unreadable/i)
+  })
 })
 
 // ── swe1.6 — file attachments ─────────────────────────────────────────────────
@@ -164,6 +185,37 @@ describe('uploadAttachment', () => {
       fakeFetch(200, { conversation_id: 'conv-1', attachment: ATTACHMENT }),
     )
     expect(result).toEqual({ kind: 'ok', attachment: ATTACHMENT })
+  })
+
+  it('maps a 200 with a non-JSON body to an error result, not a throw', async () => {
+    const result = await uploadAttachment(
+      'conv-1', fakeFile('x', 'notes.txt', 'text/plain'), htmlFetch(),
+    )
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/unreadable/i)
+  })
+
+  it('base64-encodes a multi-chunk (>32 KiB) file losslessly', async () => {
+    // Exercises the 32 KiB slice boundary in fileToBase64: byte values that
+    // span the full 0-255 range across several chunks must round-trip exactly.
+    const size = 100_000
+    const bytes = new Uint8Array(size)
+    for (let i = 0; i < size; i++) bytes[i] = i % 256
+    let sent: string | null = null
+    const spy: typeof fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      sent = (JSON.parse(String(init?.body)) as { data: string }).data
+      return new Response(
+        JSON.stringify({ conversation_id: 'c', attachment: ATTACHMENT }),
+        { status: 200 },
+      )
+    }) as typeof fetch
+    await uploadAttachment('c', new File([bytes], 'big.bin.txt', { type: 'text/plain' }), spy)
+    expect(sent).not.toBeNull()
+    const decoded = atob(sent!)
+    expect(decoded.length).toBe(size)
+    for (const probe of [0, 0x7fff, 0x8000, 0x8001, size - 1]) {
+      expect(decoded.charCodeAt(probe)).toBe(probe % 256)
+    }
   })
 
   it('POSTs base64-encoded file content as JSON to /conversations/{id}/attachments', async () => {

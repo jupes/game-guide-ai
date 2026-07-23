@@ -407,11 +407,57 @@ describe('ChatPane (#21)', () => {
 
     const input = screen.getByLabelText(/attach file/i, { selector: 'input' }) as HTMLInputElement
     const file = new File(['x'], 'art.png', { type: 'image/png' })
-    await userEvent.upload(input, file)
+    // applyAccept off: the picker's accept filter would block .png client-side;
+    // this spec exercises the server-refusal path for a forced wrong file.
+    await userEvent.upload(input, file, { applyAccept: false })
 
     await waitFor(() =>
       expect(screen.getByText(/isn't supported/i)).toBeInTheDocument(),
     )
     expect(screen.getByPlaceholderText('Ask…')).toBeInTheDocument()
+  })
+
+  it('pre-filters the picker to the supported attachment types', () => {
+    render(
+      <Wrapper navState={{ conversationId: 'conv-1' }} loadHistory={emptyHistory} />,
+    )
+    const input = screen.getByLabelText(/attach file/i, { selector: 'input' }) as HTMLInputElement
+    expect(input.accept).toBe('.txt,.md,.pdf')
+  })
+
+  it('a rejecting upload surfaces an error instead of an unhandled rejection', async () => {
+    const uploadAttachment: UploadAttachmentFn = () =>
+      Promise.reject(new Error('wire snapped'))
+    render(
+      <Wrapper
+        navState={{ conversationId: 'conv-1' }}
+        loadHistory={emptyHistory}
+        uploadAttachment={uploadAttachment}
+      />,
+    )
+
+    const input = screen.getByLabelText(/attach file/i, { selector: 'input' }) as HTMLInputElement
+    const file = new File(['the orb is cursed'], 'notes.txt', { type: 'text/plain' })
+    await userEvent.upload(input, file)
+
+    await waitFor(() =>
+      expect(screen.getByText(/couldn't upload/i)).toBeInTheDocument(),
+    )
+    expect(screen.getByPlaceholderText('Ask…')).toBeInTheDocument()
+  })
+
+  it('a rejecting attachment load degrades to no chips without crashing', async () => {
+    const getAttachments: GetAttachmentsFn = () =>
+      Promise.reject(new Error('wire snapped'))
+    render(
+      <Wrapper
+        navState={{ conversationId: 'conv-1' }}
+        loadHistory={emptyHistory}
+        getAttachments={getAttachments}
+      />,
+    )
+    // Pane renders and stays interactive; no attachment chips appear.
+    await waitFor(() => expect(screen.getByPlaceholderText('Ask…')).toBeInTheDocument())
+    expect(screen.queryByText('notes.txt')).not.toBeInTheDocument()
   })
 })

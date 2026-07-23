@@ -163,6 +163,26 @@ def test_chat_forwards_stored_attachment_text_to_the_service() -> None:
     assert "notes.txt" in svc.received["attachment_label"]
 
 
+def test_chat_joins_multiple_attachments_and_labels() -> None:
+    """Two stored files reach the service as one joined context ("\n\n") with
+    both filenames in the label — the contract _fetch_attachment_context pins."""
+    from service.app import get_service
+
+    store = InMemoryMessageStore()
+    store.append_attachment("c1", "notes.txt", "text/plain", "The orb is cursed.")
+    store.append_attachment("c1", "map.md", "text/markdown", "The vault is north.")
+    svc = _CapturingService()
+    app.dependency_overrides[get_service] = lambda: svc
+    app.dependency_overrides[get_message_store] = lambda: store
+    client = TestClient(app)
+
+    r = client.post("/chat", json={"prompt": "What do my files say?", "conversation_id": "c1"})
+    assert r.status_code == 200
+    assert svc.received["attachment_context"] == "The orb is cursed.\n\nThe vault is north."
+    assert "notes.txt" in svc.received["attachment_label"]
+    assert "map.md" in svc.received["attachment_label"]
+
+
 def test_chat_answers_normally_with_no_stored_attachments() -> None:
     from service.app import get_service
 

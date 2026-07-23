@@ -46,6 +46,25 @@ def test_service_version_prefers_env(monkeypatch):
     assert service_version() == "deadbeef"
 
 
+def test_service_version_git_lookup_runs_once(monkeypatch):
+    """The git-SHA fallback is cached: build_trace_config calls service_version
+    per request when tracing is on, and a subprocess per /chat is pure overhead."""
+    import service.tracing as tracing
+
+    calls = {"n": 0}
+
+    def _fake_check_output(*args, **kwargs):
+        calls["n"] += 1
+        return "abc1234\n"
+
+    monkeypatch.delenv("SERVICE_VERSION", raising=False)
+    monkeypatch.setattr(tracing, "_VERSION_CACHE", None)
+    monkeypatch.setattr(tracing.subprocess, "check_output", _fake_check_output)
+    assert tracing.service_version() == "abc1234"
+    assert tracing.service_version() == "abc1234"
+    assert calls["n"] == 1
+
+
 def test_build_trace_config_enabled_attaches_callback_and_metadata(monkeypatch):
     monkeypatch.setenv("RAG_TRACING", "1")
     # Dummy keys so the Langfuse handler constructs without warnings; no network

@@ -201,6 +201,21 @@ def test_attachment_adds_a_synthetic_source():
     assert attachment_sources[0].book == "notes.txt"
 
 
+def test_attachment_source_snippet_capped_at_snippet_max():
+    """The synthetic attachment source shows a display snippet, not the whole
+    file — capped at the same SNIPPET_MAX as corpus-chunk snippets."""
+    import config
+
+    llm = _FakeLLM("ok")
+    svc = RagService(retriever=_FakeRetriever(_result(answerable=True)), llm_client=llm)
+    resp = svc.answer(
+        "Summarize my file", attachment_context="x" * (config.SNIPPET_MAX + 500),
+        attachment_label="notes.txt",
+    )
+    [att] = [s for s in resp.sources if s.section == "Attachment"]
+    assert len(att.snippet) <= config.SNIPPET_MAX
+
+
 def test_no_attachment_context_leaves_the_refuse_path_intact():
     # Regression: without an attachment, an unanswerable corpus question still refuses.
     llm = _FakeLLM("should not be called")

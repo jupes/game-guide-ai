@@ -104,6 +104,18 @@ def test_service_not_ready_503():
     assert r.status_code == 503
 
 
+def test_healthz_ready_is_a_json_boolean():
+    """`ready` is a real boolean, not the stringified "True"/"False" it once
+    was — machine consumers (healthchecks, --wait) must not string-match."""
+    c = _client(_GROUNDED)
+    try:
+        body = c.get("/healthz").json()
+        assert body["status"] == "ok"
+        assert isinstance(body["ready"], bool)
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_response_schema():
     c = _client(_GROUNDED)
     try:

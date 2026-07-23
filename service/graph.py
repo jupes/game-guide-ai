@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, TOP_K
+from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, SNIPPET_MAX, TOP_K
 
 from ingestion.rerank import should_rerank
 from ingestion.retrieval import RetrievalResult, RetrievedChunk, assemble_result
@@ -240,7 +240,7 @@ def build_rag_graph(svc: RagService) -> Any:
         attachment_context = state.get("attachment_context")
         if attachment_context:
             label = state.get("attachment_label") or "your attachment"
-            snippet = cap_text(attachment_context, 240)
+            snippet = cap_text(attachment_context, SNIPPET_MAX)
             sources.append(Source(
                 book=label, section="Attachment", snippet=snippet,
             ))

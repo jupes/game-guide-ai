@@ -115,12 +115,17 @@ export function ChatPane({
   React.useEffect(() => {
     if (conversationId === null) return
     let cancelled = false
-    void getAttachments(conversationId).then((result) => {
-      if (cancelled) return
-      if (result.kind === 'ok') {
-        setAttachmentState({ scopeId: conversationId, attachments: result.attachments })
-      }
-    })
+    void getAttachments(conversationId).then(
+      (result) => {
+        if (cancelled) return
+        if (result.kind === 'ok') {
+          setAttachmentState({ scopeId: conversationId, attachments: result.attachments })
+        }
+      },
+      // A rejecting GetAttachmentsFn degrades like an error result (chips just
+      // don't show) — an unhandled rejection here would take the pane down.
+      () => {},
+    )
     return () => {
       cancelled = true
     }
@@ -132,19 +137,24 @@ export function ChatPane({
       e.target.value = '' // allow re-selecting the same file later
       if (!file || conversationId === null) return
       setAttachmentError(null)
-      void uploadAttachment(conversationId, file).then((result) => {
-        if (result.kind === 'ok') {
-          setAttachmentState((prev) => ({
-            scopeId: conversationId,
-            attachments: [
-              ...(prev.scopeId === conversationId ? prev.attachments : []),
-              result.attachment,
-            ],
-          }))
-        } else {
-          setAttachmentError(result.message)
-        }
-      })
+      void uploadAttachment(conversationId, file).then(
+        (result) => {
+          if (result.kind === 'ok') {
+            setAttachmentState((prev) => ({
+              scopeId: conversationId,
+              attachments: [
+                ...(prev.scopeId === conversationId ? prev.attachments : []),
+                result.attachment,
+              ],
+            }))
+          } else {
+            setAttachmentError(result.message)
+          }
+        },
+        // A rejecting UploadAttachmentFn surfaces like an error result instead
+        // of vanishing into an unhandled rejection (useChat's posture).
+        () => setAttachmentError("Couldn't upload the file — please try again."),
+      )
     },
     [conversationId, uploadAttachment],
   )
@@ -247,6 +257,9 @@ export function ChatPane({
         <input
           ref={fileInputRef}
           type="file"
+          // Mirrors the service's ATTACHMENT_TYPES allowlist (server-side check
+          // remains the source of truth; this only pre-filters the picker).
+          accept=".txt,.md,.pdf"
           aria-label="Attach file"
           className="chat-pane__file-input"
           onChange={handleFileSelected}
