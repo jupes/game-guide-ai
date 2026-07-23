@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { render } from '@testing-library/react'
+import * as React from 'react'
 import { LocalStorageConversationStore, MemoryConversationStore } from './conversationStore'
+import {
+  ConversationStoreProvider,
+  useConversationStore,
+} from './ConversationStoreContext'
 
 // ── CP-F5.2 — ConversationStore behaviors (#20) ───────────────────────────────
 
@@ -53,6 +59,20 @@ describe('MemoryConversationStore', () => {
     expect(conv.title).toBe('New conversation')
   })
 
+  it('keeps the first prompt as the fallback when a custom title is cleared', () => {
+    const conv = store.create('sage')
+
+    store.recordFirstPrompt(conv.id, '  What is a basilisk and how does its gaze work?  ')
+    expect(store.get(conv.id)?.title).toBe('What is a basilisk and how does its ga')
+
+    store.rename(conv.id, '  Basilisk lore  ')
+    expect(store.get(conv.id)?.title).toBe('Basilisk lore')
+
+    store.recordFirstPrompt(conv.id, 'This later prompt must not replace the fallback')
+    store.rename(conv.id, '   ')
+    expect(store.get(conv.id)?.title).toBe('What is a basilisk and how does its ga')
+  })
+
   it('rename updates the title', () => {
     const conv = store.create('sage')
     store.rename(conv.id, 'Dragon Lore')
@@ -94,6 +114,23 @@ describe('MemoryConversationStore', () => {
     const list = store.list('sage')
     expect(list).toHaveLength(1)
     expect(list[0].id).toBe(b.id)
+  })
+
+  it('notifies once per successful mutation and honors unsubscribe', () => {
+    const listener = vi.fn()
+    const unsubscribe = store.subscribe(listener)
+
+    const conv = store.create('sage')
+    store.rename(conv.id, 'Renamed')
+    store.rename('missing', 'Ignored')
+
+    expect(listener).toHaveBeenCalledTimes(2)
+    expect(store.getSnapshot()).toBe(2)
+
+    unsubscribe()
+    store.remove(conv.id)
+    expect(listener).toHaveBeenCalledTimes(2)
+    expect(store.getSnapshot()).toBe(3)
   })
 })
 
@@ -153,6 +190,20 @@ describe('LocalStorageConversationStore', () => {
     expect(new LocalStorageConversationStore().list('sage')).toHaveLength(0)
   })
 
+  it('persists the first-prompt fallback through custom and blank renames', () => {
+    const conv = store.create('sage')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?')
+    store.rename(conv.id, '  Basilisk lore  ')
+
+    const reloaded = new LocalStorageConversationStore()
+    expect(reloaded.get(conv.id)?.title).toBe('Basilisk lore')
+
+    reloaded.rename(conv.id, '   ')
+    expect(new LocalStorageConversationStore().get(conv.id)?.title).toBe(
+      'What is a basilisk?',
+    )
+  })
+
   it('load() tolerates corrupt JSON without throwing', () => {
     lsMock.setItem('game-guide-ai:conversations', '{not valid json')
     expect(() => store.list('sage')).not.toThrow()
@@ -168,6 +219,25 @@ describe('LocalStorageConversationStore', () => {
     expect(lsMock.getItem('rag-chat:conversations')).toBeNull()
   })
 
+  it('normalizes legacy rows without deleting them or losing their visible titles', () => {
+    const legacy = [
+      { id: 'old', mode: 'sage', title: 'Old chat', createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'new', mode: 'sage', title: 'New conversation', createdAt: '2026-01-02T00:00:00.000Z' },
+    ]
+    lsMock.setItem('game-guide-ai:conversations', JSON.stringify(legacy))
+
+    expect(store.get('old')).toMatchObject({
+      title: 'Old chat',
+      derivedTitle: 'Old chat',
+      customTitle: null,
+      hasFirstPrompt: true,
+    })
+
+    store.recordFirstPrompt('new', 'A fresh question')
+    expect(store.get('new')?.title).toBe('A fresh question')
+    expect(store.list('sage')).toHaveLength(2)
+  })
+
   it('create() does not throw when the write fails (quota exceeded) and warns instead', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     lsMock.setItem = () => {
@@ -178,5 +248,33 @@ describe('LocalStorageConversationStore', () => {
     expect(() => store.create('sage', 'overflow')).not.toThrow()
     // The failure is surfaced, not swallowed silently.
     expect(warn).toHaveBeenCalled()
+  })
+})
+
+describe('ConversationStoreProvider', () => {
+  it('keeps its default store stable across provider rerenders', () => {
+    const observed: ReturnType<typeof useConversationStore>[] = []
+
+    function Probe({ label }: { label: string }) {
+      observed.push(useConversationStore())
+      return React.createElement('span', null, label)
+    }
+
+    const view = render(
+      React.createElement(
+        ConversationStoreProvider,
+        null,
+        React.createElement(Probe, { label: 'first' }),
+      ),
+    )
+    view.rerender(
+      React.createElement(
+        ConversationStoreProvider,
+        null,
+        React.createElement(Probe, { label: 'second' }),
+      ),
+    )
+
+    expect(observed.at(-1)).toBe(observed[0])
   })
 })

@@ -1,5 +1,5 @@
 /* ── TopBar ──────────────────────────────────────────────────────────────────
-   Brand header with the dark/light theme toggle.
+   Brand header with the active conversation title.
    ─────────────────────────────────────────────────────────────────────────── */
 
 .top-bar {
@@ -28,4 +28,17 @@
   font-weight: 700;
   font-size: 18px;
   color: var(--md-sys-color-on-surface);
+}
+
+.top-bar__conversation-title {
+  min-width: 0;
+  margin-left: 24px;
+  overflow: hidden;
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: var(--md-sys-typescale-title-medium-font);
+  font-size: var(--md-sys-typescale-title-medium-size);
+  font-weight: var(--md-sys-typescale-title-medium-weight);
+  line-height: var(--md-sys-typescale-title-medium-line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

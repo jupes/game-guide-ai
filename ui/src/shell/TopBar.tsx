@@ -1,12 +1,18 @@
 /**
- * TopBar — Brand header. The dark/light theme toggle moved to the UserMenu
- * (swe1.11); channel switching lives in the AppHeader (swe1.4).
+ * TopBar — Brand and active-conversation header.
  */
 
 import * as React from 'react'
+import { useAppNav } from './AppNav'
+import { useConversationStore } from './ConversationStoreContext'
 import './TopBar.css'
 
 export function TopBar(): React.JSX.Element {
+  const { conversationId } = useAppNav()
+  const store = useConversationStore()
+  const activeConversation =
+    conversationId === null ? undefined : store.get(conversationId)
+
   return (
     <header className="top-bar">
       <div className="top-bar__brand">
@@ -18,6 +24,11 @@ export function TopBar(): React.JSX.Element {
         </span>
         <span className="top-bar__brand-name">Aetheril</span>
       </div>
+      {activeConversation && (
+        <span className="top-bar__conversation-title" aria-live="polite">
+          {activeConversation.title}
+        </span>
+      )}
     </header>
   )
 }

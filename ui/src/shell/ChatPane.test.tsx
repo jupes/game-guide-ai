@@ -54,14 +54,15 @@ function Wrapper({
   loadHistory,
   uploadAttachment,
   getAttachments,
+  store = new MemoryConversationStore(),
 }: {
   navState?: Partial<AppNavState>
   post?: PostFn
   loadHistory?: LoadHistoryFn
   uploadAttachment?: UploadAttachmentFn
   getAttachments?: GetAttachmentsFn
+  store?: MemoryConversationStore
 }): React.JSX.Element {
-  const store = new MemoryConversationStore()
   return (
     <ThemeProvider>
       <AppNavContext.Provider value={makeNavState(navState)}>
@@ -127,6 +128,28 @@ describe('ChatPane (#21)', () => {
     // Resolve the post so the test can clean up
     act(() => resolvePost(GROUNDED))
     await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
+  })
+
+  it('records the first submitted prompt as the active conversation title fallback', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage')
+    const emptyHistory: LoadHistoryFn = async () => ({ kind: 'ok', messages: [] })
+    const noAttachments: GetAttachmentsFn = async () => ({ kind: 'ok', attachments: [] })
+
+    render(
+      <Wrapper
+        navState={{ conversationId: conv.id }}
+        store={store}
+        post={async () => GROUNDED}
+        loadHistory={emptyHistory}
+        getAttachments={noAttachments}
+      />,
+    )
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'What is a basilisk?')
+    await userEvent.keyboard('{Enter}')
+
+    expect(store.get(conv.id)?.title).toBe('What is a basilisk?')
   })
 
   it('renders a dm ChatMessage with the answer after post resolves', async () => {
