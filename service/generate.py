@@ -32,17 +32,39 @@ class LLMClient(Protocol):
     ) -> Any: ...  # pragma: no cover - structural type
 
 # Shared grounding instruction appended to every grounded-mode system prompt.
+# The numbered sources include any uploaded attachment, which generate_node
+# injects as its own numbered source (swe1.6 / 08il) — call it out so the model
+# treats the file as answerable material instead of giving its canned
+# "I can't see attachments" refusal.
 _GROUNDING_SUFFIX = (
-    "Answer the user's question using ONLY the numbered sources below. "
+    "Answer the user's question using ONLY the numbered sources below. The "
+    "numbered sources include any file the user uploaded, which appears as its "
+    "own numbered source labeled 'Attachment' — treat it as readable material "
+    "you can see and quote. "
     "Cite the sources you use inline as [1], [2], etc. "
     "If the sources do not contain the answer, say you don't have that in your "
     "sources — do not use outside knowledge."
+)
+
+# Formatting directive for statted creatures (synn). Appended to the personas
+# that produce or reproduce creatures so a generated character/monster/NPC comes
+# back in the canonical 5e stat-block layout instead of free-form prose.
+_STATBLOCK_SUFFIX = (
+    " When you present a character, monster, or NPC — anything with game "
+    "statistics — format it as a classic D&D 5e stat block in this order: the "
+    "creature's name; a line of 'Size type, alignment'; Armor Class; Hit "
+    "Points (with Hit Dice); Speed; the six ability scores as a "
+    "STR / DEX / CON / INT / WIS / CHA row, each with its score and modifier; "
+    "then, where they apply, Saving Throws, Skills, Damage and Condition "
+    "immunities, Senses, Languages, and Challenge (with XP); followed by any "
+    "Traits, then Actions, Bonus Actions, Reactions, and Legendary Actions."
 )
 
 PERSONA_PROMPTS: dict[str, str] = {
     "sage": (
         "You are the Sage — an all-knowing D&D 5th Edition assistant. "
         + _GROUNDING_SUFFIX
+        + _STATBLOCK_SUFFIX
     ),
     "spell": (
         "You are a Spell Archivist for D&D 5e. Reproduce the spell's rules "
@@ -67,6 +89,7 @@ PERSONA_PROMPTS: dict[str, str] = {
         "extrapolate, invent, and create (monsters, NPCs, plot hooks) "
         "inspired by those sources. When inventing, say so explicitly. "
         "Cite sources where you draw from them; note invented content."
+        + _STATBLOCK_SUFFIX
     ),
 }
 
