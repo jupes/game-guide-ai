@@ -467,9 +467,11 @@ def main() -> None:
     print(f"  positives wrongly refused:   {koz_pos_wrongly_refused}/{n_pos}")
     print("=" * 72)
 
-    # Save results JSON
+    # Save results JSON. Encoding pinned: without it write_text uses the locale
+    # codec, which on Windows produced a cp1252 file that downstream UTF-8
+    # readers (scripts/ci/eval_gate.py, spike_rerank) could not parse.
     out_path = Path(__file__).parent / "eval_results.json"
-    out_path.write_text(json.dumps(results_json, indent=2, ensure_ascii=False))
+    out_path.write_text(json.dumps(results_json, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nDetailed results saved to {out_path}")
 
 

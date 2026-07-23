@@ -147,7 +147,7 @@
         "content_type": "rule",
         "entity_name": "Inspiration",
         "class_name": null,
-        "cosine_distance": 0.50968,
+        "cosine_distance": 0.509714,
         "is_hit": false
       },
       {
@@ -156,7 +156,7 @@
         "content_type": "dm_guidance",
         "entity_name": "N Master Inspiration",
         "class_name": null,
-        "cosine_distance": 0.564949,
+        "cosine_distance": 0.564944,
         "is_hit": true
       },
       {
@@ -165,7 +165,7 @@
         "content_type": "dm_guidance",
         "entity_name": "N Master Inspiration",
         "class_name": null,
-        "cosine_distance": 0.568715,
+        "cosine_distance": 0.568718,
         "is_hit": true
       },
       {
@@ -174,7 +174,7 @@
         "content_type": "rule",
         "entity_name": "Inspiration",
         "class_name": null,
-        "cosine_distance": 0.597692,
+        "cosine_distance": 0.597712,
         "is_hit": false
       },
       {
@@ -183,7 +183,7 @@
         "content_type": "dm_guidance",
         "entity_name": "N Master Inspiration",
         "class_name": null,
-        "cosine_distance": 0.603197,
+        "cosine_distance": 0.603186,
         "is_hit": true
       },
       {
@@ -192,7 +192,7 @@
         "content_type": "rule",
         "entity_name": "Mastermind F E Atures",
         "class_name": null,
-        "cosine_distance": 0.603867,
+        "cosine_distance": 0.603855,
         "is_hit": false
       },
       {
@@ -201,7 +201,7 @@
         "content_type": "rule",
         "entity_name": "Masters",
         "class_name": null,
-        "cosine_distance": 0.604221,
+        "cosine_distance": 0.604263,
         "is_hit": false
       },
       {
@@ -210,7 +210,7 @@
         "content_type": "rule",
         "entity_name": "Master",
         "class_name": null,
-        "cosine_distance": 0.614038,
+        "cosine_distance": 0.614028,
         "is_hit": false
       },
       {
@@ -219,7 +219,7 @@
         "content_type": "dm_guidance",
         "entity_name": "N Master Inspiration",
         "class_name": null,
-        "cosine_distance": 0.614889,
+        "cosine_distance": 0.614865,
         "is_hit": true
       },
       {
@@ -228,7 +228,7 @@
         "content_type": "rule",
         "entity_name": "Mastermind",
         "class_name": null,
-        "cosine_distance": 0.621781,
+        "cosine_distance": 0.62174,
         "is_hit": false
       }
     ]
@@ -729,7 +729,7 @@
         "content_type": "feat",
         "entity_name": "Radiant Weapon",
         "class_name": null,
-        "cosine_distance": 0.354929,
+        "cosine_distance": 0.354955,
         "is_hit": true
       },
       {
@@ -738,7 +738,7 @@
         "content_type": "feat",
         "entity_name": "Radiant Weapon",
         "class_name": null,
-        "cosine_distance": 0.390923,
+        "cosine_distance": 0.390952,
         "is_hit": true
       },
       {
@@ -747,7 +747,7 @@
         "content_type": "feat",
         "entity_name": "Radiant Weapon",
         "class_name": null,
-        "cosine_distance": 0.65865,
+        "cosine_distance": 0.658705,
         "is_hit": true
       },
       {
@@ -756,7 +756,7 @@
         "content_type": "feat",
         "entity_name": "Radiant Weapon",
         "class_name": null,
-        "cosine_distance": 0.700348,
+        "cosine_distance": 0.700404,
         "is_hit": true
       },
       {
@@ -765,7 +765,7 @@
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
-        "cosine_distance": 0.77455,
+        "cosine_distance": 0.774577,
         "is_hit": false
       }
     ]
@@ -797,7 +797,7 @@
         "content_type": "monster",
         "entity_name": "Homunculus Servant",
         "class_name": null,
-        "cosine_distance": 0.330723,
+        "cosine_distance": 0.330709,
         "is_hit": false
       },
       {
@@ -806,7 +806,7 @@
         "content_type": "monster",
         "entity_name": "Homunculus Servant",
         "class_name": null,
-        "cosine_distance": 0.376804,
+        "cosine_distance": 0.376761,
         "is_hit": false
       },
       {
@@ -815,7 +815,7 @@
         "content_type": "monster",
         "entity_name": "Homunculus Servant",
         "class_name": null,
-        "cosine_distance": 0.457234,
+        "cosine_distance": 0.457256,
         "is_hit": false
       }
     ]
@@ -1076,7 +1076,7 @@
         "content_type": "feat",
         "entity_name": "Svirfneblin Magic",
         "class_name": null,
-        "cosine_distance": 0.341929,
+        "cosine_distance": 0.341873,
         "is_hit": true
       },
       {
@@ -1085,7 +1085,7 @@
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
-        "cosine_distance": 0.702789,
+        "cosine_distance": 0.702782,
         "is_hit": false
       }
     ]
@@ -1160,7 +1160,7 @@
         "content_type": "feat",
         "entity_name": "Ritual Caster",
         "class_name": null,
-        "cosine_distance": 0.316178,
+        "cosine_distance": 0.316175,
         "is_hit": true
       },
       {
@@ -1169,7 +1169,7 @@
         "content_type": "feat",
         "entity_name": "Ritual Caster",
         "class_name": null,
-        "cosine_distance": 0.524606,
+        "cosine_distance": 0.524617,
         "is_hit": true
       },
       {
@@ -1178,7 +1178,7 @@
         "content_type": "feat",
         "entity_name": "Ritual Caster",
         "class_name": null,
-        "cosine_distance": 0.567593,
+        "cosine_distance": 0.567618,
         "is_hit": true
       },
       {
@@ -1187,7 +1187,7 @@
         "content_type": "feat",
         "entity_name": "Ritual Caster",
         "class_name": null,
-        "cosine_distance": 0.58422,
+        "cosine_distance": 0.584229,
         "is_hit": true
       }
     ]
@@ -1262,7 +1262,7 @@
         "content_type": "feat",
         "entity_name": "Grappler",
         "class_name": null,
-        "cosine_distance": 0.391711,
+        "cosine_distance": 0.391725,
         "is_hit": true
       },
       {
@@ -1271,7 +1271,7 @@
         "content_type": "feat",
         "entity_name": "Grappler",
         "class_name": null,
-        "cosine_distance": 0.712397,
+        "cosine_distance": 0.712428,
         "is_hit": true
       },
       {
@@ -1280,7 +1280,7 @@
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
-        "cosine_distance": 0.804352,
+        "cosine_distance": 0.804327,
         "is_hit": false
       }
     ]
@@ -1410,7 +1410,7 @@
         "content_type": "feat",
         "entity_name": "Eldritch Spear",
         "class_name": null,
-        "cosine_distance": 0.431794,
+        "cosine_distance": 0.431828,
         "is_hit": true
       }
     ]
@@ -1564,7 +1564,7 @@
         "content_type": "feat",
         "entity_name": "Rakdos Guild Spells",
         "class_name": null,
-        "cosine_distance": 0.24332,
+        "cosine_distance": 0.24333,
         "is_hit": true
       },
       {
@@ -1573,7 +1573,7 @@
         "content_type": "rule",
         "entity_name": "Rakdos Guild Sp El Ls",
         "class_name": null,
-        "cosine_distance": 0.331861,
+        "cosine_distance": 0.331811,
         "is_hit": false
       },
       {
@@ -1582,7 +1582,7 @@
         "content_type": "monster",
         "entity_name": "Rakdos",
         "class_name": null,
-        "cosine_distance": 0.439133,
+        "cosine_distance": 0.439093,
         "is_hit": false
       },
       {
@@ -1591,7 +1591,7 @@
         "content_type": "rule",
         "entity_name": "Background: Rakdos Cultist",
         "class_name": null,
-        "cosine_distance": 0.447445,
+        "cosine_distance": 0.447363,
         "is_hit": false
       },
       {
@@ -1600,7 +1600,7 @@
         "content_type": "rule",
         "entity_name": "Cult Of Rakdos",
         "class_name": null,
-        "cosine_distance": 0.451267,
+        "cosine_distance": 0.451081,
         "is_hit": false
       },
       {
@@ -1609,7 +1609,7 @@
         "content_type": "monster",
         "entity_name": "Rakdos",
         "class_name": null,
-        "cosine_distance": 0.452474,
+        "cosine_distance": 0.452406,
         "is_hit": false
       },
       {
@@ -1618,7 +1618,7 @@
         "content_type": "rule",
         "entity_name": "Goals Of The Rakdo S",
         "class_name": null,
-        "cosine_distance": 0.455839,
+        "cosine_distance": 0.455722,
         "is_hit": false
       },
       {
@@ -1627,7 +1627,7 @@
         "content_type": "rule",
         "entity_name": "Rakdos V I Llain S",
         "class_name": null,
-        "cosine_distance": 0.46516,
+        "cosine_distance": 0.465061,
         "is_hit": false
       },
       {
@@ -1636,7 +1636,7 @@
         "content_type": "monster",
         "entity_name": "Rakdos",
         "class_name": null,
-        "cosine_distance": 0.47127,
+        "cosine_distance": 0.471213,
         "is_hit": false
       },
       {
@@ -1645,7 +1645,7 @@
         "content_type": "rule",
         "entity_name": "Cult Of Rakdos",
         "class_name": null,
-        "cosine_distance": 0.491535,
+        "cosine_distance": 0.491412,
         "is_hit": false
       }
     ]
@@ -1729,7 +1729,7 @@
         "content_type": "feat",
         "entity_name": "Rank Commander",
         "class_name": null,
-        "cosine_distance": 0.492708,
+        "cosine_distance": 0.492663,
         "is_hit": true
       },
       {
@@ -1738,7 +1738,7 @@
         "content_type": "rule",
         "entity_name": "Githyanki Supreme Commander",
         "class_name": null,
-        "cosine_distance": 0.579765,
+        "cosine_distance": 0.579787,
         "is_hit": false
       },
       {
@@ -1747,7 +1747,7 @@
         "content_type": "rule",
         "entity_name": "Commander",
         "class_name": null,
-        "cosine_distance": 0.725903,
+        "cosine_distance": 0.725835,
         "is_hit": false
       },
       {
@@ -1756,7 +1756,7 @@
         "content_type": "feat",
         "entity_name": "Rank Commander",
         "class_name": null,
-        "cosine_distance": 0.787522,
+        "cosine_distance": 0.787479,
         "is_hit": true
       },
       {
@@ -1765,7 +1765,7 @@
         "content_type": "rule",
         "entity_name": "Commander",
         "class_name": null,
-        "cosine_distance": 0.813318,
+        "cosine_distance": 0.813257,
         "is_hit": false
       },
       {
@@ -1774,7 +1774,7 @@
         "content_type": "feat",
         "entity_name": "Rank Commander",
         "class_name": null,
-        "cosine_distance": 0.820858,
+        "cosine_distance": 0.820789,
         "is_hit": true
       }
     ]
@@ -1808,7 +1808,7 @@
         "content_type": "feat",
         "entity_name": "Metamagic Adept",
         "class_name": null,
-        "cosine_distance": 0.369693,
+        "cosine_distance": 0.369694,
         "is_hit": true
       },
       {
@@ -1817,7 +1817,7 @@
         "content_type": "feat",
         "entity_name": "Metamagic Adept",
         "class_name": null,
-        "cosine_distance": 0.431052,
+        "cosine_distance": 0.431055,
         "is_hit": true
       },
       {
@@ -1826,7 +1826,7 @@
         "content_type": "feat",
         "entity_name": "Metamagic Adept",
         "class_name": null,
-        "cosine_distance": 0.530041,
+        "cosine_distance": 0.530037,
         "is_hit": true
       },
       {
@@ -1835,7 +1835,7 @@
         "content_type": "feat",
         "entity_name": "Metamagic Adept",
         "class_name": null,
-        "cosine_distance": 0.551396,
+        "cosine_distance": 0.551357,
         "is_hit": true
       },
       {
@@ -1844,7 +1844,7 @@
         "content_type": "rule",
         "entity_name": "Give",
         "class_name": null,
-        "cosine_distance": 0.693344,
+        "cosine_distance": 0.69335,
         "is_hit": false
       }
     ]
@@ -1879,7 +1879,7 @@
         "content_type": "feat",
         "entity_name": "Arcane Propulsion Armor",
         "class_name": null,
-        "cosine_distance": 0.313781,
+        "cosine_distance": 0.313806,
         "is_hit": true
       },
       {
@@ -1888,7 +1888,7 @@
         "content_type": "feat",
         "entity_name": "Heavy Armor Master",
         "class_name": null,
-        "cosine_distance": 0.45102,
+        "cosine_distance": 0.451033,
         "is_hit": false
       },
       {
@@ -1897,7 +1897,7 @@
         "content_type": "feat",
         "entity_name": "Moderately Armored",
         "class_name": null,
-        "cosine_distance": 0.468258,
+        "cosine_distance": 0.468248,
         "is_hit": false
       },
       {
@@ -1906,7 +1906,7 @@
         "content_type": "feat",
         "entity_name": "Medium Armor Master",
         "class_name": null,
-        "cosine_distance": 0.469931,
+        "cosine_distance": 0.469942,
         "is_hit": false
       },
       {
@@ -1915,7 +1915,7 @@
         "content_type": "feat",
         "entity_name": "Heavily Armored",
         "class_name": null,
-        "cosine_distance": 0.472899,
+        "cosine_distance": 0.472885,
         "is_hit": false
       },
       {
@@ -1924,7 +1924,7 @@
         "content_type": "rule",
         "entity_name": "Arcane",
         "class_name": null,
-        "cosine_distance": 0.481425,
+        "cosine_distance": 0.481468,
         "is_hit": false
       },
       {
@@ -1933,7 +1933,7 @@
         "content_type": "feat",
         "entity_name": "Resistant Armor",
         "class_name": null,
-        "cosine_distance": 0.491676,
+        "cosine_distance": 0.491709,
         "is_hit": false
       },
       {
@@ -1942,7 +1942,7 @@
         "content_type": "feat",
         "entity_name": "Resistant Armor",
         "class_name": null,
-        "cosine_distance": 0.495322,
+        "cosine_distance": 0.495353,
         "is_hit": false
       },
       {
@@ -1951,7 +1951,7 @@
         "content_type": "rule",
         "entity_name": "Arcane Grimoire",
         "class_name": null,
-        "cosine_distance": 0.504956,
+        "cosine_distance": 0.504982,
         "is_hit": false
       },
       {
@@ -1960,7 +1960,7 @@
         "content_type": "rule",
         "entity_name": "Arcana Domain Spells",
         "class_name": null,
-        "cosine_distance": 0.513991,
+        "cosine_distance": 0.513992,
         "is_hit": false
       }
     ]
@@ -2276,7 +2276,7 @@
         "content_type": "feat",
         "entity_name": "Fey Teleportation",
         "class_name": null,
-        "cosine_distance": 0.325941,
+        "cosine_distance": 0.326221,
         "is_hit": true
       }
     ]
@@ -2395,7 +2395,7 @@
         "content_type": "feat",
         "entity_name": "Maddening Hex",
         "class_name": null,
-        "cosine_distance": 0.317475,
+        "cosine_distance": 0.317453,
         "is_hit": true
       },
       {
@@ -2404,7 +2404,7 @@
         "content_type": "feat",
         "entity_name": "Hex",
         "class_name": null,
-        "cosine_distance": 0.50844,
+        "cosine_distance": 0.508357,
         "is_hit": false
       },
       {
@@ -2413,7 +2413,7 @@
         "content_type": "spell",
         "entity_name": "Hex",
         "class_name": null,
-        "cosine_distance": 0.531772,
+        "cosine_distance": 0.531714,
         "is_hit": false
       }
     ]
@@ -2825,7 +2825,7 @@
         "content_type": "magic_item",
         "entity_name": "Wand Of Wonder",
         "class_name": null,
-        "cosine_distance": 0.380745,
+        "cosine_distance": 0.380713,
         "is_hit": true
       }
     ]
@@ -3503,7 +3503,7 @@
         "content_type": "monster",
         "entity_name": "Lizardf Olk",
         "class_name": null,
-        "cosine_distance": 0.300072,
+        "cosine_distance": 0.300005,
         "is_hit": true
       },
       {
@@ -3512,7 +3512,7 @@
         "content_type": "monster",
         "entity_name": "Lizardf Olk",
         "class_name": null,
-        "cosine_distance": 0.330991,
+        "cosine_distance": 0.330944,
         "is_hit": true
       },
       {
@@ -3521,7 +3521,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
-        "cosine_distance": 0.47475,
+        "cosine_distance": 0.474679,
         "is_hit": false
       },
       {
@@ -3530,7 +3530,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.477195,
+        "cosine_distance": 0.47712,
         "is_hit": false
       },
       {
@@ -3539,7 +3539,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class L 0",
         "class_name": null,
-        "cosine_distance": 0.497247,
+        "cosine_distance": 0.497158,
         "is_hit": false
       },
       {
@@ -3548,7 +3548,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.507613,
+        "cosine_distance": 0.507531,
         "is_hit": false
       },
       {
@@ -3557,7 +3557,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.517209,
+        "cosine_distance": 0.517123,
         "is_hit": false
       },
       {
@@ -3566,7 +3566,7 @@
         "content_type": "monster",
         "entity_name": "Animated Armor",
         "class_name": null,
-        "cosine_distance": 0.522953,
+        "cosine_distance": 0.522918,
         "is_hit": false
       },
       {
@@ -3575,7 +3575,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.531544,
+        "cosine_distance": 0.531451,
         "is_hit": false
       },
       {
@@ -3584,7 +3584,7 @@
         "content_type": "monster",
         "entity_name": "Lizardf Olk",
         "class_name": null,
-        "cosine_distance": 0.546163,
+        "cosine_distance": 0.546096,
         "is_hit": true
       }
     ]
@@ -4204,7 +4204,7 @@
         "content_type": "monster",
         "entity_name": "Star Spawn Hulk",
         "class_name": null,
-        "cosine_distance": 0.311196,
+        "cosine_distance": 0.313851,
         "is_hit": true
       },
       {
@@ -4213,7 +4213,7 @@
         "content_type": "monster",
         "entity_name": "Umber Hulk",
         "class_name": null,
-        "cosine_distance": 0.391526,
+        "cosine_distance": 0.390818,
         "is_hit": false
       },
       {
@@ -4222,7 +4222,7 @@
         "content_type": "rule",
         "entity_name": "Star Spawn Seer",
         "class_name": null,
-        "cosine_distance": 0.40341,
+        "cosine_distance": 0.404403,
         "is_hit": false
       },
       {
@@ -4231,7 +4231,7 @@
         "content_type": "monster",
         "entity_name": "Hulk",
         "class_name": null,
-        "cosine_distance": 0.441278,
+        "cosine_distance": 0.444001,
         "is_hit": false
       },
       {
@@ -4240,25 +4240,25 @@
         "content_type": "rule",
         "entity_name": "Star Spawn",
         "class_name": null,
-        "cosine_distance": 0.493851,
+        "cosine_distance": 0.492838,
         "is_hit": false
       },
       {
         "rank": 6,
-        "chunk_id": "145d486f99fbed0a7d59",
-        "content_type": "monster",
-        "entity_name": "Umber Hulk",
-        "class_name": null,
-        "cosine_distance": 0.497842,
-        "is_hit": false
-      },
-      {
-        "rank": 7,
         "chunk_id": "6eb0b01c56cb7a0b67bd",
         "content_type": "monster",
         "entity_name": "Star Spawn Mangler",
         "class_name": null,
-        "cosine_distance": 0.501779,
+        "cosine_distance": 0.4969,
+        "is_hit": false
+      },
+      {
+        "rank": 7,
+        "chunk_id": "145d486f99fbed0a7d59",
+        "content_type": "monster",
+        "entity_name": "Umber Hulk",
+        "class_name": null,
+        "cosine_distance": 0.496941,
         "is_hit": false
       },
       {
@@ -4267,7 +4267,7 @@
         "content_type": "rule",
         "entity_name": "Star Spawn Grue",
         "class_name": null,
-        "cosine_distance": 0.514841,
+        "cosine_distance": 0.516089,
         "is_hit": false
       },
       {
@@ -4276,7 +4276,7 @@
         "content_type": "monster",
         "entity_name": "Star Spawn Larva Mage",
         "class_name": null,
-        "cosine_distance": 0.541729,
+        "cosine_distance": 0.53942,
         "is_hit": false
       },
       {
@@ -4285,7 +4285,7 @@
         "content_type": "rule",
         "entity_name": "Star Spawn Seer",
         "class_name": null,
-        "cosine_distance": 0.562872,
+        "cosine_distance": 0.562283,
         "is_hit": false
       }
     ]
@@ -4313,7 +4313,7 @@
         "content_type": "rule",
         "entity_name": "Challenge Ratings",
         "class_name": null,
-        "cosine_distance": 0.483068,
+        "cosine_distance": 0.483006,
         "is_hit": false
       },
       {
@@ -4322,7 +4322,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating A Monster",
         "class_name": null,
-        "cosine_distance": 0.48587,
+        "cosine_distance": 0.485813,
         "is_hit": false
       },
       {
@@ -4331,7 +4331,7 @@
         "content_type": "spell",
         "entity_name": "Conjure Elemental",
         "class_name": null,
-        "cosine_distance": 0.489041,
+        "cosine_distance": 0.488978,
         "is_hit": false
       },
       {
@@ -4340,7 +4340,7 @@
         "content_type": "rule",
         "entity_name": "Challenge Ratings",
         "class_name": null,
-        "cosine_distance": 0.504863,
+        "cosine_distance": 0.504796,
         "is_hit": false
       },
       {
@@ -4349,7 +4349,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating A Monster",
         "class_name": null,
-        "cosine_distance": 0.526242,
+        "cosine_distance": 0.526185,
         "is_hit": false
       },
       {
@@ -4358,7 +4358,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating A Monster",
         "class_name": null,
-        "cosine_distance": 0.537711,
+        "cosine_distance": 0.537637,
         "is_hit": false
       },
       {
@@ -4367,7 +4367,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating Encounters",
         "class_name": null,
-        "cosine_distance": 0.537988,
+        "cosine_distance": 0.53791,
         "is_hit": false
       },
       {
@@ -4376,7 +4376,7 @@
         "content_type": "rule",
         "entity_name": "Multiple Monsters : 16Th-20Th Level",
         "class_name": null,
-        "cosine_distance": 0.541311,
+        "cosine_distance": 0.541251,
         "is_hit": false
       },
       {
@@ -4385,7 +4385,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating A Monster",
         "class_name": null,
-        "cosine_distance": 0.544952,
+        "cosine_distance": 0.544876,
         "is_hit": false
       },
       {
@@ -4394,7 +4394,7 @@
         "content_type": "dm_guidance",
         "entity_name": "Creating A Monster",
         "class_name": null,
-        "cosine_distance": 0.547461,
+        "cosine_distance": 0.547405,
         "is_hit": false
       }
     ]
@@ -4426,7 +4426,7 @@
         "content_type": "monster",
         "entity_name": "Skulk",
         "class_name": null,
-        "cosine_distance": 0.280424,
+        "cosine_distance": 0.280465,
         "is_hit": true
       },
       {
@@ -4435,7 +4435,7 @@
         "content_type": "monster",
         "entity_name": "Skulk",
         "class_name": null,
-        "cosine_distance": 0.321742,
+        "cosine_distance": 0.321726,
         "is_hit": true
       }
     ]
@@ -4471,7 +4471,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.495898,
+        "cosine_distance": 0.495922,
         "is_hit": false
       },
       {
@@ -4480,7 +4480,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.504279,
+        "cosine_distance": 0.504292,
         "is_hit": false
       },
       {
@@ -4489,7 +4489,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class (Natural Armor)",
         "class_name": null,
-        "cosine_distance": 0.507611,
+        "cosine_distance": 0.507649,
         "is_hit": false
       },
       {
@@ -4498,7 +4498,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class L 0",
         "class_name": null,
-        "cosine_distance": 0.50863,
+        "cosine_distance": 0.508667,
         "is_hit": false
       },
       {
@@ -4507,7 +4507,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.508792,
+        "cosine_distance": 0.508806,
         "is_hit": false
       },
       {
@@ -4516,7 +4516,7 @@
         "content_type": "rule",
         "entity_name": "Armor Class",
         "class_name": null,
-        "cosine_distance": 0.51578,
+        "cosine_distance": 0.515807,
         "is_hit": false
       },
       {
@@ -4525,7 +4525,7 @@
         "content_type": "rule",
         "entity_name": "Armor Cl Ass",
         "class_name": null,
-        "cosine_distance": 0.539912,
+        "cosine_distance": 0.539916,
         "is_hit": false
       },
       {
@@ -4534,7 +4534,7 @@
         "content_type": "feat",
         "entity_name": "Arcane Propulsion Armor",
         "class_name": null,
-        "cosine_distance": 0.561613,
+        "cosine_distance": 0.561619,
         "is_hit": false
       },
       {
@@ -4543,7 +4543,7 @@
         "content_type": "rule",
         "entity_name": "Class Features",
         "class_name": null,
-        "cosine_distance": 0.577758,
+        "cosine_distance": 0.577814,
         "is_hit": false
       },
       {
@@ -4552,7 +4552,7 @@
         "content_type": "feat",
         "entity_name": "Resistant Armor",
         "class_name": null,
-        "cosine_distance": 0.58636,
+        "cosine_distance": 0.586352,
         "is_hit": false
       }
     ]
@@ -5502,7 +5502,7 @@
         "content_type": "monster",
         "entity_name": "Wildfire Spirit",
         "class_name": null,
-        "cosine_distance": 0.417132,
+        "cosine_distance": 0.417084,
         "is_hit": true
       },
       {
@@ -5511,7 +5511,7 @@
         "content_type": "monster",
         "entity_name": "Wildfire Spirit",
         "class_name": null,
-        "cosine_distance": 0.427269,
+        "cosine_distance": 0.427203,
         "is_hit": true
       },
       {
@@ -5520,7 +5520,7 @@
         "content_type": "monster",
         "entity_name": "Wildfire Spirit",
         "class_name": null,
-        "cosine_distance": 0.670418,
+        "cosine_distance": 0.670334,
         "is_hit": true
       }
     ]
@@ -5552,7 +5552,7 @@
         "content_type": "monster",
         "entity_name": "Dancing Item",
         "class_name": null,
-        "cosine_distance": 0.343707,
+        "cosine_distance": 0.343721,
         "is_hit": true
       },
       {
@@ -5561,7 +5561,7 @@
         "content_type": "monster",
         "entity_name": "Dancing Item",
         "class_name": null,
-        "cosine_distance": 0.542868,
+        "cosine_distance": 0.542911,
         "is_hit": true
       },
       {
@@ -5570,7 +5570,7 @@
         "content_type": "monster",
         "entity_name": "Dancing Item",
         "class_name": null,
-        "cosine_distance": 0.875388,
+        "cosine_distance": 0.875393,
         "is_hit": true
       }
     ]
@@ -5958,7 +5958,7 @@
         "content_type": "monster",
         "entity_name": "Sea Spawn",
         "class_name": null,
-        "cosine_distance": 0.373069,
+        "cosine_distance": 0.372977,
         "is_hit": true
       },
       {
@@ -5967,7 +5967,7 @@
         "content_type": "monster",
         "entity_name": "Sea Spawn",
         "class_name": null,
-        "cosine_distance": 0.391261,
+        "cosine_distance": 0.391011,
         "is_hit": true
       },
       {
@@ -5976,7 +5976,7 @@
         "content_type": "monster",
         "entity_name": "Sea Spawn",
         "class_name": null,
-        "cosine_distance": 0.396614,
+        "cosine_distance": 0.396117,
         "is_hit": true
       },
       {
@@ -5985,7 +5985,7 @@
         "content_type": "rule",
         "entity_name": "The Sea Spawn Of Purple Rocks",
         "class_name": null,
-        "cosine_distance": 0.473654,
+        "cosine_distance": 0.472896,
         "is_hit": false
       },
       {
@@ -5994,7 +5994,7 @@
         "content_type": "rule",
         "entity_name": "Make",
         "class_name": null,
-        "cosine_distance": 0.684403,
+        "cosine_distance": 0.683593,
         "is_hit": false
       },
       {
@@ -6003,7 +6003,7 @@
         "content_type": "rule",
         "entity_name": "Makes Their Charac-",
         "class_name": null,
-        "cosine_distance": 0.718172,
+        "cosine_distance": 0.717342,
         "is_hit": false
       },
       {
@@ -6012,7 +6012,7 @@
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
         "class_name": null,
-        "cosine_distance": 0.747366,
+        "cosine_distance": 0.746888,
         "is_hit": false
       },
       {
@@ -6021,7 +6021,7 @@
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
         "class_name": null,
-        "cosine_distance": 0.768937,
+        "cosine_distance": 0.768192,
         "is_hit": false
       },
       {
@@ -6030,7 +6030,7 @@
         "content_type": "rule",
         "entity_name": "Rhythm-Maker's Drum",
         "class_name": null,
-        "cosine_distance": 0.790783,
+        "cosine_distance": 0.789802,
         "is_hit": false
       },
       {
@@ -6039,7 +6039,7 @@
         "content_type": "rule",
         "entity_name": "Celestial Toymakers",
         "class_name": null,
-        "cosine_distance": 0.807637,
+        "cosine_distance": 0.807327,
         "is_hit": false
       }
     ]
@@ -6180,7 +6180,7 @@
         "content_type": "rule",
         "entity_name": "Sports And Games",
         "class_name": null,
-        "cosine_distance": 0.53454,
+        "cosine_distance": 0.534504,
         "is_hit": true
       },
       {
@@ -6189,7 +6189,7 @@
         "content_type": "rule",
         "entity_name": "Sports And Games",
         "class_name": null,
-        "cosine_distance": 0.636634,
+        "cosine_distance": 0.636581,
         "is_hit": true
       },
       {
@@ -6198,7 +6198,7 @@
         "content_type": "rule",
         "entity_name": "Sports And Games",
         "class_name": null,
-        "cosine_distance": 0.665654,
+        "cosine_distance": 0.6656,
         "is_hit": true
       },
       {
@@ -6207,7 +6207,7 @@
         "content_type": "rule",
         "entity_name": "Sports And Games",
         "class_name": null,
-        "cosine_distance": 0.89636,
+        "cosine_distance": 0.896398,
         "is_hit": true
       }
     ]
@@ -7240,7 +7240,7 @@
         "content_type": "rule",
         "entity_name": "Cult Of Levistu S",
         "class_name": null,
-        "cosine_distance": 0.288514,
+        "cosine_distance": 0.288509,
         "is_hit": true
       },
       {
@@ -7249,7 +7249,7 @@
         "content_type": "rule",
         "entity_name": "Cult Of Levistu S",
         "class_name": null,
-        "cosine_distance": 0.402077,
+        "cosine_distance": 0.402079,
         "is_hit": true
       },
       {
@@ -7258,7 +7258,7 @@
         "content_type": "rule",
         "entity_name": "Cult Of Levistu S",
         "class_name": null,
-        "cosine_distance": 0.595782,
+        "cosine_distance": 0.5957,
         "is_hit": true
       },
       {
@@ -7267,7 +7267,7 @@
         "content_type": "rule",
         "entity_name": "Cult Of Levistu S",
         "class_name": null,
-        "cosine_distance": 0.729753,
+        "cosine_distance": 0.72972,
         "is_hit": true
       }
     ]
@@ -7394,7 +7394,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.324816,
+        "cosine_distance": 0.324807,
         "is_hit": true
       },
       {
@@ -7403,7 +7403,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.328185,
+        "cosine_distance": 0.32814,
         "is_hit": true
       },
       {
@@ -7412,7 +7412,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.411467,
+        "cosine_distance": 0.411424,
         "is_hit": true
       },
       {
@@ -7421,7 +7421,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.422039,
+        "cosine_distance": 0.422004,
         "is_hit": true
       },
       {
@@ -7430,7 +7430,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.519091,
+        "cosine_distance": 0.519072,
         "is_hit": true
       },
       {
@@ -7439,7 +7439,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.625361,
+        "cosine_distance": 0.625386,
         "is_hit": true
       },
       {
@@ -7448,7 +7448,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.658586,
+        "cosine_distance": 0.658582,
         "is_hit": true
       },
       {
@@ -7457,7 +7457,7 @@
         "content_type": "rule",
         "entity_name": "Bael",
         "class_name": null,
-        "cosine_distance": 0.742033,
+        "cosine_distance": 0.742097,
         "is_hit": true
       }
     ]
@@ -8037,7 +8037,7 @@
         "content_type": "rule",
         "entity_name": "Divine Domain",
         "class_name": null,
-        "cosine_distance": 0.337329,
+        "cosine_distance": 0.337324,
         "is_hit": false
       },
       {
@@ -8046,7 +8046,7 @@
         "content_type": "rule",
         "entity_name": "Divine Domains",
         "class_name": null,
-        "cosine_distance": 0.339288,
+        "cosine_distance": 0.339329,
         "is_hit": true
       },
       {
@@ -8055,7 +8055,7 @@
         "content_type": "rule",
         "entity_name": "Divine Domains",
         "class_name": null,
-        "cosine_distance": 0.360636,
+        "cosine_distance": 0.360642,
         "is_hit": true
       },
       {
@@ -8064,7 +8064,7 @@
         "content_type": "rule",
         "entity_name": "Divine Domains",
         "class_name": null,
-        "cosine_distance": 0.366168,
+        "cosine_distance": 0.366221,
         "is_hit": true
       },
       {
@@ -8073,7 +8073,7 @@
         "content_type": "rule",
         "entity_name": "Divine Domains",
         "class_name": null,
-        "cosine_distance": 0.642589,
+        "cosine_distance": 0.642557,
         "is_hit": true
       }
     ]
@@ -8331,7 +8331,7 @@
         "content_type": "monster",
         "entity_name": "Rakdos",
         "class_name": null,
-        "cosine_distance": 0.411264,
+        "cosine_distance": 0.41125,
         "is_hit": false
       },
       {
@@ -8340,7 +8340,7 @@
         "content_type": "monster",
         "entity_name": "Rakdos",
         "class_name": null,
-        "cosine_distance": 0.446643,
+        "cosine_distance": 0.446611,
         "is_hit": false
       },
       {
@@ -8349,7 +8349,7 @@
         "content_type": "rule",
         "entity_name": "Background: Rakdos Cultist",
         "class_name": null,
-        "cosine_distance": 0.449113,
+        "cosine_distance": 0.449104,
         "is_hit": false
       },
       {
@@ -8358,7 +8358,7 @@
         "content_type": "rule",
         "entity_name": "Cult Of Rakdos",
         "class_name": null,
-        "cosine_distance": 0.451271,
+        "cosine_distance": 0.45127,
         "is_hit": false
       },
       {
@@ -8367,7 +8367,7 @@
         "content_type": "rule",
         "entity_name": "Goals Of The Rakdo S",
         "class_name": null,
-        "cosine_distance": 0.451888,
+        "cosine_distance": 0.451863,
         "is_hit": false
       },
       {
@@ -8376,7 +8376,7 @@
         "content_type": "rule",
         "entity_name": "Cult Of Rakdos",
         "class_name": null,
-        "cosine_distance": 0.46608,
+        "cosine_distance": 0.466045,
         "is_hit": false
       },
       {
@@ -8385,7 +8385,7 @@
         "content_type": "monster",
         "entity_name": "Rakdos",
         "class_name": null,
-        "cosine_distance": 0.467391,
+        "cosine_distance": 0.467369,
         "is_hit": false
       },
       {
@@ -8394,7 +8394,7 @@
         "content_type": "rule",
         "entity_name": "Rakdos Guild Sp El Ls",
         "class_name": null,
-        "cosine_distance": 0.469505,
+        "cosine_distance": 0.469514,
         "is_hit": false
       },
       {
@@ -8403,7 +8403,7 @@
         "content_type": "rule",
         "entity_name": "Rakdos Items",
         "class_name": null,
-        "cosine_distance": 0.491241,
+        "cosine_distance": 0.491213,
         "is_hit": true
       },
       {
@@ -8412,7 +8412,7 @@
         "content_type": "rule",
         "entity_name": "Cult Of Rakdos",
         "class_name": null,
-        "cosine_distance": 0.503669,
+        "cosine_distance": 0.503644,
         "is_hit": false
       }
     ]
@@ -8650,7 +8650,7 @@
         "content_type": "rule",
         "entity_name": "Mira Bar",
         "class_name": null,
-        "cosine_distance": 0.462751,
+        "cosine_distance": 0.462821,
         "is_hit": true
       },
       {
@@ -8659,7 +8659,7 @@
         "content_type": "rule",
         "entity_name": "Mira Bar",
         "class_name": null,
-        "cosine_distance": 0.540636,
+        "cosine_distance": 0.540705,
         "is_hit": true
       }
     ]
@@ -8739,7 +8739,7 @@
         "rank": 7,
         "chunk_id": "6ee30ddfee3c5ddd72e9",
         "content_type": "rule",
-        "entity_name": "Non ·I Zzet Contacts",
+        "entity_name": "Non Â·I Zzet Contacts",
         "class_name": null,
         "cosine_distance": 0.69286,
         "is_hit": false
@@ -8800,7 +8800,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.439422,
+        "cosine_distance": 0.439502,
         "is_hit": true
       },
       {
@@ -8809,7 +8809,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.558957,
+        "cosine_distance": 0.559037,
         "is_hit": true
       },
       {
@@ -8818,7 +8818,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.589929,
+        "cosine_distance": 0.589982,
         "is_hit": true
       },
       {
@@ -8827,7 +8827,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.686316,
+        "cosine_distance": 0.686363,
         "is_hit": true
       },
       {
@@ -8836,7 +8836,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.704909,
+        "cosine_distance": 0.704967,
         "is_hit": true
       },
       {
@@ -8845,7 +8845,7 @@
         "content_type": "rule",
         "entity_name": "Forms Of Worship",
         "class_name": null,
-        "cosine_distance": 0.736266,
+        "cosine_distance": 0.736337,
         "is_hit": true
       }
     ]
@@ -8920,7 +8920,7 @@
         "content_type": "rule",
         "entity_name": "Magic In The Realms",
         "class_name": null,
-        "cosine_distance": 0.432363,
+        "cosine_distance": 0.432337,
         "is_hit": true
       },
       {
@@ -8929,7 +8929,7 @@
         "content_type": "rule",
         "entity_name": "Patrons In The Realms",
         "class_name": null,
-        "cosine_distance": 0.514644,
+        "cosine_distance": 0.514706,
         "is_hit": false
       },
       {
@@ -8938,7 +8938,7 @@
         "content_type": "rule",
         "entity_name": "Far Realm",
         "class_name": null,
-        "cosine_distance": 0.529379,
+        "cosine_distance": 0.529431,
         "is_hit": false
       },
       {
@@ -8947,7 +8947,7 @@
         "content_type": "rule",
         "entity_name": "The Realms",
         "class_name": null,
-        "cosine_distance": 0.531283,
+        "cosine_distance": 0.531323,
         "is_hit": false
       },
       {
@@ -8956,7 +8956,7 @@
         "content_type": "rule",
         "entity_name": "Regions Of The Realms",
         "class_name": null,
-        "cosine_distance": 0.542426,
+        "cosine_distance": 0.542476,
         "is_hit": false
       },
       {
@@ -8965,7 +8965,7 @@
         "content_type": "rule",
         "entity_name": "Religion In The Realms",
         "class_name": null,
-        "cosine_distance": 0.548605,
+        "cosine_distance": 0.548664,
         "is_hit": false
       },
       {
@@ -8974,7 +8974,7 @@
         "content_type": "rule",
         "entity_name": "Far Realm",
         "class_name": null,
-        "cosine_distance": 0.555063,
+        "cosine_distance": 0.55509,
         "is_hit": false
       },
       {
@@ -8983,7 +8983,7 @@
         "content_type": "rule",
         "entity_name": "Magic In The Realms",
         "class_name": null,
-        "cosine_distance": 0.556098,
+        "cosine_distance": 0.556056,
         "is_hit": true
       },
       {
@@ -8992,7 +8992,7 @@
         "content_type": "rule",
         "entity_name": "Deep Gnomes In The Forgotten Realms",
         "class_name": null,
-        "cosine_distance": 0.564959,
+        "cosine_distance": 0.564967,
         "is_hit": false
       },
       {
@@ -9001,7 +9001,7 @@
         "content_type": "rule",
         "entity_name": "Far Realm Shard",
         "class_name": null,
-        "cosine_distance": 0.57471,
+        "cosine_distance": 0.574732,
         "is_hit": false
       }
     ]
@@ -9654,7 +9654,7 @@
         "rank": 1,
         "chunk_id": "d2faca5334e4f96212c8",
         "content_type": "rule",
-        "entity_name": "Tortle •",
+        "entity_name": "Tortle â€¢",
         "class_name": null,
         "cosine_distance": 0.349695,
         "is_hit": true
@@ -10424,7 +10424,7 @@
         "content_type": "rule",
         "entity_name": "Leaving The Lair",
         "class_name": null,
-        "cosine_distance": 0.413528,
+        "cosine_distance": 0.413565,
         "is_hit": true
       },
       {
@@ -10433,7 +10433,7 @@
         "content_type": "rule",
         "entity_name": "Baphomet 1 S Lair",
         "class_name": null,
-        "cosine_distance": 0.495382,
+        "cosine_distance": 0.49549,
         "is_hit": false
       },
       {
@@ -10442,7 +10442,7 @@
         "content_type": "rule",
         "entity_name": "Baphomet 1 S Lair",
         "class_name": null,
-        "cosine_distance": 0.499625,
+        "cosine_distance": 0.499677,
         "is_hit": false
       },
       {
@@ -10451,7 +10451,7 @@
         "content_type": "rule",
         "entity_name": "Yeenoghu's Lair",
         "class_name": null,
-        "cosine_distance": 0.501142,
+        "cosine_distance": 0.501178,
         "is_hit": false
       },
       {
@@ -10460,7 +10460,7 @@
         "content_type": "rule",
         "entity_name": "Yeenoghu's Lair",
         "class_name": null,
-        "cosine_distance": 0.520425,
+        "cosine_distance": 0.52046,
         "is_hit": false
       },
       {
@@ -10469,7 +10469,7 @@
         "content_type": "rule",
         "entity_name": "Lair",
         "class_name": null,
-        "cosine_distance": 0.550082,
+        "cosine_distance": 0.550148,
         "is_hit": false
       },
       {
@@ -10478,7 +10478,7 @@
         "content_type": "rule",
         "entity_name": "Lair",
         "class_name": null,
-        "cosine_distance": 0.585051,
+        "cosine_distance": 0.585072,
         "is_hit": false
       },
       {
@@ -10487,7 +10487,7 @@
         "content_type": "rule",
         "entity_name": "Lair Of Luxury",
         "class_name": null,
-        "cosine_distance": 0.623305,
+        "cosine_distance": 0.623361,
         "is_hit": false
       },
       {
@@ -10496,7 +10496,7 @@
         "content_type": "rule",
         "entity_name": "0Rc Lairs",
         "class_name": null,
-        "cosine_distance": 0.63793,
+        "cosine_distance": 0.637959,
         "is_hit": false
       },
       {
@@ -10505,7 +10505,7 @@
         "content_type": "rule",
         "entity_name": "Leaving The Lair",
         "class_name": null,
-        "cosine_distance": 0.657669,
+        "cosine_distance": 0.657671,
         "is_hit": true
       }
     ]
@@ -11434,7 +11434,7 @@
         "content_type": "rule",
         "entity_name": "Dloo",
         "class_name": null,
-        "cosine_distance": 0.595304,
+        "cosine_distance": 0.595295,
         "is_hit": false
       },
       {
@@ -11443,7 +11443,7 @@
         "content_type": "rule",
         "entity_name": "Gnoll Names",
         "class_name": null,
-        "cosine_distance": 0.639648,
+        "cosine_distance": 0.639698,
         "is_hit": false
       },
       {
@@ -11452,7 +11452,7 @@
         "content_type": "rule",
         "entity_name": "0Rc Names",
         "class_name": null,
-        "cosine_distance": 0.648821,
+        "cosine_distance": 0.648842,
         "is_hit": false
       },
       {
@@ -11461,7 +11461,7 @@
         "content_type": "rule",
         "entity_name": "Dloo Name",
         "class_name": null,
-        "cosine_distance": 0.65074,
+        "cosine_distance": 0.650761,
         "is_hit": true
       },
       {
@@ -11470,7 +11470,7 @@
         "content_type": "rule",
         "entity_name": "Goliath Names",
         "class_name": null,
-        "cosine_distance": 0.652901,
+        "cosine_distance": 0.652886,
         "is_hit": false
       },
       {
@@ -11479,7 +11479,7 @@
         "content_type": "rule",
         "entity_name": "Dloo Name",
         "class_name": null,
-        "cosine_distance": 0.659781,
+        "cosine_distance": 0.659782,
         "is_hit": true
       },
       {
@@ -11488,7 +11488,7 @@
         "content_type": "rule",
         "entity_name": "Kobold Names",
         "class_name": null,
-        "cosine_distance": 0.662164,
+        "cosine_distance": 0.6621,
         "is_hit": false
       },
       {
@@ -11497,7 +11497,7 @@
         "content_type": "rule",
         "entity_name": "Gnollnames",
         "class_name": null,
-        "cosine_distance": 0.663408,
+        "cosine_distance": 0.663481,
         "is_hit": false
       },
       {
@@ -11506,7 +11506,7 @@
         "content_type": "rule",
         "entity_name": "Dloo Name",
         "class_name": null,
-        "cosine_distance": 0.66406,
+        "cosine_distance": 0.664005,
         "is_hit": true
       },
       {
@@ -11515,7 +11515,7 @@
         "content_type": "rule",
         "entity_name": "Names",
         "class_name": null,
-        "cosine_distance": 0.669227,
+        "cosine_distance": 0.669185,
         "is_hit": false
       }
     ]
@@ -11821,7 +11821,7 @@
         "content_type": "spell",
         "entity_name": "Investiture Of Flame",
         "class_name": null,
-        "cosine_distance": 0.323124,
+        "cosine_distance": 0.323087,
         "is_hit": true
       }
     ]
@@ -12262,7 +12262,7 @@
         "content_type": "spell",
         "entity_name": "Prestidigitation",
         "class_name": null,
-        "cosine_distance": 0.435475,
+        "cosine_distance": 0.435363,
         "is_hit": true
       }
     ]
@@ -12292,7 +12292,7 @@
         "content_type": "spell",
         "entity_name": "Delayed Blast Fireball",
         "class_name": null,
-        "cosine_distance": 0.504534,
+        "cosine_distance": 0.504563,
         "is_hit": false
       },
       {
@@ -12301,7 +12301,7 @@
         "content_type": "spell",
         "entity_name": "Mass Suggestion",
         "class_name": null,
-        "cosine_distance": 0.506103,
+        "cosine_distance": 0.506187,
         "is_hit": false
       },
       {
@@ -12310,7 +12310,7 @@
         "content_type": "spell",
         "entity_name": "Glyph Of Warding",
         "class_name": null,
-        "cosine_distance": 0.53192,
+        "cosine_distance": 0.531963,
         "is_hit": false
       },
       {
@@ -12319,7 +12319,7 @@
         "content_type": "spell",
         "entity_name": "Tran",
         "class_name": null,
-        "cosine_distance": 0.537899,
+        "cosine_distance": 0.537922,
         "is_hit": false
       },
       {
@@ -12328,7 +12328,7 @@
         "content_type": "spell",
         "entity_name": "Wish",
         "class_name": null,
-        "cosine_distance": 0.542542,
+        "cosine_distance": 0.542558,
         "is_hit": false
       },
       {
@@ -12337,7 +12337,7 @@
         "content_type": "spell",
         "entity_name": "Major Image",
         "class_name": null,
-        "cosine_distance": 0.544927,
+        "cosine_distance": 0.544971,
         "is_hit": false
       },
       {
@@ -12346,7 +12346,7 @@
         "content_type": "spell",
         "entity_name": "Imprisonment",
         "class_name": null,
-        "cosine_distance": 0.546459,
+        "cosine_distance": 0.546488,
         "is_hit": false
       },
       {
@@ -12355,7 +12355,7 @@
         "content_type": "spell",
         "entity_name": "Antipathy/Sympathy",
         "class_name": null,
-        "cosine_distance": 0.546765,
+        "cosine_distance": 0.546804,
         "is_hit": false
       },
       {
@@ -12364,7 +12364,7 @@
         "content_type": "spell",
         "entity_name": "Dissonant Whispers",
         "class_name": null,
-        "cosine_distance": 0.550038,
+        "cosine_distance": 0.55008,
         "is_hit": false
       },
       {
@@ -12373,7 +12373,7 @@
         "content_type": "spell",
         "entity_name": "Legend Lore",
         "class_name": null,
-        "cosine_distance": 0.551264,
+        "cosine_distance": 0.551317,
         "is_hit": false
       }
     ]
@@ -12868,7 +12868,7 @@
         "content_type": "spell",
         "entity_name": "Summon Beast",
         "class_name": null,
-        "cosine_distance": 0.341168,
+        "cosine_distance": 0.341217,
         "is_hit": true
       }
     ]
@@ -12900,7 +12900,7 @@
         "content_type": "spell",
         "entity_name": "Summon Aberration",
         "class_name": null,
-        "cosine_distance": 0.234443,
+        "cosine_distance": 0.234405,
         "is_hit": true
       }
     ]
@@ -13424,7 +13424,7 @@
         "content_type": "spell",
         "entity_name": "Watery Sphere",
         "class_name": null,
-        "cosine_distance": 0.267853,
+        "cosine_distance": 0.267824,
         "is_hit": true
       },
       {
@@ -13433,7 +13433,7 @@
         "content_type": "spell",
         "entity_name": "Watery Sphere",
         "class_name": null,
-        "cosine_distance": 0.340491,
+        "cosine_distance": 0.340424,
         "is_hit": true
       },
       {
@@ -13442,7 +13442,7 @@
         "content_type": "spell",
         "entity_name": "Watery Sphere",
         "class_name": null,
-        "cosine_distance": 0.472164,
+        "cosine_distance": 0.472167,
         "is_hit": true
       },
       {
@@ -13451,7 +13451,7 @@
         "content_type": "spell",
         "entity_name": "Watery Sphere",
         "class_name": null,
-        "cosine_distance": 0.682432,
+        "cosine_distance": 0.682379,
         "is_hit": true
       }
     ]
@@ -13657,7 +13657,7 @@
         "rank": 2,
         "chunk_id": "3cae10791c1fbd2e8e48",
         "content_type": "rule",
-        "entity_name": "Ha• Aom• Potion Or Amulet That",
+        "entity_name": "Haâ€¢ Aomâ€¢ Potion Or Amulet That",
         "class_name": null,
         "cosine_distance": 0.685055,
         "is_hit": false
@@ -13972,7 +13972,7 @@
         "content_type": "monster",
         "entity_name": "Shield Guardian",
         "class_name": null,
-        "cosine_distance": 0.299906,
+        "cosine_distance": 0.299902,
         "is_hit": true
       },
       {
@@ -13981,7 +13981,7 @@
         "content_type": "monster",
         "entity_name": "Shield Guardian",
         "class_name": null,
-        "cosine_distance": 0.311433,
+        "cosine_distance": 0.311444,
         "is_hit": true
       },
       {
@@ -13990,7 +13990,7 @@
         "content_type": "spell",
         "entity_name": "Fire Shield",
         "class_name": null,
-        "cosine_distance": 0.522029,
+        "cosine_distance": 0.522082,
         "is_hit": false
       },
       {
@@ -13999,7 +13999,7 @@
         "content_type": "spell",
         "entity_name": "Shield",
         "class_name": null,
-        "cosine_distance": 0.541383,
+        "cosine_distance": 0.541386,
         "is_hit": false
       },
       {
@@ -14008,7 +14008,7 @@
         "content_type": "monster",
         "entity_name": "Shield Guardian",
         "class_name": null,
-        "cosine_distance": 0.545352,
+        "cosine_distance": 0.545385,
         "is_hit": true
       },
       {
@@ -14017,7 +14017,7 @@
         "content_type": "spell",
         "entity_name": "Shield Of Faith",
         "class_name": null,
-        "cosine_distance": 0.585196,
+        "cosine_distance": 0.585227,
         "is_hit": false
       }
     ]
@@ -14287,7 +14287,7 @@
         "content_type": "monster",
         "entity_name": "Flail Snail",
         "class_name": null,
-        "cosine_distance": 0.264914,
+        "cosine_distance": 0.264922,
         "is_hit": true
       },
       {
@@ -14296,7 +14296,7 @@
         "content_type": "monster",
         "entity_name": "Flail Snail",
         "class_name": null,
-        "cosine_distance": 0.349884,
+        "cosine_distance": 0.349841,
         "is_hit": true
       },
       {
@@ -14305,7 +14305,7 @@
         "content_type": "monster",
         "entity_name": "Flail Snail",
         "class_name": null,
-        "cosine_distance": 0.442686,
+        "cosine_distance": 0.442688,
         "is_hit": true
       }
     ]
@@ -14387,7 +14387,7 @@
         "content_type": "monster",
         "entity_name": "Allip",
         "class_name": null,
-        "cosine_distance": 0.388646,
+        "cosine_distance": 0.388677,
         "is_hit": true
       },
       {
@@ -14396,7 +14396,7 @@
         "content_type": "monster",
         "entity_name": "Allip",
         "class_name": null,
-        "cosine_distance": 0.407304,
+        "cosine_distance": 0.407274,
         "is_hit": true
       },
       {
@@ -14405,7 +14405,7 @@
         "content_type": "monster",
         "entity_name": "Allip",
         "class_name": null,
-        "cosine_distance": 0.434655,
+        "cosine_distance": 0.43462,
         "is_hit": true
       },
       {
@@ -14414,7 +14414,7 @@
         "content_type": "monster",
         "entity_name": "Allip",
         "class_name": null,
-        "cosine_distance": 0.526515,
+        "cosine_distance": 0.526547,
         "is_hit": true
       },
       {
@@ -14423,7 +14423,7 @@
         "content_type": "monster",
         "entity_name": "Allip",
         "class_name": null,
-        "cosine_distance": 0.609994,
+        "cosine_distance": 0.609991,
         "is_hit": true
       }
     ]
