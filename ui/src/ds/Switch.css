@@ -9,18 +9,28 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* expand clickable area to 44px without changing visual size */
-  padding: calc((var(--aether-touch-min) - 32px) / 2) calc((var(--aether-touch-min) - 52px) / 2);
+  min-width: var(--aether-touch-min);
+  min-height: var(--aether-touch-min);
+  /* expand the 32px track to the 44px vertical touch floor */
+  padding: calc((var(--aether-touch-min) - 32px) / 2) 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.aether-switch-wrap--disabled {
+.aether-switch-wrap--disabled,
+.aether-switch-wrap:disabled {
   cursor: not-allowed;
   opacity: 0.38;
   pointer-events: none;
 }
 
-/* Track (the <button> itself) */
+/* Visual track */
 .aether-switch {
   position: relative;
   width: 52px;
@@ -35,18 +45,10 @@
     background var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard),
     border-color var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
   -webkit-tap-highlight-color: transparent;
-  /* reset browser button styles */
-  appearance: none;
-  -webkit-appearance: none;
-}
-
-.aether-switch:disabled {
-  cursor: not-allowed;
-  pointer-events: none;
 }
 
 /* ON state — ember primary fill */
-.aether-switch[data-checked="true"] {
+.aether-switch-wrap[data-checked="true"] .aether-switch {
   background: var(--md-sys-color-primary);
   border-color: var(--md-sys-color-primary);
 }
@@ -68,7 +70,7 @@
 }
 
 /* OFF handle */
-.aether-switch[data-checked="false"] .aether-switch__handle {
+.aether-switch-wrap[data-checked="false"] .aether-switch__handle {
   left: 4px;
   width: 16px;
   height: 16px;
@@ -76,7 +78,7 @@
 }
 
 /* ON handle — on-primary colour, shifted right */
-.aether-switch[data-checked="true"] .aether-switch__handle {
+.aether-switch-wrap[data-checked="true"] .aether-switch__handle {
   left: 26px;
   width: 22px;
   height: 22px;
@@ -90,17 +92,17 @@
 }
 
 /* OFF icon colour matches track background */
-.aether-switch[data-checked="false"] .aether-switch__icon {
+.aether-switch-wrap[data-checked="false"] .aether-switch__icon {
   color: var(--md-sys-color-surface-container-highest);
 }
 
 /* ON icon colour matches primary track */
-.aether-switch[data-checked="true"] .aether-switch__icon {
+.aether-switch-wrap[data-checked="true"] .aether-switch__icon {
   color: var(--md-sys-color-primary);
 }
 
 /* ── Focus ring ── */
-.aether-switch:focus-visible {
+.aether-switch-wrap:focus-visible .aether-switch {
   outline: 3px solid var(--md-sys-color-secondary);
   outline-offset: 2px;
 }

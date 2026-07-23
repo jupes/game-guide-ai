@@ -1,6 +1,6 @@
 import * as React from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { fn } from 'storybook/test'
+import { expect, fn, within } from 'storybook/test'
 
 import { Switch } from './Switch'
 import type { SwitchProps } from './Switch'
@@ -59,4 +59,37 @@ export const Disabled: Story = {
     ariaLabel: 'Unavailable option',
     disabled: true,
   },
+}
+
+export const VisualStates: Story = {
+  render: (args) => (
+    <div style={{ display: 'flex', gap: '24px' }}>
+      <Switch {...args} ariaLabel="Off switch" checked={false} />
+      <Switch {...args} ariaLabel="On switch" checked />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const offControl = canvas.getByRole('switch', { name: 'Off switch' })
+    const onControl = canvas.getByRole('switch', { name: 'On switch' })
+    const offTrack = offControl.querySelector<HTMLElement>('.aether-switch')!
+    const onTrack = onControl.querySelector<HTMLElement>('.aether-switch')!
+    const offHandle = offControl.querySelector<HTMLElement>('.aether-switch__handle')!
+    const onHandle = onControl.querySelector<HTMLElement>('.aether-switch__handle')!
+
+    await expect(getComputedStyle(offTrack).backgroundColor).not.toBe(
+      getComputedStyle(onTrack).backgroundColor,
+    )
+    await expect(getComputedStyle(offHandle).left).not.toBe(
+      getComputedStyle(onHandle).left,
+    )
+
+    offControl.focus()
+    await expect(getComputedStyle(offTrack).outlineStyle).not.toBe('none')
+  },
+}
+
+export const DarkVisualStates: Story = {
+  ...VisualStates,
+  globals: { theme: 'dark' },
 }
