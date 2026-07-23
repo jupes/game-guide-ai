@@ -1,8 +1,9 @@
-# Merge-to-master pipeline: tests → retrieval metrics + regression gate → deploy.
+# Pull-request and merge pipeline: tests → E2E + metrics gates → deploy.
 # Full operator guide (activation switches, force-deploy, back-out): docs/ci.md
 #
 # Activation state (jobs light up as infrastructure lands, nothing is faked):
 #   tests            — always run.
+#   ui-e2e           — always runs against the production Compose stack.
 #   retrieval-metrics — needs secrets EVAL_DATABASE_URL + OPENAI_API_KEY
 #                       (a reachable corpus DB; the corpus is deliberately not
 #                       in git — licensing). Skips loudly until configured.
@@ -13,6 +14,8 @@ name: CI
 
 on:
   push:
+    branches: [master]
+  pull_request:
     branches: [master]
   workflow_dispatch:
     inputs:
@@ -56,6 +59,33 @@ jobs:
         run: bun run lint
       - name: Vitest (jsdom + storybook browser projects)
         run: bun run test
+
+  # Browser-level release tracer. This builds and starts the production Nginx
+  # UI plus a deterministic FastAPI service, then records TTFB/FCP/LCP/CLS.
+  ui-e2e:
+    needs: [python-tests, ui-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Playwright E2E and UI performance budgets
+        run: bun run test:e2e
+      - name: Upload Playwright performance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-e2e-results-${{ github.sha }}
+          path: ui/e2e-results
+          if-no-files-found: warn
+          retention-days: 30
 
   # Retrieval quality against the live corpus DB. The corpus is not in git
   # (licensing — no verbatim book text in the repo), so this job can only run
@@ -113,11 +143,13 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [python-tests, ui-tests, retrieval-metrics]
+    needs: [python-tests, ui-tests, ui-e2e, retrieval-metrics]
     if: >-
       always()
+      && github.event_name != 'pull_request'
       && needs.python-tests.result == 'success'
       && needs.ui-tests.result == 'success'
+      && needs.ui-e2e.result == 'success'
       && (needs.retrieval-metrics.result == 'success'
           || needs.retrieval-metrics.result == 'skipped'
           || (github.event_name == 'workflow_dispatch' && inputs.force_deploy))

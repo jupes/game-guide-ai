@@ -19,7 +19,8 @@ export default defineConfig({
     proxy: {
       '/chat': 'http://localhost:8000',
       '/healthz': 'http://localhost:8000',
-      '/conversations': 'http://localhost:8000'
+      '/conversations': 'http://localhost:8000',
+      '/metrics': 'http://localhost:8000'
     }
   },
   test: {
@@ -28,6 +29,7 @@ export default defineConfig({
       test: {
         environment: 'jsdom',
         globals: true,
+        include: ['src/**/*.{test,spec}.{ts,tsx}'],
         setupFiles: './src/test-setup.ts'
       }
     }, {

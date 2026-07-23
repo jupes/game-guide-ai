@@ -9,10 +9,12 @@ import { ThemeProvider } from './ds/theme'
 import { AppNavProvider } from './shell/AppNav'
 import { CurrentUserProvider } from './shell/currentUser'
 import { ConversationStoreProvider } from './shell/ConversationStoreContext'
+import { startMetrics } from './metrics/metrics'
 
 // Apply the parchment ground to the document body so the app sits on parchment
 // before React hydrates. This avoids a flash of the browser default background.
 document.body.classList.add('aether-parchment')
+startMetrics()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -9,6 +9,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getMessages, postChat } from './api'
 import type { ChatResponse, ChatResult, ChatMode, MessagesResult, StoredMessage } from './api'
+import {
+  recordMetric as recordBrowserMetric,
+  runtimeMetricLabels,
+  type MetricPoint,
+} from './metrics/metrics'
 
 export type ExchangeStatus = 'pending' | 'done' | 'error'
 
@@ -22,12 +27,15 @@ export interface Exchange {
 
 export type PostFn = (prompt: string, mode: ChatMode, conversationId: string | null) => Promise<ChatResult>
 export type LoadHistoryFn = (conversationId: string) => Promise<MessagesResult>
+const monotonicNow = () => performance.now()
 
 export interface UseChatOptions {
   post?: PostFn
   loadHistory?: LoadHistoryFn
   mode: ChatMode
   conversationId: string | null
+  now?: () => number
+  recordMetric?: (point: MetricPoint) => void
 }
 
 interface ChatState {
@@ -64,7 +72,14 @@ function toExchanges(messages: StoredMessage[], nextId: { current: number }): Ex
   return out
 }
 
-export function useChat({ post = postChat, loadHistory = getMessages, mode, conversationId }: UseChatOptions) {
+export function useChat({
+  post = postChat,
+  loadHistory = getMessages,
+  mode,
+  conversationId,
+  now = monotonicNow,
+  recordMetric = recordBrowserMetric,
+}: UseChatOptions) {
   const [state, setState] = useState<ChatState>({
     scopeId: conversationId,
     exchanges: [],
@@ -133,6 +148,7 @@ export function useChat({ post = postChat, loadHistory = getMessages, mode, conv
       const trimmed = prompt.trim()
       if (!trimmed || pendingRef.current) return
       pendingRef.current = true
+      const startedAt = now()
 
       const id = nextId.current++
       setState((prev) => ({
@@ -147,8 +163,26 @@ export function useChat({ post = postChat, loadHistory = getMessages, mode, conv
           prev.scopeId === conversationId ? prev.loadingHistory : conversationId !== null,
       }))
 
-      const settle = (update: Partial<Exchange>) => {
+      const settle = (
+        update: Partial<Exchange>,
+        outcome: 'success' | 'http_error' | 'network_error' | 'aborted',
+      ) => {
         pendingRef.current = false
+        const labels = runtimeMetricLabels(mode)
+        recordMetric({
+          name: 'ui.interaction.chat_round_trip_ms',
+          kind: 'numeric',
+          unit: 'ms',
+          value: Math.max(0, now() - startedAt),
+          labels,
+        })
+        recordMetric({
+          name: 'ui.interaction.chat_outcome',
+          kind: 'categorical',
+          unit: 'category',
+          value: outcome,
+          labels,
+        })
         setState((prev) => ({
           ...prev,
           scopeId: conversationId,
@@ -157,21 +191,34 @@ export function useChat({ post = postChat, loadHistory = getMessages, mode, conv
       }
 
       void post(trimmed, mode, conversationId).then(
-        (result) =>
-          settle(
-            result.kind === 'ok'
-              ? { status: 'done', response: result.response }
-              : { status: 'error', error: result.message },
-          ),
+        (result) => {
+          if (result.kind === 'ok') {
+            settle({ status: 'done', response: result.response }, 'success')
+          } else {
+            settle(
+              { status: 'error', error: result.message },
+              result.outcome ?? 'http_error',
+            )
+          }
+        },
         // A custom PostFn may reject; don't strand pendingRef (locks the composer).
-        (err: unknown) =>
-          settle({
-            status: 'error',
-            error: err instanceof Error ? err.message : 'Unexpected error — please try again.',
-          }),
+        (err: unknown) => {
+          settle(
+            {
+              status: 'error',
+              error:
+                err instanceof Error
+                  ? err.message
+                  : 'Unexpected error — please try again.',
+            },
+            err instanceof Error && err.name === 'AbortError'
+              ? 'aborted'
+              : 'network_error',
+          )
+        },
       )
     },
-    [post, mode, conversationId],
+    [post, mode, conversationId, now, recordMetric],
   )
 
   return { exchanges, send, pending, historyError, loadingHistory }

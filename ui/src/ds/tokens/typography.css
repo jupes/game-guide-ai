@@ -1,20 +1,20 @@
 /* ── Typography ────────────────────────────────────────────────────────
    Material 3 type scale, re-cast onto the Aetheril font set.
    Families:
-     --aether-font-display = Cinzel   (display + headline roles)
+     --aether-font-display = Inter    (display + headline roles)
      --aether-font-body    = Spectral (body roles, reading)
-     --aether-font-ui      = Mulish   (title + label roles, UI chrome)
-     --aether-font-mono    = JetBrains Mono (dice, stats, code)
+     --aether-font-ui      = Inter    (title + label roles, UI chrome)
+     --aether-font-mono    = system monospace (dice, stats, code)
    M3 role tokens keep their --md-sys-typescale-* names so components and
    consumers can reference the standard Material roles directly. */
 
 :root {
-  --aether-font-display: 'Cinzel', 'Cinzel Decorative', Georgia, serif;
+  --aether-font-display: 'Inter Variable', system-ui, sans-serif;
   --aether-font-body: 'Spectral', Georgia, 'Times New Roman', serif;
-  --aether-font-ui: 'Mulish', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --aether-font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+  --aether-font-ui: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --aether-font-mono: ui-monospace, 'SFMono-Regular', monospace;
 
-  /* Brand display (Cinzel) — engraved, used at large sizes only */
+  /* Brand display — high-weight Inter, used at large sizes only */
   --md-sys-typescale-display-large-font: var(--aether-font-display);
   --md-sys-typescale-display-large-size: 57px;
   --md-sys-typescale-display-large-line-height: 64px;
@@ -46,7 +46,7 @@
   --md-sys-typescale-headline-small-line-height: 32px;
   --md-sys-typescale-headline-small-weight: 500;
 
-  /* Titles (Mulish) — UI section headers */
+  /* Titles (Inter) — UI section headers */
   --md-sys-typescale-title-large-font: var(--aether-font-ui);
   --md-sys-typescale-title-large-size: 22px;
   --md-sys-typescale-title-large-line-height: 28px;
@@ -82,7 +82,7 @@
   --md-sys-typescale-body-small-line-height: 16px;
   --md-sys-typescale-body-small-weight: 400;
 
-  /* Labels (Mulish) — buttons, chips, metadata */
+  /* Labels (Inter) — buttons, chips, metadata */
   --md-sys-typescale-label-large-font: var(--aether-font-ui);
   --md-sys-typescale-label-large-size: 14px;
   --md-sys-typescale-label-large-line-height: 20px;
@@ -101,8 +101,8 @@
   --md-sys-typescale-label-small-weight: 600;
   --md-sys-typescale-label-small-tracking: 0.5px;
 
-  /* Brand flourish — Cinzel Decorative, for rare ornamental moments */
-  --aether-font-flourish: 'Cinzel Decorative', 'Cinzel', serif;
+  /* Brand flourish remains a high-weight display treatment. */
+  --aether-font-flourish: 'Inter Variable', system-ui, sans-serif;
 }
 
 /* Convenience role classes (optional, components mostly use vars directly) */

@@ -1,0 +1,47 @@
+services:
+  service:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command:
+      - uvicorn
+      - service.e2e_app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    environment:
+      RAG_TRACING: "0"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json,sys,urllib.request;
+          body=json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3));
+          sys.exit(0 if body.get('status') == 'ok' else 1)
+      interval: 2s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  ui:
+    build:
+      context: ./ui
+    ports:
+      - "4173:80"
+    depends_on:
+      service:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1/
+      interval: 2s
+      timeout: 5s
+      retries: 20
+      start_period: 3s

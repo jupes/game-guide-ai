@@ -1,0 +1,6 @@
+{
+  "ui.web_vital.ttfb_ms": 1500,
+  "ui.web_vital.fcp_ms": 2000,
+  "ui.web_vital.lcp_ms": 2500,
+  "ui.web_vital.cls": 0.1
+}

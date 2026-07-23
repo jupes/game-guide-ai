@@ -15,12 +15,13 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+import time
 from contextlib import asynccontextmanager
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.staticfiles import StaticFiles
 
 import config
@@ -37,6 +38,17 @@ from .models import (
     ChatRequest,
     ChatResponse,
     MessagesResponse,
+)
+from .metrics import (
+    BooleanMetricPoint,
+    CategoricalMetricPoint,
+    MetricBatch,
+    MetricLabels,
+    MetricsSink,
+    NoopMetricsSink,
+    NumericMetricPoint,
+    build_metrics_sink,
+    record_safely,
 )
 from .rag import RagService
 
@@ -89,6 +101,7 @@ def build_reranker(enabled: bool | None = None) -> Any | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.metrics_sink = build_metrics_sink()
     # Build the service once (loads corpus vocabulary). Guarded so the app can
     # still start for endpoint tests that override the dependency without a DB.
     try:
@@ -109,6 +122,7 @@ async def lifespan(app: FastAPI):
         )
     yield
     _state.clear()
+    del app.state.metrics_sink
 
 
 app = FastAPI(title="D&D 5e RAG — Agent Service", version="1.0", lifespan=lifespan)
@@ -125,6 +139,64 @@ def get_message_store() -> MessageStore | None:
     # None is a valid state (history disabled) — /chat degrades gracefully;
     # only the history endpoint itself hard-fails without a store.
     return _state.get("store")
+
+
+def get_metrics_sink(request: Request) -> MetricsSink:
+    return getattr(request.app.state, "metrics_sink", NoopMetricsSink())
+
+
+def _chat_error_category(status_code: int) -> str:
+    if status_code == 422:
+        return "validation"
+    if status_code in {502, 503}:
+        return "dependency"
+    if status_code >= 500:
+        return "handler"
+    return "unknown"
+
+
+@app.middleware("http")
+async def capture_chat_metrics(request: Request, call_next):
+    if request.url.path != "/chat":
+        return await call_next(request)
+
+    started_at = time.perf_counter()
+    response = await call_next(request)
+    sink = get_metrics_sink(request)
+    labels = MetricLabels(route_template="/chat")
+    record_safely(
+        sink,
+        NumericMetricPoint(
+            name="service.chat.duration_ms",
+            kind="numeric",
+            unit="ms",
+            value=(time.perf_counter() - started_at) * 1000,
+            labels=labels,
+        ),
+    )
+    is_error = response.status_code >= 400
+    record_safely(
+        sink,
+        BooleanMetricPoint(
+            name="service.chat.error",
+            kind="boolean",
+            unit="boolean",
+            value=is_error,
+            labels=labels,
+        ),
+    )
+    if is_error:
+        record_safely(
+            sink,
+            CategoricalMetricPoint(
+                name="service.chat.error_category",
+                kind="categorical",
+                unit="category",
+                value=_chat_error_category(response.status_code),
+                labels=labels,
+            ),
+        )
+    return response
 
 
 def _persist_turn(
@@ -178,6 +250,7 @@ def chat(
     req: ChatRequest,
     svc: RagService = Depends(get_service),
     store: MessageStore | None = Depends(get_message_store),
+    metrics: MetricsSink = Depends(get_metrics_sink),
 ) -> ChatResponse:
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
@@ -186,6 +259,16 @@ def chat(
         resp = svc.answer(
             req.prompt, mode=req.mode.value, conversation_id=req.conversation_id,
             attachment_context=attachment_context, attachment_label=attachment_label,
+        )
+        record_safely(
+            metrics,
+            BooleanMetricPoint(
+                name="service.chat.gate.answerable",
+                kind="boolean",
+                unit="boolean",
+                value=resp.answerable,
+                labels=MetricLabels(mode=req.mode.value, route_template="/chat"),
+            ),
         )
         _persist_turn(store, req.conversation_id, req.mode.value, "user", req.prompt)
         _persist_turn(
@@ -222,6 +305,18 @@ def chat(
         # Anything else is a bug in our code — log the full traceback, return 500.
         log.exception("internal error on /chat (mode=%s)", req.mode.value)
         raise HTTPException(status_code=500, detail="internal error") from None
+
+
+@app.post("/metrics/ui", status_code=status.HTTP_202_ACCEPTED)
+def record_ui_metrics(
+    batch: MetricBatch,
+    sink: MetricsSink = Depends(get_metrics_sink),
+) -> dict[str, int]:
+    if any(not point.name.startswith("ui.") for point in batch.points):
+        raise HTTPException(status_code=422, detail="only UI metrics are accepted")
+    for point in batch.points:
+        record_safely(sink, point)
+    return {"accepted": len(batch.points)}
 
 
 @app.get("/conversations/{conversation_id}/messages", response_model=MessagesResponse)

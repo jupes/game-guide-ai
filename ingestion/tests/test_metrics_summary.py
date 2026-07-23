@@ -10,9 +10,18 @@ Run from repo root:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
-from ingestion.metrics_summary import build_query, summarize, summary_from_results
+from ingestion.metrics_summary import (
+    build_query,
+    runtime_metric_queries,
+    summarize,
+    summary_from_results,
+    summary_from_runtime_metrics,
+)
 
 
 # --- build_query --------------------------------------------------------------
@@ -39,6 +48,19 @@ def test_build_query_no_group_by():
     q = build_query(view="scores", measures=[("value", "avg")], group_by=None,
                     since="24h", now_iso="2026-07-08T12:00:00")
     assert q["dimensions"] == []
+
+
+def test_build_query_includes_legacy_time_dimension():
+    q = build_query(
+        view="scores-numeric",
+        measures=[("value", "avg")],
+        group_by="name",
+        since="7d",
+        now_iso="2026-07-08T12:00:00",
+        time_dimension="day",
+    )
+
+    assert q["timeDimension"] == {"granularity": "day"}
 
 
 def test_build_query_bad_since_raises():
@@ -80,3 +102,53 @@ def test_summary_from_results_builds_per_model_table():
     assert table["gpt-4o-mini"]["faithfulness"] == 0.8
     assert table["gemma4:12b"]["answer_correctness"] == 0.6
     assert table["gemma4:12b"]["judge_tokens"] == {"t": 2}
+
+
+def test_runtime_queries_cover_typed_scores_and_native_observations():
+    queries = runtime_metric_queries(
+        since="7d",
+        now_iso="2026-07-08T12:00:00",
+    )
+
+    assert {query["view"] for query in queries.values()} == {
+        "scores-numeric",
+        "scores-boolean",
+        "scores-categorical",
+        "observations",
+    }
+    assert all(
+        query["timeDimension"] == {"granularity": "day"}
+        for query in queries.values()
+    )
+
+
+def test_runtime_fixture_produces_every_timestamped_catalog_series():
+    fixture = json.loads(
+        Path("ingestion/runtime_metrics.sample.json").read_text(encoding="utf-8")
+    )
+
+    series = summary_from_runtime_metrics(fixture)
+    names = {item["name"] for item in series}
+    expected = {
+        "service.chat.duration_ms",
+        "service.chat.gate.answerable",
+        "service.chat.error",
+        "service.chat.error_category",
+        "ui.web_vital.ttfb_ms",
+        "ui.web_vital.fcp_ms",
+        "ui.web_vital.lcp_ms",
+        "ui.web_vital.cls",
+        "ui.interaction.chat_round_trip_ms",
+        "ui.interaction.chat_outcome",
+        "ui.client.error_count",
+        "service.generation.latency_ms",
+        "service.generation.cost_usd",
+        "service.generation.tokens",
+    }
+
+    assert expected <= names
+    assert all(
+        point["timestamp"]
+        for item in series
+        for point in item["points"]
+    )

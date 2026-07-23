@@ -36,7 +36,11 @@ export interface ChatResponse {
 
 export type ChatResult =
   | { kind: 'ok'; response: ChatResponse }
-  | { kind: 'error'; message: string }
+  | {
+      kind: 'error'
+      message: string
+      outcome?: 'http_error' | 'network_error' | 'aborted'
+    }
 
 /** One persisted chat turn — mirrors service StoredMessage. */
 export interface StoredMessage {
@@ -101,21 +105,39 @@ export async function postChat(
       body: JSON.stringify({ prompt, mode, conversation_id: conversationId ?? null }),
     })
   } catch {
-    return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
+    return {
+      kind: 'error',
+      message: "Couldn't reach the service — is it running? (network error)",
+      outcome: 'network_error',
+    }
   }
 
   if (res.status === 422) {
-    return { kind: 'error', message: 'The prompt was rejected — please enter a question.' }
+    return {
+      kind: 'error',
+      message: 'The prompt was rejected — please enter a question.',
+      outcome: 'http_error',
+    }
   }
   if (res.status === 503) {
-    return { kind: 'error', message: 'Service unavailable (starting up or upstream error) — try again shortly.' }
+    return {
+      kind: 'error',
+      message: 'Service unavailable (starting up or upstream error) — try again shortly.',
+      outcome: 'http_error',
+    }
   }
   if (!res.ok) {
-    return { kind: 'error', message: `Unexpected response (${res.status}).` }
+    return {
+      kind: 'error',
+      message: `Unexpected response (${res.status}).`,
+      outcome: 'http_error',
+    }
   }
 
   const response = await parseJson<ChatResponse>(res)
-  if (response === null) return { kind: 'error', message: UNREADABLE }
+  if (response === null) {
+    return { kind: 'error', message: UNREADABLE, outcome: 'http_error' }
+  }
   return { kind: 'ok', response }
 }
 
