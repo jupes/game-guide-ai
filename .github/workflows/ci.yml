@@ -1,0 +1,150 @@
+# Merge-to-master pipeline: tests → retrieval metrics + regression gate → deploy.
+# Full operator guide (activation switches, force-deploy, back-out): docs/ci.md
+#
+# Activation state (jobs light up as infrastructure lands, nothing is faked):
+#   tests            — always run.
+#   retrieval-metrics — needs secrets EVAL_DATABASE_URL + OPENAI_API_KEY
+#                       (a reachable corpus DB; the corpus is deliberately not
+#                       in git — licensing). Skips loudly until configured.
+#   deploy           — needs repo variable DEPLOY_TARGET + scripts/deploy.sh
+#                       (hosting epic 17u). No-ops loudly until configured.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: "Deploy even if the retrieval-metrics gate failed"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false # never cancel a run that may be mid-deploy
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: pytest (service + ingestion + repo guards)
+        run: uv run --with '.[test]' python -m pytest -q
+
+  ui-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Install Chromium (storybook browser test project)
+        run: bunx playwright install --with-deps chromium
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Lint
+        run: bun run lint
+      - name: Vitest (jsdom + storybook browser projects)
+        run: bun run test
+
+  # Retrieval quality against the live corpus DB. The corpus is not in git
+  # (licensing — no verbatim book text in the repo), so this job can only run
+  # once EVAL_DATABASE_URL points at a reachable, ingested pgvector instance.
+  retrieval-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check eval prerequisites
+        id: prereq
+        run: |
+          if [ -n "${{ secrets.EVAL_DATABASE_URL }}" ] && [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Retrieval eval (eval_golden)"
+              echo ""
+              echo "Skipped — configure the \`EVAL_DATABASE_URL\` and \`OPENAI_API_KEY\`"
+              echo "repository secrets to run retrieval metrics per merge (docs/ci.md)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: astral-sh/setup-uv@v5
+        if: steps.prereq.outputs.ready == 'true'
+        with:
+          enable-cache: true
+      - name: Snapshot committed baseline
+        if: steps.prereq.outputs.ready == 'true'
+        run: cp ingestion/eval_results.json /tmp/eval_baseline.json
+      - name: Run retrieval eval (eval_golden)
+        if: steps.prereq.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.EVAL_DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PYTHONUTF8: "1"
+        run: uv run --with "psycopg[binary]" --with openai python ingestion/eval_golden.py
+      - name: Regression gate vs baseline
+        if: steps.prereq.outputs.ready == 'true'
+        run: |
+          uv run python scripts/ci/eval_gate.py \
+            --baseline /tmp/eval_baseline.json \
+            --fresh ingestion/eval_results.json \
+            --threshold-points 2.0
+      - name: Upload fresh results artifact
+        if: steps.prereq.outputs.ready == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.sha }}
+          path: ingestion/eval_results.json
+
+  # Auto-deploy when everything above is green. A metrics REGRESSION blocks
+  # this job; override by re-running the workflow with force_deploy=true
+  # ("proceed anyway"), or revert the merge commit ("back out") — docs/ci.md.
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [python-tests, ui-tests, retrieval-metrics]
+    if: >-
+      always()
+      && needs.python-tests.result == 'success'
+      && needs.ui-tests.result == 'success'
+      && (needs.retrieval-metrics.result == 'success'
+          || needs.retrieval-metrics.result == 'skipped'
+          || (github.event_name == 'workflow_dispatch' && inputs.force_deploy))
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy (or report unconfigured)
+        env:
+          DEPLOY_TARGET: ${{ vars.DEPLOY_TARGET }}
+        run: |
+          if [ -z "$DEPLOY_TARGET" ]; then
+            {
+              echo "## Deploy"
+              echo ""
+              echo "No-op — no hosting configured yet (epic 17u). To activate:"
+              echo "set the \`DEPLOY_TARGET\` repository variable and add an"
+              echo "executable \`scripts/deploy.sh\` (docs/ci.md)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ ! -x scripts/deploy.sh ]; then
+            echo "DEPLOY_TARGET is set but scripts/deploy.sh is missing or not executable." >&2
+            exit 1
+          fi
+          ./scripts/deploy.sh "$DEPLOY_TARGET" "$GITHUB_SHA"
+          {
+            echo "## Deploy"
+            echo ""
+            echo "Deployed \`$GITHUB_SHA\` to \`$DEPLOY_TARGET\`."
+          } >> "$GITHUB_STEP_SUMMARY"
