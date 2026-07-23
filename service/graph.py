@@ -46,7 +46,13 @@ from ingestion.scope import scope_for_mode
 import logging
 
 from .attachments import cap_text
-from .generate import build_context, build_sources, generate_answer, generate_suggestions
+from .generate import (
+    build_context,
+    build_sources,
+    context_texts,
+    generate_answer,
+    generate_suggestions,
+)
 from .models import ChatMode, REFUSAL, Source, Suggestion
 
 log = logging.getLogger(__name__)
@@ -205,9 +211,13 @@ def build_rag_graph(svc: RagService) -> Any:
             # RagService.answer regardless of who set attachment_context.
             capped = cap_text(attachment_context, ATTACHMENT_MAX_CHARS)
             label = state.get("attachment_label") or "your attachment"
-            context = f"{context}\n\n[Attachment — {label}]: {capped}" if context else (
-                f"[Attachment — {label}]: {capped}"
-            )
+            # Present the attachment as a first-class NUMBERED source continuing
+            # the [1..N] sequence (08il). An unnumbered block was invisible to
+            # the "answer using ONLY the numbered sources" grounding rule, so the
+            # model refused ("I can't see attachments") even with the file in hand.
+            n = len(context_texts(result, CONTEXT_TOP_N)) + 1
+            attachment_block = f"[{n}] (Attachment — {label}): {capped}"
+            context = f"{context}\n\n{attachment_block}" if context else attachment_block
         answer = generate_answer(
             state["prompt"], context, mode=state["mode"],
             model=svc.model, client=svc.llm_client, config=config,

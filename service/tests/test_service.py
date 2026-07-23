@@ -216,6 +216,24 @@ def test_attachment_source_snippet_capped_at_snippet_max():
     assert len(att.snippet) <= config.SNIPPET_MAX
 
 
+def test_attachment_is_injected_as_a_numbered_source():
+    # 08il — the attachment must reach the LLM as a first-class NUMBERED source
+    # continuing the [1..N] sequence, not as an unnumbered '[Attachment — …]'
+    # block. Grounded personas answer using ONLY the numbered sources, so an
+    # unnumbered block was invisible and the model gave its canned
+    # "I can't see attachments" refusal.
+    import re
+
+    llm = _FakeLLM("Per [3] your file, the orb is cursed.")
+    svc = RagService(retriever=_FakeRetriever(_result(answerable=True)), llm_client=llm)
+    svc.answer(
+        "What does my file say?", attachment_context="The orb is cursed.",
+        attachment_label="notes.txt",
+    )
+    prompt_text = "\n".join(m.content for m in llm.last_messages)
+    assert re.search(r"\[\d+\] \(Attachment — notes\.txt\):", prompt_text), prompt_text
+
+
 def test_no_attachment_context_leaves_the_refuse_path_intact():
     # Regression: without an attachment, an unanswerable corpus question still refuses.
     llm = _FakeLLM("should not be called")
@@ -233,7 +251,10 @@ def test_attachment_context_is_capped_at_the_configured_limit():
     long_text = "x" * (config.ATTACHMENT_MAX_CHARS + 500)
     svc.answer("Summarize my file", attachment_context=long_text)
     prompt_text = "\n".join(m.content for m in llm.last_messages)
-    assert prompt_text.count("x") <= config.ATTACHMENT_MAX_CHARS
+    # Assert on the attachment's run of x's directly — a bare prompt-wide
+    # count("x") is fooled by stray 'x's in persona prose (e.g. "six").
+    assert ("x" * config.ATTACHMENT_MAX_CHARS) in prompt_text
+    assert ("x" * (config.ATTACHMENT_MAX_CHARS + 1)) not in prompt_text
 
 
 def test_answer_with_contexts_empty_on_refusal():
@@ -346,6 +367,28 @@ def test_gm_mode_uses_gm_oracle_persona():
     system_msgs = [m for m in llm.last_messages if isinstance(m, SystemMessage)]
     assert system_msgs
     assert "GM Oracle" in system_msgs[0].content
+
+
+def test_gm_persona_formats_creatures_as_classic_statblocks():
+    """synn — the GM Oracle must return generated creatures in the canonical 5e
+    stat-block layout, not free-form prose."""
+    from service.generate import PERSONA_PROMPTS
+    gm = PERSONA_PROMPTS["gm"]
+    assert "stat block" in gm.lower()
+    assert "STR / DEX / CON / INT / WIS / CHA" in gm
+
+
+def test_sage_persona_formats_creatures_as_classic_statblocks():
+    """synn — the default (sage) persona also formats statted creatures classically."""
+    from service.generate import PERSONA_PROMPTS
+    assert "stat block" in PERSONA_PROMPTS["sage"].lower()
+
+
+def test_grounding_suffix_acknowledges_attachments():
+    """08il — the grounding instruction must tell the model that an uploaded
+    attachment counts as a readable numbered source."""
+    from service.generate import _GROUNDING_SUFFIX
+    assert "attachment" in _GROUNDING_SUFFIX.lower()
 
 
 def test_grounded_template_in_user_message():

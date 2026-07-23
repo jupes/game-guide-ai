@@ -15,7 +15,11 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 8px 0;
+  /* Horizontal padding gives the DM avatar's gold outline ring (2px outline +
+     2px offset = 4px past its box) clearance; without it 'overflow: hidden'
+     on the x-axis clips the ring on the left edge (gu7b). Uniform padding
+     keeps the 56px dice/source indents aligned with the DM bubble. */
+  padding: 8px 6px;
 }
 
 .chat-pane__empty {
