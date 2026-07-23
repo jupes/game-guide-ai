@@ -59,14 +59,26 @@ function applyTheme(next: Theme): void {
   }
 }
 
-/** Read the stored preference. Returns 'light' for any invalid/missing value. */
-function readStoredTheme(): Theme {
+/** OS color-scheme preference, used on first visit when nothing is stored.
+ * Guarded: jsdom (tests) and non-DOM environments lack matchMedia — fall back
+ * to light (see DiceRoll.tsx for the same guard pattern). */
+function systemTheme(): Theme {
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  }
+  return 'light'
+}
+
+/** The initial theme: an explicit stored choice wins; otherwise follow the OS
+ * preference (swe1.11) rather than always defaulting to light. */
+function resolvePreferredTheme(): Theme {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
-    return isValidTheme(stored) ? stored : 'light'
+    if (isValidTheme(stored)) return stored
   } catch {
-    return 'light'
+    // localStorage unavailable — fall through to the system preference.
   }
+  return systemTheme()
 }
 
 // ── Provider ─────────────────────────────────────────────────────────────────
@@ -82,7 +94,7 @@ interface ThemeProviderProps {
 
 export function ThemeProvider({ children, initialTheme }: ThemeProviderProps) {
   const [theme, setThemeState] = useState<Theme>(() => {
-    const stored = readStoredTheme()
+    const stored = resolvePreferredTheme()
     const resolved = initialTheme ?? stored
     // Apply synchronously on first render so there is no flash between
     // the JS module loading and the first React commit.

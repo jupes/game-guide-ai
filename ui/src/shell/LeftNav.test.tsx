@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { useState } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -134,6 +134,29 @@ describe('LeftNav (#13)', () => {
     // The selected chip gets the chip--selected class
     const sageChip = screen.getByText('Sage').closest('.chip')
     expect(sageChip).toHaveClass('chip--selected')
+  })
+
+  // swe1.3 — each channel chip carries its distinct accent class so the
+  // selected fill / icon tint differs per mode.
+  it('applies each mode its accent modifier class', () => {
+    const navState = makeNavState({ mode: 'spell' })
+    render(
+      <ThemeProvider>
+        <AppNavContext.Provider value={navState}>
+          <CurrentUserContext.Provider value={makeUserState('dm')}>
+            <ConversationStoreProvider store={new MemoryConversationStore()}>
+              <LeftNav />
+            </ConversationStoreProvider>
+          </CurrentUserContext.Provider>
+        </AppNavContext.Provider>
+      </ThemeProvider>,
+    )
+    expect(screen.getByText('Sage').closest('.chip')).toHaveClass('mode-accent--verdigris')
+    const spellChip = screen.getByText('Spell').closest('.chip')
+    expect(spellChip).toHaveClass('mode-accent--arcane')
+    expect(spellChip).toHaveClass('chip--selected') // active mode fills with its accent
+    expect(screen.getByText('Rules').closest('.chip')).toHaveClass('mode-accent--gold')
+    expect(screen.getByText('GM').closest('.chip')).toHaveClass('mode-accent--ember')
   })
 })
 
@@ -289,27 +312,15 @@ describe('workspace chrome brand (swe1.10)', () => {
   })
 })
 
-// ── TopBar / theme toggle ──────────────────────────────────────────────────────
+// ── TopBar — no theme toggle (swe1.11 moved it to the UserMenu) ───────────────
 
-describe('TopBar theme toggle', () => {
-  beforeEach(() => {
-    // Ensure clean state
-    document.documentElement.removeAttribute('data-theme')
-  })
-
-  afterEach(() => {
-    document.documentElement.removeAttribute('data-theme')
-  })
-
-  it('clicking the theme Switch changes document.documentElement data-theme', async () => {
+describe('TopBar (swe1.11)', () => {
+  it('no longer renders a theme switch (moved to the UserMenu)', () => {
     render(
       <ThemeProvider initialTheme="light">
         <TopBar />
       </ThemeProvider>,
     )
-    const toggle = screen.getByRole('switch', { name: /dark theme/i })
-    expect(document.documentElement.getAttribute('data-theme')).toBeNull()
-    await userEvent.click(toggle)
-    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(screen.queryByRole('switch', { name: /dark theme/i })).not.toBeInTheDocument()
   })
 })

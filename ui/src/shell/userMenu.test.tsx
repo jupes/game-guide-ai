@@ -1,11 +1,19 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type { ReactElement } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppNavContext } from './AppNav'
 import type { AppNavState } from './AppNav'
 import { CurrentUserContext } from './currentUser'
 import type { CurrentUserContextValue } from './currentUser'
+import { ThemeProvider } from '../ds/theme'
 import { UserMenu } from './UserMenu'
+
+// UserMenu now consumes useTheme() (swe1.11 theme toggle), which throws without
+// a ThemeProvider ancestor — so every render goes through this wrapper.
+function renderWithTheme(ui: ReactElement) {
+  return render(<ThemeProvider>{ui}</ThemeProvider>)
+}
 
 function makeNavState(overrides: Partial<AppNavState> = {}): AppNavState {
   return {
@@ -39,7 +47,7 @@ function makeUserState(overrides: Partial<CurrentUserContextValue> = {}): Curren
 
 describe('UserMenu (#14)', () => {
   it('shows the stub user initials AV (derived from displayName Adventurer)', () => {
-    render(
+    renderWithTheme(
       <CurrentUserContext.Provider value={makeUserState()}>
         <UserMenu />
       </CurrentUserContext.Provider>,
@@ -54,7 +62,7 @@ describe('UserMenu (#14)', () => {
   })
 
   it('menu is initially closed (Sign out not visible)', () => {
-    render(
+    renderWithTheme(
       <CurrentUserContext.Provider value={makeUserState()}>
         <UserMenu />
       </CurrentUserContext.Provider>,
@@ -63,7 +71,7 @@ describe('UserMenu (#14)', () => {
   })
 
   it('clicking the avatar opens the menu showing Sign out', async () => {
-    render(
+    renderWithTheme(
       <CurrentUserContext.Provider value={makeUserState()}>
         <UserMenu />
       </CurrentUserContext.Provider>,
@@ -85,7 +93,7 @@ describe('UserMenu (#14)', () => {
         editProfile: vi.fn(),
       },
     })
-    render(
+    renderWithTheme(
       <CurrentUserContext.Provider value={userState}>
         <UserMenu />
       </CurrentUserContext.Provider>,
@@ -106,7 +114,7 @@ describe('UserMenu DM role toggle', () => {
 
   it('toggling the Dungeon Master switch on calls setRole("dm")', async () => {
     const setRole = vi.fn()
-    render(
+    renderWithTheme(
       <CurrentUserContext.Provider value={makeUserState({ setRole })}>
         <UserMenu />
       </CurrentUserContext.Provider>,
@@ -119,7 +127,7 @@ describe('UserMenu DM role toggle', () => {
   it('the switch reflects the current role', async () => {
     const dmState = makeUserState()
     dmState.user.role = 'dm'
-    render(
+    renderWithTheme(
       <CurrentUserContext.Provider value={dmState}>
         <UserMenu />
       </CurrentUserContext.Provider>,
@@ -133,7 +141,7 @@ describe('UserMenu DM role toggle', () => {
     const setMode = vi.fn()
     const dmState = makeUserState({ setRole })
     dmState.user.role = 'dm'
-    render(
+    renderWithTheme(
       <AppNavContext.Provider value={makeNavState({ mode: 'gm', setMode })}>
         <CurrentUserContext.Provider value={dmState}>
           <UserMenu />
@@ -150,7 +158,7 @@ describe('UserMenu DM role toggle', () => {
     const setMode = vi.fn()
     const dmState = makeUserState()
     dmState.user.role = 'dm'
-    render(
+    renderWithTheme(
       <AppNavContext.Provider value={makeNavState({ mode: 'rules', setMode })}>
         <CurrentUserContext.Provider value={dmState}>
           <UserMenu />
@@ -160,5 +168,35 @@ describe('UserMenu DM role toggle', () => {
     await openMenu()
     await userEvent.click(screen.getByRole('switch', { name: /dungeon master/i }))
     expect(setMode).not.toHaveBeenCalled()
+  })
+})
+
+// ── swe1.11 — dark/light theme toggle lives in the UserMenu ───────────────────
+
+describe('UserMenu theme toggle (swe1.11)', () => {
+  // localStorage is effectively inert in this runner (no removeItem/clear), so the
+  // ThemeProvider falls through to the OS default (light in jsdom). Just keep the
+  // document theme attribute clean between tests.
+  beforeEach(() => {
+    document.documentElement.removeAttribute('data-theme')
+  })
+  afterEach(() => {
+    document.documentElement.removeAttribute('data-theme')
+  })
+
+  it('exposes a Dark theme switch in the menu that flips the document theme', async () => {
+    renderWithTheme(
+      <CurrentUserContext.Provider value={makeUserState()}>
+        <UserMenu />
+      </CurrentUserContext.Provider>,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /open user menu/i }))
+
+    const toggle = screen.getByRole('switch', { name: /dark theme/i })
+    expect(document.documentElement.getAttribute('data-theme')).not.toBe('dark')
+    await userEvent.click(toggle)
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    await userEvent.click(toggle)
+    expect(document.documentElement.getAttribute('data-theme')).not.toBe('dark')
   })
 })

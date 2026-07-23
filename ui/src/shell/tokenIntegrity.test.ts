@@ -66,3 +66,34 @@ describe('shell CSS token integrity', () => {
     })
   }
 })
+
+// ── swe1.11 — component CSS must theme via tokens, not hardcoded colors ────────
+
+const DS_DIR = join(SRC_DIR, 'ds')
+
+/** Top-level component CSS (shell + ds), EXCLUDING the token definitions in
+ * ds/tokens/* where literal hexes legitimately live. */
+function componentCssFiles(): string[] {
+  const inDir = (dir: string) =>
+    readdirSync(dir)
+      .filter((f) => f.endsWith('.css'))
+      .map((f) => join(dir, f))
+  return [...inDir(SHELL_DIR), ...inDir(DS_DIR)]
+}
+
+/** Hex/rgb/hsl color literals in a stylesheet, IGNORING colors that sit inside a
+ * `var(--x, …)` fallback (matched with one level of nested parens for rgba()). */
+function colorLiterals(css: string): string[] {
+  const withoutVarFallbacks = css.replace(/var\((?:[^()]|\([^()]*\))*\)/g, '')
+  return withoutVarFallbacks.match(/#[0-9a-fA-F]{3,8}\b|(?:rgba?|hsla?)\([^)]*\)/gi) ?? []
+}
+
+describe('component CSS themes via tokens, not hardcoded colors (swe1.11)', () => {
+  for (const file of componentCssFiles()) {
+    const name = file.split(/[\\/]/).slice(-2).join('/')
+    it(`${name} has no hardcoded color literals`, () => {
+      const literals = colorLiterals(readFileSync(file, 'utf8'))
+      expect(literals, `${name} hardcodes colors: ${literals.join(', ')}`).toEqual([])
+    })
+  }
+})
