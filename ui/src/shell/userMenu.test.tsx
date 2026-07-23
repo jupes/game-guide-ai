@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { ReactElement } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -9,8 +9,8 @@ import type { CurrentUserContextValue } from './currentUser'
 import { ThemeProvider } from '../ds/theme'
 import { UserMenu } from './UserMenu'
 
-// UserMenu now consumes useTheme() (swe1.11 theme toggle), which throws without
-// a ThemeProvider ancestor — so every render goes through this wrapper.
+// Render through the app's theme boundary so the no-duplicate assertion is
+// representative even though UserMenu no longer consumes the theme itself.
 function renderWithTheme(ui: ReactElement) {
   return render(<ThemeProvider>{ui}</ThemeProvider>)
 }
@@ -175,20 +175,10 @@ describe('UserMenu DM role toggle', () => {
   })
 })
 
-// ── swe1.11 — dark/light theme toggle lives in the UserMenu ───────────────────
+// ── eiio.3 — dark/light theme toggle lives in AppHeader ────────────────────────
 
-describe('UserMenu theme toggle (swe1.11)', () => {
-  // localStorage is effectively inert in this runner (no removeItem/clear), so the
-  // ThemeProvider falls through to the OS default (light in jsdom). Just keep the
-  // document theme attribute clean between tests.
-  beforeEach(() => {
-    document.documentElement.removeAttribute('data-theme')
-  })
-  afterEach(() => {
-    document.documentElement.removeAttribute('data-theme')
-  })
-
-  it('exposes a Dark theme switch in the menu that flips the document theme', async () => {
+describe('UserMenu theme location (eiio.3)', () => {
+  it('contains no Dark theme switch', async () => {
     renderWithTheme(
       <CurrentUserContext.Provider value={makeUserState()}>
         <UserMenu />
@@ -196,12 +186,8 @@ describe('UserMenu theme toggle (swe1.11)', () => {
     )
     await userEvent.click(screen.getByRole('button', { name: /open user menu/i }))
 
-    const toggle = screen.getByRole('switch', { name: /dark theme/i })
-    expect(document.documentElement.getAttribute('data-theme')).not.toBe('dark')
-    await userEvent.click(toggle)
-    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
-    await userEvent.click(toggle)
-    expect(document.documentElement.getAttribute('data-theme')).not.toBe('dark')
+    expect(screen.queryByRole('switch', { name: /dark theme/i }))
+      .not.toBeInTheDocument()
   })
 })
 

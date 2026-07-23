@@ -2,13 +2,13 @@
  * AppHeader (swe1.4) — persistent channel switcher band.
  *
  * Behaviors: role-gated channel list, switching via click + keyboard, active
- * channel marked with its accent, and a documented slot reserved for future
- * notes / GM-lore nav.
+ * channel marked with its accent, and the persistent theme control.
  */
 
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { ThemeProvider } from '../ds/theme'
 import { AppNavContext } from './AppNav'
 import type { AppNavState } from './AppNav'
 import { CurrentUserContext } from './currentUser'
@@ -48,15 +48,21 @@ function makeUserState(role: 'dm' | 'player' = 'player'): CurrentUserContextValu
 
 function renderHeader(nav: AppNavState, user = makeUserState()) {
   return render(
-    <AppNavContext.Provider value={nav}>
-      <CurrentUserContext.Provider value={user}>
-        <AppHeader />
-      </CurrentUserContext.Provider>
-    </AppNavContext.Provider>,
+    <ThemeProvider initialTheme="light">
+      <AppNavContext.Provider value={nav}>
+        <CurrentUserContext.Provider value={user}>
+          <AppHeader />
+        </CurrentUserContext.Provider>
+      </AppNavContext.Provider>
+    </ThemeProvider>,
   )
 }
 
 describe('AppHeader (swe1.4)', () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute('data-theme')
+  })
+
   it('renders all 4 channels for a dm', () => {
     renderHeader(makeNavState(), makeUserState('dm'))
     for (const name of ['Sage', 'Spell', 'Rules', 'GM']) {
@@ -96,10 +102,18 @@ describe('AppHeader (swe1.4)', () => {
     expect(sage).not.toHaveClass('chip--selected')
   })
 
-  it('reserves a documented slot for future notes / GM-lore nav', () => {
+  it('places a keyboard-operable Dark theme switch in the right-hand slot', async () => {
     const { container } = renderHeader(makeNavState())
-    const slot = container.querySelector('.app-header__future-slot')
-    expect(slot).toBeInTheDocument()
-    expect(slot).toHaveAttribute('aria-hidden', 'true')
+    const toggle = screen.getByRole('switch', { name: 'Dark theme' })
+
+    expect(container.querySelector('.app-header__theme')).toContainElement(toggle)
+    expect(screen.getByText('Dark theme')).toBeInTheDocument()
+    expect(toggle).not.toBeChecked()
+
+    toggle.focus()
+    await userEvent.keyboard(' ')
+
+    expect(toggle).toBeChecked()
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
   })
 })
