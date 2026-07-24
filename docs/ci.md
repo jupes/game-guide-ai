@@ -78,7 +78,7 @@ pretends to run:
 | Stage | Lights up when | Why it waits |
 | --- | --- | --- |
 | `retrieval-metrics` | Repo **secrets** `EVAL_DATABASE_URL` (a reachable, ingested pgvector DSN) + `OPENAI_API_KEY` | The corpus is deliberately **not in git** (licensing: no verbatim book text in the repo), so CI can't rebuild it — it must query a live DB. Until hosting (epic `17u`) provides one, the job skips with a notice. |
-| `deploy` | Repo **variable** `DEPLOY_TARGET` + an executable `scripts/deploy.sh <target> <sha>` | There is no hosting target yet (epic `17u`). The job no-ops with a notice; once you host somewhere, `deploy.sh` encodes the "how" and the variable the "where". |
+| `deploy` | Repo **variable** `DEPLOY_TARGET` + WIF secrets `GCP_WIF_PROVIDER` / `GCP_DEPLOY_SA` (the job authenticates to GCP via Workload Identity Federation) | Hosting is the GCP pilot (epic `17u`, bead `x5bz.1`). The job no-ops with a notice until `DEPLOY_TARGET` is set; the one-time bootstrap — project, Cloud SQL, corpus, WIF — is the runbook [`docs/deploy-gcp.md`](deploy-gcp.md). `scripts/deploy.sh` encodes the "how", the variable the "where". |
 
 Optional: the `deploy` job is bound to the `production` GitHub **environment** —
 adding a required reviewer there (Settings → Environments) turns every deploy
