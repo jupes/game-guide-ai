@@ -2,7 +2,7 @@
 
 Aetheril is a Retrieval-Augmented Generation chat assistant for D&D 5e. It answers questions grounded in rulebook text, with citations, and tells you plainly when it cannot find an answer.
 
-New to the repo? Each folder has its own README written to get you contributing in that area fast: [`service/`](service/README.md) (API + RAG pipeline), [`ingestion/`](ingestion/README.md) (corpus pipeline + evals), [`ui/`](ui/README.md) (React front-end), [`vector-db/`](vector-db/README.md) (schema). The living architecture doc is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the observability/eval layer is documented in [`docs/observability/`](docs/observability/OVERVIEW.md).
+New to the repo? Each folder has its own README written to get you contributing in that area fast: [`service/`](service/README.md) (API + RAG pipeline), [`ingestion/`](ingestion/README.md) (corpus pipeline + evals), [`ui/`](ui/README.md) (React front-end), [`vector-db/`](vector-db/README.md) (schema). The living architecture doc is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the observability/eval layer is documented in [`docs/observability/`](docs/observability/OVERVIEW.md), and the merge-to-`master` CI/CD pipeline in [`docs/ci.md`](docs/ci.md).
 
 ## Chat channels
 
@@ -66,7 +66,25 @@ the eval-only ipl filter→unfiltered fallback was net-harmful (see `config.py` 
 }
 ```
 
-`suggestions` is spell-mode-only (exactly three: practical/roleplay/wacky; `null` elsewhere or when that garnish failed). A refusal is a **200** with `answerable: false` — never an error. The service also exposes `GET /conversations/{id}/messages` (history recall) and `POST`/`GET /conversations/{id}/attachments` (see [`service/README.md`](service/README.md)).
+`suggestions` is spell-mode-only (exactly three: practical/roleplay/wacky; `null` elsewhere or when that garnish failed). A refusal is a **200** with `answerable: false` — never an error. The service also exposes `GET /conversations/{id}/messages` (history recall), `POST`/`GET /conversations/{id}/attachments`, and `POST /metrics/ui` (browser-telemetry ingest) — see [`service/README.md`](service/README.md).
+
+### Observability & metrics
+
+Both telemetry layers are **env-gated and fail-open** — chat, navigation, and rendering never
+break when telemetry is unconfigured:
+
+- **LLM traces** — with `RAG_TRACING=1` and `LANGFUSE_*` credentials, the LangGraph pipeline emits
+  Langfuse traces (generation latency, model, tokens, cost); the answer-quality (Ragas) evals read
+  them.
+- **Runtime metrics** — a bounded catalog
+  ([`docs/observability/metrics-standard.md`](docs/observability/metrics-standard.md)) of service
+  points (chat duration, gate answerable-rate, error category) and browser points (Web Vitals —
+  TTFB/FCP/LCP/CLS — chat round-trip + outcome). The browser posts same-origin batches to **`POST
+  /metrics/ui`**; the service validates them against the allowlist in `service/metrics.py` (invalid
+  → `422`) and records everything as Langfuse scores — the only durable store, no second metrics DB.
+  The `ui-e2e` CI job asserts the same Web-Vital names against fixed budgets.
+
+See [`docs/observability/`](docs/observability/OVERVIEW.md) for dashboard and eval details.
 
 ## Running E2E — one command
 
@@ -147,19 +165,36 @@ with no `sys.path` hacks. Run pytest from the repo root with the `test` extra:
 ```bash
 uv run --with '.[test]' python -m pytest -q     # whole suite (service/tests + ingestion/tests + tests/)
 cd ui && bun run test                            # UI: jsdom unit tests + storybook browser tests
+cd ui && bun run test:e2e                        # UI: Playwright E2E + perf budgets (production Compose image)
 ```
+
+### Continuous integration
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every pull request to
+`master` and every merge — PRs run all gates but never deploy. Alongside `python-tests` and
+`ui-tests` (the commands above), a **`ui-e2e`** job drives the production Nginx UI image with
+Playwright over a DB-/key-free [`docker-compose.e2e.yml`](docker-compose.e2e.yml) stack and
+enforces Web-Vital budgets (TTFB ≤ 1500 ms · FCP ≤ 2000 · LCP ≤ 2500 · CLS ≤ 0.1), and a
+**`retrieval-metrics`** job re-runs `eval_golden.py` against the live corpus DB and **fails on a
+>2-point drop** in Hit@1 or Recall@10 versus the committed `ingestion/eval_results.json` baseline.
+All-green gates a `deploy` job that no-ops until a hosting target exists. Full rules — the
+`force_deploy` override, refreshing the baseline, the secrets that light up the gated jobs — are in
+[`docs/ci.md`](docs/ci.md).
 
 ## Directory layout
 
 | Path | Description |
 | --- | --- |
-| `service/` | FastAPI app — LangGraph RAG pipeline, per-channel personas, history, attachments ([README](service/README.md)) |
+| `service/` | FastAPI app — LangGraph RAG pipeline, per-channel personas, history, attachments, runtime metrics ([README](service/README.md)) |
 | `ingestion/` | PDF→chunks→embeddings pipeline, shared retrieval core, eval harness ([README](ingestion/README.md)) |
 | `ui/` | React + Vite chat interface, Aetheril design system ([README](ui/README.md)) |
 | `vector-db/` | DB init SQL (corpus + chat schema) and pgvector setup ([README](vector-db/README.md)) |
 | `config.py` | Single home of every RAG tuning knob — env-overridable (`RAG_*`), documented defaults |
+| `scripts/` | `up.sh` one-command stack launcher; `ci/eval_gate.py` retrieval regression gate |
 | `tests/` | Repo-level guards: packaging invariant, config knobs |
-| `docs/` | Architecture, observability/eval layer, ingestion research + eval reports |
+| `docs/` | Architecture, CI/CD, observability/eval layer, ingestion research + eval reports |
+| `.github/workflows/ci.yml` | Merge-to-`master` CI: tests + retrieval-metrics gate + gated deploy ([docs](docs/ci.md)) |
 | `docker-compose.yml` | Full stack: vector-db → service → ui |
+| `docker-compose.e2e.yml` | Playwright E2E stack: production UI image + deterministic FastAPI adapter (no DB/LLM) |
 | `Dockerfile.service` | Python 3.12-slim image for the agent service |
 | `ui/Dockerfile` | Multi-stage bun build + nginx serve |
