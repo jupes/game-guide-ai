@@ -58,9 +58,14 @@ No authorized networks: nothing reaches the DB over its public IP; admin/migrati
 goes through the **Cloud SQL Auth Proxy** (IAM), and the app connects over the
 Cloud Run socket (`--add-cloudsql-instances`).
 
+**`--edition=ENTERPRISE` is required.** New Postgres 17 instances default to the
+Enterprise **Plus** edition, which has no shared-core tiers — `db-f1-micro` only
+exists on the Enterprise edition. (Enterprise Plus's cheapest tier alone exceeds
+the $10 cap, so Enterprise is also the budget-correct choice.)
+
 ```bash
 gcloud sql instances create game-guide-ai \
-  --database-version=POSTGRES_17 --tier=db-f1-micro --region="$REGION" \
+  --database-version=POSTGRES_17 --edition=ENTERPRISE --tier=db-f1-micro --region="$REGION" \
   --storage-size=10 --storage-type=HDD --availability-type=zonal
 gcloud sql databases create game_guide_ai --instance=game-guide-ai
 gcloud sql users set-password postgres --instance=game-guide-ai --password="<CHOOSE_A_STRONG_PW>"
