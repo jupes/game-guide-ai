@@ -42,7 +42,10 @@ The picker controls **answer generation only** in version 1. Live retrieval stil
 corpus, changing the 1536-dimensional vector contract, and independently revalidating retrieval.
 The current generation path is also deliberately stateless: it sends the persona/system prompt,
 the retrieved context, and the current user turn, but does not replay stored conversation history.
-Adding multi-turn model context or preserved reasoning is a separate design.
+Adding multi-turn model context or preserved reasoning is a separate design — now drafted as the
+companion plan `docs/forge/plans/game-guide-ai-memory-personalization.md`, whose M-RULE (all memory
+is model-agnostic plain text, never provider state) is what keeps per-turn `Auto` switching and
+mid-stream fallback safe once memory exists.
 
 ## Resolved design decisions (D1–D7)
 
@@ -1149,7 +1152,9 @@ Out of scope:
 - embedding provider/model migration;
 - self-hosted GPU inference;
 - end-user API-key storage;
-- replaying conversation history or provider reasoning content into generation;
+- replaying conversation history or provider reasoning content into generation (planned separately
+  in `docs/forge/plans/game-guide-ai-memory-personalization.md`; provider reasoning replay stays
+  excluded there too);
 - streaming transport for `/chat`;
 - unbounded custom model/base URL entry;
 - fine-tuning;
