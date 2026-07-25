@@ -63,12 +63,17 @@ Enterprise **Plus** edition, which has no shared-core tiers — `db-f1-micro` on
 exists on the Enterprise edition. (Enterprise Plus's cheapest tier alone exceeds
 the $10 cap, so Enterprise is also the budget-correct choice.)
 
+**Use a URL-safe password.** It gets embedded in the `DATABASE_URL` secret as a
+URL DSN (`postgresql://postgres:PW@/...`) that the app parses at runtime, so a `:`,
+`@`, `/`, `[` etc. will break both `psql` here and the deployed service. Generate a
+pure-hex one — strong and safe everywhere: `export DBPW="$(openssl rand -hex 24)"`.
+
 ```bash
 gcloud sql instances create game-guide-ai \
   --database-version=POSTGRES_17 --edition=ENTERPRISE --tier=db-f1-micro --region="$REGION" \
   --storage-size=10 --storage-type=HDD --availability-type=zonal
 gcloud sql databases create game_guide_ai --instance=game-guide-ai
-gcloud sql users set-password postgres --instance=game-guide-ai --password="<CHOOSE_A_STRONG_PW>"
+gcloud sql users set-password postgres --instance=game-guide-ai --password="$DBPW"
 
 # Enable pgvector + create the schema. Via the Auth Proxy in one terminal:
 #   cloud-sql-proxy "$PROJECT:$REGION:game-guide-ai" --port 6543
