@@ -1,4 +1,4 @@
-# Deploy runbook — GCP pilot hosting (`game-guide-ai-pilot`)
+# Deploy runbook — GCP pilot hosting (`game-guide-ai-cloud`)
 
 Decision record + operator runbook for the closed pilot deployment (bead `x5bz.1`,
 epic `17u`). Hosting decision (2026-07-22): **one Cloud Run service** (the
@@ -25,7 +25,7 @@ live deploy (Checkpoint D), and CI activation (Checkpoint E) — the steps that 
 - `docker` (for `deploy.sh`) and `pg_dump`/`pg_restore` (Postgres 17 client) locally.
 
 ```bash
-export PROJECT=game-guide-ai-pilot
+export PROJECT=game-guide-ai-cloud
 export REGION=us-central1
 export BILLING_ACCOUNT_ID=XXXXXX-XXXXXX-XXXXXX   # from the list above
 ```
@@ -67,9 +67,12 @@ gcloud sql users set-password postgres --instance=game-guide-ai --password="<CHO
 
 # Enable pgvector + create the schema. Via the Auth Proxy in one terminal:
 #   cloud-sql-proxy "$PROJECT:$REGION:game-guide-ai" --port 6543
-# then, in another (connection details from the proxy):
-psql "postgresql://postgres:<PW>@localhost:6543/game_guide_ai" -c "CREATE EXTENSION IF NOT EXISTS vector;"
-psql "postgresql://postgres:<PW>@localhost:6543/game_guide_ai" -f vector-db/init/00_schema.sql   # + any other init/*.sql
+# then, in another, apply every init script in order (01 creates the vector
+# extension + dnd schema; 02-04 add tables, indexes, hybrid search, chat schema):
+PROXY="postgresql://postgres:<PW>@localhost:6543/game_guide_ai"
+for f in 01-extensions.sql 02-schema.sql 03-hybrid-search.sql 04-chat-schema.sql; do
+  psql "$PROXY" -f "vector-db/init/$f"
+done
 ```
 
 The `INSTANCE_CONNECTION_NAME` is `"$PROJECT:$REGION:game-guide-ai"` — used by
@@ -105,7 +108,7 @@ gcloud pubsub topics create budget-alerts
 
 gcloud billing budgets create \
   --billing-account="$BILLING_ACCOUNT_ID" \
-  --display-name="game-guide-ai-pilot \$10" \
+  --display-name="game-guide-ai-cloud \$10" \
   --budget-amount=10USD \
   --filter-projects="projects/$PROJECT" \
   --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0 \
@@ -214,7 +217,7 @@ Then set on the GitHub repo (Settings → Secrets and variables → Actions):
 |------|------|-------|
 | Variable | `DEPLOY_TARGET` | `game-guide-ai` |
 | Secret | `GCP_WIF_PROVIDER` | the provider resource name (`.../providers/github`) |
-| Secret | `GCP_DEPLOY_SA` | `gha-deployer@game-guide-ai-pilot.iam.gserviceaccount.com` |
+| Secret | `GCP_DEPLOY_SA` | `gha-deployer@game-guide-ai-cloud.iam.gserviceaccount.com` |
 
 Merge to `master` → the `deploy` job authenticates via WIF and runs `deploy.sh`.
 Watch: `gh run watch` and `gcloud run revisions list --service game-guide-ai --region "$REGION"`.

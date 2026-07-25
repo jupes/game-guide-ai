@@ -1,4 +1,4 @@
-"""$10 hard-cap billing kill-switch for game-guide-ai-pilot (x5bz.1.3).
+"""$10 hard-cap billing kill-switch for game-guide-ai-cloud (x5bz.1.3).
 
 A Cloud Function subscribed to the pilot budget's Pub/Sub topic. Budget *alerts*
 only notify — they don't stop spend — so when actual cost reaches the budget this

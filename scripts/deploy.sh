@@ -20,7 +20,7 @@ set -euo pipefail
 
 # ── Config (env-overridable; real values live in CI vars / the operator shell) ─
 REGION="${GCP_REGION:-us-central1}"
-PROJECT="${GCP_PROJECT:-game-guide-ai-pilot}"
+PROJECT="${GCP_PROJECT:-game-guide-ai-cloud}"
 AR_REPO="${AR_REPO:-game-guide-ai}"                       # Artifact Registry repo
 CLOUDSQL_INSTANCE="${CLOUDSQL_INSTANCE:-${PROJECT}:${REGION}:game-guide-ai}"
 # Secret Manager secret NAMES — values are never inlined here.

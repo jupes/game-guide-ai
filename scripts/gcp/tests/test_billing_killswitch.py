@@ -48,11 +48,11 @@ def _event(cost: float, budget: float) -> dict:
 def test_disables_billing_at_or_over_budget() -> None:
     client = _FakeBillingClient()
     ks.disable_billing_if_over_budget(
-        _event(10.0, 10.0), billing_client=client, project_id="game-guide-ai-pilot"
+        _event(10.0, 10.0), billing_client=client, project_id="game-guide-ai-cloud"
     )
     assert client.calls, "billing must be disabled when cost >= budget"
     name, info = client.calls[0]
-    assert name == "projects/game-guide-ai-pilot"
+    assert name == "projects/game-guide-ai-cloud"
     # Detaching the billing account (empty name) is what actually stops spend.
     assert info["billing_account_name"] == ""
 
@@ -60,7 +60,7 @@ def test_disables_billing_at_or_over_budget() -> None:
 def test_does_not_disable_under_budget() -> None:
     client = _FakeBillingClient()
     ks.disable_billing_if_over_budget(
-        _event(4.2, 10.0), billing_client=client, project_id="game-guide-ai-pilot"
+        _event(4.2, 10.0), billing_client=client, project_id="game-guide-ai-cloud"
     )
     assert client.calls == [], "billing must NOT be touched under budget"
 
