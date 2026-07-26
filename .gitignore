@@ -14,3 +14,7 @@ build/
 dist/
 uv.lock
 ingestion/metrics_summary.json
+
+# Local Python virtualenvs (pollute pytest collection if not excluded)
+.venv/
+venv/

@@ -83,3 +83,10 @@ py-modules = ["config"]
 # Puts the repo root on sys.path so `import service` / `import ingestion` resolve
 # from a plain checkout with no install (pytest >= 7). Covers "pytest from repo root".
 pythonpath = ["."]
+# Collect ONLY the project's test dirs. Without this, a bare `pytest` (as CI runs
+# it) recurses from the rootdir into any local `.venv/`, `build/lib/`, or the uv
+# ephemeral env's site-packages and tries to collect third-party tests
+# (colorama/greenlet/sqlalchemy/...), producing thousands of collection errors.
+testpaths = ["service/tests", "ingestion/tests", "tests", "scripts/gcp/tests"]
+# Belt-and-suspenders: never descend into these even if named on the CLI.
+norecursedirs = [".venv", "venv", "build", "dist", "node_modules", "ui", ".git", "*.egg-info"]
