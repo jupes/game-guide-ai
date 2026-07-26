@@ -150,13 +150,15 @@ Move the embedded corpus from local **:5433** into Cloud SQL — **no re-embeddi
 **Set `DATABASE_URL` explicitly**; `verify_db.py`'s fallback is `localhost:5432`
 (the legacy corrupted corpus) and it does a sentinel insert+delete, not a read-only probe.
 
-```bash
 # Dump the dnd schema (corpus) from the CORRECT local DB (:5433):
 pg_dump "postgresql://rag:rag_dev_change_me@localhost:5433/game_guide_ai" \
   -Fc --schema=dnd -f corpus-dnd.dump
 
-# Restore through the Auth Proxy (started in step 3, port 6543):
-pg_restore --no-owner --dbname="postgresql://postgres:<PW>@localhost:6543/game_guide_ai" corpus-dnd.dump
+# Restore DATA ONLY through the Auth Proxy (started in step 3, port 6543).
+# The dnd.chunks table + indexes already exist (init/02 applied in step 3), so a
+# full restore would collide on CREATE ("already exists"). --data-only loads just
+# the 9,067 rows into the existing table:
+pg_restore --no-owner --data-only --dbname="$PROXY" corpus-dnd.dump
 
 # Verify: row count matches local (9,067) and a kNN smoke query passes.
 DATABASE_URL="postgresql://postgres:<PW>@localhost:6543/game_guide_ai" \
