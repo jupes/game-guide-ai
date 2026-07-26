@@ -189,6 +189,25 @@ bash scripts/deploy.sh --dry-run
 bash scripts/deploy.sh game-guide-ai "$(git rev-parse --short HEAD)"
 ```
 
+> **Cloud Shell: `docker push` refused?** Pushes to `*-docker.pkg.dev` from Cloud
+> Shell can fail at the TCP level (`dial tcp ...:443: connect: connection refused`)
+> even with credentials correctly registered (hit 2026-07-25, twice, different
+> Google IPs). Bypass Cloud Shell's push path by building server-side with Cloud
+> Build, then run the `gcloud run deploy` step from `deploy.sh --dry-run` manually:
+>
+> ```bash
+> IMAGE="us-central1-docker.pkg.dev/$PROJECT/game-guide-ai/game-guide-ai:$(git rev-parse --short HEAD)"
+> cat > /tmp/cloudbuild.yaml <<EOF
+> steps:
+> - name: 'gcr.io/cloud-builders/docker'
+>   args: ['build', '-f', 'Dockerfile.cloud', '-t', '${IMAGE}', '.']
+> images: ['${IMAGE}']
+> EOF
+> gcloud builds submit --config /tmp/cloudbuild.yaml .
+> ```
+>
+> (CI is unaffected — GitHub runners push over a different network path.)
+
 **Verify the lock and the app:**
 
 ```bash
