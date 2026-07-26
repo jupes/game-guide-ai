@@ -165,13 +165,20 @@ pg_dump "postgresql://rag:rag_dev_change_me@localhost:5433/game_guide_ai" \
 # Restore DATA ONLY through the Auth Proxy (started in step 3, port 6543).
 # The dnd.chunks table + indexes already exist (init/02 applied in step 3), so a
 # full restore would collide on CREATE ("already exists"). --data-only loads just
-# the 9,067 rows into the existing table:
-pg_restore --no-owner --data-only --dbname="$PROXY" corpus-dnd.dump
+# the 9,067 rows into the existing table.
+#
+# IMPORTANT: use a pg_restore at least as new as the pg17 pg_dump that wrote the
+# archive, or you get "unsupported version (1.16) in file header". Cloud Shell's
+# bundled client is older, so run the restore via the matching pg17 image
+# (--network host lets it reach the proxy on 127.0.0.1:6543):
+docker run --rm --network host -v ~/corpus-dnd.dump:/dump:ro pgvector/pgvector:pg17-bookworm \
+  pg_restore --no-owner --data-only --dbname="$PROXY" /dump
 
-# Verify: row count matches local (9,067) and a kNN smoke query passes.
-DATABASE_URL="postgresql://postgres:<PW>@localhost:6543/game_guide_ai" \
-  PYTHONUTF8=1 python vector-db/verify_db.py
-psql "postgresql://postgres:<PW>@localhost:6543/game_guide_ai" -tAc "select count(*) from dnd.chunks;"   # → 9067
+# Verify with psql — version-independent, and needs no psycopg (Cloud Shell's
+# system python lacks it, so `python vector-db/verify_db.py` would ModuleNotFound):
+psql "$PROXY" -tAc "select count(*) from dnd.chunks;"   # → 9067
+# Optional kNN smoke test (needs psycopg): uv run --with 'psycopg[binary]' --with pgvector \
+#   env DATABASE_URL="$PROXY" PYTHONUTF8=1 python vector-db/verify_db.py
 ```
 
 ## 7. First locked deploy (Checkpoint D)
