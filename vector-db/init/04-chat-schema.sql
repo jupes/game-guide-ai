@@ -32,3 +32,12 @@ CREATE TABLE IF NOT EXISTS chat.attachments (
 
 CREATE INDEX IF NOT EXISTS chat_attachments_conv_created_idx
   ON chat.attachments (conversation_id, created_at);
+
+-- Per-user conversation ownership (x5bz.2). First authenticated user to use a
+-- conversation_id owns it; the API 403s anyone else. Kept in sync with
+-- service/history.py CHAT_SCHEMA_DDL.
+CREATE TABLE IF NOT EXISTS chat.conversations (
+  conversation_id TEXT PRIMARY KEY,
+  user_id         BIGINT NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);

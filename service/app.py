@@ -309,6 +309,35 @@ def _fetch_attachment_context(
     return context, label
 
 
+def _enforce_conversation_owner(
+    store: MessageStore | None, conversation_id: str | None, user_id: int,
+) -> None:
+    """403 if the conversation is owned by another user (x5bz.2 D). Best-effort
+    on store errors — fail-open is safe because the subsequent read/attachment
+    fetch hits the same store and fails/empties, so no cross-user data is served."""
+    if store is None or conversation_id is None:
+        return
+    try:
+        owner = store.owner_of(conversation_id)
+    except Exception:
+        log.warning("ownership check failed (conversation_id=%s)", conversation_id, exc_info=True)
+        return
+    if owner is not None and owner != user_id:
+        raise HTTPException(status_code=403, detail="not your conversation")
+
+
+def _claim_conversation(
+    store: MessageStore | None, conversation_id: str | None, user_id: int,
+) -> None:
+    """Best-effort: record the conversation's owner on first use (mirrors _persist_turn)."""
+    if store is None or conversation_id is None:
+        return
+    try:
+        store.claim_conversation(conversation_id, user_id)
+    except Exception:
+        log.warning("conversation claim failed (conversation_id=%s)", conversation_id, exc_info=True)
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str | bool]:
     return {"status": "ok", "ready": "rag" in _state}
@@ -322,6 +351,14 @@ def chat(
     metrics: MetricsSink = Depends(get_metrics_sink),
     session: SessionData = Depends(require_session),
 ) -> ChatResponse:
+    # Server-side role gate: the GM channel is DM-only, enforced from the session
+    # role (not the UI toggle). Raised before the try so it isn't masked as a 500.
+    if req.mode.value == "gm" and session.role != "dm":
+        raise HTTPException(status_code=403, detail="the GM channel requires the DM role")
+    # Ownership: 403 if this conversation belongs to someone else; claim it on
+    # first use. Before the try for the same reason (403, not 500).
+    _enforce_conversation_owner(store, req.conversation_id, session.user_id)
+    _claim_conversation(store, req.conversation_id, session.user_id)
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, req.conversation_id,
@@ -398,6 +435,7 @@ def conversation_messages(
 ) -> MessagesResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="message history unavailable")
+    _enforce_conversation_owner(store, conversation_id, session.user_id)
     # config.HISTORY_LIMIT read at request time (not import) so env/test
     # overrides of the knob take effect; client may ask for fewer, never more.
     cap = config.HISTORY_LIMIT
@@ -430,6 +468,8 @@ def upload_attachment(
 ) -> AttachmentResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
+    _enforce_conversation_owner(store, conversation_id, session.user_id)
+    _claim_conversation(store, conversation_id, session.user_id)
     try:
         data = base64.b64decode(req.data, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -459,6 +499,7 @@ def conversation_attachments(
 ) -> AttachmentsResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
+    _enforce_conversation_owner(store, conversation_id, session.user_id)
     try:
         stored = store.attachments_for(conversation_id)
     except _DB_ERRORS as exc:

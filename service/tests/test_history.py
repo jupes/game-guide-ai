@@ -58,6 +58,12 @@ class _ExplodingStore:
     def attachments_for(self, conversation_id):
         raise RuntimeError("disk on fire")
 
+    def owner_of(self, conversation_id):
+        raise RuntimeError("disk on fire")
+
+    def claim_conversation(self, conversation_id, user_id):
+        raise RuntimeError("disk on fire")
+
 
 def test_history_limit_caps_get_keeping_most_recent(monkeypatch):
     """GET returns at most HISTORY_LIMIT messages — the most recent, oldest-first."""

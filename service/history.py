@@ -55,6 +55,16 @@ CREATE TABLE IF NOT EXISTS chat.attachments (
 
 CREATE INDEX IF NOT EXISTS chat_attachments_conv_created_idx
   ON chat.attachments (conversation_id, created_at);
+
+-- Per-user conversation ownership (x5bz.2 D). A conversation_id is client-
+-- generated; the first authenticated user to use it owns it, and the endpoints
+-- 403 anyone else. A separate table (not a user_id column on messages) keeps the
+-- ownership check one lookup and leaves the message/attachment writes untouched.
+CREATE TABLE IF NOT EXISTS chat.conversations (
+  conversation_id TEXT PRIMARY KEY,
+  user_id         BIGINT NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -88,6 +98,12 @@ class MessageStore(Protocol):
     def attachments_for(self, conversation_id: str) -> list[StoredAttachment]:
         ...  # pragma: no cover - structural type
 
+    def claim_conversation(self, conversation_id: str, user_id: int) -> int:
+        ...  # pragma: no cover - structural type
+
+    def owner_of(self, conversation_id: str) -> int | None:
+        ...  # pragma: no cover - structural type
+
 
 @dataclass
 class _Row:
@@ -106,6 +122,7 @@ class InMemoryMessageStore:
 
     _rows: list[_Row] = field(default_factory=list)
     _attachments: list[StoredAttachment] = field(default_factory=list)
+    _owners: dict[str, int] = field(default_factory=dict)
 
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
@@ -134,6 +151,12 @@ class InMemoryMessageStore:
 
     def attachments_for(self, conversation_id: str) -> list[StoredAttachment]:
         return [a for a in self._attachments if a.conversation_id == conversation_id]
+
+    def claim_conversation(self, conversation_id: str, user_id: int) -> int:
+        return self._owners.setdefault(conversation_id, user_id)
+
+    def owner_of(self, conversation_id: str) -> int | None:
+        return self._owners.get(conversation_id)
 
 
 def _to_message(r: _Row) -> StoredMessage:
@@ -219,3 +242,26 @@ class PostgresMessageStore:
             )
             for row in rows
         ]
+
+    def claim_conversation(self, conversation_id: str, user_id: int) -> int:
+        """Record the owner on first use; return the owner (existing or new).
+        INSERT ... ON CONFLICT DO NOTHING then SELECT returns whoever won."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO chat.conversations (conversation_id, user_id) VALUES (%s, %s) "
+                "ON CONFLICT (conversation_id) DO NOTHING",
+                (conversation_id, user_id),
+            )
+            row = conn.execute(
+                "SELECT user_id FROM chat.conversations WHERE conversation_id = %s",
+                (conversation_id,),
+            ).fetchone()
+        return row[0]
+
+    def owner_of(self, conversation_id: str) -> int | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT user_id FROM chat.conversations WHERE conversation_id = %s",
+                (conversation_id,),
+            ).fetchone()
+        return row[0] if row is not None else None
