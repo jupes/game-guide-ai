@@ -1,0 +1,46 @@
+# Single-container UI + API image for Cloud Run (x5bz.1 Checkpoint A).
+#
+# One image serves everything: the FastAPI service mounts the bun-built ui/dist,
+# so a single Cloud Run revision answers both the SPA and /chat. Built from the
+# REPO ROOT (unlike ui/Dockerfile, whose context is ui/) so the bun stage can
+# reach ui/ and the python stage can reach service/ + ingestion/ + pyproject.
+#
+#   docker build -f Dockerfile.cloud -t gga-cloud .
+#   docker run --rm -p 8080:8000 -e DATABASE_URL=... -e OPENAI_API_KEY=... gga-cloud
+
+# ---- stage 1: build the React UI (bun) ----
+FROM oven/bun:1 AS ui-builder
+WORKDIR /ui
+# Deps first for layer caching (pattern from ui/Dockerfile).
+COPY ui/package.json ui/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY ui/ ./
+RUN bun run build          # → /ui/dist
+
+# ---- stage 2: FastAPI service with the UI baked in (slim python) ----
+FROM python:3.12-slim
+WORKDIR /app
+
+# Install the game-guide-ai package (service + ingestion) from pyproject, exactly
+# like Dockerfile.service. torch / the cross-encoder reranker stay OUT of the
+# default image — opt in with `--build-arg INSTALL_RERANK=1` (RAG_RERANK=1 alone
+# just logs a warning and serves unreranked).
+COPY pyproject.toml ./
+COPY config.py ./
+COPY ingestion/ ingestion/
+COPY service/ service/
+ARG INSTALL_RERANK=0
+RUN if [ "$INSTALL_RERANK" = "1" ]; then \
+        pip install --no-cache-dir '.[rerank]'; \
+    else \
+        pip install --no-cache-dir .; \
+    fi
+
+# Bake the built SPA in where service/app.py's StaticFiles mount serves it.
+COPY --from=ui-builder /ui/dist ui/dist
+
+# Cloud Run routes traffic to $PORT (8080 by default); compose/local has no PORT
+# and falls back to 8000. Honoring $PORT means the same image is healthy in both
+# places even if a deploy forgets `--port` (the ci.yml deploy.sh sets it anyway).
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn service.app:app --host 0.0.0.0 --port ${PORT:-8000}"]

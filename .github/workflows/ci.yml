@@ -154,8 +154,27 @@ jobs:
           || needs.retrieval-metrics.result == 'skipped'
           || (github.event_name == 'workflow_dispatch' && inputs.force_deploy))
     environment: production
+    permissions:
+      id-token: write   # WIF: mint the OIDC token google-github-actions/auth exchanges
+      contents: read    # actions/checkout
+    env:
+      WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}   # gates the auth steps until WIF is set up
     steps:
       - uses: actions/checkout@v4
+      # Auth steps stay dormant until the WIF secrets exist (docs/deploy-gcp.md §8),
+      # so an unconfigured repo still reaches the graceful no-op below instead of failing.
+      - name: Authenticate to Google Cloud (WIF)
+        if: env.WIF_PROVIDER != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+      - name: Set up gcloud
+        if: env.WIF_PROVIDER != ''
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Configure Docker for Artifact Registry
+        if: env.WIF_PROVIDER != ''
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
       - name: Deploy (or report unconfigured)
         env:
           DEPLOY_TARGET: ${{ vars.DEPLOY_TARGET }}

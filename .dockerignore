@@ -15,8 +15,15 @@ ingestion/extract*.py
 ingestion/ingest_books.py
 ingestion/qa_chunks.py
 
-# Other top-level dirs not needed
+# Other top-level dirs not needed at service runtime
 vector-db/
 spikes/
 docs/
-ui/
+
+# ui/ source IS needed by Dockerfile.cloud's bun build stage (the single-container
+# image). Keep it in the context but drop the heavy / generated dirs. Dockerfile.service
+# never COPYs ui/, so this only enlarges its context by the small source tree.
+ui/node_modules/
+ui/dist/
+ui/e2e-results/
+ui/playwright-report/

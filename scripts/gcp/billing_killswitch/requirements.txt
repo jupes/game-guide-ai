@@ -1,0 +1,4 @@
+# Cloud Function runtime deps for the billing kill-switch (deployed separately
+# from the main app — see docs/deploy-gcp.md). Pinned to a major to stay current
+# with security fixes without silent breaking changes.
+google-cloud-billing>=1.13,<2
