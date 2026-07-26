@@ -49,11 +49,29 @@ Refactor watch-list: keep the auth store behind a small interface (like `Message
 fake it; centralize cookie name/flags/TTL in `config.py`; one `require_session` dependency reused
 by every guarded route.
 
+## Security Posture (from plan review)
+
+- **Cookie:** `HttpOnly` + `SameSite=Lax` + `Secure`. `Secure` is **forced on in prod via config**,
+  not derived from `request.url.scheme` — Cloud Run terminates TLS and forwards HTTP, so scheme
+  sniffing would see `http` and wrongly drop `Secure`. Local dev sets it off.
+- **CSRF:** same-origin `SameSite=Lax` is the mitigation for the cookie-authed JSON POSTs
+  (`/chat`, `/auth/*`, attachments). No separate CSRF token for the pilot; revisit if a cross-site
+  surface ever appears. (Signup/login themselves are safe pre-session.)
+- **Invite token:** `secrets.token_urlsafe(32)`; single-use, consumed atomically; expiry + revoke.
+- **Email:** stored case-folded with a `UNIQUE` constraint; unverified (invite is the trust anchor).
+- **`/metrics/ui`:** intentionally stays **unauthenticated** (it's a UI telemetry beacon, needs to
+  fire pre-login); it accepts only bounded `ui.*` metric points — documented decision, not an oversight.
+- **`/healthz`:** stays open (Cloud Run startup probe must reach it).
+
 ## Build Sequence & Checkpoints
 
 ### Checkpoint A — Auth schema + store + argon2 (no HTTP yet)
 Steps: `05-auth-schema.sql` (users, invites) + `AuthStore.ensure_schema()`; argon2 hash/verify;
 invite create/redeem with atomic consumption. Tests #1, #3, #8.
+Schema specifics: `auth.users(id, email CITEXT/lower UNIQUE, password_hash, role, created_at)` —
+enforce **case-folded unique email**; `auth.invites(token, role, expires_at, used_at, used_by,
+revoked_at, created_at)` with `token = secrets.token_urlsafe(32)`. argon2-cffi confirmed to install
+from a manylinux abi3 wheel on `python:3.12-slim`/amd64 (no build deps; bcrypt fallback not needed).
 Demo: `pytest service/tests/test_auth_hash.py test_invites.py -q` green; `psql` shows `auth.users`/`auth.invites`.
 
 ### Checkpoint B — Session signing + admin invite CLI
@@ -65,12 +83,21 @@ Steps: `POST /auth/signup` (validate invite → create user → consume → set 
 Demo: curl signup with a CLI-minted token → 200 + Set-Cookie; then `/chat` with the cookie → 200, without → 401.
 
 ### Checkpoint D — Role enforcement + conversation ownership
-Steps: GM-channel 403 for player sessions from the session role; add `user_id` to conversations, scope history reads/writes to the owner. Tests #6, #7.
-Demo: player cookie + `mode=gm` → 403; dm cookie → 200; user A can't read user B's conversation.
+Steps: GM-channel 403 for player sessions from the session role; `ALTER TABLE ... ADD COLUMN IF NOT
+EXISTS user_id` on **both** `chat.messages` and `chat.attachments` (the existing pilot volume
+already has these tables, so CREATE-IF-NOT-EXISTS won't add the column — an explicit ALTER in
+`ensure_schema()` is required); scope message reads/writes **and the attachment GET/POST endpoints**
+to the owner so no authenticated user can reach another user's conversation by id. Tests #6, #7.
+Demo: player cookie + `mode=gm` → 403; dm cookie → 200; user A can't read user B's conversation or attachments.
 
 ### Checkpoint E — Frontend auth
-Steps: Login + Signup screens (invite token from URL query); replace `currentUser` STUB with `/auth/me`-backed session; `credentials:'include'` in `api.ts`; role read-only from session; 401 → Login. Test #9. UI gates run.
-Demo: `bun run dev` → visit `/signup?invite=…` → create account → land in app → chat → sign out → Login.
+Steps: add `'login'`/`'signup'` to the `AppNav` `Screen` union and an auth gate ahead of the app
+(there is **no router** — nav is a `Screen` state machine, and StaticFiles 404s on `/signup`, so the
+invite link is **`/?invite=<token>`** read from `window.location.search` on load, routing to the
+signup screen); Login + Signup screens; replace `currentUser` STUB with a `/auth/me`-backed session;
+`credentials:'include'` in `api.ts`; role read-only from session; a 401 from any call → Login screen.
+Test #9. UI gates run.
+Demo: `bun run dev` → open `/?invite=…` → create account → land in app → chat → sign out → Login.
 
 ### Checkpoint F — Ops wiring + invite copy + docs
 Steps: `SESSION_SECRET` in `config.py`, `deploy.sh --set-secrets`, `docs/deploy-gcp.md` (create the secret) ; invite-copy template in `docs/` (licensing posture); update `docs/ARCHITECTURE.md`. `(no live demo)` — verified by the deploy-contract guard test asserting the new secret is wired.
@@ -81,14 +108,14 @@ Demo: `bash scripts/deploy.sh --dry-run` shows `SESSION_SECRET=session-secret:la
 | File | Create/Modify | Purpose |
 |------|---------------|---------|
 | `vector-db/init/05-auth-schema.sql` | Create | users + invites tables |
-| `service/auth/store.py`, `hashing.py`, `session.py`, `invites.py` | Create | auth core (store, argon2, cookie, invite logic) |
+| `service/auth_store.py`, `hashing.py`, `session.py`, `invites.py` | Create | auth core as **flat `service/*` modules** (NOT a `service/auth/` subpackage — `pyproject.toml:70` is an explicit package list `["service","ingestion"]`, "do NOT auto-discover"; a subpackage would be omitted by `pip install .` and the image would crash while source-path unit tests stay green) |
 | `service/admin_invites.py` | Create | admin CLI (create/list/revoke) |
 | `service/app.py` | Modify | auth routes + `require_session` on guarded routes + GM 403 |
-| `service/history.py` | Modify | `user_id` ownership on conversations |
+| `service/history.py` | Modify | conversation ownership — `ALTER TABLE ... ADD COLUMN IF NOT EXISTS user_id` on **both** `chat.messages` and `chat.attachments` (CREATE-IF-NOT-EXISTS won't alter the existing pilot volume); scope message **and attachment** reads/writes to the owner |
 | `service/models.py` | Modify | Signup/Login/Me request+response models |
-| `config.py` | Modify | `SESSION_SECRET`, `SESSION_TTL_DAYS`, cookie flags |
-| `pyproject.toml` | Modify | add `argon2-cffi` (+ `itsdangerous` or PyJWT) |
-| `ui/src/shell/currentUser.tsx`, new `Login.tsx`/`Signup.tsx`, `api.ts`, `App` router | Modify/Create | real session UI |
+| `config.py` | Modify | `SESSION_SECRET`, `SESSION_TTL_DAYS`, cookie flags (`HttpOnly`, `SameSite=Lax`, `Secure` forced-on in prod via config — NOT derived from request scheme, since Cloud Run terminates TLS and forwards HTTP) |
+| `pyproject.toml` | Modify | add `argon2-cffi` + a signing lib (`itsdangerous`) to **core** deps (imported at request time, like `pymupdf`); packages list unchanged (flat modules) |
+| `ui/src/App.tsx` + `AppNav` `Screen` union, new `Login.tsx`/`Signup.tsx`, `ui/src/shell/currentUser.tsx`, `api.ts` | Modify/Create | real session UI — add `login`/`signup` to the `Screen` state machine + an auth gate ahead of `AppNavProvider` (there is no router); invite read from `window.location.search` on load |
 | `service/tests/*`, `ui/src/shell/auth.test.tsx` | Create | the 9 behavior suites |
 | `tests/test_deploy_contract.py` | Modify | assert `session-secret` wired in deploy.sh |
 | `scripts/deploy.sh`, `docs/deploy-gcp.md`, `docs/ARCHITECTURE.md`, `docs/invite-copy.md` | Modify/Create | ops + docs + licensing copy |
