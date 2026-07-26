@@ -154,6 +154,13 @@ Move the embedded corpus from local **:5433** into Cloud SQL — **no re-embeddi
 pg_dump "postgresql://rag:rag_dev_change_me@localhost:5433/game_guide_ai" \
   -Fc --schema=dnd -f corpus-dnd.dump
 
+# No local pg_dump? Use the running pg17 container's client instead (exact server
+# version; inside the container Postgres is on 5432, not the 5433 host mapping):
+#   docker exec game-guide-ai-vector-db pg_dump \
+#     "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai" \
+#     -Fc --schema=dnd -f /tmp/corpus-dnd.dump
+#   docker cp game-guide-ai-vector-db:/tmp/corpus-dnd.dump ./corpus-dnd.dump
+
 # Restore DATA ONLY through the Auth Proxy (started in step 3, port 6543).
 # The dnd.chunks table + indexes already exist (init/02 applied in step 3), so a
 # full restore would collide on CREATE ("already exists"). --data-only loads just
