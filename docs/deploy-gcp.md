@@ -154,12 +154,13 @@ Move the embedded corpus from local **:5433** into Cloud SQL — **no re-embeddi
 pg_dump "postgresql://rag:rag_dev_change_me@localhost:5433/game_guide_ai" \
   -Fc --schema=dnd -f corpus-dnd.dump
 
-# No local pg_dump? Use the running pg17 container's client instead (exact server
-# version; inside the container Postgres is on 5432, not the 5433 host mapping):
+# No local pg_dump? Use the running pg17 container's client and redirect stdout to
+# a host file (exact server version; inside the container Postgres is on 5432, not
+# the 5433 host mapping). Redirecting avoids an in-container path + docker cp — and
+# on Windows Git Bash it also sidesteps MSYS path translation mangling `-f /tmp/...`:
 #   docker exec game-guide-ai-vector-db pg_dump \
 #     "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai" \
-#     -Fc --schema=dnd -f /tmp/corpus-dnd.dump
-#   docker cp game-guide-ai-vector-db:/tmp/corpus-dnd.dump ./corpus-dnd.dump
+#     -Fc --schema=dnd > corpus-dnd.dump      # NB: no -t, it would corrupt the binary dump
 
 # Restore DATA ONLY through the Auth Proxy (started in step 3, port 6543).
 # The dnd.chunks table + indexes already exist (init/02 applied in step 3), so a
