@@ -130,3 +130,28 @@ ATTACHMENT_TYPES: frozenset[str] = frozenset({"txt", "md", "pdf"})
 # query; the +6pt prose Hit@1 should be confirmed via a Langfuse experiment A/B
 # before flipping this on in an environment.
 RAG_RERANK: bool = _bool("RAG_RERANK", False)
+
+# --- Auth / session (x5bz.2) -----------------------------------------------
+
+# Server secret that signs session cookies (itsdangerous). Empty by default so
+# a misconfigured prod fails loudly rather than signing with a guessable key —
+# service startup asserts it is set when auth is enabled. Injected in Cloud Run
+# from the `session-secret` Secret Manager entry (Checkpoint F).
+SESSION_SECRET: str = _str("SESSION_SECRET", "")
+
+# Session lifetime. A signed cookie can't be revoked server-side, so keep it
+# modest; rotating SESSION_SECRET invalidates all sessions if needed.
+SESSION_TTL_DAYS: int = _int("SESSION_TTL_DAYS", 14)
+
+SESSION_COOKIE_NAME: str = _str("SESSION_COOKIE_NAME", "gga_session")
+
+# Cookie hardening. `Secure` is forced on by default and must NOT be derived from
+# the request scheme: Cloud Run terminates TLS and forwards HTTP, so scheme
+# sniffing would see http and wrongly drop Secure. Set SESSION_COOKIE_SECURE=0
+# only for local http dev. SameSite=Lax is the CSRF mitigation for the
+# same-origin cookie-authed POSTs.
+SESSION_COOKIE_SECURE: bool = _bool("SESSION_COOKIE_SECURE", True)
+SESSION_COOKIE_SAMESITE: str = _str("SESSION_COOKIE_SAMESITE", "lax")
+
+# Default lifetime of a minted invite link (admin CLI --ttl-days overrides).
+INVITE_TTL_DAYS: int = _int("INVITE_TTL_DAYS", 14)

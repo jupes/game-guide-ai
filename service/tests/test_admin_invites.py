@@ -1,0 +1,60 @@
+"""Admin invite CLI command functions (x5bz.2 Checkpoint B).
+
+The `cmd_*`/format helpers are tested against the in-memory store — no DB. `main()`
+(argparse + PostgresAuthStore wiring) is exercised end-to-end in the gated
+integration path, not here.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from service.admin_invites import (
+    build_signup_link,
+    cmd_create,
+    cmd_list,
+    cmd_revoke,
+    format_invites,
+)
+from service.auth_store import InMemoryAuthStore
+
+
+def test_build_signup_link_uses_root_path_and_token() -> None:
+    link = build_signup_link("https://svc.run.app/", "abc123")
+    assert link == "https://svc.run.app/?invite=abc123"  # trailing slash normalized
+
+
+def test_create_persists_invite_with_role_and_returns_link() -> None:
+    store = InMemoryAuthStore()
+    link = cmd_create(store, role="dm", ttl_days=14, base_url="https://svc.run.app")
+    invites = store.list_invites()
+    assert len(invites) == 1
+    assert invites[0].role == "dm"
+    assert invites[0].token in link
+    assert link.startswith("https://svc.run.app/?invite=")
+
+
+def test_list_shows_status_open_used_revoked() -> None:
+    store = InMemoryAuthStore()
+    now = datetime.now(timezone.utc)
+    later = now + timedelta(days=7)
+    open_i = store.create_invite(role="player", expires_at=later)
+    used_i = store.create_invite(role="player", expires_at=later)
+    revoked_i = store.create_invite(role="player", expires_at=later)
+    store.redeem_invite(used_i.token, "u@example.com", "hash")
+    store.revoke_invite(revoked_i.token)
+
+    out = cmd_list(store)
+    assert "open" in out and "used" in out and "revoked" in out
+    assert open_i.token[:14] in out
+
+
+def test_format_invites_empty() -> None:
+    assert format_invites([]) == "(no invites)"
+
+
+def test_revoke_returns_true_then_false() -> None:
+    store = InMemoryAuthStore()
+    inv = store.create_invite(role="player", expires_at=datetime.now(timezone.utc) + timedelta(days=1))
+    assert cmd_revoke(store, inv.token) is True
+    assert cmd_revoke(store, inv.token) is False  # already revoked
