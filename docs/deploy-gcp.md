@@ -212,15 +212,27 @@ bash scripts/deploy.sh game-guide-ai "$(git rev-parse --short HEAD)"
 
 ```bash
 SVC_URL=$(gcloud run services describe game-guide-ai --region="$REGION" --format='value(status.url)')
-curl -s -o /dev/null -w '%{http_code}\n' "$SVC_URL/healthz"                              # → 403 (locked)
-curl -s -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$SVC_URL/healthz" # → {"status":"ok","ready":true}
 
-# Full chat round-trip through the authenticated proxy (browser on localhost):
-gcloud run services proxy game-guide-ai --region="$REGION"   # → http://localhost:8080
+# Lock check: an anonymous request must NOT get 200. A private Cloud Run service
+# returns Google's 403/404 to unauthenticated callers — either proves it's locked:
+curl -s -o /dev/null -w '%{http_code}\n' "$SVC_URL/healthz"       # → 403 or 404 (locked ✓)
+```
+
+> **Human operators: verify via the proxy, not a raw identity-token curl.**
+> `curl -H "Authorization: Bearer $(gcloud auth print-identity-token)"` works from a
+> **service account** (what CI uses in step 8), but a **user** account mints a token
+> whose audience doesn't match the service URL, so Cloud Run rejects it (you get the
+> same 403/404). Use `gcloud run services proxy`, which authenticates correctly:
+
+```bash
+# Full chat round-trip through the authenticated proxy:
+gcloud run services proxy game-guide-ai --region="$REGION"   # → http://127.0.0.1:8080
+# In Cloud Shell: Web Preview → port 8080. Append /healthz for {"status":"ok","ready":true}.
 ```
 
 Ask a Sage-channel question in the proxied browser — a grounded answer with
-citations from Cloud SQL confirms Checkpoint D.
+citations from Cloud SQL confirms Checkpoint D. Cold start builds the corpus
+vocabulary first, so the first `/healthz` may read `ready:false` for ~20-30s.
 
 **Optional — explicit `/healthz` startup probe.** Cloud Run's default startup probe
 (TCP on `--port`) is sufficient for the pilot. For an HTTP readiness probe, export
