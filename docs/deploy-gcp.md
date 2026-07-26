@@ -111,12 +111,17 @@ done
 ## 5. $10 budget + Pub/Sub kill-switch
 
 Alerts only notify; the Cloud Function (`scripts/gcp/billing_killswitch/`) is the
-hard cap — it detaches billing at 100%.
+hard cap — it detaches billing at 100%. Run from the repo root — the function
+deploy's `--source` is repo-relative.
+
+> **`beta` track required for the budget.** `--all-updates-rule-pubsub-topic`
+> (the Pub/Sub wiring the kill-switch depends on) is not on the GA
+> `gcloud billing budgets create`; use `gcloud beta billing budgets create`.
 
 ```bash
 gcloud pubsub topics create budget-alerts
 
-gcloud billing budgets create \
+gcloud beta billing budgets create \
   --billing-account="$BILLING_ACCOUNT_ID" \
   --display-name="game-guide-ai-cloud \$10" \
   --budget-amount=10USD \
