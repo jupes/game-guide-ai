@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChatMode(str, Enum):
@@ -110,3 +110,38 @@ class AttachmentResponse(BaseModel):
 class AttachmentsResponse(BaseModel):
     conversation_id: str
     attachments: list[Attachment]
+
+
+# ── Auth (x5bz.2) ────────────────────────────────────────────────────────────
+
+
+def _validate_email(v: str) -> str:
+    """Light structural check — the invite link is the real trust anchor, so we
+    don't verify deliverability, just reject the obviously-not-an-email. Avoids a
+    hard `email-validator` dependency for the pilot."""
+    v = v.strip()
+    if "@" not in v or v.startswith("@") or v.endswith("@") or " " in v:
+        raise ValueError("must be a valid email address")
+    return v
+
+
+class SignupRequest(BaseModel):
+    """Create an account by redeeming a one-time invite (POST /auth/signup)."""
+    email: str = Field(..., min_length=3, description="Account email (login id)")
+    password: str = Field(..., min_length=8, description="Account password (min 8 chars)")
+    invite: str = Field(..., min_length=1, description="One-time invite token from the link")
+
+    _email = field_validator("email")(_validate_email)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=1)
+
+    _email = field_validator("email")(_validate_email)
+
+
+class AuthUser(BaseModel):
+    """The authenticated identity returned by signup / login / GET /auth/me."""
+    email: str
+    role: str

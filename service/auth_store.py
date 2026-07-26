@@ -97,6 +97,12 @@ class AuthStore(Protocol):
     def get_user_by_email(self, email: str) -> User | None:
         ...  # pragma: no cover - structural type
 
+    def get_user_by_id(self, user_id: int) -> User | None:
+        ...  # pragma: no cover - structural type
+
+    def password_hash_for(self, email: str) -> str | None:
+        ...  # pragma: no cover - structural type
+
     def redeem_invite(
         self, token: str, email: str, password_hash: str,
     ) -> User: ...  # pragma: no cover - structural type
@@ -140,6 +146,13 @@ class InMemoryAuthStore:
     def get_user_by_email(self, email: str) -> User | None:
         folded = email.lower()
         return next((u for u in self._users if u.email.lower() == folded), None)
+
+    def get_user_by_id(self, user_id: int) -> User | None:
+        return next((u for u in self._users if u.id == user_id), None)
+
+    def password_hash_for(self, email: str) -> str | None:
+        user = self.get_user_by_email(email)
+        return self._hashes.get(user.id) if user is not None else None
 
     def redeem_invite(
         self, token: str, email: str, password_hash: str, now: datetime | None = None,
@@ -222,6 +235,22 @@ class PostgresAuthStore:
                 (email,),
             ).fetchone()
         return User(id=row[0], email=row[1], role=row[2], created_at=row[3]) if row else None
+
+    def get_user_by_id(self, user_id: int) -> User | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, email, role, created_at FROM auth.users WHERE id = %s",
+                (user_id,),
+            ).fetchone()
+        return User(id=row[0], email=row[1], role=row[2], created_at=row[3]) if row else None
+
+    def password_hash_for(self, email: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT password_hash FROM auth.users WHERE lower(email) = lower(%s)",
+                (email,),
+            ).fetchone()
+        return row[0] if row is not None else None
 
     def redeem_invite(self, token: str, email: str, password_hash: str) -> User:
         from psycopg import errors as pg_errors

@@ -21,7 +21,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.staticfiles import StaticFiles
 
 import config
@@ -29,16 +29,23 @@ import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
 from .attachments import UnsupportedAttachmentError, extract_text
+from .auth_store import AuthStore, EmailTaken, PostgresAuthStore
+from .hashing import hash_password, verify_password
 from .history import MessageStore, PostgresMessageStore, StoredAttachment
+from .invites import InviteError
 from .models import (
     Attachment,
     AttachmentResponse,
     AttachmentsResponse,
     AttachmentUploadRequest,
+    AuthUser,
     ChatRequest,
     ChatResponse,
+    LoginRequest,
     MessagesResponse,
+    SignupRequest,
 )
+from .session import SessionData, decode_session, encode_session
 from .metrics import (
     BooleanMetricPoint,
     CategoricalMetricPoint,
@@ -120,6 +127,16 @@ async def lifespan(app: FastAPI):
         log.warning(
             "startup: message store unavailable; history is disabled", exc_info=True
         )
+    # Auth store — invite-gated accounts (x5bz.2). Same best-effort startup +
+    # ensure_schema() migration path as the message store.
+    try:
+        auth = PostgresAuthStore()
+        auth.ensure_schema()
+        _state["auth"] = auth
+    except Exception:  # pragma: no cover - depends on live DB
+        log.warning(
+            "startup: auth store unavailable; auth endpoints will 503", exc_info=True
+        )
     yield
     _state.clear()
     del app.state.metrics_sink
@@ -143,6 +160,58 @@ def get_message_store() -> MessageStore | None:
 
 def get_metrics_sink(request: Request) -> MetricsSink:
     return getattr(request.app.state, "metrics_sink", NoopMetricsSink())
+
+
+# ── Auth (x5bz.2) ─────────────────────────────────────────────────────────────
+
+def get_auth_store() -> AuthStore:
+    store = _state.get("auth")
+    if store is None:
+        raise HTTPException(status_code=503, detail="auth backend unavailable")
+    return store
+
+
+def _session_secret() -> str:
+    """Fail CLOSED if the signing secret is unset — never sign or verify with an
+    empty key. In Cloud Run it comes from the `session-secret` Secret Manager
+    entry; locally from SESSION_SECRET in .env."""
+    secret = config.SESSION_SECRET
+    if not secret:
+        raise HTTPException(status_code=503, detail="auth not configured")
+    return secret
+
+
+def require_session(request: Request) -> SessionData:
+    """Dependency guarding the data endpoints: a valid session cookie or 401."""
+    token = request.cookies.get(config.SESSION_COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=401, detail="authentication required")
+    session = decode_session(token, _session_secret(), config.SESSION_TTL_DAYS * 86400)
+    if session is None:
+        raise HTTPException(status_code=401, detail="invalid or expired session")
+    return session
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=config.SESSION_COOKIE_NAME,
+        value=token,
+        max_age=config.SESSION_TTL_DAYS * 86400,
+        httponly=True,
+        secure=config.SESSION_COOKIE_SECURE,
+        samesite=config.SESSION_COOKIE_SAMESITE,
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=config.SESSION_COOKIE_NAME,
+        httponly=True,
+        secure=config.SESSION_COOKIE_SECURE,
+        samesite=config.SESSION_COOKIE_SAMESITE,
+        path="/",
+    )
 
 
 def _chat_error_category(status_code: int) -> str:
@@ -251,6 +320,7 @@ def chat(
     svc: RagService = Depends(get_service),
     store: MessageStore | None = Depends(get_message_store),
     metrics: MetricsSink = Depends(get_metrics_sink),
+    session: SessionData = Depends(require_session),
 ) -> ChatResponse:
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
@@ -324,6 +394,7 @@ def conversation_messages(
     conversation_id: str,
     limit: int | None = None,
     store: MessageStore | None = Depends(get_message_store),
+    session: SessionData = Depends(require_session),
 ) -> MessagesResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="message history unavailable")
@@ -355,6 +426,7 @@ def upload_attachment(
     conversation_id: str,
     req: AttachmentUploadRequest,
     store: MessageStore | None = Depends(get_message_store),
+    session: SessionData = Depends(require_session),
 ) -> AttachmentResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
@@ -383,6 +455,7 @@ def upload_attachment(
 def conversation_attachments(
     conversation_id: str,
     store: MessageStore | None = Depends(get_message_store),
+    session: SessionData = Depends(require_session),
 ) -> AttachmentsResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
@@ -395,6 +468,64 @@ def conversation_attachments(
         conversation_id=conversation_id,
         attachments=[_to_attachment(a) for a in stored],
     )
+
+
+@app.post("/auth/signup", response_model=AuthUser)
+def signup(
+    req: SignupRequest,
+    response: Response,
+    store: AuthStore = Depends(get_auth_store),
+) -> AuthUser:
+    """Create an account by redeeming a one-time invite, then start a session.
+    The invite carries the role; the token is consumed atomically."""
+    secret = _session_secret()
+    try:
+        user = store.redeem_invite(req.invite, req.email, hash_password(req.password))
+    except EmailTaken as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InviteError as exc:
+        # Unknown / used / expired / revoked — the message says which.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _set_session_cookie(
+        response, encode_session(SessionData(user_id=user.id, role=user.role), secret),
+    )
+    return AuthUser(email=user.email, role=user.role)
+
+
+@app.post("/auth/login", response_model=AuthUser)
+def login(
+    req: LoginRequest,
+    response: Response,
+    store: AuthStore = Depends(get_auth_store),
+) -> AuthUser:
+    secret = _session_secret()
+    user = store.get_user_by_email(req.email)
+    stored_hash = store.password_hash_for(req.email)
+    if user is None or stored_hash is None or not verify_password(stored_hash, req.password):
+        # One generic message — never reveal whether the email is registered.
+        raise HTTPException(status_code=401, detail="invalid email or password")
+    _set_session_cookie(
+        response, encode_session(SessionData(user_id=user.id, role=user.role), secret),
+    )
+    return AuthUser(email=user.email, role=user.role)
+
+
+@app.post("/auth/logout")
+def logout(response: Response) -> dict[str, bool]:
+    _clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/auth/me", response_model=AuthUser)
+def me(
+    session: SessionData = Depends(require_session),
+    store: AuthStore = Depends(get_auth_store),
+) -> AuthUser:
+    user = store.get_user_by_id(session.user_id)
+    if user is None:
+        # Session points at a since-deleted account — treat as unauthenticated.
+        raise HTTPException(status_code=401, detail="account not found")
+    return AuthUser(email=user.email, role=user.role)
 
 
 # Mount the pre-built UI at "/" — after route decorators so API routes always win.
