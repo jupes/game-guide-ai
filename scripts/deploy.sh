@@ -26,6 +26,11 @@ CLOUDSQL_INSTANCE="${CLOUDSQL_INSTANCE:-${PROJECT}:${REGION}:game-guide-ai}"
 # Secret Manager secret NAMES — values are never inlined here.
 OPENAI_SECRET="${OPENAI_SECRET:-openai-api-key}"
 DATABASE_URL_SECRET="${DATABASE_URL_SECRET:-database-url}"
+# Signs the auth session cookie (x5bz.2). REQUIRED: the service fails closed
+# (503 on every auth endpoint) rather than signing with an empty key, so a
+# deploy without this secret has no working login. Rotating it invalidates
+# every live session — that is the intended "log everyone out" lever.
+SESSION_SECRET_SECRET="${SESSION_SECRET_SECRET:-session-secret}"
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 DRY_RUN=0
@@ -74,7 +79,7 @@ run gcloud run deploy "${SERVICE}" \
   --port 8000 \
   --no-allow-unauthenticated \
   --add-cloudsql-instances "${CLOUDSQL_INSTANCE}" \
-  --set-secrets "OPENAI_API_KEY=${OPENAI_SECRET}:latest,DATABASE_URL=${DATABASE_URL_SECRET}:latest" \
+  --set-secrets "OPENAI_API_KEY=${OPENAI_SECRET}:latest,DATABASE_URL=${DATABASE_URL_SECRET}:latest,SESSION_SECRET=${SESSION_SECRET_SECRET}:latest" \
   --timeout 300 \
   --max-instances 2
 

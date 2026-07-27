@@ -99,13 +99,28 @@ printf '%s' "<YOUR_OPENAI_KEY>" | gcloud secrets create openai-api-key --data-fi
 printf '%s' "postgresql://postgres:<PW>@/game_guide_ai?host=/cloudsql/$PROJECT:$REGION:game-guide-ai" \
   | gcloud secrets create database-url --data-file=-
 
+# Session-cookie signing key (auth, x5bz.2). REQUIRED — without it the service
+# fails closed: every auth endpoint 503s and no tester can log in. Generate it
+# randomly; nobody needs to know or read this value:
+openssl rand -base64 48 | tr -d '\n' | gcloud secrets create session-secret --data-file=-
+
 # Let the Cloud Run runtime SA read them:
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
-for s in openai-api-key database-url; do
+for s in openai-api-key database-url session-secret; do
   gcloud secrets add-iam-policy-binding "$s" \
     --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
     --role=roles/secretmanager.secretAccessor
 done
+```
+
+**Rotating `session-secret` logs everyone out.** Sessions are stateless signed
+cookies, so there is no server-side session list to revoke; adding a new secret
+version and redeploying invalidates every outstanding session at once. That is
+the intended lever if a session (or the secret) is ever suspected compromised:
+
+```bash
+openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add session-secret --data-file=-
+bash scripts/deploy.sh game-guide-ai "$(git rev-parse --short HEAD)"   # picks up :latest
 ```
 
 ## 5. $10 budget + Pub/Sub kill-switch

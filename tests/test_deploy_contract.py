@@ -98,6 +98,24 @@ def test_deploy_attaches_cloudsql_and_injects_secrets_by_reference() -> None:
     )
 
 
+def test_deploy_wires_the_session_secret() -> None:
+    """The auth session-signing key (x5bz.2) must reach the service as a Secret
+    Manager reference. Without it the service fails closed — every auth endpoint
+    503s and no tester can log in — so a deploy that drops it is a broken deploy."""
+    text = _read(DEPLOY_SH)
+
+    assert "SESSION_SECRET=" in text, (
+        "deploy.sh must inject SESSION_SECRET (auth session signing key, x5bz.2)"
+    )
+    assert re.search(r"--set-secrets[^\n]*SESSION_SECRET=", text), (
+        "SESSION_SECRET must come from --set-secrets (a Secret Manager reference), "
+        "never an inlined value"
+    )
+    assert not re.search(r"--set-env-vars[^\n]*SESSION_SECRET=", text), (
+        "SESSION_SECRET must never be passed as a plaintext env var"
+    )
+
+
 def test_deploy_dry_run_prints_commands_without_executing() -> None:
     """`deploy.sh --dry-run` prints the full gcloud plan and runs nothing — a safe,
     inspectable preview that needs neither gcloud nor docker (test #3)."""

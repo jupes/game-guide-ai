@@ -4,10 +4,13 @@ A retrieval-augmented chat app for D&D 5th Edition. A user picks a **channel** (
 Rules · GM — each a persona with its own retrieval scope), asks about a spell, monster, rule, or
 piece of lore, and gets an answer grounded **only** in the ingested rulebook corpus (9,000+ chunks
 across 12 5E books in pgvector), with citations — out-of-corpus questions are refused, not
-hallucinated. Conversations persist server-side, and uploaded files (`.txt`/`.md`/`.pdf`) ground
-subsequent answers in that conversation.
+hallucinated. Access is **invite-gated**: accounts are created only through one-time invite links,
+every data endpoint requires a session, and conversations are private to their owner. Conversations
+persist server-side, and uploaded files (`.txt`/`.md`/`.pdf`) ground subsequent answers in that
+conversation.
 
-> Last updated: 2026-07-21 (branch `feat/swe1-6-file-attachments`, PR stack #26→#29)
+> Last updated: 2026-07-26 (branch `feat/x5bz.2-invite-auth` — invite-gated auth)
+> Deployed: Cloud Run + Cloud SQL, `game-guide-ai-cloud` / us-central1, IAM-locked (x5bz.1)
 > Corpus 9,103 chunks / 12 books · retrieval Hit@1 83.3% (eval run 2026-06-15, pre-PHB-OCR-repair)
 
 ## System architecture
@@ -143,20 +146,32 @@ prose categories. Default mode is pure filtered vector.
   is injected as a sibling context source and cited.
 - **`tracing.py`** — env-gated Langfuse tracing (`RAG_TRACING`, off by default): node-level
   spans, token/cost, tagged model/version/mode. See [`observability/OVERVIEW.md`](observability/OVERVIEW.md).
+- **Auth (x5bz.2)** — `auth_store.py` (users + invites in the `auth` schema, argon2 via
+  `hashing.py`, atomic single-use invite redemption), `session.py` (itsdangerous-signed
+  httpOnly session cookie carrying user id + role), `invites.py` (redeemability rules),
+  `admin_invites.py` (operator CLI: create/list/revoke). `require_session` guards `/chat`
+  and `/conversations/*`; `/healthz` and `/metrics/ui` stay open. The service **fails closed**
+  if `SESSION_SECRET` is unset. See [`invite-copy.md`](invite-copy.md).
 - Contract: `ChatRequest{prompt, mode, conversation_id}` → `ChatResponse{answer, sources[],
-  answerable, mode, conversation_id, suggestions?}`. Errors: 422 validation · 502 LLM upstream ·
-  503 backend unavailable · 500 bug; a refusal is a **200** with `answerable=false`.
+  answerable, mode, conversation_id, suggestions?}`. Errors: **401 no/expired session** ·
+  **403 wrong role (GM channel) or another user's conversation** · 422 validation ·
+  502 LLM upstream · 503 backend unavailable · 500 bug; a refusal is a **200** with
+  `answerable=false`.
 
 ### UI (`ui/` — [README](../ui/README.md))
 
 **React 19 + Vite**, bun-managed, on the **Aetheril design system** (`ui/src/ds/` — Material 3
 token layer, warm fantasy palette, light *Parchment* / dark *Tavern*, 10 components, Storybook).
-Shell: Landing → Workspace (TopBar brand · **AppHeader channel switcher** with per-channel
-accents · LeftNav conversations + UserMenu · ChatPane) + Profile screen. Channels are
-role-gated in the UI (GM is DM-only). `useChat` recalls stored history; ChatPane uploads
-attachments; spell answers render suggestion cards; dice notation renders `DiceRoll`.
-`api.ts` mirrors `service/models.py` exactly (refusals are not errors). Conversation
-list/titles + user identity are still client-side stubs pending real auth.
+Shell: **Login / Signup** → Landing → Workspace (TopBar brand · **AppHeader channel switcher**
+with per-channel accents · LeftNav conversations + UserMenu · ChatPane) + Profile screen.
+`App` gates on the session check (`GET /auth/me`): signed out renders Login, or **Signup** when
+the URL carries an invite (`/?invite=<token>` — a root-path link, since there is no client
+router and the built SPA 404s on deeper paths). Identity and role come from the server session;
+the GM channel is still hidden in the UI for DMs, but the **server** is what enforces it.
+`useChat` recalls stored history; ChatPane uploads attachments; spell answers render suggestion
+cards; dice notation renders `DiceRoll`. `api.ts` mirrors `service/models.py` exactly (refusals
+are not errors) and sends `credentials:'include'` on every call. Conversation list/titles remain
+client-side; display name + avatar tone are local cosmetics.
 
 ### Packaging
 
@@ -201,9 +216,10 @@ browser tests (Playwright Chromium); `bun run typecheck` / `lint`.
 
 ## Known gaps / follow-ups (Beads)
 
-- **x5bz.2** — real authentication (invite links); until then users/roles are client-side stubs
-  and the GM channel is UI-gated only. Blocks **swe1.5** (notes/GM-lore nav — AppHeader slot reserved).
-- **agent-forge-harness-17u** — GCP deployment (not started).
+- **x5bz.1.6** — open Cloud Run ingress to testers. The deployment is live but **IAM-locked**;
+  opening it is deliberately gated on auth (x5bz.2) being verified in the deployed service.
+- **x5bz.3** — cost guard + rate limiting on `/chat`; worth having before external traffic.
+- **swe1.5** — notes/GM-lore nav (AppHeader slot reserved); was blocked on auth, now unblocked.
 - **agent-forge-harness-1nh** — OCR Wayfinders + Blood Hunter (deferred; needs tesseract/ocrmypdf).
 - **agent-forge-harness-ask** — `detect_collapse` false-positives on multi-form monsters; deep
   two-column MM tail.
