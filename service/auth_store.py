@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from .invites import (
@@ -125,6 +125,19 @@ class InMemoryAuthStore:
             created_at=datetime.now(timezone.utc),
         )
         self._invites[invite.token] = invite
+        return invite
+
+    def seed_invite(
+        self, token: str, role: Role = "player", expires_at: datetime | None = None,
+    ) -> Invite:
+        """Insert an invite with a KNOWN token — test/dev only (the real
+        `create_invite` mints a random one, which a browser E2E can't guess)."""
+        invite = Invite(
+            token=token, role=role,
+            expires_at=expires_at or (datetime.now(timezone.utc) + timedelta(days=365)),
+            created_at=datetime.now(timezone.utc),
+        )
+        self._invites[token] = invite
         return invite
 
     def get_invite(self, token: str) -> Invite | None:

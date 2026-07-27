@@ -19,9 +19,17 @@ test('production app preserves a conversation and emits bounded performance evid
     }
   })
   await installPerformanceObservers(page)
-  await page.goto('/')
+  // Access is invite-gated (x5bz.2): land on the invite deep-link and create the
+  // account, exactly as a real tester does. The token is seeded by
+  // service/e2e_app.py (a browser can't guess a randomly minted one).
+  await page.goto('/?invite=e2e-invite-token')
 
   await expect(page.getByRole('heading', { name: 'Aetheril' })).toBeVisible()
+  await page.getByLabel('Email').fill('e2e-tester@example.com')
+  await page.getByLabel('Password').fill('e2e-password-123')
+  await page.getByRole('button', { name: 'Create account' }).click()
+
+  await expect(page.getByRole('button', { name: 'Enter the Tavern' })).toBeVisible()
   await page.getByRole('button', { name: 'Enter the Tavern' }).click()
   const channels = page.getByRole('navigation', { name: 'Channels' })
   await channels.getByRole('button', { name: 'Spell' }).click()
