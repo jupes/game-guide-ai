@@ -1,11 +1,12 @@
 /**
  * ProfilePage — the current user's profile (swe1.7).
  *
- * Edits the locally-stubbed identity: display name, avatar tone, and player/DM
- * role (via the shared useRoleToggle so the gm→sage fallback stays in one
- * place). Real accounts — username, email/password, per-user server storage,
- * and social fields — arrive with the pilot-auth work (x5bz.2); those are
- * documented here rather than invented.
+ * Edits the locally-stubbed cosmetics: display name and avatar tone. The
+ * player/DM role is shown for reference only — as of x5bz.2 it is
+ * server-authoritative (fixed by the invite that created the account) and no
+ * longer user-togglable here. Real accounts — username, email/password,
+ * per-user server storage, and social fields — arrived with the pilot-auth
+ * work (x5bz.2); remaining deferred fields are documented below.
  */
 
 import * as React from 'react'
@@ -16,7 +17,6 @@ import { Switch } from '../ds/Switch'
 import { Button } from '../ds/Button'
 import { useCurrentUser } from './currentUser'
 import { useAppNav } from './AppNav'
-import { useRoleToggle } from './useRoleToggle'
 import './ProfilePage.css'
 
 const TONE_OPTIONS: readonly { tone: AvatarTone; label: string }[] = [
@@ -26,13 +26,13 @@ const TONE_OPTIONS: readonly { tone: AvatarTone; label: string }[] = [
   { tone: 'arcane', label: 'Arcane' },
 ]
 
-// Fields that only make sense once real accounts exist (x5bz.2).
-const DEFERRED_FIELDS = ['Username', 'Email & password', 'Status & game preferences']
+// Fields still not implemented even now that real accounts exist (x5bz.2
+// shipped email/password + invite-based signup — those are no longer deferred).
+const DEFERRED_FIELDS = ['Username', 'Status & game preferences']
 
 export function ProfilePage(): React.JSX.Element {
   const { user, setDisplayName, setAvatarTone } = useCurrentUser()
   const { backToWorkspace } = useAppNav()
-  const toggleRole = useRoleToggle()
   const tone = user.avatarTone ?? 'gold'
 
   return (
@@ -74,9 +74,11 @@ export function ProfilePage(): React.JSX.Element {
 
         <div className="profile-page__role">
           <span id="profile-role-label">Dungeon Master</span>
+          {/* Read-only (x5bz.2): fixed by the invite that created this
+              account; the server enforces it on the GM channel. */}
           <Switch
             checked={user.role === 'dm'}
-            onChange={toggleRole}
+            disabled
             ariaLabel="Dungeon Master role"
           />
         </div>
@@ -89,7 +91,7 @@ export function ProfilePage(): React.JSX.Element {
             ))}
           </ul>
           <p className="profile-page__deferred-note">
-            Your profile is stored locally in this browser for now — real, private accounts arrive with sign-in.
+            Your display name and avatar are stored locally in this browser for now.
           </p>
         </section>
 

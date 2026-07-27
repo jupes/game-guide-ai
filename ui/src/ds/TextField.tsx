@@ -46,6 +46,9 @@ export function TextField({
   className,
 }: TextFieldProps): React.JSX.Element {
   const [focus, setFocus] = React.useState(false)
+  // Associate the label with its control so assistive tech (and getByLabelText)
+  // can resolve it — password/email inputs have no implicit accessible name.
+  const controlId = React.useId()
 
   const rootClasses = [
     'aether-field',
@@ -90,7 +93,11 @@ export function TextField({
       data-testid="textfield-root"
       style={style}
     >
-      {label && <label className={labelClasses}>{label}</label>}
+      {label && (
+        <label htmlFor={controlId} className={labelClasses}>
+          {label}
+        </label>
+      )}
 
       <div className={rowClasses}>
         {leadingIcon && (
@@ -104,6 +111,7 @@ export function TextField({
 
         {multiline ? (
           <textarea
+            id={controlId}
             rows={rows}
             value={value}
             onChange={onChange}
@@ -116,6 +124,7 @@ export function TextField({
           />
         ) : (
           <input
+            id={controlId}
             type={type}
             value={value}
             onChange={onChange}

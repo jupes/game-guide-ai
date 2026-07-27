@@ -1,8 +1,9 @@
 /**
  * ProfilePage (swe1.7) — render + edit + navigation.
  *
- * Driven through a stateful harness so edits flow through the real setters
- * (name/tone/role) and the avatar re-derives, exercising the wiring end to end.
+ * Driven through a stateful harness so name/tone edits flow through the real
+ * setters and the avatar re-derives. Role (x5bz.2) is server-set and passed
+ * in as a fixed prop — no longer mutable from this screen.
  */
 
 import { describe, it, expect, vi } from 'vitest'
@@ -17,22 +18,22 @@ import { deriveInitials, type AvatarTone } from '../ds/Avatar'
 import { ProfilePage } from './ProfilePage'
 
 interface HarnessProps {
-  initialRole?: UserRole
+  role?: UserRole
   mode?: ChatMode
   setMode?: (m: ChatMode) => void
   backToWorkspace?: () => void
 }
 
-/** ProfilePage wired to real name/tone/role state + spyable nav actions. */
+/** ProfilePage wired to real name/tone state + spyable nav actions. Role is
+ * fixed for the render (server-authoritative as of x5bz.2). */
 function Harness({
-  initialRole = 'player',
+  role = 'player',
   mode = 'sage',
   setMode = vi.fn(),
   backToWorkspace = vi.fn(),
 }: HarnessProps) {
   const [displayName, setDisplayName] = useState('Adventurer')
   const [avatarTone, setAvatarTone] = useState<AvatarTone>('gold')
-  const [role, setRole] = useState<UserRole>(initialRole)
 
   const userValue: CurrentUserContextValue = {
     user: {
@@ -44,7 +45,8 @@ function Harness({
       signOut: vi.fn(),
       editProfile: vi.fn(),
     },
-    setRole,
+    authStatus: 'authenticated',
+    signIn: vi.fn(),
     setDisplayName,
     setAvatarTone,
   }
@@ -100,11 +102,13 @@ describe('ProfilePage (swe1.7)', () => {
     expect(screen.getByRole('button', { name: /gold avatar/i })).toHaveAttribute('aria-pressed', 'false')
   })
 
-  it('toggling off the DM role in the GM channel falls back to sage', async () => {
-    const setMode = vi.fn()
-    render(<Harness initialRole="dm" mode="gm" setMode={setMode} />)
-    await userEvent.click(screen.getByRole('switch', { name: /dungeon master/i }))
-    expect(setMode).toHaveBeenCalledWith('sage')
+  // x5bz.2: role is server-authoritative (fixed by the invite) — the switch
+  // just displays it, and can no longer be toggled from this screen.
+  it('shows the DM role as read-only and disabled', () => {
+    render(<Harness role="dm" />)
+    const roleSwitch = screen.getByRole('switch', { name: /dungeon master/i })
+    expect(roleSwitch).toBeChecked()
+    expect(roleSwitch).toBeDisabled()
   })
 
   it('Back to chat returns to the workspace', async () => {

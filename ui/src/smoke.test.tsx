@@ -13,10 +13,27 @@
  * self-contained and obvious.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
+
+// x5bz.2: App now gates on the session check (GET /auth/me). Real <App/>
+// renders below drive multi-step flows via `await userEvent...`, which yields
+// enough ticks for that check to resolve — without this, an unmocked getMe()
+// would eventually settle to "unauthenticated" mid-flow and swap Landing/
+// Workspace out for the Login screen. Mock it to resolve to an authenticated
+// player immediately, keeping the flow deterministic.
+vi.mock('./api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./api')>()
+  return {
+    ...actual,
+    getMe: async () => ({
+      kind: 'ok' as const,
+      user: { email: 'adventurer@example.com', role: 'player' as const },
+    }),
+  }
+})
 import { ThemeProvider } from './ds/theme'
 import { AppNavProvider } from './shell/AppNav'
 import { CurrentUserProvider } from './shell/currentUser'
@@ -158,7 +175,8 @@ describe('App-flow smoke test (CP-F6.2)', () => {
         signOut: () => {},
         editProfile: () => {},
       },
-      setRole: () => {},
+      authStatus: 'authenticated',
+      signIn: () => {},
       setDisplayName: () => {},
       setAvatarTone: () => {},
     }

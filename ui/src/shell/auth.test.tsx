@@ -1,0 +1,178 @@
+/**
+ * Behavior #9 (x5bz.2 Checkpoint E) — frontend auth.
+ *
+ * Login + Signup screens submit to the API and adopt the returned session;
+ * App gates on authStatus, showing Signup for an invite deep-link
+ * (`/?invite=<token>`) and Login otherwise.
+ */
+
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import type { ReactNode } from 'react'
+import App from '../App'
+import * as api from '../api'
+import { ThemeProvider } from '../ds/theme'
+import { AppNavProvider } from './AppNav'
+import { ConversationStoreProvider } from './ConversationStoreContext'
+import { MemoryConversationStore } from './conversationStore'
+import { CurrentUserContext, CurrentUserProvider } from './currentUser'
+import type { CurrentUserContextValue, AuthStatus } from './currentUser'
+import { Login } from './Login'
+import { Signup } from './Signup'
+
+function makeUserState(
+  overrides: Partial<CurrentUserContextValue> = {},
+): CurrentUserContextValue {
+  return {
+    user: {
+      id: 'guest',
+      displayName: 'Adventurer',
+      initials: 'AV',
+      role: 'player',
+      signOut: vi.fn(),
+      editProfile: vi.fn(),
+    },
+    authStatus: 'authenticated',
+    signIn: vi.fn(),
+    setDisplayName: vi.fn(),
+    setAvatarTone: vi.fn(),
+    ...overrides,
+  }
+}
+
+function withProviders(children: ReactNode, user: CurrentUserContextValue) {
+  return (
+    <ThemeProvider>
+      <AppNavProvider>
+        <CurrentUserContext.Provider value={user}>
+          <ConversationStoreProvider store={new MemoryConversationStore()}>
+            {children}
+          </ConversationStoreProvider>
+        </CurrentUserContext.Provider>
+      </AppNavProvider>
+    </ThemeProvider>
+  )
+}
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  window.history.replaceState({}, '', '/')
+})
+
+// ── Login screen ──────────────────────────────────────────────────────────────
+
+describe('Login screen', () => {
+  it('signs in with email + password and adopts the session', async () => {
+    const signIn = vi.fn()
+    vi.spyOn(api, 'login').mockResolvedValue({
+      kind: 'ok', user: { email: 'ada@example.com', role: 'dm' },
+    })
+    render(withProviders(<Login />, makeUserState({ signIn })))
+
+    await userEvent.type(screen.getByLabelText(/email/i), 'ada@example.com')
+    await userEvent.type(screen.getByLabelText(/password/i), 'password123')
+    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+
+    await waitFor(() =>
+      expect(signIn).toHaveBeenCalledWith({ email: 'ada@example.com', role: 'dm' }),
+    )
+    expect(api.login).toHaveBeenCalledWith('ada@example.com', 'password123')
+  })
+
+  it('shows the error message on bad credentials and does not sign in', async () => {
+    const signIn = vi.fn()
+    vi.spyOn(api, 'login').mockResolvedValue({
+      kind: 'error', status: 401, message: 'invalid email or password',
+    })
+    render(withProviders(<Login />, makeUserState({ signIn })))
+
+    await userEvent.type(screen.getByLabelText(/email/i), 'ada@example.com')
+    await userEvent.type(screen.getByLabelText(/password/i), 'nope')
+    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/invalid email or password/i)
+    expect(signIn).not.toHaveBeenCalled()
+  })
+})
+
+// ── Signup screen ─────────────────────────────────────────────────────────────
+
+describe('Signup screen', () => {
+  it('redeems the invite it was given and adopts the session', async () => {
+    const signIn = vi.fn()
+    vi.spyOn(api, 'signup').mockResolvedValue({
+      kind: 'ok', user: { email: 'new@example.com', role: 'player' },
+    })
+    render(withProviders(<Signup invite="tok-abc" />, makeUserState({ signIn })))
+
+    await userEvent.type(screen.getByLabelText(/email/i), 'new@example.com')
+    await userEvent.type(screen.getByLabelText(/password/i), 'password123')
+    await userEvent.click(screen.getByRole('button', { name: /create account/i }))
+
+    await waitFor(() =>
+      expect(api.signup).toHaveBeenCalledWith('new@example.com', 'password123', 'tok-abc'),
+    )
+    expect(signIn).toHaveBeenCalledWith({ email: 'new@example.com', role: 'player' })
+  })
+
+  it('surfaces a used/expired invite error', async () => {
+    vi.spyOn(api, 'signup').mockResolvedValue({
+      kind: 'error', status: 400, message: 'This invite link has already been used.',
+    })
+    render(withProviders(<Signup invite="used" />, makeUserState()))
+
+    await userEvent.type(screen.getByLabelText(/email/i), 'a@example.com')
+    await userEvent.type(screen.getByLabelText(/password/i), 'password123')
+    await userEvent.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/already been used/i)
+  })
+})
+
+// ── App auth gate ─────────────────────────────────────────────────────────────
+
+describe('App auth gate', () => {
+  function renderApp(authStatus: AuthStatus) {
+    return render(withProviders(<App />, makeUserState({ authStatus })))
+  }
+
+  it('shows Login when unauthenticated with no invite in the URL', () => {
+    renderApp('unauthenticated')
+    expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument()
+  })
+
+  it('shows Signup when the URL carries an invite token', () => {
+    window.history.replaceState({}, '', '/?invite=tok-abc')
+    renderApp('unauthenticated')
+    expect(screen.getByRole('button', { name: /create account/i })).toBeInTheDocument()
+  })
+
+  it('shows the app (not Login) once authenticated', () => {
+    renderApp('authenticated')
+    expect(screen.queryByRole('button', { name: /sign in/i })).not.toBeInTheDocument()
+    expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+  })
+
+  it('does not flash Login while the session check is still pending', () => {
+    renderApp('checking')
+    expect(screen.queryByRole('button', { name: /sign in/i })).not.toBeInTheDocument()
+    expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+  })
+
+  it('a 401 from the session check lands the user on Login (real provider)', async () => {
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', status: 401, message: 'not signed in' })
+    render(
+      <ThemeProvider>
+        <AppNavProvider>
+          <CurrentUserProvider>
+            <ConversationStoreProvider store={new MemoryConversationStore()}>
+              <App />
+            </ConversationStoreProvider>
+          </CurrentUserProvider>
+        </AppNavProvider>
+      </ThemeProvider>,
+    )
+    expect(await screen.findByRole('button', { name: /sign in/i })).toBeInTheDocument()
+  })
+})

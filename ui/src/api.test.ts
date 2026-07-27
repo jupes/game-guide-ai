@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { postChat } from './api'
+import { postChat, signup, login, logout, getMe } from './api'
 import type { ChatResponse } from './api'
 
 const GROUNDED: ChatResponse = {
@@ -289,5 +289,118 @@ describe('getAttachments', () => {
     const result = await getAttachments('conv-1', failing)
     expect(result.kind).toBe('error')
     if (result.kind === 'error') expect(result.message).toMatch(/reach|network/i)
+  })
+})
+
+// ── Auth (x5bz.2) ─────────────────────────────────────────────────────────────
+
+describe('signup', () => {
+  it('returns ok with the user on 200', async () => {
+    const result = await signup(
+      'ada@example.com', 'password123', 'tok-abc',
+      fakeFetch(200, { email: 'ada@example.com', role: 'dm' }),
+    )
+    expect(result).toEqual({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
+  })
+
+  it('sends the invite token and credentials:include', async () => {
+    let captured: RequestInit | undefined
+    const spy: typeof fetch = (async (_url, init) => {
+      captured = init
+      return new Response(JSON.stringify({ email: 'a@example.com', role: 'player' }), { status: 200 })
+    }) as typeof fetch
+    await signup('a@example.com', 'password123', 'tok-xyz', spy)
+    expect(captured?.credentials).toBe('include')
+    expect(JSON.parse(String(captured?.body))).toEqual({
+      email: 'a@example.com', password: 'password123', invite: 'tok-xyz',
+    })
+  })
+
+  it('surfaces the service detail message on a 400 (bad invite)', async () => {
+    const result = await signup(
+      'a@example.com', 'password123', 'used-token',
+      fakeFetch(400, { detail: 'This invite link has already been used.' }),
+    )
+    expect(result).toEqual({
+      kind: 'error', status: 400, message: 'This invite link has already been used.',
+    })
+  })
+
+  it('surfaces a 409 on duplicate email', async () => {
+    const result = await signup(
+      'dup@example.com', 'password123', 'tok', fakeFetch(409, { detail: 'taken' }),
+    )
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.status).toBe(409)
+  })
+
+  it('maps a network failure to an error result', async () => {
+    const failing: typeof fetch = (async () => {
+      throw new TypeError('fetch failed')
+    }) as typeof fetch
+    const result = await signup('a@example.com', 'password123', 'tok', failing)
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/reach|network/i)
+  })
+})
+
+describe('login', () => {
+  it('returns ok with the user on 200', async () => {
+    const result = await login(
+      'ada@example.com', 'password123',
+      fakeFetch(200, { email: 'ada@example.com', role: 'player' }),
+    )
+    expect(result).toEqual({ kind: 'ok', user: { email: 'ada@example.com', role: 'player' } })
+  })
+
+  it('returns a generic 401 error on bad credentials', async () => {
+    const result = await login(
+      'ada@example.com', 'wrong', fakeFetch(401, { detail: 'invalid email or password' }),
+    )
+    expect(result).toEqual({ kind: 'error', status: 401, message: 'invalid email or password' })
+  })
+})
+
+describe('logout', () => {
+  it('posts to /auth/logout with credentials:include', async () => {
+    let called = false
+    let captured: RequestInit | undefined
+    const spy: typeof fetch = (async (_url, init) => {
+      called = true
+      captured = init
+      return new Response(null, { status: 200 })
+    }) as typeof fetch
+    await logout(spy)
+    expect(called).toBe(true)
+    expect(captured?.method).toBe('POST')
+    expect(captured?.credentials).toBe('include')
+  })
+
+  it('never throws even if the request fails (best-effort)', async () => {
+    const failing: typeof fetch = (async () => {
+      throw new TypeError('fetch failed')
+    }) as typeof fetch
+    await expect(logout(failing)).resolves.toBeUndefined()
+  })
+})
+
+describe('getMe', () => {
+  it('returns ok with the user on 200', async () => {
+    const result = await getMe(fakeFetch(200, { email: 'ada@example.com', role: 'dm' }))
+    expect(result).toEqual({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
+  })
+
+  it('returns an error (not a throw) on 401 — no session', async () => {
+    const result = await getMe(fakeFetch(401))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.status).toBe(401)
+  })
+
+  it('maps a network failure to an error result', async () => {
+    const failing: typeof fetch = (async () => {
+      throw new TypeError('fetch failed')
+    }) as typeof fetch
+    const result = await getMe(failing)
+    expect(result.kind).toBe('error')
   })
 })

@@ -11,13 +11,11 @@ import { Avatar } from '../ds/Avatar'
 import { Switch } from '../ds/Switch'
 import { useAppNav } from './AppNav'
 import { useCurrentUser } from './currentUser'
-import { useRoleToggle } from './useRoleToggle'
 import './UserMenu.css'
 
 export function UserMenu(): React.JSX.Element {
   const { user } = useCurrentUser()
   const { openProfile } = useAppNav()
-  const toggleRole = useRoleToggle()
   const [open, setOpen] = useState(false)
 
   function toggleMenu(): void {
@@ -51,9 +49,12 @@ export function UserMenu(): React.JSX.Element {
         <div role="menu" className="user-menu__popover">
           <div className="user-menu__item user-menu__role">
             <span id="user-menu-role-label">Dungeon Master</span>
+            {/* Read-only (x5bz.2): role is server-authoritative from the
+                signed session, not user-togglable. Disabled Switch keeps the
+                same at-a-glance display without implying it's interactive. */}
             <Switch
               checked={user.role === 'dm'}
-              onChange={toggleRole}
+              disabled
               ariaLabel="Dungeon Master role"
             />
           </div>

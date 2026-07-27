@@ -1,11 +1,12 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { act, renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import {
   CurrentUserProvider,
   useCurrentUser,
   STUB,
 } from './currentUser'
+import * as api from '../api'
 
 // ── 02t.6 — useCurrentUser provider guard (matches useTheme's pattern) ─────────
 
@@ -20,22 +21,74 @@ describe('useCurrentUser', () => {
     expect(() => renderHook(() => useCurrentUser())).toThrow(/CurrentUserProvider/)
   })
 
-  it('returns the provided user inside a <CurrentUserProvider>', () => {
+  it('defaults to the guest STUB shape while the session check is pending', () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <CurrentUserProvider>{children}</CurrentUserProvider>
     )
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     // avatarTone defaults to STUB's 'gold'; initials are derived from the live
-    // displayName ('Adventurer' -> 'A'), overriding STUB's static 'AV'.
-    expect(result.current.user).toEqual({ ...STUB, role: 'player', initials: 'A' })
+    // displayName ('Adventurer' -> 'A'), overriding STUB's static 'AV'. The
+    // session check (getMe) is async, so immediately after render authStatus
+    // is still 'checking' and the identity is still the guest default.
+    expect(result.current.authStatus).toBe('checking')
+    expect(result.current.user.displayName).toBe(STUB.displayName)
+    expect(result.current.user.role).toBe('player')
+    expect(result.current.user.initials).toBe('A')
   })
 })
 
-// ── channel-chats CP-D — DM/player role on the current user ───────────────────
-// jsdom 29's localStorage may not expose every method in the runner; use an
+// ── x5bz.2 — session-backed identity (checking -> authenticated/unauthenticated) ──
+
+describe('session check', () => {
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <CurrentUserProvider>{children}</CurrentUserProvider>
+  )
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('adopts the session when getMe resolves ok', async () => {
+    vi.spyOn(api, 'getMe').mockResolvedValue({
+      kind: 'ok', user: { email: 'ada@example.com', role: 'dm' },
+    })
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
+    expect(result.current.user.id).toBe('ada@example.com')
+    expect(result.current.user.role).toBe('dm')
+  })
+
+  it('falls back to unauthenticated when getMe errors', async () => {
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', message: 'not signed in' })
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    await waitFor(() => expect(result.current.authStatus).toBe('unauthenticated'))
+  })
+
+  it('signIn adopts an identity immediately (no re-fetch)', () => {
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', message: 'not signed in' })
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    act(() => result.current.signIn({ email: 'bob@example.com', role: 'player' }))
+    expect(result.current.authStatus).toBe('authenticated')
+    expect(result.current.user.id).toBe('bob@example.com')
+  })
+
+  it('signOut calls the logout endpoint and reverts to unauthenticated', () => {
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', message: 'not signed in' })
+    const logoutSpy = vi.spyOn(api, 'logout').mockResolvedValue(undefined)
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    act(() => result.current.signIn({ email: 'ada@example.com', role: 'dm' }))
+    act(() => result.current.user.signOut())
+    expect(logoutSpy).toHaveBeenCalledTimes(1)
+    expect(result.current.authStatus).toBe('unauthenticated')
+    expect(result.current.user.id).toBe('guest')
+  })
+})
+
+// ── swe1.7 — editable + persisted display name and avatar tone ────────────────
+// jsdom's localStorage may not expose every method in the runner; use an
 // in-memory stub so these tests are hermetic (mirrors conversationStore.test.ts).
 
-describe('user role', () => {
+describe('profile cosmetics (name + avatar tone)', () => {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <CurrentUserProvider>{children}</CurrentUserProvider>
   )
@@ -56,38 +109,13 @@ describe('user role', () => {
   beforeEach(() => {
     lsMock = makeLocalStorageStub()
     vi.stubGlobal('localStorage', lsMock)
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', message: 'not signed in' })
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
-
-  it('defaults to player', () => {
-    const { result } = renderHook(() => useCurrentUser(), { wrapper })
-    expect(result.current.user.role).toBe('player')
-  })
-
-  it('setRole updates the role and persists it', () => {
-    const { result } = renderHook(() => useCurrentUser(), { wrapper })
-    act(() => result.current.setRole('dm'))
-    expect(result.current.user.role).toBe('dm')
-    expect(localStorage.getItem('game-guide-ai:role')).toBe('dm')
-  })
-
-  it('seeds the role from localStorage (survives reload)', () => {
-    localStorage.setItem('game-guide-ai:role', 'dm')
-    const { result } = renderHook(() => useCurrentUser(), { wrapper })
-    expect(result.current.user.role).toBe('dm')
-  })
-
-  it('falls back to player on an unrecognized stored value', () => {
-    localStorage.setItem('game-guide-ai:role', 'archlich')
-    const { result } = renderHook(() => useCurrentUser(), { wrapper })
-    expect(result.current.user.role).toBe('player')
-  })
-
-  // ── swe1.7 — editable + persisted display name and avatar tone ──────────────
 
   it('setDisplayName updates the name and persists across a fresh provider', () => {
     const { result } = renderHook(() => useCurrentUser(), { wrapper })

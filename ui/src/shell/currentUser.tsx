@@ -1,20 +1,26 @@
 /**
- * currentUser — Stub current user context.
+ * currentUser — Session-backed current user (x5bz.2).
  *
- * Provides a guest "Adventurer" stub for the shell during development, plus
- * the DM/player role (channel-chats CP-D): a localStorage-persisted toggle
- * that gates the GM channel in the UI. This is honest-scope gating only — the
- * server does not enforce roles until real auth exists. In a real app,
- * replace STUB with a real auth integration.
+ * Identity (email, role) comes from the server session via GET /auth/me,
+ * checked once on mount. `authStatus` tracks that check so App can gate
+ * rendering: while `checking`, the app renders normally (avoids a login-screen
+ * flash for the common already-signed-in case); once it resolves to
+ * `unauthenticated`, App swaps to Login/Signup. Role is server-authoritative
+ * and no longer user-settable (replaces the pre-auth localStorage role
+ * toggle) — the GM channel gate in the UI is now just a courtesy; the server
+ * enforces it for real. displayName/avatarTone remain a local, cosmetic-only
+ * stub (per-user profile storage is out of scope for the pilot).
  */
 
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as React from 'react'
 import { deriveInitials, type AvatarTone } from '../ds/Avatar'
+import { getMe, logout as apiLogout, type AuthUser } from '../api'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type UserRole = 'dm' | 'player'
+export type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated'
 
 export interface CurrentUser {
   id: string
@@ -29,12 +35,15 @@ export interface CurrentUser {
 
 export interface CurrentUserContextValue {
   user: CurrentUser
-  setRole: (role: UserRole) => void
+  /** Session-check status; App uses this to gate Login/Signup vs the app. */
+  authStatus: AuthStatus
+  /** Adopt an authenticated identity (called by Login/Signup on success). */
+  signIn: (authUser: AuthUser) => void
   setDisplayName: (name: string) => void
   setAvatarTone: (tone: AvatarTone) => void
 }
 
-// ── Stub ──────────────────────────────────────────────────────────────────────
+// ── Guest default (pre-session / while checking) ──────────────────────────────
 
 function noop(): void {}
 
@@ -49,29 +58,8 @@ export const STUB: CurrentUser = {
   editProfile: noop,
 }
 
-// ── Role persistence (guarded, matching conversationStore's posture) ──────────
-
-const ROLE_STORAGE_KEY = 'game-guide-ai:role'
-
-function loadRole(): UserRole {
-  try {
-    return localStorage.getItem(ROLE_STORAGE_KEY) === 'dm' ? 'dm' : 'player'
-  } catch {
-    // localStorage unavailable (privacy mode, SSR) — least-privileged default.
-    return 'player'
-  }
-}
-
-function saveRole(role: UserRole): void {
-  try {
-    localStorage.setItem(ROLE_STORAGE_KEY, role)
-  } catch (err) {
-    console.warn('currentUser: could not persist role', err)
-  }
-}
-
-// ── Profile persistence (name + avatar tone; role stays under its own key) ────
-// Local-stub only — real per-user profiles arrive with the pilot-auth work (x5bz.2).
+// ── Profile persistence (local-stub only; unrelated to the server session) ───
+// Real per-user profile storage is out of scope for the pilot.
 
 const PROFILE_STORAGE_KEY = 'game-guide-ai:profile'
 const AVATAR_TONES: readonly AvatarTone[] = ['gold', 'ember', 'verdigris', 'arcane']
@@ -123,7 +111,8 @@ interface CurrentUserProviderProps {
 }
 
 export function CurrentUserProvider({ children }: CurrentUserProviderProps): React.JSX.Element {
-  const [role, setRoleState] = useState<UserRole>(loadRole)
+  const [authStatus, setAuthStatus] = useState<AuthStatus>('checking')
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [displayName, setDisplayNameState] = useState<string>(
     () => loadProfile().displayName ?? STUB.displayName,
   )
@@ -131,9 +120,33 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
     () => loadProfile().avatarTone ?? 'gold',
   )
 
-  const setRole = useCallback((next: UserRole) => {
-    setRoleState(next)
-    saveRole(next)
+  // One-time session check on mount. getMe() never throws (network/4xx both
+  // resolve to a normal AuthResult), so this can't leave authStatus stuck.
+  useEffect(() => {
+    let cancelled = false
+    getMe().then((result) => {
+      if (cancelled) return
+      if (result.kind === 'ok') {
+        setAuthUser(result.user)
+        setAuthStatus('authenticated')
+      } else {
+        setAuthStatus('unauthenticated')
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const signIn = useCallback((next: AuthUser) => {
+    setAuthUser(next)
+    setAuthStatus('authenticated')
+  }, [])
+
+  const signOut = useCallback(() => {
+    void apiLogout()
+    setAuthUser(null)
+    setAuthStatus('unauthenticated')
   }, [])
 
   const setDisplayName = useCallback((name: string) => {
@@ -146,15 +159,21 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
     saveProfile({ displayName, avatarTone: tone })
   }, [displayName])
 
-  const value = useMemo<CurrentUserContextValue>(
-    () => ({
-      user: { ...STUB, displayName, initials: deriveInitials(displayName), avatarTone, role },
-      setRole,
+  const value = useMemo<CurrentUserContextValue>(() => {
+    const role: UserRole = authUser?.role ?? 'player'
+    const id = authUser?.email ?? 'guest'
+    return {
+      user: {
+        id, displayName, initials: deriveInitials(displayName), avatarTone, role,
+        signOut, editProfile: noop,
+      },
+      authStatus,
+      signIn,
       setDisplayName,
       setAvatarTone,
-    }),
-    [displayName, avatarTone, role, setRole, setDisplayName, setAvatarTone],
-  )
+    }
+  }, [authStatus, authUser, displayName, avatarTone, signIn, signOut, setDisplayName, setAvatarTone])
+
   return <CurrentUserContext.Provider value={value}>{children}</CurrentUserContext.Provider>
 }
 

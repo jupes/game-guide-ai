@@ -77,7 +77,10 @@ export async function getMessages(
 ): Promise<MessagesResult> {
   let res: Response
   try {
-    res = await fetchImpl(`/conversations/${encodeURIComponent(conversationId)}/messages`)
+    res = await fetchImpl(
+      `/conversations/${encodeURIComponent(conversationId)}/messages`,
+      { credentials: 'include' },
+    )
   } catch {
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
   }
@@ -102,6 +105,7 @@ export async function postChat(
     res = await fetchImpl('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ prompt, mode, conversation_id: conversationId ?? null }),
     })
   } catch {
@@ -112,6 +116,20 @@ export async function postChat(
     }
   }
 
+  if (res.status === 401) {
+    return {
+      kind: 'error',
+      message: 'Your session has expired — please sign in again.',
+      outcome: 'http_error',
+    }
+  }
+  if (res.status === 403) {
+    return {
+      kind: 'error',
+      message: "You don't have access to that channel or conversation.",
+      outcome: 'http_error',
+    }
+  }
   if (res.status === 422) {
     return {
       kind: 'error',
@@ -194,6 +212,7 @@ export async function uploadAttachment(
     res = await fetchImpl(`/conversations/${encodeURIComponent(conversationId)}/attachments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ filename: file.name, content_type: file.type, data }),
     })
   } catch {
@@ -225,7 +244,10 @@ export async function getAttachments(
 ): Promise<AttachmentsResult> {
   let res: Response
   try {
-    res = await fetchImpl(`/conversations/${encodeURIComponent(conversationId)}/attachments`)
+    res = await fetchImpl(
+      `/conversations/${encodeURIComponent(conversationId)}/attachments`,
+      { credentials: 'include' },
+    )
   } catch {
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
   }
@@ -237,4 +259,91 @@ export async function getAttachments(
   const body = await parseJson<{ attachments: Attachment[] }>(res)
   if (body === null) return { kind: 'error', message: UNREADABLE }
   return { kind: 'ok', attachments: body.attachments }
+}
+
+// ── Auth (x5bz.2) — mirrors service.models.AuthUser ──────────────────────────
+
+export interface AuthUser {
+  email: string
+  role: 'player' | 'dm'
+}
+
+export type AuthResult =
+  | { kind: 'ok'; user: AuthUser }
+  | { kind: 'error'; message: string; status?: number }
+
+async function postAuthJson(
+  path: string,
+  body: Record<string, string>,
+  fetchImpl: typeof fetch,
+): Promise<AuthResult> {
+  let res: Response
+  try {
+    res = await fetchImpl(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(body),
+    })
+  } catch {
+    return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
+  }
+  if (!res.ok) {
+    const errBody = await parseJson<{ detail?: string }>(res)
+    return {
+      kind: 'error',
+      status: res.status,
+      message: errBody?.detail ?? `Request failed (${res.status}).`,
+    }
+  }
+  const parsed = await parseJson<AuthUser>(res)
+  if (parsed === null) return { kind: 'error', message: UNREADABLE }
+  return { kind: 'ok', user: parsed }
+}
+
+/** Redeem a one-time invite to create an account; the service sets the
+ * session cookie on success. */
+export function signup(
+  email: string,
+  password: string,
+  invite: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AuthResult> {
+  return postAuthJson('/auth/signup', { email, password, invite }, fetchImpl)
+}
+
+export function login(
+  email: string,
+  password: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AuthResult> {
+  return postAuthJson('/auth/login', { email, password }, fetchImpl)
+}
+
+/** Clear the session cookie. Best-effort — the client resets its own state
+ * regardless of whether the request succeeds. */
+export async function logout(fetchImpl: typeof fetch = fetch): Promise<void> {
+  try {
+    await fetchImpl('/auth/logout', { method: 'POST', credentials: 'include' })
+  } catch {
+    // ignore — signing out client-side is what actually matters
+  }
+}
+
+/** Who (if anyone) the current session cookie belongs to. A non-2xx (typically
+ * 401, no/expired cookie) is reported as an AuthResult error, not a thrown
+ * exception — the caller treats it as "not signed in". */
+export async function getMe(fetchImpl: typeof fetch = fetch): Promise<AuthResult> {
+  let res: Response
+  try {
+    res = await fetchImpl('/auth/me', { credentials: 'include' })
+  } catch {
+    return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
+  }
+  if (!res.ok) {
+    return { kind: 'error', status: res.status, message: 'not signed in' }
+  }
+  const parsed = await parseJson<AuthUser>(res)
+  if (parsed === null) return { kind: 'error', message: UNREADABLE }
+  return { kind: 'ok', user: parsed }
 }
