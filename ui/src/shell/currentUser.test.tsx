@@ -72,15 +72,54 @@ describe('session check', () => {
     expect(result.current.user.id).toBe('bob@example.com')
   })
 
-  it('signOut calls the logout endpoint and reverts to unauthenticated', () => {
+  it('signOut calls the logout endpoint and reverts to unauthenticated', async () => {
     vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', message: 'not signed in' })
-    const logoutSpy = vi.spyOn(api, 'logout').mockResolvedValue(undefined)
+    const logoutSpy = vi.spyOn(api, 'logout').mockResolvedValue(true)
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     act(() => result.current.signIn({ email: 'ada@example.com', role: 'dm' }))
-    act(() => result.current.user.signOut())
+    await act(async () => {
+      await result.current.user.signOut()
+    })
     expect(logoutSpy).toHaveBeenCalledTimes(1)
     expect(result.current.authStatus).toBe('unauthenticated')
     expect(result.current.user.id).toBe('guest')
+  })
+
+  it('a FAILED logout keeps the user signed in (the cookie is still live)', async () => {
+    // Resolve the mount session check as authenticated first — otherwise it
+    // settles later and clobbers the signed-in state this test is asserting on.
+    vi.spyOn(api, 'getMe').mockResolvedValue({
+      kind: 'ok', user: { email: 'ada@example.com', role: 'dm' },
+    })
+    vi.spyOn(api, 'logout').mockResolvedValue(false)
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
+
+    let outcome: boolean | undefined
+    await act(async () => {
+      outcome = await result.current.user.signOut()
+    })
+    // Only the server can clear an httpOnly cookie — pretending here would show
+    // "signed out" while a refresh silently restores the session.
+    expect(outcome).toBe(false)
+    expect(result.current.authStatus).toBe('authenticated')
+    expect(result.current.user.id).toBe('ada@example.com')
+  })
+
+  it('a 401 from any guarded call drops the app back to unauthenticated', async () => {
+    vi.spyOn(api, 'getMe').mockResolvedValue({
+      kind: 'ok', user: { email: 'ada@example.com', role: 'dm' },
+    })
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
+
+    // Simulate a guarded endpoint reporting the session is gone.
+    await act(async () => {
+      const res = await api.postChat('hi', 'sage', null, (async () =>
+        new Response(null, { status: 401 })) as typeof fetch)
+      expect(res.kind).toBe('error')
+    })
+    expect(result.current.authStatus).toBe('unauthenticated')
   })
 })
 

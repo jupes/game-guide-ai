@@ -20,8 +20,10 @@ from .auth_store import InMemoryAuthStore
 from .history import InMemoryMessageStore
 from .models import ChatMode, ChatResponse
 
-# Kept in sync with ui/e2e/app.spec.ts.
-E2E_INVITE_TOKEN = "e2e-invite-token"
+# Kept in sync with ui/e2e/app.spec.ts. One token PER ATTEMPT: invites are
+# single-use, so a retry that reused the first token would fail at account
+# creation rather than actually retrying the test.
+E2E_INVITE_TOKENS = [f"e2e-invite-token-{attempt}" for attempt in range(5)]
 
 
 class DeterministicRagService:
@@ -50,7 +52,8 @@ async def e2e_lifespan(application: FastAPI):
 message_store = InMemoryMessageStore()
 auth_store = InMemoryAuthStore()
 # DM role so every channel (incl. GM) is reachable in the browser test.
-auth_store.seed_invite(E2E_INVITE_TOKEN, role="dm")
+for _token in E2E_INVITE_TOKENS:
+    auth_store.seed_invite(_token, role="dm")
 
 app.router.lifespan_context = e2e_lifespan
 app.dependency_overrides[get_service] = DeterministicRagService

@@ -105,6 +105,48 @@ def test_login_unknown_email_is_401(store):
     assert r.status_code == 401
 
 
+def test_bad_invite_is_rejected_without_hashing(store, monkeypatch):
+    """argon2 is deliberately expensive; an unauthenticated caller without a
+    usable invite must not be able to spend that CPU/memory at will."""
+    from service import app as app_module
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        app_module, "hash_password", lambda pw: calls.append(pw) or "unused-hash",
+    )
+    used = _invite(store)
+    TestClient(app).post(
+        "/auth/signup", json={"email": "first@example.com", "password": "password123", "invite": used},
+    )
+    calls.clear()
+
+    for bad in ("no-such-token", used):  # unknown, then already-used
+        r = TestClient(app).post(
+            "/auth/signup",
+            json={"email": "x@example.com", "password": "password123", "invite": bad},
+        )
+        assert r.status_code == 400
+    assert calls == [], "password must not be hashed before the invite is validated"
+
+
+def test_login_verifies_a_hash_even_for_unknown_emails(store, monkeypatch):
+    """Otherwise response time alone reveals whether an account exists, and the
+    generic 401 message buys nothing."""
+    from service import app as app_module
+
+    verifications: list[str] = []
+    monkeypatch.setattr(
+        app_module, "verify_password",
+        lambda stored, pw: verifications.append(stored) or False,
+    )
+    r = TestClient(app).post(
+        "/auth/login", json={"email": "ghost@example.com", "password": "password123"},
+    )
+    assert r.status_code == 401
+    assert len(verifications) == 1, "an unknown email must still cost one verification"
+    assert verifications[0] == app_module.DUMMY_PASSWORD_HASH
+
+
 def test_logout_clears_session(store):
     token = _invite(store)
     client = TestClient(app)

@@ -15,7 +15,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as React from 'react'
 import { deriveInitials, type AvatarTone } from '../ds/Avatar'
-import { getMe, logout as apiLogout, type AuthUser } from '../api'
+import {
+  getMe,
+  logout as apiLogout,
+  setUnauthorizedHandler,
+  type AuthUser,
+} from '../api'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,7 +34,9 @@ export interface CurrentUser {
   /** Chosen avatar tone (swe1.7). Optional so existing user literals still typecheck. */
   avatarTone?: AvatarTone
   role: UserRole
-  signOut(): void
+  /** Resolves false when the SERVER refused to end the session — the caller
+   * must keep showing the user as signed in (the httpOnly cookie is still live). */
+  signOut(): Promise<boolean>
   editProfile(): void
 }
 
@@ -54,14 +61,20 @@ export const STUB: CurrentUser = {
   initials: 'AV',
   avatarTone: 'gold',
   role: 'player',
-  signOut: noop,
+  signOut: async () => true,
   editProfile: noop,
 }
 
 // ── Profile persistence (local-stub only; unrelated to the server session) ───
 // Real per-user profile storage is out of scope for the pilot.
 
-const PROFILE_STORAGE_KEY = 'game-guide-ai:profile'
+// Namespaced per account: a single shared key leaked one user's display name and
+// avatar to the next person to sign in on the same browser. Signed-out/unknown
+// users get their own bucket rather than the previous user's.
+function profileStorageKey(userId: string): string {
+  return `game-guide-ai:profile:${userId}`
+}
+
 const AVATAR_TONES: readonly AvatarTone[] = ['gold', 'ember', 'verdigris', 'arcane']
 
 interface StoredProfile {
@@ -73,9 +86,9 @@ function isAvatarTone(value: unknown): value is AvatarTone {
   return typeof value === 'string' && (AVATAR_TONES as readonly string[]).includes(value)
 }
 
-function loadProfile(): StoredProfile {
+function loadProfile(userId: string): StoredProfile {
   try {
-    const raw = localStorage.getItem(PROFILE_STORAGE_KEY)
+    const raw = localStorage.getItem(profileStorageKey(userId))
     if (!raw) return {}
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return {}
@@ -89,9 +102,9 @@ function loadProfile(): StoredProfile {
   }
 }
 
-function saveProfile(profile: StoredProfile): void {
+function saveProfile(userId: string, profile: StoredProfile): void {
   try {
-    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile))
+    localStorage.setItem(profileStorageKey(userId), JSON.stringify(profile))
   } catch (err) {
     console.warn('currentUser: could not persist profile', err)
   }
@@ -113,12 +126,11 @@ interface CurrentUserProviderProps {
 export function CurrentUserProvider({ children }: CurrentUserProviderProps): React.JSX.Element {
   const [authStatus, setAuthStatus] = useState<AuthStatus>('checking')
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
-  const [displayName, setDisplayNameState] = useState<string>(
-    () => loadProfile().displayName ?? STUB.displayName,
-  )
-  const [avatarTone, setAvatarToneState] = useState<AvatarTone>(
-    () => loadProfile().avatarTone ?? 'gold',
-  )
+  const userId = authUser?.email ?? 'guest'
+  // Edits made this session, keyed by account. The stored profile is READ per
+  // identity rather than mirrored into state, so switching accounts can't leave
+  // the previous user's name/avatar on screen (and needs no syncing effect).
+  const [edits, setEdits] = useState<Record<string, StoredProfile>>({})
 
   // One-time session check on mount. getMe() never throws (network/4xx both
   // resolve to a normal AuthResult), so this can't leave authStatus stuck.
@@ -138,33 +150,61 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
     }
   }, [])
 
+  // Centralized 401: any guarded call that finds the session gone drops the app
+  // back to Login, instead of trapping the user in an authenticated-looking
+  // shell where every request fails.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuthUser(null)
+      setAuthStatus('unauthenticated')
+    })
+    return () => setUnauthorizedHandler(null)
+  }, [])
+
   const signIn = useCallback((next: AuthUser) => {
     setAuthUser(next)
     setAuthStatus('authenticated')
   }, [])
 
-  const signOut = useCallback(() => {
-    void apiLogout()
+  const signOut = useCallback(async (): Promise<boolean> => {
+    // Only the server can clear an httpOnly cookie. If it refuses, stay signed
+    // in rather than pretending — otherwise a refresh silently restores the
+    // session the user believes they ended.
+    const ok = await apiLogout()
+    if (!ok) return false
     setAuthUser(null)
     setAuthStatus('unauthenticated')
+    return true
   }, [])
 
+  const profile = useMemo(
+    () => edits[userId] ?? loadProfile(userId),
+    [edits, userId],
+  )
+  const displayName = profile.displayName ?? STUB.displayName
+  const avatarTone = profile.avatarTone ?? 'gold'
+
+  const updateProfile = useCallback((patch: StoredProfile) => {
+    setEdits((prev) => {
+      const next = { ...(prev[userId] ?? loadProfile(userId)), ...patch }
+      saveProfile(userId, next)
+      return { ...prev, [userId]: next }
+    })
+  }, [userId])
+
   const setDisplayName = useCallback((name: string) => {
-    setDisplayNameState(name)
-    saveProfile({ displayName: name, avatarTone })
-  }, [avatarTone])
+    updateProfile({ displayName: name })
+  }, [updateProfile])
 
   const setAvatarTone = useCallback((tone: AvatarTone) => {
-    setAvatarToneState(tone)
-    saveProfile({ displayName, avatarTone: tone })
-  }, [displayName])
+    updateProfile({ avatarTone: tone })
+  }, [updateProfile])
 
   const value = useMemo<CurrentUserContextValue>(() => {
     const role: UserRole = authUser?.role ?? 'player'
-    const id = authUser?.email ?? 'guest'
     return {
       user: {
-        id, displayName, initials: deriveInitials(displayName), avatarTone, role,
+        id: userId, displayName, initials: deriveInitials(displayName), avatarTone, role,
         signOut, editProfile: noop,
       },
       authStatus,
@@ -172,7 +212,7 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
       setDisplayName,
       setAvatarTone,
     }
-  }, [authStatus, authUser, displayName, avatarTone, signIn, signOut, setDisplayName, setAvatarTone])
+  }, [authStatus, authUser, userId, displayName, avatarTone, signIn, signOut, setDisplayName, setAvatarTone])
 
   return <CurrentUserContext.Provider value={value}>{children}</CurrentUserContext.Provider>
 }

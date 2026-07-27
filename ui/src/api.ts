@@ -70,6 +70,25 @@ async function parseJson<T>(res: Response): Promise<T | null> {
 
 const UNREADABLE = 'The service returned an unreadable response.'
 
+// ── Centralized 401 handling (x5bz.2) ────────────────────────────────────────
+// Any guarded call that comes back 401 means the session is gone (expired,
+// revoked, account deleted). Rather than each caller inventing its own
+// recovery, they all report it here and the auth provider flips the app back
+// to the Login screen. Deliberately NOT fired for /auth/login or /auth/me,
+// where a 401 is a normal answer rather than a lost session.
+
+type UnauthorizedHandler = () => void
+
+let unauthorizedHandler: UnauthorizedHandler | null = null
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler
+}
+
+function notifyUnauthorized(): void {
+  unauthorizedHandler?.()
+}
+
 /** Recall a conversation's stored history (most recent window, oldest-first). */
 export async function getMessages(
   conversationId: string,
@@ -85,6 +104,7 @@ export async function getMessages(
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
   }
 
+  if (res.status === 401) notifyUnauthorized()
   if (!res.ok) {
     return { kind: 'error', message: `Message history unavailable (${res.status}).` }
   }
@@ -117,6 +137,7 @@ export async function postChat(
   }
 
   if (res.status === 401) {
+    notifyUnauthorized()
     return {
       kind: 'error',
       message: 'Your session has expired — please sign in again.',
@@ -219,6 +240,7 @@ export async function uploadAttachment(
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
   }
 
+  if (res.status === 401) notifyUnauthorized()
   if (res.status === 415) {
     return { kind: 'error', message: "That file type isn't supported." }
   }
@@ -252,6 +274,7 @@ export async function getAttachments(
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
   }
 
+  if (res.status === 401) notifyUnauthorized()
   if (!res.ok) {
     return { kind: 'error', message: `Attachments unavailable (${res.status}).` }
   }
@@ -272,6 +295,24 @@ export type AuthResult =
   | { kind: 'ok'; user: AuthUser }
   | { kind: 'error'; message: string; status?: number }
 
+/** Turn a FastAPI error body into a displayable string.
+ *
+ * `detail` is a plain string for our own HTTPExceptions, but for a 422 it is an
+ * ARRAY of validation objects — handing that straight to React throws
+ * ("objects are not valid as a React child"). Normalize both shapes. */
+function errorMessage(body: unknown, status: number): string {
+  const detail = (body as { detail?: unknown } | null)?.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    const first = detail.find(
+      (d): d is { msg: string } =>
+        typeof (d as { msg?: unknown })?.msg === 'string',
+    )
+    if (first) return first.msg
+  }
+  return `Request failed (${status}).`
+}
+
 async function postAuthJson(
   path: string,
   body: Record<string, string>,
@@ -289,11 +330,10 @@ async function postAuthJson(
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
   }
   if (!res.ok) {
-    const errBody = await parseJson<{ detail?: string }>(res)
     return {
       kind: 'error',
       status: res.status,
-      message: errBody?.detail ?? `Request failed (${res.status}).`,
+      message: errorMessage(await parseJson<unknown>(res), res.status),
     }
   }
   const parsed = await parseJson<AuthUser>(res)
@@ -320,13 +360,17 @@ export function login(
   return postAuthJson('/auth/login', { email, password }, fetchImpl)
 }
 
-/** Clear the session cookie. Best-effort — the client resets its own state
- * regardless of whether the request succeeds. */
-export async function logout(fetchImpl: typeof fetch = fetch): Promise<void> {
+/** Clear the session cookie. Returns whether the SERVER actually cleared it.
+ *
+ * The cookie is httpOnly, so only a successful server response ends the
+ * session — clearing local state on a failed request would show "signed out"
+ * while a refresh silently signs the user back in (bad on a shared device). */
+export async function logout(fetchImpl: typeof fetch = fetch): Promise<boolean> {
   try {
-    await fetchImpl('/auth/logout', { method: 'POST', credentials: 'include' })
+    const res = await fetchImpl('/auth/logout', { method: 'POST', credentials: 'include' })
+    return res.ok
   } catch {
-    // ignore — signing out client-side is what actually matters
+    return false
   }
 }
 

@@ -104,7 +104,7 @@ describe('Signup screen', () => {
     vi.spyOn(api, 'signup').mockResolvedValue({
       kind: 'ok', user: { email: 'new@example.com', role: 'player' },
     })
-    render(withProviders(<Signup invite="tok-abc" />, makeUserState({ signIn })))
+    render(withProviders(<Signup invite="tok-abc" onUseLogin={vi.fn()} />, makeUserState({ signIn })))
 
     await userEvent.type(screen.getByLabelText(/email/i), 'new@example.com')
     await userEvent.type(screen.getByLabelText(/password/i), 'password123')
@@ -120,7 +120,7 @@ describe('Signup screen', () => {
     vi.spyOn(api, 'signup').mockResolvedValue({
       kind: 'error', status: 400, message: 'This invite link has already been used.',
     })
-    render(withProviders(<Signup invite="used" />, makeUserState()))
+    render(withProviders(<Signup invite="used" onUseLogin={vi.fn()} />, makeUserState()))
 
     await userEvent.type(screen.getByLabelText(/email/i), 'a@example.com')
     await userEvent.type(screen.getByLabelText(/password/i), 'password123')
@@ -158,6 +158,35 @@ describe('App auth gate', () => {
     renderApp('checking')
     expect(screen.queryByRole('button', { name: /sign in/i })).not.toBeInTheDocument()
     expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+  })
+
+  it('scrubs the single-use invite from the URL immediately', async () => {
+    window.history.replaceState({}, '', '/?invite=tok-abc')
+    renderApp('unauthenticated')
+    // The token is a credential: leaving it in the address bar puts it in
+    // history, referrers and logs, and makes a later sign-out land on Signup
+    // with an already-spent invite.
+    expect(window.location.search).toBe('')
+    expect(screen.getByRole('button', { name: /create account/i })).toBeInTheDocument()
+  })
+
+  it('offers a route to Login from the Signup screen', async () => {
+    window.history.replaceState({}, '', '/?invite=tok-abc')
+    renderApp('unauthenticated')
+    await userEvent.click(screen.getByRole('button', { name: /already have an account/i }))
+    expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument()
+  })
+
+  it('rejects a too-short password client-side, without calling the API', async () => {
+    const signupSpy = vi.spyOn(api, 'signup')
+    render(withProviders(<Signup invite="tok" onUseLogin={vi.fn()} />, makeUserState()))
+
+    await userEvent.type(screen.getByLabelText(/email/i), 'a@example.com')
+    await userEvent.type(screen.getByLabelText(/password/i), 'short')
+    await userEvent.click(screen.getByRole('button', { name: /create account/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/at least 8 characters/i)
+    expect(signupSpy).not.toHaveBeenCalled()
   })
 
   it('a 401 from the session check lands the user on Login (real provider)', async () => {

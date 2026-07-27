@@ -17,14 +17,22 @@ export function UserMenu(): React.JSX.Element {
   const { user } = useCurrentUser()
   const { openProfile } = useAppNav()
   const [open, setOpen] = useState(false)
+  const [signOutError, setSignOutError] = useState<string | null>(null)
 
   function toggleMenu(): void {
     setOpen((prev) => !prev)
   }
 
-  function handleSignOut(): void {
-    setOpen(false)
-    user.signOut()
+  async function handleSignOut(): Promise<void> {
+    setSignOutError(null)
+    // Only the server can clear the httpOnly session cookie — if it refuses,
+    // say so and stay signed in rather than showing a false "signed out".
+    const ok = await user.signOut()
+    if (ok) {
+      setOpen(false)
+    } else {
+      setSignOutError("Couldn't sign out — please try again.")
+    }
   }
 
   function handleOpenProfile(): void {
@@ -74,6 +82,11 @@ export function UserMenu(): React.JSX.Element {
           >
             Sign out
           </button>
+          {signOutError && (
+            <p role="alert" className="user-menu__item user-menu__error">
+              {signOutError}
+            </p>
+          )}
         </div>
       )}
     </div>

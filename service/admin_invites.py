@@ -32,6 +32,11 @@ def build_signup_link(base_url: str, token: str) -> str:
 
 
 def cmd_create(store: AuthStore, role: Role, ttl_days: int, base_url: str) -> str:
+    # A zero/negative TTL mints an already-expired invite while still printing a
+    # perfectly ordinary-looking link — the operator only finds out when the
+    # tester can't sign up. Reject it up front.
+    if ttl_days < 1:
+        raise ValueError(f"--ttl-days must be at least 1 (got {ttl_days})")
     expires_at = datetime.now(timezone.utc) + timedelta(days=ttl_days)
     invite = store.create_invite(role=role, expires_at=expires_at)
     return build_signup_link(base_url, invite.token)
@@ -48,14 +53,15 @@ def _status(invite: Invite, now: datetime) -> str:
 
 
 def format_invites(invites: list[Invite], now: datetime | None = None) -> str:
+    """Full tokens, deliberately: `revoke` takes a whole token, so a truncated
+    listing would leave an operator unable to act on what they can see."""
     now = now or datetime.now(timezone.utc)
     if not invites:
         return "(no invites)"
-    lines = [f"{'TOKEN':<16} {'ROLE':<6} {'STATUS':<8} EXPIRES"]
+    lines = [f"{'ROLE':<6} {'STATUS':<8} {'EXPIRES':<26} TOKEN"]
     for inv in invites:
         lines.append(
-            f"{inv.token[:14] + '…':<16} {inv.role:<6} {_status(inv, now):<8} "
-            f"{inv.expires_at.isoformat()}"
+            f"{inv.role:<6} {_status(inv, now):<8} {inv.expires_at.isoformat():<26} {inv.token}"
         )
     return "\n".join(lines)
 
@@ -87,7 +93,10 @@ def main(argv: list[str] | None = None) -> int:
     store.ensure_schema()
 
     if args.cmd == "create":
-        print(cmd_create(store, args.role, args.ttl_days, args.base_url))
+        try:
+            print(cmd_create(store, args.role, args.ttl_days, args.base_url))
+        except ValueError as exc:
+            parser.error(str(exc))
         return 0
     if args.cmd == "list":
         print(cmd_list(store))

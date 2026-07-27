@@ -14,13 +14,16 @@ import { TextField } from '../ds/TextField'
 import * as api from '../api'
 import { useAppNav } from './AppNav'
 import { useCurrentUser } from './currentUser'
+import { validateCredentials } from './credentials'
 import './AuthScreen.css'
 
 export interface SignupProps {
   invite: string
+  /** Discard the invite and show Login instead (also called once it's spent). */
+  onUseLogin: () => void
 }
 
-export function Signup({ invite }: SignupProps): React.JSX.Element {
+export function Signup({ invite, onUseLogin }: SignupProps): React.JSX.Element {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -30,11 +33,17 @@ export function Signup({ invite }: SignupProps): React.JSX.Element {
 
   async function handleSubmit(e: React.FormEvent): Promise<void> {
     e.preventDefault()
+    const invalid = validateCredentials(email, password)
+    if (invalid) {
+      setError(invalid)
+      return
+    }
     setError(null)
     setSubmitting(true)
     const result = await api.signup(email, password, invite)
     setSubmitting(false)
     if (result.kind === 'ok') {
+      onUseLogin() // the invite is spent — never offer it again
       signIn(result.user)
       backToLanding()
     } else {
@@ -72,6 +81,11 @@ export function Signup({ invite }: SignupProps): React.JSX.Element {
             {submitting ? 'Creating account…' : 'Create account'}
           </Button>
         </form>
+        <p className="auth-screen__switch">
+          <Button variant="text" onClick={onUseLogin}>
+            Already have an account? Sign in
+          </Button>
+        </p>
       </Card>
     </div>
   )

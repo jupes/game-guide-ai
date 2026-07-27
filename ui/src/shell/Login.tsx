@@ -26,6 +26,10 @@ export function Login(): React.JSX.Element {
 
   async function handleSubmit(e: React.FormEvent): Promise<void> {
     e.preventDefault()
+    if (!email.trim() || !password) {
+      setError('Enter your email and password.')
+      return
+    }
     setError(null)
     setSubmitting(true)
     const result = await api.login(email, password)

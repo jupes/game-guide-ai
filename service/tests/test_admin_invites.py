@@ -46,11 +46,26 @@ def test_list_shows_status_open_used_revoked() -> None:
 
     out = cmd_list(store)
     assert "open" in out and "used" in out and "revoked" in out
-    assert open_i.token[:14] in out
+    # FULL tokens: `revoke` needs a whole one, so a truncated listing would be
+    # unusable for the operator reading it.
+    for inv in (open_i, used_i, revoked_i):
+        assert inv.token in out
 
 
 def test_format_invites_empty() -> None:
     assert format_invites([]) == "(no invites)"
+
+
+def test_create_rejects_non_positive_ttl() -> None:
+    """A zero/negative TTL would mint an already-expired invite while printing a
+    normal-looking link — the operator only finds out when signup fails."""
+    import pytest
+
+    store = InMemoryAuthStore()
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match="ttl-days"):
+            cmd_create(store, role="player", ttl_days=bad, base_url="https://svc")
+    assert store.list_invites() == [], "no invite should be created for a bad TTL"
 
 
 def test_revoke_returns_true_then_false() -> None:

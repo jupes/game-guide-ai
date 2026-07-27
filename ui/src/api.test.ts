@@ -326,6 +326,32 @@ describe('signup', () => {
     })
   })
 
+  it('normalizes a FastAPI 422 validation array into a string message', async () => {
+    // FastAPI answers 422 with `detail: [{loc, msg, type}, ...]`. Passing that
+    // array to React throws ("objects are not valid as a React child"), so a
+    // 7-char password used to crash the screen instead of showing an error.
+    const result = await signup(
+      'a@example.com', 'short', 'tok',
+      fakeFetch(422, {
+        detail: [
+          { type: 'string_too_short', loc: ['body', 'password'],
+            msg: 'String should have at least 8 characters' },
+        ],
+      }),
+    )
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') {
+      expect(typeof result.message).toBe('string')
+      expect(result.message).toMatch(/at least 8 characters/i)
+    }
+  })
+
+  it('falls back to a generic message when detail is an unexpected shape', async () => {
+    const result = await signup('a@example.com', 'password123', 'tok', fakeFetch(400, { detail: {} }))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toBe('Request failed (400).')
+  })
+
   it('surfaces a 409 on duplicate email', async () => {
     const result = await signup(
       'dup@example.com', 'password123', 'tok', fakeFetch(409, { detail: 'taken' }),
@@ -376,11 +402,17 @@ describe('logout', () => {
     expect(captured?.credentials).toBe('include')
   })
 
-  it('never throws even if the request fails (best-effort)', async () => {
+  it('reports failure (false) instead of throwing when the request fails', async () => {
     const failing: typeof fetch = (async () => {
       throw new TypeError('fetch failed')
     }) as typeof fetch
-    await expect(logout(failing)).resolves.toBeUndefined()
+    // The caller must be able to tell — only a successful server response
+    // clears the httpOnly cookie.
+    await expect(logout(failing)).resolves.toBe(false)
+  })
+
+  it('reports failure on a non-2xx response', async () => {
+    await expect(logout(fakeFetch(500))).resolves.toBe(false)
   })
 })
 

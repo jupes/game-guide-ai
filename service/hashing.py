@@ -14,6 +14,11 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
 _hasher = PasswordHasher()
 
+# A real argon2 hash of a value nobody can supply, used to equalize login timing
+# for unknown emails (verifying against it costs the same as a real check but can
+# never succeed). Computed once at import, not per request.
+DUMMY_PASSWORD_HASH: str = _hasher.hash("gga-nonexistent-account-sentinel")
+
 
 def hash_password(password: str) -> str:
     """Return an argon2id hash string (embeds algorithm, params, and salt)."""

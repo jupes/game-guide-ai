@@ -172,7 +172,7 @@ describe('App-flow smoke test (CP-F6.2)', () => {
         displayName: 'Adventurer',
         initials: 'AV',
         role: 'player',
-        signOut: () => {},
+        signOut: async () => true,
         editProfile: () => {},
       },
       authStatus: 'authenticated',

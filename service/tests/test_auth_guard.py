@@ -78,3 +78,28 @@ def test_metrics_ui_stays_open(store):
     # Unguarded telemetry beacon — must not 401 without a session.
     r = TestClient(app).post("/metrics/ui", json={"points": []})
     assert r.status_code != 401
+
+
+# ── Security review regressions: the cookie is not the last word ─────────────
+
+
+def test_deleted_account_cannot_keep_using_its_cookie(store):
+    """The session cookie stays cryptographically valid for days, so the account
+    is re-read per request: deleting it must revoke access immediately."""
+    client = _authed_client(store)
+    assert client.post("/chat", json={"prompt": "hi"}).status_code == 200
+
+    store._users.clear()  # noqa: SLF001 - simulate the account being removed
+    assert client.post("/chat", json={"prompt": "hi"}).status_code == 401
+
+
+def test_role_change_takes_effect_without_re_login(store):
+    """A demoted DM must lose GM access at once — authorization uses the CURRENT
+    stored role, not the one baked into the cookie at login."""
+    client = _authed_client(store)  # signs up as dm
+    assert client.post("/chat", json={"prompt": "x", "mode": "gm"}).status_code == 200
+
+    store._users[0].role = "player"  # noqa: SLF001 - admin demotes them
+    assert client.post("/chat", json={"prompt": "x", "mode": "gm"}).status_code == 403
+    # ...but non-GM channels still work.
+    assert client.post("/chat", json={"prompt": "x", "mode": "sage"}).status_code == 200

@@ -10,7 +10,12 @@ import {
 
 test('production app preserves a conversation and emits bounded performance evidence', async ({
   page,
-}) => {
+}, testInfo) => {
+  // Invites are single-use and emails unique, so each attempt needs its own —
+  // otherwise a retry fails at account creation instead of retrying the test.
+  // Tokens are seeded by service/e2e_app.py (E2E_INVITE_TOKENS).
+  const invite = `e2e-invite-token-${testInfo.retry}`
+  const testerEmail = `e2e-tester-${testInfo.retry}@example.com`
   const externalFontRequests: string[] = []
   await page.emulateMedia({ reducedMotion: 'reduce' })
   page.on('request', (request) => {
@@ -22,10 +27,10 @@ test('production app preserves a conversation and emits bounded performance evid
   // Access is invite-gated (x5bz.2): land on the invite deep-link and create the
   // account, exactly as a real tester does. The token is seeded by
   // service/e2e_app.py (a browser can't guess a randomly minted one).
-  await page.goto('/?invite=e2e-invite-token')
+  await page.goto(`/?invite=${invite}`)
 
   await expect(page.getByRole('heading', { name: 'Aetheril' })).toBeVisible()
-  await page.getByLabel('Email').fill('e2e-tester@example.com')
+  await page.getByLabel('Email').fill(testerEmail)
   await page.getByLabel('Password').fill('e2e-password-123')
   await page.getByRole('button', { name: 'Create account' }).click()
 

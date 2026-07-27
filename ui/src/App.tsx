@@ -9,18 +9,39 @@ import { useCurrentUser } from './shell/currentUser'
 import { getInviteTokenFromSearch } from './shell/inviteToken'
 
 export default function App(): React.JSX.Element {
-  const { screen } = useAppNav()
-  const { authStatus } = useCurrentUser()
+  const { screen, backToLanding, setConversationId } = useAppNav()
+  const { authStatus, user } = useCurrentUser()
 
-  // Definitively signed out: gate on Login, or Signup if this is an invite
-  // link (root-path `/?invite=<token>` — there is no client router, and the
-  // built SPA 404s on any other path). While `checking`, fall through to the
-  // normal screen below rather than flashing Login first — most visits are an
-  // already-signed-in tester, and the screen swaps to Login the moment the
-  // session check comes back negative.
+  // Capture the invite ONCE. It's a single-use credential, so it must not
+  // linger in the URL (browser history, referrers, server logs) or be re-read
+  // after it's spent — otherwise signing out later lands the user on Signup
+  // with a consumed token and no way forward.
+  const [invite, setInvite] = React.useState<string | null>(() =>
+    getInviteTokenFromSearch(window.location.search),
+  )
+  React.useEffect(() => {
+    if (getInviteTokenFromSearch(window.location.search) !== null) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
+
+  // Identity changed (sign-in, sign-out, session expiry): drop navigation state
+  // so the incoming user never inherits the previous one's open conversation.
+  React.useEffect(() => {
+    setConversationId(null)
+    backToLanding()
+  }, [user.id, setConversationId, backToLanding])
+
+  // Definitively signed out: Signup while an unspent invite is in hand,
+  // otherwise Login. While `checking`, fall through to the normal screen rather
+  // than flashing Login — most visits are an already-signed-in tester, and the
+  // screen swaps the moment the session check comes back negative.
   if (authStatus === 'unauthenticated') {
-    const invite = getInviteTokenFromSearch(window.location.search)
-    return invite ? <Signup invite={invite} /> : <Login />
+    return invite ? (
+      <Signup invite={invite} onUseLogin={() => setInvite(null)} />
+    ) : (
+      <Login />
+    )
   }
 
   if (screen === 'landing') return <Landing />

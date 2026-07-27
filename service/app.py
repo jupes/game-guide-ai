@@ -30,7 +30,7 @@ from ingestion.retrieval import EmbeddingUnavailableError
 
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore
-from .hashing import hash_password, verify_password
+from .hashing import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from .history import MessageStore, PostgresMessageStore, StoredAttachment
 from .invites import InviteError
 from .models import (
@@ -181,15 +181,31 @@ def _session_secret() -> str:
     return secret
 
 
-def require_session(request: Request) -> SessionData:
-    """Dependency guarding the data endpoints: a valid session cookie or 401."""
+def require_session(
+    request: Request, store: AuthStore = Depends(get_auth_store),
+) -> SessionData:
+    """Dependency guarding the data endpoints: a valid session cookie or 401.
+
+    The cookie is authentic-but-stale by nature (it is signed once and lives for
+    days), so the account is **re-read from the store on every request**: a
+    deleted account stops working immediately instead of at cookie expiry, and
+    the role used for authorization is the CURRENT one — demoting a DM takes
+    effect at once rather than requiring a secret rotation to log everyone out.
+    """
     token = request.cookies.get(config.SESSION_COOKIE_NAME)
     if not token:
         raise HTTPException(status_code=401, detail="authentication required")
     session = decode_session(token, _session_secret(), config.SESSION_TTL_DAYS * 86400)
     if session is None:
         raise HTTPException(status_code=401, detail="invalid or expired session")
-    return session
+    try:
+        user = store.get_user_by_id(session.user_id)
+    except Exception as exc:  # fail closed — never authorize on a failed lookup
+        log.warning("session user lookup failed (user_id=%s)", session.user_id, exc_info=True)
+        raise HTTPException(status_code=503, detail="auth backend unavailable") from exc
+    if user is None:
+        raise HTTPException(status_code=401, detail="account no longer exists")
+    return SessionData(user_id=user.id, role=user.role)
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -309,33 +325,39 @@ def _fetch_attachment_context(
     return context, label
 
 
-def _enforce_conversation_owner(
-    store: MessageStore | None, conversation_id: str | None, user_id: int,
+def _authorize_conversation(
+    store: MessageStore | None, conversation_id: str | None, user_id: int, *, claim: bool,
 ) -> None:
-    """403 if the conversation is owned by another user (x5bz.2 D). Best-effort
-    on store errors — fail-open is safe because the subsequent read/attachment
-    fetch hits the same store and fails/empties, so no cross-user data is served."""
+    """Authorize this user for `conversation_id`, or raise (x5bz.2 D).
+
+    **Fails CLOSED.** A lookup error raises 503 rather than continuing: reads and
+    ownership checks run on separate connections, so a transient failure (or a
+    role that can't see `chat.conversations`) must never be followed by a
+    successful cross-user read.
+
+    `claim=True` (writes) uses the store's **atomic** claim, which returns the
+    winning owner — that single call is both the check and the claim, closing the
+    TOCTOU window where two users racing a fresh id could both pass a separate
+    pre-check. Anyone who is not the winner is rejected.
+    """
     if store is None or conversation_id is None:
         return
     try:
-        owner = store.owner_of(conversation_id)
-    except Exception:
-        log.warning("ownership check failed (conversation_id=%s)", conversation_id, exc_info=True)
-        return
+        owner = (
+            store.claim_conversation(conversation_id, user_id)
+            if claim
+            else store.owner_of(conversation_id)
+        )
+    except Exception as exc:
+        log.warning(
+            "conversation authorization failed (conversation_id=%s)",
+            conversation_id, exc_info=True,
+        )
+        raise HTTPException(
+            status_code=503, detail="authorization backend unavailable"
+        ) from exc
     if owner is not None and owner != user_id:
         raise HTTPException(status_code=403, detail="not your conversation")
-
-
-def _claim_conversation(
-    store: MessageStore | None, conversation_id: str | None, user_id: int,
-) -> None:
-    """Best-effort: record the conversation's owner on first use (mirrors _persist_turn)."""
-    if store is None or conversation_id is None:
-        return
-    try:
-        store.claim_conversation(conversation_id, user_id)
-    except Exception:
-        log.warning("conversation claim failed (conversation_id=%s)", conversation_id, exc_info=True)
 
 
 @app.get("/healthz")
@@ -355,10 +377,9 @@ def chat(
     # role (not the UI toggle). Raised before the try so it isn't masked as a 500.
     if req.mode.value == "gm" and session.role != "dm":
         raise HTTPException(status_code=403, detail="the GM channel requires the DM role")
-    # Ownership: 403 if this conversation belongs to someone else; claim it on
-    # first use. Before the try for the same reason (403, not 500).
-    _enforce_conversation_owner(store, req.conversation_id, session.user_id)
-    _claim_conversation(store, req.conversation_id, session.user_id)
+    # Ownership: one atomic claim-or-reject (403 if it's someone else's).
+    # Before the try for the same reason (403, not 500).
+    _authorize_conversation(store, req.conversation_id, session.user_id, claim=True)
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, req.conversation_id,
@@ -435,7 +456,7 @@ def conversation_messages(
 ) -> MessagesResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="message history unavailable")
-    _enforce_conversation_owner(store, conversation_id, session.user_id)
+    _authorize_conversation(store, conversation_id, session.user_id, claim=False)
     # config.HISTORY_LIMIT read at request time (not import) so env/test
     # overrides of the knob take effect; client may ask for fewer, never more.
     cap = config.HISTORY_LIMIT
@@ -468,8 +489,7 @@ def upload_attachment(
 ) -> AttachmentResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
-    _enforce_conversation_owner(store, conversation_id, session.user_id)
-    _claim_conversation(store, conversation_id, session.user_id)
+    _authorize_conversation(store, conversation_id, session.user_id, claim=True)
     try:
         data = base64.b64decode(req.data, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -499,7 +519,7 @@ def conversation_attachments(
 ) -> AttachmentsResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
-    _enforce_conversation_owner(store, conversation_id, session.user_id)
+    _authorize_conversation(store, conversation_id, session.user_id, claim=False)
     try:
         stored = store.attachments_for(conversation_id)
     except _DB_ERRORS as exc:
@@ -520,6 +540,22 @@ def signup(
     """Create an account by redeeming a one-time invite, then start a session.
     The invite carries the role; the token is consumed atomically."""
     secret = _session_secret()
+    # Cheap pre-check BEFORE the (deliberately expensive) argon2 hash, so an
+    # unauthenticated caller without a usable invite can't burn CPU/memory at
+    # will. The atomic re-check inside redeem_invite is still what actually
+    # guarantees single use — this only short-circuits the obvious rejects.
+    try:
+        invite = store.get_invite(req.invite)
+    except Exception as exc:
+        log.warning("invite lookup failed", exc_info=True)
+        raise HTTPException(status_code=503, detail="auth backend unavailable") from exc
+    if invite is None:
+        raise HTTPException(status_code=400, detail="Unknown invite link.")
+    try:
+        invite.check_redeemable()
+    except InviteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     try:
         user = store.redeem_invite(req.invite, req.email, hash_password(req.password))
     except EmailTaken as exc:
@@ -542,7 +578,11 @@ def login(
     secret = _session_secret()
     user = store.get_user_by_email(req.email)
     stored_hash = store.password_hash_for(req.email)
-    if user is None or stored_hash is None or not verify_password(stored_hash, req.password):
+    # Always run one argon2 verification, even for an unknown email — otherwise
+    # the response time itself reveals whether an account exists, and the generic
+    # message below buys nothing. DUMMY_PASSWORD_HASH never matches.
+    ok = verify_password(stored_hash or DUMMY_PASSWORD_HASH, req.password)
+    if user is None or stored_hash is None or not ok:
         # One generic message — never reveal whether the email is registered.
         raise HTTPException(status_code=401, detail="invalid email or password")
     _set_session_cookie(

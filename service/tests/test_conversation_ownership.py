@@ -84,3 +84,62 @@ def test_unclaimed_conversation_is_readable(env):
     # bites once someone owns it.
     alice = _signup(env, "alice@example.com")
     assert alice.get("/conversations/fresh-conv/messages").status_code == 200
+
+
+# ── Security review regressions (must fail CLOSED) ───────────────────────────
+
+
+class _AuthzFailingStore(InMemoryMessageStore):
+    """Ownership lookups raise; everything else works — models a transient DB
+    error or a role that can't read chat.conversations."""
+
+    def owner_of(self, conversation_id):
+        raise RuntimeError("ownership lookup unavailable")
+
+    def claim_conversation(self, conversation_id, user_id):
+        raise RuntimeError("ownership claim unavailable")
+
+
+def test_ownership_lookup_failure_denies_instead_of_falling_open(env):
+    """An authorization lookup that errors must NOT continue into the read.
+    Reads use separate connections, so failing open could serve another user's
+    conversation."""
+    alice = _signup(env, "alice@example.com")
+    app.dependency_overrides[get_message_store] = lambda: _AuthzFailingStore()
+
+    assert alice.get("/conversations/conv-A/messages").status_code == 503
+    assert alice.get("/conversations/conv-A/attachments").status_code == 503
+    assert alice.post(
+        "/chat", json={"prompt": "hi", "conversation_id": "conv-A"},
+    ).status_code == 503
+    assert alice.post(
+        "/conversations/conv-A/attachments",
+        json={"filename": "x.txt", "content_type": "text/plain", "data": "aGk="},
+    ).status_code == 503
+
+
+class _RacingStore(InMemoryMessageStore):
+    """Simulates losing the claim race: the atomic claim reports a different
+    winner than the caller (someone else got there first)."""
+
+    def owner_of(self, conversation_id):
+        return None  # a pre-check would see it as unowned...
+
+    def claim_conversation(self, conversation_id, user_id):
+        return user_id + 999  # ...but the atomic claim says someone else won
+
+
+def test_losing_the_claim_race_is_rejected(env):
+    """The claim is atomic and its RESULT is honored: a user who loses the race
+    on a fresh conversation id must be rejected, not allowed to write into the
+    winner's conversation."""
+    alice = _signup(env, "alice@example.com")
+    app.dependency_overrides[get_message_store] = lambda: _RacingStore()
+
+    assert alice.post(
+        "/chat", json={"prompt": "hi", "conversation_id": "fresh"},
+    ).status_code == 403
+    assert alice.post(
+        "/conversations/fresh/attachments",
+        json={"filename": "x.txt", "content_type": "text/plain", "data": "aGk="},
+    ).status_code == 403
