@@ -55,30 +55,54 @@ CREATE TABLE IF NOT EXISTS auth.invites (
 
 CREATE INDEX IF NOT EXISTS invites_created_idx ON auth.invites (created_at);
 
--- Migration for schemas created before ON DELETE SET NULL existed: every
--- redeemed invite holds a FK to its user, so deleting a compromised account —
--- the documented incident response — was rejected by Postgres for any normally
--- created account. Re-point the constraint; the invite row must survive (it is
--- the audit trail that the token was spent), it just forgets who spent it.
-ALTER TABLE auth.invites DROP CONSTRAINT IF EXISTS invites_used_by_fkey;
-ALTER TABLE auth.invites ADD CONSTRAINT invites_used_by_fkey
-  FOREIGN KEY (used_by) REFERENCES auth.users (id) ON DELETE SET NULL;
-
--- Conversation ownership points at a REAL account (added in security review).
--- Without this, deleting a compromised account left its ownership rows behind,
--- and an in-flight request — `require_session` validates at request START, so
--- one can still be running for up to the Cloud Run request timeout — could claim
--- or re-create a row for a user id that no longer exists. ON DELETE CASCADE
--- chains onward to chat.messages / chat.attachments (see history.CHAT_SCHEMA_DDL),
--- so `DELETE FROM auth.users` really does remove the account's content.
+-- Two constraint migrations, each applied ONLY when missing or wrong.
 --
--- Guarded + NOT VALID: this DDL runs after the message store's (see the lifespan
--- in app.py), but a deployment without DATABASE_URL wiring for chat would leave
--- chat.conversations absent, and ownership rows for already-deleted users must
--- not block startup. Existing rows are left alone; new ones are enforced.
+-- `ensure_schema()` runs on every startup and Cloud Run scales to zero, so an
+-- unconditional DROP/ADD would take an ACCESS EXCLUSIVE lock on a live table at
+-- every cold start — blocking queries until the startup transaction commits, and
+-- serializing simultaneous starts behind each other — and re-adding the invites
+-- FK would rescan the table to validate it every time. `confdeltype` is the
+-- delete action ('n' = SET NULL, 'c' = CASCADE), so a constraint that exists
+-- with the WRONG action is still repaired rather than assumed good.
+--
+-- 1. auth.invites.used_by ON DELETE SET NULL — for schemas created before this
+--    existed: every redeemed invite holds a FK to its user, so deleting a
+--    compromised account (the documented incident response) was rejected by
+--    Postgres for any normally created account. The invite row must survive as
+--    the audit trail that its token was spent; it just forgets who spent it.
+-- 2. chat.conversations.user_id ON DELETE CASCADE — ownership must point at a
+--    REAL account. Without it, deleting a compromised account left its ownership
+--    rows behind, and an in-flight request (`require_session` validates at
+--    request START, so one can still be running for up to the Cloud Run request
+--    timeout) could claim or re-create a row for a user id that no longer
+--    exists. The cascade chains onward to chat.messages / chat.attachments (see
+--    history.CHAT_SCHEMA_DDL), so `DELETE FROM auth.users` really does remove
+--    the account's content. Guarded on the chat table existing at all — this DDL
+--    runs after the message store's (see the lifespan in app.py), but a
+--    deployment that doesn't use the chat schema must still start — and NOT
+--    VALID so ownership rows for already-deleted users can't block startup.
 DO $$
+DECLARE
+  users regclass := to_regclass('auth.users');
+  conv  regclass := to_regclass('chat.conversations');
 BEGIN
-  IF to_regclass('chat.conversations') IS NOT NULL THEN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'invites_used_by_fkey'
+       AND conrelid = to_regclass('auth.invites')
+       AND contype = 'f' AND confrelid = users AND confdeltype = 'n'
+  ) THEN
+    ALTER TABLE auth.invites DROP CONSTRAINT IF EXISTS invites_used_by_fkey;
+    ALTER TABLE auth.invites ADD CONSTRAINT invites_used_by_fkey
+      FOREIGN KEY (used_by) REFERENCES auth.users (id) ON DELETE SET NULL;
+  END IF;
+
+  IF conv IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'conversations_user_fkey'
+       AND conrelid = conv
+       AND contype = 'f' AND confrelid = users AND confdeltype = 'c'
+  ) THEN
     ALTER TABLE chat.conversations DROP CONSTRAINT IF EXISTS conversations_user_fkey;
     ALTER TABLE chat.conversations ADD CONSTRAINT conversations_user_fkey
       FOREIGN KEY (user_id) REFERENCES auth.users (id) ON DELETE CASCADE NOT VALID;

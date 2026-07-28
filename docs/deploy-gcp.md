@@ -7,9 +7,15 @@ pgvector** (`db-f1-micro`, `us-central1`), a **$10/mo hard cap** enforced by a
 billing kill-switch, and CI deploy via **Workload Identity Federation**.
 
 > **Licensing lock.** The pilot serves a **closed** tester group on the full corpus
-> (`x5bz.5`). Every deploy is `--no-allow-unauthenticated`. **Public ingress opens
-> only after invite auth (`x5bz.2`) ships** — see [Open ingress](#9-open-ingress-deferred--x5bz16).
-> `scripts/deploy.sh` and `tests/test_deploy_contract.py` enforce this in code.
+> (`x5bz.5`). `scripts/deploy.sh` can never open ingress — the flag does not appear
+> in it and `tests/test_deploy_contract.py` fails the build if it ever does.
+> **Public ingress opens only after invite auth (`x5bz.2`) ships**, as a separate
+> deliberate command — see [Open ingress](#9-open-ingress-deferred--x5bz16).
+>
+> Deploys default to `ACCESS=preserve`: they leave the service's IAM mode exactly
+> as they found it, creating a *new* service locked. That default matters in both
+> directions — a deploy must not open access, and once §9 has opened it, a routine
+> deploy must not silently take it away either. `ACCESS=locked` re-closes on purpose.
 
 The code side (Checkpoints A, B, and the kill-switch + CI wiring) is done and
 tested. This runbook is the one-time infra bootstrap (Checkpoint C), the first
@@ -312,6 +318,14 @@ gcloud run services update game-guide-ai --region="$REGION" --allow-unauthentica
 
 (That flag lives only here, never in `deploy.sh` — the guard test keeps it out.)
 
+**It stays open across later deploys.** `deploy.sh` defaults to
+`ACCESS=preserve` and passes no IAM flag at all, so shipping code — or the
+incident-response redeploy in `docs/invite-copy.md` — leaves this binding
+untouched. It used to hardcode `--no-allow-unauthenticated`, which would have
+quietly re-locked the service on the next CI push and handed every tester an
+edge 403 with no login page behind it. To re-close deliberately:
+`ACCESS=locked bash scripts/deploy.sh …`.
+
 ### Before you run it: the ingress + proxy-hop pair
 
 Opening ingress makes `/auth/login` reachable by anyone, so its rate limiting has
@@ -352,19 +366,35 @@ be bypassed. It spends your own source budget for `AUTH_RATE_LIMIT_WINDOW_S`
 (5 min) and then decays; nothing to clear.
 
 That test can't tell hops `0` from hops `1` — both resist spoofing, but `0`
-collapses every tester into one shared bucket. For that half, read the derived
-key the throttle log now carries and compare it with the peer address on the
-same entry:
+collapses every tester into one shared bucket. For that half, compare the key the
+service *derived* against the address Google *observed*.
+
+Those are two different log entries: the throttle line is an application log
+(`jsonPayload`), while `httpRequest.remoteIp` belongs to Cloud Run's separate
+request log. A single query over one of them cannot show both — join them by
+**trace**, which the service now emits on the structured entry:
 
 ```bash
+# 1. the derived key + the trace of the request it came from
 gcloud logging read \
-  'resource.type="cloud_run_revision" AND textPayload:"auth attempt throttled"' \
-  --project "$PROJECT" --limit 5 \
-  --format='value(textPayload, httpRequest.remoteIp)'
+  'resource.type="cloud_run_revision" AND jsonPayload.message="auth attempt throttled"' \
+  --project "$PROJECT" --limit 1 --format='value(jsonPayload.source, trace)'
+# -> 203.0.113.7   projects/<PROJECT>/traces/<TRACE_ID>
+
+# 2. the request entry for that same trace
+gcloud logging read \
+  'logName:"run.googleapis.com%2Frequests" AND trace="projects/'"$PROJECT"'/traces/<TRACE_ID>"' \
+  --project "$PROJECT" --limit 1 --format='value(httpRequest.remoteIp)'
+# -> 203.0.113.7
 ```
 
-`source=<A>` in the message must equal `remoteIp <A>` beside it. If entries from
-**different** testers all report the same `source=`, the hop count is too low.
+The two must be equal. If they differ, `AUTH_TRUSTED_PROXY_HOPS` is reading the
+wrong position in the chain. If entries from **different** testers' networks all
+report the same `jsonPayload.source`, the hop count is too low and everyone is
+sharing one budget.
+
+(The trace field needs `GCP_PROJECT`, which `deploy.sh` sets. Without it the
+entry still carries a bare trace id — searchable, just not auto-correlated.)
 
 ## Cost
 

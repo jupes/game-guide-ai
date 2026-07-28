@@ -10,12 +10,18 @@
 #     bash scripts/deploy.sh --dry-run     # prints the plan, runs nothing
 #
 # ── LICENSING LOCK ────────────────────────────────────────────────────────────
-# The pilot serves a CLOSED tester group (x5bz.5). This script always deploys
-# with --no-allow-unauthenticated and never opens public ingress. That opens only
-# after invite auth (x5bz.2) lands — tracked by bead x5bz.1.6 and the "Open
-# ingress" section of docs/deploy-gcp.md. A repo guard test
-# (tests/test_deploy_contract.py) fails the build if the bare public-ingress flag
-# ever appears here again, so the lock cannot silently regress.
+# The pilot serves a CLOSED tester group (x5bz.5). This script NEVER opens public
+# ingress: --allow-unauthenticated does not appear here at all, and a repo guard
+# test (tests/test_deploy_contract.py) fails the build if it ever does. Opening
+# is a separate, deliberate `gcloud run services update` — bead x5bz.1.6 and the
+# "Open ingress" section of docs/deploy-gcp.md.
+#
+# It does not *close* ingress either, unless asked. The IAM mode is an explicit
+# input (ACCESS, below) rather than a hardcoded flag, because hardcoding
+# --no-allow-unauthenticated meant every later deploy — a routine CI push, or the
+# incident-response redeploy in docs/invite-copy.md — silently revoked tester
+# access after x5bz.1.6, handing them Cloud Run IAM 403s at the edge with no
+# sign-in page to explain it.
 set -euo pipefail
 
 # ── Config (env-overridable; real values live in CI vars / the operator shell) ─
@@ -31,6 +37,20 @@ DATABASE_URL_SECRET="${DATABASE_URL_SECRET:-database-url}"
 # deploy without this secret has no working login. Rotating it invalidates
 # every live session — that is the intended "log everyone out" lever.
 SESSION_SECRET_SECRET="${SESSION_SECRET_SECRET:-session-secret}"
+
+# Who may INVOKE the service (Cloud Run IAM), independent of the app's own auth:
+#   preserve (default) — pass no IAM flag, so an existing service keeps whatever
+#                        mode it is in. A service that does not exist yet is
+#                        CREATED LOCKED: preserve must never mean "open".
+#   locked             — force --no-allow-unauthenticated (pre-x5bz.1.6 posture,
+#                        or to re-close a service deliberately).
+# There is no "public" value: opening ingress stays a separate, explicit command
+# (docs/deploy-gcp.md §9) so it can never be a side effect of shipping code.
+ACCESS="${ACCESS:-preserve}"
+case "$ACCESS" in
+  preserve|locked) ;;
+  *) echo "ACCESS must be 'preserve' or 'locked' (got '${ACCESS}')" >&2; exit 2 ;;
+esac
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 DRY_RUN=0
@@ -55,8 +75,26 @@ run() {
   fi
 }
 
+# Resolve ACCESS into the actual gcloud flags. `preserve` on an existing service
+# passes NOTHING, which is what leaves its IAM policy alone; on a service that
+# does not exist yet it falls back to locked, so a first deploy is never open.
+IAM_FLAGS=()
+if [ "$ACCESS" = "locked" ]; then
+  IAM_FLAGS=(--no-allow-unauthenticated)
+  ACCESS_NOTE="locked (forcing --no-allow-unauthenticated)"
+elif [ "$DRY_RUN" = "1" ]; then
+  ACCESS_NOTE="preserve (live IAM mode untouched; a NEW service would be created locked)"
+elif gcloud run services describe "${SERVICE}" \
+       --project "${PROJECT}" --region "${REGION}" >/dev/null 2>&1; then
+  ACCESS_NOTE="preserve (service exists — IAM mode left as-is)"
+else
+  IAM_FLAGS=(--no-allow-unauthenticated)
+  ACCESS_NOTE="preserve → locked (service does not exist yet; created closed)"
+fi
+
 echo "Deploy plan: service=${SERVICE} sha=${SHA}"
 echo "  image=${IMAGE}"
+echo "  access=${ACCESS_NOTE}"
 if [ "$DRY_RUN" = "1" ]; then
   echo "  (dry-run: printing commands, executing nothing)"
 fi
@@ -67,7 +105,7 @@ run docker build --platform linux/amd64 -f Dockerfile.cloud -t "${IMAGE}" .
 # 2. Push to Artifact Registry (operator/CI has run `gcloud auth configure-docker`).
 run docker push "${IMAGE}"
 
-# 3. Deploy to Cloud Run — LOCKED. Cloud SQL attached by socket; OPENAI_API_KEY
+# 3. Deploy to Cloud Run. Cloud SQL attached by socket; OPENAI_API_KEY
 #    and DATABASE_URL injected by Secret Manager reference (never values); the
 #    app listens on 8000 (Cloud Run defaults to 8080, so --port is required).
 #    --memory / --concurrency are set EXPLICITLY, not left to the platform
@@ -84,15 +122,18 @@ run docker push "${IMAGE}"
 #    external HTTPS load balancer is ever put in front, this becomes 2. It is only
 #    sound while ingress is restricted to that front end (see docs/deploy-gcp.md);
 #    a caller who can reach the container directly is the trusted hop.
+#    GCP_PROJECT is what lets the app emit a full Cloud Trace resource name on its
+#    structured logs, so a container log line can be joined to its request log
+#    entry (docs/deploy-gcp.md §9 verification). Not a secret.
 run gcloud run deploy "${SERVICE}" \
   --project "${PROJECT}" \
   --region "${REGION}" \
   --image "${IMAGE}" \
   --port 8000 \
-  --no-allow-unauthenticated \
+  ${IAM_FLAGS[@]+"${IAM_FLAGS[@]}"} \
   --add-cloudsql-instances "${CLOUDSQL_INSTANCE}" \
   --set-secrets "OPENAI_API_KEY=${OPENAI_SECRET}:latest,DATABASE_URL=${DATABASE_URL_SECRET}:latest,SESSION_SECRET=${SESSION_SECRET_SECRET}:latest" \
-  --set-env-vars "AUTH_TRUSTED_PROXY_HOPS=1" \
+  --set-env-vars "AUTH_TRUSTED_PROXY_HOPS=1,GCP_PROJECT=${PROJECT}" \
   --timeout 300 \
   --max-instances 2 \
   --memory 1Gi \

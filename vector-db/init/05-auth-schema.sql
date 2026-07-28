@@ -35,24 +35,44 @@ CREATE TABLE IF NOT EXISTS auth.invites (
 
 CREATE INDEX IF NOT EXISTS invites_created_idx ON auth.invites (created_at);
 
--- Redundant on a fresh volume (the inline REFERENCES above already produces a
--- constraint of this name), but service/auth_store.py runs it as the migration
--- for volumes created before ON DELETE SET NULL existed. Both copies carry it so
--- they declare the same objects — tests/test_schema_parity.py enforces that.
-ALTER TABLE auth.invites DROP CONSTRAINT IF EXISTS invites_used_by_fkey;
-ALTER TABLE auth.invites ADD CONSTRAINT invites_used_by_fkey
-  FOREIGN KEY (used_by) REFERENCES auth.users (id) ON DELETE SET NULL;
-
--- Conversation ownership points at a REAL account. `require_session` validates
--- at request START, so a request in flight when an account is deleted could
--- otherwise re-create an ownership row for a user id that no longer exists.
--- ON DELETE CASCADE chains onward to chat.messages / chat.attachments (see
--- 04-chat-schema.sql), so deleting an account removes its content. Guarded
--- because this file runs after 04 but the chat schema may be absent in a
--- deployment that doesn't use it. Kept in sync with service/auth_store.py.
+-- Two constraint migrations, each applied ONLY when missing or wrong — the same
+-- DDL runs at every service startup (service/auth_store.py), where an
+-- unconditional DROP/ADD would take an ACCESS EXCLUSIVE lock on a live table at
+-- each cold start and re-validate the invites FK every time. `confdeltype` is
+-- the delete action: 'n' = SET NULL, 'c' = CASCADE.
+--
+-- 1. auth.invites.used_by ON DELETE SET NULL — redundant on a fresh volume (the
+--    inline REFERENCES above already produces a constraint of this name), but
+--    carried here so both copies declare the same objects
+--    (tests/test_schema_parity.py enforces that).
+-- 2. chat.conversations.user_id ON DELETE CASCADE — ownership must point at a
+--    real account, so a request in flight when an account is deleted cannot
+--    re-create a row for a user id that no longer exists, and deleting an
+--    account removes its content (the cascade chains on to chat.messages /
+--    chat.attachments, see 04-chat-schema.sql). Guarded because this file runs
+--    after 04 but the chat schema may be absent in a deployment that skips it.
 DO $$
+DECLARE
+  users regclass := to_regclass('auth.users');
+  conv  regclass := to_regclass('chat.conversations');
 BEGIN
-  IF to_regclass('chat.conversations') IS NOT NULL THEN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'invites_used_by_fkey'
+       AND conrelid = to_regclass('auth.invites')
+       AND contype = 'f' AND confrelid = users AND confdeltype = 'n'
+  ) THEN
+    ALTER TABLE auth.invites DROP CONSTRAINT IF EXISTS invites_used_by_fkey;
+    ALTER TABLE auth.invites ADD CONSTRAINT invites_used_by_fkey
+      FOREIGN KEY (used_by) REFERENCES auth.users (id) ON DELETE SET NULL;
+  END IF;
+
+  IF conv IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'conversations_user_fkey'
+       AND conrelid = conv
+       AND contype = 'f' AND confrelid = users AND confdeltype = 'c'
+  ) THEN
     ALTER TABLE chat.conversations DROP CONSTRAINT IF EXISTS conversations_user_fkey;
     ALTER TABLE chat.conversations ADD CONSTRAINT conversations_user_fkey
       FOREIGN KEY (user_id) REFERENCES auth.users (id) ON DELETE CASCADE NOT VALID;

@@ -47,12 +47,33 @@ CREATE TABLE IF NOT EXISTS chat.conversations (
 -- is gone, and deleting an account must take its content with it (the cascade
 -- chains from auth.users — see 05-auth-schema.sql). NOT VALID leaves
 -- pre-ownership-table rows alone and enforces every new write.
-ALTER TABLE chat.messages DROP CONSTRAINT IF EXISTS messages_conversation_fkey;
-ALTER TABLE chat.messages ADD CONSTRAINT messages_conversation_fkey
-  FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
-  ON DELETE CASCADE NOT VALID;
+-- Guarded so a re-run is a no-op: the same DDL runs at every service startup
+-- (service/history.py), where an unconditional DROP/ADD would take an ACCESS
+-- EXCLUSIVE lock on a live table at every cold start. confdeltype 'c' = CASCADE.
+DO $$
+DECLARE conv regclass := to_regclass('chat.conversations');
+BEGIN
+  IF conv IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'messages_conversation_fkey'
+       AND conrelid = to_regclass('chat.messages')
+       AND contype = 'f' AND confrelid = conv AND confdeltype = 'c'
+  ) THEN
+    ALTER TABLE chat.messages DROP CONSTRAINT IF EXISTS messages_conversation_fkey;
+    ALTER TABLE chat.messages ADD CONSTRAINT messages_conversation_fkey
+      FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
+      ON DELETE CASCADE NOT VALID;
+  END IF;
 
-ALTER TABLE chat.attachments DROP CONSTRAINT IF EXISTS attachments_conversation_fkey;
-ALTER TABLE chat.attachments ADD CONSTRAINT attachments_conversation_fkey
-  FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
-  ON DELETE CASCADE NOT VALID;
+  IF conv IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'attachments_conversation_fkey'
+       AND conrelid = to_regclass('chat.attachments')
+       AND contype = 'f' AND confrelid = conv AND confdeltype = 'c'
+  ) THEN
+    ALTER TABLE chat.attachments DROP CONSTRAINT IF EXISTS attachments_conversation_fkey;
+    ALTER TABLE chat.attachments ADD CONSTRAINT attachments_conversation_fkey
+      FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
+      ON DELETE CASCADE NOT VALID;
+  END IF;
+END $$;

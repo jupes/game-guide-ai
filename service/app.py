@@ -29,6 +29,7 @@ import config
 
 from ingestion.retrieval import EmbeddingUnavailableError
 
+from . import gcp_logging
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore
 from .hashing import (
@@ -274,14 +275,20 @@ def _throttle_auth(request: Request, account: str) -> None:
     except RateLimited as exc:
         # The DERIVED source key is logged, not just the fact of throttling: it
         # is the only way to confirm from outside that AUTH_TRUSTED_PROXY_HOPS
-        # matches the real topology. Compare it with Cloud Logging's
-        # httpRequest.remoteIp for the same request — they must agree, and
-        # neither must be a value the caller chose (see docs/deploy-gcp.md §9).
-        # No new exposure: Cloud Run already logs the peer address per request.
-        log.warning(
-            "auth attempt throttled (source=%s, retry_after=%ss)",
-            client_source(request), exc.retry_after,
-        )
+        # matches the real topology — it must equal the address Google observed
+        # (docs/deploy-gcp.md §9). That comparison needs Cloud Run's *request*
+        # log, which is a separate entry, so on Cloud Run this goes out as a
+        # structured record carrying the trace that joins the two. No new
+        # exposure: Cloud Run already logs the peer address per request.
+        source = client_source(request)
+        if not gcp_logging.emit(
+            "WARNING", "auth attempt throttled", request,
+            source=source, retry_after=exc.retry_after,
+        ):
+            log.warning(
+                "auth attempt throttled (source=%s, retry_after=%ss)",
+                source, exc.retry_after,
+            )
         raise HTTPException(
             status_code=429,
             detail="Too many attempts — please wait and try again.",

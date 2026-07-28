@@ -78,15 +78,40 @@ CREATE TABLE IF NOT EXISTS chat.conversations (
 -- NOT VALID is deliberate: conversations that predate the ownership table have
 -- messages with no parent row, and back-filling owners for them is not something
 -- DDL can decide. Existing rows are left alone; every new write is enforced.
-ALTER TABLE chat.messages DROP CONSTRAINT IF EXISTS messages_conversation_fkey;
-ALTER TABLE chat.messages ADD CONSTRAINT messages_conversation_fkey
-  FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
-  ON DELETE CASCADE NOT VALID;
+--
+-- Each is applied ONLY when missing or wrong. `ensure_schema()` runs on every
+-- startup and Cloud Run scales to zero, so an unconditional DROP/ADD would take
+-- an ACCESS EXCLUSIVE lock on the table at every cold start — blocking live
+-- queries until the startup transaction commits, and serializing concurrent
+-- starts behind each other. `confdeltype = 'c'` is ON DELETE CASCADE, so a
+-- constraint that exists with the wrong delete action is still repaired.
+DO $$
+DECLARE conv regclass := to_regclass('chat.conversations');
+BEGIN
+  IF conv IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'messages_conversation_fkey'
+       AND conrelid = to_regclass('chat.messages')
+       AND contype = 'f' AND confrelid = conv AND confdeltype = 'c'
+  ) THEN
+    ALTER TABLE chat.messages DROP CONSTRAINT IF EXISTS messages_conversation_fkey;
+    ALTER TABLE chat.messages ADD CONSTRAINT messages_conversation_fkey
+      FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
+      ON DELETE CASCADE NOT VALID;
+  END IF;
 
-ALTER TABLE chat.attachments DROP CONSTRAINT IF EXISTS attachments_conversation_fkey;
-ALTER TABLE chat.attachments ADD CONSTRAINT attachments_conversation_fkey
-  FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
-  ON DELETE CASCADE NOT VALID;
+  IF conv IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'attachments_conversation_fkey'
+       AND conrelid = to_regclass('chat.attachments')
+       AND contype = 'f' AND confrelid = conv AND confdeltype = 'c'
+  ) THEN
+    ALTER TABLE chat.attachments DROP CONSTRAINT IF EXISTS attachments_conversation_fkey;
+    ALTER TABLE chat.attachments ADD CONSTRAINT attachments_conversation_fkey
+      FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
+      ON DELETE CASCADE NOT VALID;
+  END IF;
+END $$;
 """
 
 

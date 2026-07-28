@@ -113,16 +113,40 @@ in the UI; the server enforces the GM channel from their session.
    ```
 
    Rotating the secret logs **everyone** out (stateless cookies have no
-   server-side revocation), so the other testers will simply sign in again.
-
-   **Step 2 — drain.** Wait for requests admitted by the old revision to finish
-   — longer than `--timeout`, so at least **six minutes**. Confirm the old
-   revision is no longer serving before continuing:
+   server-side revocation), so the other testers will simply sign in again —
+   *at the app's login screen*. That is the point: they must still be able to
+   reach it. `deploy.sh` defaults to `ACCESS=preserve` and leaves the Cloud Run
+   IAM mode alone precisely so this redeploy — run mid-incident, when nobody is
+   reading flags — cannot also revoke invocation and turn every tester's session
+   into an edge 403 with no login screen behind it. Confirm after deploying:
 
    ```bash
-   sleep 360
-   gcloud run revisions list --service game-guide-ai --region "$REGION" \
-     --format='table(name, status.conditions[0].status, spec.containers[0].image)'
+   gcloud run services get-iam-policy game-guide-ai --region "$REGION" \
+     --format='value(bindings.members)' | grep -q allUsers \
+     && echo "public invoke intact" || echo "IAM-LOCKED — testers cannot reach the login page"
+   ```
+
+   (Before x5bz.1.6 opens ingress the service *is* IAM-locked and that second
+   line is the correct state.)
+
+   **Step 2 — drain.** First confirm the old revision is no longer *receiving*
+   traffic, then start the clock. Readiness is the wrong signal: retired
+   revisions normally stay `Ready` with 0% traffic, so a revision still taking
+   every request looks identical to one taking none. Traffic allocation is the
+   signal:
+
+   ```bash
+   gcloud run services describe game-guide-ai --region "$REGION" \
+     --format='value(status.traffic[].revisionName, status.traffic[].percent)'
+   ```
+
+   Wait until the **new** revision is at 100% and the old one is at 0 (or gone
+   from the list). Only from that moment does the drain window start — requests
+   the old revision already admitted may still be running, for up to
+   `--timeout` (300s). So:
+
+   ```bash
+   sleep 360   # > --timeout, counted from the 100% cutover, not from the deploy
    ```
 
    **Step 3 — delete.** Now nothing can write on the account's behalf:

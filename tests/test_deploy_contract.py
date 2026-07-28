@@ -17,6 +17,7 @@ Run from repo root:
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -67,18 +68,87 @@ def test_cloud_image_builds_ui_and_copies_dist_without_rerank() -> None:
 
 
 def test_deploy_never_requests_public_ingress() -> None:
-    """The licensing lock: deploy.sh locks ingress and can never open it (test #1)."""
+    """The licensing lock: deploy.sh can never open ingress (test #1)."""
     text = _read(DEPLOY_SH)
 
     assert text.startswith("#!"), "deploy.sh must be a runnable script (shebang)"
-    assert "--no-allow-unauthenticated" in text, (
-        "deploy.sh must deploy Cloud Run with --no-allow-unauthenticated (closed pilot)"
-    )
-    # The public-ingress flag must never appear. `--no-allow-unauthenticated` does
+    # The public-ingress flag must never appear in EXECUTABLE code. Comments may
+    # name it (they explain why it is absent). `--no-allow-unauthenticated` does
     # NOT contain the substring `--allow-unauthenticated`, so this is a clean check.
-    assert "--allow-unauthenticated" not in text, (
-        "deploy.sh must NEVER request public ingress (licensing lock — see x5bz.5)"
+    code = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
     )
+    assert "--allow-unauthenticated" not in code, (
+        "deploy.sh must NEVER request public ingress (licensing lock — see x5bz.5); "
+        "opening it is a separate deliberate command, see docs/deploy-gcp.md §9"
+    )
+
+
+def test_deploy_does_not_hardcode_the_iam_mode() -> None:
+    """It must not *close* ingress unconditionally either.
+
+    `--no-allow-unauthenticated` on every deploy meant that once x5bz.1.6 opened
+    the service, the next routine CI push — or the incident-response redeploy in
+    docs/invite-copy.md, which runs during an incident — silently revoked every
+    tester's access, handing them a Cloud Run IAM 403 at the edge with no sign-in
+    page to explain it. The IAM mode has to be an input, and its default must
+    leave the live policy alone.
+    """
+    text = _read(DEPLOY_SH)
+
+    assert "ACCESS" in text, "deploy.sh must expose the IAM mode as an input (ACCESS)"
+    assert 'ACCESS="${ACCESS:-preserve}"' in text, (
+        "the default IAM mode must be `preserve` — a deploy must not change who "
+        "may invoke the service unless explicitly asked to"
+    )
+    # The lock flag may still appear, but only inside the resolution logic — never
+    # in the gcloud invocation itself, where it would apply to every deploy.
+    deploy_call = text.split("gcloud run deploy", 1)[1]
+    assert "--no-allow-unauthenticated" not in deploy_call, (
+        "the gcloud run deploy call must take the IAM flags from the resolved "
+        "ACCESS mode, not hardcode --no-allow-unauthenticated"
+    )
+
+
+@pytest.mark.parametrize(
+    ("access", "expect_lock_flag"),
+    [(None, False), ("preserve", False), ("locked", True)],
+)
+def test_dry_run_iam_flags_follow_the_access_mode(access, expect_lock_flag) -> None:
+    """Default/preserve emits no IAM flag (policy untouched); locked emits one."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash unavailable to exercise deploy.sh --dry-run (runs in CI)")
+
+    env = {**os.environ}
+    env.pop("ACCESS", None)
+    if access is not None:
+        env["ACCESS"] = access
+
+    result = subprocess.run(
+        [bash, str(DEPLOY_SH), "--dry-run"],
+        capture_output=True, text=True, timeout=30, cwd=REPO_ROOT, env=env,
+    )
+    assert result.returncode == 0, f"--dry-run exited {result.returncode}: {result.stderr}"
+    plan = result.stdout.split("gcloud run deploy", 1)[1]
+    assert ("--no-allow-unauthenticated" in plan) is expect_lock_flag, (
+        f"ACCESS={access!r} should {'' if expect_lock_flag else 'not '}emit the lock flag:\n{plan}"
+    )
+    assert "--allow-unauthenticated" not in plan.replace("--no-allow-unauthenticated", "")
+
+
+def test_deploy_rejects_an_unknown_access_mode() -> None:
+    """Notably `ACCESS=public`: opening ingress must not be reachable from here."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash unavailable to exercise deploy.sh (runs in CI)")
+
+    result = subprocess.run(
+        [bash, str(DEPLOY_SH), "--dry-run"],
+        capture_output=True, text=True, timeout=30, cwd=REPO_ROOT,
+        env={**os.environ, "ACCESS": "public"},
+    )
+    assert result.returncode != 0, "an unknown ACCESS mode must fail, not be ignored"
 
 
 def test_deploy_attaches_cloudsql_and_injects_secrets_by_reference() -> None:
@@ -150,4 +220,4 @@ def test_deploy_dry_run_prints_commands_without_executing() -> None:
     assert result.returncode == 0, f"--dry-run exited {result.returncode}: {result.stderr}"
     out = result.stdout
     assert "gcloud run deploy" in out, "dry-run must print the gcloud run deploy command"
-    assert "--no-allow-unauthenticated" in out, "the printed plan must carry the ingress lock"
+    assert "access=" in out, "the plan must state which IAM mode it resolved to"
