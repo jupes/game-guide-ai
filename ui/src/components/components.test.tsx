@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { SourceList } from './SourceList'
 import App from '../App'
+import * as api from '../api'
 import { ThemeProvider } from '../ds/theme'
 import { AppNavProvider } from '../shell/AppNav'
 import { CurrentUserProvider } from '../shell/currentUser'
@@ -28,7 +29,12 @@ describe('SourceList', () => {
 })
 
 describe('App (integration — shell renders Landing)', () => {
-  it('renders the Landing screen by default', () => {
+  it('renders the Landing screen by default', async () => {
+    // App holds a loading state until the session check resolves (x5bz.2), so
+    // stub it as an authenticated tester and wait for the shell.
+    vi.spyOn(api, 'getMe').mockResolvedValue({
+      kind: 'ok', user: { email: 'tester@example.com', role: 'player' },
+    })
     render(
       <ThemeProvider>
         <AppNavProvider>
@@ -40,7 +46,7 @@ describe('App (integration — shell renders Landing)', () => {
         </AppNavProvider>
       </ThemeProvider>,
     )
-    expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
     expect(screen.getByText('Aetheril')).toBeInTheDocument()
   })
 })

@@ -32,7 +32,7 @@ Defined once in `src/shell/modes.ts`; the service applies the matching retrieval
 | **Sage** | verdigris | General oracle; default |
 | **Spell** | arcane | Spell Archivist; answers arrive with 3 usage-suggestion cards |
 | **Rules** | gold | Rules-as-written arbiter |
-| **GM** | ember | **DM-only** — hidden unless the user's role is `dm` (`modesForRole`). UI gating only until real auth exists. |
+| **GM** | ember | **DM-only** — hidden unless the session role is `dm` (`modesForRole`). The hiding is a courtesy; the **server** enforces it (403) from the signed session, so it can't be bypassed client-side. |
 
 ## Chat features
 
@@ -51,11 +51,16 @@ Defined once in `src/shell/modes.ts`; the service applies the matching retrieval
 ## Client-side state & stubs
 
 - **Conversation list/titles** live in `localStorage`
-  (`conversationStore.ts`, key `game-guide-ai:conversations`, with a one-time migration from
-  the legacy `rag-chat:conversations` key). Message *content* is persisted server-side.
-- **The user is still a stub** — hard-coded guest "Adventurer" (`currentUser.tsx`); display
-  name / avatar tone / DM-player role are localStorage-persisted client state. Real auth is
-  a follow-up (x5bz.2).
+  (`conversationStore.ts`, key `game-guide-ai:conversations:<account>` — namespaced **per
+  account**, with a one-time migration from the legacy `rag-chat:conversations` and pre-auth
+  `game-guide-ai:conversations` keys). Message *content* is persisted server-side.
+- **Auth (x5bz.2)** — access is invite-gated. `App` gates on a session check
+  (`GET /auth/me`): signed out renders **Login**, or **Signup** when the URL carries an invite
+  (`/#invite=<token>`; the token rides in the fragment so it never reaches the server or its
+  request logs), and a neutral loading state until the identity is known. Identity and role come
+  from the server session (`currentUser.tsx`) — the DM role is **read-only**, fixed by the invite.
+  Only display name and avatar tone remain local cosmetics, and they are per-account too.
+  Every `api.ts` call sends `credentials:'include'`; a 401 from any of them routes back to Login.
 
 ## API client
 

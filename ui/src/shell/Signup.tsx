@@ -1,7 +1,7 @@
 /**
  * Signup — redeem a one-time invite to create an account (x5bz.2).
  *
- * Rendered by App when the URL is an invite deep-link (`/?invite=<token>`,
+ * Rendered by App when the URL is an invite deep-link (`/#invite=<token>`,
  * the root path — there is no client router). The invite token itself is
  * opaque to the tester; only email + password are entered.
  */

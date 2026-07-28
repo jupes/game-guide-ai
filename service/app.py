@@ -193,20 +193,28 @@ def _session_secret() -> str:
     an empty, placeholder, or trivially short key. In Cloud Run it comes from the
     `session-secret` Secret Manager entry; locally from SESSION_SECRET in .env."""
     secret = config.SESSION_SECRET
-    if not secret:
-        log.error("SESSION_SECRET is unset — auth is disabled (see docs/deploy-gcp.md)")
+    # Normalize FIRST, then judge. Checking emptiness on the raw value while
+    # measuring its length let a whitespace-only secret through: 32 spaces is
+    # truthy and 32 chars long, but trivially guessable — enough to forge any
+    # session, including a DM one.
+    normalized = secret.strip() if secret else ""
+    if not normalized:
+        log.error(
+            "SESSION_SECRET is unset or whitespace-only — auth is disabled "
+            "(see docs/deploy-gcp.md)"
+        )
         raise HTTPException(status_code=503, detail="auth not configured")
-    if secret.strip().lower() in _PLACEHOLDER_SESSION_SECRETS:
+    if normalized.lower() in _PLACEHOLDER_SESSION_SECRETS:
         log.error(
             "SESSION_SECRET is a known placeholder value — refusing to sign sessions "
             "with a publicly known key. Generate one: openssl rand -base64 48"
         )
         raise HTTPException(status_code=503, detail="auth not configured")
-    if len(secret) < MIN_SESSION_SECRET_LENGTH:
+    if len(normalized) < MIN_SESSION_SECRET_LENGTH:
         log.error(
-            "SESSION_SECRET is too short (%d chars; need >= %d) — refusing to sign "
-            "sessions with a weak key. Generate one: openssl rand -base64 48",
-            len(secret), MIN_SESSION_SECRET_LENGTH,
+            "SESSION_SECRET is too short (%d meaningful chars; need >= %d) — refusing "
+            "to sign sessions with a weak key. Generate one: openssl rand -base64 48",
+            len(normalized), MIN_SESSION_SECRET_LENGTH,
         )
         raise HTTPException(status_code=503, detail="auth not configured")
     return secret

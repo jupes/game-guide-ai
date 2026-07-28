@@ -20,7 +20,8 @@ Role = Literal["player", "dm"]
 ROLES: tuple[Role, ...] = ("player", "dm")
 
 # 32 bytes -> a 43-char url-safe token (~256 bits). Ample entropy for an
-# access-granting anchor; url-safe so it drops cleanly into `/?invite=<token>`.
+# access-granting anchor; url-safe so it drops cleanly into `/#invite=<token>`
+# (the FRAGMENT — never sent to the server, so it stays out of request logs).
 INVITE_TOKEN_BYTES = 32
 
 

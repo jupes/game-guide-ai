@@ -87,9 +87,14 @@ def test_metrics_ui_stays_open(store):
     "secret",
     [
         "",                                   # unset
+        "   ",                                # whitespace-only
+        " " * 40,                             # long enough to pass a naive length check
+        "\t\n  \t",                           # other whitespace
         "replace-me-with-a-random-string",    # the shipped .env.example placeholder
         "CHANGEME",                           # case-insensitive placeholder
+        "  replace-me-with-a-random-string ", # placeholder with padding
         "short-secret",                       # brute-forceable
+        "  short  ",                          # short once trimmed
     ],
 )
 def test_placeholder_or_weak_secret_disables_auth(store, monkeypatch, secret):

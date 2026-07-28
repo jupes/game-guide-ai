@@ -8,6 +8,7 @@ import type { CurrentUserContextValue } from './currentUser'
 import { ThemeProvider } from '../ds/theme'
 import { Landing } from './Landing'
 import App from '../App'
+import * as api from '../api'
 
 function makeNavState(overrides: Partial<AppNavState> = {}): AppNavState {
   return {
@@ -105,7 +106,11 @@ describe('AppNav context (#12)', () => {
 })
 
 describe('App profile screen (swe1.7)', () => {
-  it('renders the ProfilePage when screen is profile', () => {
+  it('renders the ProfilePage when screen is profile', async () => {
+    // App holds a loading state until the session check resolves (x5bz.2).
+    vi.spyOn(api, 'getMe').mockResolvedValue({
+      kind: 'ok', user: { email: 'tester@example.com', role: 'player' },
+    })
     render(
       <ThemeProvider>
         <AppNavContext.Provider value={makeNavState({ screen: 'profile' })}>
@@ -115,7 +120,7 @@ describe('App profile screen (swe1.7)', () => {
         </AppNavContext.Provider>
       </ThemeProvider>,
     )
-    expect(screen.getByRole('heading', { name: 'Profile' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Profile' })).toBeInTheDocument()
   })
 })
 

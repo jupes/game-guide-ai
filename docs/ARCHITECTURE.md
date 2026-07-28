@@ -165,7 +165,8 @@ token layer, warm fantasy palette, light *Parchment* / dark *Tavern*, 10 compone
 Shell: **Login / Signup** → Landing → Workspace (TopBar brand · **AppHeader channel switcher**
 with per-channel accents · LeftNav conversations + UserMenu · ChatPane) + Profile screen.
 `App` gates on the session check (`GET /auth/me`): signed out renders Login, or **Signup** when
-the URL carries an invite (`/?invite=<token>` — a root-path link, since there is no client
+the URL carries an invite (`/#invite=<token>` — a root-path link whose token rides in the
+URL **fragment**, so it never reaches the server or its request logs; there is no client
 router and the built SPA 404s on deeper paths). Identity and role come from the server session;
 the GM channel is still hidden in the UI for DMs, but the **server** is what enforces it.
 `useChat` recalls stored history; ChatPane uploads attachments; spell answers render suggestion

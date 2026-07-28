@@ -155,10 +155,14 @@ describe('App auth gate', () => {
     expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
   })
 
-  it('does not flash Login while the session check is still pending', () => {
+  it('holds a neutral loading state while the session check is pending', () => {
     renderApp('checking')
+    // Neither Login (no flash at a signed-in tester) NOR the workspace: letting
+    // the user start a conversation before their identity is known stranded it
+    // in the guest store when the real identity arrived.
     expect(screen.queryByRole('button', { name: /sign in/i })).not.toBeInTheDocument()
-    expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+    expect(screen.queryByText('Enter the Tavern')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/loading/i)
   })
 
   it('scrubs the single-use invite from the URL immediately', async () => {

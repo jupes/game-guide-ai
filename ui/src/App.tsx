@@ -7,6 +7,7 @@ import { Login } from './shell/Login'
 import { Signup } from './shell/Signup'
 import { useCurrentUser } from './shell/currentUser'
 import { getInviteTokenFromHash } from './shell/inviteToken'
+import './shell/AuthScreen.css'
 
 export default function App(): React.JSX.Element {
   const { screen, backToLanding, setConversationId } = useAppNav()
@@ -35,10 +36,22 @@ export default function App(): React.JSX.Element {
     backToLanding()
   }, [user.id, setConversationId, backToLanding])
 
+  // Hold everything until the identity is known. Rendering the workspace during
+  // the check let a returning user start a conversation while the store was
+  // still scoped to `guest`; when their identity arrived the store switched and
+  // that conversation's metadata was stranded (with no server-side listing to
+  // recover it from). A brief neutral state is cheaper than losing data — and
+  // it avoids flashing Login at an already-signed-in tester.
+  if (authStatus === 'checking') {
+    return (
+      <div className="auth-screen" role="status" aria-live="polite">
+        <p>Loading…</p>
+      </div>
+    )
+  }
+
   // Definitively signed out: Signup while an unspent invite is in hand,
-  // otherwise Login. While `checking`, fall through to the normal screen rather
-  // than flashing Login — most visits are an already-signed-in tester, and the
-  // screen swaps the moment the session check comes back negative.
+  // otherwise Login.
   if (authStatus === 'unauthenticated') {
     return invite ? (
       <Signup invite={invite} onUseLogin={() => setInvite(null)} />

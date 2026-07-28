@@ -87,7 +87,7 @@ import { Landing } from './shell/Landing'
 // ── Smoke test ────────────────────────────────────────────────────────────────
 
 describe('App-flow smoke test (CP-F6.2)', () => {
-  it('Landing renders with the Enter the Tavern CTA', () => {
+  it('Landing renders with the Enter the Tavern CTA', async () => {
     render(
       <ThemeProvider>
         <AppNavProvider>
@@ -99,7 +99,7 @@ describe('App-flow smoke test (CP-F6.2)', () => {
         </AppNavProvider>
       </ThemeProvider>,
     )
-    expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
     expect(screen.getByText('Aetheril')).toBeInTheDocument()
   })
 
@@ -126,7 +126,7 @@ describe('App-flow smoke test (CP-F6.2)', () => {
     )
 
     // Step 1: Landing is visible.
-    expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
 
     // Step 2: Click "Enter the Tavern" → enters workspace (sage mode by default).
     await userEvent.click(screen.getByText('Enter the Tavern'))
@@ -229,7 +229,7 @@ describe('toolchain smoke', () => {
 // ── Landing-only render (quick) ───────────────────────────────────────────────
 
 describe('App renders Landing screen (integration)', () => {
-  it('renders the Landing screen by default', () => {
+  it('renders the Landing screen by default', async () => {
     render(
       <ThemeProvider>
         <AppNavProvider>
@@ -241,7 +241,7 @@ describe('App renders Landing screen (integration)', () => {
         </AppNavProvider>
       </ThemeProvider>,
     )
-    expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
     expect(screen.getByText('Aetheril')).toBeInTheDocument()
   })
 })

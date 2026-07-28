@@ -93,11 +93,12 @@ Demo: player cookie + `mode=gm` → 403; dm cookie → 200; user A can't read us
 ### Checkpoint E — Frontend auth
 Steps: add `'login'`/`'signup'` to the `AppNav` `Screen` union and an auth gate ahead of the app
 (there is **no router** — nav is a `Screen` state machine, and StaticFiles 404s on `/signup`, so the
-invite link is **`/?invite=<token>`** read from `window.location.search` on load, routing to the
+invite link is **`/#invite=<token>`** read from `window.location.hash` on load (fragment, so the
+token never reaches the server or its logs), routing to the
 signup screen); Login + Signup screens; replace `currentUser` STUB with a `/auth/me`-backed session;
 `credentials:'include'` in `api.ts`; role read-only from session; a 401 from any call → Login screen.
 Test #9. UI gates run.
-Demo: `bun run dev` → open `/?invite=…` → create account → land in app → chat → sign out → Login.
+Demo: `bun run dev` → open `/#invite=…` → create account → land in app → chat → sign out → Login.
 
 ### Checkpoint F — Ops wiring + invite copy + docs
 Steps: `SESSION_SECRET` in `config.py`, `deploy.sh --set-secrets`, `docs/deploy-gcp.md` (create the secret) ; invite-copy template in `docs/` (licensing posture); update `docs/ARCHITECTURE.md`. `(no live demo)` — verified by the deploy-contract guard test asserting the new secret is wired.
