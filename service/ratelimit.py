@@ -28,6 +28,7 @@ Deliberate limitations, stated rather than implied:
 from __future__ import annotations
 
 import ipaddress
+import math
 import threading
 import time
 from collections import OrderedDict, deque
@@ -59,9 +60,14 @@ class SlidingWindowLimiter:
         # container will not start with a rate limiter that does not limit.
         if limit < 1:
             raise ValueError(f"rate-limit `limit` must be >= 1, got {limit!r}")
-        if window_seconds <= 0:
+        # `isfinite` first: nan fails EVERY comparison, so `<= 0` waves it
+        # through, and inf passes too. Both survive to the retry_after
+        # arithmetic, where int() of a nan/inf raises — turning /auth/login into
+        # a 500 on the second attempt. A comparison alone is not a range check.
+        if not math.isfinite(window_seconds) or window_seconds <= 0:
             raise ValueError(
-                f"rate-limit `window_seconds` must be > 0, got {window_seconds!r}"
+                f"rate-limit `window_seconds` must be a finite number > 0, "
+                f"got {window_seconds!r}"
             )
         if max_keys < 1:
             raise ValueError(f"rate-limit `max_keys` must be >= 1, got {max_keys!r}")

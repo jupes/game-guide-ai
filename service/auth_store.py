@@ -63,6 +63,27 @@ CREATE INDEX IF NOT EXISTS invites_created_idx ON auth.invites (created_at);
 ALTER TABLE auth.invites DROP CONSTRAINT IF EXISTS invites_used_by_fkey;
 ALTER TABLE auth.invites ADD CONSTRAINT invites_used_by_fkey
   FOREIGN KEY (used_by) REFERENCES auth.users (id) ON DELETE SET NULL;
+
+-- Conversation ownership points at a REAL account (added in security review).
+-- Without this, deleting a compromised account left its ownership rows behind,
+-- and an in-flight request — `require_session` validates at request START, so
+-- one can still be running for up to the Cloud Run request timeout — could claim
+-- or re-create a row for a user id that no longer exists. ON DELETE CASCADE
+-- chains onward to chat.messages / chat.attachments (see history.CHAT_SCHEMA_DDL),
+-- so `DELETE FROM auth.users` really does remove the account's content.
+--
+-- Guarded + NOT VALID: this DDL runs after the message store's (see the lifespan
+-- in app.py), but a deployment without DATABASE_URL wiring for chat would leave
+-- chat.conversations absent, and ownership rows for already-deleted users must
+-- not block startup. Existing rows are left alone; new ones are enforced.
+DO $$
+BEGIN
+  IF to_regclass('chat.conversations') IS NOT NULL THEN
+    ALTER TABLE chat.conversations DROP CONSTRAINT IF EXISTS conversations_user_fkey;
+    ALTER TABLE chat.conversations ADD CONSTRAINT conversations_user_fkey
+      FOREIGN KEY (user_id) REFERENCES auth.users (id) ON DELETE CASCADE NOT VALID;
+  END IF;
+END $$;
 """
 
 

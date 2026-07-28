@@ -96,34 +96,16 @@ in the UI; the server enforces the GM channel from their session.
 
 1. `revoke <token>` if it hasn't been redeemed — that's the end of it.
 2. If it *was* redeemed by someone unintended, the account already exists.
-   Delete it, then rotate `session-secret` (see `deploy-gcp.md`) to invalidate
-   their session immediately:
+   **Revoke access first, then delete — in that order.** `require_session`
+   validates the account at the *start* of a request, so an already-authorized
+   request keeps running with its decision; deleting first leaves a window in
+   which an in-flight `/chat` or attachment upload writes new rows *after* the
+   cleanup. Cloud Run's request timeout (`--timeout 300`) is the width of that
+   window.
 
-   **Their chat data must be deleted explicitly.** `chat.messages` and
-   `chat.attachments` are keyed by `conversation_id` with no foreign key to the
-   user, so deleting the account alone leaves their conversations behind under
-   an orphaned owner id. Do it in one transaction, ordered so nothing is
-   stranded (`auth.invites.used_by` is `ON DELETE SET NULL`, so the invite row
-   survives as the audit trail that its token was spent — it just forgets who):
-
-   ```bash
-   psql "$PROXY" <<'SQL'
-   BEGIN;
-   CREATE TEMP TABLE doomed ON COMMIT DROP AS
-     SELECT c.conversation_id
-       FROM chat.conversations c
-       JOIN auth.users u ON u.id = c.user_id
-      WHERE lower(u.email) = lower('them@example.com');
-
-   DELETE FROM chat.attachments   WHERE conversation_id IN (SELECT conversation_id FROM doomed);
-   DELETE FROM chat.messages      WHERE conversation_id IN (SELECT conversation_id FROM doomed);
-   DELETE FROM chat.conversations WHERE conversation_id IN (SELECT conversation_id FROM doomed);
-   DELETE FROM auth.users         WHERE lower(email) = lower('them@example.com');
-   COMMIT;
-   SQL
-   ```
-
-   Then rotate the signing secret and redeploy so their session dies at once:
+   **Step 1 — cut off access.** Rotate the signing secret and redeploy. Every
+   session cookie becomes unverifiable, so no *new* request from that account
+   can authenticate:
 
    ```bash
    openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add session-secret --data-file=-
@@ -132,3 +114,39 @@ in the UI; the server enforces the GM channel from their session.
 
    Rotating the secret logs **everyone** out (stateless cookies have no
    server-side revocation), so the other testers will simply sign in again.
+
+   **Step 2 — drain.** Wait for requests admitted by the old revision to finish
+   — longer than `--timeout`, so at least **six minutes**. Confirm the old
+   revision is no longer serving before continuing:
+
+   ```bash
+   sleep 360
+   gcloud run revisions list --service game-guide-ai --region "$REGION" \
+     --format='table(name, status.conditions[0].status, spec.containers[0].image)'
+   ```
+
+   **Step 3 — delete.** Now nothing can write on the account's behalf:
+
+   ```bash
+   psql "$PROXY" -c "DELETE FROM auth.users WHERE lower(email) = lower('them@example.com');"
+   ```
+
+   That one statement is enough: `chat.conversations.user_id` references
+   `auth.users` `ON DELETE CASCADE`, and `chat.messages` / `chat.attachments`
+   cascade from `chat.conversations`, so the account's content goes with it.
+   `auth.invites.used_by` is `ON DELETE SET NULL` instead — the invite row
+   survives as the audit trail that its token was spent, it just forgets who.
+
+   Those foreign keys are also the backstop for step 1: a write that slips
+   through anyway is *rejected by the database* rather than silently recreating
+   an ownership row for a user id that no longer exists. Verify:
+
+   ```bash
+   psql "$PROXY" -c "SELECT count(*) FROM chat.conversations c
+                       LEFT JOIN auth.users u ON u.id = c.user_id
+                      WHERE u.id IS NULL;"   -- expect 0
+   ```
+
+   Conversations that predate the ownership table are the one exception the
+   cascade cannot reach (their messages have no owner row, so the constraint was
+   added `NOT VALID`). They are pre-auth data, not this account's.

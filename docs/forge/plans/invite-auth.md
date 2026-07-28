@@ -75,6 +75,12 @@ by every guarded route.
   empty conversation is answered as empty **without a second read**, so nothing can be
   claimed and written in the gap. Attachment uploads validate the payload *before*
   claiming, so rejected uploads can't mint ownership rows.
+- **Account deletion (added in review):** `require_session` validates at request *start*,
+  so deleting an account cannot stop a request already in flight. The runbook therefore
+  revokes access (rotate `session-secret` + redeploy), drains past the request timeout,
+  and only then deletes. `ON DELETE CASCADE` from `auth.users` through
+  `chat.conversations` to messages/attachments is the backstop: a late write is rejected
+  by the database instead of recreating rows for a deleted user.
 
 ## Build Sequence & Checkpoints
 

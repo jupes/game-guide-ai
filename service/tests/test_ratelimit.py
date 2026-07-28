@@ -77,6 +77,12 @@ def test_key_table_is_capped_so_the_limiter_is_not_itself_a_memory_leak() -> Non
         {"limit": 5, "window_seconds": 0},       # every hit expires instantly
         {"limit": 5, "window_seconds": -30},
         {"limit": 5, "window_seconds": 60, "max_keys": 0},
+        # nan fails every comparison, so `<= 0` waves it through; inf passes too.
+        # Both reach the retry_after arithmetic and blow up there, turning
+        # /auth/login into a 500 on the second attempt.
+        {"limit": 5, "window_seconds": float("nan")},
+        {"limit": 5, "window_seconds": float("inf")},
+        {"limit": 5, "window_seconds": float("-inf")},
     ],
 )
 def test_invalid_configuration_is_rejected_at_construction(kwargs) -> None:

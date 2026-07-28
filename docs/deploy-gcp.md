@@ -331,14 +331,40 @@ wrong is silent:
    caller-supplied entries (an attacker rotates them for unlimited budget); left
    at `0` behind a proxy, every tester shares one bucket.
 
-Verify after opening, from two different networks — the second column should be
-the caller's real address, not a value they chose:
+### Verify it — behaviorally, not by reading a log
+
+A request log only shows what **Google** observed (`httpRequest.remoteIp`); it
+never shows the value `client_source()` picked out of the `X-Forwarded-For`
+chain, and hop counts of 0, 1 or a badly wrong value all produce
+identical-looking entries. The check has to be behavioral:
+
+```bash
+SVC_URL=$(gcloud run services describe game-guide-ai --region="$REGION" --format='value(status.url)')
+bash scripts/verify-auth-throttle.sh "$SVC_URL"
+```
+
+It sends attempts that differ **only** in a spoofed `X-Forwarded-For` (rotating
+the email too, so the account limiter can't be what trips) and expects a
+**429**. A 429 means the spoofed values shared one budget — the key is not
+caller-controlled. All-401s means each spoof bought its own budget, i.e. the hop
+count reaches past the trusted entries into caller-written text, or ingress can
+be bypassed. It spends your own source budget for `AUTH_RATE_LIMIT_WINDOW_S`
+(5 min) and then decays; nothing to clear.
+
+That test can't tell hops `0` from hops `1` — both resist spoofing, but `0`
+collapses every tester into one shared bucket. For that half, read the derived
+key the throttle log now carries and compare it with the peer address on the
+same entry:
 
 ```bash
 gcloud logging read \
-  'resource.type="cloud_run_revision" AND httpRequest.requestUrl:"/auth/login"' \
-  --project "$PROJECT" --limit 5 --format='value(httpRequest.remoteIp)'
+  'resource.type="cloud_run_revision" AND textPayload:"auth attempt throttled"' \
+  --project "$PROJECT" --limit 5 \
+  --format='value(textPayload, httpRequest.remoteIp)'
 ```
+
+`source=<A>` in the message must equal `remoteIp <A>` beside it. If entries from
+**different** testers all report the same `source=`, the hop count is too low.
 
 ## Cost
 

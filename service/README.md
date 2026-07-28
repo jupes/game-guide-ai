@@ -157,6 +157,17 @@ The budgets are **per instance and in memory**, so with `--max-instances N` the 
 ceiling is N × these numbers; a shared store (Redis/DB) is the answer if it ever needs to
 be exact. Rate limiting for `/chat` itself is separate and still open (x5bz.3).
 
+**Account deletion is enforced by the database, not only by policy.** `require_session`
+validates at request *start*, so a request already in flight when an account is deleted
+keeps running with its decision — for up to the Cloud Run request timeout. Foreign keys
+close that window: `chat.conversations.user_id → auth.users` and
+`chat.messages`/`chat.attachments` → `chat.conversations`, all `ON DELETE CASCADE`. So a
+late write into a deleted account's conversation is *rejected* rather than silently
+recreating it, and one `DELETE FROM auth.users` removes the account's content. (The
+constraints are added `NOT VALID`, so conversations predating the ownership table keep
+their messages.) The incident runbook in `docs/invite-copy.md` still revokes access
+first and drains before deleting — the constraints are the backstop, not the plan.
+
 ## Run
 
 ```bash

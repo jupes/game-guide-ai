@@ -65,6 +65,28 @@ CREATE TABLE IF NOT EXISTS chat.conversations (
   user_id         BIGINT NOT NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Content follows its ownership row (added in security review). Policy alone
+-- was not enough for account deletion: `require_session` validates at request
+-- START, so a request already in flight when an account is deleted could append
+-- to a conversation whose ownership row had just been removed — recreating
+-- unowned content under a deleted user. That write is now refused by the
+-- database, and ON DELETE CASCADE (chained from auth.users via
+-- chat.conversations, see auth_store.AUTH_SCHEMA_DDL) means deleting an account
+-- takes its conversations, messages and attachments with it.
+--
+-- NOT VALID is deliberate: conversations that predate the ownership table have
+-- messages with no parent row, and back-filling owners for them is not something
+-- DDL can decide. Existing rows are left alone; every new write is enforced.
+ALTER TABLE chat.messages DROP CONSTRAINT IF EXISTS messages_conversation_fkey;
+ALTER TABLE chat.messages ADD CONSTRAINT messages_conversation_fkey
+  FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
+  ON DELETE CASCADE NOT VALID;
+
+ALTER TABLE chat.attachments DROP CONSTRAINT IF EXISTS attachments_conversation_fkey;
+ALTER TABLE chat.attachments ADD CONSTRAINT attachments_conversation_fkey
+  FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
+  ON DELETE CASCADE NOT VALID;
 """
 
 

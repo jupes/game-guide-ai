@@ -41,3 +41,18 @@ CREATE TABLE IF NOT EXISTS chat.conversations (
   user_id         BIGINT NOT NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Content follows its ownership row: a request already in flight when an account
+-- is deleted must not be able to append into a conversation whose ownership row
+-- is gone, and deleting an account must take its content with it (the cascade
+-- chains from auth.users — see 05-auth-schema.sql). NOT VALID leaves
+-- pre-ownership-table rows alone and enforces every new write.
+ALTER TABLE chat.messages DROP CONSTRAINT IF EXISTS messages_conversation_fkey;
+ALTER TABLE chat.messages ADD CONSTRAINT messages_conversation_fkey
+  FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
+  ON DELETE CASCADE NOT VALID;
+
+ALTER TABLE chat.attachments DROP CONSTRAINT IF EXISTS attachments_conversation_fkey;
+ALTER TABLE chat.attachments ADD CONSTRAINT attachments_conversation_fkey
+  FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id)
+  ON DELETE CASCADE NOT VALID;

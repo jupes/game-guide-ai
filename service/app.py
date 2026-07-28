@@ -39,7 +39,7 @@ from .hashing import (
 )
 from .history import MessageStore, PostgresMessageStore, StoredAttachment
 from .invites import InviteError
-from .ratelimit import RateLimited, check_auth_attempt
+from .ratelimit import RateLimited, check_auth_attempt, client_source
 from .models import (
     Attachment,
     AttachmentResponse,
@@ -272,7 +272,16 @@ def _throttle_auth(request: Request, account: str) -> None:
     try:
         check_auth_attempt(request, account)
     except RateLimited as exc:
-        log.warning("auth attempt throttled (retry_after=%ss)", exc.retry_after)
+        # The DERIVED source key is logged, not just the fact of throttling: it
+        # is the only way to confirm from outside that AUTH_TRUSTED_PROXY_HOPS
+        # matches the real topology. Compare it with Cloud Logging's
+        # httpRequest.remoteIp for the same request — they must agree, and
+        # neither must be a value the caller chose (see docs/deploy-gcp.md §9).
+        # No new exposure: Cloud Run already logs the peer address per request.
+        log.warning(
+            "auth attempt throttled (source=%s, retry_after=%ss)",
+            client_source(request), exc.retry_after,
+        )
         raise HTTPException(
             status_code=429,
             detail="Too many attempts — please wait and try again.",
