@@ -312,6 +312,34 @@ gcloud run services update game-guide-ai --region="$REGION" --allow-unauthentica
 
 (That flag lives only here, never in `deploy.sh` — the guard test keeps it out.)
 
+### Before you run it: the ingress + proxy-hop pair
+
+Opening ingress makes `/auth/login` reachable by anyone, so its rate limiting has
+to be keying on something real. Two settings have to agree, and getting either
+wrong is silent:
+
+1. **Ingress stays restricted to Google's front end** — `--ingress all` means
+   "all *via the run.app front end*", which is what we want; it must **not** be
+   `internal` (testers can't reach it) and the container must not be reachable by
+   any path that bypasses that front end. A caller who can reach the container
+   directly becomes the "trusted" hop and can write the whole
+   `X-Forwarded-For` chain themselves.
+2. **`AUTH_TRUSTED_PROXY_HOPS` matches the topology** — `deploy.sh` sets `1`, the
+   number of entries Cloud Run's default front end appends. Change it to `2` if
+   an external HTTPS load balancer is ever put in front, and back to `0` for any
+   deployment with nothing in front. Too high and the limiter starts trusting
+   caller-supplied entries (an attacker rotates them for unlimited budget); left
+   at `0` behind a proxy, every tester shares one bucket.
+
+Verify after opening, from two different networks — the second column should be
+the caller's real address, not a value they chose:
+
+```bash
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND httpRequest.requestUrl:"/auth/login"' \
+  --project "$PROJECT" --limit 5 --format='value(httpRequest.remoteIp)'
+```
+
 ## Cost
 
 ~$9.4/mo steady state (Cloud SQL `db-f1-micro`), within the $10 cap. Corpus

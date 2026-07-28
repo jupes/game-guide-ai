@@ -62,6 +62,19 @@ by every guarded route.
 - **`/metrics/ui`:** intentionally stays **unauthenticated** (it's a UI telemetry beacon, needs to
   fire pre-login); it accepts only bounded `ui.*` metric points — documented decision, not an oversight.
 - **`/healthz`:** stays open (Cloud Run startup probe must reach it).
+- **Auth throttling (added in review):** argon2 is memory-hard *by design*, which makes
+  `/auth/login` an amplifier — every anonymous attempt buys 64 MiB × 4 threads of work and
+  holds a request slot while it queues. Bounding memory (a hashing semaphore) was not
+  enough; attempts themselves are budgeted per account **and** per source IP before any
+  hashing runs (`service/ratelimit.py`). The source key is read from the trusted end of
+  `X-Forwarded-For` (`AUTH_TRUSTED_PROXY_HOPS`), since the header is caller-writable —
+  see `service/README.md`.
+- **Conversation authorization** is a **claim**, not a check-then-use: an ownership probe
+  answers about the past, and the read that follows runs on a different connection. Writes
+  claim atomically; reads claim only a conversation that already has content; an unowned
+  empty conversation is answered as empty **without a second read**, so nothing can be
+  claimed and written in the gap. Attachment uploads validate the payload *before*
+  claiming, so rejected uploads can't mint ownership rows.
 
 ## Build Sequence & Checkpoints
 

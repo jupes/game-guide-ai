@@ -78,6 +78,12 @@ run docker push "${IMAGE}"
 #    keep the three in sync (see config.py / service/hashing.py).
 #    The /healthz startup probe is set via the service YAML in docs/deploy-gcp.md
 #    (kept out of this flag list so an unsupported gcloud flag can't break deploy).
+#    AUTH_TRUSTED_PROXY_HOPS=1: on the default run.app front end exactly one
+#    trusted entry is appended to X-Forwarded-For, and the auth rate limiter keys
+#    on THAT entry — everything to its left is caller-written and ignored. If an
+#    external HTTPS load balancer is ever put in front, this becomes 2. It is only
+#    sound while ingress is restricted to that front end (see docs/deploy-gcp.md);
+#    a caller who can reach the container directly is the trusted hop.
 run gcloud run deploy "${SERVICE}" \
   --project "${PROJECT}" \
   --region "${REGION}" \
@@ -86,6 +92,7 @@ run gcloud run deploy "${SERVICE}" \
   --no-allow-unauthenticated \
   --add-cloudsql-instances "${CLOUDSQL_INSTANCE}" \
   --set-secrets "OPENAI_API_KEY=${OPENAI_SECRET}:latest,DATABASE_URL=${DATABASE_URL_SECRET}:latest,SESSION_SECRET=${SESSION_SECRET_SECRET}:latest" \
+  --set-env-vars "AUTH_TRUSTED_PROXY_HOPS=1" \
   --timeout 300 \
   --max-instances 2 \
   --memory 1Gi \

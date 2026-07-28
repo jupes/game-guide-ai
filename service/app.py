@@ -17,6 +17,7 @@ import binascii
 import logging
 import time
 from contextlib import asynccontextmanager
+from enum import Enum
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
@@ -384,16 +385,63 @@ def _fetch_attachment_context(
     return context, label
 
 
+class ConversationAccess(Enum):
+    """Outcome of `_authorize_conversation` — see there for the rules."""
+
+    OWNED = "owned"
+    #: Unowned AND empty. The caller is authorized, but MUST NOT go on to read
+    #: the conversation: it was only observed to be empty, and another user can
+    #: claim and write it in the gap before that read. Serve an empty result
+    #: built from nothing instead.
+    EMPTY = "empty"
+
+
+def _conversation_lookup(conversation_id: str):
+    """Run an ownership/content lookup, converting any failure into a 503.
+
+    **Fails CLOSED.** Reads and ownership checks run on separate connections, so
+    a transient failure (or a role that can't see `chat.conversations`) must
+    never be followed by a successful cross-user read.
+    """
+    def run(fn, *args):
+        try:
+            return fn(*args)
+        except Exception as exc:
+            log.warning(
+                "conversation authorization failed (conversation_id=%s)",
+                conversation_id, exc_info=True,
+            )
+            raise HTTPException(
+                status_code=503, detail="authorization backend unavailable"
+            ) from exc
+    return run
+
+
+def _reject_foreign_conversation(
+    store: MessageStore | None, conversation_id: str, user_id: int,
+) -> None:
+    """403 if `conversation_id` demonstrably belongs to someone else — without
+    claiming anything.
+
+    This is the cheap precheck that lets a write endpoint refuse an obviously
+    foreign conversation before doing expensive work, while leaving the actual
+    claim for the moment just before persistence. It is deliberately NOT an
+    authorization decision on its own: passing it means "not known to be someone
+    else's", and only the atomic claim that follows settles ownership.
+    """
+    if store is None:
+        return
+    run = _conversation_lookup(conversation_id)
+    owner = run(store.owner_of, conversation_id)
+    if owner is not None and owner != user_id:
+        raise HTTPException(status_code=403, detail="not your conversation")
+
+
 def _authorize_conversation(
     store: MessageStore | None, conversation_id: str | None, user_id: int,
     *, creating: bool,
-) -> None:
+) -> ConversationAccess:
     """Authorize this user for `conversation_id`, or raise (x5bz.2 D).
-
-    **Fails CLOSED.** A lookup error raises 503 rather than continuing: reads and
-    ownership checks run on separate connections, so a transient failure (or a
-    role that can't see `chat.conversations`) must never be followed by a
-    successful cross-user read.
 
     `creating=True` (writes) uses the store's **atomic** claim, which returns the
     winning owner — one call that is both the check and the claim. That closes
@@ -401,38 +449,36 @@ def _authorize_conversation(
     separate pre-check.
 
     `creating=False` (reads) claims only a conversation that **already has
-    content**. That still closes the ownership table's cold-start hole —
-    conversations predating the table have no owner row, and "no owner ⇒ allow"
-    would leave all of that history readable by any authenticated caller — while
-    refusing to mint a row for an id with nothing in it. Otherwise a plain GET
-    loop over random ids could fill `chat.conversations` at will; an empty id has
-    nothing to protect and nothing to leak, so it is simply served as empty.
+    content**. That closes the ownership table's cold-start hole — conversations
+    predating the table have no owner row, and "no owner ⇒ allow" would leave all
+    of that history readable by any authenticated caller — while refusing to mint
+    a row for an id with nothing in it, so a GET loop over random ids can't fill
+    `chat.conversations`.
+
+    An unowned, empty conversation returns `EMPTY` rather than authorizing a
+    read. "Empty" is a past-tense observation on its own connection: between the
+    probe and the endpoint's read, another user can claim the id and write to it,
+    and the read would then serve their content. The caller must answer from
+    `EMPTY` directly instead of reading.
 
     Either way, the first authenticated user to touch a conversation with content
     takes ownership (ids are unguessable `crypto.randomUUID()` values held only
     by their owner), and everyone else is rejected from then on.
     """
     if store is None or conversation_id is None:
-        return
-    try:
-        if creating:
-            owner = store.claim_conversation(conversation_id, user_id)
-        else:
-            owner = store.owner_of(conversation_id)
-            if owner is None:
-                if not store.has_content(conversation_id):
-                    return  # nothing to protect — do not create an ownership row
-                owner = store.claim_conversation(conversation_id, user_id)
-    except Exception as exc:
-        log.warning(
-            "conversation authorization failed (conversation_id=%s)",
-            conversation_id, exc_info=True,
-        )
-        raise HTTPException(
-            status_code=503, detail="authorization backend unavailable"
-        ) from exc
+        return ConversationAccess.OWNED
+    run = _conversation_lookup(conversation_id)
+    if creating:
+        owner = run(store.claim_conversation, conversation_id, user_id)
+    else:
+        owner = run(store.owner_of, conversation_id)
+        if owner is None:
+            if not run(store.has_content, conversation_id):
+                return ConversationAccess.EMPTY
+            owner = run(store.claim_conversation, conversation_id, user_id)
     if owner is not None and owner != user_id:
         raise HTTPException(status_code=403, detail="not your conversation")
+    return ConversationAccess.OWNED
 
 
 @app.get("/healthz")
@@ -531,7 +577,11 @@ def conversation_messages(
 ) -> MessagesResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="message history unavailable")
-    _authorize_conversation(store, conversation_id, session.user_id, creating=False)
+    access = _authorize_conversation(store, conversation_id, session.user_id, creating=False)
+    if access is ConversationAccess.EMPTY:
+        # Unowned and empty: answer from the authorization result, do NOT read.
+        # A second read could land after another user claimed and wrote the id.
+        return MessagesResponse(conversation_id=conversation_id, messages=[])
     # config.HISTORY_LIMIT read at request time (not import) so env/test
     # overrides of the knob take effect; client may ask for fewer, never more.
     cap = config.HISTORY_LIMIT
@@ -564,7 +614,15 @@ def upload_attachment(
 ) -> AttachmentResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
-    _authorize_conversation(store, conversation_id, session.user_id, creating=True)
+    # Ownership is settled in two steps here, deliberately:
+    #   1. a precheck that only REJECTS a conversation already owned by someone
+    #      else, so a foreign id still 403s without any decoding work; then
+    #   2. validation; then
+    #   3. the atomic claim, immediately before persisting.
+    # Claiming up front instead would let a stream of rejected uploads (bad
+    # base64, oversized, unsupported type) mint an ownership row per request —
+    # unbounded writes to chat.conversations for input that never gets stored.
+    _reject_foreign_conversation(store, conversation_id, session.user_id)
     try:
         data = base64.b64decode(req.data, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -578,6 +636,10 @@ def upload_attachment(
         text = extract_text(data, req.filename)
     except UnsupportedAttachmentError as exc:
         raise HTTPException(status_code=415, detail=str(exc)) from exc
+    # Payload is good — now take ownership atomically. The claim (not the
+    # precheck above) is the authorization decision: it settles the race between
+    # two users reaching a fresh id at once.
+    _authorize_conversation(store, conversation_id, session.user_id, creating=True)
     try:
         stored = store.append_attachment(conversation_id, req.filename, req.content_type, text)
     except _DB_ERRORS as exc:
@@ -594,7 +656,11 @@ def conversation_attachments(
 ) -> AttachmentsResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
-    _authorize_conversation(store, conversation_id, session.user_id, creating=False)
+    access = _authorize_conversation(store, conversation_id, session.user_id, creating=False)
+    if access is ConversationAccess.EMPTY:
+        # See conversation_messages: answer from the authorization result rather
+        # than re-reading an id that another user may have claimed since.
+        return AttachmentsResponse(conversation_id=conversation_id, attachments=[])
     try:
         stored = store.attachments_for(conversation_id)
     except _DB_ERRORS as exc:

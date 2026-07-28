@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from service import ratelimit
 from service.app import app, require_session
 from service.session import SessionData
 
@@ -22,6 +23,22 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "real_auth: exercise the real require_session guard (auth tests opt out of the default session)",
     )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    """Give every test its own attempt budget.
+
+    The limiters are process-global module state, and `TestClient` has no real
+    peer address, so every test in the run shares one source key. Without this,
+    signups/logins accumulate across unrelated tests until some later test —
+    whichever one happens to cross the threshold — starts getting 429s and fails
+    for reasons that have nothing to do with what it is testing. Tests that
+    exercise throttling build their own budget inside the test.
+    """
+    ratelimit.reset_all()
+    yield
+    ratelimit.reset_all()
 
 
 @pytest.fixture(autouse=True)

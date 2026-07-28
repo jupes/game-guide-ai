@@ -116,6 +116,7 @@ Attachment **metadata** only (extracted text never leaves the server); health + 
 | `401` | No / invalid / expired session, or the account no longer exists |
 | `403` | Wrong role for the channel (GM is DM-only), or another user's conversation |
 | `422` | Validation (empty prompt, unknown mode, bad upload body, bad credentials shape) |
+| `429` | Auth attempt budget exhausted for this account or source — carries `Retry-After` |
 | `502` | LLM upstream failed (timeout/rate limit) — retryable |
 | `503` | Retrieval backend, embedding (missing `OPENAI_API_KEY`), store or auth unavailable, `SESSION_SECRET` unusable, or hashing capacity exhausted |
 | `500` | Bug in our code (full traceback logged) |
@@ -135,11 +136,26 @@ Access is invite-gated; `/chat` and `/conversations/*` require a session.
 | `session.py` | itsdangerous-signed httpOnly cookie carrying user id + role. Stateless: no session table; rotating `SESSION_SECRET` logs everyone out. |
 | `invites.py` | Token generation (`secrets.token_urlsafe(32)`) + redeemability rules (used / expired / revoked). |
 | `admin_invites.py` | Operator CLI: `create` / `list` / `revoke`. `create` prints a `/#invite=<token>` link — the token rides in the **fragment**, which browsers never send, so it stays out of request logs. |
+| `ratelimit.py` | Attempt budgets for `/auth/signup` + `/auth/login`, checked **before** any argon2 work — per account (10 / 5 min) and per source IP (30 / 5 min), both must pass. 429 + `Retry-After`; decays, never locks out. |
 
 `require_session` re-reads the account on **every** request rather than trusting the
 cookie's contents, so a deleted account or a demoted DM loses access immediately instead
 of at cookie expiry. Roles are server-authoritative: the invite fixes the role, and the UI
 cannot change it. `/healthz` and `/metrics/ui` are intentionally open.
+
+**The source budget depends on deployment config.** `X-Forwarded-For` is caller-writable —
+Google preserves whatever the client sent and appends its own observation — so the source
+key is read from the **right-hand (trusted) end** of the chain, `AUTH_TRUSTED_PROXY_HOPS`
+entries in, and everything left of that is ignored. The default is `0` (trust nothing in
+the header, key on the peer address); `scripts/deploy.sh` sets `1` for Cloud Run's run.app
+front end, and an external HTTPS load balancer in front would make it `2`. Set too high it
+starts trusting caller-supplied entries; left at `0` behind a proxy every caller collapses
+into one shared bucket. It is only sound while ingress is restricted to that front end —
+a caller who can reach the container directly *is* the trusted hop.
+
+The budgets are **per instance and in memory**, so with `--max-instances N` the real
+ceiling is N × these numbers; a shared store (Redis/DB) is the answer if it ever needs to
+be exact. Rate limiting for `/chat` itself is separate and still open (x5bz.3).
 
 ## Run
 

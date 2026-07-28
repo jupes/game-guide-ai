@@ -175,6 +175,89 @@ def test_reading_an_empty_conversation_creates_no_ownership_row(env):
     assert "real-conv" in messages._owners  # noqa: SLF001
 
 
+class _RaceAfterProbeStore(InMemoryMessageStore):
+    """Models the gap between "is this empty?" and the endpoint's own read.
+
+    The probe answers "empty" on its own connection; by the time a follow-up read
+    ran, another user could have claimed the id and written to it — so the probe
+    result must be treated as *past tense*, not as a licence to read.
+    """
+
+    def has_content(self, conversation_id: str) -> bool:
+        return False
+
+    def recent(self, conversation_id: str, limit: int):
+        raise AssertionError("read a conversation that was authorized as EMPTY")
+
+    def attachments_for(self, conversation_id: str):
+        raise AssertionError("read a conversation that was authorized as EMPTY")
+
+
+def test_an_empty_conversation_is_answered_without_a_second_read(env):
+    """The empty case must be answered from the authorization result itself.
+    Re-reading would reopen the cross-user window the ownership check closes:
+    the row this request finally reads may have been written by someone else
+    *after* the probe saw nothing."""
+    alice = _signup(env, "alice@example.com")
+    app.dependency_overrides[get_message_store] = lambda: _RaceAfterProbeStore()
+
+    msgs = alice.get("/conversations/never-used/messages")
+    assert msgs.status_code == 200
+    assert msgs.json()["messages"] == []
+
+    atts = alice.get("/conversations/never-used/attachments")
+    assert atts.status_code == 200
+    assert atts.json()["attachments"] == []
+
+
+def test_rejected_uploads_create_no_ownership_rows(env):
+    """The claim happens immediately before persistence, not on arrival: a
+    stream of invalid uploads must not write one chat.conversations row per
+    request for content that is never stored."""
+    messages = InMemoryMessageStore()
+    app.dependency_overrides[get_message_store] = lambda: messages
+    alice = _signup(env, "alice@example.com")
+
+    for i in range(25):
+        bad = alice.post(
+            f"/conversations/junk-{i}/attachments",
+            json={"filename": "x.txt", "content_type": "text/plain", "data": "not!base64"},
+        )
+        assert bad.status_code == 422
+    assert messages._owners == {}, "rejected uploads must not claim"  # noqa: SLF001
+
+    # A VALID upload still claims — the payload survived validation, so the row
+    # is about to have content.
+    ok = alice.post(
+        "/conversations/real/attachments",
+        json={"filename": "x.txt", "content_type": "text/plain", "data": "aGk="},
+    )
+    assert ok.status_code == 200
+    assert "real" in messages._owners  # noqa: SLF001
+
+
+def test_a_foreign_conversation_is_still_refused_before_any_decoding(env):
+    """Deferring the claim must not defer the *rejection*: an id already owned by
+    someone else 403s up front, without decoding the payload."""
+    auth = env
+    messages = InMemoryMessageStore()
+    app.dependency_overrides[get_message_store] = lambda: messages
+    alice = _signup(auth, "alice@example.com")
+    bob = _signup(auth, "bob@example.com")
+
+    assert alice.post(
+        "/conversations/conv-A/attachments",
+        json={"filename": "a.txt", "content_type": "text/plain", "data": "aGk="},
+    ).status_code == 200
+
+    # Invalid payload AND someone else's conversation: 403 wins, so the decode
+    # never runs.
+    assert bob.post(
+        "/conversations/conv-A/attachments",
+        json={"filename": "x.txt", "content_type": "text/plain", "data": "not!base64"},
+    ).status_code == 403
+
+
 def test_losing_the_claim_race_is_rejected(env):
     """The claim is atomic and its RESULT is honored: a user who loses the race
     on a fresh conversation id must be rejected, not allowed to write into the

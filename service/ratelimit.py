@@ -12,7 +12,8 @@ Two keys are checked per attempt, and both must pass:
 
 - **account** (the submitted email) — stops one account being ground down, no
   matter how many sources the attempts come from.
-- **source** (client IP) — stops one source spraying many accounts, and is what
+- **source** (client IP, read only from a *trusted* proxy hop — see
+  `client_source`) — stops one source spraying many accounts, and is what
   actually protects the request slots.
 
 Deliberate limitations, stated rather than implied:
@@ -26,6 +27,7 @@ Deliberate limitations, stated rather than implied:
 
 from __future__ import annotations
 
+import ipaddress
 import threading
 import time
 from collections import OrderedDict, deque
@@ -50,6 +52,19 @@ class SlidingWindowLimiter:
     """
 
     def __init__(self, limit: int, window_seconds: float, max_keys: int = 10_000):
+        # These are env-derived, so a typo must fail loudly at startup rather
+        # than silently disabling the control: a window <= 0 expires every hit
+        # immediately (no throttling at all) and a limit < 1 can never be
+        # satisfied. Refusing to construct is the fail-closed choice — the
+        # container will not start with a rate limiter that does not limit.
+        if limit < 1:
+            raise ValueError(f"rate-limit `limit` must be >= 1, got {limit!r}")
+        if window_seconds <= 0:
+            raise ValueError(
+                f"rate-limit `window_seconds` must be > 0, got {window_seconds!r}"
+            )
+        if max_keys < 1:
+            raise ValueError(f"rate-limit `max_keys` must be >= 1, got {max_keys!r}")
         self._limit = limit
         self._window = window_seconds
         self._max_keys = max_keys
@@ -88,17 +103,29 @@ class SlidingWindowLimiter:
             self._hits.clear()
 
 
+def _build(limit: int, env_name: str) -> SlidingWindowLimiter:
+    """Construct a limiter, naming the offending env var if the values are bad."""
+    try:
+        return SlidingWindowLimiter(
+            limit=limit, window_seconds=config.AUTH_RATE_LIMIT_WINDOW_S
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"invalid auth rate-limit configuration "
+            f"({env_name} / AUTH_RATE_LIMIT_WINDOW_S): {exc}"
+        ) from exc
+
+
 # One limiter per dimension. Sizing: the account limit is the brute-force
 # ceiling; the source limit is deliberately looser (a household or office can
 # share an egress IP) but still far below what it takes to starve request slots.
-account_limiter = SlidingWindowLimiter(
-    limit=config.AUTH_RATE_LIMIT_PER_ACCOUNT,
-    window_seconds=config.AUTH_RATE_LIMIT_WINDOW_S,
-)
-source_limiter = SlidingWindowLimiter(
-    limit=config.AUTH_RATE_LIMIT_PER_SOURCE,
-    window_seconds=config.AUTH_RATE_LIMIT_WINDOW_S,
-)
+account_limiter = _build(config.AUTH_RATE_LIMIT_PER_ACCOUNT, "AUTH_RATE_LIMIT_PER_ACCOUNT")
+source_limiter = _build(config.AUTH_RATE_LIMIT_PER_SOURCE, "AUTH_RATE_LIMIT_PER_SOURCE")
+
+if config.AUTH_TRUSTED_PROXY_HOPS < 0:
+    raise ValueError(
+        f"AUTH_TRUSTED_PROXY_HOPS must be >= 0, got {config.AUTH_TRUSTED_PROXY_HOPS!r}"
+    )
 
 
 def reset_all() -> None:
@@ -106,19 +133,67 @@ def reset_all() -> None:
     source_limiter.reset()
 
 
-def client_source(request) -> str:
-    """Best-effort caller identity for throttling.
+# An IPv6 address in text form is at most 45 characters; anything longer is not
+# an address, and accepting it would let a caller inflate the key table.
+_MAX_SOURCE_LEN = 64
 
-    Cloud Run terminates the connection, so `request.client.host` is the proxy;
-    the real caller is the FIRST entry of X-Forwarded-For. It is spoofable, which
-    is why the account limiter exists alongside it — an attacker can rotate this
-    value but cannot rotate the account they are attacking.
+
+def _parse_ip(raw: str) -> str | None:
+    """Normalize one X-Forwarded-For / peer entry to a canonical IP, or None.
+
+    Normalizing (rather than using the raw text) matters: `::1`, `0:0:0:0:0:0:0:1`
+    and `[::1]:443` are the same caller, and treating them as three keys would
+    hand an attacker three budgets.
     """
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    candidate = raw.strip()
+    if not candidate or len(candidate) > _MAX_SOURCE_LEN:
+        return None
+    if candidate.startswith("["):  # [2001:db8::1]:443
+        candidate = candidate[1:].partition("]")[0]
+    elif candidate.count(":") == 1:  # 203.0.113.7:443 (a bare IPv6 has >1 colon)
+        candidate = candidate.rpartition(":")[0]
+    try:
+        return ipaddress.ip_address(candidate).compressed
+    except ValueError:
+        return None
+
+
+def client_source(request) -> str:
+    """Caller identity for throttling, taken only from a **trusted** hop.
+
+    `X-Forwarded-For` is caller-writable: Google's front end *preserves* whatever
+    the client sent and *appends* its own observation, and the docs are explicit
+    that the client-supplied part is unverified. Reading the leftmost entry —
+    the intuitive "original client" — therefore reads attacker-controlled text,
+    and an attacker who rotates it gets a fresh budget every request, which is
+    exactly the throttle this module exists to apply.
+
+    So the header is parsed from the RIGHT instead, and only when we know how
+    many entries our own infrastructure appended:
+
+    - `AUTH_TRUSTED_PROXY_HOPS = 0` (default) — trust nothing in the header; key
+      on the peer address. Correct for direct/local serving.
+    - `= 1` — one trusted hop appended the caller's address (Cloud Run's default
+      run.app front end). Set by `scripts/deploy.sh`.
+    - `= 2` — an external HTTPS load balancer in front of Cloud Run.
+
+    Entries left of the trusted hops are ignored no matter what they contain, and
+    the chosen value must parse as an IP address or we fall back to the peer.
+    Ingress must also be restricted to that infrastructure (see
+    `docs/deploy-gcp.md`), or a caller could reach the service directly and
+    become the "trusted" hop themselves.
+    """
+    hops = config.AUTH_TRUSTED_PROXY_HOPS
+    if hops > 0:
+        chain = [p for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+        # Fewer entries than trusted hops ⇒ our proxies did not write this
+        # header, so none of it is trustworthy.
+        if len(chain) >= hops:
+            source = _parse_ip(chain[-hops])
+            if source is not None:
+                return source
     client = getattr(request, "client", None)
-    return getattr(client, "host", None) or "unknown"
+    return _parse_ip(getattr(client, "host", "") or "") or "unknown"
 
 
 def check_auth_attempt(request, account: str) -> None:

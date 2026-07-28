@@ -191,3 +191,13 @@ AUTH_RATE_LIMIT_PER_ACCOUNT: int = _int("AUTH_RATE_LIMIT_PER_ACCOUNT", 10)
 # Per source IP: looser, since a household/office shares an egress IP, but still
 # far below what it takes to starve the instance's request slots.
 AUTH_RATE_LIMIT_PER_SOURCE: int = _int("AUTH_RATE_LIMIT_PER_SOURCE", 30)
+# How many X-Forwarded-For entries our OWN infrastructure appends. X-Forwarded-For
+# is caller-writable — Google preserves what the client sent and appends to it —
+# so the source key is taken from the right-hand (trusted) end of the chain, this
+# many entries in, and everything to its left is ignored. The default of 0 trusts
+# nothing in the header and keys on the peer address; deployments behind a proxy
+# MUST set it (scripts/deploy.sh sets 1 for Cloud Run's run.app front end; use 2
+# behind an external HTTPS load balancer) or every caller collapses into one
+# shared bucket. Getting it too HIGH is the unsafe direction: it starts trusting
+# caller-supplied entries. See service/ratelimit.py:client_source.
+AUTH_TRUSTED_PROXY_HOPS: int = _int("AUTH_TRUSTED_PROXY_HOPS", 0)

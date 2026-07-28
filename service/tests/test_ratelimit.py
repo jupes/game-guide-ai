@@ -66,6 +66,102 @@ def test_key_table_is_capped_so_the_limiter_is_not_itself_a_memory_leak() -> Non
     assert len(limiter._hits) <= 10  # noqa: SLF001
 
 
+# ── Configuration must fail loudly, never silently disable the limit ─────────
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"limit": 0, "window_seconds": 60},      # can never be satisfied
+        {"limit": -1, "window_seconds": 60},
+        {"limit": 5, "window_seconds": 0},       # every hit expires instantly
+        {"limit": 5, "window_seconds": -30},
+        {"limit": 5, "window_seconds": 60, "max_keys": 0},
+    ],
+)
+def test_invalid_configuration_is_rejected_at_construction(kwargs) -> None:
+    """These values are env-derived. A zero/negative window would silently turn
+    throttling OFF while every request still looks fine — the worst failure mode
+    for a security control — so the limiter refuses to exist instead."""
+    with pytest.raises(ValueError):
+        SlidingWindowLimiter(**kwargs)
+
+
+# ── Source identity: the header is caller-writable ───────────────────────────
+
+
+class _Req:
+    """Minimal stand-in for a Starlette Request (headers + peer)."""
+
+    def __init__(self, xff: str | None = None, peer: str = "10.0.0.1"):
+        self.headers = {} if xff is None else {"x-forwarded-for": xff}
+        self.client = type("C", (), {"host": peer})()
+
+
+def test_untrusted_deployment_ignores_the_header_entirely(monkeypatch) -> None:
+    """With no trusted proxy, X-Forwarded-For is just text the caller typed."""
+    monkeypatch.setattr(config, "AUTH_TRUSTED_PROXY_HOPS", 0)
+    assert ratelimit.client_source(_Req("1.2.3.4", peer="10.0.0.1")) == "10.0.0.1"
+
+
+def test_only_the_trusted_hop_is_read_not_the_caller_supplied_prefix(monkeypatch) -> None:
+    """Google PRESERVES what the client sent and APPENDS its own observation, so
+    the leftmost entry is attacker-controlled. Read from the right instead."""
+    monkeypatch.setattr(config, "AUTH_TRUSTED_PROXY_HOPS", 1)
+    req = _Req("9.9.9.9, 8.8.8.8, 203.0.113.7")  # first two are spoofed
+    assert ratelimit.client_source(req) == "203.0.113.7"
+
+
+def test_two_hops_reads_past_the_load_balancer(monkeypatch) -> None:
+    monkeypatch.setattr(config, "AUTH_TRUSTED_PROXY_HOPS", 2)
+    req = _Req("9.9.9.9, 203.0.113.7, 130.211.0.1")  # client, then the LB
+    assert ratelimit.client_source(req) == "203.0.113.7"
+
+
+def test_a_chain_shorter_than_the_trusted_hops_falls_back_to_the_peer(monkeypatch) -> None:
+    """Fewer entries than our proxies append ⇒ our proxies did not write this."""
+    monkeypatch.setattr(config, "AUTH_TRUSTED_PROXY_HOPS", 2)
+    assert ratelimit.client_source(_Req("1.2.3.4", peer="10.0.0.1")) == "10.0.0.1"
+
+
+@pytest.mark.parametrize(
+    "value", ["not-an-ip", "", "   ", "x" * 200, "999.999.999.999", "<script>"],
+)
+def test_a_non_ip_in_the_trusted_position_falls_back_to_the_peer(monkeypatch, value) -> None:
+    """Junk must not become a rate-limit key — that is free budget per variant."""
+    monkeypatch.setattr(config, "AUTH_TRUSTED_PROXY_HOPS", 1)
+    assert ratelimit.client_source(_Req(value, peer="10.0.0.1")) == "10.0.0.1"
+
+
+def test_equivalent_spellings_collapse_to_one_key(monkeypatch) -> None:
+    """`::1`, its expanded form and a bracketed host:port are one caller; three
+    keys would be three budgets."""
+    monkeypatch.setattr(config, "AUTH_TRUSTED_PROXY_HOPS", 1)
+    keys = {
+        ratelimit.client_source(_Req(v))
+        for v in ("::1", "0:0:0:0:0:0:0:1", "[::1]:443")
+    }
+    assert keys == {"::1"}
+    assert ratelimit.client_source(_Req("203.0.113.7:51234")) == "203.0.113.7"
+
+
+def test_rotating_a_spoofed_header_does_not_buy_extra_budget(monkeypatch, store) -> None:
+    """The reported attack: rotate X-Forwarded-For *and* the email, and every
+    request reaches the dummy argon2 hash. With the header untrusted, the source
+    budget still binds."""
+    monkeypatch.setattr(config, "AUTH_TRUSTED_PROXY_HOPS", 0)
+    client = TestClient(app)
+    statuses = [
+        client.post(
+            "/auth/login",
+            json={"email": f"nobody{i}@example.com", "password": "password123"},
+            headers={"x-forwarded-for": f"198.51.100.{i}"},  # rotating, spoofed
+        ).status_code
+        for i in range(config.AUTH_RATE_LIMIT_PER_SOURCE + 5)
+    ]
+    assert 429 in statuses, "a spoofed source must not mint a fresh budget"
+
+
 # ── Enforcement on the endpoints ─────────────────────────────────────────────
 
 
