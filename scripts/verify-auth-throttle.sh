@@ -49,9 +49,18 @@
 set -euo pipefail
 
 BASE="${1:?usage: verify-auth-throttle.sh <service-url> [attempts]}"
-# Set by the app on every 429 its auth limiter raises, and on nothing else — see
-# AUTH_THROTTLE_HEADER in service/app.py. Keep the two in step; a repo test does.
-MARKER="${MARKER:-x-auth-throttled}"
+
+# The trusted marker is part of this check's CONTRACT with the app, not a knob.
+# It was briefly an env override for test convenience, which handed the whole
+# vulnerability straight back: `MARKER=server` made an ordinary Server header on
+# a platform 429 read as proof our limiter fired. Ambient environment state must
+# not be able to decide what counts as trustworthy — readonly, and no default-in
+# from the environment. Set by the app on every 429 its auth limiter raises and
+# on nothing else; see AUTH_THROTTLE_HEADER in service/app.py, which a repo test
+# pins to this exact pair.
+readonly MARKER_NAME="x-auth-throttled"
+readonly MARKER_VALUE="1"
+
 SERVICE="${SERVICE:-game-guide-ai}"
 REGION="${GCP_REGION:-us-central1}"
 PER_SOURCE="${PER_SOURCE:-30}"        # config.AUTH_RATE_LIMIT_PER_SOURCE
@@ -109,6 +118,21 @@ if [ "${ATTEMPTS}" -le "${BUDGET}" ]; then
   exit 2
 fi
 
+# True only for a header block carrying exactly `X-Auth-Throttled: 1`.
+#
+# Presence is not enough — an empty or unexpected value is not our limiter
+# saying "budget exhausted", it is something else that happens to share a header
+# name. Field names are case-insensitive per RFC 9110 and header lines end with
+# CRLF, so the block is stripped of CR and folded to lower case before matching,
+# and optional whitespace is allowed around the value (both legal in the wire
+# format). MARKER_VALUE must therefore be lower-case; "1" is.
+has_app_marker() {
+  printf '%s' "$1" \
+    | tr -d '\r' \
+    | tr '[:upper:]' '[:lower:]' \
+    | grep -qE "^${MARKER_NAME}:[[:blank:]]*${MARKER_VALUE}[[:blank:]]*$"
+}
+
 saw_429=0
 for i in $(seq 1 "${ATTEMPTS}"); do
   # Headers are captured, not just the status: a 429 alone does NOT mean our
@@ -132,11 +156,11 @@ for i in $(seq 1 "${ATTEMPTS}"); do
       # The expected outcome for a bad credential: keep spending the budget.
       ;;
     429)
-      if printf '%s' "${headers}" | grep -qi "^${MARKER}:"; then
+      if has_app_marker "${headers}"; then
         saw_429=1
         break
       fi
-      echo; echo "ABORT — 429 WITHOUT the '${MARKER}' marker on attempt ${i}."
+      echo; echo "ABORT — 429 without '${MARKER_NAME}: ${MARKER_VALUE}' on attempt ${i}."
       echo "        That is not our rate limiter: Cloud Run returns 429 of its own"
       echo "        when no instance is available. Treating it as a pass would"
       echo "        certify the proxy configuration on a platform hiccup. Wait for"

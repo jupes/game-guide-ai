@@ -95,11 +95,12 @@ gcloud sql users set-password postgres --instance=game-guide-ai --password="$DBP
 # self-heals once it boots — but only then. Anything you do BEFORE first boot
 # against a half-bootstrapped database fails: minting the first invite with
 # `python -m service.admin_invites` needs auth.users/auth.invites to exist.
-# -v ON_ERROR_STOP=1 and the `break` are both load-bearing: psql keeps going
-# after a SQL error by default, and the loop would keep going after a failed
-# FILE — so 05 could run against a database where 04 never created the table it
-# adds the ownership key to, and the whole thing would still look like it
-# finished. Fail at the first error instead, and say where.
+# -v ON_ERROR_STOP=1, the `break` and the trailing `false` are all load-bearing:
+# psql keeps going after a SQL error by default; the loop would keep going after
+# a failed FILE (so 05 could run against a database where 04 never created the
+# table it adds the ownership key to); and a block whose last command is `echo`
+# EXITS 0 no matter what it printed — automation would read a half-bootstrapped
+# database as a success. Stop at the first error, say where, and exit nonzero.
 PROXY="postgresql://postgres:<PW>@localhost:6543/game_guide_ai"
 BOOTSTRAP_OK=1
 for f in 01-extensions.sql 02-schema.sql 03-hybrid-search.sql \
@@ -108,9 +109,12 @@ for f in 01-extensions.sql 02-schema.sql 03-hybrid-search.sql \
   psql "$PROXY" -v ON_ERROR_STOP=1 -f "vector-db/init/$f" \
     || { BOOTSTRAP_OK=0; echo "BOOTSTRAP FAILED at $f" >&2; break; }
 done
-[ "$BOOTSTRAP_OK" = 1 ] \
-  && echo "schema bootstrap complete" \
-  || echo "schema bootstrap INCOMPLETE — fix the error above, then re-run the loop" >&2
+if [ "$BOOTSTRAP_OK" = 1 ]; then
+  echo "schema bootstrap complete"
+else
+  echo "schema bootstrap INCOMPLETE — fix the error above, then re-run the loop" >&2
+  false   # the block's exit status; `echo` alone would report success
+fi
 ```
 
 The `INSTANCE_CONNECTION_NAME` is `"$PROJECT:$REGION:game-guide-ai"` — used by

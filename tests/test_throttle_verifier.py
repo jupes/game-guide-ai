@@ -23,6 +23,7 @@ Run from repo root:
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import threading
@@ -110,12 +111,31 @@ def bash():
 
 
 def test_app_and_script_agree_on_the_marker() -> None:
-    """The script greps for a literal header name. If the app renames it, the
-    script silently stops finding it and every real throttle becomes an ABORT —
-    or worse, someone 'fixes' that by dropping the check."""
+    """The script matches a literal header name and value. If the app renames or
+    revalues it, the script silently stops finding it and every real throttle
+    becomes an ABORT — or worse, someone 'fixes' that by dropping the check."""
     app = APP_PY.read_text(encoding="utf-8")
+    script = SCRIPT.read_text(encoding="utf-8")
     assert 'AUTH_THROTTLE_HEADER = "X-Auth-Throttled"' in app
-    assert 'MARKER="${MARKER:-x-auth-throttled}"' in SCRIPT.read_text(encoding="utf-8")
+    assert 'AUTH_THROTTLE_HEADER: "1"' in app
+    assert 'readonly MARKER_NAME="x-auth-throttled"' in script
+    assert 'readonly MARKER_VALUE="1"' in script
+
+
+def test_the_marker_contract_is_not_environment_configurable() -> None:
+    """It was briefly `MARKER="${MARKER:-...}"` for test convenience, which handed
+    the whole vulnerability back: ambient state could nominate any header — say
+    `Server`, which every platform 429 carries — as proof our limiter fired.
+    What counts as trustworthy is a contract, not a knob."""
+    script = SCRIPT.read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert not re.search(r'MARKER\w*="\$\{', code), (
+        "the marker must not be defaulted in from the environment"
+    )
+    for name in ("MARKER_NAME", "MARKER_VALUE"):
+        assert f'readonly {name}=' in code, f"{name} must be readonly"
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────────
@@ -136,8 +156,53 @@ def test_unmarked_429_aborts_instead_of_passing(bash, stub) -> None:
     result = _run(bash, base)
     assert result.returncode == ABORT, result.stdout + result.stderr
     assert "PASS" not in result.stdout
-    assert "WITHOUT the" in result.stdout
+    assert "x-auth-throttled: 1" in result.stdout  # says what was missing
     assert "INCONCLUSIVE" in result.stdout
+
+
+def test_marker_env_override_cannot_manufacture_a_pass(bash, stub) -> None:
+    """The reported reproduction: a platform 429 carrying an ordinary `Server`
+    header, verified with `MARKER=server`. If the environment can nominate the
+    trusted header, the check certifies whatever it is told to."""
+    base = stub([(401, {})] * 3, (429, {"Server": "Google Frontend"}))
+    result = _run(bash, base, MARKER="server")
+    assert result.returncode == ABORT, result.stdout + result.stderr
+    assert "PASS" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"X-Auth-Throttled": ""},          # present but empty
+        {"X-Auth-Throttled": "0"},         # present, wrong value
+        {"X-Auth-Throttled": "yes"},
+        {"X-Auth-Throttled": "1 1"},
+        {"X-Auth-Throttled-Extra": "1"},   # different field name
+        {"Not-X-Auth-Throttled": "1"},     # must anchor at line start
+    ],
+)
+def test_presence_alone_does_not_pass(bash, stub, headers) -> None:
+    """A header that merely shares the name isn't our limiter saying "budget
+    exhausted" — the value carries the meaning."""
+    base = stub([(401, {})] * 3, (429, headers))
+    result = _run(bash, base)
+    assert result.returncode == ABORT, result.stdout + result.stderr
+    assert "PASS" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"X-Auth-Throttled": "1"},
+        {"x-auth-throttled": "1"},         # field names are case-insensitive
+        {"X-AUTH-THROTTLED": "1"},
+        {"X-Auth-Throttled": " 1 "},       # optional surrounding whitespace
+    ],
+)
+def test_the_real_marker_passes_however_it_is_cased(bash, stub, headers) -> None:
+    base = stub([(401, {})] * 3, (429, headers))
+    result = _run(bash, base)
+    assert result.returncode == PASS, result.stdout + result.stderr
 
 
 def test_all_401s_is_a_real_failure(bash, stub) -> None:
