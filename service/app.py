@@ -38,6 +38,7 @@ from .hashing import (
 )
 from .history import MessageStore, PostgresMessageStore, StoredAttachment
 from .invites import InviteError
+from .ratelimit import RateLimited, check_auth_attempt
 from .models import (
     Attachment,
     AttachmentResponse,
@@ -264,6 +265,20 @@ def _set_session_cookie(response: Response, token: str) -> None:
     )
 
 
+def _throttle_auth(request: Request, account: str) -> None:
+    """Apply the auth attempt budget, or 429. Must run BEFORE any argon2 work —
+    the whole point is to cap how much hashing an anonymous caller can trigger."""
+    try:
+        check_auth_attempt(request, account)
+    except RateLimited as exc:
+        log.warning("auth attempt throttled (retry_after=%ss)", exc.retry_after)
+        raise HTTPException(
+            status_code=429,
+            detail="Too many attempts — please wait and try again.",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+
+
 def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(
         key=config.SESSION_COOKIE_NAME,
@@ -371,6 +386,7 @@ def _fetch_attachment_context(
 
 def _authorize_conversation(
     store: MessageStore | None, conversation_id: str | None, user_id: int,
+    *, creating: bool,
 ) -> None:
     """Authorize this user for `conversation_id`, or raise (x5bz.2 D).
 
@@ -379,20 +395,34 @@ def _authorize_conversation(
     role that can't see `chat.conversations`) must never be followed by a
     successful cross-user read.
 
-    Always uses the store's **atomic** claim, which returns the winning owner —
-    one call that is both the check and the claim. That closes the TOCTOU window
-    where two users racing a fresh id could both pass a separate pre-check, and
-    it also closes the ownership table's cold-start hole: conversations that
-    predate this table have no owner row, and "no owner ⇒ allow" would leave
-    every one of them readable by any authenticated caller, forever. The first
-    authenticated user to touch such a conversation takes ownership of it (ids
-    are unguessable `crypto.randomUUID()` values held only by their owner), and
-    everyone else is rejected from then on.
+    `creating=True` (writes) uses the store's **atomic** claim, which returns the
+    winning owner — one call that is both the check and the claim. That closes
+    the TOCTOU window where two users racing a fresh id could both pass a
+    separate pre-check.
+
+    `creating=False` (reads) claims only a conversation that **already has
+    content**. That still closes the ownership table's cold-start hole —
+    conversations predating the table have no owner row, and "no owner ⇒ allow"
+    would leave all of that history readable by any authenticated caller — while
+    refusing to mint a row for an id with nothing in it. Otherwise a plain GET
+    loop over random ids could fill `chat.conversations` at will; an empty id has
+    nothing to protect and nothing to leak, so it is simply served as empty.
+
+    Either way, the first authenticated user to touch a conversation with content
+    takes ownership (ids are unguessable `crypto.randomUUID()` values held only
+    by their owner), and everyone else is rejected from then on.
     """
     if store is None or conversation_id is None:
         return
     try:
-        owner = store.claim_conversation(conversation_id, user_id)
+        if creating:
+            owner = store.claim_conversation(conversation_id, user_id)
+        else:
+            owner = store.owner_of(conversation_id)
+            if owner is None:
+                if not store.has_content(conversation_id):
+                    return  # nothing to protect — do not create an ownership row
+                owner = store.claim_conversation(conversation_id, user_id)
     except Exception as exc:
         log.warning(
             "conversation authorization failed (conversation_id=%s)",
@@ -424,7 +454,7 @@ def chat(
         raise HTTPException(status_code=403, detail="the GM channel requires the DM role")
     # Ownership: one atomic claim-or-reject (403 if it's someone else's).
     # Before the try for the same reason (403, not 500).
-    _authorize_conversation(store, req.conversation_id, session.user_id)
+    _authorize_conversation(store, req.conversation_id, session.user_id, creating=True)
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, req.conversation_id,
@@ -501,7 +531,7 @@ def conversation_messages(
 ) -> MessagesResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="message history unavailable")
-    _authorize_conversation(store, conversation_id, session.user_id)
+    _authorize_conversation(store, conversation_id, session.user_id, creating=False)
     # config.HISTORY_LIMIT read at request time (not import) so env/test
     # overrides of the knob take effect; client may ask for fewer, never more.
     cap = config.HISTORY_LIMIT
@@ -534,7 +564,7 @@ def upload_attachment(
 ) -> AttachmentResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
-    _authorize_conversation(store, conversation_id, session.user_id)
+    _authorize_conversation(store, conversation_id, session.user_id, creating=True)
     try:
         data = base64.b64decode(req.data, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -564,7 +594,7 @@ def conversation_attachments(
 ) -> AttachmentsResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
-    _authorize_conversation(store, conversation_id, session.user_id)
+    _authorize_conversation(store, conversation_id, session.user_id, creating=False)
     try:
         stored = store.attachments_for(conversation_id)
     except _DB_ERRORS as exc:
@@ -579,12 +609,14 @@ def conversation_attachments(
 @app.post("/auth/signup", response_model=AuthUser)
 def signup(
     req: SignupRequest,
+    request: Request,
     response: Response,
     store: AuthStore = Depends(get_auth_store),
 ) -> AuthUser:
     """Create an account by redeeming a one-time invite, then start a session.
     The invite carries the role; the token is consumed atomically."""
     secret = _session_secret()
+    _throttle_auth(request, req.email)
     # Cheap pre-check BEFORE the (deliberately expensive) argon2 hash, so an
     # unauthenticated caller without a usable invite can't burn CPU/memory at
     # will. The atomic re-check inside redeem_invite is still what actually
@@ -621,10 +653,14 @@ def signup(
 @app.post("/auth/login", response_model=AuthUser)
 def login(
     req: LoginRequest,
+    request: Request,
     response: Response,
     store: AuthStore = Depends(get_auth_store),
 ) -> AuthUser:
     secret = _session_secret()
+    # Before the lookup AND before hashing: this is the brute-force ceiling and
+    # what keeps waiting-for-a-hash-slot requests from starving the instance.
+    _throttle_auth(request, req.email)
     user = store.get_user_by_email(req.email)
     stored_hash = store.password_hash_for(req.email)
     # Always run one argon2 verification, even for an unknown email — otherwise

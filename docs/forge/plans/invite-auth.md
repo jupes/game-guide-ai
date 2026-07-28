@@ -83,11 +83,15 @@ Steps: `POST /auth/signup` (validate invite → create user → consume → set 
 Demo: curl signup with a CLI-minted token → 200 + Set-Cookie; then `/chat` with the cookie → 200, without → 401.
 
 ### Checkpoint D — Role enforcement + conversation ownership
-Steps: GM-channel 403 for player sessions from the session role; `ALTER TABLE ... ADD COLUMN IF NOT
-EXISTS user_id` on **both** `chat.messages` and `chat.attachments` (the existing pilot volume
-already has these tables, so CREATE-IF-NOT-EXISTS won't add the column — an explicit ALTER in
-`ensure_schema()` is required); scope message reads/writes **and the attachment GET/POST endpoints**
-to the owner so no authenticated user can reach another user's conversation by id. Tests #6, #7.
+Steps: GM-channel 403 for player sessions from the session role; conversation ownership scoping
+message reads/writes **and the attachment GET/POST endpoints** so no authenticated user can reach
+another user's conversation by id. Tests #6, #7.
+
+> **As built:** ownership landed as a separate `chat.conversations(conversation_id, user_id)`
+> table rather than a `user_id` column on `chat.messages` / `chat.attachments`. It is additive —
+> the existing message/attachment writes and their tests were untouched — and one lookup answers
+> the authorization question. Ownership is taken via an **atomic** claim (writes always; reads only
+> when the conversation already has content, so a GET over random ids can't mint rows).
 Demo: player cookie + `mode=gm` → 403; dm cookie → 200; user A can't read user B's conversation or attachments.
 
 ### Checkpoint E — Frontend auth
@@ -112,7 +116,7 @@ Demo: `bash scripts/deploy.sh --dry-run` shows `SESSION_SECRET=session-secret:la
 | `service/auth_store.py`, `hashing.py`, `session.py`, `invites.py` | Create | auth core as **flat `service/*` modules** (NOT a `service/auth/` subpackage — `pyproject.toml:70` is an explicit package list `["service","ingestion"]`, "do NOT auto-discover"; a subpackage would be omitted by `pip install .` and the image would crash while source-path unit tests stay green) |
 | `service/admin_invites.py` | Create | admin CLI (create/list/revoke) |
 | `service/app.py` | Modify | auth routes + `require_session` on guarded routes + GM 403 |
-| `service/history.py` | Modify | conversation ownership — `ALTER TABLE ... ADD COLUMN IF NOT EXISTS user_id` on **both** `chat.messages` and `chat.attachments` (CREATE-IF-NOT-EXISTS won't alter the existing pilot volume); scope message **and attachment** reads/writes to the owner |
+| `service/history.py` | Modify | conversation ownership — **as built**: a `chat.conversations(conversation_id, user_id)` table plus `owner_of` / `claim_conversation` / `has_content`, not a `user_id` column on `chat.messages`/`chat.attachments` (additive, so existing writes and their tests were untouched); scope message **and attachment** reads/writes to the owner |
 | `service/models.py` | Modify | Signup/Login/Me request+response models |
 | `config.py` | Modify | `SESSION_SECRET`, `SESSION_TTL_DAYS`, cookie flags (`HttpOnly`, `SameSite=Lax`, `Secure` forced-on in prod via config — NOT derived from request scheme, since Cloud Run terminates TLS and forwards HTTP) |
 | `pyproject.toml` | Modify | add `argon2-cffi` + a signing lib (`itsdangerous`) to **core** deps (imported at request time, like `pymupdf`); packages list unchanged (flat modules) |

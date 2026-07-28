@@ -117,6 +117,9 @@ class _AuthzFailingStore(InMemoryMessageStore):
     def claim_conversation(self, conversation_id, user_id):
         raise RuntimeError("ownership claim unavailable")
 
+    def has_content(self, conversation_id):
+        raise RuntimeError("content probe unavailable")
+
 
 def test_ownership_lookup_failure_denies_instead_of_falling_open(env):
     """An authorization lookup that errors must NOT continue into the read.
@@ -145,6 +148,31 @@ class _RacingStore(InMemoryMessageStore):
 
     def claim_conversation(self, conversation_id, user_id):
         return user_id + 999  # ...but the atomic claim says someone else won
+
+    def has_content(self, conversation_id):
+        return True
+
+
+def test_reading_an_empty_conversation_creates_no_ownership_row(env):
+    """A GET for an arbitrary id must not mint a row: otherwise any authenticated
+    caller could fill chat.conversations just by looping over random ids. An
+    empty conversation has nothing to protect and nothing to leak."""
+    auth = env
+    messages = InMemoryMessageStore()
+    app.dependency_overrides[get_message_store] = lambda: messages
+    alice = _signup(auth, "alice@example.com")
+
+    for i in range(25):
+        assert alice.get(f"/conversations/junk-{i}/messages").status_code == 200
+        assert alice.get(f"/conversations/junk-{i}/attachments").status_code == 200
+
+    assert messages._owners == {}, "reads of empty conversations must not claim"  # noqa: SLF001
+
+    # ...and a WRITE still claims, because content is about to exist.
+    assert alice.post(
+        "/chat", json={"prompt": "hi", "conversation_id": "real-conv"},
+    ).status_code == 200
+    assert "real-conv" in messages._owners  # noqa: SLF001
 
 
 def test_losing_the_claim_race_is_rejected(env):

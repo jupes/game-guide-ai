@@ -174,4 +174,20 @@ MAX_CONCURRENT_HASHES: int = _int("MAX_CONCURRENT_HASHES", 2)
 
 # How long a request waits for a hashing slot before being shed as a 503.
 # Bounded so overload fails fast instead of queueing until the request times out.
-HASH_ACQUIRE_TIMEOUT_S: float = _float("HASH_ACQUIRE_TIMEOUT_S", 5.0)
+# Kept short: a waiting request still occupies one of the instance's
+# --concurrency slots, so a long wait converts a hashing queue into request
+# starvation. Rate limiting (below) is the primary defence; this is the backstop.
+HASH_ACQUIRE_TIMEOUT_S: float = _float("HASH_ACQUIRE_TIMEOUT_S", 2.0)
+
+# --- Auth rate limiting (x5bz.2) -------------------------------------------
+# Attempt budgets for the unauthenticated auth endpoints, enforced BEFORE any
+# argon2 work. Without them /auth/login accepts unlimited guesses and unlimited
+# concurrent callers holding request slots. Per-instance and in-memory — with
+# --max-instances N the effective ceiling is N x these numbers (see ratelimit.py).
+AUTH_RATE_LIMIT_WINDOW_S: float = _float("AUTH_RATE_LIMIT_WINDOW_S", 300.0)  # 5 min
+# Per account: the brute-force ceiling. 10 tries / 5 min is generous for a human
+# who forgot their password and hopeless for a guessing attack.
+AUTH_RATE_LIMIT_PER_ACCOUNT: int = _int("AUTH_RATE_LIMIT_PER_ACCOUNT", 10)
+# Per source IP: looser, since a household/office shares an egress IP, but still
+# far below what it takes to starve the instance's request slots.
+AUTH_RATE_LIMIT_PER_SOURCE: int = _int("AUTH_RATE_LIMIT_PER_SOURCE", 30)

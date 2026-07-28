@@ -151,8 +151,12 @@ uv run --with . uvicorn service.app:app --port 8000 --reload
 **Single-process serving (UI + API):** `cd ui && bun run build`, then start uvicorn as
 above and open <http://localhost:8000> — `app.py` mounts `ui/dist/` when it exists.
 In the proxied modes (:5173 dev or compose), every service API prefix — `/chat`,
-`/healthz`, `/conversations` — must be listed in **both** `ui/vite.config.ts` and
-`ui/nginx.conf` when you add an endpoint (see the proxy invariant in `ui/README.md`).
+`/healthz`, `/conversations`, `/metrics`, `/auth` — must be listed in **both**
+`ui/vite.config.ts` and `ui/nginx.conf` when you add an endpoint, or the SPA
+fallback swallows it (a GET returns `index.html`, a POST returns 405).
+`tests/test_proxy_contract.py` derives the list from the real route table and
+fails CI if either front end is missing one; see also the proxy invariant in
+`ui/README.md`.
 
 ## Config
 

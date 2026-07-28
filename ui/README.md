@@ -99,7 +99,7 @@ next to their components (`src/ds/*.stories.tsx`).
 
 ```bash
 bun install        # once
-bun run dev        # Vite dev server on :5173 (proxies /chat, /healthz, /conversations → :8000)
+bun run dev        # Vite dev server on :5173 (proxies /chat, /healthz, /conversations, /metrics, /auth → :8000)
 bun run typecheck  # tsc --noEmit
 bun run lint       # ESLint
 bun run test       # Vitest — see below

@@ -104,6 +104,9 @@ class MessageStore(Protocol):
     def owner_of(self, conversation_id: str) -> int | None:
         ...  # pragma: no cover - structural type
 
+    def has_content(self, conversation_id: str) -> bool:
+        ...  # pragma: no cover - structural type
+
 
 @dataclass
 class _Row:
@@ -157,6 +160,11 @@ class InMemoryMessageStore:
 
     def owner_of(self, conversation_id: str) -> int | None:
         return self._owners.get(conversation_id)
+
+    def has_content(self, conversation_id: str) -> bool:
+        return any(r.conversation_id == conversation_id for r in self._rows) or any(
+            a.conversation_id == conversation_id for a in self._attachments
+        )
 
 
 def _to_message(r: _Row) -> StoredMessage:
@@ -265,3 +273,21 @@ class PostgresMessageStore:
                 (conversation_id,),
             ).fetchone()
         return row[0] if row is not None else None
+
+    def has_content(self, conversation_id: str) -> bool:
+        """Does this conversation hold any message or attachment?
+
+        Lets a READ decide whether a conversation is worth claiming. An empty id
+        has nothing to protect and nothing to leak, so it must NOT get an
+        ownership row — otherwise any authenticated caller could fill
+        chat.conversations with arbitrary ids just by issuing GETs."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT EXISTS ("
+                "  SELECT 1 FROM chat.messages WHERE conversation_id = %s"
+                "  UNION ALL"
+                "  SELECT 1 FROM chat.attachments WHERE conversation_id = %s"
+                ")",
+                (conversation_id, conversation_id),
+            ).fetchone()
+        return bool(row[0])

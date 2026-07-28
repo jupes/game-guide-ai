@@ -74,6 +74,9 @@ class _ExplodingStore:
     def claim_conversation(self, conversation_id, user_id):
         return self._owners.setdefault(conversation_id, user_id)
 
+    def has_content(self, conversation_id):
+        return False
+
 
 def test_history_limit_caps_get_keeping_most_recent(monkeypatch):
     """GET returns at most HISTORY_LIMIT messages — the most recent, oldest-first."""

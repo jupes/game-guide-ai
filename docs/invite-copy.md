@@ -99,12 +99,33 @@ in the UI; the server enforces the GM channel from their session.
    Delete it, then rotate `session-secret` (see `deploy-gcp.md`) to invalidate
    their session immediately:
 
-   ```bash
-   # Through the Cloud SQL proxy. auth.invites.used_by is ON DELETE SET NULL, so
-   # the invite row survives as the audit trail that its token was spent — it
-   # just forgets who spent it. Their conversations are removed alongside.
-   psql "$PROXY" -c "DELETE FROM auth.users WHERE lower(email) = lower('them@example.com');"
+   **Their chat data must be deleted explicitly.** `chat.messages` and
+   `chat.attachments` are keyed by `conversation_id` with no foreign key to the
+   user, so deleting the account alone leaves their conversations behind under
+   an orphaned owner id. Do it in one transaction, ordered so nothing is
+   stranded (`auth.invites.used_by` is `ON DELETE SET NULL`, so the invite row
+   survives as the audit trail that its token was spent — it just forgets who):
 
+   ```bash
+   psql "$PROXY" <<'SQL'
+   BEGIN;
+   CREATE TEMP TABLE doomed ON COMMIT DROP AS
+     SELECT c.conversation_id
+       FROM chat.conversations c
+       JOIN auth.users u ON u.id = c.user_id
+      WHERE lower(u.email) = lower('them@example.com');
+
+   DELETE FROM chat.attachments   WHERE conversation_id IN (SELECT conversation_id FROM doomed);
+   DELETE FROM chat.messages      WHERE conversation_id IN (SELECT conversation_id FROM doomed);
+   DELETE FROM chat.conversations WHERE conversation_id IN (SELECT conversation_id FROM doomed);
+   DELETE FROM auth.users         WHERE lower(email) = lower('them@example.com');
+   COMMIT;
+   SQL
+   ```
+
+   Then rotate the signing secret and redeploy so their session dies at once:
+
+   ```bash
    openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add session-secret --data-file=-
    bash scripts/deploy.sh game-guide-ai "$(git rev-parse --short HEAD)"
    ```
