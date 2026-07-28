@@ -267,6 +267,12 @@ def _set_session_cookie(response: Response, token: str) -> None:
     )
 
 
+#: Set on every 429 the auth limiter raises, and on no other response. It exists
+#: so an external check can tell an application throttle from a Cloud Run
+#: platform 429 (no instance available), which is indistinguishable by status.
+AUTH_THROTTLE_HEADER = "X-Auth-Throttled"
+
+
 def _throttle_auth(request: Request, account: str) -> None:
     """Apply the auth attempt budget, or 429. Must run BEFORE any argon2 work —
     the whole point is to cap how much hashing an anonymous caller can trigger."""
@@ -292,7 +298,17 @@ def _throttle_auth(request: Request, account: str) -> None:
         raise HTTPException(
             status_code=429,
             detail="Too many attempts — please wait and try again.",
-            headers={"Retry-After": str(exc.retry_after)},
+            # AUTH_THROTTLE_HEADER marks this 429 as OURS. Cloud Run returns 429
+            # of its own when no instance is available, and a status code alone
+            # cannot tell the two apart — so a verifier that accepted any 429 as
+            # "the limiter fired" could certify a broken proxy configuration on
+            # the strength of a transient platform response. Only this header
+            # means the application's budget was actually enforced.
+            # scripts/verify-auth-throttle.sh requires it before reporting PASS.
+            headers={
+                "Retry-After": str(exc.retry_after),
+                AUTH_THROTTLE_HEADER: "1",
+            },
         ) from exc
 
 

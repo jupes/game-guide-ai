@@ -17,14 +17,14 @@ Run from repo root:
 
 from __future__ import annotations
 
-import functools
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from _bash import bash_or_skip
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCKERFILE_CLOUD = REPO_ROOT / "Dockerfile.cloud"
@@ -36,49 +36,9 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-@functools.lru_cache(maxsize=1)
-def _working_bash() -> str | None:
-    """A bash that can actually RUN, or None.
-
-    `shutil.which("bash")` only proves something is on PATH. On Windows it finds
-    `C:\\Windows\\System32\\bash.exe` — the WSL launcher, present on every modern
-    install — which exits non-zero when no distribution is registered. These
-    tests then *fail* instead of skipping, on a machine that has a perfectly good
-    Git Bash sitting one PATH entry away. So: prefer Git Bash on Windows, and
-    prove whatever we picked starts before handing it a script.
-    """
-    candidates: list[str] = []
-    if os.name == "nt":
-        git = shutil.which("git")
-        if git:  # <git>/cmd/git.exe -> <git>/bin/bash.exe
-            candidates.append(str(Path(git).resolve().parent.parent / "bin" / "bash.exe"))
-        candidates += [
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files (x86)\Git\bin\bash.exe",
-        ]
-    on_path = shutil.which("bash")
-    if on_path:
-        candidates.append(on_path)
-
-    for candidate in candidates:
-        if not Path(candidate).exists():
-            continue
-        try:
-            probe = subprocess.run(
-                [candidate, "--version"], capture_output=True, timeout=15
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if probe.returncode == 0:
-            return candidate
-    return None
-
-
-def _bash_or_skip() -> str:
-    bash = _working_bash()
-    if bash is None:
-        pytest.skip("no working bash to exercise deploy.sh (CI always has one)")
-    return bash
+# Bash discovery is shared with test_throttle_verifier.py — see tests/_bash.py
+# for why `shutil.which("bash")` is not enough on Windows.
+_bash_or_skip = bash_or_skip
 
 
 # ── Checkpoint A: Dockerfile.cloud ────────────────────────────────────────────

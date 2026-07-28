@@ -116,7 +116,7 @@ Attachment **metadata** only (extracted text never leaves the server); health + 
 | `401` | No / invalid / expired session, or the account no longer exists |
 | `403` | Wrong role for the channel (GM is DM-only), or another user's conversation |
 | `422` | Validation (empty prompt, unknown mode, bad upload body, bad credentials shape) |
-| `429` | Auth attempt budget exhausted for this account or source — carries `Retry-After` |
+| `429` | Auth attempt budget exhausted for this account or source — carries `Retry-After` and `X-Auth-Throttled: 1`. That header marks the response as *ours*: Cloud Run also returns 429 when no instance is available, and nothing else distinguishes them |
 | `502` | LLM upstream failed (timeout/rate limit) — retryable |
 | `503` | Retrieval backend, embedding (missing `OPENAI_API_KEY`), store or auth unavailable, `SESSION_SECRET` unusable, or hashing capacity exhausted |
 | `500` | Bug in our code (full traceback logged) |
@@ -136,7 +136,7 @@ Access is invite-gated; `/chat` and `/conversations/*` require a session.
 | `session.py` | itsdangerous-signed httpOnly cookie carrying user id + role. Stateless: no session table; rotating `SESSION_SECRET` logs everyone out. |
 | `invites.py` | Token generation (`secrets.token_urlsafe(32)`) + redeemability rules (used / expired / revoked). |
 | `admin_invites.py` | Operator CLI: `create` / `list` / `revoke`. `create` prints a `/#invite=<token>` link — the token rides in the **fragment**, which browsers never send, so it stays out of request logs. |
-| `ratelimit.py` | Attempt budgets for `/auth/signup` + `/auth/login`, checked **before** any argon2 work — per account (10 / 5 min) and per source IP (30 / 5 min), both must pass. 429 + `Retry-After`; decays, never locks out. |
+| `ratelimit.py` | Attempt budgets for `/auth/signup` + `/auth/login`, checked **before** any argon2 work — per account (10 / 5 min) and per source IP (30 / 5 min), both must pass. 429 + `Retry-After` + `X-Auth-Throttled`; decays, never locks out. |
 
 `require_session` re-reads the account on **every** request rather than trusting the
 cookie's contents, so a deleted account or a demoted DM loses access immediately instead

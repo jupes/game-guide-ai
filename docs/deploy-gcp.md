@@ -95,11 +95,22 @@ gcloud sql users set-password postgres --instance=game-guide-ai --password="$DBP
 # self-heals once it boots — but only then. Anything you do BEFORE first boot
 # against a half-bootstrapped database fails: minting the first invite with
 # `python -m service.admin_invites` needs auth.users/auth.invites to exist.
+# -v ON_ERROR_STOP=1 and the `break` are both load-bearing: psql keeps going
+# after a SQL error by default, and the loop would keep going after a failed
+# FILE — so 05 could run against a database where 04 never created the table it
+# adds the ownership key to, and the whole thing would still look like it
+# finished. Fail at the first error instead, and say where.
 PROXY="postgresql://postgres:<PW>@localhost:6543/game_guide_ai"
+BOOTSTRAP_OK=1
 for f in 01-extensions.sql 02-schema.sql 03-hybrid-search.sql \
          04-chat-schema.sql 05-auth-schema.sql; do
-  psql "$PROXY" -f "vector-db/init/$f"
+  echo "==> $f"
+  psql "$PROXY" -v ON_ERROR_STOP=1 -f "vector-db/init/$f" \
+    || { BOOTSTRAP_OK=0; echo "BOOTSTRAP FAILED at $f" >&2; break; }
 done
+[ "$BOOTSTRAP_OK" = 1 ] \
+  && echo "schema bootstrap complete" \
+  || echo "schema bootstrap INCOMPLETE — fix the error above, then re-run the loop" >&2
 ```
 
 The `INSTANCE_CONNECTION_NAME` is `"$PROJECT:$REGION:game-guide-ai"` — used by
@@ -372,12 +383,24 @@ bash scripts/verify-auth-throttle.sh "$SVC_URL"
 ```
 
 It sends attempts that differ **only** in a spoofed `X-Forwarded-For` (rotating
-the email too, so the account limiter can't be what trips) and expects a
-**429**. A 429 means the spoofed values shared one budget — the key is not
-caller-controlled. All-401s means each spoof bought its own budget, i.e. the hop
-count reaches past the trusted entries into caller-written text, or ingress can
-be bypassed. It spends your own source budget for `AUTH_RATE_LIMIT_WINDOW_S`
-(5 min) and then decays; nothing to clear.
+the email too, so the account limiter can't be what trips) and reports through
+its exit status:
+
+| Exit | Verdict | Meaning |
+|---|---|---|
+| `0` | **PASS** | A 429 carrying the app's `X-Auth-Throttled` marker. The spoofed values shared one budget, so the key is not caller-controlled |
+| `1` | **FAIL** | The whole budget spent, all 401s. Each spoof bought its own budget — the hop count reaches past the trusted entries into caller-written text, or ingress can be bypassed |
+| `2` | REFUSE | The attempt count can't exhaust the derived budget, so a FAIL would be meaningless. Nothing is sent |
+| `3` | ABORT | Something unexplained (403, 422, 5xx, or a 429 **without** the marker). Inconclusive — never a pass |
+
+The marker is why a bare 429 isn't enough: **Cloud Run returns 429 itself when
+no instance is available**, which is indistinguishable by status code, so
+accepting any 429 would certify the proxy configuration on the strength of a
+transient platform response. Only the header the app sets counts, and an
+unmarked 429 aborts. (`tests/test_throttle_verifier.py` pins all of these.)
+
+The run spends your own source budget for `AUTH_RATE_LIMIT_WINDOW_S` (5 min) and
+then decays; nothing to clear.
 
 That test can't tell hops `0` from hops `1` — both resist spoofing, but `0`
 collapses every tester into one shared bucket. For that half, compare the key the

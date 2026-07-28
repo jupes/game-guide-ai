@@ -202,6 +202,26 @@ def test_repeated_failed_logins_are_throttled_with_retry_after(store) -> None:
     assert int(throttled.headers["retry-after"]) > 0
 
 
+def test_a_throttled_response_is_marked_as_ours(store) -> None:
+    """Cloud Run returns 429 itself when no instance is available, so a status
+    code alone cannot prove OUR limiter fired — and the deployed verifier would
+    otherwise certify a broken proxy config on a platform hiccup. Every throttle
+    response carries the marker; nothing else does."""
+    from service.app import AUTH_THROTTLE_HEADER
+
+    client = TestClient(app)
+    ordinary = _login(client)
+    assert ordinary.status_code == 401
+    assert AUTH_THROTTLE_HEADER.lower() not in {k.lower() for k in ordinary.headers}
+
+    for _ in range(config.AUTH_RATE_LIMIT_PER_ACCOUNT):
+        _login(client)
+    throttled = _login(client)
+    assert throttled.status_code == 429
+    assert throttled.headers[AUTH_THROTTLE_HEADER] == "1"
+    assert int(throttled.headers["retry-after"]) > 0
+
+
 def test_throttling_is_per_account_not_global(store) -> None:
     """One account being ground down must not lock everyone else out."""
     client = TestClient(app)
