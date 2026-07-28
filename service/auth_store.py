@@ -81,16 +81,29 @@ CREATE INDEX IF NOT EXISTS invites_created_idx ON auth.invites (created_at);
 --    runs after the message store's (see the lifespan in app.py), but a
 --    deployment that doesn't use the chat schema must still start — and NOT
 --    VALID so ownership rows for already-deleted users can't block startup.
+--
+-- Both predicates pin the whole shape, not just the name: conkey/confkey pin the
+-- exact COLUMNS, so a same-named FK with the right tables and delete action but
+-- the WRONG column cannot pass for the real one and leave the intended column
+-- unprotected while startup reports success.
 DO $$
 DECLARE
-  users regclass := to_regclass('auth.users');
-  conv  regclass := to_regclass('chat.conversations');
+  users    regclass := to_regclass('auth.users');
+  invites  regclass := to_regclass('auth.invites');
+  conv     regclass := to_regclass('chat.conversations');
+  users_pk smallint[];
 BEGIN
+  users_pk := ARRAY[(SELECT attnum FROM pg_attribute
+                      WHERE attrelid = users AND attname = 'id')];
+
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conname = 'invites_used_by_fkey'
-       AND conrelid = to_regclass('auth.invites')
-       AND contype = 'f' AND confrelid = users AND confdeltype = 'n'
+       AND conrelid = invites AND contype = 'f'
+       AND confrelid = users AND confdeltype = 'n'
+       AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
+                            WHERE attrelid = invites AND attname = 'used_by')]
+       AND confkey = users_pk
   ) THEN
     ALTER TABLE auth.invites DROP CONSTRAINT IF EXISTS invites_used_by_fkey;
     ALTER TABLE auth.invites ADD CONSTRAINT invites_used_by_fkey
@@ -100,8 +113,11 @@ BEGIN
   IF conv IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conname = 'conversations_user_fkey'
-       AND conrelid = conv
-       AND contype = 'f' AND confrelid = users AND confdeltype = 'c'
+       AND conrelid = conv AND contype = 'f'
+       AND confrelid = users AND confdeltype = 'c'
+       AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
+                            WHERE attrelid = conv AND attname = 'user_id')]
+       AND confkey = users_pk
   ) THEN
     ALTER TABLE chat.conversations DROP CONSTRAINT IF EXISTS conversations_user_fkey;
     ALTER TABLE chat.conversations ADD CONSTRAINT conversations_user_fkey

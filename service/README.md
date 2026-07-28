@@ -169,7 +169,10 @@ their messages.) The incident runbook in `docs/invite-copy.md` still revokes acc
 first and drains before deleting — the constraints are the backstop, not the plan.
 
 The constraint migrations check `pg_constraint` and only run when a constraint is
-**missing or has the wrong delete action**. `ensure_schema()` runs at every startup and
+**missing or wrong** — the predicate pins the child and referenced tables, the delete
+action (`confdeltype`) *and* the exact columns (`conkey`/`confkey`), so a same-named
+foreign key on a different column can't pass for the real one and leave the intended
+column unprotected. `ensure_schema()` runs at every startup and
 Cloud Run scales to zero, so an unconditional `DROP`/`ADD` would take an `ACCESS
 EXCLUSIVE` lock on a live table at each cold start — blocking queries until the startup
 transaction commits and serializing simultaneous starts — and would re-scan the table to

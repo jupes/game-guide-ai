@@ -12,10 +12,13 @@ billing kill-switch, and CI deploy via **Workload Identity Federation**.
 > **Public ingress opens only after invite auth (`x5bz.2`) ships**, as a separate
 > deliberate command — see [Open ingress](#9-open-ingress-deferred--x5bz16).
 >
-> Deploys default to `ACCESS=preserve`: they leave the service's IAM mode exactly
-> as they found it, creating a *new* service locked. That default matters in both
-> directions — a deploy must not open access, and once §9 has opened it, a routine
-> deploy must not silently take it away either. `ACCESS=locked` re-closes on purpose.
+> Deploys default to `ACCESS=preserve`, which sends **no IAM flag at all** — not
+> "figure out the current mode and re-send it", which would re-lock a live public
+> service the moment a `describe` call hit a network blip or an expired
+> credential. A new service is private anyway unless `allUsers` is granted. That
+> default matters in both directions: a deploy must not open access, and once §9
+> has opened it, a routine deploy must not silently take it away either.
+> `ACCESS=locked` re-closes on purpose.
 
 The code side (Checkpoints A, B, and the kill-switch + CI wiring) is done and
 tested. This runbook is the one-time infra bootstrap (Checkpoint C), the first
@@ -83,10 +86,18 @@ gcloud sql users set-password postgres --instance=game-guide-ai --password="$DBP
 
 # Enable pgvector + create the schema. Via the Auth Proxy in one terminal:
 #   cloud-sql-proxy "$PROJECT:$REGION:game-guide-ai" --port 6543
-# then, in another, apply every init script in order (01 creates the vector
-# extension + dnd schema; 02-04 add tables, indexes, hybrid search, chat schema):
+# then, in another, apply every init script IN ORDER (01 creates the vector
+# extension + dnd schema; 02-03 add tables, indexes and hybrid search; 04 the
+# chat schema; 05 the auth schema — users, invites, and the ownership foreign
+# key, which 05 adds onto 04's table, hence the order).
+#
+# The service also runs this DDL at startup (ensure_schema()), so a missed file
+# self-heals once it boots — but only then. Anything you do BEFORE first boot
+# against a half-bootstrapped database fails: minting the first invite with
+# `python -m service.admin_invites` needs auth.users/auth.invites to exist.
 PROXY="postgresql://postgres:<PW>@localhost:6543/game_guide_ai"
-for f in 01-extensions.sql 02-schema.sql 03-hybrid-search.sql 04-chat-schema.sql; do
+for f in 01-extensions.sql 02-schema.sql 03-hybrid-search.sql \
+         04-chat-schema.sql 05-auth-schema.sql; do
   psql "$PROXY" -f "vector-db/init/$f"
 done
 ```
@@ -323,8 +334,11 @@ gcloud run services update game-guide-ai --region="$REGION" --allow-unauthentica
 incident-response redeploy in `docs/invite-copy.md` — leaves this binding
 untouched. It used to hardcode `--no-allow-unauthenticated`, which would have
 quietly re-locked the service on the next CI push and handed every tester an
-edge 403 with no login page behind it. To re-close deliberately:
-`ACCESS=locked bash scripts/deploy.sh …`.
+edge 403 with no login page behind it. `preserve` deliberately does **not** read
+the current mode back first: every way that read can fail (transient API error,
+expired credential, missing permission) looks identical to "no such service",
+and acting on that would re-lock a live public service. To re-close
+deliberately: `ACCESS=locked bash scripts/deploy.sh …`.
 
 ### Before you run it: the ingress + proxy-hop pair
 

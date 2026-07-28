@@ -17,6 +17,7 @@ Run from repo root:
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -33,6 +34,51 @@ DEPLOY_SH = REPO_ROOT / "scripts" / "deploy.sh"
 def _read(path: Path) -> str:
     assert path.exists(), f"{path.relative_to(REPO_ROOT)} does not exist"
     return path.read_text(encoding="utf-8")
+
+
+@functools.lru_cache(maxsize=1)
+def _working_bash() -> str | None:
+    """A bash that can actually RUN, or None.
+
+    `shutil.which("bash")` only proves something is on PATH. On Windows it finds
+    `C:\\Windows\\System32\\bash.exe` — the WSL launcher, present on every modern
+    install — which exits non-zero when no distribution is registered. These
+    tests then *fail* instead of skipping, on a machine that has a perfectly good
+    Git Bash sitting one PATH entry away. So: prefer Git Bash on Windows, and
+    prove whatever we picked starts before handing it a script.
+    """
+    candidates: list[str] = []
+    if os.name == "nt":
+        git = shutil.which("git")
+        if git:  # <git>/cmd/git.exe -> <git>/bin/bash.exe
+            candidates.append(str(Path(git).resolve().parent.parent / "bin" / "bash.exe"))
+        candidates += [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+        ]
+    on_path = shutil.which("bash")
+    if on_path:
+        candidates.append(on_path)
+
+    for candidate in candidates:
+        if not Path(candidate).exists():
+            continue
+        try:
+            probe = subprocess.run(
+                [candidate, "--version"], capture_output=True, timeout=15
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
+            return candidate
+    return None
+
+
+def _bash_or_skip() -> str:
+    bash = _working_bash()
+    if bash is None:
+        pytest.skip("no working bash to exercise deploy.sh (CI always has one)")
+    return bash
 
 
 # ── Checkpoint A: Dockerfile.cloud ────────────────────────────────────────────
@@ -116,9 +162,7 @@ def test_deploy_does_not_hardcode_the_iam_mode() -> None:
 )
 def test_dry_run_iam_flags_follow_the_access_mode(access, expect_lock_flag) -> None:
     """Default/preserve emits no IAM flag (policy untouched); locked emits one."""
-    bash = shutil.which("bash")
-    if bash is None:
-        pytest.skip("bash unavailable to exercise deploy.sh --dry-run (runs in CI)")
+    bash = _bash_or_skip()
 
     env = {**os.environ}
     env.pop("ACCESS", None)
@@ -139,9 +183,7 @@ def test_dry_run_iam_flags_follow_the_access_mode(access, expect_lock_flag) -> N
 
 def test_deploy_rejects_an_unknown_access_mode() -> None:
     """Notably `ACCESS=public`: opening ingress must not be reachable from here."""
-    bash = shutil.which("bash")
-    if bash is None:
-        pytest.skip("bash unavailable to exercise deploy.sh (runs in CI)")
+    bash = _bash_or_skip()
 
     result = subprocess.run(
         [bash, str(DEPLOY_SH), "--dry-run"],
@@ -206,9 +248,7 @@ def test_deploy_wires_the_session_secret() -> None:
 def test_deploy_dry_run_prints_commands_without_executing() -> None:
     """`deploy.sh --dry-run` prints the full gcloud plan and runs nothing — a safe,
     inspectable preview that needs neither gcloud nor docker (test #3)."""
-    bash = shutil.which("bash")
-    if bash is None:
-        pytest.skip("bash unavailable to exercise deploy.sh --dry-run (runs in CI)")
+    bash = _bash_or_skip()
 
     result = subprocess.run(
         [bash, str(DEPLOY_SH), "--dry-run"],

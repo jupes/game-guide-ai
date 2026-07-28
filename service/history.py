@@ -83,16 +83,32 @@ CREATE TABLE IF NOT EXISTS chat.conversations (
 -- startup and Cloud Run scales to zero, so an unconditional DROP/ADD would take
 -- an ACCESS EXCLUSIVE lock on the table at every cold start — blocking live
 -- queries until the startup transaction commits, and serializing concurrent
--- starts behind each other. `confdeltype = 'c'` is ON DELETE CASCADE, so a
--- constraint that exists with the wrong delete action is still repaired.
+-- starts behind each other.
+--
+-- The predicate pins the whole shape, not just the name: `confdeltype = 'c'` is
+-- ON DELETE CASCADE, and conkey/confkey pin the exact COLUMNS. Without the
+-- column check a same-named CASCADE foreign key from some other text column
+-- (chat.messages.content would type-check) to chat.conversations would satisfy
+-- the test, leaving conversation_id unprotected while startup reported success.
 DO $$
-DECLARE conv regclass := to_regclass('chat.conversations');
+DECLARE
+  conv regclass := to_regclass('chat.conversations');
+  msgs regclass := to_regclass('chat.messages');
+  atts regclass := to_regclass('chat.attachments');
+  conv_key smallint[];
 BEGIN
-  IF conv IS NOT NULL AND NOT EXISTS (
+  IF conv IS NULL THEN RETURN; END IF;
+  conv_key := ARRAY[(SELECT attnum FROM pg_attribute
+                      WHERE attrelid = conv AND attname = 'conversation_id')];
+
+  IF msgs IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conname = 'messages_conversation_fkey'
-       AND conrelid = to_regclass('chat.messages')
-       AND contype = 'f' AND confrelid = conv AND confdeltype = 'c'
+       AND conrelid = msgs AND contype = 'f'
+       AND confrelid = conv AND confdeltype = 'c'
+       AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
+                            WHERE attrelid = msgs AND attname = 'conversation_id')]
+       AND confkey = conv_key
   ) THEN
     ALTER TABLE chat.messages DROP CONSTRAINT IF EXISTS messages_conversation_fkey;
     ALTER TABLE chat.messages ADD CONSTRAINT messages_conversation_fkey
@@ -100,11 +116,14 @@ BEGIN
       ON DELETE CASCADE NOT VALID;
   END IF;
 
-  IF conv IS NOT NULL AND NOT EXISTS (
+  IF atts IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conname = 'attachments_conversation_fkey'
-       AND conrelid = to_regclass('chat.attachments')
-       AND contype = 'f' AND confrelid = conv AND confdeltype = 'c'
+       AND conrelid = atts AND contype = 'f'
+       AND confrelid = conv AND confdeltype = 'c'
+       AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
+                            WHERE attrelid = atts AND attname = 'conversation_id')]
+       AND confkey = conv_key
   ) THEN
     ALTER TABLE chat.attachments DROP CONSTRAINT IF EXISTS attachments_conversation_fkey;
     ALTER TABLE chat.attachments ADD CONSTRAINT attachments_conversation_fkey

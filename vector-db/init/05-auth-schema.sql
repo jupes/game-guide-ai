@@ -51,16 +51,27 @@ CREATE INDEX IF NOT EXISTS invites_created_idx ON auth.invites (created_at);
 --    account removes its content (the cascade chains on to chat.messages /
 --    chat.attachments, see 04-chat-schema.sql). Guarded because this file runs
 --    after 04 but the chat schema may be absent in a deployment that skips it.
+--
+-- Both predicates pin the exact COLUMNS too (conkey/confkey), so a same-named FK
+-- on the wrong column can't pass for the real one.
 DO $$
 DECLARE
-  users regclass := to_regclass('auth.users');
-  conv  regclass := to_regclass('chat.conversations');
+  users    regclass := to_regclass('auth.users');
+  invites  regclass := to_regclass('auth.invites');
+  conv     regclass := to_regclass('chat.conversations');
+  users_pk smallint[];
 BEGIN
+  users_pk := ARRAY[(SELECT attnum FROM pg_attribute
+                      WHERE attrelid = users AND attname = 'id')];
+
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conname = 'invites_used_by_fkey'
-       AND conrelid = to_regclass('auth.invites')
-       AND contype = 'f' AND confrelid = users AND confdeltype = 'n'
+       AND conrelid = invites AND contype = 'f'
+       AND confrelid = users AND confdeltype = 'n'
+       AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
+                            WHERE attrelid = invites AND attname = 'used_by')]
+       AND confkey = users_pk
   ) THEN
     ALTER TABLE auth.invites DROP CONSTRAINT IF EXISTS invites_used_by_fkey;
     ALTER TABLE auth.invites ADD CONSTRAINT invites_used_by_fkey
@@ -70,8 +81,11 @@ BEGIN
   IF conv IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conname = 'conversations_user_fkey'
-       AND conrelid = conv
-       AND contype = 'f' AND confrelid = users AND confdeltype = 'c'
+       AND conrelid = conv AND contype = 'f'
+       AND confrelid = users AND confdeltype = 'c'
+       AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
+                            WHERE attrelid = conv AND attname = 'user_id')]
+       AND confkey = users_pk
   ) THEN
     ALTER TABLE chat.conversations DROP CONSTRAINT IF EXISTS conversations_user_fkey;
     ALTER TABLE chat.conversations ADD CONSTRAINT conversations_user_fkey

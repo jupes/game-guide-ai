@@ -75,21 +75,27 @@ run() {
   fi
 }
 
-# Resolve ACCESS into the actual gcloud flags. `preserve` on an existing service
-# passes NOTHING, which is what leaves its IAM policy alone; on a service that
-# does not exist yet it falls back to locked, so a first deploy is never open.
+# Resolve ACCESS into the actual gcloud flags.
+#
+# `preserve` passes NOTHING, unconditionally. It does NOT probe whether the
+# service exists first: `gcloud run services describe` fails for a transient
+# network blip, an expired credential or a missing permission exactly as it does
+# for a service that isn't there, and treating all of those as "doesn't exist"
+# would send --no-allow-unauthenticated at a live, public service — re-locking it
+# out from under the testers, with the build+push window giving the underlying
+# problem time to clear so the deploy still "succeeds". A mode called `preserve`
+# must have no path that changes IAM.
+#
+# Passing nothing is safe for a first deploy too: Cloud Run services are private
+# unless allUsers is granted the invoker role, and --quiet keeps a
+# non-interactive create from stopping on the "allow unauthenticated?" prompt
+# (whose non-interactive default is no).
 IAM_FLAGS=()
 if [ "$ACCESS" = "locked" ]; then
   IAM_FLAGS=(--no-allow-unauthenticated)
   ACCESS_NOTE="locked (forcing --no-allow-unauthenticated)"
-elif [ "$DRY_RUN" = "1" ]; then
-  ACCESS_NOTE="preserve (live IAM mode untouched; a NEW service would be created locked)"
-elif gcloud run services describe "${SERVICE}" \
-       --project "${PROJECT}" --region "${REGION}" >/dev/null 2>&1; then
-  ACCESS_NOTE="preserve (service exists — IAM mode left as-is)"
 else
-  IAM_FLAGS=(--no-allow-unauthenticated)
-  ACCESS_NOTE="preserve → locked (service does not exist yet; created closed)"
+  ACCESS_NOTE="preserve (no IAM flag sent — live policy untouched; a NEW service is private by default)"
 fi
 
 echo "Deploy plan: service=${SERVICE} sha=${SHA}"
@@ -126,6 +132,7 @@ run docker push "${IMAGE}"
 #    structured logs, so a container log line can be joined to its request log
 #    entry (docs/deploy-gcp.md §9 verification). Not a secret.
 run gcloud run deploy "${SERVICE}" \
+  --quiet \
   --project "${PROJECT}" \
   --region "${REGION}" \
   --image "${IMAGE}" \
