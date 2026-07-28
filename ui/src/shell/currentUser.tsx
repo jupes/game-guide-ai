@@ -75,6 +75,12 @@ function profileStorageKey(userId: string): string {
   return `game-guide-ai:profile:${userId}`
 }
 
+/** The un-namespaced key this replaced. Migrated onto the first REAL identity
+ * that loads (never `guest`, which would strand it while the session check is
+ * still in flight) and consumed, so a second account can't inherit it too. */
+const PRE_AUTH_PROFILE_KEY = 'game-guide-ai:profile'
+const GUEST_USER_ID = 'guest'
+
 const AVATAR_TONES: readonly AvatarTone[] = ['gold', 'ember', 'verdigris', 'arcane']
 
 interface StoredProfile {
@@ -86,9 +92,25 @@ function isAvatarTone(value: unknown): value is AvatarTone {
   return typeof value === 'string' && (AVATAR_TONES as readonly string[]).includes(value)
 }
 
+/** Move a pre-auth profile onto this account's key, once. Returns its payload so
+ * the caller can use it immediately. */
+function migratePreAuthProfile(userId: string): string | null {
+  if (userId === GUEST_USER_ID) return null
+  const legacy = localStorage.getItem(PRE_AUTH_PROFILE_KEY)
+  if (legacy === null) return null
+  try {
+    localStorage.setItem(profileStorageKey(userId), legacy)
+    localStorage.removeItem(PRE_AUTH_PROFILE_KEY)
+  } catch {
+    // Quota/availability errors: still return it so this session reads it.
+  }
+  return legacy
+}
+
 function loadProfile(userId: string): StoredProfile {
   try {
     const raw = localStorage.getItem(profileStorageKey(userId))
+      ?? migratePreAuthProfile(userId)
     if (!raw) return {}
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return {}

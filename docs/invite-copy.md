@@ -80,7 +80,7 @@ DATABASE_URL="$PROXY" python -m service.admin_invites create \
 DATABASE_URL="$PROXY" python -m service.admin_invites create --role dm --base-url https://<service-url>
 ```
 
-The command prints a `.../?invite=<token>` link. Each token is **single-use**
+The command prints a `.../#invite=<token>` link (the token rides in the URL **fragment**, which browsers never send to the server, so it stays out of Cloud Run request logs). Each token is **single-use**
 and expires (default 14 days, `--ttl-days` to change). To see outstanding
 invites or take one back:
 

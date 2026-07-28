@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from service.session import SessionData, decode_session, encode_session
 
-SECRET = "test-secret-please-rotate"
+SECRET = "test-secret-please-rotate-at-least-32-chars"
 TTL = 14 * 24 * 3600
 
 

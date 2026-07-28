@@ -28,7 +28,7 @@ class _FakeService:
 
 @pytest.fixture
 def store(monkeypatch):
-    monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate")
+    monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate-at-least-32-chars")
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", False)
     s = InMemoryAuthStore()
     app.dependency_overrides[get_auth_store] = lambda: s

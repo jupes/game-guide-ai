@@ -4,7 +4,7 @@ Admin invite CLI (x5bz.2 Checkpoint B).
 The pilot admin (the operator, with DB access via the Cloud SQL proxy) mints,
 lists, and revokes one-time invite links from the command line — no in-app admin
 surface to secure. The invite carries the role, and the printed link is
-``<base-url>/?invite=<token>`` (root path, since the SPA has no client router and
+``<base-url>/#invite=<token>`` (root path, since the SPA has no client router and
 StaticFiles 404s on other paths).
 
     python -m service.admin_invites create --role dm --base-url https://<svc>.run.app
@@ -28,7 +28,11 @@ from .invites import ROLES, Invite, Role
 
 
 def build_signup_link(base_url: str, token: str) -> str:
-    return f"{base_url.rstrip('/')}/?invite={token}"
+    """`<base>/#invite=<token>` — the token goes in the FRAGMENT, which browsers
+    never send to the server. A query string would land in Cloud Run's automatic
+    request logs (`httpRequest.requestUrl` keeps the query), exposing a live
+    invite to anyone with log access; scrubbing it client-side is too late."""
+    return f"{base_url.rstrip('/')}/#invite={token}"
 
 
 def cmd_create(store: AuthStore, role: Role, ttl_days: int, base_url: str) -> str:

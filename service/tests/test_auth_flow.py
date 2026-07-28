@@ -20,7 +20,7 @@ pytestmark = pytest.mark.real_auth
 
 @pytest.fixture
 def store(monkeypatch):
-    monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate")
+    monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate-at-least-32-chars")
     # TestClient speaks http; a Secure cookie wouldn't be sent back. Prod stays Secure.
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", False)
     s = InMemoryAuthStore()

@@ -27,7 +27,7 @@ test('production app preserves a conversation and emits bounded performance evid
   // Access is invite-gated (x5bz.2): land on the invite deep-link and create the
   // account, exactly as a real tester does. The token is seeded by
   // service/e2e_app.py (a browser can't guess a randomly minted one).
-  await page.goto(`/?invite=${invite}`)
+  await page.goto(`/#invite=${invite}`)
 
   await expect(page.getByRole('heading', { name: 'Aetheril' })).toBeVisible()
   await page.getByLabel('Email').fill(testerEmail)

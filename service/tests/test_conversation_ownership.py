@@ -29,7 +29,7 @@ class _FakeService:
 
 @pytest.fixture
 def env(monkeypatch):
-    monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate")
+    monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate-at-least-32-chars")
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", False)
     auth = InMemoryAuthStore()
     messages = InMemoryMessageStore()

@@ -173,4 +173,31 @@ describe('profile cosmetics (name + avatar tone)', () => {
     const again = renderHook(() => useCurrentUser(), { wrapper })
     expect(again.result.current.user.avatarTone).toBe('arcane')
   })
+
+  it('adopts a pre-auth profile for the first real identity, and consumes it', async () => {
+    // Existing users stored cosmetics under the un-namespaced key; without a
+    // migration they'd silently lose their name and avatar after this deploys.
+    lsMock.setItem(
+      'game-guide-ai:profile',
+      JSON.stringify({ displayName: 'Astra Vail', avatarTone: 'arcane' }),
+    )
+    vi.spyOn(api, 'getMe').mockResolvedValue({
+      kind: 'ok', user: { email: 'astra@example.com', role: 'dm' },
+    })
+
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    await waitFor(() => expect(result.current.user.displayName).toBe('Astra Vail'))
+    expect(result.current.user.avatarTone).toBe('arcane')
+    // Consumed, so a second account can't inherit the same profile.
+    expect(lsMock.getItem('game-guide-ai:profile')).toBeNull()
+    expect(lsMock.getItem('game-guide-ai:profile:astra@example.com')).not.toBeNull()
+  })
+
+  it('does not consume the pre-auth profile into the guest bucket', () => {
+    lsMock.setItem('game-guide-ai:profile', JSON.stringify({ displayName: 'Astra Vail' }))
+    // Still 'checking' → identity is guest; migrating now would strand it.
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    expect(result.current.user.displayName).toBe('Adventurer')
+    expect(lsMock.getItem('game-guide-ai:profile')).not.toBeNull()
+  })
 })

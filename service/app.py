@@ -171,12 +171,43 @@ def get_auth_store() -> AuthStore:
     return store
 
 
+# Any secret shipped in an example/template is public by definition — copying it
+# unchanged would let anyone forge a session (including a DM one), so these are
+# rejected as if unset. Compared case-insensitively.
+_PLACEHOLDER_SESSION_SECRETS = frozenset({
+    "replace-me-with-a-random-string",
+    "replace-me",
+    "changeme",
+    "change-me",
+    "secret",
+    "your-secret-here",
+})
+
+# Short enough to be brute-forced offline against a signed cookie. `openssl rand
+# -base64 48` gives 64 chars, so a real secret clears this comfortably.
+MIN_SESSION_SECRET_LENGTH = 32
+
+
 def _session_secret() -> str:
-    """Fail CLOSED if the signing secret is unset — never sign or verify with an
-    empty key. In Cloud Run it comes from the `session-secret` Secret Manager
-    entry; locally from SESSION_SECRET in .env."""
+    """Fail CLOSED unless the signing secret is real: never sign or verify with
+    an empty, placeholder, or trivially short key. In Cloud Run it comes from the
+    `session-secret` Secret Manager entry; locally from SESSION_SECRET in .env."""
     secret = config.SESSION_SECRET
     if not secret:
+        log.error("SESSION_SECRET is unset — auth is disabled (see docs/deploy-gcp.md)")
+        raise HTTPException(status_code=503, detail="auth not configured")
+    if secret.strip().lower() in _PLACEHOLDER_SESSION_SECRETS:
+        log.error(
+            "SESSION_SECRET is a known placeholder value — refusing to sign sessions "
+            "with a publicly known key. Generate one: openssl rand -base64 48"
+        )
+        raise HTTPException(status_code=503, detail="auth not configured")
+    if len(secret) < MIN_SESSION_SECRET_LENGTH:
+        log.error(
+            "SESSION_SECRET is too short (%d chars; need >= %d) — refusing to sign "
+            "sessions with a weak key. Generate one: openssl rand -base64 48",
+            len(secret), MIN_SESSION_SECRET_LENGTH,
+        )
         raise HTTPException(status_code=503, detail="auth not configured")
     return secret
 

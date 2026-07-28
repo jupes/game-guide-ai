@@ -19,9 +19,12 @@ from service.admin_invites import (
 from service.auth_store import InMemoryAuthStore
 
 
-def test_build_signup_link_uses_root_path_and_token() -> None:
+def test_build_signup_link_puts_the_token_in_the_fragment() -> None:
     link = build_signup_link("https://svc.run.app/", "abc123")
-    assert link == "https://svc.run.app/?invite=abc123"  # trailing slash normalized
+    assert link == "https://svc.run.app/#invite=abc123"  # trailing slash normalized
+    # A query string would be captured by Cloud Run's request logs
+    # (httpRequest.requestUrl keeps the query), exposing a live invite.
+    assert "?invite=" not in link
 
 
 def test_create_persists_invite_with_role_and_returns_link() -> None:
@@ -31,7 +34,7 @@ def test_create_persists_invite_with_role_and_returns_link() -> None:
     assert len(invites) == 1
     assert invites[0].role == "dm"
     assert invites[0].token in link
-    assert link.startswith("https://svc.run.app/?invite=")
+    assert link.startswith("https://svc.run.app/#invite=")
 
 
 def test_list_shows_status_open_used_revoked() -> None:

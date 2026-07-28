@@ -213,11 +213,27 @@ describe('LocalStorageConversationStore', () => {
   it('migrates conversations from the pre-rename key (rag-chat:conversations)', () => {
     const legacy = [{ id: 'x', mode: 'sage', title: 'Old chat', createdAt: '2026-01-01T00:00:00.000Z' }]
     lsMock.setItem('rag-chat:conversations', JSON.stringify(legacy))
-    // A fresh store reads the legacy key, returns its rows, and moves them onto
-    // THIS account's namespaced key (x5bz.2), consuming the legacy one.
-    expect(new LocalStorageConversationStore().list('sage')).toHaveLength(1)
-    expect(lsMock.getItem('game-guide-ai:conversations:guest')).toBe(JSON.stringify(legacy))
+    // A store for a REAL identity reads the legacy key, returns its rows, and
+    // moves them onto that account's namespaced key (x5bz.2), consuming the old one.
+    expect(new LocalStorageConversationStore('alice@example.com').list('sage')).toHaveLength(1)
+    expect(lsMock.getItem('game-guide-ai:conversations:alice@example.com'))
+      .toBe(JSON.stringify(legacy))
     expect(lsMock.getItem('rag-chat:conversations')).toBeNull()
+  })
+
+  it('never migrates into the guest bucket while the session is still resolving', () => {
+    const legacy = [{ id: 'x', mode: 'sage', title: 'Old chat', createdAt: '2026-01-01T00:00:00.000Z' }]
+    lsMock.setItem('game-guide-ai:conversations', JSON.stringify(legacy))
+
+    // The app stays interactive while /auth/me is in flight, so a returning user
+    // can hit the store as "guest". Migrating then would strand their real
+    // account's conversations in the guest bucket.
+    expect(new LocalStorageConversationStore('guest').list('sage')).toEqual([])
+    expect(lsMock.getItem('game-guide-ai:conversations')).toBe(JSON.stringify(legacy))
+
+    // Once the identity resolves, the migration happens for the real account.
+    expect(new LocalStorageConversationStore('alice@example.com').list('sage')).toHaveLength(1)
+    expect(lsMock.getItem('game-guide-ai:conversations')).toBeNull()
   })
 
   it('keeps each account\'s conversations separate', () => {
@@ -245,6 +261,9 @@ describe('LocalStorageConversationStore', () => {
       { id: 'new', mode: 'sage', title: 'New conversation', createdAt: '2026-01-02T00:00:00.000Z' },
     ]
     lsMock.setItem('game-guide-ai:conversations', JSON.stringify(legacy))
+    // A real identity, since the pre-auth list is only migrated once the
+    // account is known (never into the guest bucket).
+    const store = new LocalStorageConversationStore('alice@example.com')
 
     expect(store.get('old')).toMatchObject({
       title: 'Old chat',

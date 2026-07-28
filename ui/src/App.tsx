@@ -6,22 +6,25 @@ import { ProfilePage } from './shell/ProfilePage'
 import { Login } from './shell/Login'
 import { Signup } from './shell/Signup'
 import { useCurrentUser } from './shell/currentUser'
-import { getInviteTokenFromSearch } from './shell/inviteToken'
+import { getInviteTokenFromHash } from './shell/inviteToken'
 
 export default function App(): React.JSX.Element {
   const { screen, backToLanding, setConversationId } = useAppNav()
   const { authStatus, user } = useCurrentUser()
 
-  // Capture the invite ONCE. It's a single-use credential, so it must not
-  // linger in the URL (browser history, referrers, server logs) or be re-read
-  // after it's spent — otherwise signing out later lands the user on Signup
-  // with a consumed token and no way forward.
+  // Capture the invite ONCE, from the fragment (never sent to the server, so it
+  // stays out of request logs). It's a single-use credential: clear it from the
+  // address bar so it doesn't linger in history, and don't re-read it after
+  // it's spent — otherwise signing out later lands the user on Signup with a
+  // consumed token and no way forward.
   const [invite, setInvite] = React.useState<string | null>(() =>
-    getInviteTokenFromSearch(window.location.search),
+    getInviteTokenFromHash(window.location.hash),
   )
   React.useEffect(() => {
-    if (getInviteTokenFromSearch(window.location.search) !== null) {
-      window.history.replaceState({}, '', window.location.pathname)
+    if (getInviteTokenFromHash(window.location.hash) !== null) {
+      window.history.replaceState(
+        {}, '', window.location.pathname + window.location.search,
+      )
     }
   }, [])
 

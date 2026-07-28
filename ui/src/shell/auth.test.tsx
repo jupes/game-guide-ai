@@ -3,7 +3,8 @@
  *
  * Login + Signup screens submit to the API and adopt the returned session;
  * App gates on authStatus, showing Signup for an invite deep-link
- * (`/?invite=<token>`) and Login otherwise.
+ * (`/#invite=<token>` — the token rides in the FRAGMENT so it never reaches the
+ * server or its request logs) and Login otherwise.
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest'
@@ -143,7 +144,7 @@ describe('App auth gate', () => {
   })
 
   it('shows Signup when the URL carries an invite token', () => {
-    window.history.replaceState({}, '', '/?invite=tok-abc')
+    window.history.replaceState({}, '', '/#invite=tok-abc')
     renderApp('unauthenticated')
     expect(screen.getByRole('button', { name: /create account/i })).toBeInTheDocument()
   })
@@ -161,17 +162,16 @@ describe('App auth gate', () => {
   })
 
   it('scrubs the single-use invite from the URL immediately', async () => {
-    window.history.replaceState({}, '', '/?invite=tok-abc')
+    window.history.replaceState({}, '', '/#invite=tok-abc')
     renderApp('unauthenticated')
-    // The token is a credential: leaving it in the address bar puts it in
-    // history, referrers and logs, and makes a later sign-out land on Signup
-    // with an already-spent invite.
-    expect(window.location.search).toBe('')
+    // The token is a credential: leaving it in the address bar keeps it in
+    // history, and makes a later sign-out land on Signup with a spent invite.
+    expect(window.location.hash).toBe('')
     expect(screen.getByRole('button', { name: /create account/i })).toBeInTheDocument()
   })
 
   it('offers a route to Login from the Signup screen', async () => {
-    window.history.replaceState({}, '', '/?invite=tok-abc')
+    window.history.replaceState({}, '', '/#invite=tok-abc')
     renderApp('unauthenticated')
     await userEvent.click(screen.getByRole('button', { name: /already have an account/i }))
     expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument()

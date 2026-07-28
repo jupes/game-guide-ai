@@ -28,7 +28,7 @@ class _FakeService:
 
 @pytest.fixture
 def store(monkeypatch):
-    monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate")
+    monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate-at-least-32-chars")
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", False)
     s = InMemoryAuthStore()
     app.dependency_overrides[get_auth_store] = lambda: s
@@ -78,6 +78,28 @@ def test_metrics_ui_stays_open(store):
     # Unguarded telemetry beacon — must not 401 without a session.
     r = TestClient(app).post("/metrics/ui", json={"points": []})
     assert r.status_code != 401
+
+
+# ── A weak/known signing secret must disable auth, not sign with it ──────────
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "",                                   # unset
+        "replace-me-with-a-random-string",    # the shipped .env.example placeholder
+        "CHANGEME",                           # case-insensitive placeholder
+        "short-secret",                       # brute-forceable
+    ],
+)
+def test_placeholder_or_weak_secret_disables_auth(store, monkeypatch, secret):
+    """A secret that ships in a template is public by definition — signing with
+    it would let anyone forge a session (including a DM one). Fail closed."""
+    monkeypatch.setattr(config, "SESSION_SECRET", secret)
+    r = TestClient(app).post(
+        "/auth/login", json={"email": "a@example.com", "password": "password123"},
+    )
+    assert r.status_code == 503, f"expected auth disabled for secret {secret!r}"
 
 
 # ── Security review regressions: the cookie is not the last word ─────────────

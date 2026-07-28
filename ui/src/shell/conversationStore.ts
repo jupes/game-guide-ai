@@ -193,6 +193,9 @@ const STORAGE_KEY = 'game-guide-ai:conversations'
 // users keep their saved conversations. Safe to remove once no clients hold it.
 const LEGACY_STORAGE_KEY = 'rag-chat:conversations'
 
+/** The signed-out / not-yet-known identity. */
+export const GUEST_USER_ID = 'guest'
+
 /** Per-account storage key (x5bz.2). Conversation ids and prompt-derived titles
  * are user data: one shared key meant the next person to sign in on the same
  * browser saw the previous user's conversation list. */
@@ -234,7 +237,14 @@ export class LocalStorageConversationStore
   // account's key. Covers both the pre-rename `rag-chat:` key and the shared,
   // un-namespaced `game-guide-ai:conversations` key that predates per-user
   // scoping. Consumed (removed) so it can't also surface for a second account.
+  //
+  // NEVER migrates into the guest bucket: the app stays interactive while the
+  // session check is in flight, so a returning user can touch the store before
+  // `/auth/me` resolves. Migrating then would consume the shared key into
+  // `...:guest` and strand the real account's conversations once its identity
+  // arrived. Waiting costs nothing — the next load under the real identity migrates.
   private migrateLegacy(): string | null {
+    if (this.userId === GUEST_USER_ID) return null
     for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {
       const legacy = localStorage.getItem(key)
       if (legacy === null) continue
