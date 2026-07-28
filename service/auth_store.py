@@ -48,12 +48,21 @@ CREATE TABLE IF NOT EXISTS auth.invites (
   role        TEXT NOT NULL DEFAULT 'player' CHECK (role IN ('player', 'dm')),
   expires_at  TIMESTAMPTZ NOT NULL,
   used_at     TIMESTAMPTZ,
-  used_by     BIGINT REFERENCES auth.users (id),
+  used_by     BIGINT REFERENCES auth.users (id) ON DELETE SET NULL,
   revoked_at  TIMESTAMPTZ,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS invites_created_idx ON auth.invites (created_at);
+
+-- Migration for schemas created before ON DELETE SET NULL existed: every
+-- redeemed invite holds a FK to its user, so deleting a compromised account —
+-- the documented incident response — was rejected by Postgres for any normally
+-- created account. Re-point the constraint; the invite row must survive (it is
+-- the audit trail that the token was spent), it just forgets who spent it.
+ALTER TABLE auth.invites DROP CONSTRAINT IF EXISTS invites_used_by_fkey;
+ALTER TABLE auth.invites ADD CONSTRAINT invites_used_by_fkey
+  FOREIGN KEY (used_by) REFERENCES auth.users (id) ON DELETE SET NULL;
 """
 
 

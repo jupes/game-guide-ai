@@ -155,3 +155,23 @@ SESSION_COOKIE_SAMESITE: str = _str("SESSION_COOKIE_SAMESITE", "lax")
 
 # Default lifetime of a minted invite link (admin CLI --ttl-days overrides).
 INVITE_TTL_DAYS: int = _int("INVITE_TTL_DAYS", 14)
+
+# --- Password hashing cost + capacity (x5bz.2) ------------------------------
+# argon2id parameters. 64 MiB / t=3 / p=4 matches argon2-cffi's defaults and
+# RFC 9106's interactive-login guidance. Declared explicitly because peak memory
+# is ARGON2_MEMORY_KIB * MAX_CONCURRENT_HASHES and must be a reviewable number.
+# Changing these does not invalidate existing hashes (params live in the hash).
+ARGON2_TIME_COST: int = _int("ARGON2_TIME_COST", 3)
+ARGON2_MEMORY_KIB: int = _int("ARGON2_MEMORY_KIB", 65536)  # 64 MiB per hash
+ARGON2_PARALLELISM: int = _int("ARGON2_PARALLELISM", 4)
+
+# How many argon2 operations may run at once. /auth/login hashes on EVERY
+# attempt (including unknown emails), so without a cap a public endpoint could
+# exhaust the instance's memory and get it killed. 2 * 64 MiB = 128 MiB peak,
+# which fits comfortably in the 1 GiB the deploy requests. Keep this in sync
+# with --memory / --concurrency in scripts/deploy.sh.
+MAX_CONCURRENT_HASHES: int = _int("MAX_CONCURRENT_HASHES", 2)
+
+# How long a request waits for a hashing slot before being shed as a 503.
+# Bounded so overload fails fast instead of queueing until the request times out.
+HASH_ACQUIRE_TIMEOUT_S: float = _float("HASH_ACQUIRE_TIMEOUT_S", 5.0)

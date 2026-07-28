@@ -95,6 +95,19 @@ in the UI; the server enforces the GM channel from their session.
 ## If a link leaks
 
 1. `revoke <token>` if it hasn't been redeemed — that's the end of it.
-2. If it *was* redeemed by someone unintended, the account already exists:
-   remove that user row, then rotate `session-secret` (see `deploy-gcp.md`) to
-   invalidate their session immediately.
+2. If it *was* redeemed by someone unintended, the account already exists.
+   Delete it, then rotate `session-secret` (see `deploy-gcp.md`) to invalidate
+   their session immediately:
+
+   ```bash
+   # Through the Cloud SQL proxy. auth.invites.used_by is ON DELETE SET NULL, so
+   # the invite row survives as the audit trail that its token was spent — it
+   # just forgets who spent it. Their conversations are removed alongside.
+   psql "$PROXY" -c "DELETE FROM auth.users WHERE lower(email) = lower('them@example.com');"
+
+   openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add session-secret --data-file=-
+   bash scripts/deploy.sh game-guide-ai "$(git rev-parse --short HEAD)"
+   ```
+
+   Rotating the secret logs **everyone** out (stateless cookies have no
+   server-side revocation), so the other testers will simply sign in again.

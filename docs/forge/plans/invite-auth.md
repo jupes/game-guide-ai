@@ -116,7 +116,7 @@ Demo: `bash scripts/deploy.sh --dry-run` shows `SESSION_SECRET=session-secret:la
 | `service/models.py` | Modify | Signup/Login/Me request+response models |
 | `config.py` | Modify | `SESSION_SECRET`, `SESSION_TTL_DAYS`, cookie flags (`HttpOnly`, `SameSite=Lax`, `Secure` forced-on in prod via config — NOT derived from request scheme, since Cloud Run terminates TLS and forwards HTTP) |
 | `pyproject.toml` | Modify | add `argon2-cffi` + a signing lib (`itsdangerous`) to **core** deps (imported at request time, like `pymupdf`); packages list unchanged (flat modules) |
-| `ui/src/App.tsx` + `AppNav` `Screen` union, new `Login.tsx`/`Signup.tsx`, `ui/src/shell/currentUser.tsx`, `api.ts` | Modify/Create | real session UI — add `login`/`signup` to the `Screen` state machine + an auth gate ahead of `AppNavProvider` (there is no router); invite read from `window.location.search` on load |
+| `ui/src/App.tsx` + `AppNav` `Screen` union, new `Login.tsx`/`Signup.tsx`, `ui/src/shell/currentUser.tsx`, `api.ts` | Modify/Create | real session UI — add `login`/`signup` to the `Screen` state machine + an auth gate ahead of `AppNavProvider` (there is no router); invite read from `window.location.hash` on load (fragment — never sent to the server, so the token stays out of request logs) |
 | `service/tests/*`, `ui/src/shell/auth.test.tsx` | Create | the 9 behavior suites |
 | `tests/test_deploy_contract.py` | Modify | assert `session-secret` wired in deploy.sh |
 | `scripts/deploy.sh`, `docs/deploy-gcp.md`, `docs/ARCHITECTURE.md`, `docs/invite-copy.md` | Modify/Create | ops + docs + licensing copy |

@@ -113,13 +113,33 @@ Attachment **metadata** only (extracted text never leaves the server); health + 
 
 | Status | Meaning |
 | --- | --- |
-| `422` | Validation (empty prompt, unknown mode, bad upload body) |
+| `401` | No / invalid / expired session, or the account no longer exists |
+| `403` | Wrong role for the channel (GM is DM-only), or another user's conversation |
+| `422` | Validation (empty prompt, unknown mode, bad upload body, bad credentials shape) |
 | `502` | LLM upstream failed (timeout/rate limit) — retryable |
-| `503` | Retrieval backend, embedding (missing `OPENAI_API_KEY`), or store unavailable |
+| `503` | Retrieval backend, embedding (missing `OPENAI_API_KEY`), store or auth unavailable, `SESSION_SECRET` unusable, or hashing capacity exhausted |
 | `500` | Bug in our code (full traceback logged) |
 
 History writes are **best-effort by design**: a failed persist logs a warning and never
-fails an answer.
+fails an answer. Authorization is the opposite — it **fails closed**: an ownership lookup
+that errors returns 503 rather than serving the content.
+
+## Auth (x5bz.2)
+
+Access is invite-gated; `/chat` and `/conversations/*` require a session.
+
+| Module | Role |
+| --- | --- |
+| `auth_store.py` | `AuthStore` protocol + Postgres/in-memory impls — `auth.users` / `auth.invites`, idempotent `ensure_schema()`. Invite redemption is **atomic** (`UPDATE ... WHERE used_at IS NULL ... RETURNING`), so concurrent redeemers can't both win. |
+| `hashing.py` | argon2id hash/verify with **explicit** parameters, plus a semaphore capping concurrent hashes — argon2 is memory-hard and `/auth/login` hashes on every attempt, so unbounded concurrency is an OOM lever. |
+| `session.py` | itsdangerous-signed httpOnly cookie carrying user id + role. Stateless: no session table; rotating `SESSION_SECRET` logs everyone out. |
+| `invites.py` | Token generation (`secrets.token_urlsafe(32)`) + redeemability rules (used / expired / revoked). |
+| `admin_invites.py` | Operator CLI: `create` / `list` / `revoke`. `create` prints a `/#invite=<token>` link — the token rides in the **fragment**, which browsers never send, so it stays out of request logs. |
+
+`require_session` re-reads the account on **every** request rather than trusting the
+cookie's contents, so a deleted account or a demoted DM loses access immediately instead
+of at cookie expiry. Roles are server-authoritative: the invite fixes the role, and the UI
+cannot change it. `/healthz` and `/metrics/ui` are intentionally open.
 
 ## Run
 
@@ -168,5 +188,7 @@ uv run --with '.[test]' python -m pytest -q             # whole suite
 
 - Streaming (SSE) answers.
 - Connection pooling (per-request connect today).
-- Real auth / server-side role enforcement (the GM channel is UI-gated only until then).
+- Rate limiting / spend cap on `/chat` (x5bz.3) — needed before external traffic.
+- Password reset (needs email sending) and an in-app admin surface for invites
+  (the CLI `python -m service.admin_invites` is the pilot's admin path).
 - A real secondary world-corpus retriever behind the GM seam.

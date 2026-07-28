@@ -98,6 +98,23 @@ def test_deploy_attaches_cloudsql_and_injects_secrets_by_reference() -> None:
     )
 
 
+def test_deploy_sets_memory_and_concurrency_explicitly() -> None:
+    """Cloud Run's defaults (512 MiB / 80 concurrent) are not survivable here:
+    /auth/login runs a 64 MiB argon2 hash on every attempt, so a handful of
+    simultaneous logins would push the instance past its memory limit and get it
+    killed. Both limits must be stated, not inherited."""
+    text = _read(DEPLOY_SH)
+
+    assert "--memory" in text, (
+        "deploy.sh must set --memory explicitly (argon2 is memory-hard; the "
+        "512 MiB default leaves no headroom)"
+    )
+    assert "--concurrency" in text, (
+        "deploy.sh must set --concurrency explicitly (the default of 80 allows "
+        "far more simultaneous hashes than the instance can hold)"
+    )
+
+
 def test_deploy_wires_the_session_secret() -> None:
     """The auth session-signing key (x5bz.2) must reach the service as a Secret
     Manager reference. Without it the service fails closed — every auth endpoint

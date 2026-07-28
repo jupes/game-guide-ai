@@ -79,11 +79,29 @@ def test_other_user_cannot_read_your_attachments(env):
     assert alice.get("/conversations/conv-A/attachments").status_code == 200
 
 
-def test_unclaimed_conversation_is_readable(env):
-    # A conversation nobody has claimed (owner None) isn't 403 — ownership only
-    # bites once someone owns it.
-    alice = _signup(env, "alice@example.com")
-    assert alice.get("/conversations/fresh-conv/messages").status_code == 200
+def test_reading_an_unowned_conversation_claims_it(env):
+    """Conversations predating the ownership table have no owner row. "No owner
+    ⇒ allow" would leave all of that pre-auth history readable by ANY
+    authenticated caller forever, so the first reader takes ownership instead."""
+    auth = env
+    messages = InMemoryMessageStore()
+    app.dependency_overrides[get_message_store] = lambda: messages
+    # A legacy conversation with real content and no ownership row.
+    messages.append("legacy-conv", "sage", "user", "alice's private question")
+
+    alice = _signup(auth, "alice@example.com")
+    bob = _signup(auth, "bob@example.com")
+
+    first = alice.get("/conversations/legacy-conv/messages")
+    assert first.status_code == 200
+    assert first.json()["messages"][0]["content"] == "alice's private question"
+
+    # Now it is hers — nobody else can read it.
+    assert bob.get("/conversations/legacy-conv/messages").status_code == 403
+    assert bob.get("/conversations/legacy-conv/attachments").status_code == 403
+    assert bob.post(
+        "/chat", json={"prompt": "sneak", "conversation_id": "legacy-conv"},
+    ).status_code == 403
 
 
 # ── Security review regressions (must fail CLOSED) ───────────────────────────

@@ -70,6 +70,12 @@ run docker push "${IMAGE}"
 # 3. Deploy to Cloud Run — LOCKED. Cloud SQL attached by socket; OPENAI_API_KEY
 #    and DATABASE_URL injected by Secret Manager reference (never values); the
 #    app listens on 8000 (Cloud Run defaults to 8080, so --port is required).
+#    --memory / --concurrency are set EXPLICITLY, not left to the platform
+#    defaults (512 MiB / 80 concurrent): /auth/login runs a 64 MiB argon2 hash on
+#    every attempt, so those defaults would let a handful of simultaneous logins
+#    push the instance over its memory limit and get it killed. 1 GiB comfortably
+#    covers the app plus MAX_CONCURRENT_HASHES * ARGON2_MEMORY_KIB (2 * 64 MiB);
+#    keep the three in sync (see config.py / service/hashing.py).
 #    The /healthz startup probe is set via the service YAML in docs/deploy-gcp.md
 #    (kept out of this flag list so an unsupported gcloud flag can't break deploy).
 run gcloud run deploy "${SERVICE}" \
@@ -81,6 +87,8 @@ run gcloud run deploy "${SERVICE}" \
   --add-cloudsql-instances "${CLOUDSQL_INSTANCE}" \
   --set-secrets "OPENAI_API_KEY=${OPENAI_SECRET}:latest,DATABASE_URL=${DATABASE_URL_SECRET}:latest,SESSION_SECRET=${SESSION_SECRET_SECRET}:latest" \
   --timeout 300 \
-  --max-instances 2
+  --max-instances 2 \
+  --memory 1Gi \
+  --concurrency 20
 
 echo "Done."

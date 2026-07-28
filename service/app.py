@@ -30,7 +30,12 @@ from ingestion.retrieval import EmbeddingUnavailableError
 
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore
-from .hashing import DUMMY_PASSWORD_HASH, hash_password, verify_password
+from .hashing import (
+    DUMMY_PASSWORD_HASH,
+    HashingCapacityError,
+    hash_password,
+    verify_password,
+)
 from .history import MessageStore, PostgresMessageStore, StoredAttachment
 from .invites import InviteError
 from .models import (
@@ -365,7 +370,7 @@ def _fetch_attachment_context(
 
 
 def _authorize_conversation(
-    store: MessageStore | None, conversation_id: str | None, user_id: int, *, claim: bool,
+    store: MessageStore | None, conversation_id: str | None, user_id: int,
 ) -> None:
     """Authorize this user for `conversation_id`, or raise (x5bz.2 D).
 
@@ -374,19 +379,20 @@ def _authorize_conversation(
     role that can't see `chat.conversations`) must never be followed by a
     successful cross-user read.
 
-    `claim=True` (writes) uses the store's **atomic** claim, which returns the
-    winning owner — that single call is both the check and the claim, closing the
-    TOCTOU window where two users racing a fresh id could both pass a separate
-    pre-check. Anyone who is not the winner is rejected.
+    Always uses the store's **atomic** claim, which returns the winning owner —
+    one call that is both the check and the claim. That closes the TOCTOU window
+    where two users racing a fresh id could both pass a separate pre-check, and
+    it also closes the ownership table's cold-start hole: conversations that
+    predate this table have no owner row, and "no owner ⇒ allow" would leave
+    every one of them readable by any authenticated caller, forever. The first
+    authenticated user to touch such a conversation takes ownership of it (ids
+    are unguessable `crypto.randomUUID()` values held only by their owner), and
+    everyone else is rejected from then on.
     """
     if store is None or conversation_id is None:
         return
     try:
-        owner = (
-            store.claim_conversation(conversation_id, user_id)
-            if claim
-            else store.owner_of(conversation_id)
-        )
+        owner = store.claim_conversation(conversation_id, user_id)
     except Exception as exc:
         log.warning(
             "conversation authorization failed (conversation_id=%s)",
@@ -418,7 +424,7 @@ def chat(
         raise HTTPException(status_code=403, detail="the GM channel requires the DM role")
     # Ownership: one atomic claim-or-reject (403 if it's someone else's).
     # Before the try for the same reason (403, not 500).
-    _authorize_conversation(store, req.conversation_id, session.user_id, claim=True)
+    _authorize_conversation(store, req.conversation_id, session.user_id)
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, req.conversation_id,
@@ -495,7 +501,7 @@ def conversation_messages(
 ) -> MessagesResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="message history unavailable")
-    _authorize_conversation(store, conversation_id, session.user_id, claim=False)
+    _authorize_conversation(store, conversation_id, session.user_id)
     # config.HISTORY_LIMIT read at request time (not import) so env/test
     # overrides of the knob take effect; client may ask for fewer, never more.
     cap = config.HISTORY_LIMIT
@@ -528,7 +534,7 @@ def upload_attachment(
 ) -> AttachmentResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
-    _authorize_conversation(store, conversation_id, session.user_id, claim=True)
+    _authorize_conversation(store, conversation_id, session.user_id)
     try:
         data = base64.b64decode(req.data, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -558,7 +564,7 @@ def conversation_attachments(
 ) -> AttachmentsResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
-    _authorize_conversation(store, conversation_id, session.user_id, claim=False)
+    _authorize_conversation(store, conversation_id, session.user_id)
     try:
         stored = store.attachments_for(conversation_id)
     except _DB_ERRORS as exc:
@@ -597,6 +603,10 @@ def signup(
 
     try:
         user = store.redeem_invite(req.invite, req.email, hash_password(req.password))
+    except HashingCapacityError as exc:
+        # Overloaded, not rejected — shed load with a retryable status.
+        log.warning("signup shed: %s", exc)
+        raise HTTPException(status_code=503, detail="busy, please retry") from exc
     except EmailTaken as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except InviteError as exc:
@@ -620,7 +630,12 @@ def login(
     # Always run one argon2 verification, even for an unknown email — otherwise
     # the response time itself reveals whether an account exists, and the generic
     # message below buys nothing. DUMMY_PASSWORD_HASH never matches.
-    ok = verify_password(stored_hash or DUMMY_PASSWORD_HASH, req.password)
+    try:
+        ok = verify_password(stored_hash or DUMMY_PASSWORD_HASH, req.password)
+    except HashingCapacityError as exc:
+        # Overloaded, not wrong credentials — must NOT be reported as a 401.
+        log.warning("login shed: %s", exc)
+        raise HTTPException(status_code=503, detail="busy, please retry") from exc
     if user is None or stored_hash is None or not ok:
         # One generic message — never reveal whether the email is registered.
         raise HTTPException(status_code=401, detail="invalid email or password")

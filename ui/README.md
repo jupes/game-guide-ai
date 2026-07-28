@@ -20,8 +20,10 @@ Landing ── "Enter the Tavern" ─▶ Workspace                    Profile (s
   reserves an empty slot for future note-taking / GM-lore nav (swe1.5).
 - **Theme toggle** (light Parchment / dark Tavern) sits in the **UserMenu** popover
   (swe1.11), persisted to `localStorage`.
-- **Profile page** (swe1.7): editable display name + avatar tone, DM/player role toggle —
-  all client-side, persisted to `localStorage` via `currentUser.tsx` / `useRoleToggle.ts`.
+- **Profile page** (swe1.7): editable display name + avatar tone, persisted to
+  `localStorage` **per account** via `currentUser.tsx`. The DM/player role is shown
+  read-only — it is fixed by the invite that created the account and enforced by the
+  server (x5bz.2), so there is no client-side role toggle.
 
 ## Channels (chat modes)
 
@@ -69,10 +71,14 @@ refusals are 200s with `answerable: false`, **not** errors; 422/413/415/503/netw
 `{ kind: 'error', message }` so the UI never throws on a bad day.
 
 > **Proxy invariant:** the Vite dev proxy (`vite.config.ts`) and nginx (`nginx.conf`)
-> each forward `/chat`, `/healthz`, and `/conversations` to the service — a new service
-> API prefix must be added to **both**, or the SPA fallback silently swallows it
-> (that was bug `agent-forge-harness-cnqf`). nginx also raises `client_max_body_size`
-> for `/conversations` so base64 attachment uploads aren't 413'd below the service's cap.
+> each forward `/chat`, `/healthz`, `/conversations`, `/metrics`, and `/auth` to the
+> service — a new service API prefix must be added to **both**, or the SPA fallback
+> silently swallows it: a GET quietly returns `index.html` (bug
+> `agent-forge-harness-cnqf`) and a POST returns **405**, because a static file can't
+> take one (that was `/auth` when auth landed). `tests/test_proxy_contract.py` now
+> derives the prefixes from the real route table and fails CI if either front end
+> misses one. nginx also raises `client_max_body_size` for `/conversations` so base64
+> attachment uploads aren't 413'd below the service's cap.
 
 ## Design system
 

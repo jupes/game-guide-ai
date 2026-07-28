@@ -24,7 +24,11 @@ CREATE TABLE IF NOT EXISTS auth.invites (
   role        TEXT NOT NULL DEFAULT 'player' CHECK (role IN ('player', 'dm')),
   expires_at  TIMESTAMPTZ NOT NULL,
   used_at     TIMESTAMPTZ,                     -- NULL until redeemed (atomic guard)
-  used_by     BIGINT REFERENCES auth.users (id),
+  -- ON DELETE SET NULL so a compromised account can actually be deleted: the
+  -- invite row survives as the audit trail that its token was spent, it just
+  -- forgets who spent it. Without this, deleting any user who redeemed an
+  -- invite is rejected by the FK.
+  used_by     BIGINT REFERENCES auth.users (id) ON DELETE SET NULL,
   revoked_at  TIMESTAMPTZ,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
