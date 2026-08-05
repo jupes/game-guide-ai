@@ -1,5 +1,7 @@
 """Behavior tests for the shared service/UI metrics contract (eiio.4)."""
 
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -144,7 +146,7 @@ def test_payload_rejects_extra_private_non_finite_and_oversized_input():
 
 class _RecordingSink:
     def __init__(self) -> None:
-        self.points = []
+        self.points: list[Any] = []
 
     def record(self, point) -> None:
         self.points.append(point)
@@ -233,7 +235,7 @@ class _FakeObservation:
 
 class _FakeLangfuse:
     def __init__(self) -> None:
-        self.scores = []
+        self.scores: list[Any] = []
 
     def start_observation(self, **kwargs):
         return _FakeObservation()

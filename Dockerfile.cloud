@@ -21,20 +21,28 @@ RUN bun run build          # → /ui/dist
 FROM python:3.12-slim
 WORKDIR /app
 
-# Install the game-guide-ai package (service + ingestion) from pyproject, exactly
-# like Dockerfile.service. torch / the cross-encoder reranker stay OUT of the
-# default image — opt in with `--build-arg INSTALL_RERANK=1` (RAG_RERANK=1 alone
-# just logs a warning and serves unreranked).
-COPY pyproject.toml ./
+# Install the game-guide-ai package (service + ingestion). Dependencies come from
+# the COMMITTED uv.lock, not a fresh resolve: `pip install .` would re-resolve
+# every transitive dependency at build time, so the image that ships need not
+# contain the code that was reviewed — a poor property for a service that hashes
+# passwords and signs sessions. `uv export --frozen` fails if the lock and
+# pyproject have drifted, which is the check we want at build time.
+#
+# torch / the cross-encoder reranker stay OUT of the default image — opt in with
+# `--build-arg INSTALL_RERANK=1` (RAG_RERANK=1 alone just logs a warning and
+# serves unreranked).
+COPY pyproject.toml uv.lock ./
 COPY config.py ./
 COPY ingestion/ ingestion/
 COPY service/ service/
 ARG INSTALL_RERANK=0
-RUN if [ "$INSTALL_RERANK" = "1" ]; then \
-        pip install --no-cache-dir '.[rerank]'; \
-    else \
-        pip install --no-cache-dir .; \
-    fi
+RUN pip install --no-cache-dir uv==0.9.9 && \
+    if [ "$INSTALL_RERANK" = "1" ]; then EXTRAS="--extra rerank"; else EXTRAS=""; fi && \
+    uv export --frozen --no-emit-project --no-dev $EXTRAS \
+        --format requirements-txt -o /tmp/requirements.txt && \
+    pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt && \
+    pip install --no-cache-dir --no-deps . && \
+    pip uninstall -y uv && rm /tmp/requirements.txt
 
 # Bake the built SPA in where service/app.py's StaticFiles mount serves it.
 COPY --from=ui-builder /ui/dist ui/dist

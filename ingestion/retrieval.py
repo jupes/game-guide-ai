@@ -22,15 +22,15 @@ from pathlib import Path
 
 import psycopg
 
-# Canonical mode→scope mapping + rerank gate (sibling package leaves; pure logic,
-# no heavy imports — the cross-encoder model lazy-loads only on instantiation).
-from ingestion.scope import scope_for_mode
-from ingestion.rerank import should_rerank
-
 # Tuning knobs (env-overridable) live in the single top-level config module.
 # Re-exported here so existing `from ingestion.retrieval import TOP_K, ...`
 # importers (eval_golden) keep resolving.
-from config import TOP_K, IPL_FALLBACK_DISTANCE, KOZ_ANSWERABLE_DISTANCE
+from config import IPL_FALLBACK_DISTANCE, KOZ_ANSWERABLE_DISTANCE, TOP_K
+from ingestion.rerank import should_rerank
+
+# Canonical mode→scope mapping + rerank gate (sibling package leaves; pure logic,
+# no heavy imports — the cross-encoder model lazy-loads only on instantiation).
+from ingestion.scope import scope_for_mode
 
 # ---------------------------------------------------------------------------
 # Load .env from repo root (shared by eval + service)

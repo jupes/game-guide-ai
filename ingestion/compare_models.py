@@ -18,15 +18,16 @@ Built in checkpoints:
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 # --- Model registry (lazy factories; building a generator imports its SDK only
 #     when actually used, so importing this module / known_models() stays light) --
 
 def _openai(model: str) -> Callable[[], object]:
     def build() -> object:
-        from config import TEMPERATURE
         from langchain_openai import ChatOpenAI
+
+        from config import TEMPERATURE
         return ChatOpenAI(model=model, temperature=TEMPERATURE)
     return build
 
@@ -34,8 +35,10 @@ def _openai(model: str) -> Callable[[], object]:
 def _ollama(model: str) -> Callable[[], object]:
     def build() -> object:
         import os
-        from config import TEMPERATURE
+
         from langchain_ollama import ChatOllama  # in the [eval] extra
+
+        from config import TEMPERATURE
         return ChatOllama(
             model=model, temperature=TEMPERATURE,
             base_url=os.environ.get("OLLAMA_URL", "http://localhost:11434"),

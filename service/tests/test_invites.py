@@ -6,7 +6,7 @@ all the logical rules, no DB. The concurrency guarantee is test_invite_atomic.py
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -16,14 +16,15 @@ from service.invites import (
     InviteExpired,
     InviteNotFound,
     InviteRevoked,
+    Role,
     new_invite_token,
 )
 
-NOW = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 LATER = NOW + timedelta(days=7)
 
 
-def _store_with_invite(role: str = "player", expires_at: datetime = LATER):
+def _store_with_invite(role: Role = "player", expires_at: datetime = LATER):
     store = InMemoryAuthStore()
     invite = store.create_invite(role=role, expires_at=expires_at)
     return store, invite

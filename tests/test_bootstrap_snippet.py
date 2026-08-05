@@ -26,7 +26,6 @@ import textwrap
 from pathlib import Path
 
 import pytest
-
 from _bash import bash_or_skip
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

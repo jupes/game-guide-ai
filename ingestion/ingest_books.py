@@ -18,15 +18,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
-import os
-
 from ingestion import extract_scan as ex
 from ingestion import qa_chunks
-from ingestion.embed import embed_and_upsert, DEFAULT_DSN, DEFAULT_BACKEND, DEFAULT_MODEL_OAI
+from ingestion.embed import DEFAULT_BACKEND, DEFAULT_DSN, DEFAULT_MODEL_OAI, embed_and_upsert
 from ingestion.ocr_normalize import normalize_ocr
 
 BOOKS_DIR = Path(__file__).resolve().parent.parent.parent / "DnD-Books" / "5e" / "Books"

@@ -26,7 +26,6 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.staticfiles import StaticFiles
 
 import config
-
 from ingestion.retrieval import EmbeddingUnavailableError
 
 from . import gcp_logging
@@ -40,7 +39,17 @@ from .hashing import (
 )
 from .history import MessageStore, PostgresMessageStore, StoredAttachment
 from .invites import InviteError
-from .ratelimit import RateLimited, check_auth_attempt, client_source
+from .metrics import (
+    BooleanMetricPoint,
+    CategoricalMetricPoint,
+    MetricBatch,
+    MetricLabels,
+    MetricsSink,
+    NoopMetricsSink,
+    NumericMetricPoint,
+    build_metrics_sink,
+    record_safely,
+)
 from .models import (
     Attachment,
     AttachmentResponse,
@@ -53,19 +62,9 @@ from .models import (
     MessagesResponse,
     SignupRequest,
 )
-from .session import SessionData, decode_session, encode_session
-from .metrics import (
-    BooleanMetricPoint,
-    CategoricalMetricPoint,
-    MetricBatch,
-    MetricLabels,
-    MetricsSink,
-    NoopMetricsSink,
-    NumericMetricPoint,
-    build_metrics_sink,
-    record_safely,
-)
 from .rag import RagService
+from .ratelimit import RateLimited, check_auth_attempt, client_source
+from .session import SessionData, decode_session, encode_session
 
 log = logging.getLogger(__name__)
 

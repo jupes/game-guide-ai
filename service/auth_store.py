@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from .invites import (
@@ -143,7 +143,7 @@ class User:
 
 
 def _now(now: datetime | None) -> datetime:
-    return now if now is not None else datetime.now(timezone.utc)
+    return now if now is not None else datetime.now(UTC)
 
 
 class AuthStore(Protocol):
@@ -192,7 +192,7 @@ class InMemoryAuthStore:
     def create_invite(self, role: Role, expires_at: datetime) -> Invite:
         invite = Invite(
             token=new_invite_token(), role=role, expires_at=expires_at,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         self._invites[invite.token] = invite
         return invite
@@ -204,8 +204,8 @@ class InMemoryAuthStore:
         `create_invite` mints a random one, which a browser E2E can't guess)."""
         invite = Invite(
             token=token, role=role,
-            expires_at=expires_at or (datetime.now(timezone.utc) + timedelta(days=365)),
-            created_at=datetime.now(timezone.utc),
+            expires_at=expires_at or (datetime.now(UTC) + timedelta(days=365)),
+            created_at=datetime.now(UTC),
         )
         self._invites[token] = invite
         return invite
@@ -216,14 +216,14 @@ class InMemoryAuthStore:
     def list_invites(self) -> list[Invite]:
         return sorted(
             self._invites.values(),
-            key=lambda i: i.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda i: i.created_at or datetime.min.replace(tzinfo=UTC),
         )
 
     def revoke_invite(self, token: str) -> bool:
         invite = self._invites.get(token)
         if invite is None or invite.is_revoked or invite.is_used:
             return False
-        invite.revoked_at = datetime.now(timezone.utc)
+        invite.revoked_at = datetime.now(UTC)
         return True
 
     def get_user_by_email(self, email: str) -> User | None:

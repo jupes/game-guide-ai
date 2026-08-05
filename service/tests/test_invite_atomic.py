@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -41,7 +41,7 @@ pytestmark = pytest.mark.skipif(
 def test_concurrent_double_redeem_exactly_one_wins() -> None:
     store = PostgresAuthStore()
     store.ensure_schema()
-    invite = store.create_invite(role="player", expires_at=datetime.now(timezone.utc) + timedelta(days=1))
+    invite = store.create_invite(role="player", expires_at=datetime.now(UTC) + timedelta(days=1))
     marker = uuid.uuid4().hex
     emails = [f"race-{marker}-a@example.com", f"race-{marker}-b@example.com"]
 

@@ -6,7 +6,7 @@ a player-role session posting mode=gm gets 403; a dm session succeeds.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,7 +39,7 @@ def store(monkeypatch):
 
 def _client_as(store, role: str) -> TestClient:
     token = store.create_invite(
-        role=role, expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        role=role, expires_at=datetime.now(UTC) + timedelta(days=1),
     ).token
     client = TestClient(app)
     client.post(

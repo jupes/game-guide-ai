@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import config
 
@@ -41,7 +41,7 @@ def cmd_create(store: AuthStore, role: Role, ttl_days: int, base_url: str) -> st
     # tester can't sign up. Reject it up front.
     if ttl_days < 1:
         raise ValueError(f"--ttl-days must be at least 1 (got {ttl_days})")
-    expires_at = datetime.now(timezone.utc) + timedelta(days=ttl_days)
+    expires_at = datetime.now(UTC) + timedelta(days=ttl_days)
     invite = store.create_invite(role=role, expires_at=expires_at)
     return build_signup_link(base_url, invite.token)
 
@@ -59,7 +59,7 @@ def _status(invite: Invite, now: datetime) -> str:
 def format_invites(invites: list[Invite], now: datetime | None = None) -> str:
     """Full tokens, deliberately: `revoke` takes a whole token, so a truncated
     listing would leave an operator unable to act on what they can see."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     if not invites:
         return "(no invites)"
     lines = [f"{'ROLE':<6} {'STATUS':<8} {'EXPIRES':<26} TOKEN"]

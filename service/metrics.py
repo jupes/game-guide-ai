@@ -9,8 +9,8 @@ from typing import Annotated, Any, Literal, Protocol
 from pydantic import (
     BaseModel,
     ConfigDict,
-    FiniteFloat,
     Field,
+    FiniteFloat,
     StrictBool,
     model_validator,
 )
@@ -101,7 +101,7 @@ def _validate_catalog_contract(
     if kind != definition["kind"] or unit != definition["unit"]:
         raise ValueError(f"metric kind/unit mismatch: {name}")
     supplied_labels = set(labels.model_dump(exclude_none=True))
-    if not supplied_labels <= definition["labels"]:
+    if not supplied_labels.issubset(definition["labels"]):
         raise ValueError(f"unsupported labels for metric: {name}")
     if category is not None and category not in definition["categories"]:
         raise ValueError(f"unsupported category for metric: {name}")

@@ -979,7 +979,7 @@ def group_spans_to_lines(
         buckets.setdefault((col, yband), []).append((x0, top, size, flags, text))
 
     lines: list[LineItem] = []
-    for (col, yband), group in sorted(buckets.items()):
+    for (col, _yband), group in sorted(buckets.items()):
         group.sort(key=lambda s: s[0])  # left-to-right within the line
         text = " ".join(s[4].strip() for s in group if s[4].strip())
         text = _CONTROL_RE.sub("", text).strip()
@@ -1032,8 +1032,9 @@ def read_pdf_stream_fitz(pdf_path: str) -> list[LineItem]:
 
 def read_pdf_stream(pdf_path: str) -> list[LineItem]:
     """Legacy pdfplumber reader — kept as a fallback engine (--engine pdfplumber)."""
-    import pdfplumber
     from collections import Counter
+
+    import pdfplumber
 
     stream: list[LineItem] = []
     with pdfplumber.open(pdf_path) as pdf:

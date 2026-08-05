@@ -12,8 +12,18 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-uv.lock
+# uv.lock is COMMITTED, deliberately (PR #43 review). This is an application, not
+# a library: without the lock, CI and the production image re-resolve every
+# transitive dependency on each build, so the artifact that passed review is not
+# necessarily the artifact that ships — a poor property for code that hashes
+# passwords and signs sessions.
 ingestion/metrics_summary.json
+# Coverage artifacts (the gates run in CI; the reports are local noise).
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+ui/coverage/
 
 # Local Python virtualenvs (pollute pytest collection if not excluded)
 .venv/

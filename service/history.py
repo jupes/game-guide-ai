@@ -21,10 +21,10 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Protocol
+from datetime import UTC, datetime
+from typing import Any, Protocol, cast
 
-from .models import ChatMode, MessageRole, StoredMessage
+from .models import ChatMode, MessageRole, StoredMessage, Suggestion
 
 # Idempotent DDL — safe to run on every startup. Kept in sync with
 # vector-db/init/04-chat-schema.sql (fresh-volume path).
@@ -200,7 +200,7 @@ class InMemoryMessageStore:
         self._rows.append(_Row(
             id=len(self._rows) + 1, conversation_id=conversation_id,
             mode=mode, role=role, content=content, suggestions=suggestions,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         ))
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
@@ -213,7 +213,7 @@ class InMemoryMessageStore:
         att = StoredAttachment(
             id=len(self._attachments) + 1, conversation_id=conversation_id,
             filename=filename, content_type=content_type, extracted_text=extracted_text,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         self._attachments.append(att)
         return att
@@ -237,7 +237,10 @@ def _to_message(r: _Row) -> StoredMessage:
     return StoredMessage(
         id=r.id, role=MessageRole(r.role), content=r.content,
         mode=ChatMode(r.mode), created_at=r.created_at,
-        suggestions=r.suggestions,  # pydantic validates the raw dicts
+        # The cast is the honest description of a boundary a type checker can't
+        # see through: these are raw JSONB dicts and pydantic validates/coerces
+        # them into Suggestion on construction, raising if they don't fit.
+        suggestions=cast("list[Suggestion] | None", r.suggestions),
     )
 
 

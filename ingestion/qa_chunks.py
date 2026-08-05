@@ -305,7 +305,8 @@ def main() -> None:
             if not args.chunks or not Path(args.chunks).exists():
                 print("ERROR: provide a chunks JSONL or --from-db", file=sys.stderr)
                 sys.exit(2)
-            chunks = [json.loads(line) for line in Path(args.chunks).read_text(encoding="utf-8").splitlines() if line.strip()]
+            lines = Path(args.chunks).read_text(encoding="utf-8").splitlines()
+            chunks = [json.loads(line) for line in lines if line.strip()]
         sys.exit(_run_collapse_check(chunks))
 
     in_path = Path(args.chunks) if args.chunks else None

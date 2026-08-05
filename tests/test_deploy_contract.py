@@ -23,12 +23,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from _bash import bash_or_skip
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCKERFILE_CLOUD = REPO_ROOT / "Dockerfile.cloud"
 DEPLOY_SH = REPO_ROOT / "scripts" / "deploy.sh"
+UV_LOCK = REPO_ROOT / "uv.lock"
+DOCKERIGNORE = REPO_ROOT / ".dockerignore"
 
 
 def _read(path: Path) -> str:
@@ -68,6 +69,60 @@ def test_cloud_image_builds_ui_and_copies_dist_without_rerank() -> None:
         assert "INSTALL_RERANK" in text, (
             "the rerank extra must be gated behind INSTALL_RERANK (opt-in), not installed by default"
         )
+
+
+# ── Reproducible dependency resolution (PR #43 review) ───────────────────────
+
+
+def test_the_lockfile_is_committed_and_reachable_by_the_build() -> None:
+    """Without a committed lock, CI and the production image re-resolve every
+    transitive dependency on each build — so the artifact that passed review is
+    not necessarily the artifact that ships. For code that hashes passwords and
+    signs sessions, "probably the same packages" is not good enough.
+
+    Three ways this silently regresses: the file gets deleted, `.gitignore`
+    starts ignoring it again (it did until this change), or `.dockerignore`
+    keeps it out of the build context so the image falls back to a fresh
+    resolve.
+    """
+    assert UV_LOCK.exists(), "uv.lock must be committed, not generated per build"
+
+    ignored = subprocess.run(
+        ["git", "check-ignore", "uv.lock"],
+        capture_output=True, text=True, timeout=30, cwd=REPO_ROOT,
+    )
+    assert ignored.returncode != 0, "uv.lock must not be gitignored"
+
+    if DOCKERIGNORE.exists():
+        patterns = {
+            line.strip() for line in _read(DOCKERIGNORE).splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        assert not patterns & {"uv.lock", "*.lock", "uv.*"}, (
+            ".dockerignore must not exclude uv.lock — the image build reads it"
+        )
+
+
+def test_the_cloud_image_installs_from_the_lock_not_a_fresh_resolve() -> None:
+    text = _read(DOCKERFILE_CLOUD)
+
+    assert "uv.lock" in text, "Dockerfile.cloud must COPY uv.lock into the build"
+    assert "--frozen" in text, (
+        "the export must be --frozen so a lock that has drifted from "
+        "pyproject.toml fails the build instead of being silently re-resolved"
+    )
+    assert "--require-hashes" in text, (
+        "install with --require-hashes: the lock pins versions, the hashes pin "
+        "the actual artifacts"
+    )
+    # A bare `pip install .` (or '.[extra]') resolves dependencies afresh and
+    # would quietly undo all of the above. Only the --no-deps form is allowed.
+    for match in re.finditer(r"pip install[^\n\\]*", text):
+        command = match.group(0)
+        if re.search(r"\s'?\.(\[|\s|'|$)", command):
+            assert "--no-deps" in command, (
+                f"project install must be --no-deps (deps come from the lock): {command!r}"
+            )
 
 
 # ── Checkpoint B: scripts/deploy.sh ───────────────────────────────────────────

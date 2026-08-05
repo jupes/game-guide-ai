@@ -8,7 +8,6 @@ Run from repos/game-guide-ai:
 
 from __future__ import annotations
 
-
 from ingestion.ocr_normalize import normalize_ocr
 
 

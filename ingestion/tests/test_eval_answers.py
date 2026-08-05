@@ -27,7 +27,6 @@ from ingestion.eval_answers import (
 )
 from service.rag import REFUSAL
 
-
 # --- AnswerCase ---------------------------------------------------------------
 
 def test_answer_case_defaults_to_sage():

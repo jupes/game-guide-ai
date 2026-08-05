@@ -7,8 +7,7 @@ Run:
 
 from __future__ import annotations
 
-
-from ingestion.gen_golden import template_question, CATEGORY_FOR
+from ingestion.gen_golden import CATEGORY_FOR, template_question
 
 
 def test_spell_template():

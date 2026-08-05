@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 # Roles are server-authoritative (the GM channel is enforced from this, not the
@@ -30,7 +30,7 @@ def new_invite_token() -> str:
 
 
 def _now(now: datetime | None) -> datetime:
-    return now if now is not None else datetime.now(timezone.utc)
+    return now if now is not None else datetime.now(UTC)
 
 
 # ── Errors (each maps to a distinct, user-facing signup failure) ──────────────

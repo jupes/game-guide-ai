@@ -7,7 +7,6 @@ Run:
 
 from __future__ import annotations
 
-
 from ingestion.extract_scan import (
     BOOK_CONFIGS,
     DndChunk,
@@ -186,7 +185,8 @@ def _mm_collapse_stream():
         L(1, 0, 8.7, "Gargantuan monstrosity (titan), chaotic evil"),
         L(1, 0, 8.5, "Armor Class 18 (natural armor)"),
         L(1, 0, 8.5, "Hit Points 472 (27d20 + 189)"),
-        L(1, 0, 8.5, "Legendary Resistance (3/Day). If the kraken fails a saving throw it can choose to succeed instead."),
+        L(1, 0, 8.5, "Legendary Resistance (3/Day). If the kraken fails a saving throw "
+                     "it can choose to succeed instead."),
         L(2, 0, 14.7, "Kuo-ToA"),                      # mixed-case OCR name, fails 0.6 upper-ratio
         L(2, 0, 8.7, "Medium humanoid (kuo-toa), neutral evil"),
         L(2, 0, 8.5, "Armor Class 13 (natural armor, shield)"),

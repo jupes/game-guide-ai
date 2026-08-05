@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 # --- .env loading ----------------------------------------------------------
 # Mirror the repo-root .env into the environment (idempotent; never overrides an
@@ -46,6 +47,28 @@ def _float(name: str, default: float) -> float:
 
 def _str(name: str, default: str) -> str:
     return os.environ.get(name, default)
+
+
+SameSite = Literal["lax", "strict", "none"]
+_SAMESITE_VALUES: tuple[SameSite, ...] = ("lax", "strict", "none")
+
+
+def _samesite(name: str, default: SameSite) -> SameSite:
+    """Read a SameSite policy, rejecting anything else at import.
+
+    Browsers *ignore* an unrecognised SameSite value rather than erroring, so a
+    typo would not fail anywhere — the cookie would just fall back to whatever
+    the browser defaults to, quietly changing the CSRF posture this value exists
+    to set. Validating here also gives the value a Literal type, which is what
+    Starlette's `set_cookie` actually accepts.
+    """
+    raw = _str(name, default).strip().lower()
+    for allowed in _SAMESITE_VALUES:
+        if raw == allowed:
+            return allowed
+    raise ValueError(
+        f"{name} must be one of {_SAMESITE_VALUES}, got {raw!r}"
+    )
 
 
 # Truthy set shared with service/tracing.py's RAG_TRACING parsing — boolean
@@ -151,7 +174,7 @@ SESSION_COOKIE_NAME: str = _str("SESSION_COOKIE_NAME", "gga_session")
 # only for local http dev. SameSite=Lax is the CSRF mitigation for the
 # same-origin cookie-authed POSTs.
 SESSION_COOKIE_SECURE: bool = _bool("SESSION_COOKIE_SECURE", True)
-SESSION_COOKIE_SAMESITE: str = _str("SESSION_COOKIE_SAMESITE", "lax")
+SESSION_COOKIE_SAMESITE: SameSite = _samesite("SESSION_COOKIE_SAMESITE", "lax")
 
 # Default lifetime of a minted invite link (admin CLI --ttl-days overrides).
 INVITE_TTL_DAYS: int = _int("INVITE_TTL_DAYS", 14)

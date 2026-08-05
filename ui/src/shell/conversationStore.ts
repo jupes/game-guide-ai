@@ -238,11 +238,13 @@ export class LocalStorageConversationStore
   // un-namespaced `game-guide-ai:conversations` key that predates per-user
   // scoping. Consumed (removed) so it can't also surface for a second account.
   //
-  // NEVER migrates into the guest bucket: the app stays interactive while the
-  // session check is in flight, so a returning user can touch the store before
-  // `/auth/me` resolves. Migrating then would consume the shared key into
-  // `...:guest` and strand the real account's conversations once its identity
-  // arrived. Waiting costs nothing — the next load under the real identity migrates.
+  // NEVER migrates into the guest bucket. Migrating there would consume the
+  // shared key into `...:guest` and strand the real account's conversations
+  // once its identity arrived. `App` now holds a loading gate until `/auth/me`
+  // resolves, so no *user* can reach the store first — but this store does not
+  // depend on that: it defaults to the guest id, so any caller constructed
+  // before the identity is known would still hit this path. Waiting costs
+  // nothing — the next load under the real identity migrates.
   private migrateLegacy(): string | null {
     if (this.userId === GUEST_USER_ID) return null
     for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {

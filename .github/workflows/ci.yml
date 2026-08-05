@@ -37,8 +37,17 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: pytest (service + ingestion + repo guards)
-        run: uv run --with '.[test]' python -m pytest -q
+      # --frozen: install exactly what uv.lock pins and FAIL if the lock has
+      # drifted from pyproject.toml. Without it CI re-resolves every transitive
+      # dependency on each run, so a green build says nothing about what ships.
+      - name: Install from the lockfile
+        run: uv sync --frozen --extra dev
+      - name: Lint (ruff)
+        run: uv run --frozen --no-sync ruff check .
+      - name: Typecheck (mypy — service/ + config.py)
+        run: uv run --frozen --no-sync mypy
+      - name: pytest (service + ingestion + repo guards) + coverage gate
+        run: uv run --frozen --no-sync python -m pytest -q --cov
 
   ui-tests:
     runs-on: ubuntu-latest
@@ -59,6 +68,12 @@ jobs:
         run: bun run lint
       - name: Vitest (jsdom + storybook browser projects)
         run: bun run test
+      # Separate run: the storybook project renders every story in a real
+      # browser, which inflates coverage without adding behavioural assertions,
+      # so the gate measures the jsdom project only. Thresholds live in
+      # vite.config.ts and are a ratchet — raise them, never lower them.
+      - name: Coverage gate (jsdom project)
+        run: bun run test:coverage
 
   # Browser-level release tracer. This builds and starts the production Nginx
   # UI plus a deterministic FastAPI service, then records TTFB/FCP/LCP/CLS.

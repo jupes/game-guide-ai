@@ -76,8 +76,10 @@ function profileStorageKey(userId: string): string {
 }
 
 /** The un-namespaced key this replaced. Migrated onto the first REAL identity
- * that loads (never `guest`, which would strand it while the session check is
- * still in flight) and consumed, so a second account can't inherit it too. */
+ * that loads — never `guest`, which would consume it into a bucket the signed-in
+ * user never reads — and consumed, so a second account can't inherit it too.
+ * (`App` gates on the session check, so `guest` is the signed-out identity in
+ * practice; this guard does not rely on that gate, only on the id.) */
 const PRE_AUTH_PROFILE_KEY = 'game-guide-ai:profile'
 const GUEST_USER_ID = 'guest'
 

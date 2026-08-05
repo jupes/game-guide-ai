@@ -6,7 +6,7 @@ the identity round-trips through login + /auth/me. Uses an in-memory auth store.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 import config
 from service.app import app, get_auth_store
 from service.auth_store import InMemoryAuthStore
+from service.invites import Role
 
 pytestmark = pytest.mark.real_auth
 
@@ -29,9 +30,9 @@ def store(monkeypatch):
     app.dependency_overrides.clear()
 
 
-def _invite(store: InMemoryAuthStore, role: str = "player") -> str:
+def _invite(store: InMemoryAuthStore, role: Role = "player") -> str:
     return store.create_invite(
-        role=role, expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        role=role, expires_at=datetime.now(UTC) + timedelta(days=1),
     ).token
 
 

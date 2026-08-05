@@ -13,11 +13,10 @@ from typing import Any, Protocol
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from ingestion.retrieval import RetrievalResult
-
 # Env-overridable tuning knobs live in the single top-level config module.
 # DEFAULT_MODEL is re-exported here for `from .generate import DEFAULT_MODEL`.
 from config import CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX, TEMPERATURE
+from ingestion.retrieval import RetrievalResult
 
 from .models import Source, Suggestion, SuggestionStyle
 
@@ -107,8 +106,11 @@ def context_texts(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> list[s
 def build_context(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> str:
     """Numbered source blocks with FULL chunk text, for the LLM context."""
     blocks: list[str] = []
+    # strict=False is the intent, not an oversight: context_texts() returns only
+    # the first `top_n` chunks' text, so the zip truncates result.chunks to the
+    # context window on purpose.
     for i, (c, text) in enumerate(
-        zip(result.chunks, context_texts(result, top_n)), start=1,
+        zip(result.chunks, context_texts(result, top_n), strict=False), start=1,
     ):
         label = c.entity_name or c.section or c.chapter or c.content_type
         blocks.append(f"[{i}] ({label}): {text}")

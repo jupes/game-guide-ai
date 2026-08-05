@@ -7,7 +7,7 @@ which can hold a request slot while waiting for a hashing slot.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -260,10 +260,12 @@ def test_throttle_runs_before_any_hashing(store, monkeypatch) -> None:
     from service import app as app_module
 
     hashes: list[str] = []
-    monkeypatch.setattr(
-        app_module, "verify_password",
-        lambda stored, pw: hashes.append(pw) or False,
-    )
+
+    def _record(stored: str, pw: str) -> bool:
+        hashes.append(pw)
+        return False
+
+    monkeypatch.setattr(app_module, "verify_password", _record)
     client = TestClient(app)
     for _ in range(config.AUTH_RATE_LIMIT_PER_ACCOUNT):
         _login(client)
@@ -274,7 +276,7 @@ def test_throttle_runs_before_any_hashing(store, monkeypatch) -> None:
 
 def test_a_successful_login_still_works_within_budget(store) -> None:
     invite = store.create_invite(
-        role="player", expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        role="player", expires_at=datetime.now(UTC) + timedelta(days=1),
     ).token
     client = TestClient(app)
     client.post(

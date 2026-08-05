@@ -7,7 +7,7 @@ integration path, not here.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from service.admin_invites import (
     build_signup_link,
@@ -39,7 +39,7 @@ def test_create_persists_invite_with_role_and_returns_link() -> None:
 
 def test_list_shows_status_open_used_revoked() -> None:
     store = InMemoryAuthStore()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     later = now + timedelta(days=7)
     open_i = store.create_invite(role="player", expires_at=later)
     used_i = store.create_invite(role="player", expires_at=later)
@@ -73,6 +73,6 @@ def test_create_rejects_non_positive_ttl() -> None:
 
 def test_revoke_returns_true_then_false() -> None:
     store = InMemoryAuthStore()
-    inv = store.create_invite(role="player", expires_at=datetime.now(timezone.utc) + timedelta(days=1))
+    inv = store.create_invite(role="player", expires_at=datetime.now(UTC) + timedelta(days=1))
     assert cmd_revoke(store, inv.token) is True
     assert cmd_revoke(store, inv.token) is False  # already revoked

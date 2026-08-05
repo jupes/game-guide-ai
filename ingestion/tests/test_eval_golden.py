@@ -7,7 +7,6 @@ Run:
 
 from __future__ import annotations
 
-
 from ingestion.eval_golden import compute_metrics
 from ingestion.retrieval import (
     build_vector_sql,
@@ -16,7 +15,6 @@ from ingestion.retrieval import (
     is_answerable,
     needs_unfiltered_fallback,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test vocabulary — mirrors what we'd pull from dnd.chunks at runtime

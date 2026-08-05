@@ -6,7 +6,7 @@ cannot read its messages or attachments, nor post into it (403). The owner can.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,7 +42,7 @@ def env(monkeypatch):
 
 def _signup(auth, email: str) -> TestClient:
     token = auth.create_invite(
-        role="player", expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        role="player", expires_at=datetime.now(UTC) + timedelta(days=1),
     ).token
     client = TestClient(app)
     client.post("/auth/signup", json={"email": email, "password": "password123", "invite": token})

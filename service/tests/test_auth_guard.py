@@ -6,7 +6,7 @@ Without a valid session cookie, /chat and /conversations/* are 401; with one
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,7 +39,7 @@ def store(monkeypatch):
 
 def _authed_client(store) -> TestClient:
     token = store.create_invite(
-        role="dm", expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        role="dm", expires_at=datetime.now(UTC) + timedelta(days=1),
     ).token
     client = TestClient(app)
     client.post("/auth/signup", json={"email": "a@example.com", "password": "password123", "invite": token})
