@@ -1,5 +1,5 @@
 """
-Structured logging + trace correlation (x5bz.2, security review round 8).
+Structured logging + trace correlation.
 
 The throttle log line only proves the rate limiter keys on a real address if it
 can be joined to Cloud Run's *request* entry, which is where `httpRequest.remoteIp`

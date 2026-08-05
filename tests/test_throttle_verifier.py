@@ -75,9 +75,9 @@ def test_the_real_marker_is_recognised_however_it_arrives(headers):
 
 
 def test_the_marker_is_a_constant_not_an_environment_override(monkeypatch):
-    """It was briefly overridable for test convenience, which handed the whole
-    vulnerability back: an override of `server` made an ordinary Server header on
-    a platform 429 read as proof our limiter fired."""
+    """An environment override would hand the vulnerability back: setting it to
+    `server` makes an ordinary Server header on a platform 429 read as proof our
+    limiter fired."""
     for var in ("MARKER", "MARKER_NAME", "MARKER_VALUE"):
         monkeypatch.setenv(var, "server")
     reloaded = _load()

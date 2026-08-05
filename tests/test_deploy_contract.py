@@ -70,7 +70,7 @@ def test_cloud_image_builds_ui_and_copies_dist_without_rerank() -> None:
         )
 
 
-# ── Reproducible dependency resolution (PR #43 review) ───────────────────────
+# ── Reproducible dependency resolution ───────────────────────────────────────
 
 
 def test_the_lockfile_is_committed_and_reachable_by_the_build() -> None:

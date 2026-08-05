@@ -96,11 +96,10 @@ py-modules = ["config"]
 # the wheel, not just exist in the source tree.
 service = ["sql/*.sql"]
 
-# ── Lint (PR #43 review) ─────────────────────────────────────────────────────
-# The Python side shipped with no static gate at all, which is a poor position
-# for security-sensitive code. The rule set is deliberately mainstream rather
-# than maximal: ruff's wider families (PL*, FURB, PERF, TRY, PYI) flag mostly
-# stylistic things here and would have made the gate noise people learn to skip.
+# ── Lint ─────────────────────────────────────────────────────────────────────
+# Deliberately mainstream rather than maximal: ruff's wider families (PL*, FURB,
+# PERF, TRY, PYI) flag mostly stylistic things here, and a noisy gate is one
+# people learn to skip.
 [tool.ruff]
 target-version = "py312"
 # Set to the codebase as written (longest line was 126, only two over 120) rather
@@ -143,11 +142,11 @@ ignore = [
 # what the banners document.
 "ingestion/tests/test_retrieval.py" = ["B905", "E402"]
 
-# ── Typecheck (PR #43 review) ────────────────────────────────────────────────
-# Scoped to the deployed request path and the auth surface, which this pass took
-# to zero. `ingestion/` (25 findings, book-extraction and eval CLIs) is real work
-# that belongs in its own change, not smuggled into an auth PR — tracked in beads.
-# `ignore_missing_imports` because langgraph/langfuse/psycopg ship partial stubs.
+# ── Typecheck ────────────────────────────────────────────────────────────────
+# Scoped to the deployed request path and the auth surface, both at zero.
+# Extending it over `ingestion/` (the book-extraction and eval CLIs) is tracked
+# separately. `ignore_missing_imports` because langgraph/langfuse/psycopg ship
+# partial stubs.
 [tool.mypy]
 python_version = "3.12"
 files = ["service", "config.py"]
@@ -165,7 +164,7 @@ testpaths = ["service/tests", "ingestion/tests", "tests", "scripts/gcp/tests"]
 # Belt-and-suspenders: never descend into these even if named on the CLI.
 norecursedirs = [".venv", "venv", "build", "dist", "node_modules", "ui", ".git", "*.egg-info"]
 
-# ── Coverage (PR #43 review) ─────────────────────────────────────────────────
+# ── Coverage ─────────────────────────────────────────────────────────────────
 # Scoped to `service/` on purpose. A repo-wide number would be dominated by the
 # one-shot ingestion CLIs (extract.py, embed.py, ingest_books.py — 0%, run by
 # hand against book PDFs, not exercised by tests), which would drag the floor so

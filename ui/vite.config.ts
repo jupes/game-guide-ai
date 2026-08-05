@@ -25,10 +25,9 @@ export default defineConfig({
     }
   },
   test: {
-    // Coverage (PR #43 review): `@vitest/coverage-v8` was already a dependency
-    // but nothing ever ran it. Measured over the jsdom project — the storybook
-    // project renders every story in a real browser, which inflates the number
-    // without adding assertions about behaviour.
+    // Measured over the jsdom project only: the storybook project renders every
+    // story in a real browser, which inflates the number without adding any
+    // assertions about behaviour.
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],

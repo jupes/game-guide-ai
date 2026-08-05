@@ -201,7 +201,7 @@ describe('App auth gate', () => {
   })
 })
 
-// ── An outage is not a logout (PR #43 review) ────────────────────────────────
+// ── An outage is not a logout ────────────────────────────────────────────────
 
 function realApp() {
   return (
@@ -223,8 +223,8 @@ describe('session check outage', () => {
     render(realApp())
 
     expect(await screen.findByRole('button', { name: /try again/i })).toBeInTheDocument()
-    // The regression this pins: a backend blip used to present the login form,
-    // where every credential the tester typed would fail for the same reason.
+    // Never the login form: every credential the tester typed there would fail
+    // for the same reason the check did.
     expect(screen.queryByRole('button', { name: /sign in/i })).not.toBeInTheDocument()
     expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument()
   })

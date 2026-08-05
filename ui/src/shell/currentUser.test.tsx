@@ -64,12 +64,11 @@ describe('session check', () => {
     await waitFor(() => expect(result.current.authStatus).toBe('unauthenticated'))
   })
 
-  // ── An outage is not a logout (PR #43 review) ──────────────────────────────
+  // ── An outage is not a logout ──────────────────────────────────────────────
   //
-  // Every non-ok result used to become `unauthenticated`, so a backend blip
-  // dropped a signed-in tester onto Login — asking them to re-enter credentials
-  // that the same unreachable backend could not have checked. Only a 401 is the
-  // server actually saying the session is invalid.
+  // Only a 401 is the server saying the session is invalid. Anything else means
+  // the question went unanswered, and sending that tester to Login would ask
+  // them to re-enter credentials the backend cannot check.
 
   it.each([
     ['a 503 (backend down)', { kind: 'error' as const, status: 503, message: 'x' }],

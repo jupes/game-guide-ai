@@ -1,7 +1,9 @@
-"""Behavior #5 — require_session guards the data endpoints (x5bz.2 Checkpoint C).
+"""`require_session` guards the data endpoints.
 
-Without a valid session cookie, /chat and /conversations/* are 401; with one
-(minted via signup), /chat is 200. /healthz and /metrics/ui stay open.
+Without a valid session cookie the guarded routes are 401; with one they are
+not. /healthz and /metrics/ui stay open. The signing secret must be real or auth
+fails closed, and the cookie is never the last word — the account is re-read per
+request, so deletion and role changes take effect immediately.
 """
 
 from __future__ import annotations
@@ -46,19 +48,14 @@ def _authed_client(store) -> TestClient:
     return client
 
 
-# Every route behind `require_session`, as a matrix rather than a test each —
-# the list is the security contract, so adding a guarded route means adding a
-# line here, and forgetting to is the only way a route can slip out of coverage.
-#
-# GET /conversations/{id}/attachments was the one this suite used to omit: the
-# route was protected, but nothing failed if a future dependency change exposed
-# it, and attachment metadata carries filenames from other users' uploads.
+# Every route behind `require_session`, as a matrix rather than a test each. This
+# list IS the security contract: a guarded route missing from it is a route with
+# no test that it is guarded, and attachment metadata alone carries filenames
+# from other users' uploads. `test_every_session_guarded_route_is_in_the_matrix`
+# checks the list against the real routing table so it cannot fall behind.
 #: (method, route template as FastAPI knows it, concrete URL, JSON body or None)
 Route = tuple[str, str, str, dict[str, object] | None]
 
-# Each entry: (method, route template as FastAPI knows it, concrete URL, body).
-# The template is what `test_every_session_guarded_route_is_in_the_matrix`
-# matches against the real routing table.
 PROTECTED_ROUTES: list[Route] = [
     ("POST", "/chat", "/chat", {"prompt": "What is a Basilisk?"}),
     ("GET", "/auth/me", "/auth/me", None),
@@ -159,7 +156,7 @@ def test_placeholder_or_weak_secret_disables_auth(store, monkeypatch, secret):
     assert r.status_code == 503, f"expected auth disabled for secret {secret!r}"
 
 
-# ── Security review regressions: the cookie is not the last word ─────────────
+# ── The cookie is not the last word ──────────────────────────────────────────
 
 
 def test_deleted_account_cannot_keep_using_its_cookie(store):

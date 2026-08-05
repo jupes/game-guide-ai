@@ -328,8 +328,8 @@ describe('signup', () => {
 
   it('normalizes a FastAPI 422 validation array into a string message', async () => {
     // FastAPI answers 422 with `detail: [{loc, msg, type}, ...]`. Passing that
-    // array to React throws ("objects are not valid as a React child"), so a
-    // 7-char password used to crash the screen instead of showing an error.
+    // array to React throws ("objects are not valid as a React child"), so it
+    // must be normalised to a string before it reaches the screen.
     const result = await signup(
       'a@example.com', 'short', 'tok',
       fakeFetch(422, {
@@ -437,8 +437,7 @@ describe('getMe', () => {
   })
 
   // The caller decides logout-vs-outage from `status` alone, so getMe must
-  // report it faithfully — and must not describe an outage as "not signed in",
-  // which is how the two got conflated in the first place (PR #43 review).
+  // report it faithfully and must never describe an outage as "not signed in".
 
   it.each([500, 502, 503, 403, 404])('reports the real status for %i', async (status) => {
     const result = await getMe(fakeFetch(status))

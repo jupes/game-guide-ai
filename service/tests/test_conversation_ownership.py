@@ -104,7 +104,7 @@ def test_reading_an_unowned_conversation_claims_it(env):
     ).status_code == 403
 
 
-# ── Security review regressions (must fail CLOSED) ───────────────────────────
+# ── Authorization must fail CLOSED ───────────────────────────────────────────
 
 
 class _AuthzFailingStore(InMemoryMessageStore):

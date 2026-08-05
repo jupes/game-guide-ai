@@ -34,12 +34,11 @@ def test_ci_runs_e2e_on_pull_requests_and_never_deploys_them():
     assert "github.event_name != 'pull_request'" in deploy_job
 
 
-# ── The database-backed tests must actually RUN in CI (PR #43 review) ────────
+# ── The database-backed tests must actually RUN in CI ────────────────────────
 #
-# These guards exist because the failure they prevent is invisible. A test that
-# skips reports the same green tick as a test that passes, so the atomic invite
-# guarantee — one invite, one account, enforced by a Postgres row lock — sat
-# unverified through every CI run since it was written, and nothing said so.
+# The failure these prevent is invisible: a skipped test reports the same green
+# tick as a passing one, so the atomic invite guarantee could go unverified on
+# every run with nothing to show for it.
 
 
 def test_ci_provides_a_postgres_service_for_the_python_job():
@@ -83,5 +82,5 @@ def test_the_integration_step_does_not_swallow_its_own_failure():
     step = job.split("Integration tests against real PostgreSQL", 1)[1]
     assert "continue-on-error" not in step, (
         "the integration step must be able to fail the job — allowing it to "
-        "continue would restore exactly the green-whatever-happens state this fixed"
+        "continue would make the job green whatever the database did"
     )
