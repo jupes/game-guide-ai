@@ -1,21 +1,20 @@
-"""Auth endpoints report a broken store as 503, never 500 (PR #43 review).
+"""How the auth endpoints classify a failure.
 
-`get_auth_store` already 503s when the store never came up. The gap was the
-store that comes up and *then* breaks — a dropped connection, a Cloud SQL
-failover, connections exhausted. Those calls had no error boundary, so the
-exception escaped the endpoint as a 500.
+`service/app.py` publishes a taxonomy operators alert on — 502 upstream, 503
+unavailable, 500 bug — and the auth path has to keep it under every kind of
+breakage:
 
-That is a real difference, not a cosmetic one:
+    store outage (connection lost, failover, pool exhausted) -> 503
+    domain outcome (taken email, spent invite)               -> 409 / 400
+    programming error inside a store                         -> 500
+    local hashing saturation                                 -> 503 "busy"
 
-  * 500 means "this request is broken, retrying will not help"; 503 means "the
-    backend is down, retry". The UI, the operator reading status codes, and any
-    uptime check all act on that distinction.
-  * `docs/deploy-gcp.md` documents `auth unavailable -> 503` as the contract, and
-    the startup path already keeps it. A 500 out of /auth/login contradicted the
-    runbook the on-call person is reading during the outage.
+503 rather than 500 for an outage is what tells a client to retry, and 503
+rather than 401 is what stops a signed-in tester being sent to Login to
+re-enter credentials the backend is in no state to check.
 
-Each test drives the endpoint through real HTTP with a store whose methods
-raise, and asserts the status the client actually receives.
+Each test drives a real HTTP request against a store whose methods raise, and
+asserts the status a client actually receives.
 """
 
 from __future__ import annotations
@@ -37,15 +36,13 @@ from service.models import ChatMode, ChatResponse
 pytestmark = pytest.mark.real_auth
 
 SECRET = "test-secret-please-rotate-at-least-32-chars"
+CREDENTIALS = {"email": "ada@example.com", "password": "password123"}
 
 
 def store_down() -> Exception:
-    """What psycopg actually raises when the database is gone.
-
-    Using the real class matters: the endpoint boundary translates the concrete
-    connection/database errors, NOT `Exception`, so a test double raising some
-    bespoke error would be testing a boundary the code no longer has.
-    """
+    """What psycopg raises when the database is gone. The boundary translates
+    the concrete connection errors, not `Exception`, so a bespoke test error
+    would exercise a boundary the code does not have."""
     import psycopg
 
     return psycopg.OperationalError("connection refused")
@@ -61,12 +58,8 @@ class _FakeService:
 
 
 class _ExplodingStore(InMemoryAuthStore):
-    """A working in-memory store with one method sabotaged.
-
-    Subclassing the real fake (rather than a bare mock) keeps every OTHER call on
-    the request path behaving normally, so each test isolates one failure point
-    instead of a store that is uniformly broken.
-    """
+    """A working store with named methods sabotaged, so each test isolates one
+    failure point instead of a uniformly broken backend."""
 
     def __init__(self, *broken: str, error: Exception | None = None) -> None:
         super().__init__()
@@ -102,9 +95,9 @@ def _auth_config(monkeypatch):
     app.dependency_overrides.clear()
 
 
-def _use(store) -> TestClient:
+def _use(store, **client_kwargs) -> TestClient:
     app.dependency_overrides[get_auth_store] = lambda: store
-    return TestClient(app)
+    return TestClient(app, **client_kwargs)
 
 
 def _invite(store, role="player") -> str:
@@ -116,128 +109,66 @@ def _invite(store, role="player") -> str:
 def _signed_in_client(store) -> TestClient:
     """A client holding a real session cookie, minted before anything breaks."""
     client = _use(store)
-    token = _invite(store)
-    r = client.post(
-        "/auth/signup",
-        json={"email": "ada@example.com", "password": "password123", "invite": token},
-    )
+    r = client.post("/auth/signup", json={**CREDENTIALS, "invite": _invite(store)})
     assert r.status_code == 200, r.text
     return client
 
 
-# ── login ────────────────────────────────────────────────────────────────────
+# ── Outage -> 503 ────────────────────────────────────────────────────────────
+#
+# Asserting the 503 *and its detail* covers the near-misses in one request: not
+# 500 (a bug the client should not retry), not 401 (wrong credentials / signed
+# out), and not some unrelated 503 from another dependency.
 
 
-def test_login_store_outage_is_503_not_500():
-    r = _use(_ExplodingStore("get_credentials")).post(
-        "/auth/login", json={"email": "ada@example.com", "password": "password123"},
-    )
-    assert r.status_code == 503, f"a broken store must not read as a server bug: {r.text}"
+def test_login_outage_is_unavailability_not_bad_credentials():
+    r = _use(_ExplodingStore("get_credentials")).post("/auth/login", json=CREDENTIALS)
+    assert r.status_code == 503, r.text
     assert r.json()["detail"] == "auth backend unavailable"
 
 
-def test_login_store_outage_is_never_reported_as_bad_credentials():
-    """The dangerous near-miss: swallowing the failure and falling through to the
-    generic 401 would tell every tester their password is wrong during an outage,
-    and invite a support queue full of password resets that fix nothing."""
-    r = _use(_ExplodingStore("get_credentials")).post(
-        "/auth/login", json={"email": "ada@example.com", "password": "password123"},
-    )
-    assert r.status_code != 401
-
-
-# ── signup ───────────────────────────────────────────────────────────────────
-
-
-def test_signup_invite_lookup_outage_is_503():
-    store = _ExplodingStore("get_invite")
-    r = _use(store).post(
-        "/auth/signup",
-        json={"email": "a@example.com", "password": "password123", "invite": "tok"},
-    )
-    assert r.status_code == 503
-
-
-def test_signup_redemption_outage_is_503():
-    """The precheck passes and the store dies during the atomic redemption —
-    the window where signup previously 500'd with a half-told story."""
-    store = _ExplodingStore("redeem_invite")
-    token = _invite(store)
-    r = _use(store).post(
-        "/auth/signup",
-        json={"email": "a@example.com", "password": "password123", "invite": token},
-    )
+@pytest.mark.parametrize("broken", ["get_invite", "redeem_invite"])
+def test_signup_outage_is_503(broken):
+    """Both windows: the cheap precheck, and the atomic redemption itself."""
+    store = _ExplodingStore(broken)
+    r = _use(store).post("/auth/signup", json={**CREDENTIALS, "invite": _invite(store)})
     assert r.status_code == 503, r.text
 
 
-@pytest.mark.parametrize(
-    ("error", "expected"),
-    [
-        (EmailTaken("An account already exists for this email."), 409),
-        (InviteError("This invite link has already been used."), 400),
-    ],
-)
-def test_domain_errors_keep_their_own_status(error, expected):
-    """The boundary must not flatten real answers into 503. A taken email is a
-    decision about the request (409); a spent invite is too (400)."""
-    store = _ExplodingStore("redeem_invite", error=error)
-    token = _invite(store)
-    r = _use(store).post(
-        "/auth/signup",
-        json={"email": "a@example.com", "password": "password123", "invite": token},
-    )
-    assert r.status_code == expected, r.text
-
-
-# ── /auth/me and the session guard ───────────────────────────────────────────
-
-
-def test_me_store_outage_is_503_not_500():
+def test_me_outage_is_unavailability_not_a_signed_out_session():
     store = _ExplodingStore()
     client = _signed_in_client(store)
     store._broken.add("get_user_by_id")  # noqa: SLF001 - break it mid-session
     r = client.get("/auth/me")
     assert r.status_code == 503, r.text
+    assert r.json()["detail"] == "auth backend unavailable"
 
 
-def test_me_store_outage_does_not_look_like_a_signed_out_session():
-    """401 would send a signed-in tester to Login to re-enter credentials that
-    cannot be checked — the session is fine, the database is not."""
-    store = _ExplodingStore()
-    client = _signed_in_client(store)
-    store._broken.add("get_user_by_id")  # noqa: SLF001
-    assert client.get("/auth/me").status_code != 401
-
-
-def test_guarded_endpoint_store_outage_is_503():
-    """Same rule on the data endpoints: `require_session` fails CLOSED, and an
-    unreadable account is unavailability, not a verdict.
-
-    /chat 503s on its own when the RAG service isn't built — and FastAPI resolves
-    that dependency first — so a bare status assertion here passes whether or not
-    the auth guard does anything. Hence both a working fake service AND a check
-    on the detail.
-    """
+def test_guarded_endpoint_outage_is_503():
+    """`require_session` fails CLOSED: an unreadable account is unavailability,
+    not permission. The detail is asserted because /chat 503s on its own when
+    the RAG service is absent, which would pass a bare status check."""
     store = _ExplodingStore()
     client = _signed_in_client(store)
     app.dependency_overrides[get_service] = lambda: _FakeService()
     store._broken.add("get_user_by_id")  # noqa: SLF001
     r = client.post("/chat", json={"prompt": "hi"})
     assert r.status_code == 503
-    assert r.json()["detail"] == "auth backend unavailable", (
-        "the 503 must come from the session guard, not from the unrelated "
-        f"'service not ready' path: {r.text}"
-    )
+    assert r.json()["detail"] == "auth backend unavailable", r.text
 
 
-# ── ...but a BUG is still a bug ──────────────────────────────────────────────
-#
-# The other half of the contract. `service/app.py` documents 502 upstream · 503
-# unavailable · 500 bug, and operators alert on that split. A boundary that
-# caught `Exception` would relabel every programming error inside a store
-# implementation as a retryable 503 — so a client would keep retrying a request
-# that can never succeed, and the signal that something is genuinely broken
-# would be buried among ordinary outages.
+# ── ...but a domain outcome, and a bug, keep their own status ────────────────
+
+
+@pytest.mark.parametrize(("error", "expected"), [
+    (EmailTaken("An account already exists for this email."), 409),
+    (InviteError("This invite link has already been used."), 400),
+])
+def test_domain_errors_are_not_flattened_into_503(error, expected):
+    """A taken email and a spent invite are decisions about the request."""
+    store = _ExplodingStore("redeem_invite", error=error)
+    r = _use(store).post("/auth/signup", json={**CREDENTIALS, "invite": _invite(store)})
+    assert r.status_code == expected, r.text
 
 
 @pytest.mark.parametrize("bug", [
@@ -246,25 +177,19 @@ def test_guarded_endpoint_store_outage_is_503():
     AttributeError("'NoneType' object has no attribute 'id'"),
     KeyError("email"),
 ])
-def test_a_programming_error_in_the_store_is_a_500_not_a_503(bug):
-    store = _ExplodingStore("get_credentials", error=bug)
-    app.dependency_overrides[get_auth_store] = lambda: store
-    # raise_server_exceptions=False so the client sees the response a real
-    # client would, instead of the exception being re-raised into the test.
-    client = TestClient(app, raise_server_exceptions=False)
-
-    r = client.post("/auth/login", json={"email": "a@example.com", "password": "password123"})
-    assert r.status_code == 500, (
-        f"{type(bug).__name__} is a bug, not an outage — reporting it as "
-        f"{r.status_code} tells the client to retry something that cannot work"
-    )
+def test_a_programming_error_in_the_store_is_a_500(bug):
+    """Reporting a bug as 503 tells the client to retry something that can never
+    succeed, and buries the signal among ordinary outages."""
+    # raise_server_exceptions=False so the client sees what a real client sees.
+    client = _use(_ExplodingStore("get_credentials", error=bug), raise_server_exceptions=False)
+    r = client.post("/auth/login", json=CREDENTIALS)
+    assert r.status_code == 500, f"{type(bug).__name__} is a bug, not an outage"
 
 
-def test_hashing_capacity_is_not_reported_as_a_backend_outage():
-    """`hash_password` runs in this process, not in the store. Wrapping it in
-    the backend boundary would have made a local CPU/memory limit look like a
-    database failure — same status, but the wrong operational story, and
-    `signup` already sheds that load with its own message."""
+def test_hashing_saturation_keeps_its_own_shed_message():
+    """`hash_password` is CPU work in this process, not a store call. Routing it
+    through the backend boundary would give a local capacity limit the wrong
+    operational story."""
     store = InMemoryAuthStore()
     token = _invite(store)
     client = _use(store)
@@ -273,15 +198,12 @@ def test_hashing_capacity_is_not_reported_as_a_backend_outage():
         raise HashingCapacityError("all hash slots busy")
 
     with mock.patch.object(app_module, "hash_password", explode):
-        r = client.post(
-            "/auth/signup",
-            json={"email": "a@example.com", "password": "password123", "invite": token},
-        )
+        r = client.post("/auth/signup", json={**CREDENTIALS, "invite": token})
     assert r.status_code == 503
     assert r.json()["detail"] == "busy, please retry"
 
 
-# ── the duplicate /auth/me query is gone ─────────────────────────────────────
+# ── One account read per request ─────────────────────────────────────────────
 
 
 class _CountingStore(InMemoryAuthStore):
@@ -294,20 +216,12 @@ class _CountingStore(InMemoryAuthStore):
         return super().get_user_by_id(user_id)
 
 
-def test_me_does_not_re_query_the_account_require_session_already_read():
-    """`require_session` re-reads the account on every request by design. /auth/me
-    ran the identical query a second time — extra load on the auth database and a
-    second, unguarded chance to fail."""
+def test_me_reads_the_account_once():
+    """`require_session` re-reads the account on every request by design;
+    /auth/me answers from that read rather than repeating the query."""
     store = _CountingStore()
-    client = _use(store)
-    token = _invite(store)
-    client.post(
-        "/auth/signup",
-        json={"email": "ada@example.com", "password": "password123", "invite": token},
-    )
+    client = _signed_in_client(store)
     store.by_id_calls = 0
 
     assert client.get("/auth/me").status_code == 200
-    assert store.by_id_calls == 1, (
-        f"/auth/me should read the account once per request, not {store.by_id_calls} times"
-    )
+    assert store.by_id_calls == 1, f"expected 1 read, got {store.by_id_calls}"
