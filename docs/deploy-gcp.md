@@ -86,8 +86,10 @@ gcloud sql users set-password postgres --instance=game-guide-ai --password="$DBP
 
 # Enable pgvector + create the schema. Via the Auth Proxy in one terminal:
 #   cloud-sql-proxy "$PROJECT:$REGION:game-guide-ai" --port 6543
-# then, in another:
-scripts/bootstrap-db.sh "postgresql://postgres:<PW>@localhost:6543/game_guide_ai"
+# then, in another. $PROXY is the operator DSN through that proxy; §6 and the
+# §10/§11 incident sections all reuse it, so re-export it in every new shell:
+export PROXY="postgresql://postgres:<PW>@localhost:6543/game_guide_ai"
+scripts/bootstrap-db.sh "$PROXY"
 ```
 
 The script applies every schema file in order and stops at the first failure
@@ -176,6 +178,7 @@ Move the embedded corpus from local **:5433** into Cloud SQL — **no re-embeddi
 **Set `DATABASE_URL` explicitly**; `verify_db.py`'s fallback is `localhost:5432`
 (the legacy corrupted corpus) and it does a sentinel insert+delete, not a read-only probe.
 
+```bash
 # Dump the dnd schema (corpus) from the CORRECT local DB (:5433):
 pg_dump "postgresql://rag:rag_dev_change_me@localhost:5433/game_guide_ai" \
   -Fc --schema=dnd -f corpus-dnd.dump
@@ -189,6 +192,8 @@ pg_dump "postgresql://rag:rag_dev_change_me@localhost:5433/game_guide_ai" \
 #     -Fc --schema=dnd > corpus-dnd.dump      # NB: no -t, it would corrupt the binary dump
 
 # Restore DATA ONLY through the Auth Proxy (started in step 3, port 6543).
+# $PROXY is set in step 3 — re-export it if this is a fresh shell. Unset, it is
+# an empty DSN, and pg_restore loads 9,067 rows into a LOCAL database instead.
 # The dnd.chunks table + indexes already exist (init/02 applied in step 3), so a
 # full restore would collide on CREATE ("already exists"). --data-only loads just
 # the 9,067 rows into the existing table.
@@ -418,8 +423,27 @@ entry still carries a bare trace id — searchable, just not auto-correlated.)
 
 ## 10. Incident — a leaked invite or a compromised account
 
-All `admin_invites` commands below run from the repo root with the Cloud SQL
-proxy up and `DATABASE_URL` pointing through it (see §3).
+**Set the shell up first.** Every command below reads `$PROXY`, and the failure
+is silent: unset, it is an empty DSN, so `psql` connects to whatever local
+database it finds and `admin_invites` falls back to the local development DSN.
+Both then report success — against the wrong database, with production access
+left exactly where it was.
+
+```bash
+export PROJECT=game-guide-ai-cloud REGION=us-central1
+cloud-sql-proxy "$PROJECT:$REGION:game-guide-ai" --port 6543 &   # if not already up
+
+export PROXY="postgresql://postgres:<PW>@localhost:6543/game_guide_ai"   # as in §3
+export DATABASE_URL="$PROXY"    # what `python -m service.admin_invites` reads
+export SVC_URL="$(gcloud run services describe game-guide-ai \
+  --region="$REGION" --format='value(status.url)')"
+
+# Prove you are on Cloud SQL before touching anything:
+psql "$PROXY" -tAc 'select current_user, current_database();'   # → postgres|game_guide_ai
+```
+
+`postgres` is the discriminator — the local development DSN connects as `rag`.
+Run `admin_invites` from the repo root.
 
 An invite that has **not** been redeemed — revoke it and you are done:
 
@@ -505,14 +529,16 @@ not have, and there is no admin reset command. Minting a second invite does not
 help on its own: signup rejects an email that already has an account
 (`EmailTaken`, 409), and the invite is single-use, so it is spent either way.
 
-Recovery is **delete the account, then re-invite** — and it is destructive:
+Recovery is **delete the account, then re-invite** — and it is destructive. Set
+the shell up as in §10 first; `$SVC_URL` matters here because `--base-url`
+otherwise defaults to `http://localhost:8000` and mints a link to nowhere.
 
 ```bash
 # 1. Delete. This CASCADES: their conversations, messages and attachments go too.
 psql "$PROXY" -c "DELETE FROM auth.users WHERE lower(email) = lower('them@example.com');"
 
 # 2. Mint a fresh invite for the same person (--role dm to restore GM access).
-python -m service.admin_invites create --role player
+python -m service.admin_invites create --role player --base-url "$SVC_URL"
 ```
 
 They sign up again with the same email — now unused — and start with empty

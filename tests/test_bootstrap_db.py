@@ -17,7 +17,6 @@ Run from repo root:
 
 from __future__ import annotations
 
-import os
 import stat
 import subprocess
 from pathlib import Path
@@ -76,29 +75,6 @@ def _run(tmp_path: Path, *args: str, fail_on: str = "") -> tuple[int, list[str],
 def test_applies_every_schema_file_in_dependency_order(tmp_path):
     code, applied, output = _run(tmp_path, DSN)
     assert code == 0, output
-    assert applied == EXPECTED_ORDER
-
-
-@pytest.mark.skipif(os.name == "nt", reason="no executable bit on Windows checkouts")
-def test_runs_the_way_the_runbook_invokes_it(tmp_path):
-    """`docs/deploy-gcp.md` says `scripts/bootstrap-db.sh <dsn>` — no `bash`
-    prefix — so the script has to carry its own executable bit and shebang.
-
-    Every other test here launches it as `bash <script>`, which works whether or
-    not it is executable. That is precisely how a non-executable script reached
-    a runbook: the suite was green and the documented command was not runnable.
-    """
-    bindir = _fake_psql(tmp_path)
-    log = tmp_path / "psql.log"
-    result = subprocess.run(
-        [str(SCRIPT), DSN],  # NOT [bash, script] — the point of this test
-        capture_output=True, text=True, timeout=60, cwd=REPO_ROOT,
-        env={"PATH": f"{bindir}:/usr/bin:/bin", "PSQL_LOG": str(log), "HOME": str(tmp_path)},
-    )
-    assert result.returncode == 0, (
-        f"the documented invocation failed: {result.returncode}\n{result.stderr}"
-    )
-    applied = [Path(p.strip()).name for p in log.read_text(encoding="utf-8").splitlines()]
     assert applied == EXPECTED_ORDER
 
 

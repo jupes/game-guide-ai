@@ -71,7 +71,8 @@ the invite list *is* the access-control boundary.
 ## Generating the link
 
 ```bash
-# From the repo root, with the Cloud SQL proxy running (see deploy-gcp.md):
+# From the repo root, with the Cloud SQL proxy running and $PROXY exported
+# (deploy-gcp.md §3 defines it). Unset, this mints against your LOCAL database:
 DATABASE_URL="$PROXY" python -m service.admin_invites create \
   --role player \
   --base-url https://<service-url>
