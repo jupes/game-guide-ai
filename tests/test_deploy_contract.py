@@ -41,6 +41,46 @@ def _read(path: Path) -> str:
 _bash_or_skip = bash_or_skip
 
 
+# ── A script with a shebang must be executable ───────────────────────────────
+
+
+def _indexed_scripts() -> list[tuple[str, str]]:
+    """(mode, path) for everything under scripts/, as GIT records it."""
+    out = subprocess.run(
+        ["git", "ls-files", "-s", "scripts/"],
+        capture_output=True, text=True, timeout=30, cwd=REPO_ROOT, check=True,
+    ).stdout
+    entries = []
+    for line in out.splitlines():
+        meta, path = line.split("\t", 1)
+        entries.append((meta.split()[0], path))
+    return entries
+
+
+def test_every_shebanged_script_is_recorded_executable():
+    """The runbooks invoke these directly (`scripts/bootstrap-db.sh <dsn>`), which
+    needs the executable bit — a fresh clone otherwise gets "permission denied"
+    partway through a production bootstrap.
+
+    Two reasons this is checked against the git index rather than the filesystem:
+    the index is what a clone actually receives, and on Windows `core.fileMode`
+    is off, so the working-tree bit carries no information at all.
+
+    It also has to be a MODE check, not an execution check. The suites that run
+    these scripts invoke them as `bash <script>`, which works regardless of the
+    bit — so running them green says nothing about whether anyone else can.
+    """
+    wrong = [
+        path for mode, path in _indexed_scripts()
+        if (REPO_ROOT / path).read_text(encoding="utf-8", errors="ignore").startswith("#!")
+        and mode != "100755"
+    ]
+    assert not wrong, (
+        f"declare a shebang, be executable: {wrong} recorded non-executable. "
+        f"Fix with `git update-index --chmod=+x <path>`."
+    )
+
+
 # ── Checkpoint A: Dockerfile.cloud ────────────────────────────────────────────
 
 
