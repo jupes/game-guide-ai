@@ -149,7 +149,7 @@ def test_deploy_does_not_hardcode_the_iam_mode() -> None:
 
     `--no-allow-unauthenticated` on every deploy meant that once x5bz.1.6 opened
     the service, the next routine CI push — or the incident-response redeploy in
-    docs/invite-copy.md, which runs during an incident — silently revoked every
+    docs/deploy-gcp.md §10, which runs during an incident — silently revoked every
     tester's access, handing them a Cloud Run IAM 403 at the edge with no sign-in
     page to explain it. The IAM mode has to be an input, and its default must
     leave the live policy alone.

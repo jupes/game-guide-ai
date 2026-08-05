@@ -165,7 +165,7 @@ close that window: `chat.conversations.user_id → auth.users` and
 late write into a deleted account's conversation is *rejected* rather than silently
 recreating it, and one `DELETE FROM auth.users` removes the account's content. (The
 constraints are added `NOT VALID`, so conversations predating the ownership table keep
-their messages.) The incident runbook in `docs/invite-copy.md` still revokes access
+their messages.) The incident runbook in `docs/deploy-gcp.md` §10 still revokes access
 first and drains before deleting — the constraints are the backstop, not the plan.
 
 The constraint migrations check `pg_constraint` and only run when a constraint is

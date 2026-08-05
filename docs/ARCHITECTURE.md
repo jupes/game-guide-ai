@@ -157,7 +157,8 @@ prose categories. Default mode is pure filtered vector.
   `/conversations/*` and `/auth/me`; `/healthz` and `/metrics/ui` stay open. The service
   **fails closed** if `SESSION_SECRET` is unset. Every auth-store call goes through
   `_auth_lookup`, so a backend that breaks *after* startup answers **503**, never 500 —
-  "retry later", not "this request is broken". See [`invite-copy.md`](invite-copy.md).
+  "retry later", not "this request is broken". Design rationale:
+  [`adr/invite-auth.md`](adr/invite-auth.md); incident response: [`deploy-gcp.md`](deploy-gcp.md) §10.
 - Contract: `ChatRequest{prompt, mode, conversation_id}` → `ChatResponse{answer, sources[],
   answerable, mode, conversation_id, suggestions?}`. Errors: **401 no/expired session** ·
   **403 wrong role (GM channel) or another user's conversation** · 422 validation ·

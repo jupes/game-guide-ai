@@ -325,7 +325,7 @@ gcloud run services update game-guide-ai --region="$REGION" --allow-unauthentica
 
 **It stays open across later deploys.** `deploy.sh` defaults to
 `ACCESS=preserve` and passes no IAM flag at all, so shipping code — or the
-incident-response redeploy in `docs/invite-copy.md` — leaves this binding
+incident-response redeploy in §10 — leaves this binding
 untouched. It used to hardcode `--no-allow-unauthenticated`, which would have
 quietly re-locked the service on the next CI push and handed every tester an
 edge 403 with no login page behind it. `preserve` deliberately does **not** read
@@ -415,6 +415,75 @@ sharing one budget.
 
 (The trace field needs `GCP_PROJECT`, which `deploy.sh` sets. Without it the
 entry still carries a bare trace id — searchable, just not auto-correlated.)
+
+## 10. Incident — a leaked invite or a compromised account
+
+An invite that has **not** been redeemed: `revoke <token>` and you are done.
+
+If it *was* redeemed, the account exists, and the order below is load-bearing.
+`require_session` validates at the **start** of a request, so a request already
+admitted keeps its authorization for as long as it runs — up to Cloud Run's
+`--timeout` (300s). Deleting first leaves exactly that window for an in-flight
+`/chat` or upload to write rows after the cleanup.
+
+**1. Cut off access.** Rotate the signing secret and redeploy; every session
+cookie becomes unverifiable, so no *new* request can authenticate.
+
+```bash
+openssl rand -base64 48 | tr -d '
+' | gcloud secrets versions add session-secret --data-file=-
+bash scripts/deploy.sh game-guide-ai "$(git rev-parse --short HEAD)"
+```
+
+This logs **everyone** out — stateless cookies have no server-side revocation —
+so the other testers must still be able to reach the login screen. `deploy.sh`
+defaults to `ACCESS=preserve` and leaves the IAM mode alone precisely so this
+mid-incident redeploy cannot also revoke invocation and turn every session into
+an edge 403 with no login page behind it. Confirm:
+
+```bash
+gcloud run services get-iam-policy game-guide-ai --region "$REGION"   --format='value(bindings.members)' | grep -q allUsers   && echo "public invoke intact" || echo "IAM-LOCKED — testers cannot reach the login page"
+```
+
+(Before §9 opens ingress the service *is* IAM-locked, and that second line is
+the correct state.)
+
+**2. Drain.** Traffic allocation is the signal, not readiness: a retired
+revision normally stays `Ready` at 0%, so one still taking every request looks
+identical to one taking none.
+
+```bash
+gcloud run services describe game-guide-ai --region "$REGION"   --format='value(status.traffic[].revisionName, status.traffic[].percent)'
+sleep 360   # > --timeout, counted from the 100% cutover, not from the deploy
+```
+
+Wait for the new revision at 100% and the old at 0 (or gone) **before** starting
+the clock — requests the old revision already admitted may still be running.
+
+**3. Delete.** Now nothing can write on the account's behalf.
+
+```bash
+psql "$PROXY" -c "DELETE FROM auth.users WHERE lower(email) = lower('them@example.com');"
+```
+
+One statement suffices: `chat.conversations.user_id` references `auth.users`
+`ON DELETE CASCADE`, and messages/attachments cascade from conversations, so the
+content goes too. `auth.invites.used_by` is `ON DELETE SET NULL` — the invite row
+survives as the audit trail that its token was spent, it just forgets who.
+
+Those keys are also the backstop for step 1: a write that slips through anyway is
+rejected by the database rather than silently recreating an ownership row for a
+user id that no longer exists. Verify:
+
+```bash
+psql "$PROXY" -c "SELECT count(*) FROM chat.conversations c
+                    LEFT JOIN auth.users u ON u.id = c.user_id
+                   WHERE u.id IS NULL;"   -- expect 0
+```
+
+Conversations predating the ownership table are the one exception the cascade
+cannot reach (their messages have no owner row, which is why the constraint is
+`NOT VALID`). That is pre-auth data, not this account's.
 
 ## Cost
 

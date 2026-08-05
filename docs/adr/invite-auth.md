@@ -80,4 +80,4 @@ tests and crashing the deployed image.
 - `session-secret` must exist in Secret Manager before deploying, or every auth
   endpoint 503s by design.
 - Revoking a compromised account and draining in-flight requests is a runbook
-  procedure — see [`invite-copy.md`](../invite-copy.md).
+  procedure — see [`deploy-gcp.md` §10](../deploy-gcp.md).
