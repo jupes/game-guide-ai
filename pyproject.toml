@@ -90,6 +90,12 @@ packages = ["service", "ingestion"]
 # imported by both service and ingestion. Must ship in `pip install .`.
 py-modules = ["config"]
 
+[tool.setuptools.package-data]
+# The canonical schema DDL (service/schema.py). `ensure_schema()` reads these at
+# startup, so an image without them cannot migrate a database — it must ship in
+# the wheel, not just exist in the source tree.
+service = ["sql/*.sql"]
+
 # ── Lint (PR #43 review) ─────────────────────────────────────────────────────
 # The Python side shipped with no static gate at all, which is a poor position
 # for security-sensitive code. The rule set is deliberately mainstream rather

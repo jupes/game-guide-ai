@@ -117,10 +117,14 @@ pass fed by `build_vocab.py`); `qa_chunks.py` quarantines failure signatures pre
 
 ### Vector DB (`vector-db/` — [README](../vector-db/README.md))
 
-- **Postgres 17 + pgvector**, initialized from `vector-db/init/`: `01-extensions.sql`,
-  `02-schema.sql` (dnd.chunks + HNSW/GIN indexes), `03-hybrid-search.sql`,
-  `04-chat-schema.sql` (chat.messages / chat.attachments — same DDL `history.ensure_schema()`
-  applies idempotently at service startup for pre-existing volumes).
+- **Postgres 17 + pgvector.** Corpus schema in `vector-db/init/`: `01-extensions.sql`,
+  `02-schema.sql` (dnd.chunks + HNSW/GIN indexes), `03-hybrid-search.sql`.
+- **Application schema is canonical in `service/sql/`** (`04-chat-schema.sql`,
+  `05-auth-schema.sql`) — one definition, applied by both paths: mounted into the
+  container's init directory for a fresh database (or `scripts/bootstrap-db.sh` for
+  Cloud SQL), and re-applied by `ensure_schema()` at every service startup, which is
+  the migration path for existing databases. It ships inside the installed package,
+  so the Cloud image can migrate what it connects to.
 - `dnd.hybrid_search()` (vector+FTS RRF) exists but is **not adopted** — tied Hit@1, slightly
   worse Recall@10 (3q3). `verify_db.py` is an insert+kNN smoke test.
 

@@ -1,8 +1,13 @@
--- Auth schema (x5bz.2): per-user accounts + one-time invite links.
--- Fresh-volume path only: compose init SQL runs on first container init.
--- Existing volumes are migrated by the service at startup — see
--- service/auth_store.py PostgresAuthStore.ensure_schema(), which runs this
--- same idempotent DDL (keep the two in sync).
+-- Auth schema: per-user accounts + one-time invite links.
+--
+-- CANONICAL. This file is the only definition of the `auth` schema. It is
+-- applied by both paths and must stay idempotent:
+--   * fresh database — mounted into the container's init directory
+--   * existing database — re-applied at every service startup
+--     (service/auth_store.py PostgresAuthStore.ensure_schema)
+--
+-- Runs AFTER 04-chat-schema.sql: the ownership foreign key below points at
+-- chat.conversations, and is skipped when that table does not exist.
 
 CREATE SCHEMA IF NOT EXISTS auth;
 
@@ -35,25 +40,22 @@ CREATE TABLE IF NOT EXISTS auth.invites (
 
 CREATE INDEX IF NOT EXISTS invites_created_idx ON auth.invites (created_at);
 
--- Two constraint migrations, each applied ONLY when missing or wrong — the same
--- DDL runs at every service startup (service/auth_store.py), where an
--- unconditional DROP/ADD would take an ACCESS EXCLUSIVE lock on a live table at
--- each cold start and re-validate the invites FK every time. `confdeltype` is
--- the delete action: 'n' = SET NULL, 'c' = CASCADE.
+-- Two constraint migrations, each applied ONLY when missing or wrong. This runs
+-- at every startup, where an unconditional DROP/ADD would take an ACCESS
+-- EXCLUSIVE lock on a live table at each cold start and re-validate the invites
+-- FK every time. `confdeltype` is the delete action: 'n' = SET NULL, 'c' =
+-- CASCADE; conkey/confkey pin the exact COLUMNS, so a same-named FK on the
+-- wrong column cannot pass for the real one.
 --
--- 1. auth.invites.used_by ON DELETE SET NULL — redundant on a fresh volume (the
---    inline REFERENCES above already produces a constraint of this name), but
---    carried here so both copies declare the same objects
---    (tests/test_schema_parity.py enforces that).
+-- 1. auth.invites.used_by ON DELETE SET NULL — repairs a database whose
+--    constraint predates this (or has the wrong action); on a fresh one the
+--    inline REFERENCES above has already produced it.
 -- 2. chat.conversations.user_id ON DELETE CASCADE — ownership must point at a
 --    real account, so a request in flight when an account is deleted cannot
 --    re-create a row for a user id that no longer exists, and deleting an
 --    account removes its content (the cascade chains on to chat.messages /
---    chat.attachments, see 04-chat-schema.sql). Guarded because this file runs
---    after 04 but the chat schema may be absent in a deployment that skips it.
---
--- Both predicates pin the exact COLUMNS too (conkey/confkey), so a same-named FK
--- on the wrong column can't pass for the real one.
+--    chat.attachments, see 04-chat-schema.sql). Guarded on the chat table
+--    existing: a deployment that skips the chat schema must still start.
 DO $$
 DECLARE
   users    regclass := to_regclass('auth.users');

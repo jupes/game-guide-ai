@@ -9,7 +9,7 @@ WORKFLOW = Path(".github/workflows/ci.yml")
 #: from CI with DATABASE_URL set, or it silently reverts to a permanent skip.
 DB_BACKED_TESTS = [
     "service/tests/test_invite_atomic.py",
-    "tests/test_schema_parity.py",
+    "tests/test_schema.py",
 ]
 
 

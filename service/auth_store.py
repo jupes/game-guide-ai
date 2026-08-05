@@ -1,11 +1,10 @@
 """
-Auth store (x5bz.2 Checkpoint A) — users + invites persistence.
+Auth store — users + invites persistence.
 
-Mirrors `history.py`: a `AuthStore` Protocol the app talks to, with a Postgres
+Mirrors `history.py`: an `AuthStore` Protocol the app talks to, with a Postgres
 impl (`auth` schema in the same instance as the corpus) and an in-memory fake
-with identical semantics for pure tests. `ensure_schema()` runs idempotent DDL
-at startup — the migration path for volumes predating the auth schema (kept in
-sync with vector-db/init/05-auth-schema.sql).
+with identical semantics for pure tests. `ensure_schema()` applies the canonical
+DDL (`service/sql/05-auth-schema.sql`) at startup.
 
 The single load-bearing invariant here is **atomic invite consumption**: a
 concurrent second redemption of one invite must fail. The Postgres impl enforces
@@ -27,104 +26,7 @@ from .invites import (
     Role,
     new_invite_token,
 )
-
-# Idempotent DDL — kept in sync with vector-db/init/05-auth-schema.sql.
-AUTH_SCHEMA_DDL = """
-CREATE SCHEMA IF NOT EXISTS auth;
-
-CREATE TABLE IF NOT EXISTS auth.users (
-  id            BIGSERIAL PRIMARY KEY,
-  email         TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
-  role          TEXT NOT NULL DEFAULT 'player' CHECK (role IN ('player', 'dm')),
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_uidx
-  ON auth.users (lower(email));
-
-CREATE TABLE IF NOT EXISTS auth.invites (
-  token       TEXT PRIMARY KEY,
-  role        TEXT NOT NULL DEFAULT 'player' CHECK (role IN ('player', 'dm')),
-  expires_at  TIMESTAMPTZ NOT NULL,
-  used_at     TIMESTAMPTZ,
-  used_by     BIGINT REFERENCES auth.users (id) ON DELETE SET NULL,
-  revoked_at  TIMESTAMPTZ,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS invites_created_idx ON auth.invites (created_at);
-
--- Two constraint migrations, each applied ONLY when missing or wrong.
---
--- `ensure_schema()` runs on every startup and Cloud Run scales to zero, so an
--- unconditional DROP/ADD would take an ACCESS EXCLUSIVE lock on a live table at
--- every cold start — blocking queries until the startup transaction commits, and
--- serializing simultaneous starts behind each other — and re-adding the invites
--- FK would rescan the table to validate it every time. `confdeltype` is the
--- delete action ('n' = SET NULL, 'c' = CASCADE), so a constraint that exists
--- with the WRONG action is still repaired rather than assumed good.
---
--- 1. auth.invites.used_by ON DELETE SET NULL — for schemas created before this
---    existed: every redeemed invite holds a FK to its user, so deleting a
---    compromised account (the documented incident response) was rejected by
---    Postgres for any normally created account. The invite row must survive as
---    the audit trail that its token was spent; it just forgets who spent it.
--- 2. chat.conversations.user_id ON DELETE CASCADE — ownership must point at a
---    REAL account. Without it, deleting a compromised account left its ownership
---    rows behind, and an in-flight request (`require_session` validates at
---    request START, so one can still be running for up to the Cloud Run request
---    timeout) could claim or re-create a row for a user id that no longer
---    exists. The cascade chains onward to chat.messages / chat.attachments (see
---    history.CHAT_SCHEMA_DDL), so `DELETE FROM auth.users` really does remove
---    the account's content. Guarded on the chat table existing at all — this DDL
---    runs after the message store's (see the lifespan in app.py), but a
---    deployment that doesn't use the chat schema must still start — and NOT
---    VALID so ownership rows for already-deleted users can't block startup.
---
--- Both predicates pin the whole shape, not just the name: conkey/confkey pin the
--- exact COLUMNS, so a same-named FK with the right tables and delete action but
--- the WRONG column cannot pass for the real one and leave the intended column
--- unprotected while startup reports success.
-DO $$
-DECLARE
-  users    regclass := to_regclass('auth.users');
-  invites  regclass := to_regclass('auth.invites');
-  conv     regclass := to_regclass('chat.conversations');
-  users_pk smallint[];
-BEGIN
-  users_pk := ARRAY[(SELECT attnum FROM pg_attribute
-                      WHERE attrelid = users AND attname = 'id')];
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conname = 'invites_used_by_fkey'
-       AND conrelid = invites AND contype = 'f'
-       AND confrelid = users AND confdeltype = 'n'
-       AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
-                            WHERE attrelid = invites AND attname = 'used_by')]
-       AND confkey = users_pk
-  ) THEN
-    ALTER TABLE auth.invites DROP CONSTRAINT IF EXISTS invites_used_by_fkey;
-    ALTER TABLE auth.invites ADD CONSTRAINT invites_used_by_fkey
-      FOREIGN KEY (used_by) REFERENCES auth.users (id) ON DELETE SET NULL;
-  END IF;
-
-  IF conv IS NOT NULL AND NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conname = 'conversations_user_fkey'
-       AND conrelid = conv AND contype = 'f'
-       AND confrelid = users AND confdeltype = 'c'
-       AND conkey = ARRAY[(SELECT attnum FROM pg_attribute
-                            WHERE attrelid = conv AND attname = 'user_id')]
-       AND confkey = users_pk
-  ) THEN
-    ALTER TABLE chat.conversations DROP CONSTRAINT IF EXISTS conversations_user_fkey;
-    ALTER TABLE chat.conversations ADD CONSTRAINT conversations_user_fkey
-      FOREIGN KEY (user_id) REFERENCES auth.users (id) ON DELETE CASCADE NOT VALID;
-  END IF;
-END $$;
-"""
+from .schema import AUTH_SCHEMA, load
 
 
 class EmailTaken(Exception):
@@ -275,7 +177,7 @@ class PostgresAuthStore:
 
     def ensure_schema(self) -> None:
         with self._connect() as conn:
-            conn.execute(AUTH_SCHEMA_DDL)
+            conn.execute(load(AUTH_SCHEMA))
 
     def create_invite(self, role: Role, expires_at: datetime) -> Invite:
         token = new_invite_token()

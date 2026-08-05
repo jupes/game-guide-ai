@@ -86,36 +86,15 @@ gcloud sql users set-password postgres --instance=game-guide-ai --password="$DBP
 
 # Enable pgvector + create the schema. Via the Auth Proxy in one terminal:
 #   cloud-sql-proxy "$PROJECT:$REGION:game-guide-ai" --port 6543
-# then, in another, apply every init script IN ORDER (01 creates the vector
-# extension + dnd schema; 02-03 add tables, indexes and hybrid search; 04 the
-# chat schema; 05 the auth schema — users, invites, and the ownership foreign
-# key, which 05 adds onto 04's table, hence the order).
-#
-# The service also runs this DDL at startup (ensure_schema()), so a missed file
-# self-heals once it boots — but only then. Anything you do BEFORE first boot
-# against a half-bootstrapped database fails: minting the first invite with
-# `python -m service.admin_invites` needs auth.users/auth.invites to exist.
-# -v ON_ERROR_STOP=1, the `break` and the trailing `false` are all load-bearing:
-# psql keeps going after a SQL error by default; the loop would keep going after
-# a failed FILE (so 05 could run against a database where 04 never created the
-# table it adds the ownership key to); and a block whose last command is `echo`
-# EXITS 0 no matter what it printed — automation would read a half-bootstrapped
-# database as a success. Stop at the first error, say where, and exit nonzero.
-PROXY="postgresql://postgres:<PW>@localhost:6543/game_guide_ai"
-BOOTSTRAP_OK=1
-for f in 01-extensions.sql 02-schema.sql 03-hybrid-search.sql \
-         04-chat-schema.sql 05-auth-schema.sql; do
-  echo "==> $f"
-  psql "$PROXY" -v ON_ERROR_STOP=1 -f "vector-db/init/$f" \
-    || { BOOTSTRAP_OK=0; echo "BOOTSTRAP FAILED at $f" >&2; break; }
-done
-if [ "$BOOTSTRAP_OK" = 1 ]; then
-  echo "schema bootstrap complete"
-else
-  echo "schema bootstrap INCOMPLETE — fix the error above, then re-run the loop" >&2
-  false   # the block's exit status; `echo` alone would report success
-fi
+# then, in another:
+scripts/bootstrap-db.sh "postgresql://postgres:<PW>@localhost:6543/game_guide_ai"
 ```
+
+The script applies every schema file in order and stops at the first failure
+(exit 1). Do not skip it because the service re-applies the same DDL at startup:
+that self-heals only once it boots, and minting the first invite with
+`python -m service.admin_invites` needs `auth.users`/`auth.invites` to exist
+before then.
 
 The `INSTANCE_CONNECTION_NAME` is `"$PROJECT:$REGION:game-guide-ai"` — used by
 `deploy.sh` (`CLOUDSQL_INSTANCE`) and the `DATABASE_URL` secret below.
