@@ -26,3 +26,9 @@ ui/coverage/
 # Local Python virtualenvs (pollute pytest collection if not excluded)
 .venv/
 venv/
+
+# Generated spike extraction dumps (large, and contain source rulebook text)
+spikes/raw-extract-*.jsonl
+
+# Beads runtime state - the tracker is owned by the parent harness repo
+.beads/
