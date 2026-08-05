@@ -11,7 +11,7 @@ import './shell/AuthScreen.css'
 
 export default function App(): React.JSX.Element {
   const { screen, backToLanding, setConversationId } = useAppNav()
-  const { authStatus, user } = useCurrentUser()
+  const { authStatus, retryAuthCheck, user } = useCurrentUser()
 
   // Capture the invite ONCE, from the fragment (never sent to the server, so it
   // stays out of request logs). It's a single-use credential: clear it from the
@@ -46,6 +46,23 @@ export default function App(): React.JSX.Element {
     return (
       <div className="auth-screen" role="status" aria-live="polite">
         <p>Loading…</p>
+      </div>
+    )
+  }
+
+  // The check could not be completed (5xx, network failure). NOT a logout: the
+  // session cookie may be perfectly valid, and Login would be a dead end anyway
+  // because the same backend has to serve it. Say what happened and offer a
+  // retry, so a passing outage costs a click rather than a credential re-entry.
+  if (authStatus === 'unavailable') {
+    return (
+      <div className="auth-screen" role="alert">
+        <h1>Can’t reach the service</h1>
+        <p>
+          We couldn’t check your session. This is usually temporary — your
+          sign-in is probably still fine.
+        </p>
+        <button type="button" onClick={retryAuthCheck}>Try again</button>
       </div>
     )
   }

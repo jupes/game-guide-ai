@@ -46,6 +46,7 @@ function Harness({
       editProfile: vi.fn(),
     },
     authStatus: 'authenticated',
+    retryAuthCheck: vi.fn(),
     signIn: vi.fn(),
     setDisplayName,
     setAvatarTone,

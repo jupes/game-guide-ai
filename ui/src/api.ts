@@ -374,9 +374,13 @@ export async function logout(fetchImpl: typeof fetch = fetch): Promise<boolean> 
   }
 }
 
-/** Who (if anyone) the current session cookie belongs to. A non-2xx (typically
- * 401, no/expired cookie) is reported as an AuthResult error, not a thrown
- * exception — the caller treats it as "not signed in". */
+/** Who (if anyone) the current session cookie belongs to.
+ *
+ * Every failure is an AuthResult error rather than a thrown exception, but the
+ * caller MUST distinguish them by `status`: only 401 means "not signed in". A
+ * 503 or a network failure means the question went unanswered, and `status` is
+ * absent for the latter — see currentUser.tsx, which maps anything that is not
+ * a 401 to `unavailable` rather than logging the user out. */
 export async function getMe(fetchImpl: typeof fetch = fetch): Promise<AuthResult> {
   let res: Response
   try {
@@ -385,7 +389,15 @@ export async function getMe(fetchImpl: typeof fetch = fetch): Promise<AuthResult
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
   }
   if (!res.ok) {
-    return { kind: 'error', status: res.status, message: 'not signed in' }
+    return {
+      kind: 'error',
+      status: res.status,
+      // The message follows the status: calling a 503 "not signed in" is how the
+      // outage got mistaken for a logout in the first place.
+      message: res.status === 401
+        ? 'not signed in'
+        : `Couldn't check your session (${res.status}).`,
+    }
   }
   const parsed = await parseJson<AuthUser>(res)
   if (parsed === null) return { kind: 'error', message: UNREADABLE }

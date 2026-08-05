@@ -3,13 +3,26 @@
  *
  * Identity (email, role) comes from the server session via GET /auth/me,
  * checked once on mount. `authStatus` tracks that check so App can gate
- * rendering: while `checking`, the app renders normally (avoids a login-screen
- * flash for the common already-signed-in case); once it resolves to
- * `unauthenticated`, App swaps to Login/Signup. Role is server-authoritative
- * and no longer user-settable (replaces the pre-auth localStorage role
- * toggle) — the GM channel gate in the UI is now just a courtesy; the server
- * enforces it for real. displayName/avatarTone remain a local, cosmetic-only
- * stub (per-user profile storage is out of scope for the pilot).
+ * rendering, and it has four states because "we don't know who you are" and
+ * "you are signed out" are different facts:
+ *
+ *   checking        — the request is in flight; App holds a Loading gate (it
+ *                     must not render the workspace with a guest identity, see
+ *                     App.tsx, nor flash Login at an already-signed-in tester)
+ *   authenticated   — /auth/me answered with an account
+ *   unauthenticated — the server said 401. ONLY a 401 proves this.
+ *   unavailable     — the check could not be completed: 5xx, a network failure,
+ *                     an unreadable body. The session may well be perfectly
+ *                     valid, so App offers a retry instead of Login. Treating
+ *                     this as signed-out asked a tester to re-enter credentials
+ *                     that the backend was in no state to check, and a
+ *                     successful "login" was impossible for the same reason.
+ *
+ * Role is server-authoritative and no longer user-settable (replaces the
+ * pre-auth localStorage role toggle) — the GM channel gate in the UI is now
+ * just a courtesy; the server enforces it for real. displayName/avatarTone
+ * remain a local, cosmetic-only stub (per-user profile storage is out of scope
+ * for the pilot).
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
@@ -25,7 +38,12 @@ import {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type UserRole = 'dm' | 'player'
-export type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated'
+export type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated' | 'unavailable'
+
+/** HTTP status that proves the session is not valid. Everything else — 5xx, a
+ * network failure, a 403 from the Cloud Run edge before the app is even reached
+ * — says the check failed, not that the user is signed out. */
+const UNAUTHORIZED = 401
 
 export interface CurrentUser {
   id: string
@@ -44,6 +62,9 @@ export interface CurrentUserContextValue {
   user: CurrentUser
   /** Session-check status; App uses this to gate Login/Signup vs the app. */
   authStatus: AuthStatus
+  /** Re-run the session check. For the `unavailable` state: the outage may be
+   * over, and the user should not have to reload the page to find out. */
+  retryAuthCheck: () => void
   /** Adopt an authenticated identity (called by Login/Signup on success). */
   signIn: (authUser: AuthUser) => void
   setDisplayName: (name: string) => void
@@ -156,8 +177,10 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
   // the previous user's name/avatar on screen (and needs no syncing effect).
   const [edits, setEdits] = useState<Record<string, StoredProfile>>({})
 
-  // One-time session check on mount. getMe() never throws (network/4xx both
-  // resolve to a normal AuthResult), so this can't leave authStatus stuck.
+  // Session check on mount, re-runnable via retryAuthCheck. getMe() never
+  // throws (network errors and non-2xx both resolve to a normal AuthResult), so
+  // this can't leave authStatus stuck in `checking`.
+  const [checkNonce, setCheckNonce] = useState(0)
   useEffect(() => {
     let cancelled = false
     getMe().then((result) => {
@@ -165,13 +188,28 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
       if (result.kind === 'ok') {
         setAuthUser(result.user)
         setAuthStatus('authenticated')
-      } else {
-        setAuthStatus('unauthenticated')
+        return
       }
+      // Only a 401 means "signed out". A 5xx or a network failure means the
+      // question went unanswered — sending the user to Login there would ask
+      // them to prove an identity to a service that cannot check it, and would
+      // silently discard a session that is still perfectly valid.
+      setAuthUser(null)
+      setAuthStatus(result.status === UNAUTHORIZED ? 'unauthenticated' : 'unavailable')
     })
     return () => {
       cancelled = true
     }
+  }, [checkNonce])
+
+  // Back to `checking` for the duration of the retry, so App shows the loading
+  // gate rather than leaving the error screen up with a dead button. Set here
+  // and not in the effect: the initial state is already `checking`, so the
+  // effect never needs to write it (and writing state from an effect is exactly
+  // what react-hooks/set-state-in-effect is there to stop).
+  const retryAuthCheck = useCallback(() => {
+    setAuthStatus('checking')
+    setCheckNonce((n) => n + 1)
   }, [])
 
   // Centralized 401: any guarded call that finds the session gone drops the app
@@ -232,11 +270,13 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
         signOut, editProfile: noop,
       },
       authStatus,
+      retryAuthCheck,
       signIn,
       setDisplayName,
       setAvatarTone,
     }
-  }, [authStatus, authUser, userId, displayName, avatarTone, signIn, signOut, setDisplayName, setAvatarTone])
+  }, [authStatus, authUser, userId, displayName, avatarTone, retryAuthCheck, signIn, signOut,
+      setDisplayName, setAvatarTone])
 
   return <CurrentUserContext.Provider value={value}>{children}</CurrentUserContext.Provider>
 }

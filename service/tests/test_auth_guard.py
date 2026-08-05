@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import config
-from service.app import app, get_auth_store, get_service
+from service.app import app, get_auth_store, get_service, require_session
 from service.auth_store import InMemoryAuthStore
 from service.models import ChatMode, ChatResponse
 
@@ -46,38 +46,90 @@ def _authed_client(store) -> TestClient:
     return client
 
 
-def test_chat_without_session_is_401(store):
-    r = TestClient(app).post("/chat", json={"prompt": "What is a Basilisk?"})
-    assert r.status_code == 401
+# Every route behind `require_session`, as a matrix rather than a test each —
+# the list is the security contract, so adding a guarded route means adding a
+# line here, and forgetting to is the only way a route can slip out of coverage.
+#
+# GET /conversations/{id}/attachments was the one this suite used to omit: the
+# route was protected, but nothing failed if a future dependency change exposed
+# it, and attachment metadata carries filenames from other users' uploads.
+#: (method, route template as FastAPI knows it, concrete URL, JSON body or None)
+Route = tuple[str, str, str, dict[str, object] | None]
+
+# Each entry: (method, route template as FastAPI knows it, concrete URL, body).
+# The template is what `test_every_session_guarded_route_is_in_the_matrix`
+# matches against the real routing table.
+PROTECTED_ROUTES: list[Route] = [
+    ("POST", "/chat", "/chat", {"prompt": "What is a Basilisk?"}),
+    ("GET", "/auth/me", "/auth/me", None),
+    ("GET", "/conversations/{conversation_id}/messages",
+     "/conversations/abc/messages", None),
+    ("GET", "/conversations/{conversation_id}/attachments",
+     "/conversations/abc/attachments", None),
+    ("POST", "/conversations/{conversation_id}/attachments",
+     "/conversations/abc/attachments",
+     {"filename": "x.txt", "content_type": "text/plain", "data": "aGk="}),
+]
+
+#: Deliberately unguarded, and asserted so that a blanket "guard everything"
+#: change has to be a conscious decision: /healthz is what the platform probes
+#: (a 401 there takes the service down), /metrics/ui is the pre-auth beacon.
+OPEN_ROUTES: list[tuple[str, str, dict[str, object] | None]] = [
+    ("GET", "/healthz", None),
+    ("POST", "/metrics/ui", {"points": []}),
+]
+
+
+def _request(client: TestClient, method: str, path: str, body):
+    return client.request(method, path, json=body) if body is not None \
+        else client.request(method, path)
+
+
+@pytest.mark.parametrize(("method", "template", "path", "body"), PROTECTED_ROUTES)
+def test_protected_route_without_session_is_401(store, method, template, path, body):
+    r = _request(TestClient(app), method, path, body)
+    assert r.status_code == 401, f"{method} {template} answered {r.status_code} with no session"
+
+
+@pytest.mark.parametrize(("method", "template", "path", "body"), PROTECTED_ROUTES)
+def test_protected_route_with_session_is_not_401(store, method, template, path, body):
+    """The other half of the matrix. Without it a route could 'pass' the guard
+    test by being broken — 401 for everyone, signed in or not — and the suite
+    would report the security property as intact."""
+    r = _request(_authed_client(store), method, path, body)
+    assert r.status_code != 401, f"{method} {template} rejected a VALID session"
+
+
+@pytest.mark.parametrize(("method", "path", "body"), OPEN_ROUTES)
+def test_open_route_stays_open(store, method, path, body):
+    assert _request(TestClient(app), method, path, body).status_code != 401
+
+
+def test_every_session_guarded_route_is_in_the_matrix(store):
+    """The matrix cannot silently fall behind the app.
+
+    Walk the real routing table for anything depending on `require_session` and
+    require it to be listed above. A new guarded endpoint that nobody adds here
+    would otherwise ship with no test that it is guarded at all.
+    """
+    listed = {(method, template) for method, template, _, _ in PROTECTED_ROUTES}
+    for route in app.routes:
+        dependant = getattr(route, "dependant", None)
+        if dependant is None:
+            continue
+        if not any(d.call is require_session for d in dependant.dependencies):
+            continue
+        for method in getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}:
+            assert (method, route.path) in listed, (
+                f"{method} {route.path} is behind require_session but is missing "
+                f"from PROTECTED_ROUTES — add it, so the guard is actually tested"
+            )
 
 
 def test_chat_with_session_is_200(store):
     r = _authed_client(store).post("/chat", json={"prompt": "What is a Basilisk?"})
     assert r.status_code == 200
     assert r.json()["answerable"] is True
-
-
-def test_conversation_messages_without_session_is_401(store):
-    r = TestClient(app).get("/conversations/abc/messages")
-    assert r.status_code == 401
-
-
-def test_upload_attachment_without_session_is_401(store):
-    r = TestClient(app).post(
-        "/conversations/abc/attachments",
-        json={"filename": "x.txt", "content_type": "text/plain", "data": "aGk="},
-    )
-    assert r.status_code == 401
-
-
-def test_healthz_stays_open(store):
-    assert TestClient(app).get("/healthz").status_code == 200
-
-
-def test_metrics_ui_stays_open(store):
-    # Unguarded telemetry beacon — must not 401 without a session.
-    r = TestClient(app).post("/metrics/ui", json={"points": []})
-    assert r.status_code != 401
 
 
 # ── A weak/known signing secret must disable auth, not sign with it ──────────

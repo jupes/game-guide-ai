@@ -58,14 +58,67 @@ describe('session check', () => {
     expect(result.current.user.role).toBe('dm')
   })
 
-  it('falls back to unauthenticated when getMe errors', async () => {
-    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', message: 'not signed in' })
+  it('a 401 means signed out', async () => {
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', status: 401, message: 'not signed in' })
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     await waitFor(() => expect(result.current.authStatus).toBe('unauthenticated'))
   })
 
+  // ── An outage is not a logout (PR #43 review) ──────────────────────────────
+  //
+  // Every non-ok result used to become `unauthenticated`, so a backend blip
+  // dropped a signed-in tester onto Login — asking them to re-enter credentials
+  // that the same unreachable backend could not have checked. Only a 401 is the
+  // server actually saying the session is invalid.
+
+  it.each([
+    ['a 503 (backend down)', { kind: 'error' as const, status: 503, message: 'x' }],
+    ['a 500', { kind: 'error' as const, status: 500, message: 'x' }],
+    ['a 502 from a proxy', { kind: 'error' as const, status: 502, message: 'x' }],
+    ['an edge 403 (Cloud Run IAM)', { kind: 'error' as const, status: 403, message: 'x' }],
+    ['a network failure (no status)', { kind: 'error' as const, message: 'network error' }],
+    ['an unreadable body (no status)', { kind: 'error' as const, message: 'unreadable' }],
+  ])('reports %s as unavailable, not unauthenticated', async (_label, result) => {
+    vi.spyOn(api, 'getMe').mockResolvedValue(result)
+    const { result: hook } = renderHook(() => useCurrentUser(), { wrapper })
+    await waitFor(() => expect(hook.current.authStatus).toBe('unavailable'))
+    expect(hook.current.authStatus).not.toBe('unauthenticated')
+  })
+
+  it('retryAuthCheck re-runs the check and recovers when the backend returns', async () => {
+    const getMe = vi.spyOn(api, 'getMe')
+      .mockResolvedValueOnce({ kind: 'error', status: 503, message: 'down' })
+      .mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
+
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    await waitFor(() => expect(result.current.authStatus).toBe('unavailable'))
+
+    act(() => result.current.retryAuthCheck())
+    await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
+    expect(result.current.user.id).toBe('ada@example.com')
+    expect(getMe).toHaveBeenCalledTimes(2)
+  })
+
+  it('an outage does not strand a stale identity in the context', async () => {
+    // The session that WAS authenticated must not linger as an authenticated
+    // identity behind an `unavailable` status — the workspace is gated on the
+    // status, and a half-signed-in state is the kind of thing that leaks one
+    // user's conversation list to the next.
+    vi.spyOn(api, 'getMe')
+      .mockResolvedValueOnce({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
+      .mockResolvedValue({ kind: 'error', status: 503, message: 'down' })
+
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
+
+    act(() => result.current.retryAuthCheck())
+    await waitFor(() => expect(result.current.authStatus).toBe('unavailable'))
+    expect(result.current.user.id).toBe('guest')
+    expect(result.current.user.role).toBe('player')
+  })
+
   it('signIn adopts an identity immediately (no re-fetch)', () => {
-    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', message: 'not signed in' })
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', status: 401, message: 'not signed in' })
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     act(() => result.current.signIn({ email: 'bob@example.com', role: 'player' }))
     expect(result.current.authStatus).toBe('authenticated')
@@ -73,7 +126,7 @@ describe('session check', () => {
   })
 
   it('signOut calls the logout endpoint and reverts to unauthenticated', async () => {
-    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', message: 'not signed in' })
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', status: 401, message: 'not signed in' })
     const logoutSpy = vi.spyOn(api, 'logout').mockResolvedValue(true)
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     act(() => result.current.signIn({ email: 'ada@example.com', role: 'dm' }))
@@ -148,7 +201,7 @@ describe('profile cosmetics (name + avatar tone)', () => {
   beforeEach(() => {
     lsMock = makeLocalStorageStub()
     vi.stubGlobal('localStorage', lsMock)
-    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', message: 'not signed in' })
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', status: 401, message: 'not signed in' })
   })
 
   afterEach(() => {

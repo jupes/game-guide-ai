@@ -435,4 +435,30 @@ describe('getMe', () => {
     const result = await getMe(failing)
     expect(result.kind).toBe('error')
   })
+
+  // The caller decides logout-vs-outage from `status` alone, so getMe must
+  // report it faithfully — and must not describe an outage as "not signed in",
+  // which is how the two got conflated in the first place (PR #43 review).
+
+  it.each([500, 502, 503, 403, 404])('reports the real status for %i', async (status) => {
+    const result = await getMe(fakeFetch(status))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') {
+      expect(result.status).toBe(status)
+      expect(result.message).not.toMatch(/not signed in/i)
+    }
+  })
+
+  it('leaves status undefined for a network failure (nothing was answered)', async () => {
+    const failing: typeof fetch = (async () => {
+      throw new TypeError('fetch failed')
+    }) as typeof fetch
+    const result = await getMe(failing)
+    if (result.kind === 'error') expect(result.status).toBeUndefined()
+  })
+
+  it('only 401 says "not signed in"', async () => {
+    const unauthorized = await getMe(fakeFetch(401))
+    if (unauthorized.kind === 'error') expect(unauthorized.message).toMatch(/not signed in/i)
+  })
 })

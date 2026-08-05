@@ -170,7 +170,7 @@ class AuthStore(Protocol):
     def get_user_by_id(self, user_id: int) -> User | None:
         ...  # pragma: no cover - structural type
 
-    def password_hash_for(self, email: str) -> str | None:
+    def get_credentials(self, email: str) -> tuple[User, str] | None:
         ...  # pragma: no cover - structural type
 
     def redeem_invite(
@@ -233,9 +233,12 @@ class InMemoryAuthStore:
     def get_user_by_id(self, user_id: int) -> User | None:
         return next((u for u in self._users if u.id == user_id), None)
 
-    def password_hash_for(self, email: str) -> str | None:
+    def get_credentials(self, email: str) -> tuple[User, str] | None:
         user = self.get_user_by_email(email)
-        return self._hashes.get(user.id) if user is not None else None
+        if user is None:
+            return None
+        stored = self._hashes.get(user.id)
+        return (user, stored) if stored is not None else None
 
     def redeem_invite(
         self, token: str, email: str, password_hash: str, now: datetime | None = None,
@@ -327,13 +330,19 @@ class PostgresAuthStore:
             ).fetchone()
         return User(id=row[0], email=row[1], role=row[2], created_at=row[3]) if row else None
 
-    def password_hash_for(self, email: str) -> str | None:
+    def get_credentials(self, email: str) -> tuple[User, str] | None:
+        """Identity + password hash in ONE query. Login needs both, and fetching
+        them separately meant two round trips (on the endpoint an anonymous
+        caller can hammer) and two independent chances for the store to fail."""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT password_hash FROM auth.users WHERE lower(email) = lower(%s)",
+                "SELECT id, email, role, created_at, password_hash "
+                "FROM auth.users WHERE lower(email) = lower(%s)",
                 (email,),
             ).fetchone()
-        return row[0] if row is not None else None
+        if row is None:
+            return None
+        return User(id=row[0], email=row[1], role=row[2], created_at=row[3]), row[4]
 
     def redeem_invite(self, token: str, email: str, password_hash: str) -> User:
         from psycopg import errors as pg_errors

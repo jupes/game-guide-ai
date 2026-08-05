@@ -32,6 +32,28 @@ jobs:
   python-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # A real PostgreSQL, for the tests whose whole subject is behaviour no fake
+    # reproduces: the atomic single-use invite guarantee (row locks) and the
+    # schema-parity catalogue comparison. Those tests were skip-only before,
+    # which meant the invite guarantee — the thing standing between one invite
+    # and two accounts — had never actually run in CI.
+    #
+    # It is an EMPTY database: no corpus, no book text. The corpus is deliberately
+    # not in git (licensing), and none of these tests need it.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: rag
+          POSTGRES_PASSWORD: ci_throwaway_not_a_secret
+          POSTGRES_DB: game_guide_ai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rag -d game_guide_ai"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -48,6 +70,20 @@ jobs:
         run: uv run --frozen --no-sync mypy
       - name: pytest (service + ingestion + repo guards) + coverage gate
         run: uv run --frozen --no-sync python -m pytest -q --cov
+      # Separate step, and a separate pytest run, so DATABASE_URL is scoped to
+      # the tests that want a database. Exporting it for the whole suite would
+      # change what the startup path does in every unrelated test (the lifespan
+      # builds a real PostgresAuthStore when it can connect).
+      #
+      # These have no skip branch here: DATABASE_URL is set, so an unreachable
+      # database FAILS the job. That is the point — the previous arrangement
+      # turned a broken database into a green skip.
+      - name: Integration tests against real PostgreSQL
+        env:
+          DATABASE_URL: postgresql://rag:ci_throwaway_not_a_secret@localhost:5432/game_guide_ai
+        run: |
+          uv run --frozen --no-sync python -m pytest -q --no-cov \
+            service/tests/test_invite_atomic.py tests/test_schema_parity.py
 
   ui-tests:
     runs-on: ubuntu-latest

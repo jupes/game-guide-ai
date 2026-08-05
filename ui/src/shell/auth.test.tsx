@@ -35,6 +35,7 @@ function makeUserState(
       editProfile: vi.fn(),
     },
     authStatus: 'authenticated',
+    retryAuthCheck: vi.fn(),
     signIn: vi.fn(),
     setDisplayName: vi.fn(),
     setAvatarTone: vi.fn(),
@@ -195,17 +196,66 @@ describe('App auth gate', () => {
 
   it('a 401 from the session check lands the user on Login (real provider)', async () => {
     vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', status: 401, message: 'not signed in' })
-    render(
-      <ThemeProvider>
-        <AppNavProvider>
-          <CurrentUserProvider>
-            <ConversationStoreProvider store={new MemoryConversationStore()}>
-              <App />
-            </ConversationStoreProvider>
-          </CurrentUserProvider>
-        </AppNavProvider>
-      </ThemeProvider>,
-    )
+    render(realApp())
     expect(await screen.findByRole('button', { name: /sign in/i })).toBeInTheDocument()
+  })
+})
+
+// ── An outage is not a logout (PR #43 review) ────────────────────────────────
+
+function realApp() {
+  return (
+    <ThemeProvider>
+      <AppNavProvider>
+        <CurrentUserProvider>
+          <ConversationStoreProvider store={new MemoryConversationStore()}>
+            <App />
+          </ConversationStoreProvider>
+        </CurrentUserProvider>
+      </AppNavProvider>
+    </ThemeProvider>
+  )
+}
+
+describe('session check outage', () => {
+  it('a 503 shows a retry, NOT the login form', async () => {
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', status: 503, message: 'down' })
+    render(realApp())
+
+    expect(await screen.findByRole('button', { name: /try again/i })).toBeInTheDocument()
+    // The regression this pins: a backend blip used to present the login form,
+    // where every credential the tester typed would fail for the same reason.
+    expect(screen.queryByRole('button', { name: /sign in/i })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument()
+  })
+
+  it('announces the failure to assistive tech', async () => {
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', message: 'network error' })
+    render(realApp())
+    expect(await screen.findByRole('alert')).toHaveTextContent(/can.t reach the service/i)
+  })
+
+  it('Try again re-checks and lets the user straight back in', async () => {
+    vi.spyOn(api, 'getMe')
+      .mockResolvedValueOnce({ kind: 'error', status: 503, message: 'down' })
+      .mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
+    render(realApp())
+
+    await userEvent.click(await screen.findByRole('button', { name: /try again/i }))
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument(),
+    )
+    expect(screen.queryByRole('button', { name: /sign in/i })).not.toBeInTheDocument()
+  })
+
+  it('an invite deep-link does not force Signup during an outage', async () => {
+    // Otherwise the tester burns their one-time invite against a backend that
+    // cannot redeem it, and the token is gone from the URL either way.
+    window.history.replaceState({}, '', '/#invite=tok-abc')
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', status: 503, message: 'down' })
+    render(realApp())
+
+    expect(await screen.findByRole('button', { name: /try again/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /create account/i })).not.toBeInTheDocument()
   })
 })

@@ -149,9 +149,11 @@ prose categories. Default mode is pure filtered vector.
 - **Auth (x5bz.2)** — `auth_store.py` (users + invites in the `auth` schema, argon2 via
   `hashing.py`, atomic single-use invite redemption), `session.py` (itsdangerous-signed
   httpOnly session cookie carrying user id + role), `invites.py` (redeemability rules),
-  `admin_invites.py` (operator CLI: create/list/revoke). `require_session` guards `/chat`
-  and `/conversations/*`; `/healthz` and `/metrics/ui` stay open. The service **fails closed**
-  if `SESSION_SECRET` is unset. See [`invite-copy.md`](invite-copy.md).
+  `admin_invites.py` (operator CLI: create/list/revoke). `require_session` guards `/chat`,
+  `/conversations/*` and `/auth/me`; `/healthz` and `/metrics/ui` stay open. The service
+  **fails closed** if `SESSION_SECRET` is unset. Every auth-store call goes through
+  `_auth_lookup`, so a backend that breaks *after* startup answers **503**, never 500 —
+  "retry later", not "this request is broken". See [`invite-copy.md`](invite-copy.md).
 - Contract: `ChatRequest{prompt, mode, conversation_id}` → `ChatResponse{answer, sources[],
   answerable, mode, conversation_id, suggestions?}`. Errors: **401 no/expired session** ·
   **403 wrong role (GM channel) or another user's conversation** · 422 validation ·
@@ -164,10 +166,13 @@ prose categories. Default mode is pure filtered vector.
 token layer, warm fantasy palette, light *Parchment* / dark *Tavern*, 10 components, Storybook).
 Shell: **Login / Signup** → Landing → Workspace (TopBar brand · **AppHeader channel switcher**
 with per-channel accents · LeftNav conversations + UserMenu · ChatPane) + Profile screen.
-`App` gates on the session check (`GET /auth/me`): signed out renders Login, or **Signup** when
-the URL carries an invite (`/#invite=<token>` — a root-path link whose token rides in the
-URL **fragment**, so it never reaches the server or its request logs; there is no client
-router and the built SPA 404s on deeper paths). Identity and role come from the server session;
+`App` gates on the session check (`GET /auth/me`), which has four outcomes: *checking* holds a
+loading gate, *authenticated* enters the app, **401 — and only 401 —** renders Login, or
+**Signup** when the URL carries an invite (`/#invite=<token>` — a root-path link whose token
+rides in the URL **fragment**, so it never reaches the server or its request logs; there is no
+client router and the built SPA 404s on deeper paths). Anything else (5xx, network failure)
+is *unavailable*: a retry screen, not Login — the session may be perfectly valid, and signing
+in again would need the same backend that just failed. Identity and role come from the server session;
 the GM channel is still hidden in the UI for DMs, but the **server** is what enforces it.
 `useChat` recalls stored history; ChatPane uploads attachments; spell answers render suggestion
 cards; dice notation renders `DiceRoll`. `api.ts` mirrors `service/models.py` exactly (refusals

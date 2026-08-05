@@ -36,6 +36,7 @@ function makeUserState(role: 'dm' | 'player' = 'player'): CurrentUserContextValu
       editProfile: vi.fn(),
     },
     authStatus: 'authenticated',
+    retryAuthCheck: vi.fn(),
     signIn: vi.fn(),
     setDisplayName: vi.fn(),
     setAvatarTone: vi.fn(),

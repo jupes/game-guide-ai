@@ -16,6 +16,7 @@ import base64
 import binascii
 import logging
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from enum import Enum
 from importlib.util import find_spec
@@ -30,7 +31,7 @@ from ingestion.retrieval import EmbeddingUnavailableError
 
 from . import gcp_logging
 from .attachments import UnsupportedAttachmentError, extract_text
-from .auth_store import AuthStore, EmailTaken, PostgresAuthStore
+from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .hashing import (
     DUMMY_PASSWORD_HASH,
     HashingCapacityError,
@@ -178,6 +179,37 @@ def get_auth_store() -> AuthStore:
     return store
 
 
+#: Outcomes the auth endpoints decide for themselves. Anything ELSE coming out of
+#: a store call is the backend failing, not a verdict about the caller.
+_AUTH_DOMAIN_ERRORS = (EmailTaken, InviteError, HashingCapacityError)
+
+
+def _auth_lookup[T](what: str, call: Callable[[], T]) -> T:
+    """Run an auth-store call, converting a backend failure into 503.
+
+    `auth backend unavailable → 503` is the contract the rest of the auth path
+    already speaks: `get_auth_store` 503s when the store never came up at all,
+    and startup logs that intent explicitly. But a store that comes up and *then*
+    breaks — a dropped connection, a Cloud SQL failover, connections exhausted —
+    raised straight out of the endpoint as a 500. That is the wrong thing to tell
+    a client: 500 means "this request is broken, retrying won't help", so the UI
+    surfaced a transient outage as a permanent error, and an operator reading
+    status codes saw an application bug rather than an unavailable dependency.
+
+    Domain errors pass through untouched — a taken email or a spent invite is an
+    answer, not an outage, and the caller maps each to its own status.
+    """
+    try:
+        return call()
+    except HTTPException:
+        raise
+    except _AUTH_DOMAIN_ERRORS:
+        raise
+    except Exception as exc:
+        log.warning("auth store unavailable (%s)", what, exc_info=True)
+        raise HTTPException(status_code=503, detail="auth backend unavailable") from exc
+
+
 # Any secret shipped in an example/template is public by definition — copying it
 # unchanged would let anyone forge a session (including a DM one), so these are
 # rejected as if unset. Compared case-insensitively.
@@ -244,13 +276,15 @@ def require_session(
     session = decode_session(token, _session_secret(), config.SESSION_TTL_DAYS * 86400)
     if session is None:
         raise HTTPException(status_code=401, detail="invalid or expired session")
-    try:
-        user = store.get_user_by_id(session.user_id)
-    except Exception as exc:  # fail closed — never authorize on a failed lookup
-        log.warning("session user lookup failed (user_id=%s)", session.user_id, exc_info=True)
-        raise HTTPException(status_code=503, detail="auth backend unavailable") from exc
+    # Fails CLOSED — never authorize on a failed lookup (`_auth_lookup` 503s).
+    user = _auth_lookup(f"session user lookup (user_id={session.user_id})",
+                        lambda: store.get_user_by_id(session.user_id))
     if user is None:
         raise HTTPException(status_code=401, detail="account no longer exists")
+    # Stash the account this request has already re-read. /auth/me answers from
+    # it instead of repeating the identical query — a second round trip that was
+    # also a second chance to fail, and did so as an unguarded 500.
+    request.state.auth_user = user
     return SessionData(user_id=user.id, role=user.role)
 
 
@@ -718,11 +752,7 @@ def signup(
     # unauthenticated caller without a usable invite can't burn CPU/memory at
     # will. The atomic re-check inside redeem_invite is still what actually
     # guarantees single use — this only short-circuits the obvious rejects.
-    try:
-        invite = store.get_invite(req.invite)
-    except Exception as exc:
-        log.warning("invite lookup failed", exc_info=True)
-        raise HTTPException(status_code=503, detail="auth backend unavailable") from exc
+    invite = _auth_lookup("invite lookup", lambda: store.get_invite(req.invite))
     if invite is None:
         raise HTTPException(status_code=400, detail="Unknown invite link.")
     try:
@@ -731,7 +761,12 @@ def signup(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        user = store.redeem_invite(req.invite, req.email, hash_password(req.password))
+        # `_auth_lookup` re-raises the three domain errors below untouched and
+        # 503s anything else, so a store outage mid-redemption is not a 500.
+        user = _auth_lookup(
+            "redeem invite",
+            lambda: store.redeem_invite(req.invite, req.email, hash_password(req.password)),
+        )
     except HashingCapacityError as exc:
         # Overloaded, not rejected — shed load with a retryable status.
         log.warning("signup shed: %s", exc)
@@ -758,8 +793,11 @@ def login(
     # Before the lookup AND before hashing: this is the brute-force ceiling and
     # what keeps waiting-for-a-hash-slot requests from starving the instance.
     _throttle_auth(request, req.email)
-    user = store.get_user_by_email(req.email)
-    stored_hash = store.password_hash_for(req.email)
+    # Identity and hash together, in one guarded query. A store outage here must
+    # not become a 500: this is the endpoint testers hit when the pilot looks
+    # broken, and "retry later" is the truthful answer.
+    creds = _auth_lookup("credentials lookup", lambda: store.get_credentials(req.email))
+    stored_hash = creds[1] if creds is not None else None
     # Always run one argon2 verification, even for an unknown email — otherwise
     # the response time itself reveals whether an account exists, and the generic
     # message below buys nothing. DUMMY_PASSWORD_HASH never matches.
@@ -769,9 +807,10 @@ def login(
         # Overloaded, not wrong credentials — must NOT be reported as a 401.
         log.warning("login shed: %s", exc)
         raise HTTPException(status_code=503, detail="busy, please retry") from exc
-    if user is None or stored_hash is None or not ok:
+    if creds is None or not ok:
         # One generic message — never reveal whether the email is registered.
         raise HTTPException(status_code=401, detail="invalid email or password")
+    user = creds[0]
     _set_session_cookie(
         response, encode_session(SessionData(user_id=user.id, role=user.role), secret),
     )
@@ -786,10 +825,23 @@ def logout(response: Response) -> dict[str, bool]:
 
 @app.get("/auth/me", response_model=AuthUser)
 def me(
+    request: Request,
     session: SessionData = Depends(require_session),
     store: AuthStore = Depends(get_auth_store),
 ) -> AuthUser:
-    user = store.get_user_by_id(session.user_id)
+    """Who the session cookie belongs to.
+
+    `require_session` has already re-read the account this request (that re-read
+    is what makes a deleted account stop working immediately), so normally there
+    is nothing left to fetch. The lookup below is for a caller that supplies its
+    own session dependency and therefore never populated the stash — it is
+    guarded, because an unguarded repeat of this query is exactly how a store
+    outage used to leave here as a 500.
+    """
+    user: User | None = getattr(request.state, "auth_user", None)
+    if user is None:
+        user = _auth_lookup("account lookup",
+                            lambda: store.get_user_by_id(session.user_id))
     if user is None:
         # Session points at a since-deleted account — treat as unauthenticated.
         raise HTTPException(status_code=401, detail="account not found")

@@ -176,6 +176,7 @@ describe('App-flow smoke test (CP-F6.2)', () => {
         editProfile: () => {},
       },
       authStatus: 'authenticated',
+      retryAuthCheck: () => {},
       signIn: () => {},
       setDisplayName: () => {},
       setAvatarTone: () => {},
