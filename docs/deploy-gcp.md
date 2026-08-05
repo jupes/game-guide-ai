@@ -527,7 +527,8 @@ cannot reach (their messages have no owner row, which is why the constraint is
 **There is no password reset.** It needs outbound email, which the pilot does
 not have, and there is no admin reset command. Minting a second invite does not
 help on its own: signup rejects an email that already has an account
-(`EmailTaken`, 409), and the invite is single-use, so it is spent either way.
+(`EmailTaken`, 409). The invite remains unused, but it cannot create a second
+account with that email until the old account is deleted.
 
 Recovery is **delete the account, then re-invite** — and it is destructive. Set
 the shell up as in §10 first; `$SVC_URL` matters here because `--base-url`
