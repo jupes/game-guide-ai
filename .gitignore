@@ -14,3 +14,9 @@ build/
 dist/
 uv.lock
 ingestion/metrics_summary.json
+
+# Generated spike extraction dumps (large, and contain source rulebook text)
+spikes/raw-extract-*.jsonl
+
+# Beads runtime state — the tracker is owned by the parent harness repo
+.beads/
