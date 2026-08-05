@@ -64,8 +64,13 @@ tests and crashing the deployed image.
 
 ## Tradeoffs accepted
 
-- **No password reset.** It needs outbound email, which the pilot does not have.
-  Recovery is an operator minting a new invite.
+- **No password reset, and no recovery that preserves the account.** Resetting
+  needs outbound email, which the pilot does not have, and there is no admin
+  reset command. Minting a second invite does not substitute for one: signup
+  rejects an email that already has an account (`EmailTaken`, 409). The only
+  recovery is to delete the account and re-invite, which **cascades away that
+  user's conversations** — see [`deploy-gcp.md` §11](../deploy-gcp.md). That is
+  acceptable for a handful of pilot testers and would not be beyond them.
 - **No server-side session revocation.** The cost of stateless cookies; rotating
   the secret is the blunt instrument, and per-request account re-reads cover the
   case that actually matters (a revoked account).
@@ -80,4 +85,5 @@ tests and crashing the deployed image.
 - `session-secret` must exist in Secret Manager before deploying, or every auth
   endpoint 503s by design.
 - Revoking a compromised account and draining in-flight requests is a runbook
-  procedure — see [`deploy-gcp.md` §10](../deploy-gcp.md).
+  procedure — see [`deploy-gcp.md` §10](../deploy-gcp.md); a forgotten password
+  is §11.

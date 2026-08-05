@@ -74,6 +74,29 @@ def test_the_stores_do_not_embed_their_own_ddl():
         )
 
 
+#: Docs an operator follows to build or understand a database. Each must not
+#: send them to the old location — a stale path here means hand-applying the
+#: wrong file set against production.
+SCHEMA_DOCS = [
+    "docs/ARCHITECTURE.md",
+    "docs/deploy-gcp.md",
+    "vector-db/README.md",
+    "service/README.md",
+]
+
+
+@pytest.mark.parametrize("doc", SCHEMA_DOCS)
+def test_docs_do_not_point_at_the_old_schema_location(doc):
+    path = REPO_ROOT / doc
+    if not path.exists():
+        pytest.skip(f"{doc} does not exist")
+    text = path.read_text(encoding="utf-8")
+    for name in ("04-chat-schema.sql", "05-auth-schema.sql"):
+        assert f"vector-db/init/{name}" not in text, (
+            f"{doc} still places {name} under vector-db/init/; it is canonical in service/sql/"
+        )
+
+
 # ── What the database actually does ──────────────────────────────────────────
 
 

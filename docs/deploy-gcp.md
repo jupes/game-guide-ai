@@ -418,7 +418,14 @@ entry still carries a bare trace id — searchable, just not auto-correlated.)
 
 ## 10. Incident — a leaked invite or a compromised account
 
-An invite that has **not** been redeemed: `revoke <token>` and you are done.
+All `admin_invites` commands below run from the repo root with the Cloud SQL
+proxy up and `DATABASE_URL` pointing through it (see §3).
+
+An invite that has **not** been redeemed — revoke it and you are done:
+
+```bash
+python -m service.admin_invites revoke <token>
+```
 
 If it *was* redeemed, the account exists, and the order below is load-bearing.
 `require_session` validates at the **start** of a request, so a request already
@@ -430,8 +437,7 @@ admitted keeps its authorization for as long as it runs — up to Cloud Run's
 cookie becomes unverifiable, so no *new* request can authenticate.
 
 ```bash
-openssl rand -base64 48 | tr -d '
-' | gcloud secrets versions add session-secret --data-file=-
+openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add session-secret --data-file=-
 bash scripts/deploy.sh game-guide-ai "$(git rev-parse --short HEAD)"
 ```
 
@@ -442,7 +448,10 @@ mid-incident redeploy cannot also revoke invocation and turn every session into
 an edge 403 with no login page behind it. Confirm:
 
 ```bash
-gcloud run services get-iam-policy game-guide-ai --region "$REGION"   --format='value(bindings.members)' | grep -q allUsers   && echo "public invoke intact" || echo "IAM-LOCKED — testers cannot reach the login page"
+gcloud run services get-iam-policy game-guide-ai --region "$REGION" \
+  --format='value(bindings.members)' | grep -q allUsers \
+  && echo "public invoke intact" \
+  || echo "IAM-LOCKED — testers cannot reach the login page"
 ```
 
 (Before §9 opens ingress the service *is* IAM-locked, and that second line is
@@ -453,12 +462,16 @@ revision normally stays `Ready` at 0%, so one still taking every request looks
 identical to one taking none.
 
 ```bash
-gcloud run services describe game-guide-ai --region "$REGION"   --format='value(status.traffic[].revisionName, status.traffic[].percent)'
-sleep 360   # > --timeout, counted from the 100% cutover, not from the deploy
+gcloud run services describe game-guide-ai --region "$REGION" \
+  --format='value(status.traffic[].revisionName, status.traffic[].percent)'
 ```
 
 Wait for the new revision at 100% and the old at 0 (or gone) **before** starting
 the clock — requests the old revision already admitted may still be running.
+
+```bash
+sleep 360   # > --timeout, counted from the 100% cutover, not from the deploy
+```
 
 **3. Delete.** Now nothing can write on the account's behalf.
 
@@ -484,6 +497,30 @@ psql "$PROXY" -c "SELECT count(*) FROM chat.conversations c
 Conversations predating the ownership table are the one exception the cascade
 cannot reach (their messages have no owner row, which is why the constraint is
 `NOT VALID`). That is pre-auth data, not this account's.
+
+## 11. A tester forgot their password
+
+**There is no password reset.** It needs outbound email, which the pilot does
+not have, and there is no admin reset command. Minting a second invite does not
+help on its own: signup rejects an email that already has an account
+(`EmailTaken`, 409), and the invite is single-use, so it is spent either way.
+
+Recovery is **delete the account, then re-invite** — and it is destructive:
+
+```bash
+# 1. Delete. This CASCADES: their conversations, messages and attachments go too.
+psql "$PROXY" -c "DELETE FROM auth.users WHERE lower(email) = lower('them@example.com');"
+
+# 2. Mint a fresh invite for the same person (--role dm to restore GM access).
+python -m service.admin_invites create --role player
+```
+
+They sign up again with the same email — now unused — and start with empty
+history. Tell them that before you do it.
+
+No secret rotation and no drain here: this is a cooperative user, not an
+adversary with a live session, so there is nothing to race. If you are *not*
+sure the account is uncompromised, treat it as §10 instead.
 
 ## Cost
 

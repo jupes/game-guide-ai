@@ -44,12 +44,25 @@ docker compose down -v
 
 ## Schema
 
-Applied on **first** container init via scripts in `vector-db/init/` (lexical order):
+Applied on **first** container init, in lexical order. The files come from two
+places, and `docker-compose.yml` mounts both into the init directory:
+
+**Corpus schema — `vector-db/init/`:**
 
 - **`01-extensions.sql`** — enables the `vector` extension; creates the `dnd` schema.
 - **`02-schema.sql`** — `dnd.chunks` table (see below) + B-tree indexes + HNSW vector index + `search_vector` tsvector + GIN FTS index.
 - **`03-hybrid-search.sql`** — the `dnd.hybrid_search()` function (vector + FTS fused via RRF). Kept separate so the retrieval function can be iterated without touching the table DDL.
-- **`04-chat-schema.sql`** — the `chat` schema: `chat.messages` (persisted conversation turns, incl. spell-mode suggestions as JSONB) and `chat.attachments` (uploaded-file extracted text that grounds a conversation's answers). The same DDL is applied idempotently by `service/history.py::ensure_schema()` at service startup, which is the migration path for volumes that predate the chat schema (init scripts only run on first container init).
+
+**Application schema — `service/sql/`** (canonical; see `service/schema.py`):
+
+- **`04-chat-schema.sql`** — the `chat` schema: `chat.messages` (persisted conversation turns, incl. spell-mode suggestions as JSONB), `chat.attachments` (uploaded-file extracted text that grounds a conversation's answers), and `chat.conversations` (per-user ownership, with the foreign keys that make content follow its owner).
+- **`05-auth-schema.sql`** — the `auth` schema: `auth.users` and `auth.invites` (one-time invite links). Adds the ownership foreign key onto `chat.conversations`, hence the order.
+
+These two live in the package rather than here because the **service applies the
+same files at startup** — `history.py` / `auth_store.py` `ensure_schema()`, which
+is the migration path for volumes that predate a schema change (init scripts run
+only on first container init). One definition, both paths. For a managed
+instance with no init directory, `scripts/bootstrap-db.sh` applies all five.
 
 ### `dnd.chunks`
 
