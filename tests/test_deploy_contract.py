@@ -37,8 +37,7 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-# Bash discovery is shared with test_throttle_verifier.py — see tests/_bash.py
-# for why `shutil.which("bash")` is not enough on Windows.
+# See tests/_bash.py for why `shutil.which("bash")` is not enough on Windows.
 _bash_or_skip = bash_or_skip
 
 

@@ -340,7 +340,7 @@ def _throttle_auth(request: Request, account: str) -> None:
             # "the limiter fired" could certify a broken proxy configuration on
             # the strength of a transient platform response. Only this header
             # means the application's budget was actually enforced.
-            # scripts/verify-auth-throttle.sh requires it before reporting PASS.
+            # scripts/verify_auth_throttle.py requires it before reporting PASS.
             headers={
                 "Retry-After": str(exc.retry_after),
                 AUTH_THROTTLE_HEADER: "1",

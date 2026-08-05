@@ -362,7 +362,7 @@ identical-looking entries. The check has to be behavioral:
 
 ```bash
 SVC_URL=$(gcloud run services describe game-guide-ai --region="$REGION" --format='value(status.url)')
-bash scripts/verify-auth-throttle.sh "$SVC_URL"
+python scripts/verify_auth_throttle.py "$SVC_URL"
 ```
 
 It sends attempts that differ **only** in a spoofed `X-Forwarded-For` (rotating
