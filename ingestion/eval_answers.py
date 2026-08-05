@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from service.rag import REFUSAL
 
@@ -232,8 +233,11 @@ class RagasEvaluator:
         # embeddings we pass. (collections/* is the future API but its classes need
         # llm at construction and have diverged names in 0.4.x — these are stable.)
         from ragas.metrics import (
-            answer_correctness, answer_relevancy, context_precision,
-            context_recall, faithfulness,
+            answer_correctness,
+            answer_relevancy,
+            context_precision,
+            context_recall,
+            faithfulness,
         )
         return [faithfulness, answer_relevancy, answer_correctness,
                 context_precision, context_recall]
@@ -273,8 +277,8 @@ class RagasEvaluator:
 
 def _load_dotenv() -> None:  # pragma: no cover - convenience I/O
     """Best-effort load of repo-root .env (OPENAI_API_KEY + LANGFUSE_*); existing env wins."""
-    from pathlib import Path
     import os
+    from pathlib import Path
     env = Path(__file__).resolve().parent.parent / ".env"
     if not env.is_file():
         return

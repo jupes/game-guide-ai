@@ -8,15 +8,13 @@ Run from repo root:
 
 from __future__ import annotations
 
-
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from ingestion.retrieval import RetrievalResult, RetrievedChunk
-
 from service.generate import build_context, build_sources, context_texts, generate_answer
-from service.rag import RagService, REFUSAL
 from service.models import ChatResponse
+from service.rag import REFUSAL, RagService
 
 
 def _chunk(cid, entity, ctype="monster", section=None, chapter=None, page=1, dist=0.3):
@@ -471,7 +469,7 @@ def test_sage_scope_passes_through_unmodified():
 
 def test_gm_mode_answers_when_not_answerable_but_has_chunks():
     """GM mode proceeds when chunks exist even if answerable=False."""
-    from service.rag import RagService, REFUSAL
+    from service.rag import REFUSAL, RagService
     svc = RagService(
         retriever=_FakeRetriever(_result(answerable=False)),
         llm_client=_FakeLLM("Here is a creative swamp monster idea [1]."),
@@ -483,7 +481,7 @@ def test_gm_mode_answers_when_not_answerable_but_has_chunks():
 
 def test_sage_refuses_when_not_answerable():
     """sage mode still refuses when answerable=False."""
-    from service.rag import RagService, REFUSAL
+    from service.rag import REFUSAL, RagService
     svc = RagService(
         retriever=_FakeRetriever(_result(answerable=False)),
         llm_client=_FakeLLM("should not be called"),
@@ -494,7 +492,7 @@ def test_sage_refuses_when_not_answerable():
 
 def test_spell_refuses_when_not_answerable():
     """spell mode still refuses when answerable=False."""
-    from service.rag import RagService, REFUSAL
+    from service.rag import REFUSAL, RagService
     svc = RagService(
         retriever=_FakeRetriever(_result(answerable=False)),
         llm_client=_FakeLLM("should not be called"),
@@ -505,7 +503,7 @@ def test_spell_refuses_when_not_answerable():
 
 def test_rules_refuses_when_not_answerable():
     """rules mode still refuses when answerable=False."""
-    from service.rag import RagService, REFUSAL
+    from service.rag import REFUSAL, RagService
     svc = RagService(
         retriever=_FakeRetriever(_result(answerable=False)),
         llm_client=_FakeLLM("should not be called"),
@@ -516,7 +514,7 @@ def test_rules_refuses_when_not_answerable():
 
 def test_gm_refuses_when_no_chunks():
     """Even GM mode refuses if no chunks are retrieved."""
-    from service.rag import RagService, REFUSAL
+    from service.rag import REFUSAL, RagService
     empty = RetrievalResult(
         chunks=[], full_texts={}, top1_distance=None,
         answerable=False, book_by_id={},
@@ -554,8 +552,9 @@ def test_merge_results_with_empty_secondary_preserves_primary():
 
 def test_merge_results_primary_chunks_ranked_first():
     """When secondary has chunks, primary chunks appear before secondary in merge."""
-    from service.rag import RagService
     from dataclasses import dataclass
+
+    from service.rag import RagService
 
     primary = _result(answerable=True)
 

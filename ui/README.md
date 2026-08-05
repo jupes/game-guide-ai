@@ -20,8 +20,10 @@ Landing ── "Enter the Tavern" ─▶ Workspace                    Profile (s
   reserves an empty slot for future note-taking / GM-lore nav (swe1.5).
 - **Theme toggle** (light Parchment / dark Tavern) sits in the **UserMenu** popover
   (swe1.11), persisted to `localStorage`.
-- **Profile page** (swe1.7): editable display name + avatar tone, DM/player role toggle —
-  all client-side, persisted to `localStorage` via `currentUser.tsx` / `useRoleToggle.ts`.
+- **Profile page** (swe1.7): editable display name + avatar tone, persisted to
+  `localStorage` **per account** via `currentUser.tsx`. The DM/player role is shown
+  read-only — it is fixed by the invite that created the account and enforced by the
+  server (x5bz.2), so there is no client-side role toggle.
 
 ## Channels (chat modes)
 
@@ -32,7 +34,7 @@ Defined once in `src/shell/modes.ts`; the service applies the matching retrieval
 | **Sage** | verdigris | General oracle; default |
 | **Spell** | arcane | Spell Archivist; answers arrive with 3 usage-suggestion cards |
 | **Rules** | gold | Rules-as-written arbiter |
-| **GM** | ember | **DM-only** — hidden unless the user's role is `dm` (`modesForRole`). UI gating only until real auth exists. |
+| **GM** | ember | **DM-only** — hidden unless the session role is `dm` (`modesForRole`). The hiding is a courtesy; the **server** enforces it (403) from the signed session, so it can't be bypassed client-side. |
 
 ## Chat features
 
@@ -51,11 +53,16 @@ Defined once in `src/shell/modes.ts`; the service applies the matching retrieval
 ## Client-side state & stubs
 
 - **Conversation list/titles** live in `localStorage`
-  (`conversationStore.ts`, key `game-guide-ai:conversations`, with a one-time migration from
-  the legacy `rag-chat:conversations` key). Message *content* is persisted server-side.
-- **The user is still a stub** — hard-coded guest "Adventurer" (`currentUser.tsx`); display
-  name / avatar tone / DM-player role are localStorage-persisted client state. Real auth is
-  a follow-up (x5bz.2).
+  (`conversationStore.ts`, key `game-guide-ai:conversations:<account>` — namespaced **per
+  account**, with a one-time migration from the legacy `rag-chat:conversations` and pre-auth
+  `game-guide-ai:conversations` keys). Message *content* is persisted server-side.
+- **Auth (x5bz.2)** — access is invite-gated. `App` gates on a session check
+  (`GET /auth/me`): signed out renders **Login**, or **Signup** when the URL carries an invite
+  (`/#invite=<token>`; the token rides in the fragment so it never reaches the server or its
+  request logs), and a neutral loading state until the identity is known. Identity and role come
+  from the server session (`currentUser.tsx`) — the DM role is **read-only**, fixed by the invite.
+  Only display name and avatar tone remain local cosmetics, and they are per-account too.
+  Every `api.ts` call sends `credentials:'include'`; a 401 from any of them routes back to Login.
 
 ## API client
 
@@ -64,10 +71,14 @@ refusals are 200s with `answerable: false`, **not** errors; 422/413/415/503/netw
 `{ kind: 'error', message }` so the UI never throws on a bad day.
 
 > **Proxy invariant:** the Vite dev proxy (`vite.config.ts`) and nginx (`nginx.conf`)
-> each forward `/chat`, `/healthz`, and `/conversations` to the service — a new service
-> API prefix must be added to **both**, or the SPA fallback silently swallows it
-> (that was bug `agent-forge-harness-cnqf`). nginx also raises `client_max_body_size`
-> for `/conversations` so base64 attachment uploads aren't 413'd below the service's cap.
+> each forward `/chat`, `/healthz`, `/conversations`, `/metrics`, and `/auth` to the
+> service — a new service API prefix must be added to **both**, or the SPA fallback
+> silently swallows it: a GET quietly returns `index.html` (bug
+> `agent-forge-harness-cnqf`) and a POST returns **405**, because a static file can't
+> take one (that was `/auth` when auth landed). `tests/test_proxy_contract.py` now
+> derives the prefixes from the real route table and fails CI if either front end
+> misses one. nginx also raises `client_max_body_size` for `/conversations` so base64
+> attachment uploads aren't 413'd below the service's cap.
 
 ## Design system
 
@@ -88,7 +99,7 @@ next to their components (`src/ds/*.stories.tsx`).
 
 ```bash
 bun install        # once
-bun run dev        # Vite dev server on :5173 (proxies /chat, /healthz, /conversations → :8000)
+bun run dev        # Vite dev server on :5173 (proxies /chat, /healthz, /conversations, /metrics, /auth → :8000)
 bun run typecheck  # tsc --noEmit
 bun run lint       # ESLint
 bun run test       # Vitest — see below

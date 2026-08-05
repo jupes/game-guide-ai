@@ -21,7 +21,12 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgvector_data:/var/lib/postgresql/data
+      # Corpus schema (01-03), then the application schemas — which live in the
+      # package because the service applies the SAME files at startup to migrate
+      # an existing database (service/schema.py). One definition, both paths.
       - ./vector-db/init:/docker-entrypoint-initdb.d:ro
+      - ./service/sql/04-chat-schema.sql:/docker-entrypoint-initdb.d/04-chat-schema.sql:ro
+      - ./service/sql/05-auth-schema.sql:/docker-entrypoint-initdb.d/05-auth-schema.sql:ro
     healthcheck:
       test:
         [

@@ -12,6 +12,13 @@ services:
       - "8000"
     environment:
       RAG_TRACING: "0"
+      # Auth (x5bz.2). A throwaway signing key for the ephemeral E2E stack —
+      # the service refuses to sign cookies without one. SESSION_COOKIE_SECURE=0
+      # because the E2E stack is served over plain http; a Secure cookie would
+      # never be sent back and every guarded request would 401. Production keeps
+      # the default (1) and gets the real key from Secret Manager.
+      SESSION_SECRET: "e2e-only-throwaway-session-signing-key"
+      SESSION_COOKIE_SECURE: "0"
     healthcheck:
       test:
         - CMD

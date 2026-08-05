@@ -180,6 +180,7 @@ def test_chat_all_valid_modes_accepted():
 def test_chat_resolves_with_static_mount():
     """POST /chat is not shadowed by a '/' StaticFiles mount (API routes registered first)."""
     import tempfile
+
     from fastapi.staticfiles import StaticFiles
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -238,7 +239,7 @@ class _CaptureLogs:
     def records(self) -> list[logging.LogRecord]:
         return self._handler.records
 
-    def __enter__(self) -> "_CaptureLogs":
+    def __enter__(self) -> _CaptureLogs:
         self._prev_level = self.logger.level
         self.logger.addHandler(self._handler)
         self.logger.setLevel(logging.DEBUG)

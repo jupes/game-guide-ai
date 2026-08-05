@@ -4,10 +4,13 @@ A retrieval-augmented chat app for D&D 5th Edition. A user picks a **channel** (
 Rules · GM — each a persona with its own retrieval scope), asks about a spell, monster, rule, or
 piece of lore, and gets an answer grounded **only** in the ingested rulebook corpus (9,000+ chunks
 across 12 5E books in pgvector), with citations — out-of-corpus questions are refused, not
-hallucinated. Conversations persist server-side, and uploaded files (`.txt`/`.md`/`.pdf`) ground
-subsequent answers in that conversation.
+hallucinated. Access is **invite-gated**: accounts are created only through one-time invite links,
+every data endpoint requires a session, and conversations are private to their owner. Conversations
+persist server-side, and uploaded files (`.txt`/`.md`/`.pdf`) ground subsequent answers in that
+conversation.
 
-> Last updated: 2026-07-21 (branch `feat/swe1-6-file-attachments`, PR stack #26→#29)
+> Last updated: 2026-07-26 (branch `feat/x5bz.2-invite-auth` — invite-gated auth)
+> Deployed: Cloud Run + Cloud SQL, `game-guide-ai-cloud` / us-central1, IAM-locked (x5bz.1)
 > Corpus 9,103 chunks / 12 books · retrieval Hit@1 83.3% (eval run 2026-06-15, pre-PHB-OCR-repair)
 
 ## System architecture
@@ -114,10 +117,14 @@ pass fed by `build_vocab.py`); `qa_chunks.py` quarantines failure signatures pre
 
 ### Vector DB (`vector-db/` — [README](../vector-db/README.md))
 
-- **Postgres 17 + pgvector**, initialized from `vector-db/init/`: `01-extensions.sql`,
-  `02-schema.sql` (dnd.chunks + HNSW/GIN indexes), `03-hybrid-search.sql`,
-  `04-chat-schema.sql` (chat.messages / chat.attachments — same DDL `history.ensure_schema()`
-  applies idempotently at service startup for pre-existing volumes).
+- **Postgres 17 + pgvector.** Corpus schema in `vector-db/init/`: `01-extensions.sql`,
+  `02-schema.sql` (dnd.chunks + HNSW/GIN indexes), `03-hybrid-search.sql`.
+- **Application schema is canonical in `service/sql/`** (`04-chat-schema.sql`,
+  `05-auth-schema.sql`) — one definition, applied by both paths: mounted into the
+  container's init directory for a fresh database (or `scripts/bootstrap-db.sh` for
+  Cloud SQL), and re-applied by `ensure_schema()` at every service startup, which is
+  the migration path for existing databases. It ships inside the installed package,
+  so the Cloud image can migrate what it connects to.
 - `dnd.hybrid_search()` (vector+FTS RRF) exists but is **not adopted** — tied Hit@1, slightly
   worse Recall@10 (3q3). `verify_db.py` is an insert+kNN smoke test.
 
@@ -143,20 +150,39 @@ prose categories. Default mode is pure filtered vector.
   is injected as a sibling context source and cited.
 - **`tracing.py`** — env-gated Langfuse tracing (`RAG_TRACING`, off by default): node-level
   spans, token/cost, tagged model/version/mode. See [`observability/OVERVIEW.md`](observability/OVERVIEW.md).
+- **Auth (x5bz.2)** — `auth_store.py` (users + invites in the `auth` schema, argon2 via
+  `hashing.py`, atomic single-use invite redemption), `session.py` (itsdangerous-signed
+  httpOnly session cookie carrying user id + role), `invites.py` (redeemability rules),
+  `admin_invites.py` (operator CLI: create/list/revoke). `require_session` guards `/chat`,
+  `/conversations/*` and `/auth/me`; `/healthz` and `/metrics/ui` stay open. The service
+  **fails closed** if `SESSION_SECRET` is unset. Every auth-store call goes through
+  `_auth_lookup`, so a backend that breaks *after* startup answers **503**, never 500 —
+  "retry later", not "this request is broken". Design rationale:
+  [`adr/invite-auth.md`](adr/invite-auth.md); incident response: [`deploy-gcp.md`](deploy-gcp.md) §10.
 - Contract: `ChatRequest{prompt, mode, conversation_id}` → `ChatResponse{answer, sources[],
-  answerable, mode, conversation_id, suggestions?}`. Errors: 422 validation · 502 LLM upstream ·
-  503 backend unavailable · 500 bug; a refusal is a **200** with `answerable=false`.
+  answerable, mode, conversation_id, suggestions?}`. Errors: **401 no/expired session** ·
+  **403 wrong role (GM channel) or another user's conversation** · 422 validation ·
+  502 LLM upstream · 503 backend unavailable · 500 bug; a refusal is a **200** with
+  `answerable=false`.
 
 ### UI (`ui/` — [README](../ui/README.md))
 
 **React 19 + Vite**, bun-managed, on the **Aetheril design system** (`ui/src/ds/` — Material 3
 token layer, warm fantasy palette, light *Parchment* / dark *Tavern*, 10 components, Storybook).
-Shell: Landing → Workspace (TopBar brand · **AppHeader channel switcher** with per-channel
-accents · LeftNav conversations + UserMenu · ChatPane) + Profile screen. Channels are
-role-gated in the UI (GM is DM-only). `useChat` recalls stored history; ChatPane uploads
-attachments; spell answers render suggestion cards; dice notation renders `DiceRoll`.
-`api.ts` mirrors `service/models.py` exactly (refusals are not errors). Conversation
-list/titles + user identity are still client-side stubs pending real auth.
+Shell: **Login / Signup** → Landing → Workspace (TopBar brand · **AppHeader channel switcher**
+with per-channel accents · LeftNav conversations + UserMenu · ChatPane) + Profile screen.
+`App` gates on the session check (`GET /auth/me`), which has four outcomes: *checking* holds a
+loading gate, *authenticated* enters the app, **401 — and only 401 —** renders Login, or
+**Signup** when the URL carries an invite (`/#invite=<token>` — a root-path link whose token
+rides in the URL **fragment**, so it never reaches the server or its request logs; there is no
+client router and the built SPA 404s on deeper paths). Anything else (5xx, network failure)
+is *unavailable*: a retry screen, not Login — the session may be perfectly valid, and signing
+in again would need the same backend that just failed. Identity and role come from the server session;
+the GM channel is still hidden in the UI for DMs, but the **server** is what enforces it.
+`useChat` recalls stored history; ChatPane uploads attachments; spell answers render suggestion
+cards; dice notation renders `DiceRoll`. `api.ts` mirrors `service/models.py` exactly (refusals
+are not errors) and sends `credentials:'include'` on every call. Conversation list/titles remain
+client-side; display name + avatar tone are local cosmetics.
 
 ### Packaging
 
@@ -201,9 +227,10 @@ browser tests (Playwright Chromium); `bun run typecheck` / `lint`.
 
 ## Known gaps / follow-ups (Beads)
 
-- **x5bz.2** — real authentication (invite links); until then users/roles are client-side stubs
-  and the GM channel is UI-gated only. Blocks **swe1.5** (notes/GM-lore nav — AppHeader slot reserved).
-- **agent-forge-harness-17u** — GCP deployment (not started).
+- **x5bz.1.6** — open Cloud Run ingress to testers. The deployment is live but **IAM-locked**;
+  opening it is deliberately gated on auth (x5bz.2) being verified in the deployed service.
+- **x5bz.3** — cost guard + rate limiting on `/chat`; worth having before external traffic.
+- **swe1.5** — notes/GM-lore nav (AppHeader slot reserved); was blocked on auth, now unblocked.
 - **agent-forge-harness-1nh** — OCR Wayfinders + Blood Hunter (deferred; needs tesseract/ocrmypdf).
 - **agent-forge-harness-ask** — `detect_collapse` false-positives on multi-form monsters; deep
   two-column MM tail.

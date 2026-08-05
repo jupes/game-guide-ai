@@ -47,7 +47,17 @@ def _client(store, response=_GROUNDED):
 
 
 class _ExplodingStore:
-    """MessageStore whose append always raises — persistence must be best-effort."""
+    """MessageStore whose PERSISTENCE always raises — writes/reads of content are
+    best-effort and must never fail an answer.
+
+    Authorization (`owner_of` / `claim_conversation`) deliberately still works
+    here: that path is NOT best-effort — it fails closed with a 503 — and is
+    covered by test_conversation_ownership.py. Mixing the two into one fake would
+    make this test assert the wrong thing.
+    """
+
+    def __init__(self):
+        self._owners: dict[str, int] = {}
 
     def append(self, conversation_id, mode, role, content, suggestions=None):
         raise RuntimeError("disk on fire")
@@ -57,6 +67,15 @@ class _ExplodingStore:
 
     def attachments_for(self, conversation_id):
         raise RuntimeError("disk on fire")
+
+    def owner_of(self, conversation_id):
+        return self._owners.get(conversation_id)
+
+    def claim_conversation(self, conversation_id, user_id):
+        return self._owners.setdefault(conversation_id, user_id)
+
+    def has_content(self, conversation_id):
+        return False
 
 
 def test_history_limit_caps_get_keeping_most_recent(monkeypatch):

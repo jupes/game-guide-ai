@@ -35,15 +35,14 @@ off by default — see tracing.py).
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Hashable
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, SNIPPET_MAX, TOP_K
-
 from ingestion.rerank import should_rerank
 from ingestion.retrieval import RetrievalResult, RetrievedChunk, assemble_result
 from ingestion.scope import scope_for_mode
-
-import logging
 
 from .attachments import cap_text
 from .generate import (
@@ -53,14 +52,14 @@ from .generate import (
     generate_answer,
     generate_suggestions,
 )
-from .models import ChatMode, REFUSAL, Source, Suggestion
+from .models import REFUSAL, ChatMode, Source, Suggestion
 
 log = logging.getLogger(__name__)
 
 # Runtime import (not TYPE_CHECKING): LangGraph resolves GraphState's
 # annotations when building the state schema. No cycle — service.rag imports
 # this module lazily (inside _compiled_graph), never at module load.
-from .rag import SecondaryResult
+from .rag import SecondaryResult  # noqa: E402 — placement is the point, see above
 
 if TYPE_CHECKING:
     from .rag import RagService
@@ -124,7 +123,10 @@ def build_rag_graph(svc: RagService) -> Any:
         effective_ctypes, allowed_books = scope_for_mode(state["mode"], state["ctypes"])
         return {"effective_ctypes": effective_ctypes, "allowed_books": allowed_books}
 
-    def scope_route(state: GraphState) -> list[str]:
+    # list[Hashable], not list[str]: LangGraph's add_conditional_edges is typed
+    # for Hashable node keys and list is invariant, so list[str] does not satisfy
+    # it. The values are still the node-name strings below.
+    def scope_route(state: GraphState) -> list[Hashable]:
         # GM fans out to the secondary (world/campaign) corpus IN PARALLEL with
         # the primary search branch; other modes run the primary branch only.
         if state["mode"] == "gm":

@@ -42,7 +42,9 @@ function makeUserState(overrides: Partial<CurrentUserContextValue> = {}): Curren
       signOut: vi.fn(),
       editProfile: vi.fn(),
     },
-    setRole: vi.fn(),
+    authStatus: 'authenticated',
+    retryAuthCheck: vi.fn(),
+    signIn: vi.fn(),
     setDisplayName: vi.fn(),
     setAvatarTone: vi.fn(),
     ...overrides,
@@ -109,24 +111,12 @@ describe('UserMenu (#14)', () => {
   })
 })
 
-// ── channel-chats CP-D — DM role toggle + gm→sage fallback ────────────────────
+// ── x5bz.2 — DM role display is read-only (server-authoritative) ─────────────
 
-describe('UserMenu DM role toggle', () => {
+describe('UserMenu DM role display (x5bz.2)', () => {
   async function openMenu() {
     await userEvent.click(screen.getByRole('button', { name: /open user menu/i }))
   }
-
-  it('toggling the Dungeon Master switch on calls setRole("dm")', async () => {
-    const setRole = vi.fn()
-    renderWithTheme(
-      <CurrentUserContext.Provider value={makeUserState({ setRole })}>
-        <UserMenu />
-      </CurrentUserContext.Provider>,
-    )
-    await openMenu()
-    await userEvent.click(screen.getByRole('switch', { name: /dungeon master/i }))
-    expect(setRole).toHaveBeenCalledWith('dm')
-  })
 
   it('the switch reflects the current role', async () => {
     const dmState = makeUserState()
@@ -140,38 +130,16 @@ describe('UserMenu DM role toggle', () => {
     expect(screen.getByRole('switch', { name: /dungeon master/i })).toBeChecked()
   })
 
-  it('giving up the DM role while in the GM channel falls back to sage', async () => {
-    const setRole = vi.fn()
-    const setMode = vi.fn()
-    const dmState = makeUserState({ setRole })
-    dmState.user.role = 'dm'
+  it('a player sees the switch off and cannot toggle it (disabled — role is server-set)', async () => {
     renderWithTheme(
-      <AppNavContext.Provider value={makeNavState({ mode: 'gm', setMode })}>
-        <CurrentUserContext.Provider value={dmState}>
-          <UserMenu />
-        </CurrentUserContext.Provider>
-      </AppNavContext.Provider>,
+      <CurrentUserContext.Provider value={makeUserState()}>
+        <UserMenu />
+      </CurrentUserContext.Provider>,
     )
     await openMenu()
-    await userEvent.click(screen.getByRole('switch', { name: /dungeon master/i }))
-    expect(setRole).toHaveBeenCalledWith('player')
-    expect(setMode).toHaveBeenCalledWith('sage')
-  })
-
-  it('giving up the DM role in a non-GM channel does not touch the mode', async () => {
-    const setMode = vi.fn()
-    const dmState = makeUserState()
-    dmState.user.role = 'dm'
-    renderWithTheme(
-      <AppNavContext.Provider value={makeNavState({ mode: 'rules', setMode })}>
-        <CurrentUserContext.Provider value={dmState}>
-          <UserMenu />
-        </CurrentUserContext.Provider>
-      </AppNavContext.Provider>,
-    )
-    await openMenu()
-    await userEvent.click(screen.getByRole('switch', { name: /dungeon master/i }))
-    expect(setMode).not.toHaveBeenCalled()
+    const roleSwitch = screen.getByRole('switch', { name: /dungeon master/i })
+    expect(roleSwitch).not.toBeChecked()
+    expect(roleSwitch).toBeDisabled()
   })
 })
 

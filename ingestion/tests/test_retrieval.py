@@ -17,7 +17,6 @@ from ingestion.retrieval import (
 )
 from ingestion.scope import scope_for_mode
 
-
 # ---------------------------------------------------------------------------
 # build_vector_sql — book_slugs filter (CP-F4.3)
 # ---------------------------------------------------------------------------

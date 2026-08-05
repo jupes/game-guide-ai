@@ -1,0 +1,45 @@
+/* Shared layout for Login + Signup (x5bz.2) — mirrors Landing's centered-card feel. */
+
+.auth-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--aether-space-4, 24px);
+}
+
+.auth-screen__card {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3, 16px);
+}
+
+.auth-screen__title {
+  margin: 0;
+  text-align: center;
+}
+
+.auth-screen__tagline {
+  margin: 0 0 var(--aether-space-2, 8px);
+  text-align: center;
+  opacity: 0.8;
+}
+
+.auth-screen__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3, 16px);
+}
+
+.auth-screen__error {
+  margin: 0;
+  color: var(--aether-color-error, #b3261e);
+  font-size: 0.875rem;
+}
+
+.auth-screen__switch {
+  text-align: center;
+  font-size: 0.875rem;
+}

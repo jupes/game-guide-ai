@@ -7,9 +7,7 @@ Run:
 
 from __future__ import annotations
 
-
 from ingestion.rerank import SKIP_RERANK_CTYPES, rerank_order, should_rerank
-
 
 # ---------------------------------------------------------------------------
 # should_rerank — the content-type gate

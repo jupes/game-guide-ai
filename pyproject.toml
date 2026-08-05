@@ -28,12 +28,29 @@ dependencies = [
     # PDF text extraction for chat file attachments (swe1.6). Core (not the
     # [extract] extra) because the live upload endpoint imports it at runtime.
     "pymupdf==1.28.0",
+    # Auth (x5bz.2): argon2 password hashing + signed session cookies. Core, not
+    # an extra — the login/signup endpoints import them at request time (same
+    # rationale as pymupdf). argon2-cffi installs from a manylinux abi3 wheel on
+    # python:3.12-slim/amd64, so no build deps in the image.
+    "argon2-cffi>=23,<26",
+    "itsdangerous>=2,<3",
 ]
 
 [project.optional-dependencies]
 test = [
     "pytest",
     "httpx",
+    "pytest-cov",
+]
+# Everything CI needs to gate a change: the tests plus the static checks. Kept
+# separate from `test` so `--with '.[test]'` stays a lightweight "just run the
+# tests" install for local loops.
+dev = [
+    "pytest",
+    "httpx",
+    "pytest-cov",
+    "ruff",
+    "mypy",
 ]
 # Answer-quality eval (ziw.3) — heavy + dev/CI-only, so NOT a core dependency
 # (the FastAPI service must not pull it). Run: uv run --with '.[eval]' python
@@ -73,7 +90,102 @@ packages = ["service", "ingestion"]
 # imported by both service and ingestion. Must ship in `pip install .`.
 py-modules = ["config"]
 
+[tool.setuptools.package-data]
+# The canonical schema DDL (service/schema.py). `ensure_schema()` reads these at
+# startup, so an image without them cannot migrate a database — it must ship in
+# the wheel, not just exist in the source tree.
+service = ["sql/*.sql"]
+
+# ── Lint ─────────────────────────────────────────────────────────────────────
+# Deliberately mainstream rather than maximal: ruff's wider families (PL*, FURB,
+# PERF, TRY, PYI) flag mostly stylistic things here, and a noisy gate is one
+# people learn to skip.
+[tool.ruff]
+target-version = "py312"
+# Set to the codebase as written (longest line was 126, only two over 120) rather
+# than to a number that would have turned the gate's introduction into a
+# reformatting PR across files this change has no business touching.
+line-length = 120
+# `spikes/` is exploratory scratch code that is never imported or shipped; linting
+# it would only add churn to unrelated PRs.
+extend-exclude = ["build", "trees", "repos", "spikes"]
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes (undefined names, unused imports), I import order,
+# B bugbear (real footguns), UP pyupgrade. Style-opinion families (SIM, C4, RUF,
+# PL*, FURB) are deliberately out: RUF001-003 alone flag every em-dash in the
+# prose comments this codebase is written in, and a gate that cries wolf is a
+# gate people stop reading.
+select = ["E", "W", "F", "I", "B", "UP"]
+ignore = [
+    # FastAPI's whole dependency-injection API is `x: T = Depends(...)` in a
+    # default. This rule is right in general and wrong for every route here.
+    "B008",
+    # `class ChatMode(str, Enum)` is what pydantic serialises across the API and
+    # what ui/src/api.ts mirrors. StrEnum changes __str__/__format__, so this is
+    # a wire-format change wearing a lint fix's clothes — not something to do as
+    # a side effect of turning the linter on. Tracked separately.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on failures deliberately, and reach into private state to prove
+# invariants a public API doesn't expose (limiter key tables, ownership rows).
+"**/tests/*" = ["S101", "SLF001"]
+# B905 (zip without explicit strict=) is a rule worth having, but answering it
+# means deciding, per call site, whether unequal lengths are a bug or the point —
+# and getting that wrong turns a silent truncation into a runtime exception in
+# the book-ingestion and eval CLIs. Decided for service/ (see generate.py);
+# ingestion/ is left for someone with that code in hand.
+"ingestion/*" = ["B905"]
+# Section-banner imports partway down a long test module; moving them changes
+# what the banners document.
+"ingestion/tests/test_retrieval.py" = ["B905", "E402"]
+
+# ── Typecheck ────────────────────────────────────────────────────────────────
+# Scoped to the deployed request path and the auth surface, both at zero.
+# Extending it over `ingestion/` (the book-extraction and eval CLIs) is tracked
+# separately. `ignore_missing_imports` because langgraph/langfuse/psycopg ship
+# partial stubs.
+[tool.mypy]
+python_version = "3.12"
+files = ["service", "config.py"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 # Puts the repo root on sys.path so `import service` / `import ingestion` resolve
 # from a plain checkout with no install (pytest >= 7). Covers "pytest from repo root".
 pythonpath = ["."]
+# Collect ONLY the project's test dirs. Without this, a bare `pytest` (as CI runs
+# it) recurses from the rootdir into any local `.venv/`, `build/lib/`, or the uv
+# ephemeral env's site-packages and tries to collect third-party tests
+# (colorama/greenlet/sqlalchemy/...), producing thousands of collection errors.
+testpaths = ["service/tests", "ingestion/tests", "tests", "scripts/gcp/tests"]
+# Belt-and-suspenders: never descend into these even if named on the CLI.
+norecursedirs = [".venv", "venv", "build", "dist", "node_modules", "ui", ".git", "*.egg-info"]
+
+# ── Coverage ─────────────────────────────────────────────────────────────────
+# Scoped to `service/` on purpose. A repo-wide number would be dominated by the
+# one-shot ingestion CLIs (extract.py, embed.py, ingest_books.py — 0%, run by
+# hand against book PDFs, not exercised by tests), which would drag the floor so
+# low it stopped meaning anything. `service/` is the deployed request path and
+# the whole auth surface, which is what a gate is for.
+[tool.coverage.run]
+source = ["service"]
+branch = true
+omit = [
+    "service/tests/*",
+    # A deterministic stub service the browser E2E runs against, not the app.
+    "service/e2e_app.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# A RATCHET, not an aspiration: set just under the measured value at the time it
+# was introduced (86%), so it catches a real regression without failing the build
+# on noise. Raise it when the number rises; never lower it to make a build pass —
+# fix the tests or justify the drop in the PR. The gap to 100% is mostly the
+# Postgres store implementations, which need a live database (see the two skipped
+# tests) and are covered by the gated integration test instead.
+fail_under = 85

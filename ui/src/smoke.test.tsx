@@ -13,10 +13,27 @@
  * self-contained and obvious.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
+
+// x5bz.2: App now gates on the session check (GET /auth/me). Real <App/>
+// renders below drive multi-step flows via `await userEvent...`, which yields
+// enough ticks for that check to resolve — without this, an unmocked getMe()
+// would eventually settle to "unauthenticated" mid-flow and swap Landing/
+// Workspace out for the Login screen. Mock it to resolve to an authenticated
+// player immediately, keeping the flow deterministic.
+vi.mock('./api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./api')>()
+  return {
+    ...actual,
+    getMe: async () => ({
+      kind: 'ok' as const,
+      user: { email: 'adventurer@example.com', role: 'player' as const },
+    }),
+  }
+})
 import { ThemeProvider } from './ds/theme'
 import { AppNavProvider } from './shell/AppNav'
 import { CurrentUserProvider } from './shell/currentUser'
@@ -70,7 +87,7 @@ import { Landing } from './shell/Landing'
 // ── Smoke test ────────────────────────────────────────────────────────────────
 
 describe('App-flow smoke test (CP-F6.2)', () => {
-  it('Landing renders with the Enter the Tavern CTA', () => {
+  it('Landing renders with the Enter the Tavern CTA', async () => {
     render(
       <ThemeProvider>
         <AppNavProvider>
@@ -82,7 +99,7 @@ describe('App-flow smoke test (CP-F6.2)', () => {
         </AppNavProvider>
       </ThemeProvider>,
     )
-    expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
     expect(screen.getByText('Aetheril')).toBeInTheDocument()
   })
 
@@ -109,7 +126,7 @@ describe('App-flow smoke test (CP-F6.2)', () => {
     )
 
     // Step 1: Landing is visible.
-    expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
 
     // Step 2: Click "Enter the Tavern" → enters workspace (sage mode by default).
     await userEvent.click(screen.getByText('Enter the Tavern'))
@@ -155,10 +172,12 @@ describe('App-flow smoke test (CP-F6.2)', () => {
         displayName: 'Adventurer',
         initials: 'AV',
         role: 'player',
-        signOut: () => {},
+        signOut: async () => true,
         editProfile: () => {},
       },
-      setRole: () => {},
+      authStatus: 'authenticated',
+      retryAuthCheck: () => {},
+      signIn: () => {},
       setDisplayName: () => {},
       setAvatarTone: () => {},
     }
@@ -211,7 +230,7 @@ describe('toolchain smoke', () => {
 // ── Landing-only render (quick) ───────────────────────────────────────────────
 
 describe('App renders Landing screen (integration)', () => {
-  it('renders the Landing screen by default', () => {
+  it('renders the Landing screen by default', async () => {
     render(
       <ThemeProvider>
         <AppNavProvider>
@@ -223,7 +242,7 @@ describe('App renders Landing screen (integration)', () => {
         </AppNavProvider>
       </ThemeProvider>,
     )
-    expect(screen.getByText('Enter the Tavern')).toBeInTheDocument()
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
     expect(screen.getByText('Aetheril')).toBeInTheDocument()
   })
 })

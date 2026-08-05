@@ -45,7 +45,7 @@ def _make_pdf(text: str) -> bytes:
 # ── Checkpoint A: extract_text + cap_text ─────────────────────────────────────
 
 def test_extract_text_from_txt() -> None:
-    data = "Campaign note: the tavern is the Prancing Pony.".encode()
+    data = b"Campaign note: the tavern is the Prancing Pony."
     assert "Prancing Pony" in extract_text(data, "notes.txt")
 
 

@@ -15,9 +15,8 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from ingestion.retrieval import RetrievalResult, RetrievedChunk
-
 from service.graph import build_rag_graph
-from service.rag import RagService, REFUSAL
+from service.rag import REFUSAL, RagService
 
 
 def _chunk(cid, entity, dist=0.3):

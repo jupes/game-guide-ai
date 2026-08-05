@@ -20,13 +20,40 @@ export default defineConfig({
       '/chat': 'http://localhost:8000',
       '/healthz': 'http://localhost:8000',
       '/conversations': 'http://localhost:8000',
-      '/metrics': 'http://localhost:8000'
+      '/metrics': 'http://localhost:8000',
+      '/auth': 'http://localhost:8000'
     }
   },
   test: {
+    // Measured over the jsdom project only: the storybook project renders every
+    // story in a real browser, which inflates the number without adding any
+    // assertions about behaviour.
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: [
+        'src/**/*.{test,spec}.{ts,tsx}',
+        'src/**/*.stories.tsx',
+        'src/test-setup.ts',
+        'src/main.tsx',        // the mount point; nothing to assert
+        'src/vite-env.d.ts',
+      ],
+      reporter: ['text-summary', 'lcov'],
+      // A RATCHET set just under the value measured when the gate went in, not a
+      // target. Raise it when the number rises; never lower it to make a build
+      // pass. Statements/lines rather than branches, since the branch number is
+      // dominated by defensive `??` chains in the API client.
+      thresholds: {
+        statements: 85,   // measured 87.76 when introduced
+        lines: 88,        // measured 90.62
+        functions: 87,    // measured 89.62
+        branches: 80,     // measured 83.16
+      },
+    },
     projects: [{
       extends: true,
       test: {
+        name: 'jsdom',
         environment: 'jsdom',
         globals: true,
         include: ['src/**/*.{test,spec}.{ts,tsx}'],

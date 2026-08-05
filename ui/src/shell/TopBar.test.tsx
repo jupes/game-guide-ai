@@ -36,7 +36,9 @@ function makeUserState(): CurrentUserContextValue {
       signOut: vi.fn(),
       editProfile: vi.fn(),
     },
-    setRole: vi.fn(),
+    authStatus: 'authenticated',
+    retryAuthCheck: vi.fn(),
+    signIn: vi.fn(),
     setDisplayName: vi.fn(),
     setAvatarTone: vi.fn(),
   }

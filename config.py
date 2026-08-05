@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 # --- .env loading ----------------------------------------------------------
 # Mirror the repo-root .env into the environment (idempotent; never overrides an
@@ -46,6 +47,28 @@ def _float(name: str, default: float) -> float:
 
 def _str(name: str, default: str) -> str:
     return os.environ.get(name, default)
+
+
+SameSite = Literal["lax", "strict", "none"]
+_SAMESITE_VALUES: tuple[SameSite, ...] = ("lax", "strict", "none")
+
+
+def _samesite(name: str, default: SameSite) -> SameSite:
+    """Read a SameSite policy, rejecting anything else at import.
+
+    Browsers *ignore* an unrecognised SameSite value rather than erroring, so a
+    typo would not fail anywhere — the cookie would just fall back to whatever
+    the browser defaults to, quietly changing the CSRF posture this value exists
+    to set. Validating here also gives the value a Literal type, which is what
+    Starlette's `set_cookie` actually accepts.
+    """
+    raw = _str(name, default).strip().lower()
+    for allowed in _SAMESITE_VALUES:
+        if raw == allowed:
+            return allowed
+    raise ValueError(
+        f"{name} must be one of {_SAMESITE_VALUES}, got {raw!r}"
+    )
 
 
 # Truthy set shared with service/tracing.py's RAG_TRACING parsing — boolean
@@ -130,3 +153,74 @@ ATTACHMENT_TYPES: frozenset[str] = frozenset({"txt", "md", "pdf"})
 # query; the +6pt prose Hit@1 should be confirmed via a Langfuse experiment A/B
 # before flipping this on in an environment.
 RAG_RERANK: bool = _bool("RAG_RERANK", False)
+
+# --- Auth / session (x5bz.2) -----------------------------------------------
+
+# Server secret that signs session cookies (itsdangerous). Empty by default so
+# a misconfigured prod fails loudly rather than signing with a guessable key —
+# service startup asserts it is set when auth is enabled. Injected in Cloud Run
+# from the `session-secret` Secret Manager entry (Checkpoint F).
+SESSION_SECRET: str = _str("SESSION_SECRET", "")
+
+# Session lifetime. A signed cookie can't be revoked server-side, so keep it
+# modest; rotating SESSION_SECRET invalidates all sessions if needed.
+SESSION_TTL_DAYS: int = _int("SESSION_TTL_DAYS", 14)
+
+SESSION_COOKIE_NAME: str = _str("SESSION_COOKIE_NAME", "gga_session")
+
+# Cookie hardening. `Secure` is forced on by default and must NOT be derived from
+# the request scheme: Cloud Run terminates TLS and forwards HTTP, so scheme
+# sniffing would see http and wrongly drop Secure. Set SESSION_COOKIE_SECURE=0
+# only for local http dev. SameSite=Lax is the CSRF mitigation for the
+# same-origin cookie-authed POSTs.
+SESSION_COOKIE_SECURE: bool = _bool("SESSION_COOKIE_SECURE", True)
+SESSION_COOKIE_SAMESITE: SameSite = _samesite("SESSION_COOKIE_SAMESITE", "lax")
+
+# Default lifetime of a minted invite link (admin CLI --ttl-days overrides).
+INVITE_TTL_DAYS: int = _int("INVITE_TTL_DAYS", 14)
+
+# --- Password hashing cost + capacity (x5bz.2) ------------------------------
+# argon2id parameters. 64 MiB / t=3 / p=4 matches argon2-cffi's defaults and
+# RFC 9106's interactive-login guidance. Declared explicitly because peak memory
+# is ARGON2_MEMORY_KIB * MAX_CONCURRENT_HASHES and must be a reviewable number.
+# Changing these does not invalidate existing hashes (params live in the hash).
+ARGON2_TIME_COST: int = _int("ARGON2_TIME_COST", 3)
+ARGON2_MEMORY_KIB: int = _int("ARGON2_MEMORY_KIB", 65536)  # 64 MiB per hash
+ARGON2_PARALLELISM: int = _int("ARGON2_PARALLELISM", 4)
+
+# How many argon2 operations may run at once. /auth/login hashes on EVERY
+# attempt (including unknown emails), so without a cap a public endpoint could
+# exhaust the instance's memory and get it killed. 2 * 64 MiB = 128 MiB peak,
+# which fits comfortably in the 1 GiB the deploy requests. Keep this in sync
+# with --memory / --concurrency in scripts/deploy.sh.
+MAX_CONCURRENT_HASHES: int = _int("MAX_CONCURRENT_HASHES", 2)
+
+# How long a request waits for a hashing slot before being shed as a 503.
+# Bounded so overload fails fast instead of queueing until the request times out.
+# Kept short: a waiting request still occupies one of the instance's
+# --concurrency slots, so a long wait converts a hashing queue into request
+# starvation. Rate limiting (below) is the primary defence; this is the backstop.
+HASH_ACQUIRE_TIMEOUT_S: float = _float("HASH_ACQUIRE_TIMEOUT_S", 2.0)
+
+# --- Auth rate limiting (x5bz.2) -------------------------------------------
+# Attempt budgets for the unauthenticated auth endpoints, enforced BEFORE any
+# argon2 work. Without them /auth/login accepts unlimited guesses and unlimited
+# concurrent callers holding request slots. Per-instance and in-memory — with
+# --max-instances N the effective ceiling is N x these numbers (see ratelimit.py).
+AUTH_RATE_LIMIT_WINDOW_S: float = _float("AUTH_RATE_LIMIT_WINDOW_S", 300.0)  # 5 min
+# Per account: the brute-force ceiling. 10 tries / 5 min is generous for a human
+# who forgot their password and hopeless for a guessing attack.
+AUTH_RATE_LIMIT_PER_ACCOUNT: int = _int("AUTH_RATE_LIMIT_PER_ACCOUNT", 10)
+# Per source IP: looser, since a household/office shares an egress IP, but still
+# far below what it takes to starve the instance's request slots.
+AUTH_RATE_LIMIT_PER_SOURCE: int = _int("AUTH_RATE_LIMIT_PER_SOURCE", 30)
+# How many X-Forwarded-For entries our OWN infrastructure appends. X-Forwarded-For
+# is caller-writable — Google preserves what the client sent and appends to it —
+# so the source key is taken from the right-hand (trusted) end of the chain, this
+# many entries in, and everything to its left is ignored. The default of 0 trusts
+# nothing in the header and keys on the peer address; deployments behind a proxy
+# MUST set it (scripts/deploy.sh sets 1 for Cloud Run's run.app front end; use 2
+# behind an external HTTPS load balancer) or every caller collapses into one
+# shared bucket. Getting it too HIGH is the unsafe direction: it starts trusting
+# caller-supplied entries. See service/ratelimit.py:client_source.
+AUTH_TRUSTED_PROXY_HOPS: int = _int("AUTH_TRUSTED_PROXY_HOPS", 0)

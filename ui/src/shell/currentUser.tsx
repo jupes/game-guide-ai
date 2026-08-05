@@ -1,20 +1,49 @@
 /**
- * currentUser — Stub current user context.
+ * currentUser — Session-backed current user (x5bz.2).
  *
- * Provides a guest "Adventurer" stub for the shell during development, plus
- * the DM/player role (channel-chats CP-D): a localStorage-persisted toggle
- * that gates the GM channel in the UI. This is honest-scope gating only — the
- * server does not enforce roles until real auth exists. In a real app,
- * replace STUB with a real auth integration.
+ * Identity (email, role) comes from the server session via GET /auth/me,
+ * checked once on mount. `authStatus` tracks that check so App can gate
+ * rendering, and it has four states because "we don't know who you are" and
+ * "you are signed out" are different facts:
+ *
+ *   checking        — the request is in flight; App holds a Loading gate (it
+ *                     must not render the workspace with a guest identity, see
+ *                     App.tsx, nor flash Login at an already-signed-in tester)
+ *   authenticated   — /auth/me answered with an account
+ *   unauthenticated — the server said 401. ONLY a 401 proves this.
+ *   unavailable     — the check could not be completed: 5xx, a network failure,
+ *                     an unreadable body. The session may well be perfectly
+ *                     valid, so App offers a retry instead of Login. Treating
+ *                     this as signed-out asked a tester to re-enter credentials
+ *                     that the backend was in no state to check, and a
+ *                     successful "login" was impossible for the same reason.
+ *
+ * Role is server-authoritative and no longer user-settable (replaces the
+ * pre-auth localStorage role toggle) — the GM channel gate in the UI is now
+ * just a courtesy; the server enforces it for real. displayName/avatarTone
+ * remain a local, cosmetic-only stub (per-user profile storage is out of scope
+ * for the pilot).
  */
 
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as React from 'react'
 import { deriveInitials, type AvatarTone } from '../ds/Avatar'
+import {
+  getMe,
+  logout as apiLogout,
+  setUnauthorizedHandler,
+  type AuthUser,
+} from '../api'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type UserRole = 'dm' | 'player'
+export type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated' | 'unavailable'
+
+/** HTTP status that proves the session is not valid. Everything else — 5xx, a
+ * network failure, a 403 from the Cloud Run edge before the app is even reached
+ * — says the check failed, not that the user is signed out. */
+const UNAUTHORIZED = 401
 
 export interface CurrentUser {
   id: string
@@ -23,18 +52,26 @@ export interface CurrentUser {
   /** Chosen avatar tone (swe1.7). Optional so existing user literals still typecheck. */
   avatarTone?: AvatarTone
   role: UserRole
-  signOut(): void
+  /** Resolves false when the SERVER refused to end the session — the caller
+   * must keep showing the user as signed in (the httpOnly cookie is still live). */
+  signOut(): Promise<boolean>
   editProfile(): void
 }
 
 export interface CurrentUserContextValue {
   user: CurrentUser
-  setRole: (role: UserRole) => void
+  /** Session-check status; App uses this to gate Login/Signup vs the app. */
+  authStatus: AuthStatus
+  /** Re-run the session check. For the `unavailable` state: the outage may be
+   * over, and the user should not have to reload the page to find out. */
+  retryAuthCheck: () => void
+  /** Adopt an authenticated identity (called by Login/Signup on success). */
+  signIn: (authUser: AuthUser) => void
   setDisplayName: (name: string) => void
   setAvatarTone: (tone: AvatarTone) => void
 }
 
-// ── Stub ──────────────────────────────────────────────────────────────────────
+// ── Guest default (pre-session / while checking) ──────────────────────────────
 
 function noop(): void {}
 
@@ -45,35 +82,28 @@ export const STUB: CurrentUser = {
   initials: 'AV',
   avatarTone: 'gold',
   role: 'player',
-  signOut: noop,
+  signOut: async () => true,
   editProfile: noop,
 }
 
-// ── Role persistence (guarded, matching conversationStore's posture) ──────────
+// ── Profile persistence (local-stub only; unrelated to the server session) ───
+// Real per-user profile storage is out of scope for the pilot.
 
-const ROLE_STORAGE_KEY = 'game-guide-ai:role'
-
-function loadRole(): UserRole {
-  try {
-    return localStorage.getItem(ROLE_STORAGE_KEY) === 'dm' ? 'dm' : 'player'
-  } catch {
-    // localStorage unavailable (privacy mode, SSR) — least-privileged default.
-    return 'player'
-  }
+// Namespaced per account: a single shared key leaked one user's display name and
+// avatar to the next person to sign in on the same browser. Signed-out/unknown
+// users get their own bucket rather than the previous user's.
+function profileStorageKey(userId: string): string {
+  return `game-guide-ai:profile:${userId}`
 }
 
-function saveRole(role: UserRole): void {
-  try {
-    localStorage.setItem(ROLE_STORAGE_KEY, role)
-  } catch (err) {
-    console.warn('currentUser: could not persist role', err)
-  }
-}
+/** The un-namespaced key this replaced. Migrated onto the first REAL identity
+ * that loads — never `guest`, which would consume it into a bucket the signed-in
+ * user never reads — and consumed, so a second account can't inherit it too.
+ * (`App` gates on the session check, so `guest` is the signed-out identity in
+ * practice; this guard does not rely on that gate, only on the id.) */
+const PRE_AUTH_PROFILE_KEY = 'game-guide-ai:profile'
+const GUEST_USER_ID = 'guest'
 
-// ── Profile persistence (name + avatar tone; role stays under its own key) ────
-// Local-stub only — real per-user profiles arrive with the pilot-auth work (x5bz.2).
-
-const PROFILE_STORAGE_KEY = 'game-guide-ai:profile'
 const AVATAR_TONES: readonly AvatarTone[] = ['gold', 'ember', 'verdigris', 'arcane']
 
 interface StoredProfile {
@@ -85,9 +115,25 @@ function isAvatarTone(value: unknown): value is AvatarTone {
   return typeof value === 'string' && (AVATAR_TONES as readonly string[]).includes(value)
 }
 
-function loadProfile(): StoredProfile {
+/** Move a pre-auth profile onto this account's key, once. Returns its payload so
+ * the caller can use it immediately. */
+function migratePreAuthProfile(userId: string): string | null {
+  if (userId === GUEST_USER_ID) return null
+  const legacy = localStorage.getItem(PRE_AUTH_PROFILE_KEY)
+  if (legacy === null) return null
   try {
-    const raw = localStorage.getItem(PROFILE_STORAGE_KEY)
+    localStorage.setItem(profileStorageKey(userId), legacy)
+    localStorage.removeItem(PRE_AUTH_PROFILE_KEY)
+  } catch {
+    // Quota/availability errors: still return it so this session reads it.
+  }
+  return legacy
+}
+
+function loadProfile(userId: string): StoredProfile {
+  try {
+    const raw = localStorage.getItem(profileStorageKey(userId))
+      ?? migratePreAuthProfile(userId)
     if (!raw) return {}
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return {}
@@ -101,9 +147,9 @@ function loadProfile(): StoredProfile {
   }
 }
 
-function saveProfile(profile: StoredProfile): void {
+function saveProfile(userId: string, profile: StoredProfile): void {
   try {
-    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile))
+    localStorage.setItem(profileStorageKey(userId), JSON.stringify(profile))
   } catch (err) {
     console.warn('currentUser: could not persist profile', err)
   }
@@ -123,38 +169,115 @@ interface CurrentUserProviderProps {
 }
 
 export function CurrentUserProvider({ children }: CurrentUserProviderProps): React.JSX.Element {
-  const [role, setRoleState] = useState<UserRole>(loadRole)
-  const [displayName, setDisplayNameState] = useState<string>(
-    () => loadProfile().displayName ?? STUB.displayName,
-  )
-  const [avatarTone, setAvatarToneState] = useState<AvatarTone>(
-    () => loadProfile().avatarTone ?? 'gold',
-  )
+  const [authStatus, setAuthStatus] = useState<AuthStatus>('checking')
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null)
+  const userId = authUser?.email ?? 'guest'
+  // Edits made this session, keyed by account. The stored profile is READ per
+  // identity rather than mirrored into state, so switching accounts can't leave
+  // the previous user's name/avatar on screen (and needs no syncing effect).
+  const [edits, setEdits] = useState<Record<string, StoredProfile>>({})
 
-  const setRole = useCallback((next: UserRole) => {
-    setRoleState(next)
-    saveRole(next)
+  // Session check on mount, re-runnable via retryAuthCheck. getMe() never
+  // throws (network errors and non-2xx both resolve to a normal AuthResult), so
+  // this can't leave authStatus stuck in `checking`.
+  const [checkNonce, setCheckNonce] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    getMe().then((result) => {
+      if (cancelled) return
+      if (result.kind === 'ok') {
+        setAuthUser(result.user)
+        setAuthStatus('authenticated')
+        return
+      }
+      // Only a 401 means "signed out". A 5xx or a network failure means the
+      // question went unanswered — sending the user to Login there would ask
+      // them to prove an identity to a service that cannot check it, and would
+      // silently discard a session that is still perfectly valid.
+      setAuthUser(null)
+      setAuthStatus(result.status === UNAUTHORIZED ? 'unauthenticated' : 'unavailable')
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [checkNonce])
+
+  // Back to `checking` for the duration of the retry, so App shows the loading
+  // gate rather than leaving the error screen up with a dead button. Set here
+  // and not in the effect: the initial state is already `checking`, so the
+  // effect never needs to write it (and writing state from an effect is exactly
+  // what react-hooks/set-state-in-effect is there to stop).
+  const retryAuthCheck = useCallback(() => {
+    setAuthStatus('checking')
+    setCheckNonce((n) => n + 1)
   }, [])
 
+  // Centralized 401: any guarded call that finds the session gone drops the app
+  // back to Login, instead of trapping the user in an authenticated-looking
+  // shell where every request fails.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuthUser(null)
+      setAuthStatus('unauthenticated')
+    })
+    return () => setUnauthorizedHandler(null)
+  }, [])
+
+  const signIn = useCallback((next: AuthUser) => {
+    setAuthUser(next)
+    setAuthStatus('authenticated')
+  }, [])
+
+  const signOut = useCallback(async (): Promise<boolean> => {
+    // Only the server can clear an httpOnly cookie. If it refuses, stay signed
+    // in rather than pretending — otherwise a refresh silently restores the
+    // session the user believes they ended.
+    const ok = await apiLogout()
+    if (!ok) return false
+    setAuthUser(null)
+    setAuthStatus('unauthenticated')
+    return true
+  }, [])
+
+  const profile = useMemo(
+    () => edits[userId] ?? loadProfile(userId),
+    [edits, userId],
+  )
+  const displayName = profile.displayName ?? STUB.displayName
+  const avatarTone = profile.avatarTone ?? 'gold'
+
+  const updateProfile = useCallback((patch: StoredProfile) => {
+    setEdits((prev) => {
+      const next = { ...(prev[userId] ?? loadProfile(userId)), ...patch }
+      saveProfile(userId, next)
+      return { ...prev, [userId]: next }
+    })
+  }, [userId])
+
   const setDisplayName = useCallback((name: string) => {
-    setDisplayNameState(name)
-    saveProfile({ displayName: name, avatarTone })
-  }, [avatarTone])
+    updateProfile({ displayName: name })
+  }, [updateProfile])
 
   const setAvatarTone = useCallback((tone: AvatarTone) => {
-    setAvatarToneState(tone)
-    saveProfile({ displayName, avatarTone: tone })
-  }, [displayName])
+    updateProfile({ avatarTone: tone })
+  }, [updateProfile])
 
-  const value = useMemo<CurrentUserContextValue>(
-    () => ({
-      user: { ...STUB, displayName, initials: deriveInitials(displayName), avatarTone, role },
-      setRole,
+  const value = useMemo<CurrentUserContextValue>(() => {
+    const role: UserRole = authUser?.role ?? 'player'
+    return {
+      user: {
+        id: userId, displayName, initials: deriveInitials(displayName), avatarTone, role,
+        signOut, editProfile: noop,
+      },
+      authStatus,
+      retryAuthCheck,
+      signIn,
       setDisplayName,
       setAvatarTone,
-    }),
-    [displayName, avatarTone, role, setRole, setDisplayName, setAvatarTone],
-  )
+    }
+  }, [authStatus, authUser, userId, displayName, avatarTone, retryAuthCheck, signIn, signOut,
+      setDisplayName, setAvatarTone])
+
   return <CurrentUserContext.Provider value={value}>{children}</CurrentUserContext.Provider>
 }
 

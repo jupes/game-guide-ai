@@ -32,10 +32,10 @@ import hashlib
 import json
 import re
 import sys
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from itertools import groupby
 from pathlib import Path
-from typing import Iterator
 
 import pdfplumber
 from pdfplumber.page import Page
@@ -118,7 +118,7 @@ _ENTITY_OWNERSHIP_CTYPES = {"class_feature", "race_feature"}
 # ---------------------------------------------------------------------------
 
 def _collect_entity_chapter_headings(
-    pdf: "pdfplumber.PDF",
+    pdf: pdfplumber.PDF,
     cfg: dict,
 ) -> dict[str, tuple[list[tuple[int, int, float, str]], list[int]]]:
     """
@@ -228,7 +228,7 @@ def _identify_entity_names(
 
 
 def _build_entity_ownership_map(
-    pdf: "pdfplumber.PDF",
+    pdf: pdfplumber.PDF,
     cfg: dict,
 ) -> dict[tuple[int, int], str]:
     """
@@ -254,7 +254,7 @@ def _build_entity_ownership_map(
 
     page_owner: dict[tuple[int, int], str] = {}
 
-    for chapter, (headings, all_pages) in chapter_data.items():
+    for _chapter, (headings, all_pages) in chapter_data.items():
         if not headings:
             continue
 

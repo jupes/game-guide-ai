@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from ingestion.scope import scope_for_mode
 
-
 # ---------------------------------------------------------------------------
 # Per-mode behavior
 # ---------------------------------------------------------------------------

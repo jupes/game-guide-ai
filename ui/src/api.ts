@@ -70,6 +70,25 @@ async function parseJson<T>(res: Response): Promise<T | null> {
 
 const UNREADABLE = 'The service returned an unreadable response.'
 
+// ── Centralized 401 handling (x5bz.2) ────────────────────────────────────────
+// Any guarded call that comes back 401 means the session is gone (expired,
+// revoked, account deleted). Rather than each caller inventing its own
+// recovery, they all report it here and the auth provider flips the app back
+// to the Login screen. Deliberately NOT fired for /auth/login or /auth/me,
+// where a 401 is a normal answer rather than a lost session.
+
+type UnauthorizedHandler = () => void
+
+let unauthorizedHandler: UnauthorizedHandler | null = null
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler
+}
+
+function notifyUnauthorized(): void {
+  unauthorizedHandler?.()
+}
+
 /** Recall a conversation's stored history (most recent window, oldest-first). */
 export async function getMessages(
   conversationId: string,
@@ -77,11 +96,15 @@ export async function getMessages(
 ): Promise<MessagesResult> {
   let res: Response
   try {
-    res = await fetchImpl(`/conversations/${encodeURIComponent(conversationId)}/messages`)
+    res = await fetchImpl(
+      `/conversations/${encodeURIComponent(conversationId)}/messages`,
+      { credentials: 'include' },
+    )
   } catch {
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
   }
 
+  if (res.status === 401) notifyUnauthorized()
   if (!res.ok) {
     return { kind: 'error', message: `Message history unavailable (${res.status}).` }
   }
@@ -102,6 +125,7 @@ export async function postChat(
     res = await fetchImpl('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ prompt, mode, conversation_id: conversationId ?? null }),
     })
   } catch {
@@ -112,6 +136,21 @@ export async function postChat(
     }
   }
 
+  if (res.status === 401) {
+    notifyUnauthorized()
+    return {
+      kind: 'error',
+      message: 'Your session has expired — please sign in again.',
+      outcome: 'http_error',
+    }
+  }
+  if (res.status === 403) {
+    return {
+      kind: 'error',
+      message: "You don't have access to that channel or conversation.",
+      outcome: 'http_error',
+    }
+  }
   if (res.status === 422) {
     return {
       kind: 'error',
@@ -194,12 +233,14 @@ export async function uploadAttachment(
     res = await fetchImpl(`/conversations/${encodeURIComponent(conversationId)}/attachments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ filename: file.name, content_type: file.type, data }),
     })
   } catch {
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
   }
 
+  if (res.status === 401) notifyUnauthorized()
   if (res.status === 415) {
     return { kind: 'error', message: "That file type isn't supported." }
   }
@@ -225,11 +266,15 @@ export async function getAttachments(
 ): Promise<AttachmentsResult> {
   let res: Response
   try {
-    res = await fetchImpl(`/conversations/${encodeURIComponent(conversationId)}/attachments`)
+    res = await fetchImpl(
+      `/conversations/${encodeURIComponent(conversationId)}/attachments`,
+      { credentials: 'include' },
+    )
   } catch {
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
   }
 
+  if (res.status === 401) notifyUnauthorized()
   if (!res.ok) {
     return { kind: 'error', message: `Attachments unavailable (${res.status}).` }
   }
@@ -237,4 +282,124 @@ export async function getAttachments(
   const body = await parseJson<{ attachments: Attachment[] }>(res)
   if (body === null) return { kind: 'error', message: UNREADABLE }
   return { kind: 'ok', attachments: body.attachments }
+}
+
+// ── Auth (x5bz.2) — mirrors service.models.AuthUser ──────────────────────────
+
+export interface AuthUser {
+  email: string
+  role: 'player' | 'dm'
+}
+
+export type AuthResult =
+  | { kind: 'ok'; user: AuthUser }
+  | { kind: 'error'; message: string; status?: number }
+
+/** Turn a FastAPI error body into a displayable string.
+ *
+ * `detail` is a plain string for our own HTTPExceptions, but for a 422 it is an
+ * ARRAY of validation objects — handing that straight to React throws
+ * ("objects are not valid as a React child"). Normalize both shapes. */
+function errorMessage(body: unknown, status: number): string {
+  const detail = (body as { detail?: unknown } | null)?.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    const first = detail.find(
+      (d): d is { msg: string } =>
+        typeof (d as { msg?: unknown })?.msg === 'string',
+    )
+    if (first) return first.msg
+  }
+  return `Request failed (${status}).`
+}
+
+async function postAuthJson(
+  path: string,
+  body: Record<string, string>,
+  fetchImpl: typeof fetch,
+): Promise<AuthResult> {
+  let res: Response
+  try {
+    res = await fetchImpl(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(body),
+    })
+  } catch {
+    return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
+  }
+  if (!res.ok) {
+    return {
+      kind: 'error',
+      status: res.status,
+      message: errorMessage(await parseJson<unknown>(res), res.status),
+    }
+  }
+  const parsed = await parseJson<AuthUser>(res)
+  if (parsed === null) return { kind: 'error', message: UNREADABLE }
+  return { kind: 'ok', user: parsed }
+}
+
+/** Redeem a one-time invite to create an account; the service sets the
+ * session cookie on success. */
+export function signup(
+  email: string,
+  password: string,
+  invite: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AuthResult> {
+  return postAuthJson('/auth/signup', { email, password, invite }, fetchImpl)
+}
+
+export function login(
+  email: string,
+  password: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<AuthResult> {
+  return postAuthJson('/auth/login', { email, password }, fetchImpl)
+}
+
+/** Clear the session cookie. Returns whether the SERVER actually cleared it.
+ *
+ * The cookie is httpOnly, so only a successful server response ends the
+ * session — clearing local state on a failed request would show "signed out"
+ * while a refresh silently signs the user back in (bad on a shared device). */
+export async function logout(fetchImpl: typeof fetch = fetch): Promise<boolean> {
+  try {
+    const res = await fetchImpl('/auth/logout', { method: 'POST', credentials: 'include' })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/** Who (if anyone) the current session cookie belongs to.
+ *
+ * Every failure is an AuthResult error rather than a thrown exception, but the
+ * caller MUST distinguish them by `status`: only 401 means "not signed in". A
+ * 503 or a network failure means the question went unanswered, and `status` is
+ * absent for the latter — see currentUser.tsx, which maps anything that is not
+ * a 401 to `unavailable` rather than logging the user out. */
+export async function getMe(fetchImpl: typeof fetch = fetch): Promise<AuthResult> {
+  let res: Response
+  try {
+    res = await fetchImpl('/auth/me', { credentials: 'include' })
+  } catch {
+    return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
+  }
+  if (!res.ok) {
+    return {
+      kind: 'error',
+      status: res.status,
+      // The message follows the status: calling a 503 "not signed in" is how the
+      // outage got mistaken for a logout in the first place.
+      message: res.status === 401
+        ? 'not signed in'
+        : `Couldn't check your session (${res.status}).`,
+    }
+  }
+  const parsed = await parseJson<AuthUser>(res)
+  if (parsed === null) return { kind: 'error', message: UNREADABLE }
+  return { kind: 'ok', user: parsed }
 }

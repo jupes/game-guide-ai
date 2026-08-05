@@ -14,8 +14,8 @@ bounded runtime catalog defined in `docs/observability/metrics-standard.md`.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
-from typing import Sequence
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
 _UNITS = {"d": "days", "h": "hours", "m": "minutes"}
 
@@ -256,7 +256,7 @@ def runtime_metrics(langfuse, *, since: str, now_iso: str) -> list[dict]:  # pra
 def main() -> None:  # pragma: no cover - integration entry
     import argparse
     import json
-    from datetime import datetime, timezone
+    from datetime import datetime
     from pathlib import Path
 
     parser = argparse.ArgumentParser(description="rag-chat quality/cost metrics summary (Langfuse Metrics API)")
@@ -287,9 +287,10 @@ def main() -> None:  # pragma: no cover - integration entry
         source = f"runtime-metrics:{args.from_runtime_metrics}"
         out = {"source": source, "series": series}
     else:
-        import config  # loads .env (LANGFUSE_*)  # noqa: F401
         from langfuse import get_client
-        now_iso = datetime.now(timezone.utc).isoformat()
+
+        import config  # loads .env (LANGFUSE_*)  # noqa: F401
+        now_iso = datetime.now(UTC).isoformat()
         langfuse = get_client()
         table = cost_latency_by_model(langfuse, since=args.since, now_iso=now_iso)
         series = runtime_metrics(langfuse, since=args.since, now_iso=now_iso)

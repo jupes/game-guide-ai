@@ -45,8 +45,8 @@ if _ENV_PATH.exists():
 from ingestion.retrieval import (  # noqa: E402
     DEFAULT_DSN,
     EMBED_MODEL,
-    TOP_K,
     KOZ_ANSWERABLE_DISTANCE,
+    TOP_K,
     RetrievedChunk,
     embed_query,
     extract_query_content_types,

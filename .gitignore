@@ -12,11 +12,23 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-uv.lock
+# uv.lock is COMMITTED deliberately. This is an application, not a library:
+# without the lock, CI and the production image re-resolve every transitive
+# dependency per build, so what shipped is not necessarily what was reviewed.
 ingestion/metrics_summary.json
+# Coverage artifacts (the gates run in CI; the reports are local noise).
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+ui/coverage/
+
+# Local Python virtualenvs (pollute pytest collection if not excluded)
+.venv/
+venv/
 
 # Generated spike extraction dumps (large, and contain source rulebook text)
 spikes/raw-extract-*.jsonl
 
-# Beads runtime state — the tracker is owned by the parent harness repo
+# Beads runtime state - the tracker is owned by the parent harness repo
 .beads/

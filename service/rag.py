@@ -17,11 +17,11 @@ from typing import Any, Protocol
 from ingestion.retrieval import RagRetriever, RetrievalResult, RetrievedChunk
 
 from .generate import DEFAULT_MODEL, LLMClient
-from .models import ChatMode, ChatResponse
 
 # Canonical home is service/models.py (response-contract constant); re-exported
 # here so existing importers (ingestion/eval_answers.py, tests) keep resolving.
 from .models import REFUSAL as REFUSAL  # noqa: F401
+from .models import ChatMode, ChatResponse
 
 # Mode → retrieval scope mapping lives in the canonical leaf module
 # `ingestion/scope.py` (`scope_for_mode`); the retriever applies it. The service

@@ -23,7 +23,6 @@ from ingestion.metrics_summary import (
     summary_from_runtime_metrics,
 )
 
-
 # --- build_query --------------------------------------------------------------
 
 def test_build_query_shape_and_from_timestamp():

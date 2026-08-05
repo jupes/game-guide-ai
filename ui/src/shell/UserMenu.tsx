@@ -11,22 +11,28 @@ import { Avatar } from '../ds/Avatar'
 import { Switch } from '../ds/Switch'
 import { useAppNav } from './AppNav'
 import { useCurrentUser } from './currentUser'
-import { useRoleToggle } from './useRoleToggle'
 import './UserMenu.css'
 
 export function UserMenu(): React.JSX.Element {
   const { user } = useCurrentUser()
   const { openProfile } = useAppNav()
-  const toggleRole = useRoleToggle()
   const [open, setOpen] = useState(false)
+  const [signOutError, setSignOutError] = useState<string | null>(null)
 
   function toggleMenu(): void {
     setOpen((prev) => !prev)
   }
 
-  function handleSignOut(): void {
-    setOpen(false)
-    user.signOut()
+  async function handleSignOut(): Promise<void> {
+    setSignOutError(null)
+    // Only the server can clear the httpOnly session cookie — if it refuses,
+    // say so and stay signed in rather than showing a false "signed out".
+    const ok = await user.signOut()
+    if (ok) {
+      setOpen(false)
+    } else {
+      setSignOutError("Couldn't sign out — please try again.")
+    }
   }
 
   function handleOpenProfile(): void {
@@ -51,9 +57,12 @@ export function UserMenu(): React.JSX.Element {
         <div role="menu" className="user-menu__popover">
           <div className="user-menu__item user-menu__role">
             <span id="user-menu-role-label">Dungeon Master</span>
+            {/* Read-only (x5bz.2): role is server-authoritative from the
+                signed session, not user-togglable. Disabled Switch keeps the
+                same at-a-glance display without implying it's interactive. */}
             <Switch
               checked={user.role === 'dm'}
-              onChange={toggleRole}
+              disabled
               ariaLabel="Dungeon Master role"
             />
           </div>
@@ -73,6 +82,11 @@ export function UserMenu(): React.JSX.Element {
           >
             Sign out
           </button>
+          {signOutError && (
+            <p role="alert" className="user-menu__item user-menu__error">
+              {signOutError}
+            </p>
+          )}
         </div>
       )}
     </div>

@@ -193,13 +193,36 @@ const STORAGE_KEY = 'game-guide-ai:conversations'
 // users keep their saved conversations. Safe to remove once no clients hold it.
 const LEGACY_STORAGE_KEY = 'rag-chat:conversations'
 
+/** The signed-out / not-yet-known identity. */
+export const GUEST_USER_ID = 'guest'
+
+/** Per-account storage key (x5bz.2). Conversation ids and prompt-derived titles
+ * are user data: one shared key meant the next person to sign in on the same
+ * browser saw the previous user's conversation list. */
+export function conversationsStorageKey(userId: string): string {
+  return `${STORAGE_KEY}:${userId}`
+}
+
 export class LocalStorageConversationStore
   extends ObservableConversationStore
   implements ConversationStore {
+  private readonly userId: string
+
+  /** `userId` scopes the storage key. Defaults to the signed-out bucket so the
+   * store is still usable before the session resolves. */
+  constructor(userId: string = 'guest') {
+    super()
+    this.userId = userId
+  }
+
+  private get storageKey(): string {
+    return conversationsStorageKey(this.userId)
+  }
+
   private load(): Conversation[] {
     try {
       const parsed: unknown = JSON.parse(
-        localStorage.getItem(STORAGE_KEY) ?? this.migrateLegacy() ?? '[]',
+        localStorage.getItem(this.storageKey) ?? this.migrateLegacy() ?? '[]',
       )
       if (!Array.isArray(parsed)) return []
       return parsed
@@ -210,23 +233,37 @@ export class LocalStorageConversationStore
     }
   }
 
-  // One-time move of conversations stored under the old key onto the new one.
-  // Returns the legacy payload (if any) so the caller can parse it immediately.
+  // One-time move of conversations stored under a pre-auth key onto this
+  // account's key. Covers both the pre-rename `rag-chat:` key and the shared,
+  // un-namespaced `game-guide-ai:conversations` key that predates per-user
+  // scoping. Consumed (removed) so it can't also surface for a second account.
+  //
+  // NEVER migrates into the guest bucket. Migrating there would consume the
+  // shared key into `...:guest` and strand the real account's conversations
+  // once its identity arrived. `App` now holds a loading gate until `/auth/me`
+  // resolves, so no *user* can reach the store first — but this store does not
+  // depend on that: it defaults to the guest id, so any caller constructed
+  // before the identity is known would still hit this path. Waiting costs
+  // nothing — the next load under the real identity migrates.
   private migrateLegacy(): string | null {
-    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY)
-    if (legacy === null) return null
-    try {
-      localStorage.setItem(STORAGE_KEY, legacy)
-      localStorage.removeItem(LEGACY_STORAGE_KEY)
-    } catch {
-      // Quota/availability errors: still return the payload so this session reads it.
+    if (this.userId === GUEST_USER_ID) return null
+    for (const key of [STORAGE_KEY, LEGACY_STORAGE_KEY]) {
+      const legacy = localStorage.getItem(key)
+      if (legacy === null) continue
+      try {
+        localStorage.setItem(this.storageKey, legacy)
+        localStorage.removeItem(key)
+      } catch {
+        // Quota/availability errors: still return the payload so this session reads it.
+      }
+      return legacy
     }
-    return legacy
+    return null
   }
 
   private save(rows: Conversation[]): boolean {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(rows))
+      localStorage.setItem(this.storageKey, JSON.stringify(rows))
       return true
     } catch (err) {
       // setItem throws when the quota is exceeded (common on mobile) or storage

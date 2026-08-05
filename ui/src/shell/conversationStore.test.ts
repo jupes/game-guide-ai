@@ -213,10 +213,46 @@ describe('LocalStorageConversationStore', () => {
   it('migrates conversations from the pre-rename key (rag-chat:conversations)', () => {
     const legacy = [{ id: 'x', mode: 'sage', title: 'Old chat', createdAt: '2026-01-01T00:00:00.000Z' }]
     lsMock.setItem('rag-chat:conversations', JSON.stringify(legacy))
-    // A fresh store reads the legacy key, returns its rows, and moves them over.
-    expect(new LocalStorageConversationStore().list('sage')).toHaveLength(1)
-    expect(lsMock.getItem('game-guide-ai:conversations')).toBe(JSON.stringify(legacy))
+    // A store for a REAL identity reads the legacy key, returns its rows, and
+    // moves them onto that account's namespaced key (x5bz.2), consuming the old one.
+    expect(new LocalStorageConversationStore('alice@example.com').list('sage')).toHaveLength(1)
+    expect(lsMock.getItem('game-guide-ai:conversations:alice@example.com'))
+      .toBe(JSON.stringify(legacy))
     expect(lsMock.getItem('rag-chat:conversations')).toBeNull()
+  })
+
+  it('never migrates into the guest bucket while the session is still resolving', () => {
+    const legacy = [{ id: 'x', mode: 'sage', title: 'Old chat', createdAt: '2026-01-01T00:00:00.000Z' }]
+    lsMock.setItem('game-guide-ai:conversations', JSON.stringify(legacy))
+
+    // The app stays interactive while /auth/me is in flight, so a returning user
+    // can hit the store as "guest". Migrating then would strand their real
+    // account's conversations in the guest bucket.
+    expect(new LocalStorageConversationStore('guest').list('sage')).toEqual([])
+    expect(lsMock.getItem('game-guide-ai:conversations')).toBe(JSON.stringify(legacy))
+
+    // Once the identity resolves, the migration happens for the real account.
+    expect(new LocalStorageConversationStore('alice@example.com').list('sage')).toHaveLength(1)
+    expect(lsMock.getItem('game-guide-ai:conversations')).toBeNull()
+  })
+
+  it('keeps each account\'s conversations separate', () => {
+    const alice = new LocalStorageConversationStore('alice@example.com')
+    alice.create('sage', 'alice secret prompt')
+    // A different signed-in identity must not see it — one shared key used to
+    // leak conversation ids and prompt-derived titles to the next user.
+    expect(new LocalStorageConversationStore('bob@example.com').list('sage')).toEqual([])
+    expect(alice.list('sage')).toHaveLength(1)
+  })
+
+  it('migrates a pre-auth un-namespaced list onto the account key, once', () => {
+    const shared = [{ id: 'y', mode: 'sage', title: 'Pre-auth', createdAt: '2026-01-01T00:00:00.000Z' }]
+    lsMock.setItem('game-guide-ai:conversations', JSON.stringify(shared))
+    // The first account to load adopts it...
+    expect(new LocalStorageConversationStore('alice@example.com').list('sage')).toHaveLength(1)
+    // ...and it is consumed, so a second account does NOT also inherit it.
+    expect(lsMock.getItem('game-guide-ai:conversations')).toBeNull()
+    expect(new LocalStorageConversationStore('bob@example.com').list('sage')).toEqual([])
   })
 
   it('normalizes legacy rows without deleting them or losing their visible titles', () => {
@@ -225,6 +261,9 @@ describe('LocalStorageConversationStore', () => {
       { id: 'new', mode: 'sage', title: 'New conversation', createdAt: '2026-01-02T00:00:00.000Z' },
     ]
     lsMock.setItem('game-guide-ai:conversations', JSON.stringify(legacy))
+    // A real identity, since the pre-auth list is only migrated once the
+    // account is known (never into the guest bucket).
+    const store = new LocalStorageConversationStore('alice@example.com')
 
     expect(store.get('old')).toMatchObject({
       title: 'Old chat',

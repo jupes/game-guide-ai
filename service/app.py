@@ -16,29 +16,30 @@ import base64
 import binascii
 import logging
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
+from enum import Enum
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.staticfiles import StaticFiles
 
 import config
-
 from ingestion.retrieval import EmbeddingUnavailableError
 
+from . import gcp_logging
 from .attachments import UnsupportedAttachmentError, extract_text
-from .history import MessageStore, PostgresMessageStore, StoredAttachment
-from .models import (
-    Attachment,
-    AttachmentResponse,
-    AttachmentsResponse,
-    AttachmentUploadRequest,
-    ChatRequest,
-    ChatResponse,
-    MessagesResponse,
+from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
+from .hashing import (
+    DUMMY_PASSWORD_HASH,
+    HashingCapacityError,
+    hash_password,
+    verify_password,
 )
+from .history import MessageStore, PostgresMessageStore, StoredAttachment
+from .invites import InviteError
 from .metrics import (
     BooleanMetricPoint,
     CategoricalMetricPoint,
@@ -50,7 +51,21 @@ from .metrics import (
     build_metrics_sink,
     record_safely,
 )
+from .models import (
+    Attachment,
+    AttachmentResponse,
+    AttachmentsResponse,
+    AttachmentUploadRequest,
+    AuthUser,
+    ChatRequest,
+    ChatResponse,
+    LoginRequest,
+    MessagesResponse,
+    SignupRequest,
+)
 from .rag import RagService
+from .ratelimit import RateLimited, check_auth_attempt, client_source
+from .session import SessionData, decode_session, encode_session
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +135,16 @@ async def lifespan(app: FastAPI):
         log.warning(
             "startup: message store unavailable; history is disabled", exc_info=True
         )
+    # Auth store — invite-gated accounts (x5bz.2). Same best-effort startup +
+    # ensure_schema() migration path as the message store.
+    try:
+        auth = PostgresAuthStore()
+        auth.ensure_schema()
+        _state["auth"] = auth
+    except Exception:  # pragma: no cover - depends on live DB
+        log.warning(
+            "startup: auth store unavailable; auth endpoints will 503", exc_info=True
+        )
     yield
     _state.clear()
     del app.state.metrics_sink
@@ -143,6 +168,194 @@ def get_message_store() -> MessageStore | None:
 
 def get_metrics_sink(request: Request) -> MetricsSink:
     return getattr(request.app.state, "metrics_sink", NoopMetricsSink())
+
+
+# ── Auth (x5bz.2) ─────────────────────────────────────────────────────────────
+
+def get_auth_store() -> AuthStore:
+    store = _state.get("auth")
+    if store is None:
+        raise HTTPException(status_code=503, detail="auth backend unavailable")
+    return store
+
+
+#: What "the auth backend is unavailable" actually looks like: psycopg's error
+#: hierarchy (connection lost, Cloud SQL failover, connections exhausted, a
+#: statement timeout) plus socket-level failures reaching it at all.
+#:
+#: Deliberately NOT `Exception`. A bare catch would relabel a TypeError or an
+#: IndexError inside a store implementation as a retryable 503, contradicting
+#: the documented taxonomy (`502` upstream · `503` unavailable · `500` bug) and
+#: hiding the classification operators alert on — while the client dutifully
+#: retried a request that can never succeed. Bugs stay 500s.
+_AUTH_BACKEND_ERRORS: tuple[type[BaseException], ...] = (*_DB_ERRORS, OSError)
+
+
+def _auth_lookup[T](what: str, call: Callable[[], T]) -> T:
+    """Run an auth-store call, converting a backend *outage* into 503.
+
+    `auth backend unavailable → 503` is the contract the rest of the auth path
+    already speaks: `get_auth_store` 503s when the store never came up at all,
+    and startup logs that intent explicitly. But a store that comes up and *then*
+    breaks raised straight out of the endpoint as a 500. That is the wrong thing
+    to tell a client: 500 means "this request is broken, retrying won't help", so
+    the UI surfaced a transient outage as a permanent error, and an operator
+    reading status codes saw an application bug rather than a sick dependency.
+
+    Only the errors in `_AUTH_BACKEND_ERRORS` are translated. Domain outcomes
+    (a taken email, a spent invite) and genuine bugs both pass through
+    untouched, to be answered by the caller and by the 500 handler respectively.
+    """
+    try:
+        return call()
+    except _AUTH_BACKEND_ERRORS as exc:
+        log.warning("auth store unavailable (%s)", what, exc_info=True)
+        raise HTTPException(status_code=503, detail="auth backend unavailable") from exc
+
+
+# Any secret shipped in an example/template is public by definition — copying it
+# unchanged would let anyone forge a session (including a DM one), so these are
+# rejected as if unset. Compared case-insensitively.
+_PLACEHOLDER_SESSION_SECRETS = frozenset({
+    "replace-me-with-a-random-string",
+    "replace-me",
+    "changeme",
+    "change-me",
+    "secret",
+    "your-secret-here",
+})
+
+# Short enough to be brute-forced offline against a signed cookie. `openssl rand
+# -base64 48` gives 64 chars, so a real secret clears this comfortably.
+MIN_SESSION_SECRET_LENGTH = 32
+
+
+def _session_secret() -> str:
+    """Fail CLOSED unless the signing secret is real: never sign or verify with
+    an empty, placeholder, or trivially short key. In Cloud Run it comes from the
+    `session-secret` Secret Manager entry; locally from SESSION_SECRET in .env."""
+    secret = config.SESSION_SECRET
+    # Normalize FIRST, then judge. Checking emptiness on the raw value while
+    # measuring its length let a whitespace-only secret through: 32 spaces is
+    # truthy and 32 chars long, but trivially guessable — enough to forge any
+    # session, including a DM one.
+    normalized = secret.strip() if secret else ""
+    if not normalized:
+        log.error(
+            "SESSION_SECRET is unset or whitespace-only — auth is disabled "
+            "(see docs/deploy-gcp.md)"
+        )
+        raise HTTPException(status_code=503, detail="auth not configured")
+    if normalized.lower() in _PLACEHOLDER_SESSION_SECRETS:
+        log.error(
+            "SESSION_SECRET is a known placeholder value — refusing to sign sessions "
+            "with a publicly known key. Generate one: openssl rand -base64 48"
+        )
+        raise HTTPException(status_code=503, detail="auth not configured")
+    if len(normalized) < MIN_SESSION_SECRET_LENGTH:
+        log.error(
+            "SESSION_SECRET is too short (%d meaningful chars; need >= %d) — refusing "
+            "to sign sessions with a weak key. Generate one: openssl rand -base64 48",
+            len(normalized), MIN_SESSION_SECRET_LENGTH,
+        )
+        raise HTTPException(status_code=503, detail="auth not configured")
+    return secret
+
+
+def require_session(
+    request: Request, store: AuthStore = Depends(get_auth_store),
+) -> SessionData:
+    """Dependency guarding the data endpoints: a valid session cookie or 401.
+
+    The cookie is authentic-but-stale by nature (it is signed once and lives for
+    days), so the account is **re-read from the store on every request**: a
+    deleted account stops working immediately instead of at cookie expiry, and
+    the role used for authorization is the CURRENT one — demoting a DM takes
+    effect at once rather than requiring a secret rotation to log everyone out.
+    """
+    token = request.cookies.get(config.SESSION_COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=401, detail="authentication required")
+    session = decode_session(token, _session_secret(), config.SESSION_TTL_DAYS * 86400)
+    if session is None:
+        raise HTTPException(status_code=401, detail="invalid or expired session")
+    # Fails CLOSED — never authorize on a failed lookup (`_auth_lookup` 503s).
+    user = _auth_lookup(f"session user lookup (user_id={session.user_id})",
+                        lambda: store.get_user_by_id(session.user_id))
+    if user is None:
+        raise HTTPException(status_code=401, detail="account no longer exists")
+    # Stash the account this request has already re-read. /auth/me answers from
+    # it instead of repeating the identical query — a second round trip that was
+    # also a second chance to fail, and did so as an unguarded 500.
+    request.state.auth_user = user
+    return SessionData(user_id=user.id, role=user.role)
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=config.SESSION_COOKIE_NAME,
+        value=token,
+        max_age=config.SESSION_TTL_DAYS * 86400,
+        httponly=True,
+        secure=config.SESSION_COOKIE_SECURE,
+        samesite=config.SESSION_COOKIE_SAMESITE,
+        path="/",
+    )
+
+
+#: Set on every 429 the auth limiter raises, and on no other response. It exists
+#: so an external check can tell an application throttle from a Cloud Run
+#: platform 429 (no instance available), which is indistinguishable by status.
+AUTH_THROTTLE_HEADER = "X-Auth-Throttled"
+
+
+def _throttle_auth(request: Request, account: str) -> None:
+    """Apply the auth attempt budget, or 429. Must run BEFORE any argon2 work —
+    the whole point is to cap how much hashing an anonymous caller can trigger."""
+    try:
+        check_auth_attempt(request, account)
+    except RateLimited as exc:
+        # The DERIVED source key is logged, not just the fact of throttling: it
+        # is the only way to confirm from outside that AUTH_TRUSTED_PROXY_HOPS
+        # matches the real topology — it must equal the address Google observed
+        # (docs/deploy-gcp.md §9). That comparison needs Cloud Run's *request*
+        # log, which is a separate entry, so on Cloud Run this goes out as a
+        # structured record carrying the trace that joins the two. No new
+        # exposure: Cloud Run already logs the peer address per request.
+        source = client_source(request)
+        if not gcp_logging.emit(
+            "WARNING", "auth attempt throttled", request,
+            source=source, retry_after=exc.retry_after,
+        ):
+            log.warning(
+                "auth attempt throttled (source=%s, retry_after=%ss)",
+                source, exc.retry_after,
+            )
+        raise HTTPException(
+            status_code=429,
+            detail="Too many attempts — please wait and try again.",
+            # AUTH_THROTTLE_HEADER marks this 429 as OURS. Cloud Run returns 429
+            # of its own when no instance is available, and a status code alone
+            # cannot tell the two apart — so a verifier that accepted any 429 as
+            # "the limiter fired" could certify a broken proxy configuration on
+            # the strength of a transient platform response. Only this header
+            # means the application's budget was actually enforced.
+            # scripts/verify_auth_throttle.py requires it before reporting PASS.
+            headers={
+                "Retry-After": str(exc.retry_after),
+                AUTH_THROTTLE_HEADER: "1",
+            },
+        ) from exc
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=config.SESSION_COOKIE_NAME,
+        httponly=True,
+        secure=config.SESSION_COOKIE_SECURE,
+        samesite=config.SESSION_COOKIE_SAMESITE,
+        path="/",
+    )
 
 
 def _chat_error_category(status_code: int) -> str:
@@ -240,6 +453,102 @@ def _fetch_attachment_context(
     return context, label
 
 
+class ConversationAccess(Enum):
+    """Outcome of `_authorize_conversation` — see there for the rules."""
+
+    OWNED = "owned"
+    #: Unowned AND empty. The caller is authorized, but MUST NOT go on to read
+    #: the conversation: it was only observed to be empty, and another user can
+    #: claim and write it in the gap before that read. Serve an empty result
+    #: built from nothing instead.
+    EMPTY = "empty"
+
+
+def _conversation_lookup(conversation_id: str):
+    """Run an ownership/content lookup, converting any failure into a 503.
+
+    **Fails CLOSED.** Reads and ownership checks run on separate connections, so
+    a transient failure (or a role that can't see `chat.conversations`) must
+    never be followed by a successful cross-user read.
+    """
+    def run(fn, *args):
+        try:
+            return fn(*args)
+        except Exception as exc:
+            log.warning(
+                "conversation authorization failed (conversation_id=%s)",
+                conversation_id, exc_info=True,
+            )
+            raise HTTPException(
+                status_code=503, detail="authorization backend unavailable"
+            ) from exc
+    return run
+
+
+def _reject_foreign_conversation(
+    store: MessageStore | None, conversation_id: str, user_id: int,
+) -> None:
+    """403 if `conversation_id` demonstrably belongs to someone else — without
+    claiming anything.
+
+    This is the cheap precheck that lets a write endpoint refuse an obviously
+    foreign conversation before doing expensive work, while leaving the actual
+    claim for the moment just before persistence. It is deliberately NOT an
+    authorization decision on its own: passing it means "not known to be someone
+    else's", and only the atomic claim that follows settles ownership.
+    """
+    if store is None:
+        return
+    run = _conversation_lookup(conversation_id)
+    owner = run(store.owner_of, conversation_id)
+    if owner is not None and owner != user_id:
+        raise HTTPException(status_code=403, detail="not your conversation")
+
+
+def _authorize_conversation(
+    store: MessageStore | None, conversation_id: str | None, user_id: int,
+    *, creating: bool,
+) -> ConversationAccess:
+    """Authorize this user for `conversation_id`, or raise (x5bz.2 D).
+
+    `creating=True` (writes) uses the store's **atomic** claim, which returns the
+    winning owner — one call that is both the check and the claim. That closes
+    the TOCTOU window where two users racing a fresh id could both pass a
+    separate pre-check.
+
+    `creating=False` (reads) claims only a conversation that **already has
+    content**. That closes the ownership table's cold-start hole — conversations
+    predating the table have no owner row, and "no owner ⇒ allow" would leave all
+    of that history readable by any authenticated caller — while refusing to mint
+    a row for an id with nothing in it, so a GET loop over random ids can't fill
+    `chat.conversations`.
+
+    An unowned, empty conversation returns `EMPTY` rather than authorizing a
+    read. "Empty" is a past-tense observation on its own connection: between the
+    probe and the endpoint's read, another user can claim the id and write to it,
+    and the read would then serve their content. The caller must answer from
+    `EMPTY` directly instead of reading.
+
+    Either way, the first authenticated user to touch a conversation with content
+    takes ownership (ids are unguessable `crypto.randomUUID()` values held only
+    by their owner), and everyone else is rejected from then on.
+    """
+    if store is None or conversation_id is None:
+        return ConversationAccess.OWNED
+    run = _conversation_lookup(conversation_id)
+    if creating:
+        owner = run(store.claim_conversation, conversation_id, user_id)
+    else:
+        owner = run(store.owner_of, conversation_id)
+        if owner is None:
+            if not run(store.has_content, conversation_id):
+                return ConversationAccess.EMPTY
+            owner = run(store.claim_conversation, conversation_id, user_id)
+    if owner is not None and owner != user_id:
+        raise HTTPException(status_code=403, detail="not your conversation")
+    return ConversationAccess.OWNED
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str | bool]:
     return {"status": "ok", "ready": "rag" in _state}
@@ -251,7 +560,15 @@ def chat(
     svc: RagService = Depends(get_service),
     store: MessageStore | None = Depends(get_message_store),
     metrics: MetricsSink = Depends(get_metrics_sink),
+    session: SessionData = Depends(require_session),
 ) -> ChatResponse:
+    # Server-side role gate: the GM channel is DM-only, enforced from the session
+    # role (not the UI toggle). Raised before the try so it isn't masked as a 500.
+    if req.mode.value == "gm" and session.role != "dm":
+        raise HTTPException(status_code=403, detail="the GM channel requires the DM role")
+    # Ownership: one atomic claim-or-reject (403 if it's someone else's).
+    # Before the try for the same reason (403, not 500).
+    _authorize_conversation(store, req.conversation_id, session.user_id, creating=True)
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, req.conversation_id,
@@ -324,9 +641,15 @@ def conversation_messages(
     conversation_id: str,
     limit: int | None = None,
     store: MessageStore | None = Depends(get_message_store),
+    session: SessionData = Depends(require_session),
 ) -> MessagesResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="message history unavailable")
+    access = _authorize_conversation(store, conversation_id, session.user_id, creating=False)
+    if access is ConversationAccess.EMPTY:
+        # Unowned and empty: answer from the authorization result, do NOT read.
+        # A second read could land after another user claimed and wrote the id.
+        return MessagesResponse(conversation_id=conversation_id, messages=[])
     # config.HISTORY_LIMIT read at request time (not import) so env/test
     # overrides of the knob take effect; client may ask for fewer, never more.
     cap = config.HISTORY_LIMIT
@@ -355,9 +678,19 @@ def upload_attachment(
     conversation_id: str,
     req: AttachmentUploadRequest,
     store: MessageStore | None = Depends(get_message_store),
+    session: SessionData = Depends(require_session),
 ) -> AttachmentResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
+    # Ownership is settled in two steps here, deliberately:
+    #   1. a precheck that only REJECTS a conversation already owned by someone
+    #      else, so a foreign id still 403s without any decoding work; then
+    #   2. validation; then
+    #   3. the atomic claim, immediately before persisting.
+    # Claiming up front instead would let a stream of rejected uploads (bad
+    # base64, oversized, unsupported type) mint an ownership row per request —
+    # unbounded writes to chat.conversations for input that never gets stored.
+    _reject_foreign_conversation(store, conversation_id, session.user_id)
     try:
         data = base64.b64decode(req.data, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -371,6 +704,10 @@ def upload_attachment(
         text = extract_text(data, req.filename)
     except UnsupportedAttachmentError as exc:
         raise HTTPException(status_code=415, detail=str(exc)) from exc
+    # Payload is good — now take ownership atomically. The claim (not the
+    # precheck above) is the authorization decision: it settles the race between
+    # two users reaching a fresh id at once.
+    _authorize_conversation(store, conversation_id, session.user_id, creating=True)
     try:
         stored = store.append_attachment(conversation_id, req.filename, req.content_type, text)
     except _DB_ERRORS as exc:
@@ -383,9 +720,15 @@ def upload_attachment(
 def conversation_attachments(
     conversation_id: str,
     store: MessageStore | None = Depends(get_message_store),
+    session: SessionData = Depends(require_session),
 ) -> AttachmentsResponse:
     if store is None:
         raise HTTPException(status_code=503, detail="attachments unavailable")
+    access = _authorize_conversation(store, conversation_id, session.user_id, creating=False)
+    if access is ConversationAccess.EMPTY:
+        # See conversation_messages: answer from the authorization result rather
+        # than re-reading an id that another user may have claimed since.
+        return AttachmentsResponse(conversation_id=conversation_id, attachments=[])
     try:
         stored = store.attachments_for(conversation_id)
     except _DB_ERRORS as exc:
@@ -395,6 +738,120 @@ def conversation_attachments(
         conversation_id=conversation_id,
         attachments=[_to_attachment(a) for a in stored],
     )
+
+
+@app.post("/auth/signup", response_model=AuthUser)
+def signup(
+    req: SignupRequest,
+    request: Request,
+    response: Response,
+    store: AuthStore = Depends(get_auth_store),
+) -> AuthUser:
+    """Create an account by redeeming a one-time invite, then start a session.
+    The invite carries the role; the token is consumed atomically."""
+    secret = _session_secret()
+    _throttle_auth(request, req.email)
+    # Cheap pre-check BEFORE the (deliberately expensive) argon2 hash, so an
+    # unauthenticated caller without a usable invite can't burn CPU/memory at
+    # will. The atomic re-check inside redeem_invite is still what actually
+    # guarantees single use — this only short-circuits the obvious rejects.
+    invite = _auth_lookup("invite lookup", lambda: store.get_invite(req.invite))
+    if invite is None:
+        raise HTTPException(status_code=400, detail="Unknown invite link.")
+    try:
+        invite.check_redeemable()
+    except InviteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        # Hashing runs OUTSIDE _auth_lookup: it is CPU work in this process, not
+        # a call to the backend, so its failures are not backend unavailability.
+        password_hash = hash_password(req.password)
+        # ...and the store call is wrapped, so an outage mid-redemption is a 503
+        # rather than a 500. The domain errors below pass straight through it.
+        user = _auth_lookup(
+            "redeem invite",
+            lambda: store.redeem_invite(req.invite, req.email, password_hash),
+        )
+    except HashingCapacityError as exc:
+        # Overloaded, not rejected — shed load with a retryable status.
+        log.warning("signup shed: %s", exc)
+        raise HTTPException(status_code=503, detail="busy, please retry") from exc
+    except EmailTaken as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InviteError as exc:
+        # Unknown / used / expired / revoked — the message says which.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _set_session_cookie(
+        response, encode_session(SessionData(user_id=user.id, role=user.role), secret),
+    )
+    return AuthUser(email=user.email, role=user.role)
+
+
+@app.post("/auth/login", response_model=AuthUser)
+def login(
+    req: LoginRequest,
+    request: Request,
+    response: Response,
+    store: AuthStore = Depends(get_auth_store),
+) -> AuthUser:
+    secret = _session_secret()
+    # Before the lookup AND before hashing: this is the brute-force ceiling and
+    # what keeps waiting-for-a-hash-slot requests from starving the instance.
+    _throttle_auth(request, req.email)
+    # Identity and hash together, in one guarded query. A store outage here must
+    # not become a 500: this is the endpoint testers hit when the pilot looks
+    # broken, and "retry later" is the truthful answer.
+    creds = _auth_lookup("credentials lookup", lambda: store.get_credentials(req.email))
+    stored_hash = creds[1] if creds is not None else None
+    # Always run one argon2 verification, even for an unknown email — otherwise
+    # the response time itself reveals whether an account exists, and the generic
+    # message below buys nothing. DUMMY_PASSWORD_HASH never matches.
+    try:
+        ok = verify_password(stored_hash or DUMMY_PASSWORD_HASH, req.password)
+    except HashingCapacityError as exc:
+        # Overloaded, not wrong credentials — must NOT be reported as a 401.
+        log.warning("login shed: %s", exc)
+        raise HTTPException(status_code=503, detail="busy, please retry") from exc
+    if creds is None or not ok:
+        # One generic message — never reveal whether the email is registered.
+        raise HTTPException(status_code=401, detail="invalid email or password")
+    user = creds[0]
+    _set_session_cookie(
+        response, encode_session(SessionData(user_id=user.id, role=user.role), secret),
+    )
+    return AuthUser(email=user.email, role=user.role)
+
+
+@app.post("/auth/logout")
+def logout(response: Response) -> dict[str, bool]:
+    _clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/auth/me", response_model=AuthUser)
+def me(
+    request: Request,
+    session: SessionData = Depends(require_session),
+    store: AuthStore = Depends(get_auth_store),
+) -> AuthUser:
+    """Who the session cookie belongs to.
+
+    `require_session` has already re-read the account this request (that re-read
+    is what makes a deleted account stop working immediately), so normally there
+    is nothing left to fetch. The lookup below is for a caller that supplies its
+    own session dependency and therefore never populated the stash — it is
+    guarded, because an unguarded repeat of this query is exactly how a store
+    outage used to leave here as a 500.
+    """
+    user: User | None = getattr(request.state, "auth_user", None)
+    if user is None:
+        user = _auth_lookup("account lookup",
+                            lambda: store.get_user_by_id(session.user_id))
+    if user is None:
+        # Session points at a since-deleted account — treat as unauthenticated.
+        raise HTTPException(status_code=401, detail="account not found")
+    return AuthUser(email=user.email, role=user.role)
 
 
 # Mount the pre-built UI at "/" — after route decorators so API routes always win.
