@@ -21,13 +21,16 @@ raise, and asserts the status the client actually receives.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest import mock
 
 import pytest
 from fastapi.testclient import TestClient
 
 import config
+from service import app as app_module
 from service.app import app, get_auth_store, get_service
 from service.auth_store import EmailTaken, InMemoryAuthStore, User
+from service.hashing import HashingCapacityError
 from service.invites import InviteError
 from service.models import ChatMode, ChatResponse
 
@@ -36,8 +39,16 @@ pytestmark = pytest.mark.real_auth
 SECRET = "test-secret-please-rotate-at-least-32-chars"
 
 
-class StoreDown(Exception):
-    """Stand-in for whatever psycopg raises when the database is gone."""
+def store_down() -> Exception:
+    """What psycopg actually raises when the database is gone.
+
+    Using the real class matters: the endpoint boundary translates the concrete
+    connection/database errors, NOT `Exception`, so a test double raising some
+    bespoke error would be testing a boundary the code no longer has.
+    """
+    import psycopg
+
+    return psycopg.OperationalError("connection refused")
 
 
 class _FakeService:
@@ -60,7 +71,7 @@ class _ExplodingStore(InMemoryAuthStore):
     def __init__(self, *broken: str, error: Exception | None = None) -> None:
         super().__init__()
         self._broken = set(broken)
-        self._error = error or StoreDown("connection refused")
+        self._error = error or store_down()
 
     def _guard(self, name: str) -> None:
         if name in self._broken:
@@ -217,6 +228,57 @@ def test_guarded_endpoint_store_outage_is_503():
         "the 503 must come from the session guard, not from the unrelated "
         f"'service not ready' path: {r.text}"
     )
+
+
+# ── ...but a BUG is still a bug ──────────────────────────────────────────────
+#
+# The other half of the contract. `service/app.py` documents 502 upstream · 503
+# unavailable · 500 bug, and operators alert on that split. A boundary that
+# caught `Exception` would relabel every programming error inside a store
+# implementation as a retryable 503 — so a client would keep retrying a request
+# that can never succeed, and the signal that something is genuinely broken
+# would be buried among ordinary outages.
+
+
+@pytest.mark.parametrize("bug", [
+    TypeError("unsupported operand"),
+    IndexError("tuple index out of range"),
+    AttributeError("'NoneType' object has no attribute 'id'"),
+    KeyError("email"),
+])
+def test_a_programming_error_in_the_store_is_a_500_not_a_503(bug):
+    store = _ExplodingStore("get_credentials", error=bug)
+    app.dependency_overrides[get_auth_store] = lambda: store
+    # raise_server_exceptions=False so the client sees the response a real
+    # client would, instead of the exception being re-raised into the test.
+    client = TestClient(app, raise_server_exceptions=False)
+
+    r = client.post("/auth/login", json={"email": "a@example.com", "password": "password123"})
+    assert r.status_code == 500, (
+        f"{type(bug).__name__} is a bug, not an outage — reporting it as "
+        f"{r.status_code} tells the client to retry something that cannot work"
+    )
+
+
+def test_hashing_capacity_is_not_reported_as_a_backend_outage():
+    """`hash_password` runs in this process, not in the store. Wrapping it in
+    the backend boundary would have made a local CPU/memory limit look like a
+    database failure — same status, but the wrong operational story, and
+    `signup` already sheds that load with its own message."""
+    store = InMemoryAuthStore()
+    token = _invite(store)
+    client = _use(store)
+
+    def explode(_password: str) -> str:
+        raise HashingCapacityError("all hash slots busy")
+
+    with mock.patch.object(app_module, "hash_password", explode):
+        r = client.post(
+            "/auth/signup",
+            json={"email": "a@example.com", "password": "password123", "invite": token},
+        )
+    assert r.status_code == 503
+    assert r.json()["detail"] == "busy, please retry"
 
 
 # ── the duplicate /auth/me query is gone ─────────────────────────────────────

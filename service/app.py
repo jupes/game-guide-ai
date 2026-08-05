@@ -179,33 +179,36 @@ def get_auth_store() -> AuthStore:
     return store
 
 
-#: Outcomes the auth endpoints decide for themselves. Anything ELSE coming out of
-#: a store call is the backend failing, not a verdict about the caller.
-_AUTH_DOMAIN_ERRORS = (EmailTaken, InviteError, HashingCapacityError)
+#: What "the auth backend is unavailable" actually looks like: psycopg's error
+#: hierarchy (connection lost, Cloud SQL failover, connections exhausted, a
+#: statement timeout) plus socket-level failures reaching it at all.
+#:
+#: Deliberately NOT `Exception`. A bare catch would relabel a TypeError or an
+#: IndexError inside a store implementation as a retryable 503, contradicting
+#: the documented taxonomy (`502` upstream · `503` unavailable · `500` bug) and
+#: hiding the classification operators alert on — while the client dutifully
+#: retried a request that can never succeed. Bugs stay 500s.
+_AUTH_BACKEND_ERRORS: tuple[type[BaseException], ...] = (*_DB_ERRORS, OSError)
 
 
 def _auth_lookup[T](what: str, call: Callable[[], T]) -> T:
-    """Run an auth-store call, converting a backend failure into 503.
+    """Run an auth-store call, converting a backend *outage* into 503.
 
     `auth backend unavailable → 503` is the contract the rest of the auth path
     already speaks: `get_auth_store` 503s when the store never came up at all,
     and startup logs that intent explicitly. But a store that comes up and *then*
-    breaks — a dropped connection, a Cloud SQL failover, connections exhausted —
-    raised straight out of the endpoint as a 500. That is the wrong thing to tell
-    a client: 500 means "this request is broken, retrying won't help", so the UI
-    surfaced a transient outage as a permanent error, and an operator reading
-    status codes saw an application bug rather than an unavailable dependency.
+    breaks raised straight out of the endpoint as a 500. That is the wrong thing
+    to tell a client: 500 means "this request is broken, retrying won't help", so
+    the UI surfaced a transient outage as a permanent error, and an operator
+    reading status codes saw an application bug rather than a sick dependency.
 
-    Domain errors pass through untouched — a taken email or a spent invite is an
-    answer, not an outage, and the caller maps each to its own status.
+    Only the errors in `_AUTH_BACKEND_ERRORS` are translated. Domain outcomes
+    (a taken email, a spent invite) and genuine bugs both pass through
+    untouched, to be answered by the caller and by the 500 handler respectively.
     """
     try:
         return call()
-    except HTTPException:
-        raise
-    except _AUTH_DOMAIN_ERRORS:
-        raise
-    except Exception as exc:
+    except _AUTH_BACKEND_ERRORS as exc:
         log.warning("auth store unavailable (%s)", what, exc_info=True)
         raise HTTPException(status_code=503, detail="auth backend unavailable") from exc
 
@@ -761,11 +764,14 @@ def signup(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        # `_auth_lookup` re-raises the three domain errors below untouched and
-        # 503s anything else, so a store outage mid-redemption is not a 500.
+        # Hashing runs OUTSIDE _auth_lookup: it is CPU work in this process, not
+        # a call to the backend, so its failures are not backend unavailability.
+        password_hash = hash_password(req.password)
+        # ...and the store call is wrapped, so an outage mid-redemption is a 503
+        # rather than a 500. The domain errors below pass straight through it.
         user = _auth_lookup(
             "redeem invite",
-            lambda: store.redeem_invite(req.invite, req.email, hash_password(req.password)),
+            lambda: store.redeem_invite(req.invite, req.email, password_hash),
         )
     except HashingCapacityError as exc:
         # Overloaded, not rejected — shed load with a retryable status.
