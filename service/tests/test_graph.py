@@ -514,3 +514,119 @@ def test_graph_spell_content_extractor_receives_exact_answer_text():
     graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
     assert len(captured) == 1
     assert _SPELL_ANSWER in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# z7fl.1 Checkpoint B — NPC/stat-block structuring + cost heuristic
+# ---------------------------------------------------------------------------
+
+# 2 markers ("armor class" + "hit points") — should trigger structuring.
+_STATBLOCK_ANSWER = (
+    "You encounter a goblin scout.\nArmor Class 15\nHit Points 7 (2d6)\nSpeed 30 ft."
+)
+# 0 markers — must never trigger structuring.
+_NO_MARKERS_ANSWER = "The tavern is warm and cozy, filled with laughter and pipe smoke."
+# 1 marker only ("hit points", used figuratively) — must not trigger (need 2+).
+_ONE_MARKER_ANSWER = (
+    "The old rope bridge has taken a beating over the years; it has 200 hit points "
+    "of durability before it finally gives way."
+)
+
+_STATBLOCK_JSON = (
+    '{"name": "Goblin Scout", "size": "Small", "type": "humanoid", '
+    '"alignment": "neutral evil", "ac": 15, "hp": 7, "hit_dice": "2d6", '
+    '"speed": "30 ft.", '
+    '"abilities": {"str": 8, "dex": 14, "con": 10, "int": 10, "wis": 8, "cha": 8}, '
+    '"cr": "1/4", "xp": 50, '
+    '"traits": [{"name": "Nimble Escape", "text": "The goblin can take the '
+    'Disengage or Hide action as a bonus action."}], '
+    '"actions": [{"name": "Scimitar", "text": "Melee Weapon Attack: +4 to hit."}]}'
+)
+
+
+def test_graph_gm_mode_attaches_typed_stat_block_when_heuristic_matches():
+    """Behavior 4: a prose answer with 2+ stat-block markers triggers
+    structuring and attaches a typed StatBlockContent."""
+    llm = _SeqLLM([_STATBLOCK_ANSWER, _STATBLOCK_JSON])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe an encounter", "mode": "gm"})
+    sb = out["stat_block"]
+    assert sb is not None
+    assert sb.name == "Goblin Scout"
+    assert sb.ac == 15
+    assert sb.hp == 7
+    assert sb.abilities is not None
+    assert sb.abilities.dex == 14
+    assert sb.cr == "1/4"
+    assert llm.calls == 2
+
+
+def test_graph_sage_mode_never_calls_structuring_without_markers():
+    """Behavior 5: no stat-block markers -> the structuring call never fires
+    at all (cost guard) -- llm.calls stays at 1."""
+    llm = _FakeLLM(_NO_MARKERS_ANSWER)
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe the tavern", "mode": "sage"})
+    assert out.get("stat_block") is None
+    assert llm.calls == 1
+
+
+def test_graph_single_incidental_marker_does_not_false_positive_trigger():
+    """Behavior 5b: exactly one marker (used figuratively, not a stat block)
+    must not trigger structuring -- the heuristic requires 2+."""
+    llm = _FakeLLM(_ONE_MARKER_ANSWER)
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe the bridge", "mode": "gm"})
+    assert out.get("stat_block") is None
+    assert llm.calls == 1
+
+
+def test_graph_malformed_stat_block_degrades_to_none():
+    """Behavior 6: a non-JSON structuring reply (heuristic matched) must not
+    fail the answer."""
+    llm = _SeqLLM([_STATBLOCK_ANSWER, "sorry, I cannot do JSON today"])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe an encounter", "mode": "gm"})
+    assert out["stat_block"] is None
+    assert "goblin" in out["answer"]
+
+
+def test_graph_stat_block_optional_fields_omitted_still_parses():
+    """Behavior 6b: core-required fields present (name, ac, hp), everything
+    else omitted -- still parses."""
+    minimal_valid = '{"name": "Goblin Scout", "ac": 15, "hp": 7}'
+    llm = _SeqLLM([_STATBLOCK_ANSWER, minimal_valid])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe an encounter", "mode": "gm"})
+    sb = out["stat_block"]
+    assert sb is not None
+    assert sb.name == "Goblin Scout"
+    assert sb.abilities is None
+    assert sb.traits is None
+
+
+def test_graph_stat_block_missing_core_field_degrades_to_none():
+    """Behavior 6c: valid JSON but missing the core-required `hp` field must
+    degrade to None, not validate as a near-empty stat block."""
+    missing_hp = '{"name": "Goblin Scout", "ac": 15}'
+    llm = _SeqLLM([_STATBLOCK_ANSWER, missing_hp])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe an encounter", "mode": "gm"})
+    assert out["stat_block"] is None
+
+
+def test_graph_rules_mode_never_populates_stat_block():
+    """Behavior 7: rules mode never populates stat_block and never makes an
+    extra LLM call, even when the answer text has stat-block markers."""
+    llm = _FakeLLM(_STATBLOCK_ANSWER)
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe an encounter", "mode": "rules"})
+    assert out.get("stat_block") is None
+    assert llm.calls == 1
