@@ -1,0 +1,219 @@
+/* GameContentCard(+Section+Entry) — shared shell for canonical game content
+   quoted into chat (spells, stat blocks, future: items, conditions).
+   Translated from the DS source's inline styles (no .css file upstream) into
+   real classes, 1:1 with the same custom-property references. */
+
+/* ── Root ────────────────────────────────────────────────────────────────── */
+
+.game-content-card {
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-card);
+  background: var(--md-sys-color-surface-container-low);
+  box-shadow: var(--md-sys-elevation-level1);
+  overflow: hidden;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+
+.game-content-card__header {
+  padding: 18px 24px 15px;
+  background: var(--md-sys-color-surface-container-high);
+  border-bottom: 2px solid var(--aether-gold-leaf);
+}
+
+.game-content-card--compact .game-content-card__header {
+  padding: 13px 18px 11px;
+}
+
+.game-content-card__kicker-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 6px;
+}
+
+.game-content-card__kicker-icon {
+  font-size: 17px;
+}
+
+.game-content-card__kicker-icon--compact {
+  font-size: 15px;
+  align-self: center;
+}
+
+.game-content-card__kicker-label {
+  font-family: var(--aether-font-ui);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.game-content-card__kicker-row .game-content-card__badge-slot {
+  margin-left: auto;
+}
+
+.game-content-card__title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.game-content-card--compact .game-content-card__title-row {
+  gap: 10px;
+}
+
+.game-content-card__title-row .game-content-card__badge-slot {
+  margin-left: auto;
+}
+
+.game-content-card__title {
+  margin: 0;
+  font-family: var(--aether-font-display);
+  font-size: 27px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.game-content-card--compact .game-content-card__title {
+  font-size: 19px;
+}
+
+.game-content-card__qualifier {
+  font-family: var(--aether-font-body);
+  font-style: italic;
+  font-size: 15.5px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.game-content-card--compact .game-content-card__qualifier {
+  font-size: 13.5px;
+}
+
+/* ── Stat strip ──────────────────────────────────────────────────────────── */
+
+.game-content-card__stats {
+  display: grid;
+  gap: 1px;
+  background: var(--md-sys-color-outline-variant);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.game-content-card__stat-cell {
+  background: var(--md-sys-color-surface-container-low);
+  padding: 11px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.game-content-card--compact .game-content-card__stat-cell {
+  padding: 8px 12px 9px;
+  gap: 2px;
+}
+
+.game-content-card__stat-label {
+  font-family: var(--aether-font-ui);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .9px;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.game-content-card--compact .game-content-card__stat-label {
+  font-size: 9.5px;
+}
+
+.game-content-card__stat-value {
+  font-family: var(--aether-font-mono);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.game-content-card--compact .game-content-card__stat-value {
+  font-size: 13px;
+}
+
+/* ── Footer citation ─────────────────────────────────────────────────────── */
+
+.game-content-card__footer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 11px 24px 13px;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container);
+}
+
+.game-content-card--compact .game-content-card__footer {
+  padding: 11px 18px 13px;
+}
+
+.game-content-card__footer-icon {
+  font-size: 16px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.game-content-card__footer-text {
+  font-family: var(--aether-font-ui);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ── GameContentSection ──────────────────────────────────────────────────── */
+
+.game-content-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 24px 6px;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.game-content-section--first {
+  padding-top: 18px;
+  border-top: none;
+}
+
+.game-content-section--compact {
+  padding: 12px 18px 4px;
+}
+
+.game-content-section--compact.game-content-section--first {
+  padding-top: 13px;
+}
+
+.game-content-section__title {
+  font-family: var(--aether-font-ui);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.game-content-section__title--secondary {
+  color: var(--md-sys-color-secondary);
+}
+
+.game-content-section__title--muted {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ── GameContentEntry ────────────────────────────────────────────────────── */
+
+.game-content-entry {
+  margin: 0;
+  font-family: var(--aether-font-body);
+  font-size: 15.5px;
+  line-height: 25px;
+  text-wrap: pretty;
+}
+
+.game-content-entry__name {
+  font-style: italic;
+  font-weight: 600;
+}
