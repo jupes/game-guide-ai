@@ -59,6 +59,58 @@ class SpellContent(BaseModel):
     ritual: bool | None = None
 
 
+class Abilities(BaseModel):
+    """The six 5e ability scores. Raw scores only — modifiers are derived by
+    the widget, never passed in (matches the aetheril-design-system
+    StatBlockCard contract). `extra="forbid"` so a misspelled ability name
+    (e.g. "strength") surfaces as a validation failure instead of silently
+    validating as an empty ability set."""
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    str: int | None = None
+    dex: int | None = None
+    con: int | None = None
+    int_: int | None = Field(None, alias="int")
+    wis: int | None = None
+    cha: int | None = None
+
+
+class StatBlockEntry(BaseModel):
+    """One named block (a trait, action, bonus action, reaction, or legendary
+    action) — the entry name is rendered italic, the text is its description."""
+    name: str
+    text: str
+
+
+class StatBlockContent(BaseModel):
+    """A 5e NPC/monster stat block extracted from a GM/Sage prose answer
+    (z7fl.1 Checkpoint B). `name`, `ac`, `hp` are core-required: without
+    armor class or hit points this isn't recognizably a stat block, and must
+    degrade to prose rather than replace it."""
+    name: str
+    ac: int
+    hp: int
+    size: str | None = None
+    type: str | None = None
+    alignment: str | None = None
+    ac_note: str | None = None
+    hit_dice: str | None = None
+    speed: str | None = None
+    abilities: Abilities | None = None
+    saving_throws: str | None = None
+    skills: str | None = None
+    damage_immunities: str | None = None
+    condition_immunities: str | None = None
+    senses: str | None = None
+    languages: str | None = None
+    cr: str | int | None = None
+    xp: int | None = None
+    traits: list[StatBlockEntry] | None = None
+    actions: list[StatBlockEntry] | None = None
+    bonus_actions: list[StatBlockEntry] | None = None
+    reactions: list[StatBlockEntry] | None = None
+    legendary_actions: list[StatBlockEntry] | None = None
+
+
 class StoredMessage(BaseModel):
     """One persisted chat turn, as returned by GET /conversations/{id}/messages."""
     id: int
@@ -147,6 +199,11 @@ class ChatResponse(BaseModel):
     # effort (degrades to None on any parse/LLM failure, same posture as
     # suggestions — see service/generate.py:parse_spell_content).
     spell_content: SpellContent | None = None
+    # GM/Sage only, and only when the answer looks like it presents a
+    # creature (cost-gated heuristic — see service/generate.py:
+    # _looks_like_statblock): structured NPC/monster stat block extracted
+    # from `answer`, same best-effort/degrade posture as spell_content.
+    stat_block: StatBlockContent | None = None
 
 
 # ── File attachments (swe1.6) ────────────────────────────────────────────────

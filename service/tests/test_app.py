@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from service.app import app, get_service
-from service.models import ChatMode, ChatResponse, Source
+from service.models import Abilities, ChatMode, ChatResponse, Source, StatBlockContent
 
 
 class _FakeService:
@@ -152,19 +152,34 @@ def test_response_schema():
     c = _client(_GROUNDED)
     try:
         body = c.post("/chat", json={"prompt": "x"}).json()
-        # z7fl.1 Checkpoint A: ChatResponse grew spell_content (None-valued
-        # here, but FastAPI's response_model has no exclude_none, so the key
-        # is always present) — this exact-set assertion must track every
-        # field ChatResponse serializes, or it silently drifts. Checkpoint B
-        # adds stat_block to this same set.
+        # z7fl.1: ChatResponse grew spell_content (Checkpoint A) and
+        # stat_block (Checkpoint B) — both None-valued here, but FastAPI's
+        # response_model has no exclude_none, so the keys are always present.
+        # This exact-set assertion must track every field ChatResponse
+        # serializes, or it silently drifts.
         assert set(body.keys()) == {
             "answer", "sources", "answerable", "mode", "conversation_id", "suggestions",
             "routing", "suggestions_routing",
-            "spell_content",
+            "spell_content", "stat_block",
         }
         assert set(body["sources"][0].keys()) == {"book", "chapter", "section", "entity", "page", "snippet"}
     finally:
         app.dependency_overrides.clear()
+
+
+def test_abilities_int_field_serializes_with_wire_key_int_not_int_underscore():
+    """Behavior 8c: Abilities.int_ (the Python attribute, avoiding a builtin-
+    shadowing collision) must serialize on the wire as "int", matching the
+    frontend contract's ability-key set exactly. Pydantic v2's Field(alias=)
+    covers both validation AND serialization by default, but that's easy to
+    get backwards (e.g. with a validation-only `validation_alias`) -- this
+    pins the direction that actually matters for API consumers."""
+    sb = StatBlockContent(name="Goblin", ac=15, hp=7, abilities=Abilities(int_=10))
+    dumped = sb.model_dump(mode="json", by_alias=True)
+    assert dumped["abilities"] == {
+        "str": None, "dex": None, "con": None, "int": 10, "wis": None, "cha": None,
+    }
+    assert "int_" not in dumped["abilities"]
 
 
 # ---------------------------------------------------------------------------
