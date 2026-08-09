@@ -365,10 +365,25 @@ before app-level auth exposes the full-corpus app publicly and violates the
 licensing posture (`x5bz.5`). When auth is live and verified:
 
 ```bash
-gcloud run services update game-guide-ai --region="$REGION" --allow-unauthenticated
+gcloud run services add-iam-policy-binding game-guide-ai \
+  --region="$REGION" --member=allUsers --role=roles/run.invoker
+
+# Confirm — the same check §10 step 1 uses:
+gcloud run services get-iam-policy game-guide-ai --region "$REGION" \
+  --format='value(bindings.members)' | grep -q allUsers \
+  && echo "public invoke intact" || echo "still IAM-LOCKED"
 ```
 
-(That flag lives only here, never in `deploy.sh` — the guard test keeps it out.)
+Opening ingress is an **IAM binding**, not a service setting.
+`--allow-unauthenticated` is sugar on `gcloud run deploy`, which expands to this
+same binding; `gcloud run services update` rejects it outright
+(`unrecognized arguments`). Granting `roles/run.invoker` to `allUsers` is the
+form that works against an already-deployed service, and it is what makes the
+Google front end stop returning 403 before a request ever reaches the app.
+
+Public *invoke* is not public *access*: every endpoint still requires a session,
+which is the whole point of gating this behind `x5bz.2`. `deploy.sh` never
+requests either form — the guard test keeps `--allow-unauthenticated` out of it.
 
 **It stays open across later deploys.** `deploy.sh` defaults to
 `ACCESS=preserve` and passes no IAM flag at all, so shipping code — or the
