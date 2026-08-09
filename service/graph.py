@@ -50,9 +50,10 @@ from .generate import (
     build_context,
     build_sources,
     generate_answer,
+    generate_spell_content,
     generate_suggestions,
 )
-from .models import REFUSAL, ChatMode, Source, Suggestion
+from .models import REFUSAL, ChatMode, Source, SpellContent, Suggestion
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +91,7 @@ class GraphState(TypedDict, total=False):
     sources: list[Source]
     answerable: bool
     suggestions: list[Suggestion] | None   # spell mode only; None on failure
+    spell_content: SpellContent | None     # spell mode only; None on failure
 
 
 def build_rag_graph(svc: RagService) -> Any:
@@ -245,6 +247,22 @@ def build_rag_graph(svc: RagService) -> Any:
             return {"suggestions": None}
         return {"suggestions": suggestions}
 
+    def structure_node(state: GraphState, config: Any = None) -> GraphState:
+        # Best-effort structuring: any LLM/parse failure degrades to None
+        # rather than failing an answer that already generated. Spell mode
+        # only for now (z7fl.1 Checkpoint A); Checkpoint B extends this to
+        # sage/gm stat-block structuring, gated by a cheap heuristic.
+        if state["mode"] == "spell":
+            try:
+                spell_content = generate_spell_content(
+                    state["answer"], model=svc.model, client=svc.llm_client, config=config,
+                )
+            except Exception:
+                log.warning("spell content structuring failed; answering without it", exc_info=True)
+                return {"spell_content": None}
+            return {"spell_content": spell_content}
+        return {}
+
     def cite_node(state: GraphState) -> GraphState:
         sources = build_sources(state["result"], top_n=CONTEXT_TOP_N)
         attachment_context = state.get("attachment_context")
@@ -272,6 +290,7 @@ def build_rag_graph(svc: RagService) -> Any:
     g.add_node("gate", gate_node)
     g.add_node("generate", generate_node)
     g.add_node("suggest", suggest_node)
+    g.add_node("structure", structure_node)
     g.add_node("cite", cite_node)
     g.add_node("refuse", refuse_node)
 
@@ -301,7 +320,8 @@ def build_rag_graph(svc: RagService) -> Any:
     g.add_conditional_edges(
         "generate", generate_route, {"suggest": "suggest", "cite": "cite"},
     )
-    g.add_edge("suggest", "cite")
+    g.add_edge("suggest", "structure")
+    g.add_edge("structure", "cite")
     g.add_edge("cite", END)
     g.add_edge("refuse", END)
     return g.compile()
