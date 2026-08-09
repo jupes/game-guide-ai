@@ -12,6 +12,10 @@ import { IconButton } from '../ds/IconButton'
 import { Card } from '../ds/Card'
 import { Chip } from '../ds/Chip'
 import { DiceRoll } from '../ds/DiceRoll'
+import { SpellCard } from '../ds/SpellCard'
+import type { SpellCardProps } from '../ds/SpellCard'
+import { StatBlockCard } from '../ds/StatBlockCard'
+import type { StatBlockCardProps } from '../ds/StatBlockCard'
 import { SourceList } from '../components/SourceList'
 import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
@@ -23,9 +27,82 @@ import {
   getAttachments as defaultGetAttachments,
   uploadAttachment as defaultUploadAttachment,
 } from '../api'
-import type { Attachment, AttachmentsResult, Suggestion, UploadAttachmentResult } from '../api'
+import type {
+  Attachment,
+  AttachmentsResult,
+  SpellContent,
+  StatBlockContent,
+  Suggestion,
+  UploadAttachmentResult,
+} from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
 import './ChatPane.css'
+
+// ── z7fl.4 — snake_case (wire) -> camelCase (DS widget prop) adapters ────────
+// A local mapping, not a widget-contract or wire-format change: the ported
+// widgets keep their DS camelCase props unchanged (mirrors the .d.ts
+// exactly); the API stays snake_case like every other field. This is the
+// only place the two conventions meet.
+
+function toSpellCardProps(sc: SpellContent): SpellCardProps {
+  return {
+    name: sc.name,
+    level: sc.level ?? undefined,
+    school: sc.school ?? undefined,
+    castingTime: sc.casting_time ?? undefined,
+    range: sc.range ?? undefined,
+    duration: sc.duration ?? undefined,
+    components: sc.components
+      ? {
+          v: sc.components.v ?? undefined,
+          s: sc.components.s ?? undefined,
+          m: sc.components.m ?? undefined,
+        }
+      : undefined,
+    description: sc.description,
+    higherLevels: sc.higher_levels ?? undefined,
+    classes: sc.classes ?? undefined,
+    concentration: sc.concentration ?? undefined,
+    ritual: sc.ritual ?? undefined,
+  }
+}
+
+function toStatBlockCardProps(sb: StatBlockContent): StatBlockCardProps {
+  return {
+    name: sb.name,
+    size: sb.size ?? undefined,
+    type: sb.type ?? undefined,
+    alignment: sb.alignment ?? undefined,
+    ac: sb.ac,
+    acNote: sb.ac_note ?? undefined,
+    hp: sb.hp,
+    hitDice: sb.hit_dice ?? undefined,
+    speed: sb.speed ?? undefined,
+    abilities: sb.abilities
+      ? {
+          str: sb.abilities.str ?? undefined,
+          dex: sb.abilities.dex ?? undefined,
+          con: sb.abilities.con ?? undefined,
+          int: sb.abilities.int ?? undefined,
+          wis: sb.abilities.wis ?? undefined,
+          cha: sb.abilities.cha ?? undefined,
+        }
+      : undefined,
+    savingThrows: sb.saving_throws ?? undefined,
+    skills: sb.skills ?? undefined,
+    damageImmunities: sb.damage_immunities ?? undefined,
+    conditionImmunities: sb.condition_immunities ?? undefined,
+    senses: sb.senses ?? undefined,
+    languages: sb.languages ?? undefined,
+    cr: sb.cr ?? undefined,
+    xp: sb.xp ?? undefined,
+    traits: sb.traits ?? undefined,
+    actions: sb.actions ?? undefined,
+    bonusActions: sb.bonus_actions ?? undefined,
+    reactions: sb.reactions ?? undefined,
+    legendaryActions: sb.legendary_actions ?? undefined,
+  }
+}
 
 // ── File attachments (swe1.6) ────────────────────────────────────────────────
 
@@ -193,7 +270,16 @@ export function ChatPane({
 
               {exchange.status === 'done' && exchange.response && (
                 <>
-                  <ChatMessage role="dm">{exchange.response.answer}</ChatMessage>
+                  {/* Structured content (z7fl.4) replaces the prose bubble,
+                      not additive: the prose already reproduces the same
+                      text verbatim, so showing both would duplicate it. */}
+                  {exchange.response.spell_content ? (
+                    <SpellCard {...toSpellCardProps(exchange.response.spell_content)} density="default" />
+                  ) : exchange.response.stat_block ? (
+                    <StatBlockCard {...toStatBlockCardProps(exchange.response.stat_block)} density="default" />
+                  ) : (
+                    <ChatMessage role="dm">{exchange.response.answer}</ChatMessage>
+                  )}
 
                   {/* GM creative notice — answer is invented/extrapolated, not grounded */}
                   {mode === 'gm' && !exchange.response.answerable && (
