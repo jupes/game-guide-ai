@@ -6,6 +6,13 @@
  * result so the UI never throws on a bad day.
  */
 
+import type { ZodType } from 'zod'
+import {
+  ChatResponseSchema,
+  MessagesResponseSchema,
+  AttachmentsResponseSchema,
+} from './schemas'
+
 export type ChatMode = 'sage' | 'spell' | 'rules' | 'gm'
 
 export interface Source {
@@ -23,6 +30,77 @@ export interface Suggestion {
   text: string
 }
 
+/** V/S/M component flags; `m` carries the material-component text. Mirrors
+ * service.models.SpellComponents. */
+export interface SpellComponents {
+  v?: boolean | null
+  s?: boolean | null
+  m?: string | null
+}
+
+/** A spell entry extracted from the spell-mode prose answer (z7fl.1).
+ * Mirrors service.models.SpellContent. */
+export interface SpellContent {
+  name: string
+  description: string
+  level?: number | null
+  school?: string | null
+  casting_time?: string | null
+  range?: string | null
+  duration?: string | null
+  components?: SpellComponents | null
+  higher_levels?: string | null
+  classes?: string[] | null
+  concentration?: boolean | null
+  ritual?: boolean | null
+}
+
+/** The six 5e ability scores (raw, modifiers derived by the widget). Mirrors
+ * service.models.Abilities. */
+export interface Abilities {
+  str?: number | null
+  dex?: number | null
+  con?: number | null
+  int?: number | null
+  wis?: number | null
+  cha?: number | null
+}
+
+/** One named block (trait/action/bonus action/reaction/legendary action).
+ * Mirrors service.models.StatBlockEntry. */
+export interface StatBlockEntry {
+  name: string
+  text: string
+}
+
+/** A 5e NPC/monster stat block extracted from a GM/Sage prose answer
+ * (z7fl.1). Mirrors service.models.StatBlockContent. */
+export interface StatBlockContent {
+  name: string
+  ac: number
+  hp: number
+  size?: string | null
+  type?: string | null
+  alignment?: string | null
+  ac_note?: string | null
+  hit_dice?: string | null
+  speed?: string | null
+  abilities?: Abilities | null
+  saving_throws?: string | null
+  skills?: string | null
+  damage_immunities?: string | null
+  condition_immunities?: string | null
+  senses?: string | null
+  languages?: string | null
+  cr?: string | number | null
+  xp?: number | null
+  traits?: StatBlockEntry[] | null
+  actions?: StatBlockEntry[] | null
+  bonus_actions?: StatBlockEntry[] | null
+  reactions?: StatBlockEntry[] | null
+  legendary_actions?: StatBlockEntry[] | null
+}
+
 export interface ChatResponse {
   answer: string
   sources: Source[]
@@ -32,6 +110,11 @@ export interface ChatResponse {
   /** Optional echo fields from the service. */
   mode?: ChatMode
   conversation_id?: string | null
+  /** Spell mode only; null/absent elsewhere or when structuring failed. */
+  spell_content?: SpellContent | null
+  /** GM/Sage only, and only when the answer looked like a stat block;
+   * null/absent otherwise or when structuring failed. */
+  stat_block?: StatBlockContent | null
 }
 
 export type ChatResult =
@@ -59,13 +142,25 @@ export type MessagesResult =
 
 /** Parse a response body as JSON, or null when it isn't valid JSON. A proxy
  * misroute can answer 200 with HTML (that was bug cnqf) — and this module's
- * contract is that the UI never throws on a bad day. */
-async function parseJson<T>(res: Response): Promise<T | null> {
+ * contract is that the UI never throws on a bad day.
+ *
+ * `schema` is optional (z7fl.2): when passed, the parsed body is validated
+ * against it with `safeParse` and `null` is returned on a shape mismatch —
+ * the same UNREADABLE error path as invalid JSON, so existing callers don't
+ * need a new branch. When omitted, this keeps the old `as T` cast behavior
+ * unchanged — only `postChat`/`getMessages`/`getAttachments` pass a schema;
+ * the other call sites (`uploadAttachment`, `postAuthJson`, `getMe`) are out
+ * of scope for this task and stay as they were. */
+async function parseJson<T>(res: Response, schema?: ZodType<T>): Promise<T | null> {
+  let body: unknown
   try {
-    return (await res.json()) as T
+    body = await res.json()
   } catch {
     return null
   }
+  if (!schema) return body as T
+  const result = schema.safeParse(body)
+  return result.success ? result.data : null
 }
 
 const UNREADABLE = 'The service returned an unreadable response.'
@@ -109,7 +204,7 @@ export async function getMessages(
     return { kind: 'error', message: `Message history unavailable (${res.status}).` }
   }
 
-  const body = await parseJson<{ messages: StoredMessage[] }>(res)
+  const body = await parseJson(res, MessagesResponseSchema)
   if (body === null) return { kind: 'error', message: UNREADABLE }
   return { kind: 'ok', messages: body.messages }
 }
@@ -173,7 +268,7 @@ export async function postChat(
     }
   }
 
-  const response = await parseJson<ChatResponse>(res)
+  const response = await parseJson(res, ChatResponseSchema)
   if (response === null) {
     return { kind: 'error', message: UNREADABLE, outcome: 'http_error' }
   }
@@ -279,7 +374,7 @@ export async function getAttachments(
     return { kind: 'error', message: `Attachments unavailable (${res.status}).` }
   }
 
-  const body = await parseJson<{ attachments: Attachment[] }>(res)
+  const body = await parseJson(res, AttachmentsResponseSchema)
   if (body === null) return { kind: 'error', message: UNREADABLE }
   return { kind: 'ok', attachments: body.attachments }
 }
