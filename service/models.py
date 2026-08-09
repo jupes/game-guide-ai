@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ChatMode(str, Enum):
@@ -30,6 +30,32 @@ class Suggestion(BaseModel):
     """One LLM-invented spell-usage idea (spell mode only)."""
     style: SuggestionStyle
     text: str
+
+
+class SpellComponents(BaseModel):
+    """V/S/M component flags; `m` carries the material-component text."""
+    model_config = ConfigDict(extra="forbid")
+    v: bool | None = None
+    s: bool | None = None
+    m: str | None = None
+
+
+class SpellContent(BaseModel):
+    """A spell entry extracted from the spell-mode prose answer (z7fl.1).
+    `name` and `description` are core-required: a reply missing either is not
+    a usable card and must degrade to prose rather than replace it."""
+    name: str
+    description: str
+    level: int | None = None
+    school: str | None = None
+    casting_time: str | None = None
+    range: str | None = None
+    duration: str | None = None
+    components: SpellComponents | None = None
+    higher_levels: str | None = None
+    classes: list[str] | None = None
+    concentration: bool | None = None
+    ritual: bool | None = None
 
 
 class StoredMessage(BaseModel):
@@ -81,6 +107,10 @@ class ChatResponse(BaseModel):
     # None everywhere else — and in spell mode when suggestion generation
     # failed (the answer must never fail because the garnish did).
     suggestions: list[Suggestion] | None = None
+    # Spell mode only: structured spell content extracted from `answer`, best-
+    # effort (degrades to None on any parse/LLM failure, same posture as
+    # suggestions — see service/generate.py:parse_spell_content).
+    spell_content: SpellContent | None = None
 
 
 # ── File attachments (swe1.6) ────────────────────────────────────────────────

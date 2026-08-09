@@ -120,8 +120,14 @@ def test_response_schema():
     c = _client(_GROUNDED)
     try:
         body = c.post("/chat", json={"prompt": "x"}).json()
+        # z7fl.1 Checkpoint A: ChatResponse grew spell_content (None-valued
+        # here, but FastAPI's response_model has no exclude_none, so the key
+        # is always present) — this exact-set assertion must track every
+        # field ChatResponse serializes, or it silently drifts. Checkpoint B
+        # adds stat_block to this same set.
         assert set(body.keys()) == {
             "answer", "sources", "answerable", "mode", "conversation_id", "suggestions",
+            "spell_content",
         }
         assert set(body["sources"][0].keys()) == {"book", "chapter", "section", "entity", "page", "snippet"}
     finally:

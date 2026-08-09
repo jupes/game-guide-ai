@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from config import CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX, TEMPERATURE
 from ingestion.retrieval import RetrievalResult
 
-from .models import Source, Suggestion, SuggestionStyle
+from .models import Source, SpellContent, Suggestion, SuggestionStyle
 
 
 # Minimal structural type for the injected chat model (ziw.2 / CP2). We call a
@@ -204,6 +204,69 @@ def generate_suggestions(
     )
     content = resp.content
     return parse_suggestions(content if isinstance(content, str) else str(content))
+
+
+# Spell content structuring (z7fl.1 Checkpoint A). One extra LLM call in spell
+# mode, extracting from the already-generated prose `answer` (not retrieved
+# context) so the structured card can't state anything the user wasn't shown.
+# Best-effort: the graph node degrades to no spell_content on any failure.
+SPELL_CONTENT_SYSTEM = (
+    "You extract structured spell data from a D&D 5e spell description. Using "
+    "ONLY the facts present in the text below — do not add, infer, or alter "
+    "anything not stated — respond with ONLY a JSON object matching this shape: "
+    '{"name": "...", "level": 0, "school": "...", "casting_time": "...", '
+    '"range": "...", "duration": "...", '
+    '"components": {"v": true, "s": true, "m": "..."}, '
+    '"description": "...", "higher_levels": "...", "classes": ["..."], '
+    '"concentration": false, "ritual": false}. '
+    '"name" and "description" are required; omit any other key you cannot '
+    "fill from the text. No prose outside the JSON."
+)
+
+SPELL_CONTENT_TEMPLATE = "Spell description:\n{answer}"
+
+
+def parse_spell_content(text: str) -> SpellContent:
+    """Parse the spell-content JSON, tolerating a markdown code fence. Raises
+    ValueError (non-JSON) or pydantic.ValidationError (wrong/missing shape,
+    including a missing core-required field) on anything else — both are
+    caught by the caller's degrade-to-None path."""
+    import json
+
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`").strip()
+        if raw.startswith("json"):
+            raw = raw[len("json"):]
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"spell content is not valid JSON: {exc}") from exc
+    return SpellContent.model_validate(data)
+
+
+def generate_spell_content(
+    answer: str, *,
+    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    config: Any | None = None,
+) -> SpellContent:
+    """One structured LLM call that extracts spell content from the already-
+    generated prose `answer` (an extraction task, not independent
+    regeneration — see module docstring). Raises on any LLM or parse failure;
+    the caller (graph structure node) degrades to None."""
+    if client is None:  # pragma: no cover - live path mirrors generate_answer
+        from langchain_openai import ChatOpenAI
+
+        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
+    resp = client.invoke(
+        [
+            SystemMessage(content=SPELL_CONTENT_SYSTEM),
+            HumanMessage(content=SPELL_CONTENT_TEMPLATE.format(answer=answer)),
+        ],
+        config=config,
+    )
+    content = resp.content
+    return parse_spell_content(content if isinstance(content, str) else str(content))
 
 
 def generate_answer(

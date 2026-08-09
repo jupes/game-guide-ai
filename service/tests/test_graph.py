@@ -326,7 +326,16 @@ _SUGG_JSON = (
 
 
 def test_graph_spell_mode_attaches_three_typed_suggestions():
-    llm = _SeqLLM(["Fireball: 8d6 fire damage in a 20-foot radius [1].", _SUGG_JSON])
+    # Deliberate update (z7fl.1 Checkpoint A): spell mode now makes a THIRD call
+    # (spell-content structuring, after answer + suggestions) — see
+    # test_graph_spell_mode_attaches_typed_spell_content for that behavior in
+    # detail. This test stays focused on suggestions; the third canned reply is
+    # a minimal-but-valid spell-content JSON so structuring doesn't interfere.
+    llm = _SeqLLM([
+        "Fireball: 8d6 fire damage in a 20-foot radius [1].",
+        _SUGG_JSON,
+        '{"name": "Fireball", "description": "8d6 fire damage in a 20-foot radius."}',
+    ])
     svc = _svc(_result(answerable=True), llm)
     graph = build_rag_graph(svc)
     out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
@@ -335,7 +344,7 @@ def test_graph_spell_mode_attaches_three_typed_suggestions():
     assert [s.style.value for s in suggs] == ["practical", "roleplay", "wacky"]
     assert all(s.text for s in suggs)
     assert "8d6" in out["answer"]
-    assert llm.calls == 2  # answer + suggestions
+    assert llm.calls == 3  # answer + suggestions + spell-content structuring
 
 
 def test_graph_non_spell_modes_have_no_suggestions():
@@ -398,3 +407,110 @@ def test_graph_suggestions_json_in_code_fence_parses():
     out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
     assert out["suggestions"] is not None
     assert [s.style.value for s in out["suggestions"]] == ["practical", "roleplay", "wacky"]
+
+
+# ---------------------------------------------------------------------------
+# z7fl.1 Checkpoint A — spell content structuring (tracer bullet)
+# ---------------------------------------------------------------------------
+
+_SPELL_ANSWER = "Fireball: 8d6 fire damage in a 20-foot radius [1]."
+
+_SPELL_CONTENT_JSON = (
+    '{"name": "Fireball", "level": 3, "school": "evocation", '
+    '"casting_time": "1 action", "range": "150 feet", "duration": "Instantaneous", '
+    '"components": {"v": true, "s": true, "m": "a tiny ball of bat guano and sulfur"}, '
+    '"description": "A bright streak flashes from you to a point you choose within '
+    'range and then blossoms with a low roar into an explosion of flame.", '
+    '"higher_levels": "the damage increases by 1d6 for each slot level above 3rd", '
+    '"classes": ["Sorcerer", "Wizard"], "concentration": false, "ritual": false}'
+)
+
+
+def test_graph_spell_mode_attaches_typed_spell_content():
+    """Tracer bullet (behavior 1): a valid spell-content reply attaches a typed
+    SpellContent; the prose answer is unaffected. Spell mode now makes THREE
+    calls: answer, suggestions, spell-content structuring (in that order)."""
+    llm = _SeqLLM([_SPELL_ANSWER, _SUGG_JSON, _SPELL_CONTENT_JSON])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    sc = out["spell_content"]
+    assert sc is not None
+    assert sc.name == "Fireball"
+    assert sc.level == 3
+    assert sc.components is not None
+    assert sc.components.m == "a tiny ball of bat guano and sulfur"
+    assert "8d6" in out["answer"]  # prose answer unaffected
+    assert llm.calls == 3
+
+
+def test_graph_malformed_spell_content_degrades_to_none():
+    """Behavior 2: a non-JSON structuring reply must not fail the answer."""
+    llm = _SeqLLM([_SPELL_ANSWER, _SUGG_JSON, "sorry, I cannot do JSON today"])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    assert out["spell_content"] is None
+    assert "8d6" in out["answer"]
+
+
+def test_graph_spell_content_missing_core_field_degrades_to_none():
+    """Behavior 2b: valid JSON but missing the core-required `description` field
+    must degrade to None, not validate as a near-empty card."""
+    minimal = '{"name": "Fireball"}'
+    llm = _SeqLLM([_SPELL_ANSWER, _SUGG_JSON, minimal])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    assert out["spell_content"] is None
+    assert "8d6" in out["answer"]
+
+
+def test_graph_non_spell_modes_never_populate_spell_content():
+    """Behavior 3: sage/rules/gm never populate spell_content."""
+    for mode in ("sage", "rules", "gm"):
+        llm = _FakeLLM("answer [1]")
+        svc = _svc(_result(answerable=True), llm)
+        graph = build_rag_graph(svc)
+        out = graph.invoke({"prompt": "What is a Basilisk?", "mode": mode})
+        assert out.get("spell_content") is None, mode
+
+
+def test_graph_spell_content_optional_fields_omitted_still_parses():
+    """Behavior 3b: core-required fields present, everything else omitted."""
+    minimal_valid = '{"name": "Fireball", "description": "8d6 fire damage in a 20-foot radius."}'
+    llm = _SeqLLM([_SPELL_ANSWER, _SUGG_JSON, minimal_valid])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    sc = out["spell_content"]
+    assert sc is not None
+    assert sc.name == "Fireball"
+    assert sc.level is None
+    assert sc.components is None
+
+
+def test_graph_spell_content_extractor_receives_exact_answer_text():
+    """Behavior 3c: generate_spell_content is called with the exact prose
+    `answer` text (extraction), not the retrieved corpus context — deterministic
+    replacement for an unfalsifiable "matches the substance" claim."""
+    captured: list[str] = []
+
+    class _CapturingLLM:
+        def __init__(self, texts):
+            self.texts = list(texts)
+            self.calls = 0
+
+        def invoke(self, messages, config=None, **kw):
+            self.calls += 1
+            if self.calls == 3:  # the structuring call
+                # The HumanMessage content must contain the exact prose answer.
+                captured.append(messages[-1].content)
+            return AIMessage(content=self.texts[min(self.calls - 1, len(self.texts) - 1)])
+
+    llm = _CapturingLLM([_SPELL_ANSWER, _SUGG_JSON, _SPELL_CONTENT_JSON])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    assert len(captured) == 1
+    assert _SPELL_ANSWER in captured[0]
