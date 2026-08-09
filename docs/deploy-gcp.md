@@ -283,26 +283,86 @@ startupProbe:
 The `deploy` job in `.github/workflows/ci.yml` is already wired (WIF auth +
 `id-token: write`). It stays dormant until these exist:
 
+**Select the project explicitly.** Cloud Shell carries whatever project was last
+selected, and none of the `iam` commands below take `--project`. Creating the
+pool in the wrong project is silent — it succeeds.
+
 ```bash
-# Pool + provider bound to this GitHub repo:
+export PROJECT=game-guide-ai-cloud REGION=us-central1
+gcloud config set project "$PROJECT"
+
+# §1 enables iamcredentials + sts; these two are additionally required here.
+gcloud services enable iam.googleapis.com cloudresourcemanager.googleapis.com
+```
+
+```bash
+# Pool + provider. The trust condition is deliberately narrow — see below.
+REPO_ID=1223937247          # jupes/game-guide-ai   (gh api repos/jupes/game-guide-ai --jq .id)
+OWNER_ID=58599529           # jupes                 (gh api repos/jupes/game-guide-ai --jq .owner.id)
+WORKFLOW_REF="jupes/game-guide-ai/.github/workflows/ci.yml@refs/heads/master"
+
 gcloud iam workload-identity-pools create github --location=global --display-name="GitHub"
 gcloud iam workload-identity-pools providers create-oidc github \
   --location=global --workload-identity-pool=github \
   --display-name="GitHub OIDC" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
-  --attribute-condition="assertion.repository=='jupes/game-guide-ai'" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id" \
+  --attribute-condition="assertion.repository_id=='${REPO_ID}' && assertion.repository_owner_id=='${OWNER_ID}' && assertion.ref=='refs/heads/master' && assertion.workflow_ref=='${WORKFLOW_REF}' && assertion.environment=='production'" \
   --issuer-uri="https://token.actions.githubusercontent.com"
 
-# Deploy service account + roles (run admin, SA user, AR writer, SQL client):
+# Deploy service account. run.admin + artifactregistry.writer are project-wide;
+# cloudsql.client lets it attach the instance at deploy time.
 gcloud iam service-accounts create gha-deployer --display-name="GitHub Actions deployer"
 DEPLOYER="gha-deployer@${PROJECT}.iam.gserviceaccount.com"
-for r in run.admin iam.serviceAccountUser artifactregistry.writer cloudsql.client; do
+for r in run.admin artifactregistry.writer cloudsql.client; do
   gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:$DEPLOYER" --role="roles/$r"
 done
+
+# actAs, scoped to the ONE runtime SA — not project-wide. Project-wide
+# iam.serviceAccountUser would let the deployer run code as any service account
+# in the project, including any future one with broader rights.
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
+  --member="serviceAccount:$DEPLOYER" --role=roles/iam.serviceAccountUser
+
 POOL=$(gcloud iam workload-identity-pools describe github --location=global --format='value(name)')
 gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER" \
   --role=roles/iam.workloadIdentityUser \
-  --member="principalSet://iam.googleapis.com/$POOL/attribute.repository/jupes/game-guide-ai"
+  --member="principalSet://iam.googleapis.com/$POOL/attribute.repository_id/${REPO_ID}"
+```
+
+**Why the condition is this long.** `assertion.repository=='jupes/game-guide-ai'`
+trusts a *name*, and it trusts every workflow on every branch in that repo.
+Names are reassignable — transfer or rename the repo and the string can be
+claimed by someone else — so the binding keys on `repository_id`, which is
+immutable. The rest narrows *who inside the repo* may deploy: `master` is
+currently unprotected and the `production` environment has no protection rules,
+so without `ref` + `workflow_ref` + `environment` pins, any workflow file on any
+pushed branch could mint a token with `run.admin`. Those four claims are all in
+GitHub's OIDC token. The cost is that changing the workflow filename, the
+default branch, or the job's `environment:` breaks deploys until this condition
+is updated — which is the intended trade.
+
+**The runtime identity is a different principal.** `deploy.sh` passes no
+`--service-account`, so the container runs as the default compute SA, and roles
+granted to `gha-deployer` do nothing for it. It needs its own:
+
+```bash
+# Cloud SQL: project-level.
+gcloud projects get-iam-policy "$PROJECT" --flatten='bindings[].members' \
+  --filter="bindings.members:${RUNTIME_SA}" --format='value(bindings.role)' | sort
+#   → must include roles/cloudsql.client (roles/editor subsumes it on older projects)
+
+# Secrets: granted per-secret in §4, so they do NOT appear above.
+for s in openai-api-key database-url session-secret; do
+  echo "$s -> $(gcloud secrets get-iam-policy "$s" --flatten='bindings[].members' \
+    --filter="bindings.members:${RUNTIME_SA}" --format='value(bindings.role)' | tr '\n' ' ')"
+done
+#   → each must show roles/secretmanager.secretAccessor
+
+# Grant whatever is missing:
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${RUNTIME_SA}" --role=roles/cloudsql.client
 ```
 
 Then set on the GitHub repo (Settings → Secrets and variables → Actions):
@@ -314,7 +374,48 @@ Then set on the GitHub repo (Settings → Secrets and variables → Actions):
 | Secret | `GCP_DEPLOY_SA` | `gha-deployer@game-guide-ai-cloud.iam.gserviceaccount.com` |
 
 Merge to `master` → the `deploy` job authenticates via WIF and runs `deploy.sh`.
-Watch: `gh run watch` and `gcloud run revisions list --service game-guide-ai --region "$REGION"`.
+`ci.yml` also declares `workflow_dispatch`, so once the three settings above
+exist the same deploy is available on demand: Actions → CI → *Run workflow*, or
+`gh workflow run ci.yml --ref master`. Watch with `gh run watch`.
+
+> **A green `deploy` job is not evidence of a deploy.** Until `DEPLOY_TARGET` is
+> set, the job's WIF steps are skipped (`if: env.WIF_PROVIDER != ''`) and the
+> final step prints a "No-op" summary and exits **0**. That green was read as
+> "auth is live" on 2026-08-09; the running revision was still the pre-auth
+> build, and ingress was opened onto a service with no `/auth` routes. Verify
+> the revision, not the job — see below. Tracked as `x5bz.1.7`.
+
+### Verify a deploy actually landed
+
+Three separate questions: is the new revision *ready*, is it *taking traffic*,
+and is it the *code you think*. Check all three — a revision can be Ready at 0%.
+
+```bash
+gcloud run services describe game-guide-ai \
+  --project="$PROJECT" --region="$REGION" \
+  --format='yaml(status.latestCreatedRevisionName,status.latestReadyRevisionName,status.traffic)'
+```
+
+`latestCreated` == `latestReady`, and that revision at `percent: 100`. If created
+and ready differ, the new revision failed to start and the old one is still
+serving.
+
+Then ask the running service what code it is. `gcloud run services proxy`
+authenticates as you, so this works while the service is still IAM-locked —
+which is the point: verify *before* opening ingress. **The proxy blocks, so use
+two terminals:**
+
+```bash
+# Terminal 1 — stays in the foreground
+gcloud run services proxy game-guide-ai --project="$PROJECT" --region="$REGION"
+
+# Terminal 2
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/auth/me   # 401 = auth build
+curl -s http://127.0.0.1:8080/openapi.json | grep -c '/auth/'            # 0 = pre-auth build
+```
+
+`401` (not `404`) on `/auth/me` means the auth build is serving. Only then go to
+§9 and restore unauthenticated invocation.
 
 ## 9. Open ingress (DEFERRED — `x5bz.1.6`)
 
