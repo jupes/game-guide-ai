@@ -1,0 +1,149 @@
+/* StatBlockCard — translated from the DS source's inline styles (no .css
+   file upstream) into real classes, 1:1 with the same custom-property
+   references. */
+
+.stat-block-card__ac-note {
+  font-family: var(--aether-font-body);
+  font-size: 13.5px;
+  font-weight: 400;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.stat-block-card__hp {
+  color: var(--md-sys-color-tertiary);
+}
+
+.stat-block-card__hit-dice {
+  color: var(--md-sys-color-on-surface-variant);
+  font-weight: 400;
+}
+
+/* ── Six-ability row ─────────────────────────────────────────────────────── */
+
+.stat-block-card__abilities {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--md-sys-color-outline-variant);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.stat-block-card__abilities--compact {
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.stat-block-card__ability-cell {
+  background: var(--md-sys-color-surface-container);
+  padding: 12px 6px 13px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.stat-block-card__ability-cell--compact {
+  padding: 9px 4px 10px;
+  gap: 3px;
+}
+
+.stat-block-card__ability-key {
+  font-family: var(--aether-font-ui);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.1px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.stat-block-card__ability-cell--compact .stat-block-card__ability-key {
+  font-size: 9.5px;
+}
+
+.stat-block-card__ability-score {
+  font-family: var(--aether-font-mono);
+  font-size: 23px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.stat-block-card__ability-cell--compact .stat-block-card__ability-score {
+  font-size: 16px;
+}
+
+.stat-block-card__ability-mod {
+  font-family: var(--aether-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: var(--md-sys-shape-corner-full);
+}
+
+.stat-block-card__ability-cell--compact .stat-block-card__ability-mod {
+  font-size: 11px;
+  padding: 1px 7px;
+}
+
+.stat-block-card__ability-mod--positive {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.stat-block-card__ability-mod--neutral {
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ── Compact inline vitals (AC/HP/Speed) ─────────────────────────────────── */
+
+.stat-block-card__compact-vitals {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 11px 18px 14px;
+  font-family: var(--aether-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.stat-block-card__compact-hp {
+  color: var(--md-sys-color-tertiary);
+}
+
+/* ── Details grid (saving throws / skills / immunities / senses / languages) */
+
+.stat-block-card__details {
+  padding: 16px 24px 18px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 6px 28px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.stat-block-card__detail-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-family: var(--aether-font-body);
+  font-size: 15px;
+  line-height: 24px;
+}
+
+.stat-block-card__detail-label {
+  font-family: var(--aether-font-ui);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .9px;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+  flex-shrink: 0;
+  min-width: 96px;
+}
+
+.stat-block-card__detail-value--mono {
+  font-family: var(--aether-font-mono);
+  font-size: 14px;
+}
+
+.stat-block-card__spacer {
+  height: 20px;
+}
