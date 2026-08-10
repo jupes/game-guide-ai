@@ -269,15 +269,21 @@ export function ChatPane({
 
               {exchange.status === 'done' && exchange.response && (
                 <>
-                  {/* Structured content (z7fl.4) replaces the prose bubble,
-                      not additive: the prose already reproduces the same
-                      text verbatim, so showing both would duplicate it. */}
-                  {exchange.response.spell_content ? (
+                  <ChatMessage role="dm">{exchange.response.answer}</ChatMessage>
+
+                  {/* Structured content (z7fl.4) is additive, alongside the
+                      prose — NOT a replacement (PR #46 review). The
+                      structuring call is a separate, schema-constrained LLM
+                      extraction: its prompt guarantees it won't invent facts,
+                      but nothing guarantees it captures every fact in the
+                      answer. Hiding the prose risked silently dropping
+                      content the fixed SpellContent/StatBlockContent schema
+                      has no field for. */}
+                  {exchange.response.spell_content && (
                     <SpellCard {...toSpellCardProps(exchange.response.spell_content)} density="default" />
-                  ) : exchange.response.stat_block ? (
+                  )}
+                  {exchange.response.stat_block && (
                     <StatBlockCard {...toStatBlockCardProps(exchange.response.stat_block)} density="default" />
-                  ) : (
-                    <ChatMessage role="dm">{exchange.response.answer}</ChatMessage>
                   )}
 
                   {/* GM creative notice — answer is invented/extrapolated, not grounded */}

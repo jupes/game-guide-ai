@@ -512,7 +512,12 @@ describe('ChatPane (#21)', () => {
     actions: [{ name: 'Scimitar', text: 'Melee Weapon Attack: +4 to hit.' }],
   }
 
-  it('renders a SpellCard in place of the prose bubble when spell_content is present (behavior 12)', async () => {
+  it('renders a SpellCard alongside the prose bubble when spell_content is present (behavior 12)', async () => {
+    // Additive, not a replacement (PR #46 review): the structuring call is a
+    // separate, schema-constrained LLM extraction -- it's prompted not to
+    // invent facts, but nothing guarantees it captures every fact either.
+    // Hiding the prose risks silently dropping content outside the schema
+    // (asides, caveats, anything that doesn't map to a SpellContent field).
     const post: PostFn = async () => ({
       kind: 'ok',
       response: {
@@ -533,11 +538,11 @@ describe('ChatPane (#21)', () => {
     expect(screen.getByText(/3rd-level evocation/)).toBeInTheDocument()
     expect(screen.getByText('a tiny ball of bat guano and sulfur')).toBeInTheDocument()
     expect(screen.getByText('the damage increases by 1d6 for each slot level above 3rd')).toBeInTheDocument()
-    // ...and the raw prose bubble is NOT also shown (replaced, not augmented).
-    expect(screen.queryByText('Fireball: 8d6 fire damage in a 20-foot radius.')).not.toBeInTheDocument()
+    // ...and so is the original prose bubble (nothing the model said is hidden).
+    expect(screen.getByText('Fireball: 8d6 fire damage in a 20-foot radius.')).toBeInTheDocument()
   })
 
-  it('renders a StatBlockCard in place of the prose bubble when stat_block is present (behavior 13)', async () => {
+  it('renders a StatBlockCard alongside the prose bubble when stat_block is present (behavior 13)', async () => {
     const post: PostFn = async () => ({
       kind: 'ok',
       response: {
@@ -557,10 +562,10 @@ describe('ChatPane (#21)', () => {
     expect(screen.getByText('Small humanoid, neutral evil')).toBeInTheDocument()
     expect(screen.getByText(/Nimble Escape/)).toBeInTheDocument()
     expect(screen.getByText(/Scimitar/)).toBeInTheDocument()
-    // The raw prose bubble is NOT also shown (replaced, not augmented).
+    // The original prose bubble is also shown (nothing the model said is hidden).
     expect(
-      screen.queryByText('You encounter a goblin scout. Armor Class 15. Hit Points 7.'),
-    ).not.toBeInTheDocument()
+      screen.getByText('You encounter a goblin scout. Armor Class 15. Hit Points 7.'),
+    ).toBeInTheDocument()
   })
 
   it('falls back to the plain prose bubble when neither spell_content nor stat_block is present (behavior 14)', async () => {

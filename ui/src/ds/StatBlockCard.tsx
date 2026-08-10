@@ -86,6 +86,17 @@ export function StatBlockCard({
 }: StatBlockCardProps): React.JSX.Element {
   const compact = density === 'compact'
 
+  // The backend only requires name/ac/hp — size/type/alignment/cr can all be
+  // absent. Unconditionally interpolating them produced a literal
+  // "undefined undefined, undefined" qualifier (PR #46 review); build it
+  // from whatever fields are actually present instead.
+  const sizeType = [size, type].filter(Boolean).join(' ')
+  const qualifier = compact
+    ? [sizeType, cr != null ? `CR ${cr}` : undefined].filter(Boolean).join(' · ') || undefined
+    : [sizeType, alignment].filter(Boolean).join(', ') || undefined
+
+  const hasAnyAbility = ABILITIES.some((k) => abilities[k] != null)
+
   const details: Array<[string, string, boolean]> = (
     [
       ['Saving Throws', savingThrows, true],
@@ -107,7 +118,7 @@ export function StatBlockCard({
     <GameContentCard
       kind="statblock"
       title={name}
-      qualifier={compact ? `${size} ${type} · CR ${cr}` : `${size} ${type}, ${alignment}`}
+      qualifier={qualifier}
       density={density}
       source={source}
       minStatWidth={150}
@@ -139,28 +150,34 @@ export function StatBlockCard({
       ]}
       style={style}
     >
-      {/* Signature: the six-ability row */}
-      <div className={`stat-block-card__abilities stat-block-card__abilities--${density}`}>
-        {ABILITIES.map((k) => {
-          const score = abilities[k]
-          const m = mod(score ?? 10)
-          const positive = m > 0
-          return (
-            <div key={k} className={`stat-block-card__ability-cell stat-block-card__ability-cell--${density}`}>
-              <span className="stat-block-card__ability-key">{k.toUpperCase()}</span>
-              <span className="stat-block-card__ability-score">{score}</span>
-              <span
-                className={
-                  'stat-block-card__ability-mod '
-                  + (positive ? 'stat-block-card__ability-mod--positive' : 'stat-block-card__ability-mod--neutral')
-                }
-              >
-                {fmt(m)}
-              </span>
-            </div>
-          )
-        })}
-      </div>
+      {/* Signature: the six-ability row. Omitted entirely when the model
+          reported no abilities at all — a row of six fabricated "+0"s would
+          misrepresent unknown stats as an average creature (PR #46 review).
+          Per-cell: an unknown score shows "—", never a guessed modifier. */}
+      {hasAnyAbility && (
+        <div className={`stat-block-card__abilities stat-block-card__abilities--${density}`}>
+          {ABILITIES.map((k) => {
+            const score = abilities[k]
+            const known = score != null
+            const m = known ? mod(score) : null
+            const positive = m != null && m > 0
+            return (
+              <div key={k} className={`stat-block-card__ability-cell stat-block-card__ability-cell--${density}`}>
+                <span className="stat-block-card__ability-key">{k.toUpperCase()}</span>
+                <span className="stat-block-card__ability-score">{known ? score : '—'}</span>
+                <span
+                  className={
+                    'stat-block-card__ability-mod '
+                    + (positive ? 'stat-block-card__ability-mod--positive' : 'stat-block-card__ability-mod--neutral')
+                  }
+                >
+                  {m !== null ? fmt(m) : '—'}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {compact ? (
         <div className="stat-block-card__compact-vitals">
