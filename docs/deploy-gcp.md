@@ -353,12 +353,22 @@ gcloud projects get-iam-policy "$PROJECT" --flatten='bindings[].members' \
   --filter="bindings.members:${RUNTIME_SA}" --format='value(bindings.role)' | sort
 #   → must include roles/cloudsql.client (roles/editor subsumes it on older projects)
 
-# Secrets: granted per-secret in §4, so they do NOT appear above.
+# Secrets: granted per-secret in §4, so they do NOT appear above. Guarded with
+# `describe` because a secret created by an earlier pass of §4 may simply not
+# exist yet — `session-secret` was added to §4 with auth, after the first run of
+# it, and a bare get-iam-policy on a missing secret just errors.
 for s in openai-api-key database-url session-secret; do
-  echo "$s -> $(gcloud secrets get-iam-policy "$s" --flatten='bindings[].members' \
-    --filter="bindings.members:${RUNTIME_SA}" --format='value(bindings.role)' | tr '\n' ' ')"
+  if gcloud secrets describe "$s" >/dev/null 2>&1; then
+    echo "$s -> $(gcloud secrets get-iam-policy "$s" --flatten='bindings[].members' \
+      --filter="bindings.members:${RUNTIME_SA}" --format='value(bindings.role)' | tr '\n' ' ')"
+  else
+    echo "$s -> MISSING (create it: §4)"
+  fi
 done
-#   → each must show roles/secretmanager.secretAccessor
+#   → each must EXIST and show roles/secretmanager.secretAccessor
+
+# A missing secret is not a soft failure: `gcloud run deploy --set-secrets`
+# refuses to deploy against one, so the CI job fails at the deploy step.
 
 # Grant whatever is missing:
 gcloud projects add-iam-policy-binding "$PROJECT" \
