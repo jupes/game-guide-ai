@@ -1,14 +1,16 @@
 /**
  * StatBlockCard — z7fl.4 Checkpoint D port.
  *
- * Covers (full density is what game-guide-ai actually renders — see
- * ChatPane's replace-not-augment design):
+ * Covers (full density is what game-guide-ai actually renders, alongside the
+ * prose bubble — see ChatPane's additive design):
  *   - Name, size/type/alignment qualifier, CR badge
  *   - AC/HP/Speed stat strip, six-ability row with derived modifiers
  *   - Saving throws / skills / immunities / senses / languages "details" grid
  *     (behavior 11/13 — the content compact density would drop)
  *   - At least one trait/action entry rendered (behavior 11/13)
  *   - Compact density hides details grid and traits/actions entirely
+ *   - Missing qualifier fields never render literal "undefined" (PR #46 review)
+ *   - Missing ability scores never fabricate a modifier (PR #46 review)
  */
 
 import { describe, it, expect } from 'vitest'
@@ -114,5 +116,36 @@ describe('StatBlockCard — optional fields', () => {
   it('renders with only the core fields (name, ac, hp)', () => {
     render(<StatBlockCard name="Mystery Creature" ac={10} hp={4} />)
     expect(screen.getByText('Mystery Creature')).toBeInTheDocument()
+  })
+
+  it('never renders a literal "undefined" qualifier when size/type/alignment are absent (PR #46 review)', () => {
+    // The backend only requires name/ac/hp — size/type/alignment can all be
+    // absent. Interpolating them unconditionally produced the literal string
+    // "undefined undefined, undefined".
+    render(<StatBlockCard name="Mystery Creature" ac={10} hp={4} />)
+    expect(screen.queryByText(/undefined/)).not.toBeInTheDocument()
+  })
+
+  it('builds the qualifier from whatever fields ARE present', () => {
+    render(<StatBlockCard name="Mystery Creature" ac={10} hp={4} alignment="chaotic neutral" />)
+    expect(screen.getByText('chaotic neutral')).toBeInTheDocument()
+    expect(screen.queryByText(/undefined/)).not.toBeInTheDocument()
+  })
+
+  it('never fabricates an ability modifier for a score the model never reported (PR #46 review)', () => {
+    // abilities entirely absent must not render six "+0" pills as if every
+    // score were known and average.
+    render(<StatBlockCard name="Mystery Creature" ac={10} hp={4} />)
+    expect(screen.queryByText('+0')).not.toBeInTheDocument()
+    expect(screen.queryByText('STR')).not.toBeInTheDocument()
+  })
+
+  it('shows an unknown marker (not a fabricated modifier) for a partially-known ability set', () => {
+    render(<StatBlockCard name="Mystery Creature" ac={10} hp={4} abilities={{ str: 16 }} />)
+    // The known score's real modifier renders...
+    expect(screen.getByText('+3')).toBeInTheDocument()
+    // ...but the five unknown scores show an unknown marker, not "+0".
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(5)
+    expect(screen.queryByText('+0')).not.toBeInTheDocument()
   })
 })

@@ -39,8 +39,8 @@ const ORDINAL = [
 
 export function SpellCard({
   name,
-  level = 0,
-  school = '',
+  level,
+  school,
   castingTime,
   range,
   duration,
@@ -55,9 +55,16 @@ export function SpellCard({
   style,
 }: SpellCardProps): React.JSX.Element {
   const compact = density === 'compact'
-  const qualifier = level === 0
-    ? `${school} cantrip`
-    : `${ORDINAL[level] ?? `${level}th-level`} ${school}`.trim()
+  // level is optional on the backend — defaulting an unknown level to 0
+  // would misrepresent "we don't know" as "this is a cantrip" (PR #46
+  // review). Only claim a level/cantrip qualifier when level is actually
+  // present; fall back to school alone, or no qualifier at all.
+  const qualifier = level == null
+    ? (school || undefined)
+    : (level === 0
+        ? `${school ?? ''} cantrip`
+        : `${ORDINAL[level] ?? `${level}th-level`} ${school ?? ''}`
+      ).trim()
 
   const comp = [
     components?.v && 'V',

@@ -1,15 +1,16 @@
 /**
  * SpellCard — z7fl.4 Checkpoint D port.
  *
- * Covers (full density is what game-guide-ai actually renders — see
- * ChatPane's replace-not-augment design, plans/drafts/structured-content-
- * widgets.md Checkpoint E):
+ * Covers (full density is what game-guide-ai actually renders, alongside the
+ * prose bubble — see ChatPane's additive design, plans/drafts/structured-
+ * content-widgets.md Checkpoint E):
  *   - Name, level/school qualifier (including cantrip), stat strip
  *   - Material-component text and class chips shown in FULL density
  *     (behavior 11/12 — the content compact density would drop)
  *   - Concentration / ritual badges
  *   - Description + "At Higher Levels" section
  *   - Compact density hides material text and class chips
+ *   - Missing `level` never renders a false "cantrip" claim (PR #46 review)
  */
 
 import { describe, it, expect } from 'vitest'
@@ -41,6 +42,20 @@ describe('SpellCard — full density', () => {
   it('renders a cantrip qualifier for level 0', () => {
     render(<SpellCard name="Fire Bolt" level={0} school="evocation" description="x" />)
     expect(screen.getByText(/evocation cantrip/)).toBeInTheDocument()
+  })
+
+  it('never claims "cantrip" when level is simply absent (PR #46 review)', () => {
+    // level is optional on the backend; defaulting an unknown level to 0
+    // would misrepresent "we don't know" as "this is a cantrip."
+    render(<SpellCard name="Mystery Spell" school="evocation" description="x" />)
+    expect(screen.queryByText(/cantrip/)).not.toBeInTheDocument()
+    // school alone still renders, just without a false level claim.
+    expect(screen.getByText('evocation')).toBeInTheDocument()
+  })
+
+  it('renders no qualifier at all when both level and school are absent', () => {
+    render(<SpellCard name="Mystery Spell" description="x" />)
+    expect(screen.queryByText(/cantrip|level/)).not.toBeInTheDocument()
   })
 
   it('renders the casting time / range / components / duration stat strip', () => {
