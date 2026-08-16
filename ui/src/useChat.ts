@@ -165,7 +165,11 @@ export function useChat({
 
       const settle = (
         update: Partial<Exchange>,
-        outcome: 'success' | 'http_error' | 'network_error' | 'aborted',
+        // 'throttled' is deliberately its own outcome rather than folding into
+        // http_error: it is the cost guard doing its job, not the service
+        // failing, and the metric is the only place an operator would see the
+        // limit actually biting in production.
+        outcome: 'success' | 'http_error' | 'network_error' | 'aborted' | 'throttled',
       ) => {
         pendingRef.current = false
         const labels = runtimeMetricLabels(mode)

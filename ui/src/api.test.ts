@@ -27,6 +27,17 @@ function fakeFetch(status: number, body?: unknown): typeof fetch {
     })) as typeof fetch
 }
 
+/** A response with headers — the throttle contract lives in them, not the body. */
+function fakeFetchWithHeaders(
+  status: number, headers: Record<string, string>, body?: unknown,
+): typeof fetch {
+  return (async () =>
+    new Response(body === undefined ? null : JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json', ...headers },
+    })) as typeof fetch
+}
+
 /** A 200 whose body is HTML, not JSON — what a misrouted proxy serves (cnqf). */
 function htmlFetch(): typeof fetch {
   return (async () =>
@@ -58,6 +69,67 @@ describe('postChat', () => {
     const result = await postChat('Q', 'sage', null, fakeFetch(503, { detail: 'service not ready' }))
     expect(result.kind).toBe('error')
     if (result.kind === 'error') expect(result.message).toMatch(/unavailable|not ready/i)
+  })
+
+  // ── The chat cost guard (x5bz.3) ──────────────────────────────────────────
+  // Three different 429s reach this client and they are not the same event.
+  // Two are our limiter (per-tester budget, global daily cap) and say so with
+  // X-Chat-Throttled; the third is Cloud Run's own, emitted when no instance is
+  // available. Telling a tester to "slow down" when the platform is simply busy
+  // would be a lie they can act on wrongly.
+
+  it('maps a per-tester throttle to a slow-down message carrying the wait', async () => {
+    const result = await postChat('Q', 'sage', null, fakeFetchWithHeaders(
+      429, { 'X-Chat-Throttled': 'user', 'Retry-After': '45' },
+      { detail: 'too fast' },
+    ))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') {
+      expect(result.outcome).toBe('throttled')
+      expect(result.message).toMatch(/45 seconds/i)
+      expect(result.message).not.toMatch(/tomorrow|today/i)
+    }
+  })
+
+  it('rounds a long wait to minutes rather than reciting seconds', async () => {
+    const result = await postChat('Q', 'sage', null, fakeFetchWithHeaders(
+      429, { 'X-Chat-Throttled': 'user', 'Retry-After': '90' },
+    ))
+    if (result.kind === 'error') expect(result.message).toMatch(/2 minutes/i)
+  })
+
+  it('falls back to a vague wait when Retry-After is missing or nonsense', async () => {
+    // The header is not guaranteed — an intermediary can strip it. "shortly" is
+    // honest; "in NaN seconds" is what a bare Number() would have produced.
+    const result = await postChat('Q', 'sage', null, fakeFetchWithHeaders(
+      429, { 'X-Chat-Throttled': 'user' },
+    ))
+    if (result.kind === 'error') {
+      expect(result.message).toMatch(/shortly/i)
+      expect(result.message).not.toMatch(/NaN|Infinity|undefined/i)
+    }
+  })
+
+  it('maps the daily cap to a closed-for-today message, not a slow-down', async () => {
+    const result = await postChat('Q', 'sage', null, fakeFetchWithHeaders(
+      429, { 'X-Chat-Throttled': 'daily' }, { detail: 'cap reached' },
+    ))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') {
+      expect(result.outcome).toBe('throttled')
+      expect(result.message).toMatch(/today|tomorrow/i)
+    }
+  })
+
+  it("does not blame the tester for the platform's own 429", async () => {
+    // No marker header: Cloud Run had no instance available. Nothing the tester
+    // did caused it and nothing they do fixes it faster.
+    const result = await postChat('Q', 'sage', null, fakeFetch(429, { detail: 'no instance' }))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') {
+      expect(result.message).toMatch(/busy/i)
+      expect(result.message).not.toMatch(/your |you're|you have/i)
+    }
   })
 
   it('maps a network failure to an error result', async () => {

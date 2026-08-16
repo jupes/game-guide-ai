@@ -75,8 +75,13 @@ _CATALOG = {
         "kind": "categorical",
         "unit": "category",
         "labels": _UI_INTERACTION_LABELS,
+        # "throttled" (x5bz.3) is separate from http_error on purpose: it is the
+        # cost guard working, not the service failing, and this metric is where
+        # an operator sees the limit actually biting. Mirrored in
+        # ui/src/metrics/metrics.ts — a value missing here is rejected, so the
+        # two lists have to move together.
         "categories": frozenset(
-            {"success", "http_error", "network_error", "aborted"}
+            {"success", "http_error", "network_error", "aborted", "throttled"}
         ),
     },
     "ui.client.error_count": {
