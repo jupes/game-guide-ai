@@ -64,7 +64,12 @@ from .models import (
     SignupRequest,
 )
 from .rag import RagService
-from .ratelimit import RateLimited, check_auth_attempt, client_source
+from .ratelimit import (
+    RateLimited,
+    check_auth_attempt,
+    check_chat_request,
+    client_source,
+)
 from .session import SessionData, decode_session, encode_session
 
 log = logging.getLogger(__name__)
@@ -554,14 +559,53 @@ def healthz() -> dict[str, str | bool]:
     return {"status": "ok", "ready": "rag" in _state}
 
 
+#: Marks a 429 as the CHAT limiter's, the way AUTH_THROTTLE_HEADER does for auth.
+#: Cloud Run emits its own 429 when no instance is available, so the status code
+#: alone proves nothing. The value also says WHICH control fired, because "slow
+#: down" and "the day's budget is gone" need different words in the UI.
+CHAT_THROTTLE_HEADER = "X-Chat-Throttled"
+
+
+def _throttle_chat(request: Request, user_id: int) -> None:
+    """Spend one chat request from this tester's budget, or 429."""
+    try:
+        check_chat_request(user_id)
+    except RateLimited as exc:
+        # Same reasoning as _throttle_auth: log the DERIVED source so the
+        # trusted-hop configuration can be confirmed from outside.
+        source = client_source(request)
+        if not gcp_logging.emit(
+            "WARNING", "chat request throttled", request,
+            source=source, user_id=user_id, retry_after=exc.retry_after,
+        ):
+            log.warning(
+                "chat request throttled (user_id=%s, source=%s, retry_after=%ss)",
+                user_id, source, exc.retry_after,
+            )
+        raise HTTPException(
+            status_code=429,
+            detail="You're asking faster than the tavern can pour. Try again shortly.",
+            headers={
+                "Retry-After": str(exc.retry_after),
+                CHAT_THROTTLE_HEADER: "user",
+            },
+        ) from exc
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
+    request: Request,
     svc: RagService = Depends(get_service),
     store: MessageStore | None = Depends(get_message_store),
     metrics: MetricsSink = Depends(get_metrics_sink),
     session: SessionData = Depends(require_session),
 ) -> ChatResponse:
+    # Cost guard (x5bz.3): spend one of this tester's chat budget before any
+    # work happens. Before the try for the same reason as the gates below — a
+    # 429 raised inside it would be caught by the `except Exception` and
+    # reported as an internal error.
+    _throttle_chat(request, session.user_id)
     # Server-side role gate: the GM channel is DM-only, enforced from the session
     # role (not the UI toggle). Raised before the try so it isn't masked as a 500.
     if req.mode.value == "gm" and session.role != "dm":
