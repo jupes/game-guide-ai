@@ -313,7 +313,14 @@ Then set on the GitHub repo (Settings → Secrets and variables → Actions):
 | Secret | `GCP_WIF_PROVIDER` | the provider resource name (`.../providers/github`) |
 | Secret | `GCP_DEPLOY_SA` | `gha-deployer@game-guide-ai-cloud.iam.gserviceaccount.com` |
 
-Merge to `master` → the `deploy` job authenticates via WIF and runs `deploy.sh`.
+**Set the two secrets before the variable.** The WIF steps are gated on a *secret*,
+and the `secrets` context cannot gate a job — so `DEPLOY_TARGET` alone starts a run
+with no credentials that fails at `docker push`.
+
+Merge to `master` → the `deploy` job authenticates via WIF and runs `deploy.sh`,
+then `scripts/verify_deploy.py` asks Cloud Run whether the image it just pushed is
+really serving 100% of traffic. Until `DEPLOY_TARGET` exists the job is **skipped**,
+not green (`x5bz.1.7` — a green deploy job used to mean nothing at all).
 Watch: `gh run watch` and `gcloud run revisions list --service game-guide-ai --region "$REGION"`.
 
 ## 9. Open ingress (DEFERRED — `x5bz.1.6`)
