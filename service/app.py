@@ -593,6 +593,39 @@ def _throttle_chat(request: Request, user_id: int) -> None:
         ) from exc
 
 
+def _enforce_daily_cap(store: MessageStore | None) -> None:
+    """Refuse once the pilot has spent its question budget for the day (x5bz.3.3).
+
+    Counted from chat.messages rather than a counter, so it is exact across
+    instances and survives the scale-to-zero that would reset an in-process one.
+
+    **Fails closed**, in the style of `_conversation_lookup`: a count that cannot
+    be read becomes a 503, never an allowed request. The alternative — letting the
+    call through when the database hiccups — makes the ceiling optional at
+    precisely the moment nobody is watching.
+
+    `store is None` means no database is configured at all (local dev). There is
+    nothing to count and nothing to bill against a shared key, so there is no cap.
+    """
+    if store is None:
+        return
+    try:
+        spent = store.calls_today()
+    except Exception as exc:
+        log.warning("daily cap check failed", exc_info=True)
+        raise HTTPException(
+            status_code=503, detail="usage backend unavailable"
+        ) from exc
+    if spent < config.CHAT_DAILY_CAP:
+        return
+    log.warning("daily chat cap reached (%s/%s)", spent, config.CHAT_DAILY_CAP)
+    raise HTTPException(
+        status_code=429,
+        detail="The tavern is closed for today — the daily question limit is spent.",
+        headers={CHAT_THROTTLE_HEADER: "daily"},
+    )
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
@@ -607,6 +640,11 @@ def chat(
     # 429 raised inside it would be caught by the `except Exception` and
     # reported as an internal error.
     _throttle_chat(request, session.user_id)
+    # ...then the pilot-wide ceiling. Second because it costs a database read and
+    # the per-tester budget above does not: a caller in a loop is already refused
+    # before this runs. No role exemption — the account most likely to run up a
+    # bill by accident is the one being used to test.
+    _enforce_daily_cap(store)
     # Server-side role gate: the GM channel is DM-only, enforced from the session
     # role (not the UI toggle). Raised before the try so it isn't masked as a 500.
     if req.mode.value == "gm" and session.role != "dm":

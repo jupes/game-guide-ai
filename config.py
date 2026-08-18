@@ -228,6 +228,11 @@ CHAT_RATE_LIMIT_WINDOW_S: float = _float("CHAT_RATE_LIMIT_WINDOW_S", 3600.0)  # 
 # 20 an hour is a question every three minutes sustained for an hour — beyond
 # any real reading session, and it stops a runaway loop within a minute.
 CHAT_RATE_LIMIT_PER_USER: int = _int("CHAT_RATE_LIMIT_PER_USER", 20)
+# The pilot-wide ceiling, counted from rows already in chat.messages rather
+# than a counter of its own — durable, shared across instances, and it
+# survives the scale-to-zero that would reset an in-process daily count
+# exactly when testers come back after a break. Resets at UTC midnight.
+CHAT_DAILY_CAP: int = _int("CHAT_DAILY_CAP", 500)
 # How many X-Forwarded-For entries our OWN infrastructure appends. X-Forwarded-For
 # is caller-writable — Google preserves what the client sent and appends to it —
 # so the source key is taken from the right-hand (trusted) end of the chain, this

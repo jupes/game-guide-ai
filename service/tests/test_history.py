@@ -65,6 +65,14 @@ class _ExplodingStore:
     def recent(self, conversation_id, limit):
         return []
 
+    def calls_today(self) -> int:
+        # Answers normally, on the same principle as owner_of below: the daily
+        # cost cap (x5bz.3.3) is NOT best-effort — an unreadable count fails
+        # closed with a 503, deliberately. Raising here would make this test
+        # assert that a fail-closed control breaks the answer, which is the
+        # opposite of what it is for.
+        return 0
+
     def attachments_for(self, conversation_id):
         raise RuntimeError("disk on fire")
 

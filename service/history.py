@@ -66,6 +66,9 @@ class MessageStore(Protocol):
     def has_content(self, conversation_id: str) -> bool:
         ...  # pragma: no cover - structural type
 
+    def calls_today(self) -> int:
+        ...  # pragma: no cover - structural type
+
 
 @dataclass
 class _Row:
@@ -125,6 +128,15 @@ class InMemoryMessageStore:
             a.conversation_id == conversation_id for a in self._attachments
         )
 
+    def calls_today(self) -> int:
+        # Same UTC boundary as the SQL, or the fake and the real store disagree
+        # about which rows are "today" and the integration test passes on the
+        # strength of the runner's timezone.
+        midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        return sum(
+            1 for r in self._rows if r.role == "user" and r.created_at >= midnight
+        )
+
 
 def _to_message(r: _Row) -> StoredMessage:
     return StoredMessage(
@@ -154,6 +166,30 @@ class PostgresMessageStore:
     def ensure_schema(self) -> None:
         with self._connect() as conn:
             conn.execute(load(CHAT_SCHEMA))
+
+    def calls_today(self) -> int:
+        """User turns recorded since UTC midnight — the daily cost ceiling (x5bz.3.3).
+
+        Counted from rows that already exist rather than a counter of its own: no
+        new schema, exact across instances, and it cannot drift out of step with
+        what was actually asked.
+
+        The timezone is pinned rather than inherited. A bare
+        `date_trunc('day', now())` truncates in the SERVER's TimeZone setting,
+        which this schema never sets — so the day would roll over at whatever hour
+        the instance happens to be configured for, and the in-memory fake would
+        disagree with the real store depending on where the tests ran.
+
+        Only `role = 'user'` counts: each turn writes a user row and an assistant
+        row, and counting both would silently halve the configured cap.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM chat.messages WHERE role = 'user' "
+                "AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') "
+                "AT TIME ZONE 'UTC'"
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
