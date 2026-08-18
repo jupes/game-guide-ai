@@ -74,13 +74,14 @@ export function ChatPane({
   uploadAttachment?: UploadAttachmentFn
   getAttachments?: GetAttachmentsFn
 }): React.JSX.Element {
-  const { mode, conversationId } = useAppNav()
+  const { mode, conversationId, setConversationId } = useAppNav()
   const conversationStore = useConversationStore()
   const { exchanges, send, pending, historyError, loadingHistory } = useChat({
     post,
     loadHistory,
     mode,
     conversationId,
+    onConversationAdopted: setConversationId,
   })
   const [draft, setDraft] = React.useState('')
   // Scoped like useChat's history state: derive "this scope's attachments" from

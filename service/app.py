@@ -22,6 +22,7 @@ from enum import Enum
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.staticfiles import StaticFiles
@@ -610,15 +611,24 @@ def chat(
     # role (not the UI toggle). Raised before the try so it isn't masked as a 500.
     if req.mode.value == "gm" and session.role != "dm":
         raise HTTPException(status_code=403, detail="the GM channel requires the DM role")
+    # A client may omit conversation_id. It has been optional since the field was
+    # a pass-through stub, and every consumer since — persistence, attachments,
+    # ownership — independently chose to SKIP on None rather than reject it. That
+    # made `None` mean "opt out of every server-side control", which the daily cap
+    # (x5bz.3.3) would have inherited: a turn nobody persists is a turn nobody can
+    # count. Minting here gives None one honest meaning instead — start a new
+    # conversation — and puts these requests through the same ownership claim and
+    # the same persistence as any other.
+    conversation_id = req.conversation_id or str(uuid4())
     # Ownership: one atomic claim-or-reject (403 if it's someone else's).
     # Before the try for the same reason (403, not 500).
-    _authorize_conversation(store, req.conversation_id, session.user_id, creating=True)
+    _authorize_conversation(store, conversation_id, session.user_id, creating=True)
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
-            store, req.conversation_id,
+            store, conversation_id,
         )
         resp = svc.answer(
-            req.prompt, mode=req.mode.value, conversation_id=req.conversation_id,
+            req.prompt, mode=req.mode.value, conversation_id=conversation_id,
             attachment_context=attachment_context, attachment_label=attachment_label,
         )
         record_safely(
@@ -631,9 +641,9 @@ def chat(
                 labels=MetricLabels(mode=req.mode.value, route_template="/chat"),
             ),
         )
-        _persist_turn(store, req.conversation_id, req.mode.value, "user", req.prompt)
+        _persist_turn(store, conversation_id, req.mode.value, "user", req.prompt)
         _persist_turn(
-            store, req.conversation_id, req.mode.value, "assistant", resp.answer,
+            store, conversation_id, req.mode.value, "assistant", resp.answer,
             suggestions=(
                 [s.model_dump(mode="json") for s in resp.suggestions]
                 if resp.suggestions else None
@@ -644,14 +654,14 @@ def chat(
         # LLM provider failed (timeout, rate limit, API error) — upstream, retryable.
         log.warning(
             "LLM upstream error on /chat (mode=%s, conversation_id=%s): %s: %s",
-            req.mode.value, req.conversation_id, type(exc).__name__, exc,
+            req.mode.value, conversation_id, type(exc).__name__, exc,
         )
         raise HTTPException(status_code=502, detail="LLM upstream error") from exc
     except _DB_ERRORS as exc:
         # Retrieval backend (Postgres/pgvector) unavailable — upstream, retryable.
         log.warning(
             "retrieval backend error on /chat (mode=%s, conversation_id=%s): %s: %s",
-            req.mode.value, req.conversation_id, type(exc).__name__, exc,
+            req.mode.value, conversation_id, type(exc).__name__, exc,
         )
         raise HTTPException(status_code=503, detail="retrieval backend unavailable") from exc
     except EmbeddingUnavailableError as exc:
@@ -659,7 +669,7 @@ def chat(
         # unavailability, not a crash (1em.3; previously sys.exit killed the worker).
         log.warning(
             "embedding unavailable on /chat (mode=%s, conversation_id=%s): %s",
-            req.mode.value, req.conversation_id, exc,
+            req.mode.value, conversation_id, exc,
         )
         raise HTTPException(status_code=503, detail="embedding backend unavailable") from exc
     except Exception:
