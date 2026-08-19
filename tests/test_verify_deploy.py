@@ -156,3 +156,43 @@ def test_evaluate_reports_every_failure_not_just_the_first() -> None:
     """During an incident, one-at-a-time diagnostics cost a round trip each."""
     broken = service(created="new", ready="old", generation=3, observed=2)
     assert len(V.evaluate(broken, revision(OLD_IMAGE), IMAGE)) >= 3
+
+
+# ── Tag vs digest: the false alarm that failed the first real merge ──────────
+# `docker push` sends a TAG. Cloud Run RESOLVES it to a digest when it creates
+# the revision, so the revision reports repo/name@sha256:... A tag-to-tag
+# comparison can never match, and on run 32309272588 it reported DEPLOY NOT
+# VERIFIED for a deploy that had actually succeeded — revision ready, serving
+# 100%, only this condition failing.
+
+DIGEST = "us-central1-docker.pkg.dev/p/r/game-guide-ai@sha256:c2988387b4ffb6b6"
+
+
+def test_a_revision_reporting_the_resolved_digest_verifies_clean() -> None:
+    """The real-world shape. Without this the tool cries wolf on every deploy —
+    which is worse than useless: it trains people to ignore the one check that
+    would tell them a deploy silently did not land."""
+    assert V.evaluate(service(), revision(DIGEST), IMAGE, DIGEST) == []
+
+
+def test_the_tag_still_verifies_when_that_is_what_is_reported() -> None:
+    assert V.evaluate(service(), revision(IMAGE), IMAGE, DIGEST) == []
+
+
+def test_a_genuine_mismatch_still_fails_with_a_digest_supplied() -> None:
+    """Accepting two spellings must not become accepting anything."""
+    other = "us-central1-docker.pkg.dev/p/r/game-guide-ai@sha256:0000000000000000"
+    failures = V.evaluate(service(), revision(other), IMAGE, DIGEST)
+
+    assert failures, "a different image must still fail"
+    assert any(other in f and DIGEST in f for f in failures), (
+        "the message must show both the serving image and what was expected, "
+        "so a reader can tell a real mismatch from a spelling difference"
+    )
+
+
+def test_an_unresolved_digest_falls_back_to_the_tag() -> None:
+    """docker inspect can come back empty; the check must degrade to the tag
+    rather than start passing everything."""
+    assert V.evaluate(service(), revision(IMAGE), IMAGE, "") == []
+    assert V.evaluate(service(), revision(DIGEST), IMAGE, "") != []

@@ -259,7 +259,8 @@ jobs:
             "${{ steps.deploy.outputs.service }}" \
             "${{ steps.deploy.outputs.region }}" \
             "${{ steps.deploy.outputs.project }}" \
-            "${{ steps.deploy.outputs.image }}"
+            "${{ steps.deploy.outputs.image }}" \
+            "${{ steps.deploy.outputs.image_digest }}"
           {
             echo "## Deploy"
             echo ""
