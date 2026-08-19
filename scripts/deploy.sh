@@ -111,6 +111,14 @@ run docker build --platform linux/amd64 -f Dockerfile.cloud -t "${IMAGE}" .
 # 2. Push to Artifact Registry (operator/CI has run `gcloud auth configure-docker`).
 run docker push "${IMAGE}"
 
+# 2b. Resolve the digest we just pushed. Cloud Run records the RESOLVED digest
+#     on the revision, not the tag, so the tag alone cannot verify what is
+#     serving (x5bz.1.8). RepoDigests is populated by the push above.
+if [ "$DRY_RUN" != "1" ]; then
+  IMAGE_DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}" 2>/dev/null || echo "")"
+  echo "  digest=${IMAGE_DIGEST:-<unresolved>}"
+fi
+
 # 3. Deploy to Cloud Run. Cloud SQL attached by socket; OPENAI_API_KEY
 #    and DATABASE_URL injected by Secret Manager reference (never values); the
 #    app listens on 8000 (Cloud Run defaults to 8080, so --port is required).
@@ -154,6 +162,7 @@ run gcloud run deploy "${SERVICE}" \
 if [ "$DRY_RUN" != "1" ] && [ -n "${GITHUB_OUTPUT:-}" ]; then
   {
     echo "image=${IMAGE}"
+    echo "image_digest=${IMAGE_DIGEST:-}"
     echo "region=${REGION}"
     echo "project=${PROJECT}"
     echo "service=${SERVICE}"

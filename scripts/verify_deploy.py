@@ -19,7 +19,7 @@ traffic, then its own image is read from a second call. `verify_auth_throttle.py
 documents the same trap for a different field.
 
 Usage:
-    python scripts/verify_deploy.py <service> <region> <project> <expected-image>
+    python scripts/verify_deploy.py <service> <region> <project> <expected-image> [<expected-digest>]
 
 Exit 0 = the expected image is serving all traffic. Exit 1 = anything else, with
 every failed condition listed rather than just the first.
@@ -67,8 +67,25 @@ def serving_revision(service: dict[str, Any]) -> str | None:
     return full[0] if len(full) == 1 and isinstance(full[0], str) else None
 
 
+def image_matches(serving: str, expected_image: str, expected_digest: str) -> bool:
+    """Does the serving image refer to what we pushed?
+
+    Two spellings of the same thing. `docker push` sends a TAG; Cloud Run
+    RESOLVES that tag to a digest when it creates the revision, so the revision
+    reports `repo/name@sha256:...` and a tag-to-tag comparison can never match.
+    That is not hypothetical — it failed the first real merge (run 32309272588)
+    on a deploy that had in fact succeeded.
+
+    Matching either spelling keeps the check honest in both directions: the
+    digest is the strong form (right bytes, not just the right label), and the
+    tag remains valid for any path that reports one.
+    """
+    return serving == expected_image or (bool(expected_digest) and serving == expected_digest)
+
+
 def evaluate(
     service: dict[str, Any], revision: dict[str, Any], expected_image: str,
+    expected_digest: str = "",
 ) -> list[str]:
     """Every reason this deploy has not landed. Empty list means it has.
 
@@ -126,10 +143,13 @@ def evaluate(
     )
     if image is None:
         failures.append("could not read the serving revision's container image")
-    elif image != expected_image:
+    elif not image_matches(image, expected_image, expected_digest):
+        # Both forms in the message: a reader has to be able to tell a genuine
+        # mismatch from the two-spellings-of-one-image case at a glance.
+        wanted = f"{expected_image} ({expected_digest})" if expected_digest else expected_image
         failures.append(
             f"the serving revision runs {image}, not the image just built "
-            f"({expected_image}) — the deploy did not take effect"
+            f"({wanted}) — the deploy did not take effect"
         )
 
     return failures
@@ -151,10 +171,11 @@ def _gcloud_json(*args: str) -> dict[str, Any]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 5:
+    if len(argv) not in (5, 6):
         print(__doc__)
         return 2
-    service_name, region, project, expected_image = argv[1:]
+    service_name, region, project, expected_image = argv[1:5]
+    expected_digest = argv[5] if len(argv) == 6 else ""
 
     service = _gcloud_json(
         "run", "services", "describe", service_name,
@@ -168,7 +189,7 @@ def main(argv: list[str]) -> int:
             f"--region={region}", f"--project={project}",
         )
 
-    failures = evaluate(service, revision, expected_image)
+    failures = evaluate(service, revision, expected_image, expected_digest)
     if failures:
         print(f"DEPLOY NOT VERIFIED — {service_name} is not serving {expected_image}")
         for failure in failures:
