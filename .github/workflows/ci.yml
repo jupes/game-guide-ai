@@ -8,7 +8,9 @@
 #                       (a reachable corpus DB; the corpus is deliberately not
 #                       in git — licensing). Skips loudly until configured.
 #   deploy           — needs repo variable DEPLOY_TARGET + scripts/deploy.sh
-#                       (hosting epic 17u). No-ops loudly until configured.
+#                       (hosting epic 17u). SKIPS until configured — never a green
+#                       check for having deployed nothing — and once it does run,
+#                       verifies the built image is actually serving.
 
 name: CI
 
@@ -192,9 +194,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [python-tests, ui-tests, ui-e2e, retrieval-metrics]
+    # DEPLOY_TARGET gates the JOB, not a step inside it. Previously an
+    # unconfigured repo ran the job, printed a "No-op" summary and exited 0 — a
+    # green check for deploying nothing, which is exactly how a merge came to be
+    # read as live (x5bz.1.7). Skipped is not a pass in the job list. Note the
+    # run's overall conclusion is still success: a skipped leaf job does not fail
+    # its workflow, so this fixes the per-job signal, not the badge.
+    #
+    # It has to be `vars` here: the WIF credentials are `secrets`, and the
+    # `secrets` context is NOT available in a job-level `if`. So the other half of
+    # the configuration cannot gate the job — set the SECRETS FIRST, then the
+    # variable, or the job runs without credentials and fails at `docker push`.
     if: >-
       always()
       && github.event_name != 'pull_request'
+      && vars.DEPLOY_TARGET != ''
       && needs.python-tests.result == 'success'
       && needs.ui-tests.result == 'success'
       && needs.ui-e2e.result == 'success'
@@ -223,27 +237,32 @@ jobs:
       - name: Configure Docker for Artifact Registry
         if: env.WIF_PROVIDER != ''
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
-      - name: Deploy (or report unconfigured)
+      - name: Deploy
+        id: deploy
         env:
           DEPLOY_TARGET: ${{ vars.DEPLOY_TARGET }}
         run: |
-          if [ -z "$DEPLOY_TARGET" ]; then
-            {
-              echo "## Deploy"
-              echo ""
-              echo "No-op — no hosting configured yet (epic 17u). To activate:"
-              echo "set the \`DEPLOY_TARGET\` repository variable and add an"
-              echo "executable \`scripts/deploy.sh\` (docs/ci.md)."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
           if [ ! -x scripts/deploy.sh ]; then
             echo "DEPLOY_TARGET is set but scripts/deploy.sh is missing or not executable." >&2
             exit 1
           fi
           ./scripts/deploy.sh "$DEPLOY_TARGET" "$GITHUB_SHA"
+
+      # `gcloud run deploy` exiting 0 is not evidence: a revision can be created,
+      # fail to become Ready, and leave the PREVIOUS one serving while the command
+      # still succeeds. That is how a green deploy job came to mean "auth is live"
+      # on 2026-08-09 while the pre-auth build was still serving (x5bz.1.7). Ask
+      # the platform what is actually running, using the image deploy.sh reports.
+      - name: Verify the deploy landed
+        run: |
+          python scripts/verify_deploy.py \
+            "${{ steps.deploy.outputs.service }}" \
+            "${{ steps.deploy.outputs.region }}" \
+            "${{ steps.deploy.outputs.project }}" \
+            "${{ steps.deploy.outputs.image }}"
           {
             echo "## Deploy"
             echo ""
-            echo "Deployed \`$GITHUB_SHA\` to \`$DEPLOY_TARGET\`."
+            echo "Deployed \`$GITHUB_SHA\` to \`${{ vars.DEPLOY_TARGET }}\` and"
+            echo "verified \`${{ steps.deploy.outputs.image }}\` is serving 100% of traffic."
           } >> "$GITHUB_STEP_SUMMARY"

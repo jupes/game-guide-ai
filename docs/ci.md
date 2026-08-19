@@ -15,7 +15,8 @@ pull request / push to master
           │                    (skips loudly until secrets are configured)
           ▼
        deploy             push/manual only; requires every gate to pass
-                          (no-op until hosting exists)
+                          (skipped until hosting exists — never a green
+                           check for having deployed nothing)
 ```
 
 ## Browser release tracer and UI performance gate
@@ -78,7 +79,7 @@ pretends to run:
 | Stage | Lights up when | Why it waits |
 | --- | --- | --- |
 | `retrieval-metrics` | Repo **secrets** `EVAL_DATABASE_URL` (a reachable, ingested pgvector DSN) + `OPENAI_API_KEY` | The corpus is deliberately **not in git** (licensing: no verbatim book text in the repo), so CI can't rebuild it — it must query a live DB. Until hosting (epic `17u`) provides one, the job skips with a notice. |
-| `deploy` | Repo **variable** `DEPLOY_TARGET` + WIF secrets `GCP_WIF_PROVIDER` / `GCP_DEPLOY_SA` (the job authenticates to GCP via Workload Identity Federation) | Hosting is the GCP pilot (epic `17u`, bead `x5bz.1`). The job no-ops with a notice until `DEPLOY_TARGET` is set; the one-time bootstrap — project, Cloud SQL, corpus, WIF — is the runbook [`docs/deploy-gcp.md`](deploy-gcp.md). `scripts/deploy.sh` encodes the "how", the variable the "where". |
+| `deploy` | Repo **variable** `DEPLOY_TARGET` + WIF secrets `GCP_WIF_PROVIDER` / `GCP_DEPLOY_SA` (the job authenticates to GCP via Workload Identity Federation) | Hosting is the GCP pilot (epic `17u`, bead `x5bz.1`). The job **skips** until `DEPLOY_TARGET` is set — it never reports a green check for having deployed nothing (`x5bz.1.7`) — and once it runs it verifies the built image is actually serving 100% of traffic before succeeding. Set the WIF **secrets before** the variable: the `secrets` context cannot gate a job, so the variable alone starts a run with no credentials that fails at `docker push`. The one-time bootstrap — project, Cloud SQL, corpus, WIF — is the runbook [`docs/deploy-gcp.md`](deploy-gcp.md). `scripts/deploy.sh` encodes the "how", the variable the "where". |
 
 Optional: the `deploy` job is bound to the `production` GitHub **environment** —
 adding a required reviewer there (Settings → Environments) turns every deploy

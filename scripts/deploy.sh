@@ -146,4 +146,18 @@ run gcloud run deploy "${SERVICE}" \
   --memory 1Gi \
   --concurrency 20
 
+# Publish what was actually deployed, so a following step can VERIFY it rather
+# than reconstruct it (x5bz.1.7). Reconstruction would mean duplicating REGION,
+# PROJECT, AR_REPO and the sha rule above — four defaults that live only here, so
+# changing any one of them would silently make the verifier check a string that
+# was never pushed. Only on a real deploy: a dry run pushed nothing.
+if [ "$DRY_RUN" != "1" ] && [ -n "${GITHUB_OUTPUT:-}" ]; then
+  {
+    echo "image=${IMAGE}"
+    echo "region=${REGION}"
+    echo "project=${PROJECT}"
+    echo "service=${SERVICE}"
+  } >> "$GITHUB_OUTPUT"
+fi
+
 echo "Done."
