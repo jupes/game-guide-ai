@@ -109,24 +109,41 @@ class SlidingWindowLimiter:
             self._hits.clear()
 
 
-def _build(limit: int, env_name: str) -> SlidingWindowLimiter:
-    """Construct a limiter, naming the offending env var if the values are bad."""
+def _build(limit: int, window_seconds: float, env_name: str, window_env: str) -> SlidingWindowLimiter:
+    """Construct a limiter, naming the offending env vars if the values are bad.
+
+    The window is a parameter rather than read from `config` here: this builds
+    limiters for two different controls (auth attempts, chat requests) whose
+    windows differ by an order of magnitude, and a hardcoded one would silently
+    give a caller the other control's window.
+    """
     try:
-        return SlidingWindowLimiter(
-            limit=limit, window_seconds=config.AUTH_RATE_LIMIT_WINDOW_S
-        )
+        return SlidingWindowLimiter(limit=limit, window_seconds=window_seconds)
     except ValueError as exc:
         raise ValueError(
-            f"invalid auth rate-limit configuration "
-            f"({env_name} / AUTH_RATE_LIMIT_WINDOW_S): {exc}"
+            f"invalid rate-limit configuration ({env_name} / {window_env}): {exc}"
         ) from exc
 
 
 # One limiter per dimension. Sizing: the account limit is the brute-force
 # ceiling; the source limit is deliberately looser (a household or office can
 # share an egress IP) but still far below what it takes to starve request slots.
-account_limiter = _build(config.AUTH_RATE_LIMIT_PER_ACCOUNT, "AUTH_RATE_LIMIT_PER_ACCOUNT")
-source_limiter = _build(config.AUTH_RATE_LIMIT_PER_SOURCE, "AUTH_RATE_LIMIT_PER_SOURCE")
+account_limiter = _build(
+    config.AUTH_RATE_LIMIT_PER_ACCOUNT, config.AUTH_RATE_LIMIT_WINDOW_S,
+    "AUTH_RATE_LIMIT_PER_ACCOUNT", "AUTH_RATE_LIMIT_WINDOW_S",
+)
+source_limiter = _build(
+    config.AUTH_RATE_LIMIT_PER_SOURCE, config.AUTH_RATE_LIMIT_WINDOW_S,
+    "AUTH_RATE_LIMIT_PER_SOURCE", "AUTH_RATE_LIMIT_WINDOW_S",
+)
+
+# The chat budget (x5bz.3) is a cost control, not an abuse control: the caller is
+# already authenticated and invited, so one limiter keyed on identity is the
+# whole story. Same class, a much longer window.
+chat_user_limiter = _build(
+    config.CHAT_RATE_LIMIT_PER_USER, config.CHAT_RATE_LIMIT_WINDOW_S,
+    "CHAT_RATE_LIMIT_PER_USER", "CHAT_RATE_LIMIT_WINDOW_S",
+)
 
 if config.AUTH_TRUSTED_PROXY_HOPS < 0:
     raise ValueError(
@@ -137,6 +154,7 @@ if config.AUTH_TRUSTED_PROXY_HOPS < 0:
 def reset_all() -> None:
     account_limiter.reset()
     source_limiter.reset()
+    chat_user_limiter.reset()
 
 
 # An IPv6 address in text form is at most 45 characters; anything longer is not
@@ -206,3 +224,14 @@ def check_auth_attempt(request, account: str) -> None:
     """Throttle one auth attempt, or raise RateLimited. Call BEFORE hashing."""
     source_limiter.check(client_source(request))
     account_limiter.check(account.strip().lower())
+
+
+def check_chat_request(user_id: int) -> None:
+    """Spend one of this tester's chat budget, or raise RateLimited.
+
+    Only the authenticated user id is keyed — unlike the auth endpoints, there is
+    no second source dimension. An authenticated caller cannot rotate their
+    identity the way an anonymous one rotates addresses, so the IP adds no
+    protection here and would only split one person's budget across networks.
+    """
+    chat_user_limiter.check(str(user_id))

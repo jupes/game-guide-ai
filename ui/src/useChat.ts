@@ -36,6 +36,14 @@ export interface UseChatOptions {
   conversationId: string | null
   now?: () => number
   recordMetric?: (point: MetricPoint) => void
+  /** Called when the SERVER supplied the conversation id (x5bz.3.2).
+   *
+   * Sending with a null id no longer means "this turn is unrecorded" — the
+   * server mints one and persists under it. If the client kept discarding that
+   * id, every message from the landing screen would open a fresh conversation
+   * the user could never return to. Adopting it is what makes the id the server
+   * chose the one the next turn continues. */
+  onConversationAdopted?: (conversationId: string) => void
 }
 
 interface ChatState {
@@ -77,6 +85,7 @@ export function useChat({
   loadHistory = getMessages,
   mode,
   conversationId,
+  onConversationAdopted,
   now = monotonicNow,
   recordMetric = recordBrowserMetric,
 }: UseChatOptions) {
@@ -165,7 +174,11 @@ export function useChat({
 
       const settle = (
         update: Partial<Exchange>,
-        outcome: 'success' | 'http_error' | 'network_error' | 'aborted',
+        // 'throttled' is deliberately its own outcome rather than folding into
+        // http_error: it is the cost guard doing its job, not the service
+        // failing, and the metric is the only place an operator would see the
+        // limit actually biting in production.
+        outcome: 'success' | 'http_error' | 'network_error' | 'aborted' | 'throttled',
       ) => {
         pendingRef.current = false
         const labels = runtimeMetricLabels(mode)
@@ -193,6 +206,13 @@ export function useChat({
       void post(trimmed, mode, conversationId).then(
         (result) => {
           if (result.kind === 'ok') {
+            // Only when we had none: a server echo of the id we sent is not an
+            // adoption, and re-announcing it would churn navigation state on
+            // every single turn.
+            const supplied = result.response.conversation_id
+            if (conversationId === null && typeof supplied === 'string' && supplied) {
+              onConversationAdopted?.(supplied)
+            }
             settle({ status: 'done', response: result.response }, 'success')
           } else {
             settle(
@@ -218,7 +238,7 @@ export function useChat({
         },
       )
     },
-    [post, mode, conversationId, now, recordMetric],
+    [post, mode, conversationId, now, recordMetric, onConversationAdopted],
   )
 
   return { exchanges, send, pending, historyError, loadingHistory }

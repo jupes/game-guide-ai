@@ -65,6 +65,14 @@ class _ExplodingStore:
     def recent(self, conversation_id, limit):
         return []
 
+    def calls_today(self) -> int:
+        # Answers normally, on the same principle as owner_of below: the daily
+        # cost cap (x5bz.3.3) is NOT best-effort — an unreadable count fails
+        # closed with a 503, deliberately. Raising here would make this test
+        # assert that a fail-closed control breaks the answer, which is the
+        # opposite of what it is for.
+        return 0
+
     def attachments_for(self, conversation_id):
         raise RuntimeError("disk on fire")
 
@@ -112,14 +120,28 @@ def test_client_limit_param_honored_but_capped(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_chat_without_conversation_id_stores_nothing():
+def test_chat_without_conversation_id_now_mints_one_and_stores_under_it():
+    """INVERTED by x5bz.3.2 — this used to assert "stores nothing".
+
+    That was right while conversation_id was a pass-through stub: with no
+    conversation there was nothing to store under. But persistence, ownership
+    and the daily cap all came to read a `None` as "skip me", and a turn nobody
+    persists is a turn the cap (x5bz.3.3) cannot count — so omitting one field
+    bought an authenticated caller uncounted LLM calls.
+
+    The server mints an id now. Storing nothing is no longer the contract;
+    storing under a server-supplied conversation is.
+    """
     store = InMemoryMessageStore()
     c = _client(store)
     try:
         r = c.post("/chat", json={"prompt": "What is a Basilisk?"})
         assert r.status_code == 200
-        assert store.recent("conv-1", 50) == []
-        assert store._rows == []
+
+        minted = r.json()["conversation_id"]
+        assert minted, "the server must return the id it minted"
+        assert [m.role for m in store.recent(minted, 50)] == ["user", "assistant"]
+        assert store.recent("conv-1", 50) == [], "and not under some other id"
     finally:
         app.dependency_overrides.clear()
 

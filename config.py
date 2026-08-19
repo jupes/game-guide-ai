@@ -214,6 +214,25 @@ AUTH_RATE_LIMIT_PER_ACCOUNT: int = _int("AUTH_RATE_LIMIT_PER_ACCOUNT", 10)
 # Per source IP: looser, since a household/office shares an egress IP, but still
 # far below what it takes to starve the instance's request slots.
 AUTH_RATE_LIMIT_PER_SOURCE: int = _int("AUTH_RATE_LIMIT_PER_SOURCE", 30)
+
+# --- Chat cost guard (x5bz.3) ----------------------------------------------
+# Every /chat call spends the operator's OpenAI key. The $10 GCP budget
+# kill-switch does NOT cover it — that detaches billing on the Cloud project,
+# while tokens are billed by a separate vendor — so this is the only
+# application-side bound on what a loop can spend.
+#
+# Keyed on the SESSION user id, not the client IP: testers are invited and
+# known, so identity is the meaningful unit. Keying on IP would put a household
+# behind one NAT on a single budget and hand anyone on a fresh address a new one.
+CHAT_RATE_LIMIT_WINDOW_S: float = _float("CHAT_RATE_LIMIT_WINDOW_S", 3600.0)  # 1 hour
+# 20 an hour is a question every three minutes sustained for an hour — beyond
+# any real reading session, and it stops a runaway loop within a minute.
+CHAT_RATE_LIMIT_PER_USER: int = _int("CHAT_RATE_LIMIT_PER_USER", 20)
+# The pilot-wide ceiling, counted from rows already in chat.messages rather
+# than a counter of its own — durable, shared across instances, and it
+# survives the scale-to-zero that would reset an in-process daily count
+# exactly when testers come back after a break. Resets at UTC midnight.
+CHAT_DAILY_CAP: int = _int("CHAT_DAILY_CAP", 500)
 # How many X-Forwarded-For entries our OWN infrastructure appends. X-Forwarded-For
 # is caller-writable — Google preserves what the client sent and appends to it —
 # so the source key is taken from the right-hand (trusted) end of the chain, this

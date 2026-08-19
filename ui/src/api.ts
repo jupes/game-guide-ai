@@ -39,7 +39,7 @@ export type ChatResult =
   | {
       kind: 'error'
       message: string
-      outcome?: 'http_error' | 'network_error' | 'aborted'
+      outcome?: 'http_error' | 'network_error' | 'aborted' | 'throttled'
     }
 
 /** One persisted chat turn — mirrors service StoredMessage. */
@@ -114,6 +114,50 @@ export async function getMessages(
   return { kind: 'ok', messages: body.messages }
 }
 
+// ── Throttling (x5bz.3) ──────────────────────────────────────────────────────
+// Three different things produce a 429 here. Two are the service's own cost
+// guard and identify themselves with X-Chat-Throttled; the third is Cloud Run,
+// which answers 429 when it has no instance free. Reporting all three as "you
+// are going too fast" would blame a tester for the platform's capacity, and
+// send them away for a wait that isn't theirs to serve.
+
+const CHAT_THROTTLE_HEADER = 'X-Chat-Throttled'
+
+/** "in 90 seconds" / "in 2 minutes" — a wait a person can act on. */
+function waitPhrase(retryAfter: string | null): string {
+  const seconds = Number(retryAfter)
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'shortly'
+  if (seconds < 60) return `in ${Math.ceil(seconds)} seconds`
+  const minutes = Math.ceil(seconds / 60)
+  return minutes === 1 ? 'in about a minute' : `in about ${minutes} minutes`
+}
+
+function throttled(res: Response): ChatResult {
+  const reason = res.headers.get(CHAT_THROTTLE_HEADER)
+  if (reason === 'daily') {
+    return {
+      kind: 'error',
+      message:
+        "The tavern is closed for today — the pilot's daily question limit is spent. " +
+        'It resets overnight; your conversations are all still here.',
+      outcome: 'throttled',
+    }
+  }
+  if (reason === 'user') {
+    return {
+      kind: 'error',
+      message: `That's a lot of questions at once — try again ${waitPhrase(res.headers.get('Retry-After'))}.`,
+      outcome: 'throttled',
+    }
+  }
+  // Unmarked: the platform, not us.
+  return {
+    kind: 'error',
+    message: 'The service is busy right now — try again in a moment.',
+    outcome: 'http_error',
+  }
+}
+
 export async function postChat(
   prompt: string,
   mode: ChatMode = 'sage',
@@ -165,6 +209,7 @@ export async function postChat(
       outcome: 'http_error',
     }
   }
+  if (res.status === 429) return throttled(res)
   if (!res.ok) {
     return {
       kind: 'error',

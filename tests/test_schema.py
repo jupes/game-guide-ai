@@ -271,3 +271,71 @@ def test_reapplying_is_a_no_op(db):
         for sql in ALL_SCHEMAS:
             db.execute(load(sql))
     assert oids() == before, "re-applying the schema rebuilt constraints"
+
+
+# ── The daily cost ceiling counts the same rows in both stores (x5bz.3.3) ────
+
+
+@needs_db
+def test_calls_today_counts_the_same_rows_as_the_in_memory_fake(db):
+    """The cap (`x5bz.3.3`) reads this number to decide whether the pilot has
+    spent its budget, and every unit test upstream trusts the in-memory fake to
+    behave like the real store. Two ways they could silently diverge:
+
+    - **Role.** Each turn writes a user row AND an assistant row. Counting both
+      would halve the configured cap with nothing failing.
+    - **Timezone.** A bare `date_trunc('day', now())` truncates in the server's
+      TimeZone, which this schema never sets — so the day would roll over at
+      whatever hour the instance is configured for, and this test would pass or
+      fail on where it ran rather than on the query.
+
+    Asserted as a DELTA, not an absolute: `calls_today()` counts the whole
+    database and the `db` fixture is module-scoped, so an absolute count would
+    depend on which other tests ran first.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from service.history import InMemoryMessageStore, PostgresMessageStore, _Row
+
+    # Built from DSN, not db.info.dsn — psycopg strips the password from the
+    # latter, so the store would fail to authenticate.
+    assert DSN is not None
+    current = db.execute("SELECT current_database()").fetchone()[0]
+    real = PostgresMessageStore(dsn=_target_dsn(DSN, current))
+    before = real.calls_today()
+
+    now = datetime.now(UTC)
+    rows = [
+        ("today-user-1", "user", now),
+        ("today-assistant", "assistant", now),
+        ("today-user-2", "user", now - timedelta(minutes=5)),
+        ("yesterday-user", "user", now - timedelta(days=1)),
+    ]
+
+    # The owning rows come first. messages_conversation_fkey is NOT VALID, which
+    # exempts rows that predate it — it still enforces every new INSERT, so
+    # writing a message under an unknown conversation fails outright.
+    conv = f"cap-{uuid.uuid4().hex[:8]}"
+    user_id = db.execute(
+        "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id",
+        (f"cap-{uuid.uuid4().hex[:8]}@example.com",),
+    ).fetchone()[0]
+    db.execute("INSERT INTO chat.conversations (conversation_id, user_id) VALUES (%s, %s)",
+               (conv, user_id))
+    for content, role, created in rows:
+        db.execute(
+            "INSERT INTO chat.messages (conversation_id, mode, role, content, created_at) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (conv, "sage", role, content, created),
+        )
+
+    fake = InMemoryMessageStore()
+    fake._rows.extend([
+        _Row(id=i, conversation_id=conv, mode="sage", role=role,
+             content=content, suggestions=None, created_at=created)
+        for i, (content, role, created) in enumerate(rows, start=1)
+    ])
+
+    assert real.calls_today() - before == fake.calls_today() == 2, (
+        "both stores must count today's USER rows only — two of these four"
+    )

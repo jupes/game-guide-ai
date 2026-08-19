@@ -22,6 +22,7 @@ from enum import Enum
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.staticfiles import StaticFiles
@@ -64,7 +65,12 @@ from .models import (
     SignupRequest,
 )
 from .rag import RagService
-from .ratelimit import RateLimited, check_auth_attempt, client_source
+from .ratelimit import (
+    RateLimited,
+    check_auth_attempt,
+    check_chat_request,
+    client_source,
+)
 from .session import SessionData, decode_session, encode_session
 
 log = logging.getLogger(__name__)
@@ -554,27 +560,113 @@ def healthz() -> dict[str, str | bool]:
     return {"status": "ok", "ready": "rag" in _state}
 
 
+#: Marks a 429 as the CHAT limiter's, the way AUTH_THROTTLE_HEADER does for auth.
+#: Cloud Run emits its own 429 when no instance is available, so the status code
+#: alone proves nothing. The value also says WHICH control fired, because "slow
+#: down" and "the day's budget is gone" need different words in the UI.
+CHAT_THROTTLE_HEADER = "X-Chat-Throttled"
+
+
+def _throttle_chat(request: Request, user_id: int) -> None:
+    """Spend one chat request from this tester's budget, or 429."""
+    try:
+        check_chat_request(user_id)
+    except RateLimited as exc:
+        # Same reasoning as _throttle_auth: log the DERIVED source so the
+        # trusted-hop configuration can be confirmed from outside.
+        source = client_source(request)
+        if not gcp_logging.emit(
+            "WARNING", "chat request throttled", request,
+            source=source, user_id=user_id, retry_after=exc.retry_after,
+        ):
+            log.warning(
+                "chat request throttled (user_id=%s, source=%s, retry_after=%ss)",
+                user_id, source, exc.retry_after,
+            )
+        raise HTTPException(
+            status_code=429,
+            detail="You're asking faster than the tavern can pour. Try again shortly.",
+            headers={
+                "Retry-After": str(exc.retry_after),
+                CHAT_THROTTLE_HEADER: "user",
+            },
+        ) from exc
+
+
+def _enforce_daily_cap(store: MessageStore | None) -> None:
+    """Refuse once the pilot has spent its question budget for the day (x5bz.3.3).
+
+    Counted from chat.messages rather than a counter, so it is exact across
+    instances and survives the scale-to-zero that would reset an in-process one.
+
+    **Fails closed**, in the style of `_conversation_lookup`: a count that cannot
+    be read becomes a 503, never an allowed request. The alternative — letting the
+    call through when the database hiccups — makes the ceiling optional at
+    precisely the moment nobody is watching.
+
+    `store is None` means no database is configured at all (local dev). There is
+    nothing to count and nothing to bill against a shared key, so there is no cap.
+    """
+    if store is None:
+        return
+    try:
+        spent = store.calls_today()
+    except Exception as exc:
+        log.warning("daily cap check failed", exc_info=True)
+        raise HTTPException(
+            status_code=503, detail="usage backend unavailable"
+        ) from exc
+    if spent < config.CHAT_DAILY_CAP:
+        return
+    log.warning("daily chat cap reached (%s/%s)", spent, config.CHAT_DAILY_CAP)
+    raise HTTPException(
+        status_code=429,
+        detail="The tavern is closed for today — the daily question limit is spent.",
+        headers={CHAT_THROTTLE_HEADER: "daily"},
+    )
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
+    request: Request,
     svc: RagService = Depends(get_service),
     store: MessageStore | None = Depends(get_message_store),
     metrics: MetricsSink = Depends(get_metrics_sink),
     session: SessionData = Depends(require_session),
 ) -> ChatResponse:
+    # Cost guard (x5bz.3): spend one of this tester's chat budget before any
+    # work happens. Before the try for the same reason as the gates below — a
+    # 429 raised inside it would be caught by the `except Exception` and
+    # reported as an internal error.
+    _throttle_chat(request, session.user_id)
+    # ...then the pilot-wide ceiling. Second because it costs a database read and
+    # the per-tester budget above does not: a caller in a loop is already refused
+    # before this runs. No role exemption — the account most likely to run up a
+    # bill by accident is the one being used to test.
+    _enforce_daily_cap(store)
     # Server-side role gate: the GM channel is DM-only, enforced from the session
     # role (not the UI toggle). Raised before the try so it isn't masked as a 500.
     if req.mode.value == "gm" and session.role != "dm":
         raise HTTPException(status_code=403, detail="the GM channel requires the DM role")
+    # A client may omit conversation_id. It has been optional since the field was
+    # a pass-through stub, and every consumer since — persistence, attachments,
+    # ownership — independently chose to SKIP on None rather than reject it. That
+    # made `None` mean "opt out of every server-side control", which the daily cap
+    # (x5bz.3.3) would have inherited: a turn nobody persists is a turn nobody can
+    # count. Minting here gives None one honest meaning instead — start a new
+    # conversation — and puts these requests through the same ownership claim and
+    # the same persistence as any other.
+    conversation_id = req.conversation_id or str(uuid4())
     # Ownership: one atomic claim-or-reject (403 if it's someone else's).
     # Before the try for the same reason (403, not 500).
-    _authorize_conversation(store, req.conversation_id, session.user_id, creating=True)
+    _authorize_conversation(store, conversation_id, session.user_id, creating=True)
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
-            store, req.conversation_id,
+            store, conversation_id,
         )
         resp = svc.answer(
-            req.prompt, mode=req.mode.value, conversation_id=req.conversation_id,
+            req.prompt, mode=req.mode.value, conversation_id=conversation_id,
             attachment_context=attachment_context, attachment_label=attachment_label,
         )
         record_safely(
@@ -587,9 +679,9 @@ def chat(
                 labels=MetricLabels(mode=req.mode.value, route_template="/chat"),
             ),
         )
-        _persist_turn(store, req.conversation_id, req.mode.value, "user", req.prompt)
+        _persist_turn(store, conversation_id, req.mode.value, "user", req.prompt)
         _persist_turn(
-            store, req.conversation_id, req.mode.value, "assistant", resp.answer,
+            store, conversation_id, req.mode.value, "assistant", resp.answer,
             suggestions=(
                 [s.model_dump(mode="json") for s in resp.suggestions]
                 if resp.suggestions else None
@@ -600,14 +692,14 @@ def chat(
         # LLM provider failed (timeout, rate limit, API error) — upstream, retryable.
         log.warning(
             "LLM upstream error on /chat (mode=%s, conversation_id=%s): %s: %s",
-            req.mode.value, req.conversation_id, type(exc).__name__, exc,
+            req.mode.value, conversation_id, type(exc).__name__, exc,
         )
         raise HTTPException(status_code=502, detail="LLM upstream error") from exc
     except _DB_ERRORS as exc:
         # Retrieval backend (Postgres/pgvector) unavailable — upstream, retryable.
         log.warning(
             "retrieval backend error on /chat (mode=%s, conversation_id=%s): %s: %s",
-            req.mode.value, req.conversation_id, type(exc).__name__, exc,
+            req.mode.value, conversation_id, type(exc).__name__, exc,
         )
         raise HTTPException(status_code=503, detail="retrieval backend unavailable") from exc
     except EmbeddingUnavailableError as exc:
@@ -615,7 +707,7 @@ def chat(
         # unavailability, not a crash (1em.3; previously sys.exit killed the worker).
         log.warning(
             "embedding unavailable on /chat (mode=%s, conversation_id=%s): %s",
-            req.mode.value, req.conversation_id, exc,
+            req.mode.value, conversation_id, exc,
         )
         raise HTTPException(status_code=503, detail="embedding backend unavailable") from exc
     except Exception:

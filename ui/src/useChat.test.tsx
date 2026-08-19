@@ -24,6 +24,45 @@ function deferredPost() {
 }
 
 describe('useChat', () => {
+  // ── Adopting a server-minted conversation id (x5bz.3.2) ───────────────────
+  // Sending with a null id used to mean "this turn goes unrecorded". The server
+  // now mints one and persists under it, so a client that discards it opens a
+  // fresh conversation on every message and the user can never get back to any
+  // of them.
+
+  it('adopts the conversation id the server minted when it had none', async () => {
+    const adopted: string[] = []
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: { ...GROUNDED.kind === 'ok' ? GROUNDED.response : {}, conversation_id: 'srv-9f2' },
+    }) as ChatResult
+    const { result } = renderHook(() =>
+      useChat({ post, mode: 'sage', conversationId: null,
+                onConversationAdopted: (id) => adopted.push(id) }),
+    )
+
+    act(() => { result.current.send('What is a Basilisk?') })
+    await waitFor(() => expect(adopted).toEqual(['srv-9f2']))
+  })
+
+  it('does not re-announce an id the client already had', async () => {
+    // The server echoes whatever it was given. Treating that echo as an
+    // adoption would churn navigation state on every single turn.
+    const adopted: string[] = []
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: { ...GROUNDED.kind === 'ok' ? GROUNDED.response : {}, conversation_id: 'mine-1' },
+    }) as ChatResult
+    const { result } = renderHook(() =>
+      useChat({ post, mode: 'sage', conversationId: 'mine-1',
+                onConversationAdopted: (id) => adopted.push(id) }),
+    )
+
+    act(() => { result.current.send('and its damage?') })
+    await waitFor(() => expect(result.current.exchanges[0].status).toBe('done'))
+    expect(adopted).toEqual([])
+  })
+
   it('appends a pending exchange then resolves it to done', async () => {
     const { post, resolve } = deferredPost()
     const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: null }))

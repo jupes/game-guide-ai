@@ -120,6 +120,34 @@ def test_catalog_covers_the_standard_service_and_ui_metrics():
     assert len(MetricBatch.model_validate({"points": points}).points) == len(points)
 
 
+def test_throttled_is_an_accepted_chat_outcome():
+    """The cost guard's own outcome (x5bz.3). This category list is duplicated in
+    `ui/src/metrics/metrics.ts`, and TypeScript cannot see across the boundary:
+    the UI would happily send a value this side rejects, and the only symptom
+    would be throttle events quietly missing from the metrics — the one place an
+    operator would look to see whether the limit is biting."""
+    point = {
+        "name": "ui.interaction.chat_outcome",
+        "kind": "categorical",
+        "unit": "category",
+        "value": "throttled",
+    }
+    assert MetricBatch.model_validate({"points": [point]}).points[0].value == "throttled"
+
+
+def test_an_unknown_chat_outcome_is_still_rejected():
+    """The allow-list has to stay an allow-list — widening it for `throttled`
+    must not have turned it into "any string"."""
+    point = {
+        "name": "ui.interaction.chat_outcome",
+        "kind": "categorical",
+        "unit": "category",
+        "value": "banana",
+    }
+    with pytest.raises(ValidationError):
+        MetricBatch.model_validate({"points": [point]})
+
+
 def test_payload_rejects_extra_private_non_finite_and_oversized_input():
     point = {
         "name": "ui.web_vital.cls",

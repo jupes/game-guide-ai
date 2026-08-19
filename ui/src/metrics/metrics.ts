@@ -28,7 +28,9 @@ export type MetricPoint =
       name: 'ui.interaction.chat_outcome'
       kind: 'categorical'
       unit: 'category'
-      value: 'success' | 'http_error' | 'network_error' | 'aborted'
+      // Mirrored by the server's allow-list in service/metrics.py — a value not
+      // in both is rejected on arrival, so they move together.
+      value: 'success' | 'http_error' | 'network_error' | 'aborted' | 'throttled'
       labels: MetricLabels
     }
 
