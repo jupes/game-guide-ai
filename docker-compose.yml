@@ -24,7 +24,13 @@ services:
       # Corpus schema (01-03), then the application schemas — which live in the
       # package because the service applies the SAME files at startup to migrate
       # an existing database (service/schema.py). One definition, both paths.
-      - ./vector-db/init:/docker-entrypoint-initdb.d:ro
+      # Each file its own mount (not one :ro directory mount + nested file
+      # mounts) — the OCI runtime creates a mountpoint for each nested file
+      # mount by writing into its parent, which fails ("read-only file
+      # system") once the parent directory mount is itself :ro.
+      - ./vector-db/init/01-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
+      - ./vector-db/init/02-schema.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
+      - ./vector-db/init/03-hybrid-search.sql:/docker-entrypoint-initdb.d/03-hybrid-search.sql:ro
       - ./service/sql/04-chat-schema.sql:/docker-entrypoint-initdb.d/04-chat-schema.sql:ro
       - ./service/sql/05-auth-schema.sql:/docker-entrypoint-initdb.d/05-auth-schema.sql:ro
     healthcheck:
