@@ -14,7 +14,16 @@ Run:
 
 from __future__ import annotations
 
-from ingestion.scrape_wikidot import parse_page
+import pytest
+
+from ingestion.scrape_wikidot import (
+    CLASS_SLUGS,
+    EQUIPMENT_SLUGS,
+    _extract_namespace_links,
+    discover_urls,
+    fetch_page,
+    parse_page,
+)
 
 SPELL_HTML = """
 <html><head><title>Fireball - DND 5th Edition</title></head>
@@ -150,3 +159,117 @@ def test_chunk_id_differs_for_a_different_url():
     a = parse_page(SPELL_HTML, SPELL_URL, "spell")[0]["chunk_id"]
     b = parse_page(SPELL_HTML, "https://dnd5e.wikidot.com/spell:magic-missile", "spell")[0]["chunk_id"]
     assert a != b
+
+
+# ---------------------------------------------------------------------------
+# fetch_page — rate-limited, cached fetch layer (no real network in tests)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_page_cache_hit_returns_cached_content_without_calling_fetcher(tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    url = "https://dnd5e.wikidot.com/spell:fireball"
+    from ingestion.scrape_wikidot import _cache_path
+    _cache_path(cache_dir, url).write_text("<html>cached</html>", encoding="utf-8")
+
+    calls = []
+
+    def _stub_fetcher(u: str) -> str:
+        calls.append(u)
+        return "<html>should not be used</html>"
+
+    result = fetch_page(url, cache_dir, rate_limit_s=0.0, _fetcher=_stub_fetcher)
+
+    assert result == "<html>cached</html>"
+    assert calls == [], "cache hit must not call the fetcher"
+
+
+def test_fetch_page_cache_miss_calls_fetcher_and_writes_the_cache(tmp_path):
+    cache_dir = tmp_path / "cache"
+    url = "https://dnd5e.wikidot.com/spell:fireball"
+    calls = []
+
+    def _stub_fetcher(u: str) -> str:
+        calls.append(u)
+        return "<html>fresh</html>"
+
+    result = fetch_page(url, cache_dir, rate_limit_s=0.0, _fetcher=_stub_fetcher)
+
+    assert result == "<html>fresh</html>"
+    assert calls == [url]
+    # A second call must now hit the cache, not the fetcher again.
+    result2 = fetch_page(url, cache_dir, rate_limit_s=0.0, _fetcher=_stub_fetcher)
+    assert result2 == "<html>fresh</html>"
+    assert calls == [url], "second call must be a cache hit"
+
+
+# ---------------------------------------------------------------------------
+# discover_urls — per-namespace page discovery
+#
+# spell/race/feat are discovered by fetching a real index page (verified live
+# during implementation: /spells for spell:, /lineage for race's real
+# "lineage:" prefix, the homepage itself for feat: — no dedicated feat index
+# page exists). class and equipment have NO namespace-prefixed pages on this
+# site at all (bare top-level slugs like /fighter, /armor instead), so they're
+# enumerated directly from the real, confirmed slug lists rather than scraped.
+# monster/condition/rule are not present on this site at all (no bestiary
+# section, no page-tags hits, direct guesses 404) — dropped from this
+# feature's wikidot crawl scope; see scrape_wikidot.py's module docstring.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_namespace_links_dedupes_and_resolves_absolute_urls():
+    html = (
+        '<a href="/spell:fireball">Fireball</a>'
+        '<a href="/spell:acid-splash">Acid Splash</a>'
+        '<a href="/spell:fireball">Fireball</a>'  # duplicate, e.g. a "recently added" list
+        '<a href="/monster:owlbear">Owlbear</a>'  # different namespace, must be excluded
+    )
+    links = _extract_namespace_links(html, "spell")
+    assert links == [
+        "https://dnd5e.wikidot.com/spell:fireball",
+        "https://dnd5e.wikidot.com/spell:acid-splash",
+    ]
+
+
+def test_discover_urls_class_returns_the_confirmed_slug_list(tmp_path):
+    urls = discover_urls("class", tmp_path)
+    assert urls == [f"https://dnd5e.wikidot.com/{slug}" for slug in CLASS_SLUGS]
+    assert "https://dnd5e.wikidot.com/fighter" in urls
+
+
+def test_discover_urls_equipment_returns_the_confirmed_slug_list(tmp_path):
+    urls = discover_urls("equipment", tmp_path)
+    assert urls == [f"https://dnd5e.wikidot.com/{slug}" for slug in EQUIPMENT_SLUGS]
+    assert "https://dnd5e.wikidot.com/weapons" in urls
+
+
+def test_discover_urls_spell_fetches_the_index_page_and_extracts_links(tmp_path):
+    def _stub_fetcher(url: str) -> str:
+        assert url == "https://dnd5e.wikidot.com/spells"
+        return '<a href="/spell:fireball">Fireball</a><a href="/spell:acid-splash">Acid Splash</a>'
+
+    urls = discover_urls("spell", tmp_path, rate_limit_s=0.0, _fetcher=_stub_fetcher)
+    assert urls == [
+        "https://dnd5e.wikidot.com/spell:fireball",
+        "https://dnd5e.wikidot.com/spell:acid-splash",
+    ]
+
+
+def test_discover_urls_race_uses_the_real_lineage_prefix(tmp_path):
+    """The site calls races "lineage:" internally, not "race:" — confirmed
+    live during implementation. Getting this wrong would silently discover
+    zero race pages."""
+    def _stub_fetcher(url: str) -> str:
+        assert url == "https://dnd5e.wikidot.com/lineage"
+        return '<a href="/lineage:elf">Elf</a>'
+
+    urls = discover_urls("race", tmp_path, rate_limit_s=0.0, _fetcher=_stub_fetcher)
+    assert urls == ["https://dnd5e.wikidot.com/lineage:elf"]
+
+
+def test_discover_urls_raises_for_a_namespace_with_no_real_index_on_this_site(tmp_path):
+    for namespace in ("monster", "condition", "rule"):
+        with pytest.raises(ValueError, match=namespace):
+            discover_urls(namespace, tmp_path)

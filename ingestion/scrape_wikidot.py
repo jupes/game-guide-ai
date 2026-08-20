@@ -19,10 +19,16 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
+import urllib.request
+from collections.abc import Callable
 from html.parser import HTMLParser
+from pathlib import Path
 
 BOOK_SLUG = "wikidot-5e"
 LICENSE = "CC BY-SA 3.0"
+BASE_URL = "https://dnd5e.wikidot.com"
+USER_AGENT = "agent-forge-harness-game-guide-ai/1.0 (dnd-corpus-wikidot-expansion)"
 
 # Namespace -> content_type. NOT a 1:1 name match: class/race fold into the
 # PDF taxonomy's *_feature values, and equipment has no content_type of its
@@ -101,8 +107,10 @@ def _chunk_id(url: str, idx: int) -> str:
 def parse_page(html: str, url: str, namespace: str) -> list[dict]:
     """Pure: one wikidot page's HTML -> chunk-shaped dicts ready for
     qa_chunks.py / embed.py. One chunk per page for now — reference pages
-    (spells, monsters, feats, conditions) are already page-per-entity on
-    wikidot, matching the PDF pipeline's per-entity chunk granularity."""
+    (spells, feats) are already page-per-entity on wikidot, matching the PDF
+    pipeline's per-entity chunk granularity. Equipment pages are coarser (one
+    page covers a whole category, e.g. /weapons lists every weapon) — still
+    one chunk per page for this feature; per-item splitting is future work."""
     content_type = NAMESPACE_CONTENT_TYPE[namespace]
     entity_name = _extract_title(html)
     text = _extract_page_text(html)
@@ -125,3 +133,116 @@ def parse_page(html: str, url: str, namespace: str) -> list[dict]:
         "source_url": url,
         "license": LICENSE,
     }]
+
+
+# ---------------------------------------------------------------------------
+# fetch_page — rate-limited, cached fetch layer
+# ---------------------------------------------------------------------------
+
+
+def _cache_path(cache_dir: Path, url: str) -> Path:
+    digest = hashlib.sha256(url.encode()).hexdigest()[:24]
+    return cache_dir / f"{digest}.html"
+
+
+def _http_get(url: str) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 -- fixed https URL, not user input
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def fetch_page(
+    url: str,
+    cache_dir: Path,
+    rate_limit_s: float = 1.0,
+    _fetcher: Callable[[str], str] | None = None,
+) -> str:
+    """HTML for one URL. Cache-first, keyed by a hash of the URL, so re-running
+    a crawl never re-fetches an unchanged page. A cache miss sleeps
+    rate_limit_s before fetching, so a full crawl is polite to the site.
+    _fetcher overrides the real HTTP GET — keeps the network boundary
+    pure-testable (small interface, deep implementation)."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = _cache_path(cache_dir, url)
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    time.sleep(rate_limit_s)
+    fetcher = _fetcher or _http_get
+    html = fetcher(url)
+    path.write_text(html, encoding="utf-8")
+    return html
+
+
+# ---------------------------------------------------------------------------
+# discover_urls — per-namespace page discovery
+#
+# Verified against the live site during implementation, not guessed:
+#   - spell:  /spells lists every /spell:<slug> page (574 confirmed live).
+#   - race:   the site calls races "lineage:" internally, not "race:" —
+#             /lineage lists every /lineage:<slug> page.
+#   - feat:   no dedicated index page exists; feat: links are embedded
+#             directly in the homepage's Feats section, so the homepage
+#             doubles as the index for this one namespace.
+#   - class / equipment: NO namespace-prefixed pages exist at all — bare
+#     top-level slugs instead (/fighter, /armor, ...). Both lists below were
+#     read off the real homepage's Classes/Items sections, not guessed.
+#   - monster / condition / rule (as a general namespace): NOT present on
+#     this site. No bestiary/monster section anywhere in the master index, a
+#     page-tags search for "monster" returned nothing, and direct guesses at
+#     condition pages (condition:blinded, /blinded, /conditions) all 404.
+#     Dropped from this feature's wikidot crawl scope — the PDF corpus
+#     (Monster Manual, PHB conditions) already covers this content. See
+#     docs/forge/plans/dnd-corpus-wikidot-expansion.md.
+# ---------------------------------------------------------------------------
+
+CLASS_SLUGS = [
+    "artificer", "barbarian", "bard", "cleric", "druid", "fighter", "monk",
+    "paladin", "ranger", "rogue", "sorcerer", "warlock", "wizard",
+]
+
+EQUIPMENT_SLUGS = [
+    "adventuring-gear", "armor", "trinkets", "weapons", "firearms",
+    "explosives", "wondrous-items", "currency", "poisons", "tools",
+    "siege-equipment",
+]
+
+_INDEX_PAGES = {
+    "spell": (f"{BASE_URL}/spells", "spell"),
+    "race": (f"{BASE_URL}/lineage", "lineage"),
+    "feat": (f"{BASE_URL}/", "feat"),
+}
+
+
+def _extract_namespace_links(html: str, prefix: str) -> list[str]:
+    """Pure: page HTML -> absolute URLs of every /<prefix>:<slug> link,
+    deduped, in first-seen order."""
+    pattern = re.compile(rf'href="(/{re.escape(prefix)}:[a-z0-9-]+)"')
+    seen: dict[str, None] = {}
+    for match in pattern.finditer(html):
+        seen.setdefault(BASE_URL + match.group(1), None)
+    return list(seen)
+
+
+def discover_urls(
+    namespace: str,
+    cache_dir: Path,
+    rate_limit_s: float = 1.0,
+    _fetcher: Callable[[str], str] | None = None,
+) -> list[str]:
+    """URLs of every crawlable page in one core namespace. class/equipment
+    are enumerated directly (no namespace-prefixed pages exist for them); the
+    rest are discovered by fetching a real index page and extracting matching
+    links."""
+    if namespace == "class":
+        return [f"{BASE_URL}/{slug}" for slug in CLASS_SLUGS]
+    if namespace == "equipment":
+        return [f"{BASE_URL}/{slug}" for slug in EQUIPMENT_SLUGS]
+    if namespace not in _INDEX_PAGES:
+        raise ValueError(
+            f"no crawlable index for namespace {namespace!r} on dnd5e.wikidot.com "
+            "(monster/condition/rule are not present on this site — see "
+            "scrape_wikidot.py's discover_urls docstring)"
+        )
+    index_url, prefix = _INDEX_PAGES[namespace]
+    html = fetch_page(index_url, cache_dir, rate_limit_s, _fetcher)
+    return _extract_namespace_links(html, prefix)
