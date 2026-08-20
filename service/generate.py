@@ -255,6 +255,19 @@ def assemble_context(
     return f"{context}\n\n{attachment_block}" if context else attachment_block
 
 
+# dnd-corpus-wikidot-expansion: CC BY-SA 3.0 requires attribution on any
+# derivative use. Every other book_slug shows as its raw string (unchanged,
+# pre-existing behavior) — only the wikidot corpus needs this special case.
+_WIKIDOT_BOOK_SLUG = "wikidot-5e"
+_WIKIDOT_ATTRIBUTION = "D&D 5e Wiki — dnd5e.wikidot.com (CC BY-SA 3.0)"
+
+
+def _book_label(book_slug: str | None) -> str:
+    if book_slug == _WIKIDOT_BOOK_SLUG:
+        return _WIKIDOT_ATTRIBUTION
+    return book_slug or "D&D 5e"
+
+
 def build_sources(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> list[Source]:
     """One Source per contributing chunk, deduped by (entity/section), snippet
     truncated for display."""
@@ -268,7 +281,7 @@ def build_sources(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> list[S
         full = result.text_for(c).strip().replace("\n", " ")
         snippet = full[:SNIPPET_MAX] + ("…" if len(full) > SNIPPET_MAX else "")
         sources.append(Source(
-            book=result.book_for(c) or "D&D 5e",
+            book=_book_label(result.book_for(c)),
             chapter=c.chapter, section=c.section, entity=c.entity_name,
             page=c.page_start, snippet=snippet,
         ))
