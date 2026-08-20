@@ -1,0 +1,2116 @@
+{
+  "total_wikidot_chunks": 849,
+  "overlap_count": 422,
+  "overlaps": [
+    {
+      "content_type": "feat",
+      "entity_name": "Defensive Duelist",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Dragon Hide",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Eldritch Adept",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Elemental Adept",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Elven Accuracy",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Fade Away",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Fey Teleportation",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Fighting Initiate",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Grappler",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Heavily Armored",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Heavy Armor Master",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Inspiring Leader",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Medium Armor Master",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Metamagic Adept",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Moderately Armored",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Ritual Caster",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "feat",
+      "entity_name": "Svirfneblin Magic",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "rule",
+      "entity_name": "Armor",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Absorb Elements",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Acid Splash",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Aid",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Alarm",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Alter Self",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Animal Friendship",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Animal Messenger",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Animal Shapes",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Animate Dead",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Animate Objects",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Antilife Shell",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Antimagic Field",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Antipathy/Sympathy",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Arcane Eye",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Arcane Gate",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Arcane Lock",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Armor of Agathys",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Astral Projection",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Augury",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Aura of Life",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Aura of Purity",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Aura of Vitality",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Awaken",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Bane",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Banishing Smite",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Banishment",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Barkskin",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Beacon of Hope",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Beast Bond",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Beast Sense",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Bestow Curse",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Blade Barrier",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Blade of Disaster",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Blade Ward",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Bless",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Blight",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Blinding Smite",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Blindness/Deafness",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Blink",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Blur",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Bones of the Earth",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Booming Blade",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Branding Smite",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Burning Hands",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Call Lightning",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Calm Emotions",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Catapult",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Catnap",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Ceremony",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Chain Lightning",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Charm Monster",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Charm Person",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Chill Touch",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Chromatic Orb",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Circle of Death",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Circle of Power",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Clairvoyance",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Clone",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Cloudkill",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Cloud of Daggers",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Color Spray",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Command",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Commune",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Commune with Nature",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Compelled Duel",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Comprehend Languages",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Compulsion",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Cone of Cold",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Confusion",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Conjure Animals",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Conjure Barrage",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Conjure Celestial",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Conjure Elemental",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Conjure Fey",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Conjure Minor Elementals",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Conjure Volley",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Conjure Woodland Beings",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Contact Other Plane",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Contagion",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Contingency",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Continual Flame",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Control Flames",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Control Water",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Control Weather",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Control Winds",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Cordon of Arrows",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Counterspell",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Create Bonfire",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Create Food and Water",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Create or Destroy Water",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Create Undead",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Creation",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Crown of Madness",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Cure Wounds",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Dancing Lights",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Darkness",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Darkvision",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Dawn",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Daylight",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Death Ward",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Delayed Blast Fireball",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Detect Magic",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Detect Thoughts",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Dimension Door",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Disguise Self",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Disintegrate",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Dispel Evil and Good",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Dissonant Whispers",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Divination",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Divine Favor",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Divine Word",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Dominate Beast",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Dominate Monster",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Dominate Person",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Dream",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Dream of the Blue Veil",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Druidcraft",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Druid Grove",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Dust Devil",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Earthbind",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Earthquake",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Earth Tremor",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Eldritch Blast",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Elemental Bane",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Elemental Weapon",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Enemies Abound",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Enervation",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Enhance Ability",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Enlarge/Reduce",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Ensnaring Strike",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Entangle",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Enthrall",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Erupting Earth",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Etherealness",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Expeditious Retreat",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Eyebite",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Fabricate",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Faerie Fire",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "False Life",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Fear",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Feather Fall",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Feeblemind",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Feign Death",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Find Traps",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Fireball",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Fire Bolt",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Fire Shield",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Fire Storm",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Flame Arrows",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Flame Blade",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Flame Strike",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Flaming Sphere",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Flesh to Stone",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Fly",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Fog Cloud",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Forbiddance",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Forcecage",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Foresight",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Freedom of Movement",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Friends",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Frostbite",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Gaseous Form",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Gate",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Geas",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Gentle Repose",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Giant Insect",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Glibness",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Globe of Invulnerability",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Glyph of Warding",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Goodberry",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Grasping Vine",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Grease",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Greater Invisibility",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Green-Flame Blade",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Guardian of Faith",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Guardian of Nature",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Guards and Wards",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Guidance",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Guiding Bolt",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Gust",
+      "pdf_book_count": 3
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Hail of Thorns",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Hallow",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Hallucinatory Terrain",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Harm",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Haste",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Heal",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Healing Spirit",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Healing Word",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Heat Metal",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Hellish Rebuke",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Heroism",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Hex",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Hold Monster",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Hold Person",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Holy Aura",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Holy Weapon",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Hunger Of Hadar",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Hypnotic Pattern",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Ice Knife",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Ice Storm",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Identify",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Illusory Script",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Immolation",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Imprisonment",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Incendiary Cloud",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Infernal Calling",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Infestation",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Inflict Wounds",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Insect Plague",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Intellect Fortress",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Investiture of Flame",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Investiture of Ice",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Investiture of Stone",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Investiture of Wind",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Invisibility",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Jump",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Knock",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Legend Lore",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Lesser Restoration",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Levitate",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Light",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Lightning Arrow",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Lightning Bolt",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Lightning Lure",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Locate Animals or Plants",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Locate Creature",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Locate Object",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Longstrider",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Maelstrom",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mage Hand",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Magic Circle",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Magic Missile",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Magic Mouth",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Magic Stone",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Magic Weapon",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Major Image",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mass Cure Wounds",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mass Heal",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mass Healing Word",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mass Suggestion",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Maze",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Meld into Stone",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mending",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mental Prison",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Message",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Meteor Swarm",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mighty Fortress",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mind Blank",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mind Sliver",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mind Spike",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Minor Illusion",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mirage Arcane",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mirror Image",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mislead",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Misty Step",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Modify Memory",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Mold Earth",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Moonbeam",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Move Earth",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Negative Energy Flood",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Passwall",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Pass Without Trace",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Phantasmal Force",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Phantasmal Killer",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Phantom Steed",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Planar Binding",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Plane Shift",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Plant Growth",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Poison Spray",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Polymorph",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Prayer of Healing",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Prestidigitation",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Primal Savagery",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Primordial Ward",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Prismatic Spray",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Prismatic Wall",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Produce Flame",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Programmed Illusion",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Project Image",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Protection from Energy",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Protection from Evil and Good",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Psychic Scream",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Purify Food and Drink",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Pyrotechnics",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Raise Dead",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Ray of Enfeeblement",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Ray of Frost",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Ray of Sickness",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Regenerate",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Reincarnate",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Remove Curse",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Resurrection",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Reverse Gravity",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Revivify",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Rope Trick",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Sacred Flame",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Sanctuary",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Scatter",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Scorching Ray",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Scrying",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Searing Smite",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "See Invisibility",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Seeming",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Sending",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Sequester",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Shadow Of Moil",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Shapechange",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Shape Water",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Shatter",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Shield",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Shield of Faith",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Shillelagh",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Shocking Grasp",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Sickening Radiance",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Silence",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Silent Image",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Simulacrum",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Skywrite",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Sleep",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Sleet Storm",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Slow",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Snare",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Soul Cage",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Spare the Dying",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Speak with Animals",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Speak with Dead",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Speak with Plants",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Spike Growth",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Spirit Guardians",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Spirit Shroud",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Spiritual Weapon",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Staggering Smite",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Steel Wind Strike",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Stinking Cloud",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Stone Shape",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Stoneskin",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Storm of Vengeance",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Storm Sphere",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Summon Aberration",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Summon Beast",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Summon Celestial",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Summon Construct",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Summon Elemental",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Summon Fey",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Summon Fiend",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Summon Greater Demon",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Summon Lesser Demons",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Summon Shadowspawn",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Summon Undead",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Sunbeam",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Sunburst",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Sword Burst",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Symbol",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Synaptic Static",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Telekinesis",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Telepathy",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Teleport",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Teleportation Circle",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Temple of the Gods",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Thaumaturgy",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Thunderclap",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Thunderous Smite",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Thunder Step",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Thunderwave",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Tidal Wave",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Time Stop",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Tiny Servant",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Tongues",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Transmute Rock",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Transport via Plants",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Tree Stride",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "True Polymorph",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "True Resurrection",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "True Seeing",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "True Strike",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Tsunami",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Unseen Servant",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Vampiric Touch",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Vicious Mockery",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Vitriolic Sphere",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wall of Fire",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wall of Force",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wall of Ice",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wall of Light",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wall of Sand",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wall of Stone",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wall of Thorns",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wall of Water",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Warding Bond",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Warding Wind",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Water Breathing",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Watery Sphere",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Web",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Weird",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Whirlwind",
+      "pdf_book_count": 2
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wind Walk",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wish",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Witch Bolt",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Word of Radiance",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Word of Recall",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wrathful Smite",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Wrath Of Nature",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Zephyr Strike",
+      "pdf_book_count": 1
+    },
+    {
+      "content_type": "spell",
+      "entity_name": "Zone of Truth",
+      "pdf_book_count": 1
+    }
+  ]
+}
