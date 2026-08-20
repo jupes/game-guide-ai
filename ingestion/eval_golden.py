@@ -186,6 +186,21 @@ def compute_metrics(hits: list[bool]) -> dict:
     }
 
 
+def _push_retrieval_scores(langfuse, trace_id: str, aggregates: dict[str, float]) -> None:
+    """Attach aggregate retrieval metrics (hit_at_1/recall_at_10/mrr) to a trace as
+    Langfuse scores, so the run becomes a point on the same quality dashboard the
+    answer-eval's ragas_* scores already feed (7m9g). Namespaced retrieval_* to stay
+    distinct from ragas_* on the same scores view. Mirrors eval_answers.py's
+    _push_scores: best-effort, a scoring hiccup must not fail the eval run."""
+    for name, value in aggregates.items():
+        if value is None:
+            continue
+        try:
+            langfuse.create_score(trace_id=trace_id, name=f"retrieval_{name}", value=float(value))
+        except Exception:  # pragma: no cover - network/SDK edge
+            pass
+
+
 def is_hit(chunk: RetrievedChunk, golden: GoldenQuery) -> bool:
     """Check if a retrieved chunk matches the golden query's expectations."""
     if chunk.content_type != golden.expected_content_type:
@@ -231,9 +246,19 @@ def main() -> None:
     parser.add_argument("--ipl-fallback", action="store_true",
                         help="Enable the experimental filter→unfiltered distance fallback "
                              "(net-harmful in the A/B; the generic-entity stoplist is the real ipl fix)")
+    parser.add_argument("--no-langfuse", action="store_true",
+                        help="don't attach aggregate scores to Langfuse")
     args = parser.parse_args()
 
     dsn = os.environ.get("DATABASE_URL", DEFAULT_DSN)
+
+    langfuse = None
+    if not args.no_langfuse:
+        try:
+            from langfuse import get_client
+            langfuse = get_client()
+        except Exception:
+            langfuse = None
 
     print("=" * 72)
     print("D&D RAG — Golden Set Evaluation")
@@ -473,6 +498,25 @@ def main() -> None:
     out_path = Path(__file__).parent / "eval_results.json"
     out_path.write_text(json.dumps(results_json, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nDetailed results saved to {out_path}")
+
+    # Attach this run's aggregates to Langfuse as one scored point (7m9g), so
+    # retrieval quality becomes a trend on the same dashboard the answer-eval's
+    # ragas_* scores already feed, instead of only living in a per-PR CI summary.
+    # No behavior change when Langfuse is absent/unconfigured (mirrors RAG_TRACING).
+    if langfuse is not None:
+        try:
+            with langfuse.start_as_current_span(name="eval:retrieval-golden-set") as span:
+                trace_id = getattr(span, "trace_id", None)
+            if trace_id:
+                _push_retrieval_scores(langfuse, trace_id, {
+                    "hit_at_1": total_hit_at_1 / n_pos,
+                    "precision_at_5": total_precision_at_5 / n_pos,
+                    "mrr": total_mrr / n_pos,
+                    "recall_at_10": total_recall_at_10 / n_pos,
+                })
+            langfuse.flush()
+        except Exception:  # pragma: no cover - network/SDK edge
+            pass
 
 
 if __name__ == "__main__":

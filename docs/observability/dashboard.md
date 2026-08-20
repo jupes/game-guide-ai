@@ -40,8 +40,9 @@ grouping dimension matters** (discovered live):
 | Cost by model | observations | `totalCost` / sum | **`providedModelName`** | our best "by model" axis |
 | p95 latency by model | observations | `latency` / p95 | `providedModelName` | local models show high latency |
 | Token usage by model | observations | `totalTokens` / sum | `providedModelName` | |
-| Request volume | traces | `count` / count | `tags` or time | `tags` = `mode:*`, `rag-chat` |
+| Request volume | traces | `count` / count | `tags` or time | `tags` = `mode:*`, `game-guide-ai` |
 | Answer quality | scores | `value` / avg | score `name` | `ragas_faithfulness`, `ragas_answer_correctness`, … |
+| Retrieval quality | scores | `value` / avg or time series | score `name` + time | `retrieval_hit_at_1`, `retrieval_recall_at_10`, `retrieval_mrr`, `retrieval_precision_at_5` — one point per `eval_golden.py` run (7m9g) |
 | Chat + Web Vital latency | scores-numeric | `value` / avg or p95 | `name` + time | `service.chat.duration_ms`, `ui.*_ms` |
 | Gate/error rate | scores-boolean | `value` / avg | `name` + time | average is the true-rate |
 | Error/outcome mix | scores-categorical | `count` / count | `name`, `stringValue`, time | bounded categories only |

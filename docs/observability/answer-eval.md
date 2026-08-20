@@ -1,6 +1,6 @@
 # Answer-quality eval (Phase 2 / ziw.3)
 
-Scores the **generation** quality of rag-chat's answers — deterministic graders first,
+Scores the **generation** quality of game-guide-ai's answers — deterministic graders first,
 then Ragas LLM-judge metrics — over the golden subset, and attaches the scores to the
 Langfuse trace for each request. Sibling to the retrieval-only `ingestion/eval_golden.py`.
 
@@ -98,3 +98,23 @@ uv run --with '.[eval]' python ingestion/compare_models.py \
   grouping (the native side-by-side experiment UI) is a follow-up — scorecard + gate + tagged traces
   already deliver the comparison.
 - Inherits the eval's data-quality follow-ups (expand key-facts; full-context for context metrics).
+
+---
+
+## Retrieval quality on the dashboard (7m9g)
+
+`ingestion/eval_golden.py` (Hit@1/Precision@5/MRR/Recall@10 — see `docs/dnd-retrieval-eval-report.md`
+for methodology) previously only wrote `ingestion/eval_results.json` and fed the per-PR CI gate
+(`scripts/ci/eval_gate.py`) — no history across runs, unlike the answer-quality metrics above. It now
+also attaches its run aggregates to Langfuse as `retrieval_hit_at_1` / `retrieval_precision_at_5` /
+`retrieval_mrr` / `retrieval_recall_at_10` scores (one scored point per run), so retrieval trends on
+the same dashboard (`docs/observability/dashboard.md`) instead of only living in old PRs' CI summaries.
+
+```bash
+docker compose up -d vector-db
+uv run python ingestion/eval_golden.py                  # scores attached to Langfuse
+uv run python ingestion/eval_golden.py --no-langfuse     # unchanged behavior, no Langfuse call
+```
+
+Env-gated the same way as everything else here: absent/misconfigured `LANGFUSE_*` creds degrade
+silently to no scoring, never a failed run.

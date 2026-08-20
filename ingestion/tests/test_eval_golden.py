@@ -7,7 +7,7 @@ Run:
 
 from __future__ import annotations
 
-from ingestion.eval_golden import compute_metrics
+from ingestion.eval_golden import _push_retrieval_scores, compute_metrics
 from ingestion.retrieval import (
     build_vector_sql,
     extract_query_content_types,
@@ -407,6 +407,46 @@ def test_not_answerable_when_no_results():
 def test_answerable_boundary():
     assert is_answerable(top1_distance=0.45, threshold=0.45)       # <= threshold answerable
     assert not is_answerable(top1_distance=0.4501, threshold=0.45)
+
+
+# ---------------------------------------------------------------------------
+# Langfuse retrieval-score push (7m9g) — offline, fake client, no live Langfuse
+# ---------------------------------------------------------------------------
+
+class _FakeLangfuse:
+    def __init__(self):
+        self.scores: list[tuple[str, str, float]] = []
+
+    def create_score(self, *, trace_id, name, value):
+        self.scores.append((trace_id, name, value))
+
+
+class _BoomingLangfuse:
+    def create_score(self, **kwargs):
+        raise RuntimeError("network blip")
+
+
+def test_push_retrieval_scores_attaches_prefixed_scores():
+    lf = _FakeLangfuse()
+    _push_retrieval_scores(lf, "trace-123", {
+        "hit_at_1": 0.9, "recall_at_10": 1.0, "mrr": 0.85, "precision_at_5": 0.46,
+    })
+    assert set(lf.scores) == {
+        ("trace-123", "retrieval_hit_at_1", 0.9),
+        ("trace-123", "retrieval_recall_at_10", 1.0),
+        ("trace-123", "retrieval_mrr", 0.85),
+        ("trace-123", "retrieval_precision_at_5", 0.46),
+    }
+
+
+def test_push_retrieval_scores_skips_none_values():
+    lf = _FakeLangfuse()
+    _push_retrieval_scores(lf, "trace-123", {"hit_at_1": None, "mrr": 0.5})
+    assert lf.scores == [("trace-123", "retrieval_mrr", 0.5)]
+
+
+def test_push_retrieval_scores_swallows_create_score_exceptions():
+    _push_retrieval_scores(_BoomingLangfuse(), "trace-123", {"hit_at_1": 1.0})  # must not raise
 
 
 # ---------------------------------------------------------------------------
