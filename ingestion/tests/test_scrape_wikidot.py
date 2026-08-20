@@ -14,16 +14,24 @@ Run:
 
 from __future__ import annotations
 
+import os
+import uuid
+
 import pytest
 
 from ingestion.scrape_wikidot import (
     CLASS_SLUGS,
     EQUIPMENT_SLUGS,
     _extract_namespace_links,
+    crawl_namespace,
+    dedup_report,
     discover_urls,
     fetch_page,
     parse_page,
 )
+
+DSN = os.environ.get("DATABASE_URL") or None
+needs_db = pytest.mark.skipif(DSN is None, reason="no DATABASE_URL (CI always sets it)")
 
 SPELL_HTML = """
 <html><head><title>Fireball - DND 5th Edition</title></head>
@@ -273,3 +281,54 @@ def test_discover_urls_raises_for_a_namespace_with_no_real_index_on_this_site(tm
     for namespace in ("monster", "condition", "rule"):
         with pytest.raises(ValueError, match=namespace):
             discover_urls(namespace, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# crawl_namespace — orchestration (discover_urls + fetch_page + parse_page)
+# ---------------------------------------------------------------------------
+
+
+def test_crawl_namespace_with_limit_zero_touches_no_network(tmp_path):
+    """namespace='class'/'equipment' need no network for discover_urls (hard-
+    coded slug lists) — limit=0 means the url list is sliced to empty before
+    any fetch_page call, so this is a safe, fast, fully offline check that the
+    orchestration wiring itself doesn't crash."""
+    assert crawl_namespace("class", tmp_path, rate_limit_s=0.0, limit=0) == []
+
+
+# ---------------------------------------------------------------------------
+# dedup_report — visibility only, never filters (bead AC: "supplements rather
+# than conflicts")
+# ---------------------------------------------------------------------------
+
+_INSERT_CHUNK = """
+INSERT INTO dnd.chunks (chunk_id, book_slug, source_file, content_type, entity_name, text, embedding)
+VALUES (%s, %s, %s, %s, %s, 'x', %s)
+"""
+_EMBEDDING = "[" + ",".join(["0"] * 1536) + "]"
+
+
+@needs_db
+def test_dedup_report_counts_overlaps_without_filtering_anything(tmp_path):
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        suffix = uuid.uuid4().hex[:8]
+        wiki_id, phb_id, unique_id = f"w-{suffix}", f"p-{suffix}", f"u-{suffix}"
+        conn.execute(_INSERT_CHUNK, (wiki_id, "wikidot-5e", "https://x", "spell",
+                                      f"Fireball-{suffix}", _EMBEDDING))
+        conn.execute(_INSERT_CHUNK, (phb_id, "phb-5e", "phb.pdf", "spell",
+                                      f"Fireball-{suffix}", _EMBEDDING))
+        # A wikidot-only spell — must NOT show up as an overlap.
+        conn.execute(_INSERT_CHUNK, (unique_id, "wikidot-5e", "https://x", "spell",
+                                      f"Unique-Wiki-Spell-{suffix}", _EMBEDDING))
+        try:
+            report = dedup_report(DSN)
+        finally:
+            conn.execute("DELETE FROM dnd.chunks WHERE chunk_id = ANY(%s)",
+                          ([wiki_id, phb_id, unique_id],))
+
+    overlap_names = {o["entity_name"] for o in report["overlaps"]}
+    assert f"Fireball-{suffix}" in overlap_names
+    assert f"Unique-Wiki-Spell-{suffix}" not in overlap_names
+    assert report["total_wikidot_chunks"] >= 2
