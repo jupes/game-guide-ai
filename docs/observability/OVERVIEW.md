@@ -1,4 +1,4 @@
-# rag-chat Observability & Agent-Eval — Master Overview
+# game-guide-ai Observability & Agent-Eval — Master Overview
 
 > **Epic:** `agent-forge-harness-ziw` — *Observability + agent-eval layer* (5/5 phases complete)
 > **What this is:** the single doc that explains the whole initiative — the architecture we added, the
@@ -10,7 +10,7 @@
 
 ## 1. TL;DR
 
-rag-chat is a D&D 5e Retrieval-Augmented-Generation (RAG) chat app. It worked, but it was a **black box**:
+game-guide-ai is a D&D 5e Retrieval-Augmented-Generation (RAG) chat app. It worked, but it was a **black box**:
 no way to see what a request did, no way to measure answer quality, and no way to answer *"is version/model
 B better than A?"* This epic added a full **observability + evaluation layer** in five phases:
 
@@ -242,7 +242,7 @@ the eval mixes code graders with Ragas and why the golden set includes negative 
 - **Traces** (Langfuse) — one per `/chat`: child spans `retrieve` / `gate` / `generate`, each with latency;
   the LLM call carries **tokens + cost**; tagged `model`, `service_version` (git SHA), `mode`.
 - **Scores** (Langfuse) — `ragas_faithfulness`, `ragas_answer_correctness`, … attached to the trace.
-- **Dataset** (Langfuse) — `rag-chat-answers`, the golden cases; comparison runs are model-tagged.
+- **Dataset** (Langfuse) — `game-guide-ai-answers`, the golden cases; comparison runs are model-tagged.
 - **Local JSON** — `eval_answers_results.json`, `compare_results.json`, `metrics_summary.json` (gitignored).
 
 > **Known dashboard gotcha:** trace *metadata* (`model`, `service_version`) is **not** a queryable
@@ -334,6 +334,7 @@ pulls them. The offline unit tests use fakes and need none of it.
 | `asq` | Langfuse dataset-run grouping (`item.run`) for the native side-by-side experiment UI |
 | `1c6` | Set the native trace `version` field so version-filtering works in the dashboard |
 | `3xs` | Migration hardening checklist (pin deps, PII retention, cloud-key hygiene) |
+| `7m9g` | Emit retrieval metrics (Hit@1/Recall@10/MRR) as Langfuse scores so they trend on the dashboard too, not just a per-PR CI summary — **done**, this update |
 
 ---
 

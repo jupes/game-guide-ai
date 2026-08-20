@@ -1,5 +1,5 @@
 """
-Version/model comparison + CI regression gate for rag-chat (ziw.4 / Phase 3).
+Version/model comparison + CI regression gate for game-guide-ai (ziw.4 / Phase 3).
 
 Runs the answer-quality eval (Phase 2's `run_eval` + the FIXED gpt-4o-mini judge)
 once per generator model, holding everything else constant (same golden dataset,
@@ -130,7 +130,7 @@ def ensure_dataset(langfuse, name: str, cases) -> None:  # pragma: no cover - li
     """Seed a Langfuse dataset from the golden cases (idempotent by a question-derived id)."""
     import hashlib
     try:
-        langfuse.create_dataset(name=name, description="rag-chat answer-quality golden subset")
+        langfuse.create_dataset(name=name, description="game-guide-ai answer-quality golden subset")
     except Exception:
         pass  # already exists
     for c in cases:
@@ -154,13 +154,13 @@ def main() -> None:  # pragma: no cover - integration entry (needs DB + LLM + Ol
     import json
     from pathlib import Path
 
-    parser = argparse.ArgumentParser(description="rag-chat model comparison + CI regression gate")
+    parser = argparse.ArgumentParser(description="game-guide-ai model comparison + CI regression gate")
     parser.add_argument("--models", default="gpt-4o-mini,gemma4:12b",
                         help="comma-separated labels; the first is the baseline")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--gate-metric", default="answer_correctness")
     parser.add_argument("--gate-threshold", type=float, default=0.05)
-    parser.add_argument("--dataset", default="rag-chat-answers")
+    parser.add_argument("--dataset", default="game-guide-ai-answers")
     parser.add_argument("--no-langfuse", action="store_true")
     args = parser.parse_args()
 

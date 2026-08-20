@@ -1,5 +1,5 @@
 """
-Quality, cost, and runtime metrics summary for rag-chat.
+Quality, cost, and runtime metrics summary for game-guide-ai.
 
 A scriptable companion to the Langfuse dashboard: pulls quality/cost by model
 plus timestamped service/UI score series via the Langfuse **Metrics API**, so
@@ -259,7 +259,7 @@ def main() -> None:  # pragma: no cover - integration entry
     from datetime import datetime
     from pathlib import Path
 
-    parser = argparse.ArgumentParser(description="rag-chat quality/cost metrics summary (Langfuse Metrics API)")
+    parser = argparse.ArgumentParser(description="game-guide-ai quality/cost metrics summary (Langfuse Metrics API)")
     parser.add_argument("--since", default="7d", help="window: 7d / 24h / 30m")
     offline = parser.add_mutually_exclusive_group()
     offline.add_argument(
