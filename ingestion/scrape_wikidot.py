@@ -246,3 +246,128 @@ def discover_urls(
     index_url, prefix = _INDEX_PAGES[namespace]
     html = fetch_page(index_url, cache_dir, rate_limit_s, _fetcher)
     return _extract_namespace_links(html, prefix)
+
+
+# ---------------------------------------------------------------------------
+# Crawl orchestration
+# ---------------------------------------------------------------------------
+
+#: The five namespaces that actually exist on this site — see discover_urls.
+NAMESPACES = ["spell", "race", "class", "feat", "equipment"]
+
+
+def crawl_namespace(
+    namespace: str,
+    cache_dir: Path,
+    rate_limit_s: float = 1.0,
+    limit: int | None = None,
+) -> list[dict]:
+    """discover_urls() + fetch_page() + parse_page() for one namespace.
+    `limit` caps the page count — for a quick, observable demo run; omit it
+    for a real full crawl."""
+    urls = discover_urls(namespace, cache_dir, rate_limit_s)
+    if limit is not None:
+        urls = urls[:limit]
+    chunks: list[dict] = []
+    for url in urls:
+        html = fetch_page(url, cache_dir, rate_limit_s)
+        chunks.extend(parse_page(html, url, namespace))
+    return chunks
+
+
+# ---------------------------------------------------------------------------
+# Dedup visibility report (non-blocking — counts only, never filters)
+#
+# Bead AC ("supplements rather than conflicts"): this feature's answer is
+# visibility now, not automated filtering — see the plan's Non-Goals. Actual
+# filtering/reranking policy is deferred to the retrieval-eval initiative
+# that follows.
+# ---------------------------------------------------------------------------
+
+_DEDUP_QUERY = """
+SELECT w.content_type, w.entity_name, count(DISTINCT p.book_slug) AS pdf_book_count
+  FROM dnd.chunks w
+  JOIN dnd.chunks p
+    ON p.content_type = w.content_type
+   AND lower(p.entity_name) = lower(w.entity_name)
+   AND p.book_slug <> %(wiki_slug)s
+ WHERE w.book_slug = %(wiki_slug)s AND w.entity_name IS NOT NULL
+ GROUP BY w.content_type, w.entity_name
+ ORDER BY w.content_type, w.entity_name
+"""
+
+
+def dedup_report(dsn: str) -> dict:
+    """(content_type, entity_name) pairs present in both the wikidot-5e book
+    and at least one PDF book — counts only, does not filter or exclude
+    anything from the corpus."""
+    import psycopg
+
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute(_DEDUP_QUERY, {"wiki_slug": BOOK_SLUG})
+        rows = cur.fetchall()
+        cur.execute(
+            "SELECT count(*) FROM dnd.chunks WHERE book_slug = %(wiki_slug)s",
+            {"wiki_slug": BOOK_SLUG},
+        )
+        total = cur.fetchone()[0]
+
+    overlaps = [
+        {"content_type": ct, "entity_name": name, "pdf_book_count": count}
+        for ct, name, count in rows
+    ]
+    return {
+        "total_wikidot_chunks": total,
+        "overlap_count": len(overlaps),
+        "overlaps": overlaps,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Crawl dnd5e.wikidot.com into chunks.jsonl")
+    parser.add_argument("--out", default=str(Path(__file__).parent / "chunks-wikidot-5e.jsonl"))
+    parser.add_argument("--cache-dir", default=str(Path(__file__).parent / ".wikidot-cache"))
+    parser.add_argument("--rate-limit", type=float, default=1.0)
+    parser.add_argument("--namespaces", nargs="+", default=NAMESPACES, choices=NAMESPACES)
+    parser.add_argument("--limit", type=int, default=None,
+                         help="cap pages per namespace (useful for a quick demo run)")
+    parser.add_argument("--dedup-report", default=None,
+                         help="write a dedup visibility report to this path (needs DATABASE_URL, "
+                              "run after embedding — see checkpoint E in the plan)")
+    parser.add_argument("--dsn", default=None, help="DSN for --dedup-report")
+    args = parser.parse_args()
+
+    if args.dedup_report:
+        import os
+        dsn = args.dsn or os.environ.get("DATABASE_URL")
+        if not dsn:
+            raise SystemExit("--dedup-report needs --dsn or DATABASE_URL")
+        report = dedup_report(dsn)
+        Path(args.dedup_report).write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"Dedup report: {report['overlap_count']} overlaps out of "
+              f"{report['total_wikidot_chunks']} wikidot chunks -> {args.dedup_report}")
+        return
+
+    cache_dir = Path(args.cache_dir)
+    all_chunks: list[dict] = []
+    for namespace in args.namespaces:
+        chunks = crawl_namespace(namespace, cache_dir, args.rate_limit, args.limit)
+        print(f"  {namespace}: {len(chunks)} chunks")
+        all_chunks.extend(chunks)
+
+    out_path = Path(args.out)
+    with out_path.open("w", encoding="utf-8") as f:
+        for chunk in all_chunks:
+            f.write(json.dumps(chunk) + "\n")
+    print(f"\nWrote {len(all_chunks)} chunks to {out_path}")
+
+
+if __name__ == "__main__":
+    main()
