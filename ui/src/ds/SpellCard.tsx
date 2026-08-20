@@ -80,11 +80,12 @@ export function SpellCard({
       density={density}
       source={source}
       badge={
-        concentration
-          ? <Badge tone="arcane">CONCENTRATION</Badge>
-          : ritual
-            ? <Badge tone="gold">RITUAL</Badge>
-            : undefined
+        (concentration || ritual) && (
+          <span style={{ display: 'flex', gap: 6 }}>
+            {concentration && <Badge tone="arcane">CONCENTRATION</Badge>}
+            {ritual && <Badge tone="gold">RITUAL</Badge>}
+          </span>
+        )
       }
       stats={[
         { label: compact ? 'Cast' : 'Casting Time', value: castingTime },

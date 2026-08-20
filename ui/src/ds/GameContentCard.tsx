@@ -83,6 +83,7 @@ export function GameContentCard({
 }: GameContentCardProps): React.JSX.Element {
   const meta = KINDS[kind] ?? { label: '', icon: '', accent: '' }
   const compact = density === 'compact'
+  const visibleStats = stats?.filter((s) => s.value !== null && s.value !== undefined && s.value !== '')
 
   return (
     <div className={`game-content-card game-content-card--${density}`} style={style}>
@@ -92,6 +93,7 @@ export function GameContentCard({
             <span
               className="material-symbols-rounded game-content-card__kicker-icon"
               style={{ color: accent ?? meta.accent }}
+              aria-hidden="true"
             >
               {icon ?? meta.icon}
             </span>
@@ -104,6 +106,7 @@ export function GameContentCard({
             <span
               className="material-symbols-rounded game-content-card__kicker-icon game-content-card__kicker-icon--compact"
               style={{ color: accent ?? meta.accent }}
+              aria-hidden="true"
             >
               {icon ?? meta.icon}
             </span>
@@ -114,14 +117,14 @@ export function GameContentCard({
         </div>
       </div>
 
-      {stats && stats.length > 0 && (
+      {visibleStats && visibleStats.length > 0 && (
         <div
           className="game-content-card__stats"
           style={{
             gridTemplateColumns: `repeat(auto-fit, minmax(${minStatWidth ?? (compact ? 104 : 138)}px, 1fr))`,
           }}
         >
-          {stats.map((s, i) => (
+          {visibleStats.map((s, i) => (
             <div key={i} className="game-content-card__stat-cell">
               <span className="game-content-card__stat-label">{s.label}</span>
               <span className="game-content-card__stat-value">{s.value}</span>
@@ -134,7 +137,7 @@ export function GameContentCard({
 
       {source && (
         <div className="game-content-card__footer">
-          <span className="material-symbols-rounded game-content-card__footer-icon">local_library</span>
+          <span className="material-symbols-rounded game-content-card__footer-icon" aria-hidden="true">local_library</span>
           <span className="game-content-card__footer-text">{source}</span>
         </div>
       )}

@@ -106,6 +106,14 @@ describe('SpellCard — full density', () => {
     render(<SpellCard {...FULL_PROPS} ritual concentration={false} />)
     expect(screen.getByText('RITUAL')).toBeInTheDocument()
   })
+
+  it('renders both CONCENTRATION and RITUAL badges when both flags are true (PR #46 review)', () => {
+    // The two flags are independent in the API contract; a ternary previously
+    // gave concentration precedence and silently dropped the ritual badge.
+    render(<SpellCard {...FULL_PROPS} concentration ritual />)
+    expect(screen.getByText('CONCENTRATION')).toBeInTheDocument()
+    expect(screen.getByText('RITUAL')).toBeInTheDocument()
+  })
 })
 
 describe('SpellCard — compact density', () => {
