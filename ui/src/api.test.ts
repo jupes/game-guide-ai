@@ -278,6 +278,22 @@ describe('postChat', () => {
     if (result.kind === 'error') expect(result.message).toMatch(/unreadable/i)
   })
 
+  it('rejects a fractional value for a Pydantic-int-backed field (PR #46 review)', async () => {
+    // Source.page is a Pydantic `int`; z.number() alone would silently accept
+    // 1.5 and let malformed payloads through the boundary this schema exists
+    // to guard.
+    const fractionalPage = {
+      answer: 'x',
+      sources: [{
+        book: 'mm-5e', chapter: null, section: null, entity: null, page: 1.5, snippet: 'x',
+      }],
+      answerable: true,
+    }
+    const result = await postChat('Q', 'sage', null, fakeFetch(200, fractionalPage))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/unreadable/i)
+  })
+
   it('accepts a response carrying null spell_content/stat_block (behavior 9)', async () => {
     const withNewFields = { ...GROUNDED, spell_content: null, stat_block: null }
     const result = await postChat('Q', 'sage', null, fakeFetch(200, withNewFields))

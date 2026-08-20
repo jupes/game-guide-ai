@@ -12,7 +12,7 @@ export const SourceSchema = z.object({
   chapter: z.string().nullable(),
   section: z.string().nullable(),
   entity: z.string().nullable(),
-  page: z.number().nullable(),
+  page: z.number().int().nullable(),
   snippet: z.string(),
 })
 
@@ -34,7 +34,7 @@ export const SpellComponentsSchema = z.object({
 export const SpellContentSchema = z.object({
   name: z.string(),
   description: z.string(),
-  level: z.number().nullish(),
+  level: z.number().int().nullish(),
   school: z.string().nullish(),
   casting_time: z.string().nullish(),
   range: z.string().nullish(),
@@ -50,12 +50,12 @@ export const SpellContentSchema = z.object({
  * unrecognized/misspelled key fails validation (the zod side of the
  * backend's `extra="forbid"`). */
 export const AbilitiesSchema = z.object({
-  str: z.number().nullish(),
-  dex: z.number().nullish(),
-  con: z.number().nullish(),
-  int: z.number().nullish(),
-  wis: z.number().nullish(),
-  cha: z.number().nullish(),
+  str: z.number().int().nullish(),
+  dex: z.number().int().nullish(),
+  con: z.number().int().nullish(),
+  int: z.number().int().nullish(),
+  wis: z.number().int().nullish(),
+  cha: z.number().int().nullish(),
 }).strict()
 
 export const StatBlockEntrySchema = z.object({
@@ -67,8 +67,8 @@ export const StatBlockEntrySchema = z.object({
  * the backend, everything else optional. */
 export const StatBlockContentSchema = z.object({
   name: z.string(),
-  ac: z.number(),
-  hp: z.number(),
+  ac: z.number().int(),
+  hp: z.number().int(),
   size: z.string().nullish(),
   type: z.string().nullish(),
   alignment: z.string().nullish(),
@@ -82,8 +82,8 @@ export const StatBlockContentSchema = z.object({
   condition_immunities: z.string().nullish(),
   senses: z.string().nullish(),
   languages: z.string().nullish(),
-  cr: z.union([z.string(), z.number()]).nullish(),
-  xp: z.number().nullish(),
+  cr: z.union([z.string(), z.number().int()]).nullish(),
+  xp: z.number().int().nullish(),
   traits: z.array(StatBlockEntrySchema).nullish(),
   actions: z.array(StatBlockEntrySchema).nullish(),
   bonus_actions: z.array(StatBlockEntrySchema).nullish(),
@@ -109,7 +109,7 @@ export const ChatResponseSchema = z.object({
 // only, see plans/drafts/structured-content-widgets.md non-goals), so this
 // schema deliberately does NOT gain the two new fields.
 export const StoredMessageSchema = z.object({
-  id: z.number(),
+  id: z.number().int(),
   role: z.enum(['user', 'assistant']),
   content: z.string(),
   mode: ChatModeSchema,
@@ -123,10 +123,10 @@ export const MessagesResponseSchema = z.object({
 })
 
 export const AttachmentSchema = z.object({
-  id: z.number(),
+  id: z.number().int(),
   filename: z.string(),
   content_type: z.string(),
-  chars: z.number(),
+  chars: z.number().int(),
   created_at: z.string(),
 })
 

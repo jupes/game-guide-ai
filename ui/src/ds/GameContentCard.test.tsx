@@ -57,6 +57,42 @@ describe('GameContentCard', () => {
     expect(container.querySelector('.game-content-card__stats')).not.toBeInTheDocument()
   })
 
+  it('filters out nullish/empty stat values, keeping numeric zero (PR #46 review)', () => {
+    // A minimal valid spell/stat-block payload can leave several stat fields
+    // absent; rendering them anyway produced labeled cells with blank values.
+    const { container } = render(
+      <GameContentCard
+        title="Fireball"
+        stats={[
+          { label: 'Casting Time', value: '1 action' },
+          { label: 'Range', value: undefined },
+          { label: 'Components', value: '' },
+          { label: 'Duration', value: null },
+          { label: 'Speed', value: 0 },
+        ]}
+      />,
+    )
+    expect(screen.getByText('Casting Time')).toBeInTheDocument()
+    expect(screen.queryByText('Range')).not.toBeInTheDocument()
+    expect(screen.queryByText('Components')).not.toBeInTheDocument()
+    expect(screen.queryByText('Duration')).not.toBeInTheDocument()
+    expect(screen.getByText('Speed')).toBeInTheDocument()
+    expect(container.querySelectorAll('.game-content-card__stat-cell')).toHaveLength(2)
+  })
+
+  it('omits the stat strip entirely when every stat value is empty', () => {
+    const { container } = render(
+      <GameContentCard
+        title="Fireball"
+        stats={[
+          { label: 'Range', value: undefined },
+          { label: 'Duration', value: '' },
+        ]}
+      />,
+    )
+    expect(container.querySelector('.game-content-card__stats')).not.toBeInTheDocument()
+  })
+
   it('renders children (body content)', () => {
     render(
       <GameContentCard title="Fireball">
@@ -72,6 +108,23 @@ describe('GameContentCard', () => {
 
     rerender(<GameContentCard title="Fireball" />)
     expect(screen.queryByText('phb-2024')).not.toBeInTheDocument()
+  })
+
+  it('hides decorative icon ligatures from assistive technology (PR #46 review)', () => {
+    // Material Symbols spans expose their ligature string ("auto_awesome") as
+    // accessible text unless explicitly hidden; the adjacent labels already
+    // convey the meaning.
+    const { container } = render(<GameContentCard kind="spell" title="Fireball" source="phb-2024" />)
+    const kickerIcon = container.querySelector('.game-content-card__kicker-icon')
+    const footerIcon = container.querySelector('.game-content-card__footer-icon')
+    expect(kickerIcon).toHaveAttribute('aria-hidden', 'true')
+    expect(footerIcon).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('hides the compact kicker icon from assistive technology', () => {
+    const { container } = render(<GameContentCard kind="spell" title="Fireball" density="compact" />)
+    const compactIcon = container.querySelector('.game-content-card__kicker-icon--compact')
+    expect(compactIcon).toHaveAttribute('aria-hidden', 'true')
   })
 
   it('hides the kicker row in compact density', () => {
