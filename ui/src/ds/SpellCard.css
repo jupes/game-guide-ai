@@ -1,0 +1,61 @@
+/* SpellCard — translated from the DS source's inline styles (no .css file
+   upstream) into real classes, 1:1 with the same custom-property references. */
+
+.spell-card__material {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.spell-card__material-label {
+  font-family: var(--aether-font-ui);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .9px;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.spell-card__material-text {
+  font-family: var(--aether-font-body);
+  font-size: 15px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.spell-card__description {
+  margin: 0;
+  font-family: var(--aether-font-body);
+  font-size: 16px;
+  line-height: 26px;
+  text-wrap: pretty;
+}
+
+.spell-card__description--compact {
+  font-size: 15px;
+  line-height: 24px;
+}
+
+.spell-card__higher-levels {
+  margin: 0;
+  font-family: var(--aether-font-body);
+  font-size: 15.5px;
+  line-height: 25px;
+  color: var(--md-sys-color-on-surface-variant);
+  text-wrap: pretty;
+}
+
+.spell-card__classes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.spell-card__spacer--default {
+  height: 16px;
+}
+
+.spell-card__spacer--compact {
+  height: 12px;
+}

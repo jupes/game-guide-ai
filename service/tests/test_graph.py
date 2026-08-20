@@ -326,7 +326,16 @@ _SUGG_JSON = (
 
 
 def test_graph_spell_mode_attaches_three_typed_suggestions():
-    llm = _SeqLLM(["Fireball: 8d6 fire damage in a 20-foot radius [1].", _SUGG_JSON])
+    # Deliberate update (z7fl.1 Checkpoint A): spell mode now makes a THIRD call
+    # (spell-content structuring, after answer + suggestions) — see
+    # test_graph_spell_mode_attaches_typed_spell_content for that behavior in
+    # detail. This test stays focused on suggestions; the third canned reply is
+    # a minimal-but-valid spell-content JSON so structuring doesn't interfere.
+    llm = _SeqLLM([
+        "Fireball: 8d6 fire damage in a 20-foot radius [1].",
+        _SUGG_JSON,
+        '{"name": "Fireball", "description": "8d6 fire damage in a 20-foot radius."}',
+    ])
     svc = _svc(_result(answerable=True), llm)
     graph = build_rag_graph(svc)
     out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
@@ -335,7 +344,7 @@ def test_graph_spell_mode_attaches_three_typed_suggestions():
     assert [s.style.value for s in suggs] == ["practical", "roleplay", "wacky"]
     assert all(s.text for s in suggs)
     assert "8d6" in out["answer"]
-    assert llm.calls == 2  # answer + suggestions
+    assert llm.calls == 3  # answer + suggestions + spell-content structuring
 
 
 def test_graph_non_spell_modes_have_no_suggestions():
@@ -398,3 +407,226 @@ def test_graph_suggestions_json_in_code_fence_parses():
     out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
     assert out["suggestions"] is not None
     assert [s.style.value for s in out["suggestions"]] == ["practical", "roleplay", "wacky"]
+
+
+# ---------------------------------------------------------------------------
+# z7fl.1 Checkpoint A — spell content structuring (tracer bullet)
+# ---------------------------------------------------------------------------
+
+_SPELL_ANSWER = "Fireball: 8d6 fire damage in a 20-foot radius [1]."
+
+_SPELL_CONTENT_JSON = (
+    '{"name": "Fireball", "level": 3, "school": "evocation", '
+    '"casting_time": "1 action", "range": "150 feet", "duration": "Instantaneous", '
+    '"components": {"v": true, "s": true, "m": "a tiny ball of bat guano and sulfur"}, '
+    '"description": "A bright streak flashes from you to a point you choose within '
+    'range and then blossoms with a low roar into an explosion of flame.", '
+    '"higher_levels": "the damage increases by 1d6 for each slot level above 3rd", '
+    '"classes": ["Sorcerer", "Wizard"], "concentration": false, "ritual": false}'
+)
+
+
+def test_graph_spell_mode_attaches_typed_spell_content():
+    """Tracer bullet (behavior 1): a valid spell-content reply attaches a typed
+    SpellContent; the prose answer is unaffected. Spell mode now makes THREE
+    calls: answer, suggestions, spell-content structuring (in that order)."""
+    llm = _SeqLLM([_SPELL_ANSWER, _SUGG_JSON, _SPELL_CONTENT_JSON])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    sc = out["spell_content"]
+    assert sc is not None
+    assert sc.name == "Fireball"
+    assert sc.level == 3
+    assert sc.components is not None
+    assert sc.components.m == "a tiny ball of bat guano and sulfur"
+    assert "8d6" in out["answer"]  # prose answer unaffected
+    assert llm.calls == 3
+
+
+def test_graph_malformed_spell_content_degrades_to_none():
+    """Behavior 2: a non-JSON structuring reply must not fail the answer."""
+    llm = _SeqLLM([_SPELL_ANSWER, _SUGG_JSON, "sorry, I cannot do JSON today"])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    assert out["spell_content"] is None
+    assert "8d6" in out["answer"]
+
+
+def test_graph_spell_content_missing_core_field_degrades_to_none():
+    """Behavior 2b: valid JSON but missing the core-required `description` field
+    must degrade to None, not validate as a near-empty card."""
+    minimal = '{"name": "Fireball"}'
+    llm = _SeqLLM([_SPELL_ANSWER, _SUGG_JSON, minimal])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    assert out["spell_content"] is None
+    assert "8d6" in out["answer"]
+
+
+def test_graph_non_spell_modes_never_populate_spell_content():
+    """Behavior 3: sage/rules/gm never populate spell_content."""
+    for mode in ("sage", "rules", "gm"):
+        llm = _FakeLLM("answer [1]")
+        svc = _svc(_result(answerable=True), llm)
+        graph = build_rag_graph(svc)
+        out = graph.invoke({"prompt": "What is a Basilisk?", "mode": mode})
+        assert out.get("spell_content") is None, mode
+
+
+def test_graph_spell_content_optional_fields_omitted_still_parses():
+    """Behavior 3b: core-required fields present, everything else omitted."""
+    minimal_valid = '{"name": "Fireball", "description": "8d6 fire damage in a 20-foot radius."}'
+    llm = _SeqLLM([_SPELL_ANSWER, _SUGG_JSON, minimal_valid])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    sc = out["spell_content"]
+    assert sc is not None
+    assert sc.name == "Fireball"
+    assert sc.level is None
+    assert sc.components is None
+
+
+def test_graph_spell_content_extractor_receives_exact_answer_text():
+    """Behavior 3c: generate_spell_content is called with the exact prose
+    `answer` text (extraction), not the retrieved corpus context — deterministic
+    replacement for an unfalsifiable "matches the substance" claim."""
+    captured: list[str] = []
+
+    class _CapturingLLM:
+        def __init__(self, texts):
+            self.texts = list(texts)
+            self.calls = 0
+
+        def invoke(self, messages, config=None, **kw):
+            self.calls += 1
+            if self.calls == 3:  # the structuring call
+                # The HumanMessage content must contain the exact prose answer.
+                captured.append(messages[-1].content)
+            return AIMessage(content=self.texts[min(self.calls - 1, len(self.texts) - 1)])
+
+    llm = _CapturingLLM([_SPELL_ANSWER, _SUGG_JSON, _SPELL_CONTENT_JSON])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    graph.invoke({"prompt": "What does Fireball do?", "mode": "spell"})
+    assert len(captured) == 1
+    assert _SPELL_ANSWER in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# z7fl.1 Checkpoint B — NPC/stat-block structuring + cost heuristic
+# ---------------------------------------------------------------------------
+
+# 2 markers ("armor class" + "hit points") — should trigger structuring.
+_STATBLOCK_ANSWER = (
+    "You encounter a goblin scout.\nArmor Class 15\nHit Points 7 (2d6)\nSpeed 30 ft."
+)
+# 0 markers — must never trigger structuring.
+_NO_MARKERS_ANSWER = "The tavern is warm and cozy, filled with laughter and pipe smoke."
+# 1 marker only ("hit points", used figuratively) — must not trigger (need 2+).
+_ONE_MARKER_ANSWER = (
+    "The old rope bridge has taken a beating over the years; it has 200 hit points "
+    "of durability before it finally gives way."
+)
+
+_STATBLOCK_JSON = (
+    '{"name": "Goblin Scout", "size": "Small", "type": "humanoid", '
+    '"alignment": "neutral evil", "ac": 15, "hp": 7, "hit_dice": "2d6", '
+    '"speed": "30 ft.", '
+    '"abilities": {"str": 8, "dex": 14, "con": 10, "int": 10, "wis": 8, "cha": 8}, '
+    '"cr": "1/4", "xp": 50, '
+    '"traits": [{"name": "Nimble Escape", "text": "The goblin can take the '
+    'Disengage or Hide action as a bonus action."}], '
+    '"actions": [{"name": "Scimitar", "text": "Melee Weapon Attack: +4 to hit."}]}'
+)
+
+
+def test_graph_gm_mode_attaches_typed_stat_block_when_heuristic_matches():
+    """Behavior 4: a prose answer with 2+ stat-block markers triggers
+    structuring and attaches a typed StatBlockContent."""
+    llm = _SeqLLM([_STATBLOCK_ANSWER, _STATBLOCK_JSON])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe an encounter", "mode": "gm"})
+    sb = out["stat_block"]
+    assert sb is not None
+    assert sb.name == "Goblin Scout"
+    assert sb.ac == 15
+    assert sb.hp == 7
+    assert sb.abilities is not None
+    assert sb.abilities.dex == 14
+    assert sb.cr == "1/4"
+    assert llm.calls == 2
+
+
+def test_graph_sage_mode_never_calls_structuring_without_markers():
+    """Behavior 5: no stat-block markers -> the structuring call never fires
+    at all (cost guard) -- llm.calls stays at 1."""
+    llm = _FakeLLM(_NO_MARKERS_ANSWER)
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe the tavern", "mode": "sage"})
+    assert out.get("stat_block") is None
+    assert llm.calls == 1
+
+
+def test_graph_single_incidental_marker_does_not_false_positive_trigger():
+    """Behavior 5b: exactly one marker (used figuratively, not a stat block)
+    must not trigger structuring -- the heuristic requires 2+."""
+    llm = _FakeLLM(_ONE_MARKER_ANSWER)
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe the bridge", "mode": "gm"})
+    assert out.get("stat_block") is None
+    assert llm.calls == 1
+
+
+def test_graph_malformed_stat_block_degrades_to_none():
+    """Behavior 6: a non-JSON structuring reply (heuristic matched) must not
+    fail the answer."""
+    llm = _SeqLLM([_STATBLOCK_ANSWER, "sorry, I cannot do JSON today"])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe an encounter", "mode": "gm"})
+    assert out["stat_block"] is None
+    assert "goblin" in out["answer"]
+
+
+def test_graph_stat_block_optional_fields_omitted_still_parses():
+    """Behavior 6b: core-required fields present (name, ac, hp), everything
+    else omitted -- still parses."""
+    minimal_valid = '{"name": "Goblin Scout", "ac": 15, "hp": 7}'
+    llm = _SeqLLM([_STATBLOCK_ANSWER, minimal_valid])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe an encounter", "mode": "gm"})
+    sb = out["stat_block"]
+    assert sb is not None
+    assert sb.name == "Goblin Scout"
+    assert sb.abilities is None
+    assert sb.traits is None
+
+
+def test_graph_stat_block_missing_core_field_degrades_to_none():
+    """Behavior 6c: valid JSON but missing the core-required `hp` field must
+    degrade to None, not validate as a near-empty stat block."""
+    missing_hp = '{"name": "Goblin Scout", "ac": 15}'
+    llm = _SeqLLM([_STATBLOCK_ANSWER, missing_hp])
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe an encounter", "mode": "gm"})
+    assert out["stat_block"] is None
+
+
+def test_graph_rules_mode_never_populates_stat_block():
+    """Behavior 7: rules mode never populates stat_block and never makes an
+    extra LLM call, even when the answer text has stat-block markers."""
+    llm = _FakeLLM(_STATBLOCK_ANSWER)
+    svc = _svc(_result(answerable=True), llm)
+    graph = build_rag_graph(svc)
+    out = graph.invoke({"prompt": "Describe an encounter", "mode": "rules"})
+    assert out.get("stat_block") is None
+    assert llm.calls == 1

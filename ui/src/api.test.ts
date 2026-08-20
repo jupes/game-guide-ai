@@ -183,6 +183,38 @@ describe('postChat', () => {
     await postChat('Q', 'sage', 'conv-abc', spy)
     expect(JSON.parse(String(captured!.init?.body))).toMatchObject({ conversation_id: 'conv-abc' })
   })
+
+  // z7fl.2 Checkpoint C — zod schema validation at the boundary
+  it('returns a typed error, not a thrown exception, when the response fails schema validation (behavior 10)', async () => {
+    // answerable should be boolean; this is a shape the old `as ChatResponse`
+    // cast would have silently trusted.
+    const malformed = { answer: 'x', sources: [], answerable: 'yes' }
+    const result = await postChat('Q', 'sage', null, fakeFetch(200, malformed))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/unreadable/i)
+  })
+
+  it('rejects a fractional value for a Pydantic-int-backed field (PR #46 review)', async () => {
+    // Source.page is a Pydantic `int`; z.number() alone would silently accept
+    // 1.5 and let malformed payloads through the boundary this schema exists
+    // to guard.
+    const fractionalPage = {
+      answer: 'x',
+      sources: [{
+        book: 'mm-5e', chapter: null, section: null, entity: null, page: 1.5, snippet: 'x',
+      }],
+      answerable: true,
+    }
+    const result = await postChat('Q', 'sage', null, fakeFetch(200, fractionalPage))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/unreadable/i)
+  })
+
+  it('accepts a response carrying null spell_content/stat_block (behavior 9)', async () => {
+    const withNewFields = { ...GROUNDED, spell_content: null, stat_block: null }
+    const result = await postChat('Q', 'sage', null, fakeFetch(200, withNewFields))
+    expect(result).toEqual({ kind: 'ok', response: withNewFields })
+  })
 })
 
 // ── channel-chats CP-B — getMessages ──────────────────────────────────────────
@@ -231,6 +263,17 @@ describe('getMessages', () => {
 
   it('maps a 200 with a non-JSON body to an error result, not a throw', async () => {
     const result = await getMessages('conv-1', htmlFetch())
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/unreadable/i)
+  })
+
+  it('returns a typed error, not a thrown exception, when a message fails schema validation (behavior 10)', async () => {
+    // role must be 'user' | 'assistant' — a payload the old cast would have
+    // trusted regardless of its actual shape.
+    const malformed = [{ id: 1, role: 'narrator', content: 'x', mode: 'sage', created_at: 't' }]
+    const result = await getMessages(
+      'conv-1', fakeFetch(200, { conversation_id: 'conv-1', messages: malformed }),
+    )
     expect(result.kind).toBe('error')
     if (result.kind === 'error') expect(result.message).toMatch(/unreadable/i)
   })
@@ -361,6 +404,17 @@ describe('getAttachments', () => {
     const result = await getAttachments('conv-1', failing)
     expect(result.kind).toBe('error')
     if (result.kind === 'error') expect(result.message).toMatch(/reach|network/i)
+  })
+
+  it('returns a typed error, not a thrown exception, when an attachment fails schema validation (behavior 10)', async () => {
+    // chars must be a number — a payload the old cast would have trusted
+    // regardless of its actual shape.
+    const malformed = [{ id: 1, filename: 'x.txt', content_type: 'text/plain', chars: 'lots', created_at: 't' }]
+    const result = await getAttachments(
+      'conv-1', fakeFetch(200, { conversation_id: 'conv-1', attachments: malformed }),
+    )
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/unreadable/i)
   })
 })
 

@@ -142,6 +142,8 @@ class RagService:
             answerable=final["answerable"],
             mode=ChatMode(mode), conversation_id=conversation_id,
             suggestions=final.get("suggestions"),
+            spell_content=final.get("spell_content"),
+            stat_block=final.get("stat_block"),
         )
         # Only the generate route built an LLM context; the preflight refuse
         # path never even produced a retrieval result.

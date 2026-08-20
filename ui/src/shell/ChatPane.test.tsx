@@ -485,4 +485,120 @@ describe('ChatPane (#21)', () => {
     await waitFor(() => expect(screen.getByPlaceholderText('Ask…')).toBeInTheDocument())
     expect(screen.queryByText('notes.txt')).not.toBeInTheDocument()
   })
+
+  // ── z7fl.4 Checkpoint E — structured content widgets ───────────────────────
+
+  const SPELL_CONTENT = {
+    name: 'Fireball',
+    level: 3,
+    school: 'evocation',
+    casting_time: '1 action',
+    range: '150 feet',
+    duration: 'Instantaneous',
+    components: { v: true, s: true, m: 'a tiny ball of bat guano and sulfur' },
+    description: 'A bright streak flashes from you to a point you choose within range.',
+    higher_levels: 'the damage increases by 1d6 for each slot level above 3rd',
+    classes: ['Sorcerer', 'Wizard'],
+  }
+
+  const STAT_BLOCK = {
+    name: 'Goblin Scout',
+    size: 'Small',
+    type: 'humanoid',
+    alignment: 'neutral evil',
+    ac: 15,
+    hp: 7,
+    traits: [{ name: 'Nimble Escape', text: 'The goblin can take the Disengage or Hide action as a bonus action.' }],
+    actions: [{ name: 'Scimitar', text: 'Melee Weapon Attack: +4 to hit.' }],
+  }
+
+  it('renders a SpellCard alongside the prose bubble when spell_content is present (behavior 12)', async () => {
+    // Additive, not a replacement (PR #46 review): the structuring call is a
+    // separate, schema-constrained LLM extraction -- it's prompted not to
+    // invent facts, but nothing guarantees it captures every fact either.
+    // Hiding the prose risks silently dropping content outside the schema
+    // (asides, caveats, anything that doesn't map to a SpellContent field).
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: {
+        answer: 'Fireball: 8d6 fire damage in a 20-foot radius.',
+        sources: [],
+        answerable: true,
+        spell_content: SPELL_CONTENT,
+      },
+    })
+    render(<Wrapper navState={{ mode: 'spell' }} post={post} />)
+
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'What does Fireball do?')
+    await userEvent.keyboard('{Enter}')
+
+    // The card's content is visible...
+    await waitFor(() => expect(screen.getByText('Fireball')).toBeInTheDocument())
+    expect(screen.getByText(/3rd-level evocation/)).toBeInTheDocument()
+    expect(screen.getByText('a tiny ball of bat guano and sulfur')).toBeInTheDocument()
+    expect(screen.getByText('the damage increases by 1d6 for each slot level above 3rd')).toBeInTheDocument()
+    // ...and so is the original prose bubble (nothing the model said is hidden).
+    expect(screen.getByText('Fireball: 8d6 fire damage in a 20-foot radius.')).toBeInTheDocument()
+  })
+
+  it('renders a StatBlockCard alongside the prose bubble when stat_block is present (behavior 13)', async () => {
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: {
+        answer: 'You encounter a goblin scout. Armor Class 15. Hit Points 7.',
+        sources: [],
+        answerable: true,
+        stat_block: STAT_BLOCK,
+      },
+    })
+    render(<Wrapper navState={{ mode: 'gm' }} post={post} />)
+
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'Describe an encounter')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByText('Goblin Scout')).toBeInTheDocument())
+    expect(screen.getByText('Small humanoid, neutral evil')).toBeInTheDocument()
+    expect(screen.getByText(/Nimble Escape/)).toBeInTheDocument()
+    expect(screen.getByText(/Scimitar/)).toBeInTheDocument()
+    // The original prose bubble is also shown (nothing the model said is hidden).
+    expect(
+      screen.getByText('You encounter a goblin scout. Armor Class 15. Hit Points 7.'),
+    ).toBeInTheDocument()
+  })
+
+  it('falls back to the plain prose bubble when neither spell_content nor stat_block is present (behavior 14)', async () => {
+    const post: PostFn = async () => GROUNDED
+    render(<Wrapper post={post} />)
+
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'What is a Basilisk?')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
+  })
+
+  it('keeps suggestion cards additive alongside a SpellCard in the same turn', async () => {
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: {
+        answer: 'Fireball: 8d6 fire damage in a 20-foot radius.',
+        sources: [],
+        answerable: true,
+        spell_content: SPELL_CONTENT,
+        suggestions: SUGGESTIONS,
+      },
+    })
+    render(<Wrapper navState={{ mode: 'spell' }} post={post} />)
+
+    const textarea = screen.getByPlaceholderText('Ask…')
+    await userEvent.type(textarea, 'What does Fireball do?')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByText('Fireball')).toBeInTheDocument())
+    expect(screen.getByText('Practical')).toBeInTheDocument()
+  })
 })
