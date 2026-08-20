@@ -61,6 +61,9 @@ class DndChunk:
     class_name: str | None
     feature_name: str | None
     text: str
+    source_type: str = "pdf"
+    source_url: str | None = None
+    license: str | None = None
 
 
 @dataclass

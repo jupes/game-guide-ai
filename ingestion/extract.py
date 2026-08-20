@@ -313,6 +313,9 @@ class DndChunk:
     class_name: str | None       # parent class for class_feature chunks
     feature_name: str | None     # specific feature for class_feature chunks
     text: str
+    source_type: str = "pdf"
+    source_url: str | None = None
+    license: str | None = None
 
 
 def _chunk_id(book_slug: str, page: int, col: int, idx: int) -> str:
