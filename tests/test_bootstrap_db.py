@@ -30,7 +30,7 @@ DSN = "postgresql://user:pw@localhost:5432/db"
 
 #: In dependency order. 04/05 come from the canonical package location.
 EXPECTED_ORDER = [
-    "01-extensions.sql", "02-schema.sql", "03-hybrid-search.sql",
+    "01-extensions.sql", "02-schema.sql", "03-hybrid-search.sql", "03a-corpus-provenance.sql",
     "04-chat-schema.sql", "05-auth-schema.sql",
 ]
 
