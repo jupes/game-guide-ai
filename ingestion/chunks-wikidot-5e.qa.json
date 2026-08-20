@@ -1,0 +1,18 @@
+{
+  "source": "chunks-wikidot-5e.jsonl",
+  "total": 880,
+  "clean": 849,
+  "quarantined": 31,
+  "pass_rate": 0.9648,
+  "reasons": {
+    "bad_entity_salvaged": 46,
+    "length": 31
+  },
+  "samples": {
+    "length": [
+      "Fold Unfold Table of Contents Player's Handbook Explorer's Guide to Wildemount D",
+      "Fold Unfold Table of Contents Player's Handbook Dark Elf High Elf Wood Elf Explo",
+      "Fold Unfold Table of Contents Player's Handbook Variant Eberron: Rising from the"
+    ]
+  }
+}
