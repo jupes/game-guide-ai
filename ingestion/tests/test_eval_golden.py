@@ -449,6 +449,30 @@ def test_push_retrieval_scores_swallows_create_score_exceptions():
     _push_retrieval_scores(_BoomingLangfuse(), "trace-123", {"hit_at_1": 1.0})  # must not raise
 
 
+def test_env_loader_strips_quotes_from_values():
+    """Live-reproduced bug (2026-08-20): the module-level .env loader did
+    `val.strip()` but never stripped surrounding quotes, so a quoted
+    LANGFUSE_BASE_URL="https://..." landed in os.environ AS "https://..."
+    (quotes included) -- httpx then rejected it ("missing http/https
+    protocol") and the best-effort try/except in main() swallowed that,
+    so `eval_golden.py` silently pushed nothing to Langfuse for months.
+    Confirmed live: before the fix, langfuse.auth_check() was False; after,
+    True, and a real run's retrieval_* scores landed on a real trace.
+    The loader executes at import time from a fixed path, so it can't be
+    unit-tested behaviorally without a bigger refactor (parent.parent / ".env"
+    isn't injectable) -- this locks the fix in place as a source check
+    instead, mirroring the already-correct config.py implementation."""
+    import inspect
+
+    import ingestion.eval_golden as mod
+
+    source = inspect.getsource(mod)
+    assert 'val[0] in ("\'", \'"\')' in source, (
+        "the .env loader must strip matched surrounding quotes from values "
+        "(see config.py's loader for the reference implementation)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test runner
 # ---------------------------------------------------------------------------

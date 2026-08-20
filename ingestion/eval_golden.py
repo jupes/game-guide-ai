@@ -34,7 +34,13 @@ if _ENV_PATH.exists():
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, val = line.partition("=")
-        os.environ.setdefault(key.strip(), val.strip())
+        val = val.strip()
+        # Strip one layer of matched surrounding quotes (standard .env syntax);
+        # otherwise a quoted value like LANGFUSE_BASE_URL="https://..." keeps its
+        # quotes and breaks consumers (mirrors config.py's loader).
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+            val = val[1:-1]
+        os.environ.setdefault(key.strip(), val)
 
 # ---------------------------------------------------------------------------
 # Config

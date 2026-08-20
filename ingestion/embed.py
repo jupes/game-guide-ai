@@ -40,7 +40,13 @@ if _ENV_PATH.exists():
         if not _line or _line.startswith("#") or "=" not in _line:
             continue
         _k, _, _v = _line.partition("=")
-        os.environ.setdefault(_k.strip(), _v.strip())
+        _v = _v.strip()
+        # Strip one layer of matched surrounding quotes (standard .env syntax);
+        # otherwise a quoted value keeps its quotes and breaks consumers
+        # (mirrors config.py's loader; see eval_golden.py's identical fix).
+        if len(_v) >= 2 and _v[0] == _v[-1] and _v[0] in ("'", '"'):
+            _v = _v[1:-1]
+        os.environ.setdefault(_k.strip(), _v)
 
 # ---------------------------------------------------------------------------
 # Defaults
