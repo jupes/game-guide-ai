@@ -66,6 +66,29 @@ def test_compose_mounts_the_canonical_files():
         )
 
 
+def test_initdb_files_are_mounted_individually_not_nested_in_a_directory_mount():
+    """`docker compose up -d vector-db` reliably fails ("read-only file system")
+    if 01-03 are mounted as one ./vector-db/init:/docker-entrypoint-initdb.d
+    directory mount while 04/05 are separately mounted as single files nested
+    *under* that same target — the OCI runtime has to create a mountpoint for
+    each nested file mount by writing into its parent, which a read-only
+    directory mount blocks. A writable directory mount "fixes" the error but
+    silently recreates a second copy of 04/05 on the host at container start
+    (Docker materializes the mountpoint stub through the live bind), which is
+    exactly the duplication test_compose_mounts_the_canonical_files forbids.
+    The only fix that has neither failure mode: mount every init file
+    individually, so there is no directory-level mount to nest under."""
+    compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "/docker-entrypoint-initdb.d:" not in compose and ":/docker-entrypoint-initdb.d\n" not in compose, (
+        "no bare directory mount at /docker-entrypoint-initdb.d — mount each "
+        "init file individually (see the comment above the volumes: block)"
+    )
+    for name in ("01-extensions.sql", "02-schema.sql", "03-hybrid-search.sql"):
+        assert f"./vector-db/init/{name}:/docker-entrypoint-initdb.d/{name}:ro" in compose, (
+            f"{name} must be mounted individually, read-only"
+        )
+
+
 def test_the_stores_do_not_embed_their_own_ddl():
     for module in ("service/history.py", "service/auth_store.py"):
         text = (REPO_ROOT / module).read_text(encoding="utf-8")
