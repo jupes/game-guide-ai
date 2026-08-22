@@ -89,13 +89,13 @@ to be meaningful — not treated as a signal at n=6.
 
 ## Test It Yourself (walkthrough)
 
-1. `docker run -d --name gga-vector-db -e POSTGRES_USER=rag -e POSTGRES_PASSWORD=rag_dev_change_me -e POSTGRES_DB=game_guide_ai -p 5433:5432 -v game-guide-ai_pgvector_data:/var/lib/postgresql/data pgvector/pgvector:pg17-bookworm`
-   (or use your existing local dev DB — see the Known Gaps note on `docker compose` below)
-2. `docker exec gga-vector-db psql -U rag -d game_guide_ai -c "select book_slug, source_type, count(*) from dnd.chunks group by 1,2 order by 3 desc;"`
+1. `docker compose up -d vector-db` (uses your existing `pgvector_data` volume — the real local
+   dev corpus, now including the wikidot content ingested during implementation)
+2. `docker exec game-guide-ai-vector-db psql -U rag -d game_guide_ai -c "select book_slug, source_type, count(*) from dnd.chunks group by 1,2 order by 3 desc;"`
    - Expect: a `wikidot-5e | wiki | 849` row alongside the 12 PDF book rows.
-3. `DATABASE_URL=postgresql://rag:rag_dev_change_me@localhost:5433/game_guide_ai PYTHONUTF8=1 uv run --with "psycopg[binary]" --with openai python ingestion/eval_golden.py`
+3. `DATABASE_URL=postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai PYTHONUTF8=1 uv run --with "psycopg[binary]" --with openai python ingestion/eval_golden.py`
    - Expect: Hit@1/MRR/Recall@10 in the low-80s/0.85/low-90s range (see table above).
-4. Automated: `DATABASE_URL=... uv run --with '.[test]' python -m pytest -q --no-cov` — expect all green (677 passed, 1 skipped).
+4. Automated: `DATABASE_URL=... uv run --with '.[test]' python -m pytest -q --no-cov` — expect all green.
 5. Re-run the crawl yourself: `uv run python ingestion/scrape_wikidot.py --out ingestion/chunks-wikidot-5e.jsonl --limit 3` — expect a small sample JSONL with `source_type=wiki`, `license="CC BY-SA 3.0"` on every line.
 
 ## Follow-ups / Known Gaps
@@ -105,9 +105,10 @@ to be meaningful — not treated as a signal at n=6.
 - `agent-forge-harness-4x66.9` (P3) — refresh the 4 golden-set entries this feature made stale.
 - `agent-forge-harness-h310` (P4, pre-existing) — Roll20 compendium licensing review, deferred
   from research phase.
-- `agent-forge-harness-lvmd` (P3, pre-existing, unrelated) — `docker compose up -d vector-db`
-  fails on Windows Docker Desktop (nested file-bind-mount under a `:ro` dir mount); worked around
-  during implementation with a bare `docker run` against the same named volume (see walkthrough
-  step 1 above).
+- `agent-forge-harness-lvmd` — **closed**: `docker compose up -d vector-db`'s nested-mount bug
+  (hit and diagnosed independently during this implementation) turned out to already be fixed on
+  `master` in parallel (PR #52, `aa9948c`, same root cause). This branch rebased onto that fix and
+  added the new `03a-corpus-provenance.sql` to both the compose mount list and its guarding test —
+  it wasn't covered by the upstream fix since that migration didn't exist yet when PR #52 landed.
 - Applying `vector-db/init/03a-corpus-provenance.sql` to the live Cloud SQL pilot DB is a
   deploy-time step, not exercised by CI — do this before deploying this branch's code.

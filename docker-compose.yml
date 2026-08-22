@@ -31,6 +31,7 @@ services:
       - ./vector-db/init/01-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
       - ./vector-db/init/02-schema.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
       - ./vector-db/init/03-hybrid-search.sql:/docker-entrypoint-initdb.d/03-hybrid-search.sql:ro
+      - ./vector-db/init/03a-corpus-provenance.sql:/docker-entrypoint-initdb.d/03a-corpus-provenance.sql:ro
       - ./service/sql/04-chat-schema.sql:/docker-entrypoint-initdb.d/04-chat-schema.sql:ro
       - ./service/sql/05-auth-schema.sql:/docker-entrypoint-initdb.d/05-auth-schema.sql:ro
     healthcheck:
