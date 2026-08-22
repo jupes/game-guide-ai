@@ -15,9 +15,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 # Env-overridable tuning knobs live in the single top-level config module.
 # DEFAULT_MODEL is re-exported here for `from .generate import DEFAULT_MODEL`.
-from config import CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX, TEMPERATURE
+from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX, TEMPERATURE
 from ingestion.retrieval import RetrievalResult
 
+from .attachments import cap_text
 from .models import Source, Suggestion, SuggestionStyle
 
 
@@ -115,6 +116,32 @@ def build_context(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> str:
         label = c.entity_name or c.section or c.chapter or c.content_type
         blocks.append(f"[{i}] ({label}): {text}")
     return "\n\n".join(blocks)
+
+
+def assemble_context(
+    result: RetrievalResult, *,
+    attachment_context: str | None, attachment_label: str | None,
+    top_n: int = CONTEXT_TOP_N,
+) -> str:
+    """The exact string sent to the LLM as "Sources:" — corpus chunks via
+    `build_context`, plus an uploaded attachment (if any) appended as its own
+    numbered source continuing the [1..N] sequence (swe1.6 / 08il). Extracted
+    (D2, agent-forge-harness-b8o.1) from `generate_node`'s inline block so both
+    the graph and the eval capture harness build the identical string the LLM
+    actually saw — see `service/tests/test_generate_context_assembly.py` for
+    the characterization tests proving this is behavior-preserving.
+
+    The suggestions path deliberately does NOT call this — it uses its own
+    narrower `build_context()` without the attachment block (see
+    `service/graph.py::suggest_node`); do not unify the two."""
+    context = build_context(result, top_n=top_n)
+    if not attachment_context:
+        return context
+    capped = cap_text(attachment_context, ATTACHMENT_MAX_CHARS)
+    label = attachment_label or "your attachment"
+    n = len(context_texts(result, top_n)) + 1
+    attachment_block = f"[{n}] (Attachment — {label}): {capped}"
+    return f"{context}\n\n{attachment_block}" if context else attachment_block
 
 
 def build_sources(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> list[Source]:
