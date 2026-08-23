@@ -154,6 +154,7 @@ def test_response_schema():
         body = c.post("/chat", json={"prompt": "x"}).json()
         assert set(body.keys()) == {
             "answer", "sources", "answerable", "mode", "conversation_id", "suggestions",
+            "routing", "suggestions_routing",
         }
         assert set(body["sources"][0].keys()) == {"book", "chapter", "section", "entity", "page", "snippet"}
     finally:

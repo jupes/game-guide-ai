@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from enum import Enum
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
@@ -52,7 +52,7 @@ from .metrics import (
     build_metrics_sink,
     record_safely,
 )
-from .model_catalog import enabled_profiles, public_model_entry
+from .model_catalog import CATALOG_REVISION, DEFAULT_ALIAS, enabled_profiles, get_profile, public_model_entry
 from .models import (
     Attachment,
     AttachmentResponse,
@@ -63,7 +63,9 @@ from .models import (
     ChatResponse,
     LoginRequest,
     MessagesResponse,
+    RoutingInfo,
     SignupRequest,
+    SuggestionsRoutingInfo,
 )
 from .rag import RagService
 from .ratelimit import (
@@ -679,6 +681,47 @@ def chat(
     # Ownership: one atomic claim-or-reject (403 if it's someone else's).
     # Before the try for the same reason (403, not 500).
     _authorize_conversation(store, conversation_id, session.user_id, creating=True)
+
+    # Model routing (b8o.2): validate the request, then atomically bind this
+    # conversation's strategy before any provider call (D6). D1's "null
+    # conversation_id" branch from the plan doesn't apply here — conversation_id
+    # is always minted above before this point (a design decision made after
+    # the plan was written), so every request already has a real key to bind
+    # against; there's no stateless-single-turn path left to special-case.
+    # Before the try for the same reason as ownership (409/422, not 500).
+    requested_alias = req.model_preference
+    if requested_alias != "auto" and get_profile(requested_alias) is None:
+        raise HTTPException(
+            status_code=422, detail=f"unknown or disabled model: {requested_alias!r}",
+        )
+    strategy: Literal["auto", "manual"] = "auto" if requested_alias == "auto" else "manual"
+    manual_alias = None if strategy == "auto" else requested_alias
+    if store is not None:
+        bound_strategy, bound_alias = store.claim_conversation_strategy(
+            conversation_id, strategy=strategy, manual_alias=manual_alias,
+            catalog_revision=CATALOG_REVISION,
+        )
+        if (bound_strategy, bound_alias) != (strategy, manual_alias):
+            raise HTTPException(
+                status_code=409,
+                detail="this conversation is bound to a different model preference; "
+                       "start a new conversation to change it",
+            )
+    # Effective model resolution: Checkpoint 4 (b8o.4) adds the real per-turn
+    # Auto classifier; until then 'auto' resolves to the catalog default and a
+    # manual alias resolves to itself (already validated enabled above).
+    if strategy == "manual":
+        assert manual_alias is not None  # invariant: set exactly when strategy == "manual"
+        effective_alias = manual_alias
+    else:
+        effective_alias = DEFAULT_ALIAS
+    effective_profile = get_profile(effective_alias)
+    assert effective_profile is not None  # validated above; DEFAULT_ALIAS is always enabled
+    routing = RoutingInfo(
+        requested=requested_alias, effective=effective_alias,
+        provider=effective_profile.provider, strategy=strategy,
+    )
+
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, conversation_id,
@@ -687,6 +730,15 @@ def chat(
             req.prompt, mode=req.mode.value, conversation_id=conversation_id,
             attachment_context=attachment_context, attachment_label=attachment_label,
         )
+        resp.routing = routing
+        if req.mode.value == "spell" and resp.suggestions is not None:
+            # Suggestions always route to the economy subroute regardless of
+            # the answer's routing (D3) — one enabled profile today, so
+            # "economy subroute" is the same baseline; Checkpoint 4 gives
+            # this its own real resolution once more tiers exist.
+            resp.suggestions_routing = SuggestionsRoutingInfo(
+                effective=DEFAULT_ALIAS, provider=effective_profile.provider,
+            )
         record_safely(
             metrics,
             BooleanMetricPoint(

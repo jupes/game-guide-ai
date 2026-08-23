@@ -74,6 +74,12 @@ CATALOG: dict[str, ModelProfile] = {
 
 DEFAULT_ALIAS = "gpt-4o-mini"
 
+# Bumped whenever CATALOG's alias set or policy meaningfully changes; recorded
+# on each conversation's strategy binding (b8o.2, D6) so a future change can
+# tell which catalog shape a given conversation was bound under. Static for
+# now — becomes meaningful once the catalog actually changes after launch.
+CATALOG_REVISION = "v1"
+
 
 def enabled_profiles() -> list[ModelProfile]:
     """Catalog entries eligible for the public GET /models response, in a

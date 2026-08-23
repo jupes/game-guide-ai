@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -60,6 +61,11 @@ class ChatRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Natural-language D&D question")
     mode: ChatMode = Field(ChatMode.sage, description="Chat mode (sage|spell|rules|gm)")
     conversation_id: str | None = Field(None, description="Carried through; persistence is stubbed")
+    # b8o.2: "auto" or a specific enabled catalog alias (e.g. "gpt-4o-mini").
+    # Defaults to "auto" so existing callers that omit it keep working.
+    # Validated against the catalog and atomically bound to the conversation
+    # in the /chat handler, not here — Pydantic has no catalog access.
+    model_preference: str = Field("auto", description="'auto' or a specific enabled model alias")
 
 
 class Source(BaseModel):
@@ -69,6 +75,31 @@ class Source(BaseModel):
     entity: str | None = None
     page: int | None = None
     snippet: str
+
+
+class RoutingInfo(BaseModel):
+    """Honest model/fallback disclosure for one provider call (b8o.2 D3).
+    All fields are bounded enums/aliases — never an endpoint, key state, or
+    internal error. `task_class`/`reason` stay None until Checkpoint 4's
+    classifier exists; `auto` resolves to the static baseline until then."""
+    requested: str
+    effective: str
+    provider: str
+    strategy: Literal["auto", "manual"]
+    task_class: str | None = None
+    reason: str | None = None
+    fallback_from: str | None = None
+
+
+class SuggestionsRoutingInfo(BaseModel):
+    """Same disclosure shape as RoutingInfo, for spell mode's second
+    (suggestions) call (D3) — present only in spell mode, deliberately
+    narrower (no `requested`/`strategy`: suggestions always route to the
+    economy subroute regardless of the answer's routing)."""
+    effective: str
+    provider: str
+    reason: str | None = None
+    fallback_from: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -81,6 +112,11 @@ class ChatResponse(BaseModel):
     # None everywhere else — and in spell mode when suggestion generation
     # failed (the answer must never fail because the garnish did).
     suggestions: list[Suggestion] | None = None
+    # b8o.2: which model answered. None only when routing can't be resolved
+    # (never expected on a successful response — present for forward safety).
+    routing: RoutingInfo | None = None
+    # Spell mode only; null when suggestion generation failed (D3).
+    suggestions_routing: SuggestionsRoutingInfo | None = None
 
 
 # ── File attachments (swe1.6) ────────────────────────────────────────────────
