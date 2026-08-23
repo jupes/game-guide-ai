@@ -9,6 +9,7 @@ accepts an injected client for tests.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -30,6 +31,90 @@ class LLMClient(Protocol):
     def invoke(
         self, input: Any, config: Any = None, **kwargs: Any
     ) -> Any: ...  # pragma: no cover - structural type
+
+
+# ---------------------------------------------------------------------------
+# GenerationResult / usage / attempt observer (agent-forge-harness-b8o.1,
+# Checkpoint 1 slice 4 — TDD row 11). The provider boundary must return more
+# than answer text; unknown usage fields stay None rather than becoming zero
+# (a provider that doesn't report reasoning tokens is not the same as a
+# provider that used zero). generate_answer/generate_suggestions still return
+# their existing plain types unchanged — this is an additive capability the
+# later routing/observability checkpoints build on, not a behavior change.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class GenerationUsage:
+    input_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class GenerationResult:
+    text: str
+    usage: GenerationUsage
+    provider_request_id: str | None
+    finish_reason: str | None
+
+
+class AttemptObserver(Protocol):
+    """Receives one record per actual provider call attempt, including
+    failures. Checkpoint 5 wires a real (Langfuse-backed) observer; this
+    checkpoint ships the seam + a no-op default so nothing breaks before then."""
+    def record(
+        self, *, alias: str, result: GenerationResult | None, error: BaseException | None,
+    ) -> None: ...  # pragma: no cover - structural type
+
+
+class NullAttemptObserver:
+    """Default observer: does nothing. Safe when no one is watching."""
+    def record(
+        self, *, alias: str, result: GenerationResult | None, error: BaseException | None,
+    ) -> None:
+        pass
+
+
+def _usage_from_message(message: Any) -> GenerationUsage:
+    meta = getattr(message, "usage_metadata", None) or {}
+    input_details = meta.get("input_token_details") or {}
+    output_details = meta.get("output_token_details") or {}
+    return GenerationUsage(
+        input_tokens=meta.get("input_tokens"),
+        cached_input_tokens=input_details.get("cache_read"),
+        output_tokens=meta.get("output_tokens"),
+        reasoning_tokens=output_details.get("reasoning"),
+    )
+
+
+def generate_result(
+    messages: list[Any], *, alias: str, client: LLMClient,
+    config: Any | None = None, observer: AttemptObserver | None = None,
+) -> GenerationResult:
+    """Invoke `client` and return everything the provider boundary reports,
+    not just the answer text. Records exactly one attempt with `observer` —
+    on success AND on failure (re-raised unchanged after recording) — so
+    every attempt, latency, and charge stays attributable even when the call
+    raises. `alias` identifies which catalog entry made the call; Checkpoint
+    1 has no per-request routing yet, so callers pass the service's current
+    model alias."""
+    obs = observer or NullAttemptObserver()
+    try:
+        resp = client.invoke(messages, config=config)
+    except BaseException as exc:
+        obs.record(alias=alias, result=None, error=exc)
+        raise
+    content = resp.content
+    text = content.strip() if isinstance(content, str) else str(content).strip()
+    result = GenerationResult(
+        text=text,
+        usage=_usage_from_message(resp),
+        provider_request_id=getattr(resp, "id", None),
+        finish_reason=(getattr(resp, "response_metadata", None) or {}).get("finish_reason"),
+    )
+    obs.record(alias=alias, result=result, error=None)
+    return result
 
 # Shared grounding instruction appended to every grounded-mode system prompt.
 # The numbered sources include any uploaded attachment, which generate_node
@@ -214,7 +299,7 @@ def parse_suggestions(text: str) -> list[Suggestion]:
 def generate_suggestions(
     question: str, context: str, *,
     model: str = DEFAULT_MODEL, client: LLMClient | None = None,
-    config: Any | None = None,
+    config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> list[Suggestion]:
     """One structured LLM call for the three spell-usage ideas. Raises on any
     LLM or parse failure — the caller (graph suggest node) degrades to None."""
@@ -222,21 +307,20 @@ def generate_suggestions(
         from langchain_openai import ChatOpenAI
 
         client = ChatOpenAI(model=model, temperature=TEMPERATURE)
-    resp = client.invoke(
+    result = generate_result(
         [
             SystemMessage(content=SUGGESTIONS_SYSTEM),
             HumanMessage(content=SUGGESTIONS_TEMPLATE.format(context=context, question=question)),
         ],
-        config=config,
+        alias=model, client=client, config=config, observer=observer,
     )
-    content = resp.content
-    return parse_suggestions(content if isinstance(content, str) else str(content))
+    return parse_suggestions(result.text)
 
 
 def generate_answer(
     question: str, context: str, *, mode: str = "sage",
     model: str = DEFAULT_MODEL, client: LLMClient | None = None,
-    config: Any | None = None,
+    config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> str:
     """Call gpt-4o-mini with a per-mode system prompt + grounded user message.
 
@@ -256,9 +340,8 @@ def generate_answer(
         client = ChatOpenAI(model=model, temperature=TEMPERATURE)
     system = PERSONA_PROMPTS.get(mode, PERSONA_PROMPTS["sage"])
     user_content = GROUNDED_TEMPLATE.format(context=context, question=question)
-    resp = client.invoke(
+    result = generate_result(
         [SystemMessage(content=system), HumanMessage(content=user_content)],
-        config=config,
+        alias=model, client=client, config=config, observer=observer,
     )
-    content = resp.content
-    return content.strip() if isinstance(content, str) else str(content).strip()
+    return result.text
