@@ -52,6 +52,7 @@ from .metrics import (
     build_metrics_sink,
     record_safely,
 )
+from .model_catalog import enabled_profiles, public_model_entry
 from .models import (
     Attachment,
     AttachmentResponse,
@@ -558,6 +559,23 @@ def _authorize_conversation(
 @app.get("/healthz")
 def healthz() -> dict[str, str | bool]:
     return {"status": "ok", "ready": "rag" in _state}
+
+
+@app.get("/models")
+def get_models() -> dict[str, object]:
+    """Server-owned model catalog (agent-forge-harness-b8o.1, Checkpoint 1).
+    Read-only for now — no request yet resolves a model preference against
+    this catalog (that's b8o.2/b8o.4). Never exposes secret names, base URLs,
+    or the exact provider model/snapshot string — see model_catalog.py."""
+    auto_entry: dict[str, object] = {
+        "id": "auto",
+        "display_name": "Automatic",
+        "description": "Balances speed, cost, and task difficulty.",
+    }
+    return {
+        "default": "auto",
+        "models": [auto_entry, *(public_model_entry(p) for p in enabled_profiles())],
+    }
 
 
 #: Marks a 429 as the CHAT limiter's, the way AUTH_THROTTLE_HEADER does for auth.
