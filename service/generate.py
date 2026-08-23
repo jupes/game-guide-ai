@@ -9,9 +9,11 @@ accepts an injected client for tests.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import openai
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Env-overridable tuning knobs live in the single top-level config module.
@@ -88,33 +90,57 @@ def _usage_from_message(message: Any) -> GenerationUsage:
     )
 
 
+# Bounded service-owned retry (agent-forge-harness-b8o.1, Checkpoint 1 step 5).
+# Provider clients are constructed with max_retries=0 (ProviderClientFactory) —
+# ChatOpenAI retries by default, so disabling that AND landing this retry ship
+# together, or the baseline temporarily loses resilience. Narrow on purpose:
+# only the transient network/rate-limit/5xx exceptions the SDK itself used to
+# retry on. The full normalized error-category table (authentication/quota/
+# rate_limit/timeout/content_filter/invalid_request/upstream_unavailable/
+# unknown, D4) is Checkpoint 2's job — this is not that taxonomy.
+_RETRYABLE_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    openai.APIConnectionError,  # covers APITimeoutError (its subclass)
+    openai.RateLimitError,
+    openai.InternalServerError,
+)
+_MAX_ATTEMPTS = 3
+_RETRY_BACKOFF_SECONDS = 0.5
+
+
 def generate_result(
     messages: list[Any], *, alias: str, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
+    max_attempts: int = _MAX_ATTEMPTS, sleep: Any = time.sleep,
 ) -> GenerationResult:
-    """Invoke `client` and return everything the provider boundary reports,
-    not just the answer text. Records exactly one attempt with `observer` —
-    on success AND on failure (re-raised unchanged after recording) — so
-    every attempt, latency, and charge stays attributable even when the call
-    raises. `alias` identifies which catalog entry made the call; Checkpoint
-    1 has no per-request routing yet, so callers pass the service's current
-    model alias."""
+    """Invoke `client`, retrying transient failures up to `max_attempts` times,
+    and return everything the provider boundary reports, not just the answer
+    text. Records one attempt with `observer` per actual call — success or
+    failure — including every retried attempt, so every attempt, latency, and
+    charge stays attributable. The final failure re-raises unchanged after
+    being recorded. `alias` identifies which catalog entry made the call;
+    Checkpoint 1 has no per-request routing yet, so callers pass the
+    service's current model alias."""
     obs = observer or NullAttemptObserver()
-    try:
-        resp = client.invoke(messages, config=config)
-    except BaseException as exc:
-        obs.record(alias=alias, result=None, error=exc)
-        raise
-    content = resp.content
-    text = content.strip() if isinstance(content, str) else str(content).strip()
-    result = GenerationResult(
-        text=text,
-        usage=_usage_from_message(resp),
-        provider_request_id=getattr(resp, "id", None),
-        finish_reason=(getattr(resp, "response_metadata", None) or {}).get("finish_reason"),
-    )
-    obs.record(alias=alias, result=result, error=None)
-    return result
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = client.invoke(messages, config=config)
+        except BaseException as exc:
+            obs.record(alias=alias, result=None, error=exc)
+            if isinstance(exc, _RETRYABLE_EXCEPTIONS) and attempt < max_attempts:
+                sleep(_RETRY_BACKOFF_SECONDS * attempt)
+                continue
+            raise
+        content = resp.content
+        text = content.strip() if isinstance(content, str) else str(content).strip()
+        result = GenerationResult(
+            text=text,
+            usage=_usage_from_message(resp),
+            provider_request_id=getattr(resp, "id", None),
+            finish_reason=(getattr(resp, "response_metadata", None) or {}).get("finish_reason"),
+        )
+        obs.record(alias=alias, result=result, error=None)
+        return result
+    raise AssertionError("unreachable: the loop above always returns or raises")  # pragma: no cover
 
 # Shared grounding instruction appended to every grounded-mode system prompt.
 # The numbered sources include any uploaded attachment, which generate_node

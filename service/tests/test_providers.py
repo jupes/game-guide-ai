@@ -41,6 +41,18 @@ def test_client_for_unknown_alias_raises():
         factory.client_for("not-a-real-alias")
 
 
+def test_live_openai_client_construction_disables_sdk_retries(monkeypatch):
+    # Construction (not invocation) needs a key-shaped string but never
+    # contacts the network — offline-testable. Guards Checkpoint 1 step 5:
+    # the SDK's own retries must be off in favor of generate.py's
+    # bounded service-owned retry (they ship together or the baseline
+    # temporarily loses resilience).
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
+    factory = ProviderClientFactory()
+    client = factory.client_for("gpt-4o-mini")
+    assert client.max_retries == 0
+
+
 def test_client_for_disabled_alias_raises_identically_to_unknown():
     # Same exception type/shape for "unknown" and "disabled" — a caller must
     # not be able to distinguish them (TDD row 1, mirrors get_profile()).

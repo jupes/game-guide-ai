@@ -52,7 +52,7 @@ class ProviderClientFactory:
         self._clients[alias] = client
         return client
 
-    def _build(self, profile: ModelProfile) -> LLMClient:  # pragma: no cover - live path
+    def _build(self, profile: ModelProfile) -> LLMClient:
         if profile.provider != "openai":
             raise NotImplementedError(
                 f"live client construction for provider {profile.provider!r} "
@@ -62,4 +62,9 @@ class ProviderClientFactory:
 
         from config import TEMPERATURE
 
-        return ChatOpenAI(model=profile.api_model, temperature=TEMPERATURE)
+        # max_retries=0: the SDK's own default retry (ChatOpenAI retries
+        # transient failures internally) is disabled in favor of
+        # generate.py's bounded service-owned retry, which emits an
+        # observable attempt record per try instead of hiding retries
+        # inside the SDK (agent-forge-harness-b8o.1, Checkpoint 1 step 5).
+        return ChatOpenAI(model=profile.api_model, temperature=TEMPERATURE, max_retries=0)
