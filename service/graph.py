@@ -220,7 +220,7 @@ def build_rag_graph(svc: RagService) -> Any:
         )
         answer = generate_answer(
             state["prompt"], context, mode=state["mode"],
-            model=svc.model, client=svc.llm_client, config=config,
+            model=svc.model, client=svc.factory.client_for(svc.model), config=config,
         )
         # An attachment can ground an answer the corpus alone couldn't — treat
         # the response as answerable even when corpus retrieval wasn't.
@@ -238,7 +238,7 @@ def build_rag_graph(svc: RagService) -> Any:
         try:
             suggestions = generate_suggestions(
                 state["prompt"], context,
-                model=svc.model, client=svc.llm_client, config=config,
+                model=svc.model, client=svc.factory.client_for(svc.model), config=config,
             )
         except Exception:
             log.warning("spell suggestions failed; answering without them", exc_info=True)
