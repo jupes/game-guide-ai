@@ -143,7 +143,10 @@ def _columns(conn, table: str) -> dict[str, str]:
 REQUIRED_COLUMNS = {
     "auth.users": ["id", "email", "password_hash", "role", "created_at"],
     "auth.invites": ["token", "role", "expires_at", "used_at", "used_by", "revoked_at"],
-    "chat.conversations": ["conversation_id", "user_id", "created_at"],
+    "chat.conversations": [
+        "conversation_id", "user_id", "created_at",
+        "selection_strategy", "manual_alias", "catalog_revision",
+    ],
     "chat.messages": ["id", "conversation_id", "mode", "role", "content", "suggestions"],
     "chat.attachments": ["id", "conversation_id", "filename", "content_type", "extracted_text"],
 }
@@ -362,3 +365,76 @@ def test_calls_today_counts_the_same_rows_as_the_in_memory_fake(db):
     assert real.calls_today() - before == fake.calls_today() == 2, (
         "both stores must count today's USER rows only — two of these four"
     )
+
+
+# ── Conversation strategy binding (b8o.2, D1/D6) — behaviour, not just shape ──
+
+
+@needs_db
+def test_strategy_check_constraint_rejects_an_invalid_value(db):
+    conv = f"strategy-invalid-{uuid.uuid4().hex[:8]}"
+    user_id = db.execute(
+        "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id",
+        (f"strategy-invalid-{uuid.uuid4().hex[:8]}@example.com",),
+    ).fetchone()[0]
+    db.execute("INSERT INTO chat.conversations (conversation_id, user_id) VALUES (%s, %s)",
+               (conv, user_id))
+    import psycopg
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        db.execute(
+            "UPDATE chat.conversations SET selection_strategy = 'not-a-real-strategy' "
+            "WHERE conversation_id = %s", (conv,),
+        )
+    db.rollback()
+
+
+@needs_db
+def test_claim_conversation_strategy_wins_the_race_against_a_real_database(db):
+    """The one behavior an in-memory fake can't meaningfully prove: two
+    concurrent UPDATEs racing against a real database, gated by `WHERE
+    selection_strategy IS NULL`, must leave exactly one winner — not a
+    torn/overwritten state. Simulated as two sequential calls (the SQL gate
+    itself is what makes true concurrency safe; this proves the gate exists
+    and behaves as specified for the caller-visible contract)."""
+    from service.history import PostgresMessageStore
+
+    current = db.execute("SELECT current_database()").fetchone()[0]
+    real = PostgresMessageStore(dsn=_target_dsn(DSN, current))
+
+    conv = f"strategy-race-{uuid.uuid4().hex[:8]}"
+    user_id = db.execute(
+        "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id",
+        (f"strategy-race-{uuid.uuid4().hex[:8]}@example.com",),
+    ).fetchone()[0]
+    db.execute("INSERT INTO chat.conversations (conversation_id, user_id) VALUES (%s, %s)",
+               (conv, user_id))
+
+    first = real.claim_conversation_strategy(
+        conv, strategy="auto", manual_alias=None, catalog_revision="r1",
+    )
+    second = real.claim_conversation_strategy(
+        conv, strategy="manual", manual_alias="gpt-4o-mini", catalog_revision="r1",
+    )
+    assert first == ("auto", None)
+    assert second == ("auto", None), "the second (losing) call must return the FIRST call's binding"
+
+    row = db.execute(
+        "SELECT selection_strategy, manual_alias FROM chat.conversations WHERE conversation_id = %s",
+        (conv,),
+    ).fetchone()
+    assert (row[0], row[1]) == ("auto", None), "the database must hold the winner, not the loser"
+
+
+@needs_db
+def test_claim_conversation_strategy_without_an_ownership_row_raises(db):
+    from service.history import PostgresMessageStore
+
+    current = db.execute("SELECT current_database()").fetchone()[0]
+    real = PostgresMessageStore(dsn=_target_dsn(DSN, current))
+
+    with pytest.raises(LookupError):
+        real.claim_conversation_strategy(
+            f"never-owned-{uuid.uuid4().hex[:8]}", strategy="auto",
+            manual_alias=None, catalog_revision="r1",
+        )

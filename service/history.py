@@ -63,6 +63,15 @@ class MessageStore(Protocol):
     def owner_of(self, conversation_id: str) -> int | None:
         ...  # pragma: no cover - structural type
 
+    def claim_conversation_strategy(
+        self, conversation_id: str, *, strategy: str, manual_alias: str | None,
+        catalog_revision: str,
+    ) -> tuple[str, str | None]:
+        ...  # pragma: no cover - structural type
+
+    def conversation_strategy(self, conversation_id: str) -> tuple[str, str | None] | None:
+        ...  # pragma: no cover - structural type
+
     def has_content(self, conversation_id: str) -> bool:
         ...  # pragma: no cover - structural type
 
@@ -88,6 +97,7 @@ class InMemoryMessageStore:
     _rows: list[_Row] = field(default_factory=list)
     _attachments: list[StoredAttachment] = field(default_factory=list)
     _owners: dict[str, int] = field(default_factory=dict)
+    _strategies: dict[str, tuple[str, str | None]] = field(default_factory=dict)
 
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
@@ -119,6 +129,18 @@ class InMemoryMessageStore:
 
     def claim_conversation(self, conversation_id: str, user_id: int) -> int:
         return self._owners.setdefault(conversation_id, user_id)
+
+    def claim_conversation_strategy(
+        self, conversation_id: str, *, strategy: str, manual_alias: str | None,
+        catalog_revision: str,
+    ) -> tuple[str, str | None]:
+        # catalog_revision isn't read back today (nothing yet compares across
+        # revisions) but is accepted + stored to match the real store's shape.
+        del catalog_revision
+        return self._strategies.setdefault(conversation_id, (strategy, manual_alias))
+
+    def conversation_strategy(self, conversation_id: str) -> tuple[str, str | None] | None:
+        return self._strategies.get(conversation_id)
 
     def owner_of(self, conversation_id: str) -> int | None:
         return self._owners.get(conversation_id)
@@ -263,6 +285,51 @@ class PostgresMessageStore:
                 (conversation_id,),
             ).fetchone()
         return row[0]
+
+    def claim_conversation_strategy(
+        self, conversation_id: str, *, strategy: str, manual_alias: str | None,
+        catalog_revision: str,
+    ) -> tuple[str, str | None]:
+        """Atomically bind (strategy, manual_alias) on first use; return the
+        WINNING values (this call's, or an earlier concurrent request's).
+
+        `UPDATE ... WHERE selection_strategy IS NULL` is the first-writer-wins
+        gate: only the request that finds it still unbound gets to set it, so
+        two concurrent first messages can't each believe they won. Requires
+        the conversation's ownership row to already exist (claim_conversation
+        runs at authorization, earlier in the request than this) — a missing
+        row here means a caller bug, not a legitimate race outcome."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "UPDATE chat.conversations "
+                "SET selection_strategy = %s, manual_alias = %s, catalog_revision = %s "
+                "WHERE conversation_id = %s AND selection_strategy IS NULL "
+                "RETURNING selection_strategy, manual_alias",
+                (strategy, manual_alias, catalog_revision, conversation_id),
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT selection_strategy, manual_alias FROM chat.conversations "
+                    "WHERE conversation_id = %s",
+                    (conversation_id,),
+                ).fetchone()
+        if row is None:
+            raise LookupError(
+                f"claim_conversation_strategy({conversation_id!r}): no ownership row — "
+                "claim_conversation() must run first"
+            )
+        return (row[0], row[1])
+
+    def conversation_strategy(self, conversation_id: str) -> tuple[str, str | None] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT selection_strategy, manual_alias FROM chat.conversations "
+                "WHERE conversation_id = %s",
+                (conversation_id,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return (row[0], row[1])
 
     def owner_of(self, conversation_id: str) -> int | None:
         with self._connect() as conn:
