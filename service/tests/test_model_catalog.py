@@ -77,3 +77,42 @@ def test_public_model_entry_shape_matches_the_contract():
     assert entry["display_name"] == profile.display_name
     assert entry["tier"] == profile.tier
     assert entry["supports_attachments"] == profile.supports_attachments
+
+
+# ---------------------------------------------------------------------------
+# Disabled-by-default DeepSeek/Qwen/Kimi profiles (Checkpoint 1 slice 6).
+# Frozen v1 candidates + base_url/secret_env per the plan's "Provider
+# onboarding and API keys" section. Disabled: none are eligible for traffic
+# until Checkpoint 3's evaluation matrix and D7's Qwen residency confirmation.
+# ---------------------------------------------------------------------------
+
+def test_deepseek_profile_exists_disabled_with_correct_endpoint():
+    profile = CATALOG["deepseek-v4-flash"]
+    assert profile.provider == "deepseek"
+    assert profile.base_url == "https://api.deepseek.com"
+    assert profile.secret_env == "DEEPSEEK_API_KEY"
+    assert profile.enabled is False
+
+
+def test_qwen_profile_exists_disabled_with_correct_endpoint():
+    profile = CATALOG["qwen-flash-us"]
+    assert profile.provider == "alibaba"
+    assert profile.base_url == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+    assert profile.secret_env == "DASHSCOPE_API_KEY"
+    assert profile.enabled is False
+
+
+def test_kimi_profile_exists_disabled_with_correct_endpoint():
+    profile = CATALOG["kimi-k3"]
+    assert profile.provider == "moonshot"
+    assert profile.base_url == "https://api.moonshot.ai/v1"
+    assert profile.secret_env == "MOONSHOT_API_KEY"
+    assert profile.enabled is False
+
+
+def test_disabled_provider_profiles_are_invisible_to_the_public_surface():
+    # TDD row 1: a disabled alias must look exactly like an unknown one to
+    # any caller that isn't reading CATALOG directly.
+    for alias in ("deepseek-v4-flash", "qwen-flash-us", "kimi-k3"):
+        assert get_profile(alias) is None
+        assert all(p.alias != alias for p in enabled_profiles())

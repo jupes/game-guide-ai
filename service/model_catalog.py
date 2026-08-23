@@ -39,14 +39,36 @@ class ModelProfile:
 
 
 # Checkpoint 1 ships one enabled profile: the current production baseline,
-# unchanged from today's config.DEFAULT_MODEL. Disabled DeepSeek/Qwen/Kimi
-# profiles land in a later slice of this checkpoint, alongside the provider
-# client factory that can actually construct their clients (D2 sibling work).
+# unchanged from today's config.DEFAULT_MODEL. The three disabled profiles
+# below are frozen v1 candidates (plan's "Provider onboarding and API keys")
+# — construction is proven by sanitized offline contract tests
+# (service/tests/test_providers.py), but none are eligible for traffic until
+# Checkpoint 3's evaluation matrix passes and, for Qwen, D7's US-residency
+# confirmation. DeepSeek stays synthetic-data-only pending retention terms
+# (see the plan's "Provider posture" section) even once/if ever enabled.
 CATALOG: dict[str, ModelProfile] = {
     "gpt-4o-mini": ModelProfile(
         alias="gpt-4o-mini", display_name="GPT-4o mini", provider="openai",
         api_model="gpt-4o-mini", base_url=None, secret_env="OPENAI_API_KEY",
         tier="economy", supports_attachments=True, enabled=True,
+    ),
+    "deepseek-v4-flash": ModelProfile(
+        alias="deepseek-v4-flash", display_name="DeepSeek V4 Flash", provider="deepseek",
+        api_model="deepseek-v4-flash", base_url="https://api.deepseek.com",
+        secret_env="DEEPSEEK_API_KEY", tier="economy", supports_attachments=True,
+        enabled=False,
+    ),
+    "qwen-flash-us": ModelProfile(
+        alias="qwen-flash-us", display_name="Qwen Flash (US)", provider="alibaba",
+        api_model="qwen-flash-us", base_url="https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        secret_env="DASHSCOPE_API_KEY", tier="economy", supports_attachments=True,
+        enabled=False,
+    ),
+    "kimi-k3": ModelProfile(
+        alias="kimi-k3", display_name="Kimi K3", provider="moonshot",
+        api_model="kimi-k3", base_url="https://api.moonshot.ai/v1",
+        secret_env="MOONSHOT_API_KEY", tier="premium", supports_attachments=True,
+        enabled=False,
     ),
 }
 
