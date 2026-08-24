@@ -135,6 +135,19 @@ def test_throttled_is_an_accepted_chat_outcome():
     assert MetricBatch.model_validate({"points": [point]}).points[0].value == "throttled"
 
 
+def test_conversation_mismatch_is_an_accepted_chat_outcome():
+    """The routing strategy 409 (b8o.2, D4) is likewise duplicated in
+    ui/src/metrics/metrics.ts and ui/src/useChat.ts's local settle() type —
+    same cross-boundary trap as throttled above."""
+    point = {
+        "name": "ui.interaction.chat_outcome",
+        "kind": "categorical",
+        "unit": "category",
+        "value": "conversation_mismatch",
+    }
+    assert MetricBatch.model_validate({"points": [point]}).points[0].value == "conversation_mismatch"
+
+
 def test_an_unknown_chat_outcome_is_still_rejected():
     """The allow-list has to stay an allow-list — widening it for `throttled`
     must not have turned it into "any string"."""

@@ -39,7 +39,10 @@ export type ChatResult =
   | {
       kind: 'error'
       message: string
-      outcome?: 'http_error' | 'network_error' | 'aborted' | 'throttled'
+      outcome?: 'http_error' | 'network_error' | 'aborted' | 'throttled' | 'conversation_mismatch'
+      /** Whether a retry might succeed (D4). Absent when not applicable (network
+       * errors, aborts) or unknown (legacy/unstructured error bodies). */
+      retryable?: boolean
     }
 
 /** One persisted chat turn — mirrors service StoredMessage. */
@@ -66,6 +69,43 @@ async function parseJson<T>(res: Response): Promise<T | null> {
   } catch {
     return null
   }
+}
+
+// ── D4 normalized error/status mapping (b8o.2) ───────────────────────────────
+// service/app.py's 4xx/5xx errors for the LLM-error categories carry a
+// structured body — {detail: {category, retryable, message}} — instead of
+// the plain-string `detail` FastAPI's own Pydantic validation errors use, so
+// this client can tell them apart and switch on `category` rather than
+// parsing English text or falling back to "Unexpected response (<status>)".
+
+interface StructuredErrorDetail {
+  category: string
+  retryable: boolean
+  message: string
+}
+
+function structuredErrorDetail(body: unknown): StructuredErrorDetail | null {
+  if (typeof body !== 'object' || body === null || !('detail' in body)) return null
+  const detail = (body as { detail: unknown }).detail
+  if (typeof detail !== 'object' || detail === null) return null
+  const d = detail as Record<string, unknown>
+  if (typeof d.category !== 'string' || typeof d.retryable !== 'boolean' || typeof d.message !== 'string') {
+    return null
+  }
+  return { category: d.category, retryable: d.retryable, message: d.message }
+}
+
+/** Human-facing message per category — distinct from the backend's own
+ * `message` field, which is written for logs/operators, not testers. */
+const CATEGORY_MESSAGE: Record<string, string> = {
+  rate_limit: 'The model provider is busy — try again shortly.',
+  content_filter: "That request was refused by the model provider's content policy.",
+  invalid_request: "That request couldn't be processed — please rephrase and try again.",
+  authentication: 'The model provider is temporarily unavailable — we have been notified.',
+  quota: 'The model provider is temporarily unavailable — we have been notified.',
+  timeout: 'The model provider timed out — try again in a moment.',
+  upstream_unavailable: 'The model provider is temporarily unavailable — try again in a moment.',
+  unknown: 'An unexpected upstream error occurred — try again in a moment.',
 }
 
 const UNREADABLE = 'The service returned an unreadable response.'
@@ -195,11 +235,33 @@ export async function postChat(
       outcome: 'http_error',
     }
   }
+  // 409 (b8o.2, D4): this conversation is bound to a different model
+  // preference — the recovery is starting a new conversation, not a retry.
+  if (res.status === 409) {
+    return {
+      kind: 'error',
+      message: 'This conversation is locked to a different model — start a new conversation to change it.',
+      outcome: 'conversation_mismatch',
+      retryable: false,
+    }
+  }
   if (res.status === 422) {
+    const structured = structuredErrorDetail(await parseJson<unknown>(res))
+    if (structured !== null) {
+      return {
+        kind: 'error',
+        message: CATEGORY_MESSAGE[structured.category] ?? structured.message,
+        outcome: 'http_error',
+        retryable: structured.retryable,
+      }
+    }
+    // Legacy shape: FastAPI's own Pydantic-validation 422 (e.g. empty prompt)
+    // carries a plain-string/array detail, not {category, retryable, message}.
     return {
       kind: 'error',
       message: 'The prompt was rejected — please enter a question.',
       outcome: 'http_error',
+      retryable: false,
     }
   }
   if (res.status === 503) {
@@ -209,7 +271,38 @@ export async function postChat(
       outcome: 'http_error',
     }
   }
-  if (res.status === 429) return throttled(res)
+  if (res.status === 502) {
+    const structured = structuredErrorDetail(await parseJson<unknown>(res))
+    if (structured !== null) {
+      return {
+        kind: 'error',
+        message: CATEGORY_MESSAGE[structured.category] ?? structured.message,
+        outcome: 'http_error',
+        retryable: structured.retryable,
+      }
+    }
+    return {
+      kind: 'error',
+      message: 'Unexpected response (502).',
+      outcome: 'http_error',
+    }
+  }
+  if (res.status === 429) {
+    // Ours (cost guard) always carries X-Chat-Throttled; a provider
+    // rate_limit (D4) reaching this far never does — distinct events, and
+    // conflating them would blame a tester for the provider being busy.
+    if (res.headers.get(CHAT_THROTTLE_HEADER) !== null) return throttled(res)
+    const structured = structuredErrorDetail(await parseJson<unknown>(res))
+    if (structured !== null) {
+      return {
+        kind: 'error',
+        message: CATEGORY_MESSAGE[structured.category] ?? structured.message,
+        outcome: 'http_error',
+        retryable: structured.retryable,
+      }
+    }
+    return throttled(res)
+  }
   if (!res.ok) {
     return {
       kind: 'error',

@@ -178,7 +178,9 @@ export function useChat({
         // http_error: it is the cost guard doing its job, not the service
         // failing, and the metric is the only place an operator would see the
         // limit actually biting in production.
-        outcome: 'success' | 'http_error' | 'network_error' | 'aborted' | 'throttled',
+        outcome:
+          | 'success' | 'http_error' | 'network_error' | 'aborted' | 'throttled'
+          | 'conversation_mismatch',
       ) => {
         pendingRef.current = false
         const labels = runtimeMetricLabels(mode)

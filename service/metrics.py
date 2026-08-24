@@ -77,11 +77,14 @@ _CATALOG = {
         "labels": _UI_INTERACTION_LABELS,
         # "throttled" (x5bz.3) is separate from http_error on purpose: it is the
         # cost guard working, not the service failing, and this metric is where
-        # an operator sees the limit actually biting. Mirrored in
-        # ui/src/metrics/metrics.ts — a value missing here is rejected, so the
-        # two lists have to move together.
+        # an operator sees the limit actually biting. "conversation_mismatch"
+        # (b8o.2, D4/409) is likewise its own category: a routing contract
+        # being enforced, not a service failure. Mirrored in
+        # ui/src/metrics/metrics.ts and ui/src/useChat.ts's local settle()
+        # type — a value missing here is rejected, so all three have to move
+        # together.
         "categories": frozenset(
-            {"success", "http_error", "network_error", "aborted", "throttled"}
+            {"success", "http_error", "network_error", "aborted", "throttled", "conversation_mismatch"}
         ),
     },
     "ui.client.error_count": {
