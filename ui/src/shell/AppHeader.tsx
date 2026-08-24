@@ -12,6 +12,7 @@ import { Switch } from '../ds/Switch'
 import { useTheme } from '../ds/theme'
 import { useAppNav } from './AppNav'
 import { useCurrentUser } from './currentUser'
+import { ModelPicker } from './ModelPicker'
 import { modesForRole, accentClass } from './modes'
 import './AppHeader.css'
 import './modeAccents.css'
@@ -36,6 +37,8 @@ export function AppHeader(): React.JSX.Element {
           />
         ))}
       </div>
+
+      <ModelPicker />
 
       <div className="app-header__theme">
         <span className="app-header__theme-label">Dark theme</span>
