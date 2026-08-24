@@ -28,6 +28,41 @@ describe('MemoryConversationStore', () => {
     expect(isNaN(new Date(conv.createdAt).getTime())).toBe(false)
   })
 
+  // ── b8o.2 — per-conversation model preference ─────────────────────────────
+
+  it('create defaults modelPreference to "auto"', () => {
+    const conv = store.create('sage')
+    expect(conv.modelPreference).toBe('auto')
+  })
+
+  it('create accepts an explicit modelPreference', () => {
+    const conv = store.create('sage', undefined, 'gpt-4o-mini')
+    expect(conv.modelPreference).toBe('gpt-4o-mini')
+  })
+
+  it('setModelPreference updates it and notifies', () => {
+    const conv = store.create('sage')
+    const listener = vi.fn()
+    store.subscribe(listener)
+    store.setModelPreference(conv.id, 'gpt-4o-mini')
+    expect(store.get(conv.id)?.modelPreference).toBe('gpt-4o-mini')
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('setModelPreference on an unknown id is a silent no-op', () => {
+    const listener = vi.fn()
+    store.subscribe(listener)
+    expect(() => store.setModelPreference('not-a-real-id', 'gpt-4o-mini')).not.toThrow()
+    expect(listener).not.toHaveBeenCalled()
+  })
+
+  it('setModelPreference does not affect other conversations', () => {
+    const a = store.create('sage')
+    const b = store.create('sage')
+    store.setModelPreference(a.id, 'gpt-4o-mini')
+    expect(store.get(b.id)?.modelPreference).toBe('auto')
+  })
+
   it('list filters by mode — sage conversations do not appear under spell', () => {
     store.create('sage')
     store.create('spell')
@@ -275,6 +310,18 @@ describe('LocalStorageConversationStore', () => {
     store.recordFirstPrompt('new', 'A fresh question')
     expect(store.get('new')?.title).toBe('A fresh question')
     expect(store.list('sage')).toHaveLength(2)
+    // b8o.2: a legacy row (predates the field entirely) defaults to 'auto'.
+    expect(store.get('old')?.modelPreference).toBe('auto')
+  })
+
+  it('persists modelPreference across instances (round-trips through localStorage)', () => {
+    const userId = 'alice@example.com'
+    const a = new LocalStorageConversationStore(userId)
+    const conv = a.create('sage')
+    a.setModelPreference(conv.id, 'gpt-4o-mini')
+
+    const b = new LocalStorageConversationStore(userId)
+    expect(b.get(conv.id)?.modelPreference).toBe('gpt-4o-mini')
   })
 
   it('create() does not throw when the write fails (quota exceeded) and warns instead', () => {

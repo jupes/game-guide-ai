@@ -161,6 +161,19 @@ describe('postChat', () => {
       prompt: 'What is a Basilisk?',
       mode: 'sage',
       conversation_id: null,
+      model_preference: 'auto',
+    })
+  })
+
+  it('sends an explicit modelPreference as model_preference in the request body', async () => {
+    let captured: { url: string; init?: RequestInit } | null = null
+    const spy: typeof fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      captured = { url: String(url), init }
+      return new Response(JSON.stringify(GROUNDED), { status: 200 })
+    }) as typeof fetch
+    await postChat('Q', 'sage', null, spy, 'gpt-4o-mini')
+    expect(JSON.parse(String(captured!.init?.body))).toMatchObject({
+      model_preference: 'gpt-4o-mini',
     })
   })
 

@@ -203,6 +203,10 @@ export async function postChat(
   mode: ChatMode = 'sage',
   conversationId?: string | null,
   fetchImpl: typeof fetch = fetch,
+  /** "auto" or a specific enabled catalog alias (b8o.2). Kept as the LAST
+   * param, after fetchImpl, so no existing positional call site (which all
+   * predate this field) needed to change. */
+  modelPreference: string = 'auto',
 ): Promise<ChatResult> {
   let res: Response
   try {
@@ -210,7 +214,10 @@ export async function postChat(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ prompt, mode, conversation_id: conversationId ?? null }),
+      body: JSON.stringify({
+        prompt, mode, conversation_id: conversationId ?? null,
+        model_preference: modelPreference,
+      }),
     })
   } catch {
     return {
