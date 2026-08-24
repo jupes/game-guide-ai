@@ -11,12 +11,16 @@ Run from repo root:
 
 from __future__ import annotations
 
+import httpx
+import openai
 import pytest
 from fastapi.testclient import TestClient
 
 from service.app import app, get_message_store, get_service
 from service.history import InMemoryMessageStore
 from service.models import ChatMode, ChatResponse
+
+_REQUEST = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
 
 
 class _FakeService:
@@ -116,6 +120,34 @@ def test_409_happens_before_any_provider_call(env):
         assert r2.status_code == 409
     finally:
         app.dependency_overrides[get_service] = lambda: _FakeService()
+
+
+def test_strategy_binding_survives_a_provider_failure(env):
+    # The claim happens before the try/provider-call block in /chat, so a
+    # failed provider call must NOT roll it back — otherwise two concurrent
+    # first turns could each retry into a different effective model after
+    # the other's binding attempt failed.
+    class _RaisingOnce:
+        def answer(self, *a, **kw):
+            raise openai.APIConnectionError(request=_REQUEST)
+
+    conv = "11111111-1111-1111-1111-111111111111"
+    c = TestClient(app)
+    app.dependency_overrides[get_service] = lambda: _RaisingOnce()
+    try:
+        r1 = c.post(
+            "/chat",
+            json={"prompt": "hi", "model_preference": "auto", "conversation_id": conv},
+        )
+        assert r1.status_code == 502
+    finally:
+        app.dependency_overrides[get_service] = lambda: _FakeService()
+
+    r2 = c.post(
+        "/chat",
+        json={"prompt": "again", "model_preference": "gpt-4o-mini", "conversation_id": conv},
+    )
+    assert r2.status_code == 409
 
 
 def test_no_message_store_configured_skips_binding_gracefully():
