@@ -77,14 +77,20 @@ uv run --with "psycopg[binary]" --with openai python ingestion/embed.py \
   --chunks ingestion/chunks-wikidot-5e.clean.jsonl --dsn "$PROXY"
 ```
 
-The `chunks-wikidot-5e.jsonl` / `.clean.jsonl` produced by the real crawl are already committed in
-the PR (880 raw / 849 clean) — you can skip straight to the `embed.py` step and point it at the
-already-committed `ingestion/chunks-wikidot-5e.clean.jsonl` instead of re-crawling:
+**You can skip the crawl, but not the QA step.** Only the raw `ingestion/chunks-wikidot-5e.jsonl`
+(880 chunks) is committed — `.clean.jsonl` is **gitignored** (`.gitignore` line 2,
+`ingestion/*.clean.jsonl`), so it is not in the repo and `embed.py` will not find it on a fresh
+checkout. Regenerate it from the committed raw file, which takes seconds and needs no network:
 
 ```bash
+uv run python ingestion/qa_chunks.py ingestion/chunks-wikidot-5e.jsonl      # writes .clean.jsonl (849) + .quarantine.jsonl
+
 uv run --with "psycopg[binary]" --with openai python ingestion/embed.py \
   --chunks ingestion/chunks-wikidot-5e.clean.jsonl --dsn "$PROXY"
 ```
+
+`embed.py` needs `OPENAI_API_KEY` (it defaults to `EMBED_BACKEND=openai` /
+`text-embedding-3-small`); it reads the repo-root `.env` the same way `eval_golden.py` does.
 
 ### 3. Verify
 
