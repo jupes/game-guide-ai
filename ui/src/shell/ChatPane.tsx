@@ -17,6 +17,7 @@ import type { SpellCardProps } from '../ds/SpellCard'
 import { StatBlockCard } from '../ds/StatBlockCard'
 import type { StatBlockCardProps } from '../ds/StatBlockCard'
 import { SourceList } from '../components/SourceList'
+import { Markdown } from '../components/Markdown'
 import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { useAppNav } from './AppNav'
@@ -104,6 +105,21 @@ function toStatBlockCardProps(sb: StatBlockContent): StatBlockCardProps {
   }
 }
 
+// ── Autoscroll (pp6q.1.3) ────────────────────────────────────────────────────
+// Follow the newest message ONLY while the reader is already at the bottom.
+// Scrolling on every render is the classic failure of this feature: it yanks
+// the view out from under someone reading earlier history.
+//
+// 32px rather than an exact equality check — fractional scroll offsets are
+// routine under browser zoom and HiDPI, so `scrollTop === scrollHeight -
+// clientHeight` would classify a reader who never moved as "scrolled away"
+// and silently stop following.
+const AT_BOTTOM_THRESHOLD_PX = 32
+
+function distanceFromBottom(el: HTMLElement): number {
+  return el.scrollHeight - el.clientHeight - el.scrollTop
+}
+
 // ── File attachments (swe1.6) ────────────────────────────────────────────────
 
 export type UploadAttachmentFn = (conversationId: string, file: File) => Promise<UploadAttachmentResult>
@@ -171,6 +187,37 @@ export function ChatPane({
   const attachments = attachmentState.scopeId === conversationId ? attachmentState.attachments : []
   const [attachmentError, setAttachmentError] = React.useState<string | null>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
+
+  // Autoscroll (pp6q.1.3). A fresh thread starts at the bottom by definition.
+  const feedRef = React.useRef<HTMLDivElement>(null)
+  const [atBottom, setAtBottom] = React.useState(true)
+
+  const scrollToLatest = React.useCallback(() => {
+    const feed = feedRef.current
+    if (!feed) return
+    feed.scrollTop = feed.scrollHeight
+    setAtBottom(true)
+  }, [])
+
+  const handleFeedScroll = React.useCallback(() => {
+    const feed = feedRef.current
+    if (!feed) return
+    setAtBottom(distanceFromBottom(feed) <= AT_BOTTOM_THRESHOLD_PX)
+  }, [])
+
+  // Follow new content only when the reader is already at the bottom. Keyed on
+  // exchanges (new turn, or a pending turn resolving into a longer answer) and
+  // on the scope, so opening a conversation lands at its newest message.
+  React.useEffect(() => {
+    if (!atBottom) return
+    const feed = feedRef.current
+    if (!feed) return
+    feed.scrollTop = feed.scrollHeight
+    // `atBottom` is intentionally NOT a dependency: this must run when the
+    // content changes, not when the flag flips. Including it would re-scroll
+    // the instant a reader scrolled back down, before new content arrived.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exchanges, conversationId])
 
   const handleSend = React.useCallback(() => {
     const trimmed = draft.trim()
@@ -244,8 +291,16 @@ export function ChatPane({
 
   return (
     <div className="chat-pane">
-      {/* Exchange list */}
-      <div className="chat-pane__exchanges">
+      {/* Exchange list. The scroller carries the parchment ground (the DS ships
+          .aether-parchment and its own ChatView mock applies it to the feed);
+          the inner __column is the centered reading measure, so prose does not
+          run the full width of a wide viewport. */}
+      <div
+        className="chat-pane__exchanges aether-parchment"
+        ref={feedRef}
+        onScroll={handleFeedScroll}
+      >
+        <div className="chat-pane__column">
         {/* History recall failed — recoverable: the thread starts empty. */}
         {historyError && <ChatMessage role="system">{historyError}</ChatMessage>}
 
@@ -264,13 +319,28 @@ export function ChatPane({
               {/* DM response */}
               {exchange.status === 'pending' && (
                 <ChatMessage role="dm">
-                  <span role="status">Consulting the tomes…</span>
+                  {/* The dots are decoration (aria-hidden); the status text is
+                      the actual affordance and stays for assistive tech —
+                      swapping an announcement for an animation would be an
+                      a11y regression dressed as polish (pp6q.1.5). */}
+                  <span className="chat-pane__typing" aria-hidden="true">
+                    <i className="chat-pane__dot" />
+                    <i className="chat-pane__dot" />
+                    <i className="chat-pane__dot" />
+                  </span>
+                  <span role="status" className="chat-pane__sr-only">
+                    Consulting the tomes…
+                  </span>
                 </ChatMessage>
               )}
 
               {exchange.status === 'done' && exchange.response && (
                 <>
-                  <ChatMessage role="dm">{exchange.response.answer}</ChatMessage>
+                  <ChatMessage role="dm">
+                    {/* Model output — rendered through DOMPurify, never raw
+                        (pp6q.1.1). See components/Markdown.tsx. */}
+                    <Markdown source={exchange.response.answer} />
+                  </ChatMessage>
 
                   {/* Structured content (z7fl.4) is additive, alongside the
                       prose — NOT a replacement (PR #46 review). The
@@ -329,7 +399,24 @@ export function ChatPane({
             </React.Fragment>
           ))
         )}
+        </div>
       </div>
+
+      {/* Jump-to-latest — only while the reader has scrolled away (pp6q.1.3).
+          A real <button> rather than a floating decoration so it is keyboard
+          reachable and announced, like the ChatGPT/Claude equivalent. */}
+      {!atBottom && exchanges.length > 0 && (
+        <div className="chat-pane__jump">
+          <button
+            type="button"
+            className="chat-pane__jump-button"
+            onClick={scrollToLatest}
+          >
+            <span className="material-symbols-rounded" aria-hidden="true">arrow_downward</span>
+            Jump to latest
+          </button>
+        </div>
+      )}
 
       {/* Attachments — files attached to this conversation (swe1.6) */}
       {attachments.length > 0 && (
@@ -370,7 +457,8 @@ export function ChatPane({
         />
         <TextField
           multiline
-          rows={2}
+          autoGrow
+          rows={1}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
