@@ -101,6 +101,29 @@ const GROUNDED: ChatResult = {
   },
 }
 
+describe('ChatPane — markdown rendering (pp6q.1.1)', () => {
+  it('renders a markdown answer as formatted HTML, not a raw string', async () => {
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: {
+        answer: '## Fireball\n\nA **bright streak** flashes.\n\n- Dex save\n- Half on success',
+        sources: [],
+        answerable: true,
+      },
+    })
+    render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'Fireball?')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Fireball' })).toBeInTheDocument())
+    expect(screen.getByText('bright streak').tagName).toBe('STRONG')
+    expect(screen.getAllByRole('listitem').map((li) => li.textContent))
+      .toEqual(['Dex save', 'Half on success'])
+    // The literal markdown syntax must not survive as visible text.
+    expect(screen.queryByText(/## Fireball/)).toBeNull()
+  })
+})
+
 describe('ChatPane (#21)', () => {
   it('shows the mode-aware empty state when no exchanges exist', () => {
     render(<Wrapper />)

@@ -17,6 +17,7 @@ import type { SpellCardProps } from '../ds/SpellCard'
 import { StatBlockCard } from '../ds/StatBlockCard'
 import type { StatBlockCardProps } from '../ds/StatBlockCard'
 import { SourceList } from '../components/SourceList'
+import { Markdown } from '../components/Markdown'
 import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { useAppNav } from './AppNav'
@@ -270,7 +271,11 @@ export function ChatPane({
 
               {exchange.status === 'done' && exchange.response && (
                 <>
-                  <ChatMessage role="dm">{exchange.response.answer}</ChatMessage>
+                  <ChatMessage role="dm">
+                    {/* Model output — rendered through DOMPurify, never raw
+                        (pp6q.1.1). See components/Markdown.tsx. */}
+                    <Markdown source={exchange.response.answer} />
+                  </ChatMessage>
 
                   {/* Structured content (z7fl.4) is additive, alongside the
                       prose — NOT a replacement (PR #46 review). The
