@@ -22,6 +22,7 @@ from .generate import DEFAULT_MODEL, LLMClient
 # here so existing importers (ingestion/eval_answers.py, tests) keep resolving.
 from .models import REFUSAL as REFUSAL  # noqa: F401
 from .models import ChatMode, ChatResponse
+from .providers import ProviderClientFactory
 
 # Mode → retrieval scope mapping lives in the canonical leaf module
 # `ingestion/scope.py` (`scope_for_mode`); the retriever applies it. The service
@@ -63,12 +64,20 @@ class RagService:
     def __init__(
         self, retriever=None, *, reranker=None, dsn: str | None = None,
         model: str = DEFAULT_MODEL, llm_client: LLMClient | None = None,
+        factory: ProviderClientFactory | None = None,
         secondary_retriever=None,
     ):
         self.retriever = retriever or RagRetriever(dsn)
         self.reranker = reranker
         self.model = model
-        self.llm_client: LLMClient | None = llm_client  # injected OpenAI-like client (tests)
+        # ProviderClientFactory is the only path generation reads a client
+        # through (b8o.1) — `llm_client` is a convenience that seeds the
+        # factory for this one alias; there is deliberately no `self.llm_client`
+        # attribute left for a caller to read directly (see
+        # service/tests/test_service.py::test_llm_client_is_not_a_readable_attribute).
+        self.factory = factory or ProviderClientFactory(
+            client_builders={model: llm_client} if llm_client is not None else None,
+        )
         self.secondary = secondary_retriever or StubSecondaryRetriever()
         self._graph: Any = None  # compiled LangGraph pipeline (lazy; see _compiled_graph)
 

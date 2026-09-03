@@ -21,7 +21,8 @@ export default defineConfig({
       '/healthz': 'http://localhost:8000',
       '/conversations': 'http://localhost:8000',
       '/metrics': 'http://localhost:8000',
-      '/auth': 'http://localhost:8000'
+      '/auth': 'http://localhost:8000',
+      '/models': 'http://localhost:8000'
     }
   },
   test: {

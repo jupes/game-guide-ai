@@ -116,6 +116,38 @@ def test_healthz_ready_is_a_json_boolean():
         app.dependency_overrides.clear()
 
 
+def test_get_models_returns_default_and_enabled_catalog():
+    # b8o.1 (Checkpoint 1): only the read surface exists yet — no request
+    # actually uses model_preference until b8o.2.
+    c = TestClient(app)
+    body = c.get("/models").json()
+    assert body["default"] == "auto"
+    ids = [m["id"] for m in body["models"]]
+    assert ids[0] == "auto"
+    assert "gpt-4o-mini" in ids
+
+
+def test_get_models_auto_entry_has_no_tier_or_attachment_fields():
+    # auto is a routing strategy, not a concrete model profile — it must not
+    # look like one to a client trying to distinguish them.
+    c = TestClient(app)
+    auto = c.get("/models").json()["models"][0]
+    assert auto["id"] == "auto"
+    assert "tier" not in auto
+    assert "supports_attachments" not in auto
+    assert "description" in auto
+
+
+def test_get_models_never_leaks_secret_or_provider_fields():
+    # TDD row 1: the catalog + endpoint must never expose keys, secret names,
+    # base URLs, or the exact provider model/snapshot string — only the
+    # public alias ("gpt-4o-mini" as `id`) is expected to appear.
+    c = TestClient(app)
+    serialized = str(c.get("/models").json())
+    for leaked in ("OPENAI_API_KEY", "api_model", "base_url", "secret_env"):
+        assert leaked not in serialized
+
+
 def test_response_schema():
     c = _client(_GROUNDED)
     try:

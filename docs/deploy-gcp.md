@@ -136,6 +136,41 @@ openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add session-secre
 bash scripts/deploy.sh game-guide-ai "$(git rev-parse --short HEAD)"   # picks up :latest
 ```
 
+### Model routing provider secrets (b8o.1, when a profile is enabled)
+
+`deepseek-v4-flash` / `qwen-flash-us` / `kimi-k3` are **disabled by default**
+(`service/model_catalog.py`) — none of this is needed until a provider passes
+Checkpoint 3's evaluation matrix and gets flipped to `enabled=True`. When that
+happens, provision its secret the same way as the others above, then add it to
+`deploy.sh`'s `--set-secrets` list and the runtime SA loop:
+
+```bash
+printf '%s' "<YOUR_DEEPSEEK_KEY>"  | gcloud secrets create deepseek-api-key --data-file=-
+printf '%s' "<YOUR_DASHSCOPE_KEY>" | gcloud secrets create dashscope-api-key --data-file=-
+printf '%s' "<YOUR_MOONSHOT_KEY>"  | gcloud secrets create moonshot-api-key --data-file=-
+
+for s in deepseek-api-key dashscope-api-key moonshot-api-key; do
+  gcloud secrets add-iam-policy-binding "$s" \
+    --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+    --role=roles/secretmanager.secretAccessor
+done
+```
+
+**Known gaps, not yet closed (flagged by the plan, not attempted here without
+live GCP access):**
+
+- `deploy.sh`'s `--set-secrets` pins every secret to `:latest`, not a numbered
+  version. Google recommends a specific version — an env-var secret resolves
+  at instance start, so an in-place `:latest` rotation can silently affect a
+  *running* revision's next cold start rather than only a new deploy. Fixing
+  this needs the actual current version number of each live secret, which
+  requires `gcloud` access this environment doesn't have.
+- The runtime service account above is still the **default compute SA**
+  (`${PROJECT_NUMBER}-compute@developer.gserviceaccount.com`), not a
+  dedicated one scoped to only this service's secrets. Creating one and
+  migrating the live Cloud Run service to it is an operator action against
+  the live pilot, not something to do speculatively from a plan document.
+
 ## 5. $10 budget + Pub/Sub kill-switch
 
 Alerts only notify; the Cloud Function (`scripts/gcp/billing_killswitch/`) is the

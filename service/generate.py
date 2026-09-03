@@ -9,15 +9,19 @@ accepts an injected client for tests.
 
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass
 from typing import Any, Protocol
 
+import openai
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Env-overridable tuning knobs live in the single top-level config module.
 # DEFAULT_MODEL is re-exported here for `from .generate import DEFAULT_MODEL`.
-from config import CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX, TEMPERATURE
+from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX, TEMPERATURE
 from ingestion.retrieval import RetrievalResult
 
+from .attachments import cap_text
 from .models import Source, Suggestion, SuggestionStyle
 
 
@@ -29,6 +33,114 @@ class LLMClient(Protocol):
     def invoke(
         self, input: Any, config: Any = None, **kwargs: Any
     ) -> Any: ...  # pragma: no cover - structural type
+
+
+# ---------------------------------------------------------------------------
+# GenerationResult / usage / attempt observer (agent-forge-harness-b8o.1,
+# Checkpoint 1 slice 4 — TDD row 11). The provider boundary must return more
+# than answer text; unknown usage fields stay None rather than becoming zero
+# (a provider that doesn't report reasoning tokens is not the same as a
+# provider that used zero). generate_answer/generate_suggestions still return
+# their existing plain types unchanged — this is an additive capability the
+# later routing/observability checkpoints build on, not a behavior change.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class GenerationUsage:
+    input_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class GenerationResult:
+    text: str
+    usage: GenerationUsage
+    provider_request_id: str | None
+    finish_reason: str | None
+
+
+class AttemptObserver(Protocol):
+    """Receives one record per actual provider call attempt, including
+    failures. Checkpoint 5 wires a real (Langfuse-backed) observer; this
+    checkpoint ships the seam + a no-op default so nothing breaks before then."""
+    def record(
+        self, *, alias: str, result: GenerationResult | None, error: BaseException | None,
+    ) -> None: ...  # pragma: no cover - structural type
+
+
+class NullAttemptObserver:
+    """Default observer: does nothing. Safe when no one is watching."""
+    def record(
+        self, *, alias: str, result: GenerationResult | None, error: BaseException | None,
+    ) -> None:
+        pass
+
+
+def _usage_from_message(message: Any) -> GenerationUsage:
+    meta = getattr(message, "usage_metadata", None) or {}
+    input_details = meta.get("input_token_details") or {}
+    output_details = meta.get("output_token_details") or {}
+    return GenerationUsage(
+        input_tokens=meta.get("input_tokens"),
+        cached_input_tokens=input_details.get("cache_read"),
+        output_tokens=meta.get("output_tokens"),
+        reasoning_tokens=output_details.get("reasoning"),
+    )
+
+
+# Bounded service-owned retry (agent-forge-harness-b8o.1, Checkpoint 1 step 5).
+# Provider clients are constructed with max_retries=0 (ProviderClientFactory) —
+# ChatOpenAI retries by default, so disabling that AND landing this retry ship
+# together, or the baseline temporarily loses resilience. Narrow on purpose:
+# only the transient network/rate-limit/5xx exceptions the SDK itself used to
+# retry on. The full normalized error-category table (authentication/quota/
+# rate_limit/timeout/content_filter/invalid_request/upstream_unavailable/
+# unknown, D4) is Checkpoint 2's job — this is not that taxonomy.
+_RETRYABLE_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    openai.APIConnectionError,  # covers APITimeoutError (its subclass)
+    openai.RateLimitError,
+    openai.InternalServerError,
+)
+_MAX_ATTEMPTS = 3
+_RETRY_BACKOFF_SECONDS = 0.5
+
+
+def generate_result(
+    messages: list[Any], *, alias: str, client: LLMClient,
+    config: Any | None = None, observer: AttemptObserver | None = None,
+    max_attempts: int = _MAX_ATTEMPTS, sleep: Any = time.sleep,
+) -> GenerationResult:
+    """Invoke `client`, retrying transient failures up to `max_attempts` times,
+    and return everything the provider boundary reports, not just the answer
+    text. Records one attempt with `observer` per actual call — success or
+    failure — including every retried attempt, so every attempt, latency, and
+    charge stays attributable. The final failure re-raises unchanged after
+    being recorded. `alias` identifies which catalog entry made the call;
+    Checkpoint 1 has no per-request routing yet, so callers pass the
+    service's current model alias."""
+    obs = observer or NullAttemptObserver()
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = client.invoke(messages, config=config)
+        except BaseException as exc:
+            obs.record(alias=alias, result=None, error=exc)
+            if isinstance(exc, _RETRYABLE_EXCEPTIONS) and attempt < max_attempts:
+                sleep(_RETRY_BACKOFF_SECONDS * attempt)
+                continue
+            raise
+        content = resp.content
+        text = content.strip() if isinstance(content, str) else str(content).strip()
+        result = GenerationResult(
+            text=text,
+            usage=_usage_from_message(resp),
+            provider_request_id=getattr(resp, "id", None),
+            finish_reason=(getattr(resp, "response_metadata", None) or {}).get("finish_reason"),
+        )
+        obs.record(alias=alias, result=result, error=None)
+        return result
+    raise AssertionError("unreachable: the loop above always returns or raises")  # pragma: no cover
 
 # Shared grounding instruction appended to every grounded-mode system prompt.
 # The numbered sources include any uploaded attachment, which generate_node
@@ -117,6 +229,32 @@ def build_context(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> str:
     return "\n\n".join(blocks)
 
 
+def assemble_context(
+    result: RetrievalResult, *,
+    attachment_context: str | None, attachment_label: str | None,
+    top_n: int = CONTEXT_TOP_N,
+) -> str:
+    """The exact string sent to the LLM as "Sources:" — corpus chunks via
+    `build_context`, plus an uploaded attachment (if any) appended as its own
+    numbered source continuing the [1..N] sequence (swe1.6 / 08il). Extracted
+    (D2, agent-forge-harness-b8o.1) from `generate_node`'s inline block so both
+    the graph and the eval capture harness build the identical string the LLM
+    actually saw — see `service/tests/test_generate_context_assembly.py` for
+    the characterization tests proving this is behavior-preserving.
+
+    The suggestions path deliberately does NOT call this — it uses its own
+    narrower `build_context()` without the attachment block (see
+    `service/graph.py::suggest_node`); do not unify the two."""
+    context = build_context(result, top_n=top_n)
+    if not attachment_context:
+        return context
+    capped = cap_text(attachment_context, ATTACHMENT_MAX_CHARS)
+    label = attachment_label or "your attachment"
+    n = len(context_texts(result, top_n)) + 1
+    attachment_block = f"[{n}] (Attachment — {label}): {capped}"
+    return f"{context}\n\n{attachment_block}" if context else attachment_block
+
+
 def build_sources(result: RetrievalResult, top_n: int = CONTEXT_TOP_N) -> list[Source]:
     """One Source per contributing chunk, deduped by (entity/section), snippet
     truncated for display."""
@@ -187,7 +325,7 @@ def parse_suggestions(text: str) -> list[Suggestion]:
 def generate_suggestions(
     question: str, context: str, *,
     model: str = DEFAULT_MODEL, client: LLMClient | None = None,
-    config: Any | None = None,
+    config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> list[Suggestion]:
     """One structured LLM call for the three spell-usage ideas. Raises on any
     LLM or parse failure — the caller (graph suggest node) degrades to None."""
@@ -195,21 +333,20 @@ def generate_suggestions(
         from langchain_openai import ChatOpenAI
 
         client = ChatOpenAI(model=model, temperature=TEMPERATURE)
-    resp = client.invoke(
+    result = generate_result(
         [
             SystemMessage(content=SUGGESTIONS_SYSTEM),
             HumanMessage(content=SUGGESTIONS_TEMPLATE.format(context=context, question=question)),
         ],
-        config=config,
+        alias=model, client=client, config=config, observer=observer,
     )
-    content = resp.content
-    return parse_suggestions(content if isinstance(content, str) else str(content))
+    return parse_suggestions(result.text)
 
 
 def generate_answer(
     question: str, context: str, *, mode: str = "sage",
     model: str = DEFAULT_MODEL, client: LLMClient | None = None,
-    config: Any | None = None,
+    config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> str:
     """Call gpt-4o-mini with a per-mode system prompt + grounded user message.
 
@@ -229,9 +366,8 @@ def generate_answer(
         client = ChatOpenAI(model=model, temperature=TEMPERATURE)
     system = PERSONA_PROMPTS.get(mode, PERSONA_PROMPTS["sage"])
     user_content = GROUNDED_TEMPLATE.format(context=context, question=question)
-    resp = client.invoke(
+    result = generate_result(
         [SystemMessage(content=system), HumanMessage(content=user_content)],
-        config=config,
+        alias=model, client=client, config=config, observer=observer,
     )
-    content = resp.content
-    return content.strip() if isinstance(content, str) else str(content).strip()
+    return result.text

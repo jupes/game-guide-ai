@@ -128,6 +128,41 @@ def test_generate_answer_uses_injected_client():
 
 
 # ---------------------------------------------------------------------------
+# Provider client factory seam (b8o.1) — guards against the old seam silently
+# returning. See docs/forge/plans/game-guide-ai-model-routing.md, "Provider
+# client seam and the existing test surface".
+# ---------------------------------------------------------------------------
+
+def test_llm_client_is_not_a_readable_attribute():
+    # The old seam: generate_node/suggest_node read svc.llm_client directly,
+    # so any future routing logic added elsewhere would never be exercised —
+    # a false green. There must be no attribute left to silently fall back to.
+    svc = RagService(retriever=_FakeRetriever(_result()), llm_client=_FakeLLM("x"))
+    assert not hasattr(svc, "llm_client")
+
+
+def test_llm_client_kwarg_populates_the_factory():
+    # The constructor kwarg is a convenience — it must resolve through the
+    # same factory a routed request would use, not a separate hidden path.
+    fake = _FakeLLM("x")
+    svc = RagService(retriever=_FakeRetriever(_result()), llm_client=fake)
+    assert svc.factory.client_for(svc.model) is fake
+
+
+def test_generation_actually_invokes_the_factory_resolved_client():
+    # End-to-end proof, not just object identity: the fake injected via the
+    # factory is the one the graph actually calls.
+    from service.providers import ProviderClientFactory
+
+    fake = _FakeLLM("Froghemoths lurk in swamps [1].")
+    factory = ProviderClientFactory(client_builders={"gpt-4o-mini": fake})
+    svc = RagService(retriever=_FakeRetriever(_result(answerable=True)), factory=factory)
+    resp = svc.answer("What is a Froghemoth?")
+    assert fake.calls == 1
+    assert resp.answer == fake.text
+
+
+# ---------------------------------------------------------------------------
 # RagService.answer (mocked)
 # ---------------------------------------------------------------------------
 

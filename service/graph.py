@@ -39,16 +39,16 @@ import logging
 from collections.abc import Hashable
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
-from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, SNIPPET_MAX, TOP_K
+from config import CONTEXT_TOP_N, SNIPPET_MAX, TOP_K
 from ingestion.rerank import should_rerank
 from ingestion.retrieval import RetrievalResult, RetrievedChunk, assemble_result
 from ingestion.scope import scope_for_mode
 
 from .attachments import cap_text
 from .generate import (
+    assemble_context,
     build_context,
     build_sources,
-    context_texts,
     generate_answer,
     generate_suggestions,
 )
@@ -206,27 +206,25 @@ def build_rag_graph(svc: RagService) -> Any:
         # LangGraph injects the run `config` (Langfuse callbacks) as the 2nd arg;
         # forward it to the LLM call so the generation emits a token/cost span.
         result = state["result"]
-        context = build_context(result, top_n=CONTEXT_TOP_N)
-        attachment_context = state.get("attachment_context")
-        if attachment_context:
-            # Capped HERE (not upstream) so the limit is observable through
-            # RagService.answer regardless of who set attachment_context.
-            capped = cap_text(attachment_context, ATTACHMENT_MAX_CHARS)
-            label = state.get("attachment_label") or "your attachment"
-            # Present the attachment as a first-class NUMBERED source continuing
-            # the [1..N] sequence (08il). An unnumbered block was invisible to
-            # the "answer using ONLY the numbered sources" grounding rule, so the
-            # model refused ("I can't see attachments") even with the file in hand.
-            n = len(context_texts(result, CONTEXT_TOP_N)) + 1
-            attachment_block = f"[{n}] (Attachment — {label}): {capped}"
-            context = f"{context}\n\n{attachment_block}" if context else attachment_block
+        # D2 (agent-forge-harness-b8o.1): assembly extracted into
+        # service/generate.py so the eval capture harness (Checkpoint 3) can
+        # build the identical string the LLM saw, instead of drifting from a
+        # reimplementation. Capped inside assemble_context (not upstream) so
+        # the limit is observable through RagService.answer regardless of who
+        # set attachment_context.
+        context = assemble_context(
+            result,
+            attachment_context=state.get("attachment_context"),
+            attachment_label=state.get("attachment_label"),
+            top_n=CONTEXT_TOP_N,
+        )
         answer = generate_answer(
             state["prompt"], context, mode=state["mode"],
-            model=svc.model, client=svc.llm_client, config=config,
+            model=svc.model, client=svc.factory.client_for(svc.model), config=config,
         )
         # An attachment can ground an answer the corpus alone couldn't — treat
         # the response as answerable even when corpus retrieval wasn't.
-        answerable = result.answerable or bool(attachment_context)
+        answerable = result.answerable or bool(state.get("attachment_context"))
         return {"answer": answer, "answerable": answerable}
 
     def generate_route(state: GraphState) -> Literal["suggest", "cite"]:
@@ -240,7 +238,7 @@ def build_rag_graph(svc: RagService) -> Any:
         try:
             suggestions = generate_suggestions(
                 state["prompt"], context,
-                model=svc.model, client=svc.llm_client, config=config,
+                model=svc.model, client=svc.factory.client_for(svc.model), config=config,
             )
         except Exception:
             log.warning("spell suggestions failed; answering without them", exc_info=True)
