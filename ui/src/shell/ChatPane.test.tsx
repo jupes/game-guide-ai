@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as React from 'react'
 import { AppNavContext } from './AppNav'
@@ -150,6 +150,113 @@ describe('ChatPane — reading column + parchment (pp6q.1.2)', () => {
     await waitFor(() =>
       expect(column!.textContent).toContain('A basilisk petrifies.'),
     )
+  })
+})
+
+describe('ChatPane — autoscroll + jump-to-latest (pp6q.1.3)', () => {
+  // jsdom performs NO layout: scrollTop/scrollHeight/clientHeight are all 0
+  // unless defined. Without this helper these tests would pass vacuously —
+  // "scrolled to the bottom" is trivially true when 0 === 0 - 0.
+  function stubGeometry(
+    el: Element, { scrollHeight, clientHeight, scrollTop }:
+    { scrollHeight: number; clientHeight: number; scrollTop: number },
+  ) {
+    Object.defineProperty(el, 'scrollHeight', { value: scrollHeight, configurable: true })
+    Object.defineProperty(el, 'clientHeight', { value: clientHeight, configurable: true })
+    let top = scrollTop
+    Object.defineProperty(el, 'scrollTop', {
+      get: () => top,
+      set: (v: number) => { top = v },
+      configurable: true,
+    })
+    return { get scrollTop() { return top }, set scrollTop(v: number) { top = v } }
+  }
+
+  const answer = (text: string): PostFn => async () => ({
+    kind: 'ok',
+    response: { answer: text, sources: [], answerable: true },
+  })
+
+  async function send(text: string) {
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), text)
+    await userEvent.keyboard('{Enter}')
+  }
+
+  it('scrolls to the newest message when the user is already at the bottom', async () => {
+    const { container } = render(<Wrapper post={answer('Reply one.')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    // At the bottom: scrollTop === scrollHeight - clientHeight.
+    const geo = stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 })
+
+    await send('q1')
+    await waitFor(() => expect(screen.getByText('Reply one.')).toBeInTheDocument())
+    await waitFor(() => expect(geo.scrollTop).toBe(1000))
+  })
+
+  it('does NOT scroll when the user has scrolled up to read', async () => {
+    const { container } = render(<Wrapper post={answer('Reply two.')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    // Far from the bottom — the user is reading earlier history.
+    const geo = stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 50 })
+    fireEvent.scroll(feed)
+
+    await send('q2')
+    await waitFor(() => expect(screen.getByText('Reply two.')).toBeInTheDocument())
+    expect(geo.scrollTop).toBe(50)
+  })
+
+  it('hides the jump-to-latest control while at the bottom', async () => {
+    const { container } = render(<Wrapper post={answer('Reply.')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 })
+    // A populated thread — otherwise this passes vacuously on the
+    // empty-thread guard rather than on the at-bottom check it names.
+    await send('q')
+    await waitFor(() => expect(screen.getByText('Reply.')).toBeInTheDocument())
+    fireEvent.scroll(feed)
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull()
+  })
+
+  it('never offers jump-to-latest on an empty thread, however it is scrolled', async () => {
+    const { container } = render(<Wrapper post={answer('x')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 50 })
+    fireEvent.scroll(feed)
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull()
+  })
+
+  it('shows jump-to-latest once the user scrolls away, and returns to the bottom when used', async () => {
+    const { container } = render(<Wrapper post={answer('Reply.')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    const geo = stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 })
+    await send('q')
+    await waitFor(() => expect(screen.getByText('Reply.')).toBeInTheDocument())
+
+    // Now the reader scrolls up to re-read.
+    geo.scrollTop = 50
+    fireEvent.scroll(feed)
+
+    const jump = await screen.findByRole('button', { name: /jump to latest/i })
+    await userEvent.click(jump)
+    expect(geo.scrollTop).toBe(1000)
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull(),
+    )
+  })
+
+  it('treats a sub-pixel gap from the bottom as still "at the bottom"', async () => {
+    // Fractional scroll offsets are routine under browser zoom and HiDPI; an
+    // exact scrollTop === scrollHeight - clientHeight test would call this
+    // "scrolled away" and stop following for a user who never moved.
+    const { container } = render(<Wrapper post={answer('Reply three.')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    const geo = stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 598.5 })
+    fireEvent.scroll(feed)
+
+    await send('q3')
+    await waitFor(() => expect(screen.getByText('Reply three.')).toBeInTheDocument())
+    await waitFor(() => expect(geo.scrollTop).toBe(1000))
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull()
   })
 })
 
