@@ -264,7 +264,7 @@ def build_rag_graph(svc: RagService) -> Any:
         if state["mode"] == "spell":
             try:
                 spell_content = generate_spell_content(
-                    state["answer"], model=svc.model, client=svc.llm_client, config=config,
+                    state["answer"], model=svc.model, client=svc.factory.client_for(svc.model), config=config,
                 )
             except Exception:
                 log.warning("spell content structuring failed; answering without it", exc_info=True)
@@ -279,7 +279,7 @@ def build_rag_graph(svc: RagService) -> Any:
             return {"stat_block": None}
         try:
             stat_block = generate_stat_block(
-                state["answer"], model=svc.model, client=svc.llm_client, config=config,
+                state["answer"], model=svc.model, client=svc.factory.client_for(svc.model), config=config,
             )
         except Exception:
             log.warning("stat block structuring failed; answering without it", exc_info=True)
