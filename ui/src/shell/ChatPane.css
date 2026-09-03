@@ -14,12 +14,30 @@
   overflow: hidden auto;
   display: flex;
   flex-direction: column;
+}
+
+/* The centered reading measure (pp6q.1.2). The scroller stays full-bleed so
+   the parchment ground and the scrollbar span the pane; only the content is
+   constrained — matching the DS ChatView mock, which centers a 760px column
+   inside a full-width feed.
+
+   The flex column and its 16px gap moved here from .chat-pane__exchanges:
+   they describe how MESSAGES stack, and messages now live in here. */
+.chat-pane__column {
+  width: 100%;
+  max-width: 48rem;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
   /* Horizontal padding gives the DM avatar's gold outline ring (2px outline +
      2px offset = 4px past its box) clearance; without it 'overflow: hidden'
      on the x-axis clips the ring on the left edge (gu7b). Uniform padding
      keeps the 56px dice/source indents aligned with the DM bubble. */
   padding: 8px 6px;
+  /* Grow to fill a short thread so .chat-pane__empty's `margin: auto`
+     still centres it — that rule previously resolved against the scroller. */
+  flex: 1;
 }
 
 .chat-pane__empty {

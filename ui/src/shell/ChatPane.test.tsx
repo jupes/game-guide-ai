@@ -124,6 +124,35 @@ describe('ChatPane — markdown rendering (pp6q.1.1)', () => {
   })
 })
 
+describe('ChatPane — reading column + parchment (pp6q.1.2)', () => {
+  // jsdom applies no stylesheet layout, so these assert the STRUCTURAL
+  // contract the CSS hangs off — that the ground class is applied and that a
+  // dedicated column element wraps the messages. The visual judgment (how wide
+  // the column should be) is made against the live demo, not here.
+
+  it('applies the design system parchment ground to the feed', () => {
+    const { container } = render(<Wrapper />)
+    expect(container.querySelector('.chat-pane__exchanges')?.classList)
+      .toContain('aether-parchment')
+  })
+
+  it('wraps messages in a reading column rather than letting them span the feed', async () => {
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: { answer: 'A basilisk petrifies.', sources: [], answerable: true },
+    })
+    const { container } = render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'basilisk?')
+    await userEvent.keyboard('{Enter}')
+
+    const column = container.querySelector('.chat-pane__column')
+    expect(column).not.toBeNull()
+    await waitFor(() =>
+      expect(column!.textContent).toContain('A basilisk petrifies.'),
+    )
+  })
+})
+
 describe('ChatPane (#21)', () => {
   it('shows the mode-aware empty state when no exchanges exist', () => {
     render(<Wrapper />)

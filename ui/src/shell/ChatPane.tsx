@@ -245,8 +245,12 @@ export function ChatPane({
 
   return (
     <div className="chat-pane">
-      {/* Exchange list */}
-      <div className="chat-pane__exchanges">
+      {/* Exchange list. The scroller carries the parchment ground (the DS ships
+          .aether-parchment and its own ChatView mock applies it to the feed);
+          the inner __column is the centered reading measure, so prose does not
+          run the full width of a wide viewport. */}
+      <div className="chat-pane__exchanges aether-parchment">
+        <div className="chat-pane__column">
         {/* History recall failed — recoverable: the thread starts empty. */}
         {historyError && <ChatMessage role="system">{historyError}</ChatMessage>}
 
@@ -334,6 +338,7 @@ export function ChatPane({
             </React.Fragment>
           ))
         )}
+        </div>
       </div>
 
       {/* Attachments — files attached to this conversation (swe1.6) */}
