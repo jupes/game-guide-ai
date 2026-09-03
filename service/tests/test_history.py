@@ -53,11 +53,14 @@ class _ExplodingStore:
     Authorization (`owner_of` / `claim_conversation`) deliberately still works
     here: that path is NOT best-effort — it fails closed with a 503 — and is
     covered by test_conversation_ownership.py. Mixing the two into one fake would
-    make this test assert the wrong thing.
+    make this test assert the wrong thing. `claim_conversation_strategy` (b8o.2)
+    joins this group for the same reason: it's a fail-closed pre-generation
+    gate (409 on mismatch), not best-effort persistence.
     """
 
     def __init__(self):
         self._owners: dict[str, int] = {}
+        self._strategies: dict[str, tuple[str, str | None]] = {}
 
     def append(self, conversation_id, mode, role, content, suggestions=None):
         raise RuntimeError("disk on fire")
@@ -81,6 +84,13 @@ class _ExplodingStore:
 
     def claim_conversation(self, conversation_id, user_id):
         return self._owners.setdefault(conversation_id, user_id)
+
+    def claim_conversation_strategy(self, conversation_id, *, strategy, manual_alias, catalog_revision):
+        del catalog_revision
+        return self._strategies.setdefault(conversation_id, (strategy, manual_alias))
+
+    def conversation_strategy(self, conversation_id):
+        return self._strategies.get(conversation_id)
 
     def has_content(self, conversation_id):
         return False

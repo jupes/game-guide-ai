@@ -30,7 +30,7 @@ export type MetricPoint =
       unit: 'category'
       // Mirrored by the server's allow-list in service/metrics.py — a value not
       // in both is rejected on arrival, so they move together.
-      value: 'success' | 'http_error' | 'network_error' | 'aborted' | 'throttled'
+      value: 'success' | 'http_error' | 'network_error' | 'aborted' | 'throttled' | 'conversation_mismatch'
       labels: MetricLabels
     }
 

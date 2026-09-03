@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from enum import Enum
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
@@ -52,7 +52,7 @@ from .metrics import (
     build_metrics_sink,
     record_safely,
 )
-from .model_catalog import enabled_profiles, public_model_entry
+from .model_catalog import CATALOG_REVISION, DEFAULT_ALIAS, enabled_profiles, get_profile, public_model_entry
 from .models import (
     Attachment,
     AttachmentResponse,
@@ -63,7 +63,9 @@ from .models import (
     ChatResponse,
     LoginRequest,
     MessagesResponse,
+    RoutingInfo,
     SignupRequest,
+    SuggestionsRoutingInfo,
 )
 from .rag import RagService
 from .ratelimit import (
@@ -84,7 +86,11 @@ log = logging.getLogger(__name__)
 try:
     import openai
 
-    _LLM_ERRORS: tuple[type[BaseException], ...] = (openai.APIError,)
+    # OpenAIError, not just APIError: ContentFilterFinishReasonError (raised
+    # by the LangChain wrapper on a content-filtered finish_reason) inherits
+    # OpenAIError directly, not APIError -- narrower scope would let it fall
+    # through to the generic 500 handler instead of the D4 mapping below.
+    _LLM_ERRORS: tuple[type[BaseException], ...] = (openai.OpenAIError,)
 except Exception:  # pragma: no cover - openai always present in service image
     _LLM_ERRORS = ()
 
@@ -94,6 +100,63 @@ try:
     _DB_ERRORS: tuple[type[BaseException], ...] = (psycopg.Error,)
 except Exception:  # pragma: no cover - psycopg always present in service image
     _DB_ERRORS = ()
+
+
+# Normalized LLM error category -> (HTTP status, retryable). See the plan's
+# "Error and status contract" (D4, agent-forge-harness-b8o.2 Checkpoint 2).
+# conversation_strategy_mismatch (409) and budget/daily-cap (429) are handled
+# directly at their own raise sites (claim_conversation_strategy's caller,
+# _enforce_daily_cap/_throttle_chat) -- not through this table, since neither
+# originates as an openai SDK exception.
+ERROR_STATUS: dict[str, tuple[int, bool]] = {
+    "rate_limit": (429, True),
+    "content_filter": (422, False),
+    "invalid_request": (422, False),
+    "authentication": (502, False),
+    "quota": (502, False),
+    "timeout": (502, True),
+    "upstream_unavailable": (502, True),
+    "unknown": (502, True),
+}
+
+# Human-readable message per category, exposed alongside the machine-readable
+# category/retryable pair in the 4xx/5xx response body — the UI switches on
+# `category`, not this string (which may still be shown to a tester).
+_ERROR_DETAIL: dict[str, str] = {
+    "rate_limit": "the model provider is rate-limiting requests; retry shortly",
+    "content_filter": "the request was refused by the model provider's content policy",
+    "invalid_request": "the request was rejected as invalid",
+    "authentication": "the model provider rejected our credentials",
+    "quota": "the model provider account has no remaining quota",
+    "timeout": "the model provider timed out",
+    "upstream_unavailable": "the model provider is temporarily unavailable",
+    "unknown": "an unexpected upstream error occurred",
+}
+
+
+def normalize_llm_error(exc: BaseException) -> str:
+    """Map an openai SDK exception (or anything else that reaches the /chat
+    handler's LLM-error branch) to one of ERROR_STATUS's bounded categories.
+    Order matters: APITimeoutError is a subclass of APIConnectionError, so it
+    must be checked first or every timeout would classify as the broader
+    upstream_unavailable category instead of the more specific, retryable
+    timeout one (same status/retryable pair today, but a real distinction —
+    see the plan's rationale for keeping them separate categories)."""
+    if isinstance(exc, openai.RateLimitError):
+        return "rate_limit"
+    if isinstance(exc, openai.ContentFilterFinishReasonError):
+        return "content_filter"
+    if isinstance(exc, (openai.BadRequestError, openai.UnprocessableEntityError)):
+        return "invalid_request"
+    if isinstance(exc, openai.AuthenticationError):
+        return "authentication"
+    if isinstance(exc, openai.PermissionDeniedError):
+        return "quota"
+    if isinstance(exc, openai.APITimeoutError):
+        return "timeout"
+    if isinstance(exc, (openai.APIConnectionError, openai.InternalServerError)):
+        return "upstream_unavailable"
+    return "unknown"
 
 _state: dict[str, Any] = {}
 
@@ -679,6 +742,47 @@ def chat(
     # Ownership: one atomic claim-or-reject (403 if it's someone else's).
     # Before the try for the same reason (403, not 500).
     _authorize_conversation(store, conversation_id, session.user_id, creating=True)
+
+    # Model routing (b8o.2): validate the request, then atomically bind this
+    # conversation's strategy before any provider call (D6). D1's "null
+    # conversation_id" branch from the plan doesn't apply here — conversation_id
+    # is always minted above before this point (a design decision made after
+    # the plan was written), so every request already has a real key to bind
+    # against; there's no stateless-single-turn path left to special-case.
+    # Before the try for the same reason as ownership (409/422, not 500).
+    requested_alias = req.model_preference
+    if requested_alias != "auto" and get_profile(requested_alias) is None:
+        raise HTTPException(
+            status_code=422, detail=f"unknown or disabled model: {requested_alias!r}",
+        )
+    strategy: Literal["auto", "manual"] = "auto" if requested_alias == "auto" else "manual"
+    manual_alias = None if strategy == "auto" else requested_alias
+    if store is not None:
+        bound_strategy, bound_alias = store.claim_conversation_strategy(
+            conversation_id, strategy=strategy, manual_alias=manual_alias,
+            catalog_revision=CATALOG_REVISION,
+        )
+        if (bound_strategy, bound_alias) != (strategy, manual_alias):
+            raise HTTPException(
+                status_code=409,
+                detail="this conversation is bound to a different model preference; "
+                       "start a new conversation to change it",
+            )
+    # Effective model resolution: Checkpoint 4 (b8o.4) adds the real per-turn
+    # Auto classifier; until then 'auto' resolves to the catalog default and a
+    # manual alias resolves to itself (already validated enabled above).
+    if strategy == "manual":
+        assert manual_alias is not None  # invariant: set exactly when strategy == "manual"
+        effective_alias = manual_alias
+    else:
+        effective_alias = DEFAULT_ALIAS
+    effective_profile = get_profile(effective_alias)
+    assert effective_profile is not None  # validated above; DEFAULT_ALIAS is always enabled
+    routing = RoutingInfo(
+        requested=requested_alias, effective=effective_alias,
+        provider=effective_profile.provider, strategy=strategy,
+    )
+
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, conversation_id,
@@ -687,6 +791,15 @@ def chat(
             req.prompt, mode=req.mode.value, conversation_id=conversation_id,
             attachment_context=attachment_context, attachment_label=attachment_label,
         )
+        resp.routing = routing
+        if req.mode.value == "spell" and resp.suggestions is not None:
+            # Suggestions always route to the economy subroute regardless of
+            # the answer's routing (D3) — one enabled profile today, so
+            # "economy subroute" is the same baseline; Checkpoint 4 gives
+            # this its own real resolution once more tiers exist.
+            resp.suggestions_routing = SuggestionsRoutingInfo(
+                effective=DEFAULT_ALIAS, provider=effective_profile.provider,
+            )
         record_safely(
             metrics,
             BooleanMetricPoint(
@@ -707,12 +820,28 @@ def chat(
         )
         return resp
     except _LLM_ERRORS as exc:
-        # LLM provider failed (timeout, rate limit, API error) — upstream, retryable.
+        # D4: normalize to a bounded category, then look up its status/
+        # retryable pair — replaces the old blanket "LLM error -> 502".
+        category = normalize_llm_error(exc)
+        status_code, retryable = ERROR_STATUS[category]
         log.warning(
-            "LLM upstream error on /chat (mode=%s, conversation_id=%s): %s: %s",
-            req.mode.value, conversation_id, type(exc).__name__, exc,
+            "LLM error on /chat (mode=%s, conversation_id=%s, category=%s): %s: %s",
+            req.mode.value, conversation_id, category, type(exc).__name__, exc,
         )
-        raise HTTPException(status_code=502, detail="LLM upstream error") from exc
+        headers: dict[str, str] = {}
+        if category == "rate_limit":
+            response = getattr(exc, "response", None)
+            retry_after = response.headers.get("retry-after") if response is not None else None
+            if retry_after:
+                headers["Retry-After"] = retry_after
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "category": category, "retryable": retryable,
+                "message": _ERROR_DETAIL[category],
+            },
+            headers=headers or None,
+        ) from exc
     except _DB_ERRORS as exc:
         # Retrieval backend (Postgres/pgvector) unavailable — upstream, retryable.
         log.warning(

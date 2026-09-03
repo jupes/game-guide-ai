@@ -8,6 +8,11 @@ export interface Conversation {
   customTitle: string | null
   hasFirstPrompt: boolean
   createdAt: string
+  /** "auto" or a specific enabled catalog alias (b8o.2). Mirrors
+   * ChatRequest.model_preference — editable freely before the first prompt;
+   * a change after that starts a new conversation instead (D6, plan's
+   * "Conversation affinity"), enforced by the UI, not this store. */
+  modelPreference: string
 }
 
 const NEW_CONVERSATION_TITLE = 'New conversation'
@@ -45,6 +50,10 @@ function normalizeConversation(value: unknown): Conversation | null {
     typeof row.hasFirstPrompt === 'boolean'
       ? row.hasFirstPrompt
       : legacyTitle !== NEW_CONVERSATION_TITLE
+  // Legacy rows (predate b8o.2 entirely) default to 'auto' — the same
+  // default the backend uses for an omitted model_preference.
+  const modelPreference =
+    typeof row.modelPreference === 'string' && row.modelPreference ? row.modelPreference : 'auto'
 
   return {
     id: row.id,
@@ -54,10 +63,13 @@ function normalizeConversation(value: unknown): Conversation | null {
     customTitle,
     hasFirstPrompt,
     createdAt: row.createdAt,
+    modelPreference,
   }
 }
 
-function createConversation(mode: ChatMode, firstPrompt?: string): Conversation {
+function createConversation(
+  mode: ChatMode, firstPrompt?: string, modelPreference: string = 'auto',
+): Conversation {
   const derivedTitle = deriveConversationTitle(firstPrompt ?? '')
   return {
     id: crypto.randomUUID(),
@@ -67,7 +79,20 @@ function createConversation(mode: ChatMode, firstPrompt?: string): Conversation 
     customTitle: null,
     hasFirstPrompt: Boolean(firstPrompt?.trim()),
     createdAt: new Date().toISOString(),
+    modelPreference,
   }
+}
+
+function setModelPreference(
+  rows: Conversation[],
+  id: string,
+  modelPreference: string,
+): Conversation[] | null {
+  return updateConversation(rows, id, (conversation) => (
+    conversation.modelPreference === modelPreference
+      ? conversation
+      : { ...conversation, modelPreference }
+  ))
 }
 
 function updateConversation(
@@ -119,9 +144,10 @@ function renameConversation(
 export interface ConversationStore {
   list(mode: ChatMode): Conversation[]
   get(id: string): Conversation | undefined
-  create(mode: ChatMode, firstPrompt?: string): Conversation
+  create(mode: ChatMode, firstPrompt?: string, modelPreference?: string): Conversation
   recordFirstPrompt(id: string, prompt: string): void
   rename(id: string, title: string): void
+  setModelPreference(id: string, modelPreference: string): void
   remove(id: string): void
   subscribe(listener: () => void): () => void
   getSnapshot(): number
@@ -155,8 +181,8 @@ export class MemoryConversationStore
     return this.convs.filter((c) => c.mode === mode)
   }
 
-  create(mode: ChatMode, firstPrompt?: string): Conversation {
-    const conversation = createConversation(mode, firstPrompt)
+  create(mode: ChatMode, firstPrompt?: string, modelPreference?: string): Conversation {
+    const conversation = createConversation(mode, firstPrompt, modelPreference)
     this.convs = [...this.convs, conversation]
     this.notifyChanged()
     return conversation
@@ -175,6 +201,13 @@ export class MemoryConversationStore
 
   rename(id: string, title: string): void {
     const next = renameConversation(this.convs, id, title)
+    if (next === null) return
+    this.convs = next
+    this.notifyChanged()
+  }
+
+  setModelPreference(id: string, modelPreference: string): void {
+    const next = setModelPreference(this.convs, id, modelPreference)
     if (next === null) return
     this.convs = next
     this.notifyChanged()
@@ -282,8 +315,8 @@ export class LocalStorageConversationStore
     return this.load().find((c) => c.id === id)
   }
 
-  create(mode: ChatMode, firstPrompt?: string): Conversation {
-    const conversation = createConversation(mode, firstPrompt)
+  create(mode: ChatMode, firstPrompt?: string, modelPreference?: string): Conversation {
+    const conversation = createConversation(mode, firstPrompt, modelPreference)
     if (this.save([...this.load(), conversation])) this.notifyChanged()
     return conversation
   }
@@ -295,6 +328,11 @@ export class LocalStorageConversationStore
 
   rename(id: string, title: string): void {
     const next = renameConversation(this.load(), id, title)
+    if (next !== null && this.save(next)) this.notifyChanged()
+  }
+
+  setModelPreference(id: string, modelPreference: string): void {
+    const next = setModelPreference(this.load(), id, modelPreference)
     if (next !== null && this.save(next)) this.notifyChanged()
   }
 

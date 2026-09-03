@@ -38,11 +38,40 @@ CREATE INDEX IF NOT EXISTS chat_attachments_conv_created_idx
 
 -- Per-user conversation ownership. A conversation_id is client-generated; the
 -- first authenticated user to use it owns it, and the API 403s anyone else.
+--
+-- selection_strategy/manual_alias/catalog_revision (b8o.2, model routing):
+-- the FIRST accepted request also atomically binds the conversation's model
+-- routing strategy here, before any provider call, using the same
+-- first-writer-wins semantics ownership already uses (INSERT/UPDATE ...
+-- WHERE ... IS NULL). Reuses this table rather than a second one -- both are
+-- "one row per conversation, bound once on first use." NULL means "not yet
+-- bound" (distinct from selection_strategy='auto', a real bound value).
 CREATE TABLE IF NOT EXISTS chat.conversations (
-  conversation_id TEXT PRIMARY KEY,
-  user_id         BIGINT NOT NULL,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+  conversation_id   TEXT PRIMARY KEY,
+  user_id           BIGINT NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  selection_strategy TEXT CHECK (selection_strategy IN ('auto', 'manual')),
+  manual_alias      TEXT,
+  catalog_revision  TEXT
 );
+
+-- Migration path for a database created before b8o.2 (CREATE TABLE IF NOT
+-- EXISTS above is a no-op there). ADD COLUMN IF NOT EXISTS is idempotent;
+-- re-running this file at every startup must never error on a column that's
+-- already there.
+ALTER TABLE chat.conversations ADD COLUMN IF NOT EXISTS selection_strategy TEXT;
+ALTER TABLE chat.conversations ADD COLUMN IF NOT EXISTS manual_alias TEXT;
+ALTER TABLE chat.conversations ADD COLUMN IF NOT EXISTS catalog_revision TEXT;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'conversations_strategy_check'
+  ) THEN
+    ALTER TABLE chat.conversations ADD CONSTRAINT conversations_strategy_check
+      CHECK (selection_strategy IN ('auto', 'manual'));
+  END IF;
+END $$;
 
 -- Content follows its ownership row. `require_session` validates at request
 -- START, so a request already in flight when an account is deleted must not be

@@ -161,6 +161,19 @@ describe('postChat', () => {
       prompt: 'What is a Basilisk?',
       mode: 'sage',
       conversation_id: null,
+      model_preference: 'auto',
+    })
+  })
+
+  it('sends an explicit modelPreference as model_preference in the request body', async () => {
+    let captured: { url: string; init?: RequestInit } | null = null
+    const spy: typeof fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      captured = { url: String(url), init }
+      return new Response(JSON.stringify(GROUNDED), { status: 200 })
+    }) as typeof fetch
+    await postChat('Q', 'sage', null, spy, 'gpt-4o-mini')
+    expect(JSON.parse(String(captured!.init?.body))).toMatchObject({
+      model_preference: 'gpt-4o-mini',
     })
   })
 
@@ -182,6 +195,77 @@ describe('postChat', () => {
     }) as typeof fetch
     await postChat('Q', 'sage', 'conv-abc', spy)
     expect(JSON.parse(String(captured!.init?.body))).toMatchObject({ conversation_id: 'conv-abc' })
+  })
+
+  // ── D4 normalized error/status mapping (b8o.2 Checkpoint 2) ────────────────
+  // service/app.py's ERROR_STATUS table: rate_limit/content_filter/
+  // invalid_request/authentication/quota/timeout/upstream_unavailable/unknown,
+  // plus conversation_strategy_mismatch (409, not part of that table but the
+  // same D4 contract). Body shape is {detail: {category, retryable, message}}.
+
+  it('maps 409 to a start-new-conversation recovery outcome', async () => {
+    const result = await postChat('Q', 'sage', 'conv-1', fakeFetch(409, { detail: 'mismatch' }))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') {
+      expect(result.outcome).toBe('conversation_mismatch')
+      expect(result.retryable).toBe(false)
+      expect(result.message).toMatch(/new conversation/i)
+    }
+  })
+
+  it('maps a structured 422 (content_filter) using its category, not the generic prompt message', async () => {
+    const result = await postChat('Q', 'sage', null, fakeFetch(422, {
+      detail: { category: 'content_filter', retryable: false, message: 'refused' },
+    }))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') {
+      expect(result.retryable).toBe(false)
+      expect(result.message).toMatch(/content policy/i)
+      expect(result.message).not.toMatch(/enter a question/i)
+    }
+  })
+
+  it('still maps a plain-string 422 (e.g. empty prompt) to the generic validation message', async () => {
+    // Legacy shape — FastAPI's own Pydantic-validation 422 isn't {category, ...}.
+    const result = await postChat('', 'sage', null, fakeFetch(422, { detail: 'invalid' }))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/prompt/i)
+  })
+
+  it('maps a structured 502 (authentication) using its category, retryable=false', async () => {
+    const result = await postChat('Q', 'sage', null, fakeFetch(502, {
+      detail: { category: 'authentication', retryable: false, message: 'bad creds' },
+    }))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') {
+      expect(result.retryable).toBe(false)
+      expect(result.message).toMatch(/unavailable/i)
+    }
+  })
+
+  it('maps a structured 502 (upstream_unavailable) as retryable', async () => {
+    const result = await postChat('Q', 'sage', null, fakeFetch(502, {
+      detail: { category: 'upstream_unavailable', retryable: true, message: 'down' },
+    }))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.retryable).toBe(true)
+  })
+
+  it('a provider rate_limit (structured 429, no X-Chat-Throttled header) is distinct from our own throttle', async () => {
+    const result = await postChat('Q', 'sage', null, fakeFetchWithHeaders(429, {}, {
+      detail: { category: 'rate_limit', retryable: true, message: 'provider limited' },
+    }))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') {
+      expect(result.outcome).not.toBe('throttled')
+      expect(result.retryable).toBe(true)
+    }
+  })
+
+  it('an unstructured 502 (no JSON body) still falls back to the generic unavailable message', async () => {
+    const result = await postChat('Q', 'sage', null, fakeFetch(502))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') expect(result.message).toMatch(/unavailable|unexpected/i)
   })
 })
 

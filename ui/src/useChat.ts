@@ -25,7 +25,9 @@ export interface Exchange {
   error?: string
 }
 
-export type PostFn = (prompt: string, mode: ChatMode, conversationId: string | null) => Promise<ChatResult>
+export type PostFn = (
+  prompt: string, mode: ChatMode, conversationId: string | null, modelPreference: string,
+) => Promise<ChatResult>
 export type LoadHistoryFn = (conversationId: string) => Promise<MessagesResult>
 const monotonicNow = () => performance.now()
 
@@ -34,6 +36,10 @@ export interface UseChatOptions {
   loadHistory?: LoadHistoryFn
   mode: ChatMode
   conversationId: string | null
+  /** "auto" or a specific enabled catalog alias (b8o.2) — the conversation's
+   * bound preference, threaded through to `post` unchanged. Defaults to
+   * "auto", matching the backend's own default for an omitted preference. */
+  modelPreference?: string
   now?: () => number
   recordMetric?: (point: MetricPoint) => void
   /** Called when the SERVER supplied the conversation id (x5bz.3.2).
@@ -80,11 +86,20 @@ function toExchanges(messages: StoredMessage[], nextId: { current: number }): Ex
   return out
 }
 
+// postChat's own params keep fetchImpl in test call sites' existing 4th
+// position (real signature: prompt, mode, conversationId, fetchImpl,
+// modelPreference) — this adapter is what lets the default `post` satisfy
+// PostFn's (prompt, mode, conversationId, modelPreference) shape without
+// reordering postChat's params and breaking every existing direct caller.
+const defaultPost: PostFn = (prompt, mode, conversationId, modelPreference) =>
+  postChat(prompt, mode, conversationId, undefined, modelPreference)
+
 export function useChat({
-  post = postChat,
+  post = defaultPost,
   loadHistory = getMessages,
   mode,
   conversationId,
+  modelPreference = 'auto',
   onConversationAdopted,
   now = monotonicNow,
   recordMetric = recordBrowserMetric,
@@ -178,7 +193,9 @@ export function useChat({
         // http_error: it is the cost guard doing its job, not the service
         // failing, and the metric is the only place an operator would see the
         // limit actually biting in production.
-        outcome: 'success' | 'http_error' | 'network_error' | 'aborted' | 'throttled',
+        outcome:
+          | 'success' | 'http_error' | 'network_error' | 'aborted' | 'throttled'
+          | 'conversation_mismatch',
       ) => {
         pendingRef.current = false
         const labels = runtimeMetricLabels(mode)
@@ -203,7 +220,7 @@ export function useChat({
         }))
       }
 
-      void post(trimmed, mode, conversationId).then(
+      void post(trimmed, mode, conversationId, modelPreference).then(
         (result) => {
           if (result.kind === 'ok') {
             // Only when we had none: a server echo of the id we sent is not an
@@ -238,7 +255,7 @@ export function useChat({
         },
       )
     },
-    [post, mode, conversationId, now, recordMetric, onConversationAdopted],
+    [post, mode, conversationId, modelPreference, now, recordMetric, onConversationAdopted],
   )
 
   return { exchanges, send, pending, historyError, loadingHistory }

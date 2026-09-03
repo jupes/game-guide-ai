@@ -63,6 +63,34 @@ describe('useChat', () => {
     expect(adopted).toEqual([])
   })
 
+  // ── Per-conversation model preference (b8o.2) ─────────────────────────────
+
+  it('passes the modelPreference option through to post', async () => {
+    const calls: unknown[][] = []
+    const post: PostFn = async (...args) => {
+      calls.push(args)
+      return GROUNDED
+    }
+    const { result } = renderHook(() =>
+      useChat({ post, mode: 'sage', conversationId: null, modelPreference: 'gpt-4o-mini' }),
+    )
+    act(() => { result.current.send('What is a Basilisk?') })
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0]).toEqual(['What is a Basilisk?', 'sage', null, 'gpt-4o-mini'])
+  })
+
+  it('defaults modelPreference to "auto" when the option is omitted', async () => {
+    const calls: unknown[][] = []
+    const post: PostFn = async (...args) => {
+      calls.push(args)
+      return GROUNDED
+    }
+    const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: null }))
+    act(() => { result.current.send('What is a Basilisk?') })
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0][3]).toBe('auto')
+  })
+
   it('appends a pending exchange then resolves it to done', async () => {
     const { post, resolve } = deferredPost()
     const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: null }))

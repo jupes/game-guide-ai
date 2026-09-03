@@ -1,0 +1,38 @@
+/* ── ModelPicker (b8o.2) ──────────────────────────────────────────────────────
+   Compact per-conversation model selector, anchored beside the theme control
+   in AppHeader.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.model-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-left: 12px;
+  border-left: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.model-picker__label {
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: var(--md-sys-typescale-label-large-font);
+  font-size: var(--md-sys-typescale-label-large-size);
+  font-weight: var(--md-sys-typescale-label-large-weight);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  white-space: nowrap;
+}
+
+.model-picker__select {
+  min-height: 44px; /* 44px touch-target floor, matching app-header__channel */
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--md-sys-typescale-label-large-font);
+  font-size: var(--md-sys-typescale-label-large-size);
+}
+
+.model-picker__select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
