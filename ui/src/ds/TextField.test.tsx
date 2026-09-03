@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
+import * as React from 'react'
 import userEvent from '@testing-library/user-event'
 import { TextField } from './TextField'
 
@@ -120,5 +121,59 @@ describe('TextField — variant', () => {
   it('applies data-variant="filled" when variant=filled', () => {
     render(<TextField label="Name" variant="filled" />)
     expect(screen.getByTestId('textfield-root')).toHaveAttribute('data-variant', 'filled')
+  })
+})
+
+// ── autoGrow (pp6q.1.4) ───────────────────────────────────────────────────────
+// A DS extension, like onKeyDown above: not in aetheril-design-system's
+// TextField.d.ts. jsdom performs no layout, so scrollHeight is stubbed — an
+// unstubbed run would silently measure 0 and prove nothing.
+
+function stubScrollHeight(el: HTMLElement, px: number) {
+  Object.defineProperty(el, 'scrollHeight', { value: px, configurable: true })
+}
+
+describe('TextField — autoGrow', () => {
+  it('does NOT set an inline height when autoGrow is off (the default)', async () => {
+    // Guard for every other TextField in the app: opting in must be the only
+    // way to change behavior.
+    render(<TextField multiline rows={2} value="" onChange={vi.fn()} label="Ask" />)
+    const ta = screen.getByLabelText('Ask') as HTMLTextAreaElement
+    stubScrollHeight(ta, 500)
+    await userEvent.type(ta, 'x')
+    expect(ta.style.height).toBe('')
+    expect(ta.getAttribute('rows')).toBe('2')
+  })
+
+  it('grows to fit its content when autoGrow is on', () => {
+    function Harness() {
+      const [v, setV] = React.useState('')
+      return (
+        <TextField multiline autoGrow value={v}
+          onChange={(e) => setV(e.target.value)} label="Ask" />
+      )
+    }
+    const { rerender } = render(<Harness />)
+    const ta = screen.getByLabelText('Ask') as HTMLTextAreaElement
+    stubScrollHeight(ta, 96)
+    rerender(<Harness />)
+    fireEvent.change(ta, { target: { value: 'several\nlines\nof\ntext' } })
+    expect(ta.style.height).toBe('96px')
+  })
+
+  it('caps growth and scrolls internally past the maximum', () => {
+    function Harness() {
+      const [v, setV] = React.useState('')
+      return (
+        <TextField multiline autoGrow autoGrowMaxPx={160} value={v}
+          onChange={(e) => setV(e.target.value)} label="Ask" />
+      )
+    }
+    render(<Harness />)
+    const ta = screen.getByLabelText('Ask') as HTMLTextAreaElement
+    stubScrollHeight(ta, 900)
+    fireEvent.change(ta, { target: { value: 'a very long draft' } })
+    expect(ta.style.height).toBe('160px')
+    expect(ta.style.overflowY).toBe('auto')
   })
 })

@@ -446,7 +446,8 @@ export function ChatPane({
         />
         <TextField
           multiline
-          rows={2}
+          autoGrow
+          rows={1}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}

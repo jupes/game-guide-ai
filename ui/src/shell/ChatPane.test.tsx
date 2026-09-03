@@ -260,6 +260,31 @@ describe('ChatPane — autoscroll + jump-to-latest (pp6q.1.3)', () => {
   })
 })
 
+describe('ChatPane — composer (pp6q.1.4)', () => {
+  // The composer opts into autoGrow, which changes how the textarea is sized.
+  // These pin the send semantics that sizing must not disturb.
+
+  it('still sends on Enter', async () => {
+    const sent: string[] = []
+    const post: PostFn = async (prompt) => { sent.push(prompt); return GROUNDED }
+    render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'a question')
+    await userEvent.keyboard('{Enter}')
+    expect(sent).toEqual(['a question'])
+  })
+
+  it('still inserts a newline on Shift+Enter without sending', async () => {
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Wrapper post={post} />)
+    const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+    await userEvent.type(ta, 'line one')
+    await userEvent.keyboard('{Shift>}{Enter}{/Shift}')
+    await userEvent.type(ta, 'line two')
+    expect(post).not.toHaveBeenCalled()
+    expect(ta.value).toBe('line one\nline two')
+  })
+})
+
 describe('ChatPane (#21)', () => {
   it('shows the mode-aware empty state when no exchanges exist', () => {
     render(<Wrapper />)

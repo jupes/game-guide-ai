@@ -21,6 +21,19 @@ export interface TextFieldProps {
   disabled?: boolean
   multiline?: boolean
   rows?: number
+  /**
+   * DS extension: not in the original .d.ts (same category as `onKeyDown`
+   * above). Multiline only — grows the textarea to fit its content instead of
+   * scrolling inside a fixed `rows` box, which is what a chat composer needs.
+   *
+   * Defaults to **off**, so every existing consumer is byte-for-byte
+   * unaffected; opting in is the only way to change behavior. Proposed
+   * upstream to aetheril-design-system so the contract converges rather than
+   * silently drifting (agent-forge-harness-pp6q.1.4).
+   */
+  autoGrow?: boolean
+  /** Ceiling for `autoGrow`, in px. Past it the textarea scrolls internally. */
+  autoGrowMaxPx?: number
   fullWidth?: boolean
   style?: React.CSSProperties
   className?: string
@@ -41,11 +54,28 @@ export function TextField({
   disabled = false,
   multiline = false,
   rows = 3,
+  autoGrow = false,
+  autoGrowMaxPx = 200,
   fullWidth = false,
   style,
   className,
 }: TextFieldProps): React.JSX.Element {
   const [focus, setFocus] = React.useState(false)
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null)
+
+  // autoGrow: measure content, then size to it (pp6q.1.4). Height must be
+  // reset before measuring — scrollHeight never reports LESS than the current
+  // height, so without the reset the field could only ever grow, never shrink
+  // back when the draft is deleted.
+  React.useLayoutEffect(() => {
+    if (!autoGrow || !multiline) return
+    const ta = textareaRef.current
+    if (!ta) return
+    ta.style.height = 'auto'
+    const next = Math.min(ta.scrollHeight, autoGrowMaxPx)
+    ta.style.height = `${next}px`
+    ta.style.overflowY = ta.scrollHeight > autoGrowMaxPx ? 'auto' : 'hidden'
+  }, [value, autoGrow, autoGrowMaxPx, multiline])
   // Associate the label with its control so assistive tech (and getByLabelText)
   // can resolve it — password/email inputs have no implicit accessible name.
   const controlId = React.useId()
@@ -112,6 +142,7 @@ export function TextField({
         {multiline ? (
           <textarea
             id={controlId}
+            ref={textareaRef}
             rows={rows}
             value={value}
             onChange={onChange}
