@@ -9,6 +9,14 @@ Status: implementation-ready research plan; prices inherited from the companion 
 two turns; see `docs/forge/reports/game-guide-ai-memory-personalization-plan-review.md` and
 `docs/forge/reports/game-guide-ai-memory-personalization-plan-review-2.md`.
 
+> **Read this as a point-in-time record, not current-state.** Written 2026-07-26, before
+> invite-gated auth (`x5bz.2`, merged #43) and before model-routing Checkpoints 1–2
+> (`b8o.1`/`b8o.2`, merged #54/#55) landed. Two of its assumptions are already outdated:
+> `chat.conversations` now exists (auth added it for ownership, and `b8o.2` extended it with
+> the routing-strategy columns), and `/chat` now mints a `conversation_id` for every request
+> rather than treating `null` as a stateless turn. Re-verify against the code before
+> executing any checkpoint here.
+
 ## Executive decision
 
 Build conversation memory as four deliberately separate capabilities:
