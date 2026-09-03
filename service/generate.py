@@ -9,6 +9,7 @@ accepts an injected client for tests.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -22,7 +23,7 @@ from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_M
 from ingestion.retrieval import RetrievalResult
 
 from .attachments import cap_text
-from .models import Source, Suggestion, SuggestionStyle
+from .models import Source, SpellContent, StatBlockContent, Suggestion, SuggestionStyle
 
 
 # Minimal structural type for the injected chat model (ziw.2 / CP2). We call a
@@ -354,6 +355,160 @@ def generate_suggestions(
         alias=model, client=client, config=config, observer=observer,
     )
     return parse_suggestions(result.text)
+
+
+# Spell content structuring (z7fl.1 Checkpoint A). One extra LLM call in spell
+# mode, extracting from the already-generated prose `answer` (not retrieved
+# context) so the structured card can't state anything the user wasn't shown.
+# Best-effort: the graph node degrades to no spell_content on any failure.
+SPELL_CONTENT_SYSTEM = (
+    "You extract structured spell data from a D&D 5e spell description. Using "
+    "ONLY the facts present in the text below — do not add, infer, or alter "
+    "anything not stated — respond with ONLY a JSON object matching this shape: "
+    '{"name": "...", "level": 0, "school": "...", "casting_time": "...", '
+    '"range": "...", "duration": "...", '
+    '"components": {"v": true, "s": true, "m": "..."}, '
+    '"description": "...", "higher_levels": "...", "classes": ["..."], '
+    '"concentration": false, "ritual": false}. '
+    '"name" and "description" are required; omit any other key you cannot '
+    "fill from the text. No prose outside the JSON."
+)
+
+SPELL_CONTENT_TEMPLATE = "Spell description:\n{answer}"
+
+
+def parse_spell_content(text: str) -> SpellContent:
+    """Parse the spell-content JSON, tolerating a markdown code fence. Raises
+    ValueError (non-JSON) or pydantic.ValidationError (wrong/missing shape,
+    including a missing core-required field) on anything else — both are
+    caught by the caller's degrade-to-None path."""
+    import json
+
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`").strip()
+        if raw.startswith("json"):
+            raw = raw[len("json"):]
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"spell content is not valid JSON: {exc}") from exc
+    return SpellContent.model_validate(data)
+
+
+def generate_spell_content(
+    answer: str, *,
+    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    config: Any | None = None,
+) -> SpellContent:
+    """One structured LLM call that extracts spell content from the already-
+    generated prose `answer` (an extraction task, not independent
+    regeneration — see module docstring). Raises on any LLM or parse failure;
+    the caller (graph structure node) degrades to None."""
+    if client is None:  # pragma: no cover - live path mirrors generate_answer
+        from langchain_openai import ChatOpenAI
+
+        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
+    resp = client.invoke(
+        [
+            SystemMessage(content=SPELL_CONTENT_SYSTEM),
+            HumanMessage(content=SPELL_CONTENT_TEMPLATE.format(answer=answer)),
+        ],
+        config=config,
+    )
+    content = resp.content
+    return parse_spell_content(content if isinstance(content, str) else str(content))
+
+
+# NPC/stat-block structuring (z7fl.1 Checkpoint B). GM/Sage only, and only
+# when `_looks_like_statblock` matches the prose answer — a cost guard, since
+# most GM/Sage turns are plain narrative and would otherwise pay for a
+# redundant LLM call every time. Like spell content, extracts from the
+# already-generated `answer`, not retrieved context — required for
+# GM-invented creatures, whose stats exist only in the answer the model just
+# wrote, never in the retrieved D&D corpus.
+_STATBLOCK_TEXT_MARKERS = ("armor class", "hit points", "challenge rating")
+_STATBLOCK_CR_RE = re.compile(r"\bcr\s+\d+(/\d+)?\b", re.IGNORECASE)
+_STATBLOCK_ABILITY_RE = re.compile(r"\b(str|dex)\s", re.IGNORECASE)
+
+
+def _looks_like_statblock(text: str) -> bool:
+    """Require at least TWO stat-block markers before firing the structuring
+    call. A single incidental mention (e.g. narrative prose saying a guard
+    "has good armor" or a bridge "has 200 hit points of durability") must not
+    trigger — the 2+ threshold is the cheap guard against that."""
+    lowered = text.lower()
+    hits = sum(1 for marker in _STATBLOCK_TEXT_MARKERS if marker in lowered)
+    if _STATBLOCK_CR_RE.search(lowered):
+        hits += 1
+    if _STATBLOCK_ABILITY_RE.search(lowered):
+        hits += 1
+    return hits >= 2
+
+
+STATBLOCK_SYSTEM = (
+    "You extract a structured 5e NPC/monster stat block from the text below. "
+    "Using ONLY the facts present in the text — do not add, infer, or invent "
+    "any stat not stated — respond with ONLY a JSON object matching this "
+    'shape: {"name": "...", "size": "...", "type": "...", "alignment": "...", '
+    '"ac": 0, "ac_note": "...", "hp": 0, "hit_dice": "...", "speed": "...", '
+    '"abilities": {"str": 0, "dex": 0, "con": 0, "int": 0, "wis": 0, "cha": 0}, '
+    '"saving_throws": "...", "skills": "...", "damage_immunities": "...", '
+    '"condition_immunities": "...", "senses": "...", "languages": "...", '
+    '"cr": "...", "xp": 0, '
+    '"traits": [{"name": "...", "text": "..."}], '
+    '"actions": [{"name": "...", "text": "..."}], '
+    '"bonus_actions": [{"name": "...", "text": "..."}], '
+    '"reactions": [{"name": "...", "text": "..."}], '
+    '"legendary_actions": [{"name": "...", "text": "..."}]}. '
+    '"name", "ac", and "hp" are required; omit any other key you cannot fill '
+    "from the text. No prose outside the JSON."
+)
+
+STATBLOCK_TEMPLATE = "Text:\n{answer}"
+
+
+def parse_stat_block(text: str) -> StatBlockContent:
+    """Parse the stat-block JSON, tolerating a markdown code fence. Raises
+    ValueError (non-JSON) or pydantic.ValidationError (wrong/missing shape,
+    including a missing core-required field) on anything else — both are
+    caught by the caller's degrade-to-None path."""
+    import json
+
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`").strip()
+        if raw.startswith("json"):
+            raw = raw[len("json"):]
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"stat block is not valid JSON: {exc}") from exc
+    return StatBlockContent.model_validate(data)
+
+
+def generate_stat_block(
+    answer: str, *,
+    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    config: Any | None = None,
+) -> StatBlockContent:
+    """One structured LLM call that extracts a stat block from the already-
+    generated prose `answer`. Raises on any LLM or parse failure; the caller
+    (graph structure node) degrades to None. Callers should gate this behind
+    `_looks_like_statblock` — see structure_node in service/graph.py."""
+    if client is None:  # pragma: no cover - live path mirrors generate_answer
+        from langchain_openai import ChatOpenAI
+
+        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
+    resp = client.invoke(
+        [
+            SystemMessage(content=STATBLOCK_SYSTEM),
+            HumanMessage(content=STATBLOCK_TEMPLATE.format(answer=answer)),
+        ],
+        config=config,
+    )
+    content = resp.content
+    return parse_stat_block(content if isinstance(content, str) else str(content))
 
 
 def generate_answer(
