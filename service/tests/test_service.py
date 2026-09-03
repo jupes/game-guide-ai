@@ -109,6 +109,28 @@ def test_build_sources_keeps_distinct_cased_entities():
     assert len(build_sources(r)) == 2
 
 
+def test_build_sources_attributes_wikidot_chunks_with_cc_by_sa():
+    """CC BY-SA 3.0 requires attribution (dnd-corpus-wikidot-expansion) — a
+    wikidot-sourced chunk's citation must say so, not just show the raw
+    book_slug the way PDF citations do."""
+    chunks = [_chunk("a", "Fireball")]
+    r = RetrievalResult(chunks=chunks, full_texts={"a": "x" * 10},
+                        top1_distance=0.3, answerable=True, book_by_id={"a": "wikidot-5e"})
+    srcs = build_sources(r)
+    assert len(srcs) == 1
+    assert "CC BY-SA" in srcs[0].book
+    assert "dnd5e.wikidot.com" in srcs[0].book
+
+
+def test_build_sources_pdf_book_slug_is_unchanged():
+    """Regression guard: the wikidot attribution special-case must not touch
+    PDF citations, which show the raw book_slug as before."""
+    chunks = [_chunk("a", "Fireball")]
+    r = RetrievalResult(chunks=chunks, full_texts={"a": "x" * 10},
+                        top1_distance=0.3, answerable=True, book_by_id={"a": "phb-5e"})
+    assert build_sources(r)[0].book == "phb-5e"
+
+
 def test_context_texts_full_untruncated_in_chunk_order():
     # The eval feeds these to Ragas as `contexts` — they must be the FULL chunk
     # texts generation saw (zgm), not the display snippets.

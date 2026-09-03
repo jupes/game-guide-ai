@@ -83,7 +83,7 @@ def test_initdb_files_are_mounted_individually_not_nested_in_a_directory_mount()
         "no bare directory mount at /docker-entrypoint-initdb.d — mount each "
         "init file individually (see the comment above the volumes: block)"
     )
-    for name in ("01-extensions.sql", "02-schema.sql", "03-hybrid-search.sql"):
+    for name in ("01-extensions.sql", "02-schema.sql", "03-hybrid-search.sql", "03a-corpus-provenance.sql"):
         assert f"./vector-db/init/{name}:/docker-entrypoint-initdb.d/{name}:ro" in compose, (
             f"{name} must be mounted individually, read-only"
         )

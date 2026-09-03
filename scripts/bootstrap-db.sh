@@ -12,7 +12,8 @@
 #       · 2 usage/environment error
 #
 # Order matters: 01 creates the vector extension and dnd schema, 02-03 add the
-# corpus tables and hybrid search, 04 the chat schema, 05 the auth schema — whose
+# corpus tables and hybrid search, 03a adds corpus source-provenance columns
+# (dnd-corpus-wikidot-expansion), 04 the chat schema, 05 the auth schema — whose
 # ownership foreign key is added onto 04's table.
 #
 # Stopping at the first failure is the point. psql continues past a SQL error
@@ -30,6 +31,7 @@ readonly FILES=(
   "vector-db/init/01-extensions.sql"
   "vector-db/init/02-schema.sql"
   "vector-db/init/03-hybrid-search.sql"
+  "vector-db/init/03a-corpus-provenance.sql"
   "service/sql/04-chat-schema.sql"
   "service/sql/05-auth-schema.sql"
 )

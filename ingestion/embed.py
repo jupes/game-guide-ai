@@ -101,7 +101,8 @@ INSERT INTO dnd.chunks (
     chunk_id, book_slug, source_file, page_start, page_end,
     part, chapter, section, content_type,
     entity_name, class_name, feature_name,
-    text, embedding, search_vector
+    text, embedding, search_vector,
+    source_type, source_url, license
 ) VALUES (
     %(chunk_id)s, %(book_slug)s, %(source_file)s, %(page_start)s, %(page_end)s,
     %(part)s, %(chapter)s, %(section)s, %(content_type)s,
@@ -111,7 +112,8 @@ INSERT INTO dnd.chunks (
     setweight(to_tsvector('english', coalesce(%(class_name)s,  '')), 'A') ||
     setweight(to_tsvector('english', coalesce(%(feature_name)s,'')), 'A') ||
     setweight(to_tsvector('english', replace(coalesce(%(content_type)s, ''), '_', ' ')), 'B') ||
-    setweight(to_tsvector('english', %(text)s), 'C')
+    setweight(to_tsvector('english', %(text)s), 'C'),
+    %(source_type)s, %(source_url)s, %(license)s
 )
 ON CONFLICT (chunk_id) DO UPDATE SET
     text          = EXCLUDED.text,
@@ -123,8 +125,27 @@ ON CONFLICT (chunk_id) DO UPDATE SET
     content_type  = EXCLUDED.content_type,
     entity_name   = EXCLUDED.entity_name,
     class_name    = EXCLUDED.class_name,
-    feature_name  = EXCLUDED.feature_name
+    feature_name  = EXCLUDED.feature_name,
+    source_type   = EXCLUDED.source_type,
+    source_url    = EXCLUDED.source_url,
+    license       = EXCLUDED.license
 """
+
+
+def _row_for_upsert(chunk: dict, embedding: list[float]) -> dict:
+    """Chunk dict + its embedding -> a row ready for _UPSERT_SQL.
+
+    Chunk files written before dnd-corpus-wikidot-expansion have no
+    source_type/source_url/license keys at all — default to the PDF pipeline's
+    provenance rather than KeyError, so re-embedding an old chunks.jsonl still
+    works. Wiki-sourced chunks already carry these keys and pass through as-is.
+    """
+    row = dict(chunk)
+    row["embedding"] = embedding
+    row.setdefault("source_type", "pdf")
+    row.setdefault("source_url", None)
+    row.setdefault("license", None)
+    return row
 
 
 def _upsert_batch(conn: psycopg.Connection, rows: list[dict]) -> None:
@@ -172,11 +193,7 @@ def embed_and_upsert(
                 embeddings = _embed_ollama(texts, model, ollama_url)
             elapsed = time.monotonic() - t0
 
-            rows = []
-            for chunk, emb in zip(batch, embeddings):
-                row = dict(chunk)
-                row["embedding"] = emb
-                rows.append(row)
+            rows = [_row_for_upsert(chunk, emb) for chunk, emb in zip(batch, embeddings)]
 
             _upsert_batch(conn, rows)
             upserted += len(batch)
