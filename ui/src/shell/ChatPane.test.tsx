@@ -285,6 +285,44 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
   })
 })
 
+describe('ChatPane — typing indicator (pp6q.1.5)', () => {
+  function pendingForever(): PostFn {
+    return () => new Promise<ChatResult>(() => {})
+  }
+
+  it('shows the animated dot row while a reply is pending', async () => {
+    const { container } = render(<Wrapper post={pendingForever()} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() =>
+      expect(container.querySelectorAll('.chat-pane__dot')).toHaveLength(3),
+    )
+  })
+
+  it('still announces the pending state to assistive tech', async () => {
+    // The dots are decoration. Replacing the announcement with a purely
+    // visual animation would be an accessibility regression dressed as
+    // polish — a screen-reader user would get no signal that anything is
+    // happening at all.
+    render(<Wrapper post={pendingForever()} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+    const status = await screen.findByRole('status')
+    expect(status.textContent?.trim()).not.toBe('')
+  })
+
+  it('hides the dots once the reply arrives', async () => {
+    const post: PostFn = async () => GROUNDED
+    const { container } = render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
+    expect(container.querySelectorAll('.chat-pane__dot')).toHaveLength(0)
+  })
+})
+
 describe('ChatPane (#21)', () => {
   it('shows the mode-aware empty state when no exchanges exist', () => {
     render(<Wrapper />)

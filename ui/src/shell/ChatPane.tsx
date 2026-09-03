@@ -319,7 +319,18 @@ export function ChatPane({
               {/* DM response */}
               {exchange.status === 'pending' && (
                 <ChatMessage role="dm">
-                  <span role="status">Consulting the tomes…</span>
+                  {/* The dots are decoration (aria-hidden); the status text is
+                      the actual affordance and stays for assistive tech —
+                      swapping an announcement for an animation would be an
+                      a11y regression dressed as polish (pp6q.1.5). */}
+                  <span className="chat-pane__typing" aria-hidden="true">
+                    <i className="chat-pane__dot" />
+                    <i className="chat-pane__dot" />
+                    <i className="chat-pane__dot" />
+                  </span>
+                  <span role="status" className="chat-pane__sr-only">
+                    Consulting the tomes…
+                  </span>
                 </ChatMessage>
               )}
 
