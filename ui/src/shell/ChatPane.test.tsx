@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as React from 'react'
 import { AppNavContext } from './AppNav'
@@ -100,6 +100,228 @@ const GROUNDED: ChatResult = {
     answerable: true,
   },
 }
+
+describe('ChatPane — markdown rendering (pp6q.1.1)', () => {
+  it('renders a markdown answer as formatted HTML, not a raw string', async () => {
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: {
+        answer: '## Fireball\n\nA **bright streak** flashes.\n\n- Dex save\n- Half on success',
+        sources: [],
+        answerable: true,
+      },
+    })
+    render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'Fireball?')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Fireball' })).toBeInTheDocument())
+    expect(screen.getByText('bright streak').tagName).toBe('STRONG')
+    expect(screen.getAllByRole('listitem').map((li) => li.textContent))
+      .toEqual(['Dex save', 'Half on success'])
+    // The literal markdown syntax must not survive as visible text.
+    expect(screen.queryByText(/## Fireball/)).toBeNull()
+  })
+})
+
+describe('ChatPane — reading column + parchment (pp6q.1.2)', () => {
+  // jsdom applies no stylesheet layout, so these assert the STRUCTURAL
+  // contract the CSS hangs off — that the ground class is applied and that a
+  // dedicated column element wraps the messages. The visual judgment (how wide
+  // the column should be) is made against the live demo, not here.
+
+  it('applies the design system parchment ground to the feed', () => {
+    const { container } = render(<Wrapper />)
+    expect(container.querySelector('.chat-pane__exchanges')?.classList)
+      .toContain('aether-parchment')
+  })
+
+  it('wraps messages in a reading column rather than letting them span the feed', async () => {
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: { answer: 'A basilisk petrifies.', sources: [], answerable: true },
+    })
+    const { container } = render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'basilisk?')
+    await userEvent.keyboard('{Enter}')
+
+    const column = container.querySelector('.chat-pane__column')
+    expect(column).not.toBeNull()
+    await waitFor(() =>
+      expect(column!.textContent).toContain('A basilisk petrifies.'),
+    )
+  })
+})
+
+describe('ChatPane — autoscroll + jump-to-latest (pp6q.1.3)', () => {
+  // jsdom performs NO layout: scrollTop/scrollHeight/clientHeight are all 0
+  // unless defined. Without this helper these tests would pass vacuously —
+  // "scrolled to the bottom" is trivially true when 0 === 0 - 0.
+  function stubGeometry(
+    el: Element, { scrollHeight, clientHeight, scrollTop }:
+    { scrollHeight: number; clientHeight: number; scrollTop: number },
+  ) {
+    Object.defineProperty(el, 'scrollHeight', { value: scrollHeight, configurable: true })
+    Object.defineProperty(el, 'clientHeight', { value: clientHeight, configurable: true })
+    let top = scrollTop
+    Object.defineProperty(el, 'scrollTop', {
+      get: () => top,
+      set: (v: number) => { top = v },
+      configurable: true,
+    })
+    return { get scrollTop() { return top }, set scrollTop(v: number) { top = v } }
+  }
+
+  const answer = (text: string): PostFn => async () => ({
+    kind: 'ok',
+    response: { answer: text, sources: [], answerable: true },
+  })
+
+  async function send(text: string) {
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), text)
+    await userEvent.keyboard('{Enter}')
+  }
+
+  it('scrolls to the newest message when the user is already at the bottom', async () => {
+    const { container } = render(<Wrapper post={answer('Reply one.')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    // At the bottom: scrollTop === scrollHeight - clientHeight.
+    const geo = stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 })
+
+    await send('q1')
+    await waitFor(() => expect(screen.getByText('Reply one.')).toBeInTheDocument())
+    await waitFor(() => expect(geo.scrollTop).toBe(1000))
+  })
+
+  it('does NOT scroll when the user has scrolled up to read', async () => {
+    const { container } = render(<Wrapper post={answer('Reply two.')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    // Far from the bottom — the user is reading earlier history.
+    const geo = stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 50 })
+    fireEvent.scroll(feed)
+
+    await send('q2')
+    await waitFor(() => expect(screen.getByText('Reply two.')).toBeInTheDocument())
+    expect(geo.scrollTop).toBe(50)
+  })
+
+  it('hides the jump-to-latest control while at the bottom', async () => {
+    const { container } = render(<Wrapper post={answer('Reply.')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 })
+    // A populated thread — otherwise this passes vacuously on the
+    // empty-thread guard rather than on the at-bottom check it names.
+    await send('q')
+    await waitFor(() => expect(screen.getByText('Reply.')).toBeInTheDocument())
+    fireEvent.scroll(feed)
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull()
+  })
+
+  it('never offers jump-to-latest on an empty thread, however it is scrolled', async () => {
+    const { container } = render(<Wrapper post={answer('x')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 50 })
+    fireEvent.scroll(feed)
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull()
+  })
+
+  it('shows jump-to-latest once the user scrolls away, and returns to the bottom when used', async () => {
+    const { container } = render(<Wrapper post={answer('Reply.')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    const geo = stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 })
+    await send('q')
+    await waitFor(() => expect(screen.getByText('Reply.')).toBeInTheDocument())
+
+    // Now the reader scrolls up to re-read.
+    geo.scrollTop = 50
+    fireEvent.scroll(feed)
+
+    const jump = await screen.findByRole('button', { name: /jump to latest/i })
+    await userEvent.click(jump)
+    expect(geo.scrollTop).toBe(1000)
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull(),
+    )
+  })
+
+  it('treats a sub-pixel gap from the bottom as still "at the bottom"', async () => {
+    // Fractional scroll offsets are routine under browser zoom and HiDPI; an
+    // exact scrollTop === scrollHeight - clientHeight test would call this
+    // "scrolled away" and stop following for a user who never moved.
+    const { container } = render(<Wrapper post={answer('Reply three.')} />)
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    const geo = stubGeometry(feed, { scrollHeight: 1000, clientHeight: 400, scrollTop: 598.5 })
+    fireEvent.scroll(feed)
+
+    await send('q3')
+    await waitFor(() => expect(screen.getByText('Reply three.')).toBeInTheDocument())
+    await waitFor(() => expect(geo.scrollTop).toBe(1000))
+    expect(screen.queryByRole('button', { name: /jump to latest/i })).toBeNull()
+  })
+})
+
+describe('ChatPane — composer (pp6q.1.4)', () => {
+  // The composer opts into autoGrow, which changes how the textarea is sized.
+  // These pin the send semantics that sizing must not disturb.
+
+  it('still sends on Enter', async () => {
+    const sent: string[] = []
+    const post: PostFn = async (prompt) => { sent.push(prompt); return GROUNDED }
+    render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'a question')
+    await userEvent.keyboard('{Enter}')
+    expect(sent).toEqual(['a question'])
+  })
+
+  it('still inserts a newline on Shift+Enter without sending', async () => {
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Wrapper post={post} />)
+    const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+    await userEvent.type(ta, 'line one')
+    await userEvent.keyboard('{Shift>}{Enter}{/Shift}')
+    await userEvent.type(ta, 'line two')
+    expect(post).not.toHaveBeenCalled()
+    expect(ta.value).toBe('line one\nline two')
+  })
+})
+
+describe('ChatPane — typing indicator (pp6q.1.5)', () => {
+  function pendingForever(): PostFn {
+    return () => new Promise<ChatResult>(() => {})
+  }
+
+  it('shows the animated dot row while a reply is pending', async () => {
+    const { container } = render(<Wrapper post={pendingForever()} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() =>
+      expect(container.querySelectorAll('.chat-pane__dot')).toHaveLength(3),
+    )
+  })
+
+  it('still announces the pending state to assistive tech', async () => {
+    // The dots are decoration. Replacing the announcement with a purely
+    // visual animation would be an accessibility regression dressed as
+    // polish — a screen-reader user would get no signal that anything is
+    // happening at all.
+    render(<Wrapper post={pendingForever()} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+    const status = await screen.findByRole('status')
+    expect(status.textContent?.trim()).not.toBe('')
+  })
+
+  it('hides the dots once the reply arrives', async () => {
+    const post: PostFn = async () => GROUNDED
+    const { container } = render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
+    expect(container.querySelectorAll('.chat-pane__dot')).toHaveLength(0)
+  })
+})
 
 describe('ChatPane (#21)', () => {
   it('shows the mode-aware empty state when no exchanges exist', () => {

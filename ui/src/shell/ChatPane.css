@@ -14,12 +14,30 @@
   overflow: hidden auto;
   display: flex;
   flex-direction: column;
+}
+
+/* The centered reading measure (pp6q.1.2). The scroller stays full-bleed so
+   the parchment ground and the scrollbar span the pane; only the content is
+   constrained — matching the DS ChatView mock, which centers a 760px column
+   inside a full-width feed.
+
+   The flex column and its 16px gap moved here from .chat-pane__exchanges:
+   they describe how MESSAGES stack, and messages now live in here. */
+.chat-pane__column {
+  width: 100%;
+  max-width: 48rem;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
   /* Horizontal padding gives the DM avatar's gold outline ring (2px outline +
      2px offset = 4px past its box) clearance; without it 'overflow: hidden'
      on the x-axis clips the ring on the left edge (gu7b). Uniform padding
      keeps the 56px dice/source indents aligned with the DM bubble. */
   padding: 8px 6px;
+  /* Grow to fill a short thread so .chat-pane__empty's `margin: auto`
+     still centres it — that rule previously resolved against the scroller. */
+  flex: 1;
 }
 
 .chat-pane__empty {
@@ -85,6 +103,86 @@
    programmatically and stays visually + AT hidden via off-screen clipping
    (not display:none, so it remains focusable/operable for automation). */
 .chat-pane__file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+/* ── Jump to latest (pp6q.1.3) ───────────────────────────────────────────────
+   Sits between the feed and the composer rather than floating over the feed,
+   so it never covers the last line of an answer the reader is trying to read. */
+.chat-pane__jump {
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: -4px;
+}
+
+.chat-pane__jump-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: var(--md-sys-shape-corner-full);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--aether-font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--md-sys-elevation-level1);
+}
+
+.chat-pane__jump-button:hover {
+  background: var(--md-sys-color-surface-container-highest);
+}
+
+.chat-pane__jump-button .material-symbols-rounded {
+  font-size: 18px;
+}
+
+/* ── Typing indicator (pp6q.1.5) ─────────────────────────────────────────────
+   Ported from the DS ChatView mock's .aether-dot / @keyframes aether-bounce. */
+.chat-pane__typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  /* Match the line box of the prose this stands in for, so the bubble does not
+     visibly resize when the answer replaces it. */
+  min-height: 25px;
+}
+
+.chat-pane__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--md-sys-color-primary);
+  display: inline-block;
+  animation: chat-pane-bounce 0.9s var(--md-sys-motion-easing-standard) infinite;
+}
+
+.chat-pane__dot:nth-child(2) { animation-delay: 0.15s; }
+.chat-pane__dot:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes chat-pane-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+
+/* Someone who asked for less motion should get a steady row, not a still one
+   that looks broken — hold them at full opacity instead of mid-fade. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-pane__dot { animation: none; opacity: 1; }
+}
+
+/* Visually hidden, still announced. Same clip technique as
+   .chat-pane__file-input above. */
+.chat-pane__sr-only {
   position: absolute;
   width: 1px;
   height: 1px;
