@@ -1,0 +1,89 @@
+{
+  "schema": "ErrorBody",
+  "direction": "response",
+  "valid": [
+    {
+      "name": "minimal",
+      "value": { "detail": { "code": "not_found", "message": "This document isn't available.", "retryable": false } }
+    },
+    {
+      "name": "validation failure names its field",
+      "value": {
+        "detail": { "code": "brief_too_long", "message": "A brief can be at most 2,000 characters.", "retryable": false, "field": "brief" }
+      }
+    },
+    {
+      "name": "per-user throttle says when to retry",
+      "value": {
+        "detail": { "code": "throttled_user", "message": "That's a lot at once.", "retryable": true, "retry_after_s": 90 }
+      }
+    },
+    {
+      "name": "cap reached names what is in flight",
+      "value": {
+        "detail": {
+          "code": "cap_reached",
+          "message": "Two tools are already running.",
+          "retryable": true,
+          "in_flight": ["inv_9f2c4e1a7b3d4c5e", "inv_0a1b2c3d4e5f6a7b"]
+        }
+      }
+    },
+    {
+      "name": "a newer server's error code is tolerated by the client",
+      "applies_to": ["client"],
+      "value": { "detail": { "code": "some_future_code", "message": "Something new went wrong.", "retryable": false } }
+    },
+    {
+      "name": "an additive field from a newer server is tolerated by the client",
+      "applies_to": ["client"],
+      "value": { "detail": { "code": "conflict", "message": "The document changed elsewhere.", "retryable": false, "hint": "reload" } }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "legacy string detail is not the Workbench envelope",
+      "why": "Workbench errors are structured; the tolerant reader for legacy bodies is a separate client helper",
+      "value": { "detail": "authorization backend unavailable" }
+    },
+    { "name": "missing message", "why": "every error names itself (STATE-2)", "value": { "detail": { "code": "conflict", "retryable": false } } },
+    { "name": "empty message", "why": "bounded 1..500", "value": { "detail": { "code": "conflict", "message": "", "retryable": false } } },
+    {
+      "name": "retryable must be a boolean",
+      "why": "no coercion",
+      "value": { "detail": { "code": "conflict", "message": "Changed elsewhere.", "retryable": "yes" } }
+    },
+    {
+      "name": "negative retry_after_s",
+      "why": "bounded >= 0",
+      "value": { "detail": { "code": "throttled_user", "message": "Slow down.", "retryable": true, "retry_after_s": -1 } }
+    },
+    {
+      "name": "too many in-flight ids",
+      "why": "bounded list (at most 8)",
+      "value": {
+        "detail": {
+          "code": "cap_reached",
+          "message": "Busy.",
+          "retryable": true,
+          "in_flight": [
+            "inv_aaaaaaaaaaaaaaa1", "inv_aaaaaaaaaaaaaaa2", "inv_aaaaaaaaaaaaaaa3", "inv_aaaaaaaaaaaaaaa4", "inv_aaaaaaaaaaaaaaa5",
+            "inv_aaaaaaaaaaaaaaa6", "inv_aaaaaaaaaaaaaaa7", "inv_aaaaaaaaaaaaaaa8", "inv_aaaaaaaaaaaaaaa9"
+          ]
+        }
+      }
+    },
+    {
+      "name": "the server never emits a code outside its closed set",
+      "why": "error codes are bounded so they are safe as metric labels (plan invariant 10)",
+      "applies_to": ["server"],
+      "value": { "detail": { "code": "some_future_code", "message": "Something new went wrong.", "retryable": false } }
+    },
+    {
+      "name": "the server never emits an undeclared field",
+      "why": "extra=forbid on the server",
+      "applies_to": ["server"],
+      "value": { "detail": { "code": "conflict", "message": "The document changed elsewhere.", "retryable": false, "hint": "reload" } }
+    }
+  ]
+}

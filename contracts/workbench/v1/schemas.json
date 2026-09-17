@@ -1,0 +1,14 @@
+{
+  "contract_version": 1,
+  "schemas": [
+    "ErrorBody",
+    "ToolInvocationRequest",
+    "ToolSuggestion",
+    "DocumentLink",
+    "AssetRef",
+    "ToolResult",
+    "ToolInvocation",
+    "LegacyChatResponse",
+    "LegacyMessagesResponse"
+  ]
+}

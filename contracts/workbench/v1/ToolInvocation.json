@@ -1,0 +1,205 @@
+{
+  "schema": "ToolInvocation",
+  "direction": "response",
+  "valid": [
+    {
+      "name": "working",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "status": "working",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:02Z",
+        "result": null,
+        "error": null
+      }
+    },
+    {
+      "name": "done carries its result",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "status": "done",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "result": {
+          "result_kind": "document",
+          "tool_id": "npc",
+          "prose": "Wrote her up as a dossier.",
+          "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+          "suggestions": []
+        },
+        "error": null
+      }
+    },
+    {
+      "name": "done after a cancel that came too late keeps the paid-for result (RAIL-23)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "status": "done",
+        "attempt": 1,
+        "cancel_requested": true,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24+00:00",
+        "result": {
+          "result_kind": "document",
+          "tool_id": "npc",
+          "prose": "",
+          "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+          "suggestions": []
+        },
+        "error": null
+      }
+    },
+    {
+      "name": "failed and retryable, on its second attempt (RAIL-18)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "monster",
+        "status": "failed",
+        "attempt": 2,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:33:40Z",
+        "result": null,
+        "error": { "code": "provider_timeout", "message": "The model took too long to answer.", "retryable": true }
+      }
+    },
+    {
+      "name": "failed and final (RAIL-19)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "portrait",
+        "status": "failed",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:03Z",
+        "result": null,
+        "error": { "code": "tool_disabled", "message": "Image generation isn't set up yet.", "retryable": false }
+      }
+    },
+    {
+      "name": "cancelled (RAIL-22)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "encounter",
+        "status": "cancelled",
+        "attempt": 1,
+        "cancel_requested": true,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:09Z",
+        "result": null,
+        "error": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "done without a result",
+      "why": "status and payload must agree",
+      "value": {
+        "schema_version": 1, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "npc", "status": "done", "attempt": 1, "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02Z", "updated_at": "2026-09-16T19:31:24Z", "result": null, "error": null
+      }
+    },
+    {
+      "name": "working with a result",
+      "why": "RAIL-15: a working lane has no children, so the wire must not carry one",
+      "value": {
+        "schema_version": 1, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "npc", "status": "working", "attempt": 1, "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02Z", "updated_at": "2026-09-16T19:31:24Z",
+        "result": {
+          "result_kind": "document", "tool_id": "npc", "prose": "",
+          "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Ondrey", "library_category": "npcs" }, "suggestions": []
+        },
+        "error": null
+      }
+    },
+    {
+      "name": "failed without an error",
+      "why": "STATE-2: every error names its next action",
+      "value": {
+        "schema_version": 1, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "npc", "status": "failed", "attempt": 1, "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02Z", "updated_at": "2026-09-16T19:31:24Z", "result": null, "error": null
+      }
+    },
+    {
+      "name": "cancelled with a result",
+      "why": "RAIL-23: a cancelled invocation never creates a document; a late result makes it done instead",
+      "value": {
+        "schema_version": 1, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "npc", "status": "cancelled", "attempt": 1, "cancel_requested": true,
+        "created_at": "2026-09-16T19:31:02Z", "updated_at": "2026-09-16T19:31:24Z",
+        "result": {
+          "result_kind": "document", "tool_id": "npc", "prose": "",
+          "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Ondrey", "library_category": "npcs" }, "suggestions": []
+        },
+        "error": null
+      }
+    },
+    {
+      "name": "a result that belongs to another tool",
+      "why": "the result's tool must be the invocation's tool",
+      "value": {
+        "schema_version": 1, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "encounter", "status": "done", "attempt": 1, "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02Z", "updated_at": "2026-09-16T19:31:24Z",
+        "result": {
+          "result_kind": "document", "tool_id": "npc", "prose": "",
+          "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Ondrey", "library_category": "npcs" }, "suggestions": []
+        },
+        "error": null
+      }
+    },
+    {
+      "name": "a timestamp without a zone",
+      "why": "CANVAS-27: ISO 8601 with an offset on the wire; formatting is the client's",
+      "value": {
+        "schema_version": 1, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "npc", "status": "working", "attempt": 1, "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02", "updated_at": "2026-09-16T19:31:02", "result": null, "error": null
+      }
+    },
+    {
+      "name": "the handoff's pre-formatted time",
+      "why": "CANVAS-27 rejects display strings such as 7:36 PM",
+      "value": {
+        "schema_version": 1, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "npc", "status": "working", "attempt": 1, "cancel_requested": false,
+        "created_at": "7:36 PM", "updated_at": "7:36 PM", "result": null, "error": null
+      }
+    },
+    {
+      "name": "attempt zero",
+      "why": "attempts count from one",
+      "value": {
+        "schema_version": 1, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "npc", "status": "working", "attempt": 0, "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02Z", "updated_at": "2026-09-16T19:31:02Z", "result": null, "error": null
+      }
+    },
+    {
+      "name": "unknown is a client-only state",
+      "why": "RAIL-21: it never appears on the wire",
+      "value": {
+        "schema_version": 1, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "npc", "status": "unknown", "attempt": 1, "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02Z", "updated_at": "2026-09-16T19:31:02Z", "result": null, "error": null
+      }
+    },
+    {
+      "name": "a schema version this contract does not know",
+      "why": "the strict schema refuses it; the client's safe parser turns it into a placeholder (RAIL-24)",
+      "value": {
+        "schema_version": 2, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "npc", "status": "working", "attempt": 1, "cancel_requested": false,
+        "created_at": "2026-09-16T19:31:02Z", "updated_at": "2026-09-16T19:31:02Z", "result": null, "error": null
+      }
+    }
+  ]
+}
