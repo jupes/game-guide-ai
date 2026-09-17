@@ -9,6 +9,8 @@ quality gate but never deploy.
 pull request / push to master
    ├─ python-tests        pytest — service, ingestion, repo guards ─┐
    ├─ ui-tests            typecheck · lint · vitest ───────────────┤
+   ├─ contract-parity     Pydantic vs Zod, differential fuzz       │
+   │                      (informational: does not gate deploy)    │
    │                                                              ▼
    │                    ui-e2e — production Compose + perf budgets
    └─ retrieval-metrics   eval_golden vs live corpus DB → regression gate
@@ -18,6 +20,18 @@ pull request / push to master
                           (skipped until hosting exists — never a green
                            check for having deployed nothing)
 ```
+
+## Contract parity
+
+`contract-parity` is the one job that installs both toolchains. It runs
+`contracts/workbench/tools/differential_fuzz.py`, which mutates every valid
+example of the Workbench wire contract and checks two things: that the Pydantic
+models and the Zod schemas give the same verdict, and that the client can read
+whatever the server emits. The shared fixtures already run inside `python-tests`
+and `ui-tests`; this covers the cases nobody thought to write. It does not gate
+`deploy`, because no route serves that contract yet — add it to `deploy`'s
+`needs` when the first Workbench route ships. See
+[`workbench-wire-contract.md`](workbench-wire-contract.md).
 
 ## Browser release tracer and UI performance gate
 
@@ -98,6 +112,7 @@ Everything CI runs works locally, same commands:
 ```bash
 uv run --with '.[test]' python -m pytest -q                 # python-tests
 cd ui && bun run typecheck && bun run lint && bun run test  # ui-tests
+uv run python contracts/workbench/tools/differential_fuzz.py  # contract-parity (needs bun too)
 cd ui && bun run test:e2e                                   # production Compose E2E
 docker compose -f docker-compose.e2e.yml config             # validate stack wiring
 PYTHONUTF8=1 uv run --with "psycopg[binary]" --with openai \
