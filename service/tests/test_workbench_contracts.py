@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -37,10 +38,12 @@ SCHEMAS: dict[str, TypeAdapter[Any]] = {
 
 
 def expand(value: Any) -> Any:
-    """Expand the fixtures' one directive: ``"@repeat:a:2000"`` is 2,000 ``a``s.
+    """Expand the fixtures' two directives.
 
-    Boundary cases need long strings, and a 2,001-character literal in a JSON
-    file is unreadable and easy to get wrong by one.
+    ``"@repeat:a:2000"`` is 2,000 ``a``s, and
+    ``{"@repeat_value": x, "@count": 101}`` is a list of 101 ``x``s. Boundary
+    cases need long strings and long lists, and a 2,001-character literal or a
+    101-item array in a JSON file is unreadable and easy to get wrong by one.
     """
     if isinstance(value, str):
         match = _REPEAT.match(value)
@@ -48,6 +51,8 @@ def expand(value: Any) -> Any:
     if isinstance(value, list):
         return [expand(item) for item in value]
     if isinstance(value, dict):
+        if set(value) == {"@repeat_value", "@count"}:
+            return [expand(value["@repeat_value"]) for _ in range(value["@count"])]
         return {key: expand(item) for key, item in value.items()}
     return value
 
@@ -153,3 +158,88 @@ def test_an_unknown_result_kind_names_the_discriminator() -> None:
     with pytest.raises(ValidationError) as caught:
         wc.CONTRACT_SCHEMAS["ToolResult"].validate_python({"result_kind": "table", "tool_id": "loot"})
     assert "result_kind" in str(caught.value)
+
+
+# ── Timeline ─────────────────────────────────────────────────────────────────
+
+_ROW_TIME = datetime(2026, 9, 16, 20, 10, tzinfo=UTC)
+
+
+def _valid_entry(name: str) -> dict[str, Any]:
+    fixture = json.loads((FIXTURES / "TimelineEntry.json").read_text(encoding="utf-8"))
+    return next(e["value"] for e in fixture["valid"] if e["name"] == name)
+
+
+def test_the_entry_kind_vocabulary_is_the_union() -> None:
+    """``EntryKind`` is what ``1kg.4.2`` stores by; it may not drift from the models."""
+    tags = {get_args(member.model_fields["entry_kind"].annotation)[0] for member in get_args(wc.AnyEntry)}
+    assert tags == {kind.value for kind in wc.EntryKind}
+
+
+def test_a_readable_stored_entry_is_served_as_itself() -> None:
+    raw = _valid_entry("a tool turn is a tool and a brief, never the slash string (RAIL-9)")
+    entry = wc.entry_or_opaque(raw, entry_id="ent_77aa12bc", created_at=_ROW_TIME)
+    assert isinstance(entry, wc.ToolEntry)
+    assert entry.invocation.tool_id is wc.ToolId.NPC
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"schema_version": 2, "entry_kind": "player_turn"}, "newer_version"),
+        # An embedded invocation can be newer than the entry around it.
+        ({"invocation": {"schema_version": 3, "status": "paused"}}, "newer_version"),
+        # By the versioning rule a new kind bumps the version, so an unknown kind
+        # at version 1 is damage, not the future.
+        ({"entry_kind": "player_turn"}, "unreadable"),
+        ({"brief": 42}, "unreadable"),
+        # ``True`` is an int in Python; it is not a version.
+        ({"schema_version": True}, "unreadable"),
+    ],
+)
+def test_an_unreadable_stored_entry_becomes_a_placeholder(change: dict[str, Any], reason: str) -> None:
+    """The forward-version rule: never dropped, never forwarded unvalidated."""
+    raw = {**_valid_entry("a tool turn is a tool and a brief, never the slash string (RAIL-9)"), **change}
+    entry = wc.entry_or_opaque(raw, entry_id="ent_77aa12bc", created_at=_ROW_TIME)
+    assert isinstance(entry, wc.OpaqueEntry)
+    assert entry.reason.value == reason
+    # It keeps the row's place and identity, and nothing of its content.
+    assert entry.model_dump(mode="json") == {
+        "schema_version": 1,
+        "entry_kind": "opaque",
+        "entry_id": "ent_77aa12bc",
+        "created_at": "2026-09-16T20:10:00Z",
+        "reason": reason,
+    }
+
+
+def test_junk_in_storage_never_raises() -> None:
+    deep: Any = {"schema_version": 9}
+    for _ in range(40):
+        deep = {"nested": [deep]}
+    for junk in [None, 7, "x", [], {}, deep]:
+        entry = wc.entry_or_opaque(junk, entry_id="398", created_at=_ROW_TIME)
+        assert isinstance(entry, wc.OpaqueEntry)
+        # Too deep to look for a version in: damage, which is the safe reading.
+        assert entry.reason is wc.OpaqueReason.UNREADABLE
+
+
+def test_a_page_serialises_exactly_as_the_fixtures_show() -> None:
+    """Nulls that mean "not recorded" survive the trip; nothing is invented."""
+    fixture = json.loads((FIXTURES / "TimelinePage.json").read_text(encoding="utf-8"))
+    last = next(e["value"] for e in fixture["valid"] if e["name"] == "the last page says so with a null cursor")
+    dumped = wc.TimelinePage.model_validate(last).model_dump(mode="json", by_alias=True)
+    assert dumped["next_cursor"] is None
+    answer = dumped["items"][0]["answer"]
+    assert answer["answerable"] is None
+    assert answer["sources"] is None
+    assert answer["created_at"] == "2026-08-02T18:05:09Z"
+
+
+def test_a_stat_block_inside_an_entry_keeps_its_wire_alias() -> None:
+    """``Abilities.int_`` is ``int`` on the wire; the timeline must not change that."""
+    raw = _valid_entry("a plain GM-mode message is an ordinary chat exchange (RAIL-14), here with a stat block")
+    raw["answer"]["stat_block"]["abilities"] = {"str": 18, "int": 6}
+    entry = wc.ChatEntry.model_validate(raw)
+    dumped = entry.model_dump(mode="json", by_alias=True)
+    assert dumped["answer"]["stat_block"]["abilities"]["int"] == 6

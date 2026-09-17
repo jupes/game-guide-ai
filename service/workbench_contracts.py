@@ -25,12 +25,15 @@ explicitly, so a subpackage would be silently dropped from the built image.
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     AwareDatetime,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StrictBool,
@@ -38,11 +41,20 @@ from pydantic import (
     StrictStr,
     StringConstraints,
     TypeAdapter,
+    ValidationError,
     field_validator,
     model_validator,
 )
 
-from service.models import StatBlockContent
+from service.models import (
+    ChatMode,
+    RoutingInfo,
+    Source,
+    SpellContent,
+    StatBlockContent,
+    Suggestion,
+    SuggestionsRoutingInfo,
+)
 
 CONTRACT_VERSION = 1
 
@@ -53,6 +65,12 @@ BRIEF_MAX_CHARS = 2000
 SUGGESTION_BRIEF_MAX_CHARS = 200
 PROSE_MAX_CHARS = 4000
 MAX_SUGGESTIONS = 3
+#: A ceiling on a stored prompt or answer, so a page has a bounded size. It sits
+#: far above anything the pipeline produces; ``agent-forge-harness-764`` owns the
+#: request-side bound on ``/chat``, which must not exceed it.
+CHAT_TEXT_MAX_CHARS = 100_000
+MAX_SOURCES = 50
+TIMELINE_PAGE_MAX_ITEMS = 100
 
 
 # ── Identifiers ──────────────────────────────────────────────────────────────
@@ -63,6 +81,37 @@ OpaqueId = Annotated[str, StringConstraints(strict=True, pattern=r"^[A-Za-z0-9_-
 #: Client-minted, and the idempotency key of an invocation (RAIL-18), so it has
 #: a floor: sixteen characters keeps accidental collisions out of reach.
 InvocationId = Annotated[str, StringConstraints(strict=True, pattern=r"^[A-Za-z0-9_-]{16,64}$")]
+#: One grammar for every timestamp (CANVAS-27): seconds, at most microseconds,
+#: and ``Z`` or a ``+HH:MM`` offset. The Zod side carries the same pattern.
+_ISO_TIMESTAMP = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)"
+)
+
+
+def _iso_text_or_datetime(value: object) -> object:
+    """No coercion. Left alone, Pydantic reads ``1758050000`` as a moment and
+    accepts a space for the ``T``; Zod accepts neither."""
+    if isinstance(value, datetime) or (isinstance(value, str) and _ISO_TIMESTAMP.fullmatch(value)):
+        return value
+    raise ValueError("a timestamp is ISO 8601 text with seconds and an offset")
+
+
+Timestamp = Annotated[AwareDatetime, BeforeValidator(_iso_text_or_datetime)]
+
+
+def _a_real_integer(value: object) -> object:
+    """No coercion. To Python ``True == 1``, so a bare ``Literal[1]`` accepts
+    ``true``; Zod does not."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("schema_version is an integer")
+    return value
+
+
+SchemaVersion = Annotated[Literal[1], BeforeValidator(_a_real_integer)]
+
+#: Opaque to clients and base64url, because a cursor may ride in a query string.
+#: Search text may not (X-7), which is why a cursor never encodes any.
+Cursor = Annotated[str, StringConstraints(strict=True, pattern=r"^[A-Za-z0-9_-]{1,512}$")]
 
 
 # ── Closed vocabularies ──────────────────────────────────────────────────────
@@ -125,6 +174,28 @@ class InvocationStatus(str, Enum):
     DONE = "done"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class EntryKind(str, Enum):
+    """Timeline entry kinds. AI edits and attached cues join with the documents
+    and cue families; a new kind after v1 ships is a version bump."""
+
+    CHAT = "chat"
+    TOOL = "tool"
+    SESSION_DIVIDER = "session_divider"
+    OPAQUE = "opaque"
+
+
+class SessionBoundary(str, Enum):
+    START = "start"
+    END = "end"
+
+
+class OpaqueReason(str, Enum):
+    """Closed and free of stored text, so a reason is safe as a metric label."""
+
+    NEWER_VERSION = "newer_version"
+    UNREADABLE = "unreadable"
 
 
 class ErrorCode(str, Enum):
@@ -226,7 +297,7 @@ class ToolInvocationRequest(_Contract):
     """Decisions RAIL-5 to RAIL-9. There is no free-form ``context``: the server
     assembles context from state it has authorised; a client sends ids only."""
 
-    schema_version: Literal[1]
+    schema_version: SchemaVersion
     invocation_id: InvocationId
     tool_id: ToolId
     #: Always present; a brief-optional tool sends the empty string.
@@ -358,7 +429,7 @@ ToolResult = Annotated[CardResult | DocumentResult | MediaResult, Field(discrimi
 class ToolInvocation(_Contract):
     """The status resource behind a lane (RAIL-15 to RAIL-27)."""
 
-    schema_version: Literal[1]
+    schema_version: SchemaVersion
     invocation_id: InvocationId
     tool_id: ToolId
     status: InvocationStatus
@@ -366,8 +437,8 @@ class ToolInvocation(_Contract):
     attempt: Annotated[StrictInt, Field(ge=1, le=100)]
     #: With ``status: done`` this is "finished before it could be cancelled" (RAIL-23).
     cancel_requested: StrictBool
-    created_at: AwareDatetime
-    updated_at: AwareDatetime
+    created_at: Timestamp
+    updated_at: Timestamp
     result: ToolResult | None
     error: ErrorInfo | None
 
@@ -387,8 +458,148 @@ class ToolInvocation(_Contract):
         return self
 
 
+# ── Timeline ─────────────────────────────────────────────────────────────────
+#
+# One entry per *exchange*: a turn carries its own outcome. A page boundary can
+# therefore never separate a prompt from its result (``1kg.4.2``), results sit
+# beneath the turn that asked for them however late they finish (RAIL-16), and
+# the shape matches what the client already keeps (``useChat``'s ``Exchange``).
+
+
+class ChatAnswer(_Contract):
+    """A complete assistant outcome. The pieces are the existing ``/chat`` models,
+    reused rather than re-declared, so the evidence payload ``xiu.5.2`` adds to
+    them round-trips here instead of growing a second definition."""
+
+    #: Markdown, rendered without remote subresources (X-10).
+    text: Annotated[str, StringConstraints(strict=True, max_length=CHAT_TEXT_MAX_CHARS)]
+    #: ``None`` is "not recorded" — a row older than the durable timeline. The
+    #: key is required so that absence can never be mistaken for ``True``.
+    answerable: StrictBool | None
+    #: ``None`` is "not recorded"; the empty list is "recorded, and none".
+    sources: Annotated[list[Source], Field(max_length=MAX_SOURCES)] | None
+    created_at: Timestamp
+    suggestions: Annotated[list[Suggestion], Field(max_length=MAX_SUGGESTIONS)] | None = None
+    routing: RoutingInfo | None = None
+    suggestions_routing: SuggestionsRoutingInfo | None = None
+    spell_content: SpellContent | None = None
+    stat_block: StatBlockContent | None = None
+
+
+class _EntryBase(_Contract):
+    #: Per entry, not only per page: entries are stored one by one and may
+    #: outlive the server version that wrote them.
+    schema_version: SchemaVersion
+    entry_id: OpaqueId
+    #: When the turn was made. Order is the page's, never re-derived from this.
+    created_at: Timestamp
+
+
+class ChatEntry(_EntryBase):
+    """A plain message and its answer, in any mode (RAIL-14)."""
+
+    entry_kind: Literal["chat"]
+    mode: ChatMode
+    #: ``None`` only for an old answer whose prompt was never recorded.
+    prompt: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=CHAT_TEXT_MAX_CHARS)] | None
+    #: ``None`` while the turn has no stored answer: it failed, or is still running.
+    answer: ChatAnswer | None
+
+    @model_validator(mode="after")
+    def _has_something_to_show(self) -> Self:
+        if self.prompt is None and self.answer is None:
+            raise ValueError("a chat entry needs a prompt or an answer")
+        return self
+
+
+class ToolEntry(_EntryBase):
+    """Decision RAIL-9: the stored GM turn is a tool and a brief, never the slash
+    string. The tool is ``invocation.tool_id`` — kept in one place so that the
+    turn and its lane cannot disagree."""
+
+    entry_kind: Literal["tool"]
+    #: Bounded on the way back out too (RAIL-6). The brief *policy* is not
+    #: re-judged here: it belongs to the moment a tool runs, and a registry
+    #: change must never make an old turn unreadable.
+    brief: Annotated[str, StringConstraints(strict=True, max_length=BRIEF_MAX_CHARS)]
+    #: The entry whose suggestion armed this turn (RAIL-8).
+    source_entry_id: OpaqueId | None = None
+    invocation: ToolInvocation
+
+
+class SessionDividerEntry(_EntryBase):
+    """The only thing that separates prep from play. ``/recap`` reads from the
+    most recent ``start``; rotating a link moves neither boundary (REVEAL-17)."""
+
+    entry_kind: Literal["session_divider"]
+    session_id: OpaqueId
+    boundary: SessionBoundary
+
+
+class OpaqueEntry(_EntryBase):
+    """Stands in for a stored entry this server cannot read — written by a newer
+    version before a rollback, or damaged. It keeps the entry's place in the
+    thread and carries **nothing** of it: a server never forwards bytes it has
+    not validated. The stored row itself is left untouched."""
+
+    entry_kind: Literal["opaque"]
+    reason: OpaqueReason
+
+
+AnyEntry = ChatEntry | ToolEntry | SessionDividerEntry | OpaqueEntry
+TimelineEntry = Annotated[AnyEntry, Field(discriminator="entry_kind")]
+
+
+class TimelinePage(_Contract):
+    """The pagination envelope's first concrete page. Items run **newest first**
+    and ``next_cursor`` leads to older entries."""
+
+    schema_version: SchemaVersion
+    conversation_id: OpaqueId
+    items: Annotated[list[TimelineEntry], Field(max_length=TIMELINE_PAGE_MAX_ITEMS)]
+    #: Required: the end of the list is ``None``, never a missing key.
+    next_cursor: Cursor | None
+
+
+_ENTRY_ADAPTER: TypeAdapter[Any] = TypeAdapter(TimelineEntry)
+
+
+def _mentions_newer_version(value: object, depth: int = 0) -> bool:
+    """Whether any ``schema_version`` inside a stored payload is beyond this
+    contract — the entry's own, or an embedded invocation's."""
+    if depth > 8:
+        return False
+    if isinstance(value, dict):
+        version = value.get("schema_version")
+        if isinstance(version, int) and not isinstance(version, bool) and version > CONTRACT_VERSION:
+            return True
+        return any(_mentions_newer_version(item, depth + 1) for item in value.values())
+    if isinstance(value, list):
+        return any(_mentions_newer_version(item, depth + 1) for item in value)
+    return False
+
+
+def entry_or_opaque(raw: object, *, entry_id: str, created_at: datetime) -> AnyEntry:
+    """The forward-version rule for stored entries, as code (``1kg.4.2`` calls it).
+
+    A payload this server can validate is served. Anything else — a newer
+    version's after a rollback, an unknown kind, a damaged row — becomes an
+    :class:`OpaqueEntry` in the same place. It is never dropped, never
+    rewritten, and never forwarded unvalidated.
+    """
+    try:
+        entry: AnyEntry = _ENTRY_ADAPTER.validate_python(raw)
+    except ValidationError:
+        reason = OpaqueReason.NEWER_VERSION if _mentions_newer_version(raw) else OpaqueReason.UNREADABLE
+        return OpaqueEntry(
+            schema_version=1, entry_kind="opaque", entry_id=entry_id, created_at=created_at, reason=reason
+        )
+    return entry
+
+
 #: Name → validator, in the order ``contracts/workbench/v1/schemas.json`` lists them.
 CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
+    "Timestamp": TypeAdapter(Timestamp),
     "ErrorBody": TypeAdapter(ErrorBody),
     "ToolInvocationRequest": TypeAdapter(ToolInvocationRequest),
     "ToolSuggestion": TypeAdapter(ToolSuggestion),
@@ -396,4 +607,6 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "AssetRef": TypeAdapter(AssetRef),
     "ToolResult": TypeAdapter(ToolResult),
     "ToolInvocation": TypeAdapter(ToolInvocation),
+    "TimelineEntry": _ENTRY_ADAPTER,
+    "TimelinePage": TypeAdapter(TimelinePage),
 }

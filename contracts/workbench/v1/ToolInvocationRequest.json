@@ -226,6 +226,30 @@
       }
     },
     {
+      "name": "a schema version of true",
+      "why": "no coercion: to Python true equals 1, so a bare literal would let it through on one side only",
+      "value": {
+        "schema_version": true,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "a guard",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a schema version sent as text",
+      "why": "no coercion",
+      "value": {
+        "schema_version": "1",
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "a guard",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
       "name": "a brief that is not a string",
       "why": "no coercion",
       "value": {

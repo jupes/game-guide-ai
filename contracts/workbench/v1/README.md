@@ -18,6 +18,7 @@ Conventions, versioning rules and the status of each schema family are in
 | `registry.json` | The registry facts the validators rely on. Both languages keep them as constants and both suites compare them with this file. `1kg.3.1` extends it. |
 | `<Schema>.json` | Examples for one schema. The file is named after the schema. |
 | `legacy/` | Guards, not new contracts: today's `/chat` and message-history responses, validated by the existing models. |
+| `../tools/differential_fuzz.py` | Mutates every valid example here and compares the two validators. Run it after changing a schema; CI runs it as `contract-parity`. |
 
 ## Fixture format
 
@@ -37,3 +38,7 @@ Conventions, versioning rules and the status of each schema family are in
 - The string `"@repeat:a:2000"` expands to 2,000 `a`s in both suites, so boundary
   cases stay readable. The repeated unit is one code point: `"@repeat:🎲:2000"`
   is 2,000 characters on both sides.
+- The object `{ "@repeat_value": <anything>, "@count": 101 }` expands to a list of
+  101 copies, for bounds on lists.
+- `"direction"` is `request`, `response` or `both`. It documents; it does not
+  change how an example is checked.

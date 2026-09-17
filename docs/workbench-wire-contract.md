@@ -17,6 +17,7 @@ here: a page cannot fail a build.
 | Client schemas (Zod), safe parsers, the error reader | `ui/src/gm/contracts.ts` |
 | Wire → design-system adapters | `ui/src/gm/adapters.ts` |
 | The two suites that read the same fixtures | `service/tests/test_workbench_contracts.py`, `ui/src/gm/contracts.test.ts` |
+| The differential fuzz, and the CI job that runs it | `contracts/workbench/tools/differential_fuzz.py` (+ `.ts`), job `contract-parity` |
 
 `schemas.json` lists every schema name. Each suite fails if it lacks one, if a
 schema has no fixture file, or if a fixture has no valid or no invalid example.
@@ -36,10 +37,11 @@ second source of truth.
 | Key casing | **snake_case everywhere on the wire, including nested document data.** The handoff's `ifAttacked`, `looseThreads`, `xpBudget` and `partyLevel` become `if_attacked`, `loose_threads`, `xp_budget` and `party_level`. Design-system props stay camelCase; `adapters.ts` is the one place the two meet. |
 | Enumerated values | Keep the handoff's spelling, because they are values, not keys: `session-notes`, `quest-log`, `character-sheet`, `one-shot`. Tool ids are lower-case; the slash parser normalises case before a request is built. |
 | Identifiers | Opaque: `[A-Za-z0-9_-]{1,64}`. Safe in a URL fragment and in a log line, and never meaningful. Conversation ids are UUIDs today and fit. An invocation id is client-minted and is 16–64 characters, because it is an idempotency key. |
-| Timestamps | ISO 8601 with an offset. The server emits UTC with `Z`. Formatting for people is the client's job; a display string such as `7:36 PM` is rejected (CANVAS-27). |
+| Timestamps | **One grammar**, pinned by `Timestamp.json`: `YYYY-MM-DDTHH:MM:SS`, an optional fraction of up to six digits, then `Z` or `+HH:MM`. The server emits UTC with `Z`. Formatting for people is the client's job; a display string such as `7:36 PM` is rejected (CANVAS-27). The grammar is spelled out because the libraries disagree when left alone: Pydantic reads `1758050000` as a moment and Zod accepts a time without seconds. |
 | String bounds | Counted in **Unicode code points**, on both sides, so an emoji costs one. The client uses `codePointLength`, never `.length`. |
 | Trimming | A brief is trimmed before its bound is checked, and the server stores it trimmed. JavaScript's `trim()` and Python's `strip()` disagree about a few exotic code points, so **the server's judgement is final** and the client's check exists only to save a round trip. |
-| Coercion | None. A `brief` of `42` is an error, not the string `"42"`. |
+| Coercion | None. A `brief` of `42` is an error, not the string `"42"`, and a `schema_version` of `true` is not `1` — which a bare Python `Literal[1]` would accept, because to Python `True == 1`. |
+| Not recorded | Where an older row never stored a fact, the key is **present and `null`**: `answerable: null`, `sources: null`. A missing key is invalid, so a client cannot mistake "not recorded" for `true` or for "none". |
 | Text format | Document fields are plain text. Assistant prose in a lane is Markdown, rendered without remote subresources (X-10). |
 | What never appears | A URL in an asset reference (X-10). A document body in a link (`1kg.4.4`). A free-form `context` object in a request (RAIL-7). A player's name or a cue's title in anything sent to a table client (AUD-11, AUDIO-29). |
 
@@ -99,14 +101,23 @@ Every Workbench mutation can be retried safely.
 ### Pagination
 
 List responses are `{ "items": [...], "next_cursor": "<opaque>" | null }`, read
-with `?cursor=` and `?limit=`. A cursor is opaque and may travel in a query
-string. **Search text may not**: it travels in a request body (X-7). The first
-concrete page arrives with the timeline slice.
+with `?cursor=` and `?limit=`. `next_cursor` is always present: the end of a list
+is `null`, never a missing key. A cursor is opaque to clients and is base64url
+(`[A-Za-z0-9_-]{1,512}`), so it may travel in a query string. **Search text may
+not**: it travels in a request body (X-7), and a cursor never encodes any.
+
+`TimelinePage` is the first concrete page. It holds at most 100 entries,
+**newest first**, and its cursor leads to older entries; a client reverses a page
+for display. Order is the server's and is never re-derived from `created_at`.
 
 ## Versioning and forward compatibility
 
-Every top-level payload carries `schema_version`. It is `1` throughout this
-contract version.
+Every top-level payload carries `schema_version`, and so does every timeline
+entry. It is `1` throughout this contract version.
+
+Version 1 is still being assembled by `1kg.1.2`, family by family, and nothing
+consumes it yet. The rules below start to bind when that bead closes; until then
+a new family may add a member to a union without a bump.
 
 | Change | Version |
 | --- | --- |
@@ -118,9 +129,9 @@ What each side does with something it does not know:
 | Side | Meets | Does |
 | --- | --- | --- |
 | Server | a request with an unknown `schema_version`, an undeclared field, an unknown tool, kind or type | **fails closed**: 422, before any provider work |
-| Server | a *stored* payload written by a newer server, after a rollback | serves it untouched as an opaque entry; it never rewrites or drops it (implemented with the timeline, `1kg.4.2`) |
+| Server | a *stored* entry it cannot validate — written by a newer server before a rollback, or damaged | serves an **`opaque` entry** in its place: same id, same position, a closed `reason` (`newer_version` or `unreadable`), and **nothing of the payload**, because a server never forwards bytes it has not validated. The stored row is left untouched, so it renders again after a roll-forward. `entry_or_opaque` in `workbench_contracts.py` is that rule as code, for `1kg.4.2` to call |
 | Client | an additive field; an unknown error code | **tolerates** it: the field is stripped and never reaches a component |
-| Client | a newer `schema_version`, an unknown kind, or a payload that does not validate | renders a neutral placeholder — *This result was made by a newer version of Aetheril.* — through `parseToolInvocation` and `parseToolResult`. It never crashes the thread, and it never falls back to an NPC (X-8, RAIL-24) |
+| Client | a newer `schema_version`, an unknown kind, or a payload that does not validate | renders a neutral placeholder — *This result was made by a newer version of Aetheril.* — through `parseToolInvocation`, `parseToolResult`, `parseTimelineEntry` and `parseTimelinePage`. It never crashes the thread, and it never falls back to an NPC (X-8, RAIL-24). A page is read entry by entry, so one entry from a newer server becomes one placeholder and the rest of the thread renders (AE-43) |
 
 That asymmetry — a strict server, a tolerant client — is written into the
 fixtures. An example may carry `"applies_to": ["server"]` or `["client"]`: an
@@ -136,10 +147,10 @@ on both sides.
 | Tool invocation | **done** | `ToolInvocationRequest`, `ToolInvocation`, `ToolResult` (card, document, media), `ToolSuggestion`, `DocumentLink`, `AssetRef` |
 | Card payloads | `stat_block` **done**, reusing the `/chat` stat-block contract | loot, names, rules and hooks are `1kg.4.3`'s; until they exist those tools cannot produce a valid card, by design |
 | Legacy guards | **done** | today's `/chat` and message-history responses, validated by the existing models |
-| Timeline entries and their page | to do | GM turns stored as `tool_id` plus `brief` (RAIL-9), assistant answers, tool and edit results, session dividers, attached cues |
-| Documents | to do | the envelope, versions and the write revision, field patches, AI-edit scopes, conflicts, restore, history pages |
+| Timeline entries and their page | **done** for `chat`, `tool`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The `edit` entry arrives with the documents family and the attached-cue entry with the cue family; until v1 is declared complete, adding them is not a version bump |
+| Documents | to do | the envelope, versions and the write revision, field patches, AI-edit scopes, conflicts, restore, history pages. **Per-field eligibility is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1` |
 | Per-type document fields | `1kg.5.3` | built on the document envelope |
-| Reveal | to do | the mutation with its epoch, Stop, GM-side state, the allowlisted projection, the table snapshot |
+| Reveal | to do, and **waiting** | the mutation with its epoch, Stop, GM-side state, the allowlisted projection, the table snapshot. Audience and slot shapes must not freeze before `agent-forge-harness-1ir.1.2` (field eligibility, shared with the Live Session Assistant) is decided; it blocks `1kg.7.1` |
 | Media assets and cues | to do | storage-dependent fields wait for `1kg.1.4` |
 | Realtime events | to do | the payloads are this bead's; the transport is `1kg.1.4`'s |
 | Tool and document-type registry | `1kg.3.1` | extends `registry.json` |
@@ -198,6 +209,73 @@ the composer and never runs (RAIL-8).
 The handoff's `tool_label` is not on the wire: a label is a registry fact, and
 sending it would give the two a chance to disagree.
 
+## The timeline family
+
+A conversation is read as a list of entries, one per **exchange**: a turn
+carries its own outcome. That is a deliberate choice over a flat list of
+messages with reply pointers.
+
+- A page boundary can never separate a prompt from its result, so the rule in
+  `1kg.4.2` — *pagination never splits a prompt/result association* — holds by
+  construction instead of by cursor arithmetic.
+- Tool results finish in any order (RAIL-16). Embedded, each one sits beneath the
+  turn that asked for it without the client regrouping anything.
+- It is what the client already keeps: `useChat` pairs stored rows into
+  `Exchange` objects today, and drops an answer whose prompt fell outside the
+  loaded window. Pairing on the server removes that loss.
+- An entry has one id. That id is what a suggestion's `source_entry_id` names
+  (RAIL-8) and what makes *Save to Bestiary* idempotent (LIB-11).
+
+| `entry_kind` | Carries | Notes |
+| --- | --- | --- |
+| `chat` | `mode`, `prompt`, `answer` | A plain message and its answer, in any mode (RAIL-14). `answer` is `null` while no answer is stored: the turn failed, or is still running elsewhere. `prompt` is `null` only for an old answer whose prompt was never recorded; one of the two is always present |
+| `tool` | `brief`, `invocation`, optional `source_entry_id` | RAIL-9: a tool and a brief, never the slash string. The tool is `invocation.tool_id`, kept in one place so the turn and its lane cannot disagree. The embedded `ToolInvocation` keeps all of its own rules. The brief *bound* holds on the way back out; the brief *policy* is not re-judged, so a registry change can never make an old turn unreadable |
+| `session_divider` | `session_id`, `boundary` (`start` or `end`) | The only thing that separates prep from play. `/recap` reads from the latest `start`; rotating a link moves neither boundary (REVEAL-17). Session titles and numbers belong to `1kg.2.1` and can arrive later as an optional field |
+| `opaque` | `reason` | The server's placeholder for a stored entry it cannot read. See *Versioning and forward compatibility* |
+
+Every entry carries its own `schema_version`, not only the page: entries are
+stored one at a time and can outlive the server version that wrote them.
+
+```json
+{
+  "schema_version": 1,
+  "entry_kind": "chat",
+  "entry_id": "ent_10a4c2e9",
+  "created_at": "2026-09-16T19:20:11Z",
+  "mode": "sage",
+  "prompt": "How does a basilisk's gaze work?",
+  "answer": {
+    "text": "A basilisk petrifies with its gaze [1].",
+    "answerable": true,
+    "sources": [{ "book": "mm-5e", "chapter": "Bestiary", "section": "Stat Block", "entity": "Basilisk", "page": 12, "snippet": "Armor Class 15 ..." }],
+    "created_at": "2026-09-16T19:20:19Z"
+  }
+}
+```
+
+An `answer` is a **complete outcome**: text, `answerable`, `sources`, and the
+optional usage ideas, routing disclosures, spell card and stat block that
+`POST /chat` returns today. History used to keep only the text, and the client
+filled the gaps with `sources: []` and `answerable: true`. For rows written
+before the durable timeline those facts are honestly unknown, which the contract
+says with `null` (see *Not recorded* above).
+
+The pieces of an answer are the existing `service/models.py` shapes, reused
+rather than re-declared. That is how the evidence provenance that
+`agent-forge-harness-xiu.5.2` adds to stored answers will round-trip through the
+timeline without a second definition: it extends those shapes, or lands as one
+new optional field on `answer`, and neither is a version bump. Those shapes keep
+their own, laxer validation — they coerce `"12"` to `12` — and the differential
+fuzz checks that whatever the server accepts through them it emits in a form the
+client reads.
+
+What an entry can never carry: a document body (a result links, EXPORT-12), the
+prompt the server assembled, attachment text, a provider payload, or the owner's
+user id. The server models forbid undeclared fields, and a client strips them.
+
+Entry-to-component adapters are `1kg.3.4`'s; the lane pieces they need
+(`toLaneStatus`, `toLaneSuggestions`) already exist in `adapters.ts`.
+
 ## Legacy compatibility
 
 `POST /chat` and `GET /conversations/{id}/messages` are untouched. Their
@@ -216,5 +294,10 @@ The Workbench error envelope keeps the `detail` key for the same reason.
 4. Mark an example `applies_to` only for the strict-server, tolerant-client
    asymmetry, never to paper over a disagreement.
 5. Check *why* each invalid example fails, not only that it does.
-6. Decide whether the change needs a version bump, using the table above.
-7. Add the adapter beside the schema if a design-system component consumes it.
+6. Run the differential fuzz: `python contracts/workbench/tools/differential_fuzz.py`.
+   It mutates every valid example and fails if the two validators disagree about
+   one of this contract's shapes, or if the server can emit something the client
+   cannot read. A finding is fixed in the looser validator and pinned by a new
+   fixture example. CI runs it as `contract-parity`.
+7. Decide whether the change needs a version bump, using the table above.
+8. Add the adapter beside the schema if a design-system component consumes it.

@@ -1,0 +1,655 @@
+{
+  "schema": "TimelineEntry",
+  "direction": "response",
+  "note": "One entry per exchange: a turn carries its own outcome, so a page boundary can never separate a prompt from its result (1kg.4.2). The client already models the thread this way (useChat's Exchange). Entry kinds for AI edits and attached cues arrive with the documents and cue families.",
+  "valid": [
+    {
+      "name": "a chat exchange with its complete outcome",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "ent_10a4c2e9",
+        "created_at": "2026-09-16T19:20:11Z",
+        "mode": "sage",
+        "prompt": "How does a basilisk's gaze work?",
+        "answer": {
+          "text": "A basilisk petrifies with its gaze [1].",
+          "answerable": true,
+          "sources": [
+            { "book": "mm-5e", "chapter": "Bestiary", "section": "Stat Block", "entity": "Basilisk", "page": 12, "snippet": "Armor Class 15 ..." }
+          ],
+          "created_at": "2026-09-16T19:20:19Z",
+          "routing": { "requested": "auto", "effective": "gpt-4o-mini", "provider": "openai", "strategy": "auto" }
+        }
+      }
+    },
+    {
+      "name": "a plain GM-mode message is an ordinary chat exchange (RAIL-14), here with a stat block",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "ent_10a4c2ea",
+        "created_at": "2026-09-16T19:24:40Z",
+        "mode": "gm",
+        "prompt": "Give me a drowned guardian for the marsh.",
+        "answer": {
+          "text": "Here is a drowned guardian.",
+          "answerable": false,
+          "sources": [],
+          "created_at": "2026-09-16T19:24:52Z",
+          "stat_block": { "name": "Tidewarden Drowned", "ac": 16, "hp": 82, "cr": "5" }
+        }
+      }
+    },
+    {
+      "name": "a spell answer keeps its usage ideas, its card and both routing disclosures",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "ent_10a4c2eb",
+        "created_at": "2026-09-16T19:26:03Z",
+        "mode": "spell",
+        "prompt": "Fireball",
+        "answer": {
+          "text": "Fireball is a 3rd-level evocation [1].",
+          "answerable": true,
+          "sources": [{ "book": "phb-5e", "chapter": null, "section": null, "entity": "Fireball", "page": 241, "snippet": "A bright streak..." }],
+          "created_at": "2026-09-16T19:26:10Z",
+          "suggestions": [
+            { "style": "practical", "text": "Clear a corridor." },
+            { "style": "roleplay", "text": "Light the beacon." },
+            { "style": "wacky", "text": "Pop every balloon." }
+          ],
+          "routing": { "requested": "auto", "effective": "gpt-4o-mini", "provider": "openai", "strategy": "auto", "task_class": null, "reason": null, "fallback_from": null },
+          "suggestions_routing": { "effective": "gpt-4o-mini", "provider": "openai", "reason": null, "fallback_from": null },
+          "spell_content": { "name": "Fireball", "description": "A bright streak flashes...", "level": 3, "school": "evocation" }
+        }
+      }
+    },
+    {
+      "name": "a row older than the durable timeline says what was never recorded: null, not a made-up value",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "412",
+        "created_at": "2026-08-02T18:05:00Z",
+        "mode": "rules",
+        "prompt": "Can I ready a spell?",
+        "answer": {
+          "text": "Yes. Readying a spell uses your action and holds concentration.",
+          "answerable": null,
+          "sources": null,
+          "created_at": "2026-08-02T18:05:09Z"
+        }
+      }
+    },
+    {
+      "name": "a prompt with no stored answer: the turn failed, or is still running somewhere else",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "ent_10a4c2ec",
+        "created_at": "2026-09-16T19:28:00Z",
+        "mode": "sage",
+        "prompt": "What does a gelatinous cube do?",
+        "answer": null
+      }
+    },
+    {
+      "name": "an old answer whose prompt was never recorded is kept, not dropped",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "413",
+        "created_at": "2026-08-02T18:06:30Z",
+        "mode": "sage",
+        "prompt": null,
+        "answer": { "text": "Goblins have 7 hit points.", "answerable": null, "sources": null, "created_at": "2026-08-02T18:06:30Z" }
+      }
+    },
+    {
+      "name": "a tool turn is a tool and a brief, never the slash string (RAIL-9)",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12bc",
+        "created_at": "2026-09-16T19:31:02Z",
+        "brief": "the hooded stranger at the bar",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+          "tool_id": "npc",
+          "status": "done",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:31:02Z",
+          "updated_at": "2026-09-16T19:31:24Z",
+          "result": {
+            "result_kind": "document",
+            "tool_id": "npc",
+            "prose": "Wrote her up as a dossier.",
+            "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+            "suggestions": [{ "tool_id": "portrait", "label": "Paint her portrait", "icon": "brush" }]
+          },
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "a working tool turn carries no result, so nothing stale can sit under it (RAIL-15)",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12bd",
+        "created_at": "2026-09-16T19:35:00Z",
+        "brief": "CR 5, drowned",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_0a1b2c3d4e5f6a7b",
+          "tool_id": "monster",
+          "status": "working",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:35:00Z",
+          "updated_at": "2026-09-16T19:35:00Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "a failed tool turn carries its error (RAIL-18)",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12be",
+        "created_at": "2026-09-16T19:36:00Z",
+        "brief": "CR 5, drowned",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_0a1b2c3d4e5f6a7c",
+          "tool_id": "monster",
+          "status": "failed",
+          "attempt": 2,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:36:00Z",
+          "updated_at": "2026-09-16T19:38:40Z",
+          "result": null,
+          "error": { "code": "provider_timeout", "message": "The model took too long to answer.", "retryable": true }
+        }
+      }
+    },
+    {
+      "name": "a cancelled tool turn (RAIL-22)",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12bf",
+        "created_at": "2026-09-16T19:40:00Z",
+        "brief": "a flooded crypt, party of four, level 5",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_0a1b2c3d4e5f6a7d",
+          "tool_id": "encounter",
+          "status": "cancelled",
+          "attempt": 1,
+          "cancel_requested": true,
+          "created_at": "2026-09-16T19:40:00Z",
+          "updated_at": "2026-09-16T19:40:06Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "recap ran with an empty brief (RAIL-5); the thread shows the tool's blurb instead",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12c0",
+        "created_at": "2026-09-16T22:58:00Z",
+        "brief": "",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_0a1b2c3d4e5f6a7e",
+          "tool_id": "recap",
+          "status": "working",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T22:58:00Z",
+          "updated_at": "2026-09-16T22:58:00Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "a turn armed from a suggestion remembers the entry it came from (RAIL-8)",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12c1",
+        "created_at": "2026-09-16T19:45:00Z",
+        "brief": "an encounter around the Tidewarden Drowned",
+        "source_entry_id": "ent_77aa12bd",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_5d6e7f8a9b0c1d2e",
+          "tool_id": "encounter",
+          "status": "working",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:45:00Z",
+          "updated_at": "2026-09-16T19:45:00Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "the brief policy is judged when a tool runs, not when its turn is read back",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12c2",
+        "created_at": "2026-09-16T19:50:00Z",
+        "brief": "",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_5d6e7f8a9b0c1d2f",
+          "tool_id": "hooks",
+          "status": "cancelled",
+          "attempt": 1,
+          "cancel_requested": true,
+          "created_at": "2026-09-16T19:50:00Z",
+          "updated_at": "2026-09-16T19:50:02Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "a session starts: the boundary recap reads from",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "session_divider",
+        "entry_id": "ent_5e55a001",
+        "created_at": "2026-09-16T19:00:00Z",
+        "session_id": "ses_2c7d91aa",
+        "boundary": "start"
+      }
+    },
+    {
+      "name": "a session ends",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "session_divider",
+        "entry_id": "ent_5e55a002",
+        "created_at": "2026-09-16T23:05:00-04:00",
+        "session_id": "ses_2c7d91aa",
+        "boundary": "end"
+      }
+    },
+    {
+      "name": "an entry written by a newer server is served as a placeholder that carries nothing (RAIL-24)",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "opaque",
+        "entry_id": "ent_0f00d001",
+        "created_at": "2026-09-16T20:10:00Z",
+        "reason": "newer_version"
+      }
+    },
+    {
+      "name": "a stored row this server cannot read keeps its place in the thread",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "opaque",
+        "entry_id": "398",
+        "created_at": "2026-07-30T17:00:00Z",
+        "reason": "unreadable"
+      }
+    },
+    {
+      "name": "a client strips a field a newer server added",
+      "applies_to": ["client"],
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "session_divider",
+        "entry_id": "ent_5e55a003",
+        "created_at": "2026-09-16T19:00:00Z",
+        "session_id": "ses_2c7d91aa",
+        "boundary": "start",
+        "title": "Session 12"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an entry kind this contract does not know",
+      "why": "X-8: a closed union; a new kind is a version bump, and the strict schema never guesses",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "player_turn",
+        "entry_id": "ent_10a4c2f0",
+        "created_at": "2026-09-16T19:20:11Z",
+        "text": "I search the altar."
+      }
+    },
+    {
+      "name": "an entry from a newer contract version",
+      "why": "the strict schema speaks version 1 only; the tolerant readers turn this into a placeholder",
+      "value": {
+        "schema_version": 2,
+        "entry_kind": "session_divider",
+        "entry_id": "ent_5e55a001",
+        "created_at": "2026-09-16T19:00:00Z",
+        "session_id": "ses_2c7d91aa",
+        "boundary": "start"
+      }
+    },
+    {
+      "name": "a schema version of true",
+      "why": "no coercion: to Python true equals 1, so a bare literal would let it through on one side only",
+      "value": {
+        "schema_version": true,
+        "entry_kind": "session_divider",
+        "entry_id": "ent_5e55a001",
+        "created_at": "2026-09-16T19:00:00Z",
+        "session_id": "ses_2c7d91aa",
+        "boundary": "start"
+      }
+    },
+    {
+      "name": "the raw slash string stored as the turn",
+      "why": "RAIL-9: a tool turn is a tool and a brief",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12bc",
+        "created_at": "2026-09-16T19:31:02Z",
+        "command": "/npc the hooded stranger at the bar",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+          "tool_id": "npc",
+          "status": "working",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:31:02Z",
+          "updated_at": "2026-09-16T19:31:02Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "a tool turn without its invocation",
+      "why": "an accepted tool turn has an invocation from its first moment; the lane is drawn from it",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12bc",
+        "created_at": "2026-09-16T19:31:02Z",
+        "brief": "the hooded stranger at the bar"
+      }
+    },
+    {
+      "name": "a stored brief of 2,001 characters",
+      "why": "RAIL-6: the bound holds when a turn is read back too",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12bc",
+        "created_at": "2026-09-16T19:31:02Z",
+        "brief": "@repeat:a:2001",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+          "tool_id": "npc",
+          "status": "working",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:31:02Z",
+          "updated_at": "2026-09-16T19:31:02Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "a done invocation with no result inside an entry",
+      "why": "RAIL-15 to RAIL-23: the embedded status resource keeps its own rules",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12bc",
+        "created_at": "2026-09-16T19:31:02Z",
+        "brief": "the hooded stranger at the bar",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+          "tool_id": "npc",
+          "status": "done",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:31:02Z",
+          "updated_at": "2026-09-16T19:31:24Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "a document body riding in a tool entry",
+      "why": "1kg.4.4 and EXPORT-12: the thread links a document and never embeds it, so chat export cannot become a second path for secrets",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12bc",
+        "created_at": "2026-09-16T19:31:02Z",
+        "brief": "the hooded stranger at the bar",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+          "tool_id": "npc",
+          "status": "done",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:31:02Z",
+          "updated_at": "2026-09-16T19:31:24Z",
+          "result": {
+            "result_kind": "document",
+            "tool_id": "npc",
+            "prose": "Wrote her up as a dossier.",
+            "document": {
+              "document_id": "doc_9k2f7a1c",
+              "type": "npc",
+              "title": "Sister Ondrey Vashe",
+              "library_category": "npcs",
+              "data": { "secret": "She is the drowned saint." }
+            },
+            "suggestions": []
+          },
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "hidden context stored on an entry",
+      "why": "1kg.4.2: prompts assembled by the server, attachment text and provider payloads are never part of the timeline",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "ent_10a4c2e9",
+        "created_at": "2026-09-16T19:20:11Z",
+        "mode": "gm",
+        "prompt": "What is she hiding?",
+        "answer": null,
+        "context": "SYSTEM: the party must not learn that..."
+      }
+    },
+    {
+      "name": "a chat entry with neither a prompt nor an answer",
+      "why": "there is nothing to show; one of the two must be present",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "ent_10a4c2e9",
+        "created_at": "2026-09-16T19:20:11Z",
+        "mode": "sage",
+        "prompt": null,
+        "answer": null
+      }
+    },
+    {
+      "name": "an empty prompt",
+      "why": "a prompt is at least one character, as POST /chat requires; an unrecorded prompt is null",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "ent_10a4c2e9",
+        "created_at": "2026-09-16T19:20:11Z",
+        "mode": "sage",
+        "prompt": "",
+        "answer": null
+      }
+    },
+    {
+      "name": "answerable left out",
+      "why": "not recorded is said with null, never by leaving the key out, so a client cannot mistake it for true",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "ent_10a4c2e9",
+        "created_at": "2026-09-16T19:20:11Z",
+        "mode": "sage",
+        "prompt": "How does a basilisk's gaze work?",
+        "answer": { "text": "It petrifies.", "sources": [], "created_at": "2026-09-16T19:20:19Z" }
+      }
+    },
+    {
+      "name": "answerable as a string",
+      "why": "no coercion",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "ent_10a4c2e9",
+        "created_at": "2026-09-16T19:20:11Z",
+        "mode": "sage",
+        "prompt": "How does a basilisk's gaze work?",
+        "answer": { "text": "It petrifies.", "answerable": "true", "sources": [], "created_at": "2026-09-16T19:20:19Z" }
+      }
+    },
+    {
+      "name": "an answer without its text",
+      "why": "text is the one thing every answer has",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "ent_10a4c2e9",
+        "created_at": "2026-09-16T19:20:11Z",
+        "mode": "sage",
+        "prompt": "How does a basilisk's gaze work?",
+        "answer": { "answerable": true, "sources": [], "created_at": "2026-09-16T19:20:19Z" }
+      }
+    },
+    {
+      "name": "a chat mode that does not exist",
+      "why": "the four modes are a closed set",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "chat",
+        "entry_id": "ent_10a4c2e9",
+        "created_at": "2026-09-16T19:20:11Z",
+        "mode": "lore",
+        "prompt": "Tell me of the old gods.",
+        "answer": null
+      }
+    },
+    {
+      "name": "a display time instead of a timestamp",
+      "why": "CANVAS-27: ISO 8601 with an offset; formatting for people is the client's job",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "session_divider",
+        "entry_id": "ent_5e55a001",
+        "created_at": "7:36 PM",
+        "session_id": "ses_2c7d91aa",
+        "boundary": "start"
+      }
+    },
+    {
+      "name": "a timestamp without an offset",
+      "why": "CANVAS-27: a bare local time means a different moment on every device",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "session_divider",
+        "entry_id": "ent_5e55a001",
+        "created_at": "2026-09-16T19:00:00",
+        "session_id": "ses_2c7d91aa",
+        "boundary": "start"
+      }
+    },
+    {
+      "name": "a divider that is neither a start nor an end",
+      "why": "a closed vocabulary; pausing a session is not a v1 concept",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "session_divider",
+        "entry_id": "ent_5e55a001",
+        "created_at": "2026-09-16T19:00:00Z",
+        "session_id": "ses_2c7d91aa",
+        "boundary": "paused"
+      }
+    },
+    {
+      "name": "a divider without its session",
+      "why": "REVEAL-17: a divider belongs to one session, which is how rotating a link leaves it where it is",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "session_divider",
+        "entry_id": "ent_5e55a001",
+        "created_at": "2026-09-16T19:00:00Z",
+        "boundary": "start"
+      }
+    },
+    {
+      "name": "a placeholder that forwards the payload it could not read",
+      "why": "the point of an opaque entry is that a server never forwards bytes it has not validated",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "opaque",
+        "entry_id": "ent_0f00d001",
+        "created_at": "2026-09-16T20:10:00Z",
+        "reason": "newer_version",
+        "payload": { "entry_kind": "player_turn", "text": "I search the altar." }
+      }
+    },
+    {
+      "name": "a placeholder with a reason outside the vocabulary",
+      "why": "a closed vocabulary, and never free text: a reason can become a metric label",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "opaque",
+        "entry_id": "ent_0f00d001",
+        "created_at": "2026-09-16T20:10:00Z",
+        "reason": "row 398 failed: invalid json"
+      }
+    },
+    {
+      "name": "an entry id outside the opaque-id alphabet",
+      "why": "ids are [A-Za-z0-9_-] so they are safe in a fragment and in logs",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "opaque",
+        "entry_id": "ent/../398",
+        "created_at": "2026-09-16T20:10:00Z",
+        "reason": "unreadable"
+      }
+    }
+  ]
+}

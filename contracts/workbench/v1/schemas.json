@@ -1,6 +1,7 @@
 {
   "contract_version": 1,
   "schemas": [
+    "Timestamp",
     "ErrorBody",
     "ToolInvocationRequest",
     "ToolSuggestion",
@@ -8,6 +9,8 @@
     "AssetRef",
     "ToolResult",
     "ToolInvocation",
+    "TimelineEntry",
+    "TimelinePage",
     "LegacyChatResponse",
     "LegacyMessagesResponse"
   ]

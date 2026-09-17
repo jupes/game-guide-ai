@@ -19,7 +19,13 @@
 
 import { z } from 'zod'
 import type { ZodType } from 'zod'
-import { StatBlockContentSchema } from '../schemas'
+import {
+  ChatModeSchema,
+  SourceSchema,
+  SpellContentSchema,
+  StatBlockContentSchema,
+  SuggestionSchema,
+} from '../schemas'
 
 export const CONTRACT_VERSION = 1
 
@@ -29,6 +35,10 @@ export const BRIEF_MAX_CHARS = 2000
 export const SUGGESTION_BRIEF_MAX_CHARS = 200
 export const PROSE_MAX_CHARS = 4000
 export const MAX_SUGGESTIONS = 3
+/** A ceiling on a stored prompt or answer, so a page has a bounded size. */
+export const CHAT_TEXT_MAX_CHARS = 100_000
+export const MAX_SOURCES = 50
+export const TIMELINE_PAGE_MAX_ITEMS = 100
 
 // ── Closed vocabularies (pinned by contracts/workbench/v1/registry.json) ─────
 
@@ -57,6 +67,13 @@ export const INVOCATION_STATUSES = ['working', 'done', 'failed', 'cancelled'] as
 export type InvocationStatus = (typeof INVOCATION_STATUSES)[number]
 
 export type BriefPolicy = 'required' | 'optional'
+
+/** AI edits and attached cues join with the documents and cue families. */
+export const ENTRY_KINDS = ['chat', 'tool', 'session_divider', 'opaque'] as const
+export type EntryKind = (typeof ENTRY_KINDS)[number]
+
+export const SESSION_BOUNDARIES = ['start', 'end'] as const
+export const OPAQUE_REASONS = ['newer_version', 'unreadable'] as const
 
 /** The codes this client knows. A newer server may send others; see `isKnownErrorCode`. */
 export const KNOWN_ERROR_CODES = [
@@ -144,8 +161,13 @@ function text(min: number, max: number) {
 const OpaqueIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/)
 /** Client-minted, and an invocation's idempotency key (RAIL-18). */
 const InvocationIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/)
-/** ISO 8601 with an offset (CANVAS-27). Formatting for people is the client's job. */
-const TimestampSchema = z.iso.datetime({ offset: true })
+/** One grammar for every timestamp (CANVAS-27): seconds, at most microseconds, and
+ * `Z` or a `+HH:MM` offset. The server carries the same pattern; `z.iso.datetime`
+ * then checks that the moment exists. Formatting for people is the client's job. */
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
+export const TimestampSchema = z.iso.datetime({ offset: true }).regex(ISO_TIMESTAMP)
+/** Opaque, and base64url because a cursor may ride in a query string. */
+const CursorSchema = z.string().regex(/^[A-Za-z0-9_-]{1,512}$/)
 
 const ToolIdSchema = z.enum(TOOL_IDS)
 
@@ -308,8 +330,127 @@ export const ToolInvocationSchema = z
   })
 export type ToolInvocation = z.infer<typeof ToolInvocationSchema>
 
+// ── Timeline ─────────────────────────────────────────────────────────────────
+// One entry per EXCHANGE: a turn carries its own outcome. A page boundary can
+// therefore never separate a prompt from its result (1kg.4.2), results sit
+// beneath the turn that asked for them however late they finish (RAIL-16), and
+// the shape matches what useChat already keeps as an `Exchange`.
+
+/** Mirrors service.models.RoutingInfo: which model answered (b8o.2). */
+const RoutingInfoSchema = z.object({
+  requested: z.string(),
+  effective: z.string(),
+  provider: z.string(),
+  strategy: z.enum(['auto', 'manual']),
+  task_class: z.string().nullish(),
+  reason: z.string().nullish(),
+  fallback_from: z.string().nullish(),
+})
+
+/** Mirrors service.models.SuggestionsRoutingInfo. */
+const SuggestionsRoutingInfoSchema = z.object({
+  effective: z.string(),
+  provider: z.string(),
+  reason: z.string().nullish(),
+  fallback_from: z.string().nullish(),
+})
+
+/** A complete assistant outcome, built from the existing /chat pieces so that
+ * what xiu.5.2 adds to them round-trips here instead of growing a second shape. */
+const ChatAnswerSchema = z.object({
+  /** Markdown, rendered without remote subresources (X-10). */
+  text: text(0, CHAT_TEXT_MAX_CHARS),
+  /** `null` is "not recorded" — a row older than the durable timeline. The key
+   * is required, so absence can never be mistaken for `true`. */
+  answerable: z.boolean().nullable(),
+  /** `null` is "not recorded"; the empty list is "recorded, and none". */
+  sources: z.array(SourceSchema).max(MAX_SOURCES).nullable(),
+  created_at: TimestampSchema,
+  suggestions: z.array(SuggestionSchema).max(MAX_SUGGESTIONS).nullish(),
+  routing: RoutingInfoSchema.nullish(),
+  suggestions_routing: SuggestionsRoutingInfoSchema.nullish(),
+  spell_content: SpellContentSchema.nullish(),
+  stat_block: StatBlockContentSchema.nullish(),
+})
+export type ChatAnswer = z.infer<typeof ChatAnswerSchema>
+
+const entryBase = {
+  /** Per entry, not only per page: entries are stored one by one. */
+  schema_version: z.literal(CONTRACT_VERSION),
+  entry_id: OpaqueIdSchema,
+  /** When the turn was made. Order is the page's, never re-derived from this. */
+  created_at: TimestampSchema,
+}
+
+/** A plain message and its answer, in any mode (RAIL-14). */
+const ChatEntrySchema = z
+  .object({
+    ...entryBase,
+    entry_kind: z.literal('chat'),
+    mode: ChatModeSchema,
+    /** `null` only for an old answer whose prompt was never recorded. */
+    prompt: text(1, CHAT_TEXT_MAX_CHARS).nullable(),
+    /** `null` while the turn has no stored answer: it failed, or is still running. */
+    answer: ChatAnswerSchema.nullable(),
+  })
+  .refine((entry) => entry.prompt !== null || entry.answer !== null, {
+    path: ['answer'],
+    message: 'a chat entry needs a prompt or an answer',
+  })
+
+/** Decision RAIL-9: a tool and a brief, never the slash string. The tool is
+ * `invocation.tool_id`, kept in one place so the turn and its lane cannot disagree. */
+const ToolEntrySchema = z.object({
+  ...entryBase,
+  entry_kind: z.literal('tool'),
+  /** Bounded on the way back too (RAIL-6); the brief *policy* is not re-judged. */
+  brief: text(0, BRIEF_MAX_CHARS),
+  /** The entry whose suggestion armed this turn (RAIL-8). */
+  source_entry_id: OpaqueIdSchema.nullish(),
+  invocation: ToolInvocationSchema,
+})
+
+/** The only thing that separates prep from play; `/recap` reads from the latest `start`. */
+const SessionDividerEntrySchema = z.object({
+  ...entryBase,
+  entry_kind: z.literal('session_divider'),
+  session_id: OpaqueIdSchema,
+  boundary: z.enum(SESSION_BOUNDARIES),
+})
+
+/** Stands in for a stored entry the server could not read. It carries nothing of it. */
+const OpaqueEntrySchema = z.object({
+  ...entryBase,
+  entry_kind: z.literal('opaque'),
+  reason: z.enum(OPAQUE_REASONS),
+})
+
+export const TimelineEntrySchema = z.discriminatedUnion('entry_kind', [
+  ChatEntrySchema,
+  ToolEntrySchema,
+  SessionDividerEntrySchema,
+  OpaqueEntrySchema,
+])
+export type TimelineEntry = z.infer<typeof TimelineEntrySchema>
+
+const pageEnvelope = {
+  schema_version: z.literal(CONTRACT_VERSION),
+  conversation_id: OpaqueIdSchema,
+  /** Required: the end of the list is `null`, never a missing key. */
+  next_cursor: CursorSchema.nullable(),
+}
+
+/** The strict page. Items run NEWEST FIRST and `next_cursor` leads to older
+ * entries. Components read a page through `parseTimelinePage`, never this. */
+export const TimelinePageSchema = z.object({
+  ...pageEnvelope,
+  items: z.array(TimelineEntrySchema).max(TIMELINE_PAGE_MAX_ITEMS),
+})
+export type TimelinePage = z.infer<typeof TimelinePageSchema>
+
 /** Name → schema, in the order `contracts/workbench/v1/schemas.json` lists them. */
 export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
+  Timestamp: TimestampSchema,
   ErrorBody: ErrorBodySchema,
   ToolInvocationRequest: ToolInvocationRequestSchema,
   ToolSuggestion: ToolSuggestionSchema,
@@ -317,6 +458,8 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   AssetRef: AssetRefSchema,
   ToolResult: ToolResultSchema,
   ToolInvocation: ToolInvocationSchema,
+  TimelineEntry: TimelineEntrySchema,
+  TimelinePage: TimelinePageSchema,
 }
 
 // ── Forward-version behaviour ────────────────────────────────────────────────
@@ -327,28 +470,85 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
  * render the neutral "made by a newer version" placeholder (RAIL-24).
  * `invalid` renders the same placeholder but is a bug worth counting.
  */
-export type Parsed<T> =
-  | { kind: 'ok'; value: T }
-  | { kind: 'unknown'; reason: 'newer_schema' | 'unknown_kind' | 'invalid' }
+export type UnknownReason = 'newer_schema' | 'unknown_kind' | 'invalid'
+
+export type Parsed<T> = { kind: 'ok'; value: T } | { kind: 'unknown'; reason: UnknownReason }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** Whether any `schema_version` inside a payload is beyond this client — the
+ * payload's own, or one embedded in it (an entry's invocation). */
+function mentionsNewerVersion(value: unknown, depth = 0): boolean {
+  if (depth > 8) return false
+  if (Array.isArray(value)) return value.some((item) => mentionsNewerVersion(item, depth + 1))
+  if (!isRecord(value)) return false
+  if (typeof value.schema_version === 'number' && value.schema_version > CONTRACT_VERSION) return true
+  return Object.values(value).some((item) => mentionsNewerVersion(item, depth + 1))
+}
+
+function hasUnknownKind(raw: unknown, key: string, known: readonly string[]): boolean {
+  return isRecord(raw) && typeof raw[key] === 'string' && !known.includes(raw[key])
+}
+
 export function parseToolInvocation(raw: unknown): Parsed<ToolInvocation> {
-  if (isRecord(raw) && typeof raw.schema_version === 'number' && raw.schema_version > CONTRACT_VERSION) {
-    return { kind: 'unknown', reason: 'newer_schema' }
-  }
+  if (mentionsNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema' }
   const result = ToolInvocationSchema.safeParse(raw)
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
 }
 
 export function parseToolResult(raw: unknown): Parsed<ToolResult> {
-  if (isRecord(raw) && typeof raw.result_kind === 'string' && !(RESULT_KINDS as readonly string[]).includes(raw.result_kind)) {
-    return { kind: 'unknown', reason: 'unknown_kind' }
-  }
+  if (hasUnknownKind(raw, 'result_kind', RESULT_KINDS)) return { kind: 'unknown', reason: 'unknown_kind' }
   const result = ToolResultSchema.safeParse(raw)
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
+}
+
+/**
+ * One slot in a thread. An entry this client cannot use still keeps its place
+ * and, when it is readable, its id — so the rest of the thread renders around
+ * one placeholder (AE-43). A server-sent `opaque` entry is `ok`: it is a valid
+ * entry whose meaning is "placeholder".
+ */
+export type TimelineItem =
+  | { kind: 'ok'; value: TimelineEntry }
+  | { kind: 'unknown'; reason: UnknownReason; entry_id: string | null }
+
+export function parseTimelineEntry(raw: unknown): TimelineItem {
+  const id = isRecord(raw) ? OpaqueIdSchema.safeParse(raw.entry_id) : null
+  const entry_id = id?.success ? id.data : null
+  if (mentionsNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema', entry_id }
+
+  const invocation = isRecord(raw) && isRecord(raw.invocation) ? raw.invocation : null
+  if (hasUnknownKind(raw, 'entry_kind', ENTRY_KINDS) || hasUnknownKind(invocation?.result, 'result_kind', RESULT_KINDS)) {
+    return { kind: 'unknown', reason: 'unknown_kind', entry_id }
+  }
+  const result = TimelineEntrySchema.safeParse(raw)
+  return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid', entry_id }
+}
+
+export interface ReadTimelinePage {
+  conversation_id: string
+  /** Newest first, one item per entry the server sent, none dropped. */
+  items: TimelineItem[]
+  next_cursor: string | null
+}
+
+const TimelineEnvelopeSchema = z.object({
+  ...pageEnvelope,
+  items: z.array(z.unknown()).max(TIMELINE_PAGE_MAX_ITEMS),
+})
+
+/** How a component reads a page: the envelope strictly, each entry on its own,
+ * so one entry from a newer server cannot take the thread down with it. */
+export function parseTimelinePage(raw: unknown): Parsed<ReadTimelinePage> {
+  if (isRecord(raw) && typeof raw.schema_version === 'number' && raw.schema_version > CONTRACT_VERSION) {
+    return { kind: 'unknown', reason: 'newer_schema' }
+  }
+  const envelope = TimelineEnvelopeSchema.safeParse(raw)
+  if (!envelope.success) return { kind: 'unknown', reason: 'invalid' }
+  const { conversation_id, items, next_cursor } = envelope.data
+  return { kind: 'ok', value: { conversation_id, items: items.map(parseTimelineEntry), next_cursor } }
 }
 
 // ── One reader for every error shape ─────────────────────────────────────────
