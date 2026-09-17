@@ -606,6 +606,8 @@ These boundaries avoid repeated conflicts in `service/app.py`,
 | `agent-forge-harness-1ka` and children | Own conversation memory, authoritative deletion, summaries, preferences, and long-term memory. Workbench campaign deletion and recap must compose with them. |
 | `game-guide-ai-chat-reading-experience` (PR #57, merged 2026-09-16) | **Shipped.** Sanitized Markdown answers, a 48 rem reading column, follow-newest scrolling with jump-to-latest, an auto-growing composer, and a typing indicator are now the baseline. ToolRail, SlashMenu and AssistantLane build on them. Its Markdown component keeps remote images and the app sets no CSP — see seam 9. |
 | Architecture reference to `swe1.5` | Notes/GM-lore navigation may overlap library/world data; locate the authoritative external tracker before implementation. |
+| `agent-forge-harness-xiu` and children | Own additive retrieval, evidence provenance, and bounded web fallback. Workbench tools use the same evidence contract; a corpus miss must not disable general generation. |
+| `agent-forge-harness-yje` and children | Separate subscription/coupon/profitability initiative. It owns account entitlements and cost budgets consumed by Workbench routes, but must not be folded into Workbench implementation. Its operation cost ledger (`yje.5.1`) is the durable record decision STATE-8 requires, and its open-registration plan bears on E-1 and E-6. |
 
 The new epic uses non-blocking `relates-to` edges for these initiatives because
 their live bead status is not fully synchronized with code already merged to
