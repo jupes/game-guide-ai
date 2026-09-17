@@ -87,7 +87,10 @@ function crossInitiativeTable(tracker: { id: string; title: string; status: stri
   return lines
 }
 
-const original = readFileSync(DELIVERY_DOC, 'utf8')
+// Compare and generate with LF; write back with the document's own line endings (Windows checkouts use CRLF).
+const raw = readFileSync(DELIVERY_DOC, 'utf8')
+const crlf = raw.includes('\r\n')
+const original = raw.replace(/\r\n/g, '\n')
 let doc = original
 const stale: string[] = []
 
@@ -121,6 +124,6 @@ if (check) {
   if (stale.length) { console.log(`out of date: ${stale.join('; ')} (run bun tables.ts --write)`); process.exit(1) }
   console.log('generated tables are up to date')
 } else {
-  if (doc !== original) writeFileSync(DELIVERY_DOC, doc)
+  if (doc !== original) writeFileSync(DELIVERY_DOC, crlf ? doc.replace(/\n/g, '\r\n') : doc)
   console.log(stale.length ? `updated: ${stale.join('; ')}` : 'generated tables were already up to date')
 }

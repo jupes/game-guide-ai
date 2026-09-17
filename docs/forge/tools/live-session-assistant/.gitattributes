@@ -1,0 +1,2 @@
+# Keep LF on every platform so `bun costs.ts | diff - cost-tables.md` and the scripts behave the same everywhere.
+* text eol=lf
