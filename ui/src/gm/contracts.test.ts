@@ -19,10 +19,16 @@ import type { ZodType } from 'zod'
 import {
   BRIEF_POLICY,
   CARD_KINDS,
+  COMMON_FIELDS,
   CONTRACT_SCHEMAS,
   CONTRACT_VERSION,
   DOCUMENT_TYPE_IDS,
+  DOC_TYPE_FIELDS,
   DOC_TYPE_LIBRARY_CATEGORY,
+  DOC_TYPE_VERSION,
+  DocumentSchema,
+  FIELD_KINDS,
+  FieldPatchRequestSchema,
   LIBRARY_CATEGORIES,
   RESULT_KINDS,
   TOOL_CARD_KIND,
@@ -31,6 +37,7 @@ import {
   TOOL_RESULT_KIND,
   codePointLength,
   isKnownErrorCode,
+  parseDocument,
   parseTimelineEntry,
   parseTimelinePage,
   parseToolInvocation,
@@ -141,7 +148,9 @@ describe('registry facts', () => {
     card_kinds: string[]
     library_categories: string[]
     tools: Array<{ id: string; result_kind: string; creates_doc_type: string | null; card_kind: string | null; brief: string }>
-    document_types: Array<{ id: string; library_category: string }>
+    field_kinds: string[]
+    common_fields: Record<string, string>
+    document_types: Array<{ id: string; library_category: string; type_version: number; fields: Record<string, string> }>
   }
   const registry = readJson<Registry>(join(FIXTURES, 'registry.json'))
 
@@ -163,6 +172,16 @@ describe('registry facts', () => {
     }
     for (const type of DOCUMENT_TYPE_IDS) {
       expect(DOC_TYPE_LIBRARY_CATEGORY[type]).toBe(registry.document_types.find((d) => d.id === type)?.library_category)
+    }
+  })
+
+  it('declare the same fields for every document type', () => {
+    expect([...FIELD_KINDS]).toEqual(registry.field_kinds)
+    expect(COMMON_FIELDS).toEqual(registry.common_fields)
+    for (const type of DOCUMENT_TYPE_IDS) {
+      const row = registry.document_types.find((d) => d.id === type)
+      expect(DOC_TYPE_FIELDS[type]).toEqual(row?.fields)
+      expect(DOC_TYPE_VERSION[type]).toBe(row?.type_version)
     }
   })
 })
@@ -329,6 +348,74 @@ describe('reading a timeline (AE-43, RAIL-24)', () => {
     expect(parseTimelinePage(page(Array.from({ length: 101 }, () => divider)))).toEqual({ kind: 'unknown', reason: 'invalid' })
     expect(parseTimelinePage({ schema_version: 1, items: [] })).toEqual({ kind: 'unknown', reason: 'invalid' })
     for (const junk of [null, undefined, 42, 'x', []]) expect(parseTimelinePage(junk).kind).toBe('unknown')
+  })
+})
+
+describe('reading a document (X-8, CANVAS-19)', () => {
+  const documents = readJson<Fixture>(join(FIXTURES, 'Document.json'))
+  const dossier = documents.valid.find((example) => example.name === 'an NPC dossier after an assistant edit')
+    ?.value as Record<string, unknown>
+  const withData = (data: Record<string, unknown>) => ({ ...dossier, data: { name: 'Sister Ondrey Vashe', ...data } })
+
+  it('reads a document it understands', () => {
+    const parsed = parseDocument(dossier)
+    expect(parsed.kind).toBe('ok')
+    if (parsed.kind === 'ok') expect(parsed.value.data.wants).toBe('The signet of the drowned saint, returned to the reliquary.')
+  })
+
+  it('never falls back to an NPC for a type it does not know', () => {
+    // The handoff's registry did exactly that: documentType(id) || DOCUMENT_TYPES.npc.
+    expect(parseDocument({ ...dossier, type: 'faction' })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+  })
+
+  it('shows a placeholder for newer field definitions rather than half a document', () => {
+    expect(parseDocument({ ...dossier, type_version: 2 })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+    expect(parseDocument({ ...dossier, schema_version: 2 })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+  })
+
+  it('strips a field a newer server added, so the type can grow without a version bump', () => {
+    const parsed = parseDocument(withData({ pronouns: 'she/her' }))
+    expect(parsed.kind).toBe('ok')
+    if (parsed.kind === 'ok') expect(Object.keys(parsed.value.data)).toEqual(['name'])
+  })
+
+  it('reads a key named like a JavaScript built-in as "not declared", not as something on a prototype', () => {
+    const hostile = JSON.parse(
+      '{"name": "Sister Ondrey Vashe", "constructor": "x", "toString": "y", "__proto__": {"wants": "polluted"}, "hasOwnProperty": 1}',
+    ) as Record<string, unknown>
+    const parsed = parseDocument({ ...dossier, data: hostile })
+    expect(parsed.kind).toBe('ok')
+    if (parsed.kind !== 'ok') return
+    expect(Object.keys(parsed.value.data)).toEqual(['name'])
+    expect(parsed.value.data.wants).toBeUndefined()
+    expect(({} as Record<string, unknown>).wants).toBeUndefined() // nothing leaked onto Object.prototype
+
+    // In a request the same keys are a client bug, and say so.
+    const patch = { schema_version: 1, type: 'npc', type_version: 1, base_write_revision: 3, fields: { constructor: 'x' } }
+    const result = FieldPatchRequestSchema.safeParse(patch)
+    expect(result.success).toBe(false)
+    if (!result.success) expect(result.error.issues[0].path).toEqual(['fields', 'constructor'])
+  })
+
+  it('cannot carry a URL into a component, even if a server sent one (X-10)', () => {
+    const portrait = { asset_id: 'ast_77c1d0e2', media_type: 'image', alt: 'Portrait', url: 'https://cdn.example.test/p.png' }
+    const parsed = DocumentSchema.safeParse(withData({ portrait }))
+    expect(parsed.success).toBe(true)
+    expect(JSON.stringify(parsed.data)).not.toContain('example.test')
+  })
+
+  it('reports a broken field at the field', () => {
+    const result = DocumentSchema.safeParse(withData({ voice: 'Low.\nUnhurried.', tags: ['ok', ''] }))
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => issue.path.join('.'))).toEqual(['data.voice', 'data.tags.1'])
+    }
+  })
+
+  it('never throws on junk', () => {
+    for (const junk of [null, undefined, 42, 'x', [], {}, { type: 'npc' }, { ...dossier, data: null }, { ...dossier, data: [] }]) {
+      expect(parseDocument(junk).kind).toBe('unknown')
+    }
   })
 })
 

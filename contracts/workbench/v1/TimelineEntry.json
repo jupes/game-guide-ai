@@ -1,7 +1,7 @@
 {
   "schema": "TimelineEntry",
   "direction": "response",
-  "note": "One entry per exchange: a turn carries its own outcome, so a page boundary can never separate a prompt from its result (1kg.4.2). The client already models the thread this way (useChat's Exchange). Entry kinds for AI edits and attached cues arrive with the documents and cue families.",
+  "note": "One entry per exchange: a turn carries its own outcome, so a page boundary can never separate a prompt from its result (1kg.4.2). The client already models the thread this way (useChat's Exchange). The attached-cue entry arrives with the cue family.",
   "valid": [
     {
       "name": "a chat exchange with its complete outcome",
@@ -308,6 +308,90 @@
         "entry_id": "398",
         "created_at": "2026-07-30T17:00:00Z",
         "reason": "unreadable"
+      }
+    },
+    {
+      "name": "an edit turn: the GM's words, the scope, and what changed; the lane's badge is EDIT · v3 (CANVAS-24)",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "edit",
+        "entry_id": "ent_ed170001",
+        "created_at": "2026-09-16T19:35:40Z",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+        "scope": { "kind": "document" },
+        "instruction": { "kind": "text", "text": "make her want something the party can give her" },
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_e1d2c3b4a5f60718",
+          "document_id": "doc_9k2f7a1c",
+          "status": "done",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:35:40Z",
+          "updated_at": "2026-09-16T19:36:02Z",
+          "result": {
+            "outcome": "changed",
+            "prose": "She wants the signet back now.",
+            "version_number": 3,
+            "write_revision": 14,
+            "changed_fields": ["wants", "leverage"],
+            "suggestions": []
+          },
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "a SelectionBar action as the turn; the thread keeps which field, never the selected text (EXPORT-12)",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "edit",
+        "entry_id": "ent_ed170002",
+        "created_at": "2026-09-16T19:41:00Z",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+        "scope": { "kind": "selection", "field": "if_attacked" },
+        "instruction": { "kind": "action", "action": "darker" },
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_e1d2c3b4a5f6071a",
+          "document_id": "doc_9k2f7a1c",
+          "status": "working",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:41:00Z",
+          "updated_at": "2026-09-16T19:41:00Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "an edit that lost a race says so, and nothing was overwritten (CANVAS-25)",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "edit",
+        "entry_id": "ent_ed170003",
+        "created_at": "2026-09-16T19:44:00Z",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+        "scope": { "kind": "field", "field": "wants" },
+        "instruction": { "kind": "text", "text": "sharper" },
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_e1d2c3b4a5f6071c",
+          "document_id": "doc_9k2f7a1c",
+          "status": "failed",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:44:00Z",
+          "updated_at": "2026-09-16T19:44:21Z",
+          "result": null,
+          "error": {
+            "code": "conflict",
+            "message": "The document changed while the assistant was working. Nothing was overwritten.",
+            "retryable": true,
+            "conflict": { "write_revision": 16, "fields": ["wants"] }
+          }
+        }
       }
     },
     {
@@ -649,6 +733,131 @@
         "entry_id": "ent/../398",
         "created_at": "2026-09-16T20:10:00Z",
         "reason": "unreadable"
+      }
+    },
+    {
+      "name": "the selected text stored in the thread",
+      "why": "EXPORT-12: the thread and its export hold titles and links, never document text; a selection is document text",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "edit",
+        "entry_id": "ent_ed170002",
+        "created_at": "2026-09-16T19:41:00Z",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+        "scope": { "kind": "selection", "field": "if_attacked", "start": 4, "end": 35, "text": "walks into the water and is gon" },
+        "instruction": { "kind": "action", "action": "darker" },
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_e1d2c3b4a5f6071a",
+          "document_id": "doc_9k2f7a1c",
+          "status": "working",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:41:00Z",
+          "updated_at": "2026-09-16T19:41:00Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "an edit entry whose invocation edited another document",
+      "why": "the link the lane shows and the document the edit touched must be the same one",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "edit",
+        "entry_id": "ent_ed170001",
+        "created_at": "2026-09-16T19:35:40Z",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+        "scope": { "kind": "document" },
+        "instruction": { "kind": "text", "text": "make her older" },
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_e1d2c3b4a5f60718",
+          "document_id": "doc_0a0a0a01",
+          "status": "working",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:35:40Z",
+          "updated_at": "2026-09-16T19:35:40Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "an edit entry without its document",
+      "why": "the lane names what is being edited from its first moment, whatever the outcome",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "edit",
+        "entry_id": "ent_ed170001",
+        "created_at": "2026-09-16T19:35:40Z",
+        "scope": { "kind": "document" },
+        "instruction": { "kind": "text", "text": "make her older" },
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_e1d2c3b4a5f60718",
+          "document_id": "doc_9k2f7a1c",
+          "status": "working",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:35:40Z",
+          "updated_at": "2026-09-16T19:35:40Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "a selection scope that does not say which field",
+      "why": "CANVAS-23: a selection lies inside a single field",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "edit",
+        "entry_id": "ent_ed170002",
+        "created_at": "2026-09-16T19:41:00Z",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+        "scope": { "kind": "selection" },
+        "instruction": { "kind": "action", "action": "rewrite" },
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_e1d2c3b4a5f6071a",
+          "document_id": "doc_9k2f7a1c",
+          "status": "working",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:41:00Z",
+          "updated_at": "2026-09-16T19:41:00Z",
+          "result": null,
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "a SelectionBar action recorded against the whole document",
+      "why": "CANVAS-23: actions are scoped to a selection, when read back as when sent",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "edit",
+        "entry_id": "ent_ed170001",
+        "created_at": "2026-09-16T19:35:40Z",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+        "scope": { "kind": "document" },
+        "instruction": { "kind": "action", "action": "shorter" },
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_e1d2c3b4a5f60718",
+          "document_id": "doc_9k2f7a1c",
+          "status": "working",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:35:40Z",
+          "updated_at": "2026-09-16T19:35:40Z",
+          "result": null,
+          "error": null
+        }
       }
     }
   ]

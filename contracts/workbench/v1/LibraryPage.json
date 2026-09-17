@@ -1,0 +1,134 @@
+{
+  "schema": "LibraryPage",
+  "direction": "response",
+  "note": "One page of library rows. It echoes the campaign and the category it answers, so that a response for a campaign the GM has left is dropped and a stale row can never flash (LIB-25). A row is enough to list, search-highlight and open a document, and nothing of its body.",
+  "valid": [
+    {
+      "name": "NPCs, with more to load",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "category": "npcs",
+        "items": [
+          {
+            "document_id": "doc_9k2f7a1c",
+            "type": "npc",
+            "title": "Sister Ondrey Vashe",
+            "qualifier": "Tidewarden chaplain",
+            "tags": ["tidewardens", "the sunken tavern"],
+            "archived": false,
+            "updated_at": "2026-09-16T19:36:02Z"
+          },
+          { "document_id": "doc_0a0a0a01", "type": "npc", "title": "Untitled NPC", "qualifier": "", "tags": [], "archived": false, "updated_at": "2026-09-16T20:00:00Z" }
+        ],
+        "next_cursor": "eyJhZnRlciI6ImRvY18wYTBhMGEwMSJ9"
+      }
+    },
+    {
+      "name": "Documents holds several types",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "category": "documents",
+        "items": [
+          { "document_id": "doc_aa01", "type": "handout", "title": "A letter, water-stained", "qualifier": "", "tags": [], "archived": false, "updated_at": "2026-09-16T18:00:00Z" },
+          { "document_id": "doc_aa02", "type": "lore", "title": "The Drowned Saint", "qualifier": "Coastal legend", "tags": ["saints"], "archived": false, "updated_at": "2026-09-15T18:00:00Z" }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "an empty category",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "session-log", "items": [], "next_cursor": null }
+    },
+    {
+      "name": "exactly 50 rows",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "category": "npcs",
+        "items": {
+          "@repeat_value": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "A guard", "qualifier": "", "tags": [], "archived": false, "updated_at": "2026-09-16T19:36:02Z" },
+          "@count": 50
+        },
+        "next_cursor": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "51 rows",
+      "why": "a page holds at most 50",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "category": "npcs",
+        "items": {
+          "@repeat_value": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "A guard", "qualifier": "", "tags": [], "archived": false, "updated_at": "2026-09-16T19:36:02Z" },
+          "@count": 51
+        },
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "a stat block listed among the NPCs",
+      "why": "LIB-6: category membership is a registry fact, so a row can never sit in the wrong list",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "category": "npcs",
+        "items": [{ "document_id": "doc_bb01", "type": "statblock", "title": "Tidewarden Drowned", "qualifier": "", "tags": [], "archived": false, "updated_at": "2026-09-16T19:36:02Z" }],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "a page that does not say which campaign it answers",
+      "why": "LIB-25: a client drops a response for another campaign; it cannot if the page does not say",
+      "value": { "schema_version": 1, "category": "npcs", "items": [], "next_cursor": null }
+    },
+    {
+      "name": "the Cues category",
+      "why": "LIB-5: cues are not documents",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "cues", "items": [], "next_cursor": null }
+    },
+    {
+      "name": "a row without a title",
+      "why": "every document has a name (LIB-12)",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "category": "npcs",
+        "items": [{ "document_id": "doc_9k2f7a1c", "type": "npc", "title": "", "qualifier": "", "tags": [], "archived": false, "updated_at": "2026-09-16T19:36:02Z" }],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "a row that carries the document's fields",
+      "why": "a list row never embeds a body; GM-private prose is read one document at a time",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "category": "npcs",
+        "items": [
+          {
+            "document_id": "doc_9k2f7a1c",
+            "type": "npc",
+            "title": "Sister Ondrey Vashe",
+            "qualifier": "",
+            "tags": [],
+            "archived": false,
+            "updated_at": "2026-09-16T19:36:02Z",
+            "data": { "wants": "The signet." }
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "the cursor key left out",
+      "why": "the end of a list is null, never a missing key",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "items": [] }
+    }
+  ]
+}

@@ -117,8 +117,16 @@ def test_registry_constants_match_the_shared_registry() -> None:
         assert (card.value if card else None) == tool["card_kind"]
 
     assert [doc_type.value for doc_type in wc.DocumentTypeId] == [d["id"] for d in registry["document_types"]]
+    assert [kind.value for kind in wc.FieldKind] == registry["field_kinds"]
+    assert {key: kind.value for key, kind in wc.COMMON_FIELDS.items()} == registry["common_fields"]
     for doc_type in registry["document_types"]:
-        assert wc.DOC_TYPE_LIBRARY_CATEGORY[wc.DocumentTypeId(doc_type["id"])].value == doc_type["library_category"]
+        type_id = wc.DocumentTypeId(doc_type["id"])
+        assert wc.DOC_TYPE_LIBRARY_CATEGORY[type_id].value == doc_type["library_category"]
+        assert wc.DOC_TYPE_VERSION[type_id] == doc_type["type_version"]
+        assert {key: kind.value for key, kind in wc.DOC_TYPE_FIELDS[type_id].items()} == doc_type["fields"]
+        # A type's own field may not shadow a common one, and every key is a field key.
+        assert not set(doc_type["fields"]) & set(registry["common_fields"])
+        assert all(re.fullmatch(r"[a-z][a-z0-9_]{0,39}", key) for key in doc_type["fields"])
 
 
 def test_error_codes_are_safe_metric_labels() -> None:
@@ -234,6 +242,184 @@ def test_a_page_serialises_exactly_as_the_fixtures_show() -> None:
     assert answer["answerable"] is None
     assert answer["sources"] is None
     assert answer["created_at"] == "2026-08-02T18:05:09Z"
+
+
+def test_an_edit_entry_is_read_back_like_any_other() -> None:
+    raw = _valid_entry("an edit that lost a race says so, and nothing was overwritten (CANVAS-25)")
+    entry = wc.entry_or_opaque(raw, entry_id="ent_ed170003", created_at=_ROW_TIME)
+    assert isinstance(entry, wc.EditEntry)
+    assert entry.invocation.error is not None and entry.invocation.error.conflict is not None
+    assert entry.invocation.error.conflict.fields == ["wants"]
+
+
+# ── Documents ────────────────────────────────────────────────────────────────
+
+_SECRET = "She is the drowned saint."
+
+
+def _document(**data: Any) -> dict[str, Any]:
+    fixture = json.loads((FIXTURES / "Document.json").read_text(encoding="utf-8"))
+    base = next(e["value"] for e in fixture["valid"] if e["name"].startswith("a document made by hand"))
+    return {**base, "data": {"name": "Sister Ondrey Vashe", **data}}
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {_SECRET: "a stray key"},  # an undeclared key that is itself private text
+        {"wants": [_SECRET]},  # the wrong shape for a prose field
+        {"voice": _SECRET + "\n" + _SECRET},  # a line break in a text field
+        {"tags": [_SECRET, ""]},  # a bad item beside a private one
+        {"portrait": {"asset_id": "ast_1", "media_type": "image", "alt": _SECRET, "url": "https://x.test/p.png"}},
+    ],
+)
+def test_a_rejected_field_never_echoes_gm_private_text(data: dict[str, Any]) -> None:
+    """X-7: a validation message can reach a response body and a log line, so it
+    names keys and kinds and never quotes a value — or a key it did not expect."""
+    with pytest.raises(ValidationError) as caught:
+        wc.Document.model_validate(_document(**data))
+    messages = " ".join(error["msg"] for error in caught.value.errors())
+    assert "drowned saint" not in messages
+
+
+def test_check_fields_is_usable_on_its_own() -> None:
+    """``1kg.5.2`` and ``1kg.5.5`` validate a merged document before committing it."""
+    checked = wc.check_fields(wc.DocumentTypeId.NPC, 1, {"name": "A guard", "tags": ["gate"]}, whole=True)
+    assert checked == {"name": "A guard", "tags": ["gate"]}
+    # A patch may touch any subset, but still cannot blank the name.
+    assert wc.check_fields(wc.DocumentTypeId.NPC, 1, {"notes": ""}, whole=False) == {"notes": ""}
+    with pytest.raises(ValueError, match="cannot be blank"):
+        wc.check_fields(wc.DocumentTypeId.NPC, 1, {"name": " \t "}, whole=False)
+    with pytest.raises(ValueError, match="version 1"):
+        wc.check_fields(wc.DocumentTypeId.NPC, 2, {"name": "A guard"}, whole=True)
+
+
+def test_every_type_validates_with_the_common_fields_alone() -> None:
+    """Until ``1kg.5.3`` declares a type's own fields, the common ones are all it has."""
+    for doc_type in wc.DocumentTypeId:
+        wc.check_fields(doc_type, 1, {"name": "x", "qualifier": "", "tags": []}, whole=True)
+        if not wc.DOC_TYPE_FIELDS[doc_type]:
+            with pytest.raises(ValueError, match="do not declare"):
+                wc.check_fields(doc_type, 1, {"name": "x", "body": "text"}, whole=True)
+
+
+def test_an_instruction_and_a_search_are_stored_trimmed() -> None:
+    instruction = wc.TextInstruction.model_validate({"kind": "text", "text": "  sharper, and shorter \n"})
+    assert instruction.text == "sharper, and shorter"
+    query = wc.LibraryQuery.model_validate(
+        {
+            "schema_version": 1,
+            "campaign_id": "cmp_1",
+            "category": "npcs",
+            "search": "  tide ",
+            "sort": "name",
+            "archived": False,
+        }
+    )
+    assert query.search == "tide"
+    assert (query.type, query.cursor, query.limit) == (None, None, None)
+
+
+def test_a_document_serialises_exactly_as_the_fixtures_show() -> None:
+    fixture = json.loads((FIXTURES / "Document.json").read_text(encoding="utf-8"))
+    dossier = next(e["value"] for e in fixture["valid"] if e["name"] == "an NPC dossier after an assistant edit")
+    dumped = wc.Document.model_validate(dossier).model_dump(mode="json", by_alias=True)
+    # A portrait's optional size is emitted as null; everything else is unchanged.
+    dumped["data"]["portrait"] = {k: v for k, v in dumped["data"]["portrait"].items() if v is not None}
+    assert dumped == dossier
+
+
+# ── Validation failures, as the Workbench envelope ───────────────────────────
+
+_REQUEST = {
+    "schema_version": 1,
+    "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+    "tool_id": "npc",
+    "brief": "a guard",
+    "campaign_id": "cmp_4b1d9e7a",
+    "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+}
+
+
+@pytest.mark.parametrize(
+    ("change", "code", "field"),
+    [
+        ({"brief": "  "}, "brief_required", "brief"),
+        ({"brief": "a" * 2001}, "brief_too_long", "brief"),
+        ({"tool_id": "npcs"}, "unknown_tool", "tool_id"),
+        ({"schema_version": 2}, "unsupported_schema_version", "schema_version"),
+        # Malformed is not "unsupported": there is no version to be out of date.
+        ({"schema_version": True}, "validation_failed", "schema_version"),
+        ({"campaign_id": "cmp 4b1d/9e7a"}, "validation_failed", "campaign_id"),
+        # An undeclared key is the client's text, so it is never named back.
+        ({_SECRET: "x"}, "validation_failed", None),
+    ],
+)
+def test_a_validation_failure_becomes_the_workbench_envelope(
+    change: dict[str, Any], code: str, field: str | None
+) -> None:
+    with pytest.raises(ValidationError) as caught:
+        wc.ToolInvocationRequest.model_validate({**_REQUEST, **change})
+    body = wc.validation_error_body(caught.value.errors())
+    assert (body.detail.code.value, body.detail.field, body.detail.retryable) == (code, field, False)
+    assert "drowned saint" not in body.model_dump_json()
+    # What it produces is itself a valid envelope.
+    SCHEMAS["ErrorBody"].validate_python(body.model_dump(mode="json", exclude_none=True))
+
+
+def test_an_empty_error_list_is_still_an_answer() -> None:
+    assert wc.validation_error_body([]).detail.code is wc.ErrorCode.VALIDATION_FAILED
+
+
+def test_a_route_that_uses_it_echoes_nothing_where_the_default_echoes_everything() -> None:
+    """X-7, shown end to end. FastAPI's default 422 returns each error's ``input``
+    — the request itself. A Workbench route installs this handler instead."""
+    from fastapi import FastAPI, Request
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import JSONResponse
+    from fastapi.testclient import TestClient
+
+    def build(*, safe: bool) -> TestClient:
+        app = FastAPI()
+
+        @app.post("/documents/doc_1/fields")
+        def patch(body: wc.FieldPatchRequest) -> dict[str, str]:
+            return {}
+
+        if safe:
+
+            @app.exception_handler(RequestValidationError)
+            async def answer(_request: Request, exc: RequestValidationError) -> JSONResponse:
+                body = wc.validation_error_body(exc.errors())
+                return JSONResponse(status_code=422, content=body.model_dump(mode="json", exclude_none=True))
+
+        return TestClient(app)
+
+    patch_body = {
+        "schema_version": 1,
+        "type": "npc",
+        "type_version": 1,
+        "base_write_revision": 3,
+        "fields": {"wants": [_SECRET]},
+    }
+
+    default = build(safe=False).post("/documents/doc_1/fields", json=patch_body)
+    assert default.status_code == 422 and _SECRET in default.text  # the hazard is real
+
+    safe = build(safe=True).post("/documents/doc_1/fields", json=patch_body)
+    assert safe.status_code == 422 and _SECRET not in safe.text
+    assert safe.json() == {
+        "detail": {"code": "validation_failed", "message": "That request isn't valid.", "retryable": False}
+    }
+
+
+def test_a_write_revision_survives_javascript() -> None:
+    """The token must round-trip through ``JSON.parse``, so it stops at 2**53 - 1."""
+    assert wc.WRITE_REVISION_MAX == 9_007_199_254_740_991
+    top = TypeAdapter(wc.WriteRevision)
+    assert top.validate_python(wc.WRITE_REVISION_MAX) == wc.WRITE_REVISION_MAX
+    with pytest.raises(ValidationError):
+        top.validate_python(wc.WRITE_REVISION_MAX + 1)
 
 
 def test_a_stat_block_inside_an_entry_keeps_its_wire_alias() -> None:

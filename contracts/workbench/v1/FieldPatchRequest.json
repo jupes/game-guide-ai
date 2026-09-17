@@ -1,0 +1,98 @@
+{
+  "schema": "FieldPatchRequest",
+  "direction": "request",
+  "note": "CANVAS-10: one autosave. It names the fields it touches and the WRITE REVISION it was based on; the server compares that with each touched field's last change (CANVAS-19), so a stale patch that touches untouched fields is rebased, not refused. It carries the type and the type version it was built against so that both sides can check every value before anything is written. The answer is the whole Document. A repeat of a patch that has already landed is a no-op, not a conflict (1kg.5.2).",
+  "valid": [
+    {
+      "name": "one field, committed on blur",
+      "value": {
+        "schema_version": 1,
+        "type": "npc",
+        "type_version": 1,
+        "base_write_revision": 14,
+        "fields": { "wants": "The signet, and an apology." }
+      }
+    },
+    {
+      "name": "several fields flushed together before an AI edit starts (CANVAS-24)",
+      "value": {
+        "schema_version": 1,
+        "type": "npc",
+        "type_version": 1,
+        "base_write_revision": 14,
+        "fields": { "voice": "Low, unhurried", "tags": ["tidewardens"], "notes": "" }
+      }
+    },
+    {
+      "name": "renaming is an ordinary field write (LIB-15)",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 1, "fields": { "name": "Sister Ondrey Vashe" } }
+    },
+    {
+      "name": "clearing a portrait",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 15, "fields": { "portrait": null } }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a patch that touches nothing",
+      "why": "a no-op is decided by the server comparing values, not sent as an empty patch",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "fields": {} }
+    },
+    {
+      "name": "no base revision",
+      "why": "CANVAS-34: without a base the server cannot tell a stale write from a fresh one, and a stale write must never overwrite newer work",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "fields": { "wants": "The signet." } }
+    },
+    {
+      "name": "the handoff's version id as the base",
+      "why": "CANVAS-34: a history version is never a concurrency token",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": "v3", "fields": { "wants": "The signet." } }
+    },
+    {
+      "name": "a field the type does not declare",
+      "why": "1kg.5.2: invalid-field cases fail before writes. A request is strict on both sides, because the client built it",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "fields": { "secret_plan": "Drown the harbourmaster." } }
+    },
+    {
+      "name": "the handoff's camelCase key",
+      "why": "snake_case on the wire: if_attacked",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "fields": { "ifAttacked": "She is gone." } }
+    },
+    {
+      "name": "clearing the name",
+      "why": "the one field that cannot be empty",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "fields": { "name": "" } }
+    },
+    {
+      "name": "a prose field of 20,001 characters",
+      "why": "RAIL-6: caps are checked before any write or provider work",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "fields": { "notes": "@repeat:a:20001" } }
+    },
+    {
+      "name": "a portrait by URL",
+      "why": "X-10: assets are named by id",
+      "value": {
+        "schema_version": 1,
+        "type": "npc",
+        "type_version": 1,
+        "base_write_revision": 14,
+        "fields": { "portrait": { "asset_id": "ast_77c1d0e2", "media_type": "image", "alt": "Portrait", "url": "https://cdn.example.test/p.png" } }
+      }
+    },
+    {
+      "name": "an author claimed by the client",
+      "why": "CANVAS-10: a direct patch is recorded as author gm by the server; authorship is never the client's to state",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "author": "assistant", "fields": { "wants": "The signet." } }
+    },
+    {
+      "name": "a reveal mask smuggled into a save",
+      "why": "X-2: nothing reaches a player except through the reveal mutation; an autosave can never widen what the table sees",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "fields": { "wants": "The signet." }, "reveal_mask": ["wants"] }
+    },
+    {
+      "name": "no type",
+      "why": "values are checked against the type's field kinds on both sides, before the write",
+      "value": { "schema_version": 1, "type_version": 1, "base_write_revision": 14, "fields": { "wants": "The signet." } }
+    }
+  ]
+}

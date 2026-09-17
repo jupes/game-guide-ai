@@ -30,6 +30,17 @@
       }
     },
     {
+      "name": "a write conflict names the fields that moved and the revision to rebase on, and carries no field text (CANVAS-20)",
+      "value": {
+        "detail": {
+          "code": "conflict",
+          "message": "This document changed elsewhere.",
+          "retryable": false,
+          "conflict": { "write_revision": 16, "fields": ["wants", "leverage"] }
+        }
+      }
+    },
+    {
       "name": "a newer server's error code is tolerated by the client",
       "applies_to": ["client"],
       "value": { "detail": { "code": "some_future_code", "message": "Something new went wrong.", "retryable": false } }
@@ -71,6 +82,33 @@
             "inv_aaaaaaaaaaaaaaa6", "inv_aaaaaaaaaaaaaaa7", "inv_aaaaaaaaaaaaaaa8", "inv_aaaaaaaaaaaaaaa9"
           ]
         }
+      }
+    },
+    {
+      "name": "a conflict that carries the other writer's text",
+      "why": "X-7: GM-private text never rides in an error, where logs and traces see it; a client reads the latest values through the document endpoint",
+      "applies_to": ["server"],
+      "value": {
+        "detail": {
+          "code": "conflict",
+          "message": "This document changed elsewhere.",
+          "retryable": false,
+          "conflict": { "write_revision": 16, "fields": ["wants"], "latest": { "wants": "The signet, and an apology." } }
+        }
+      }
+    },
+    {
+      "name": "a conflict that names no field",
+      "why": "CANVAS-19: a conflict exists only because a touched field changed; with none there is nothing to resolve",
+      "value": {
+        "detail": { "code": "conflict", "message": "This document changed elsewhere.", "retryable": false, "conflict": { "write_revision": 16, "fields": [] } }
+      }
+    },
+    {
+      "name": "a conflict without the revision to rebase on",
+      "why": "CANVAS-20: Keep mine re-applies the GM's text on the latest revision, so the client must be told which that is",
+      "value": {
+        "detail": { "code": "conflict", "message": "This document changed elsewhere.", "retryable": false, "conflict": { "fields": ["wants"] } }
       }
     },
     {

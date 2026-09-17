@@ -1,0 +1,215 @@
+{
+  "schema": "EditRequest",
+  "direction": "request",
+  "note": "CANVAS-21 to CANVAS-25: asking the assistant to edit a document. It has an invocation id and the same lifecycle as a tool (RAIL-15 to RAIL-27), and counts under the same cap (X-5). The scope is a server-side guarantee, not a prompt suggestion (1kg.5.5): a selection names its field, its span in CODE POINTS and the exact text the GM saw, so the server can refuse a span that no longer matches before any provider work. After a conflict, Try again re-sends the same invocation id with a fresh base (CANVAS-25).",
+  "valid": [
+    {
+      "name": "the whole document, in the GM's words",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "document" },
+        "instruction": { "kind": "text", "text": "make her want something the party can give her" }
+      }
+    },
+    {
+      "name": "one field",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60719",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "field", "field": "leverage" },
+        "instruction": { "kind": "text", "text": "  sharper, and shorter  " }
+      }
+    },
+    {
+      "name": "a SelectionBar action is a complete request (CANVAS-23)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f6071a",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "selection", "field": "if_attacked", "start": 4, "end": 35, "text": "walks into the water and is gon" },
+        "instruction": { "kind": "action", "action": "darker" }
+      }
+    },
+    {
+      "name": "a selection with the GM's own instruction; the span counts code points, so a die is one",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f6071b",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "selection", "field": "notes", "start": 0, "end": 3, "text": "🎲🎲🎲" },
+        "instruction": { "kind": "text", "text": "spell the dice out" }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an empty instruction",
+      "why": "X-1 and RAIL-6: billable work needs complete input; an instruction is 1 to 2,000 characters after trimming",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "document" },
+        "instruction": { "kind": "text", "text": "   " }
+      }
+    },
+    {
+      "name": "an instruction of 2,001 characters",
+      "why": "RAIL-6: an edit instruction shares the brief's bound",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "document" },
+        "instruction": { "kind": "text", "text": "@repeat:a:2001" }
+      }
+    },
+    {
+      "name": "a SelectionBar action aimed at the whole document",
+      "why": "CANVAS-23: Rewrite, Shorter and Darker are scoped to a selection; this is what stops a one-line fix rewriting the dossier",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "document" },
+        "instruction": { "kind": "action", "action": "shorter" }
+      }
+    },
+    {
+      "name": "an action the bar does not have",
+      "why": "a closed set: rewrite, shorter, darker",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "selection", "field": "notes", "start": 0, "end": 5, "text": "Wary." },
+        "instruction": { "kind": "action", "action": "funnier" }
+      }
+    },
+    {
+      "name": "a scope kind that does not exist",
+      "why": "document, field or selection",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "campaign" },
+        "instruction": { "kind": "text", "text": "make everyone older" }
+      }
+    },
+    {
+      "name": "a selection whose text is not as long as its span",
+      "why": "1kg.5.5: the span and the text must agree before the server compares them with the stored field",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "selection", "field": "notes", "start": 0, "end": 9, "text": "Wary." },
+        "instruction": { "kind": "action", "action": "rewrite" }
+      }
+    },
+    {
+      "name": "an empty selection",
+      "why": "CANVAS-23: the bar rises over selected text; a caret selects nothing",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "selection", "field": "notes", "start": 4, "end": 4, "text": "" },
+        "instruction": { "kind": "action", "action": "rewrite" }
+      }
+    },
+    {
+      "name": "a selection that spans two fields",
+      "why": "CANVAS-23: a selection lies inside a single field",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "selection", "fields": ["wants", "leverage"], "start": 0, "end": 5, "text": "Wary." },
+        "instruction": { "kind": "action", "action": "rewrite" }
+      }
+    },
+    {
+      "name": "no base revision",
+      "why": "1kg.5.5: a stale edit never overwrites; the server needs to know what the GM was looking at",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "scope": { "kind": "document" },
+        "instruction": { "kind": "text", "text": "make her older" }
+      }
+    },
+    {
+      "name": "the document sent along with the request",
+      "why": "RAIL-7: the server assembles context from state it has authorised; a client sends ids, never a body the model should trust",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "document" },
+        "instruction": { "kind": "text", "text": "make her older" },
+        "data": { "name": "Sister Ondrey Vashe" }
+      }
+    },
+    {
+      "name": "a field that is not a field key",
+      "why": "flat snake_case keys: if_attacked, not ifAttacked",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "field", "field": "ifAttacked" },
+        "instruction": { "kind": "text", "text": "make it colder" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,85 @@
+{
+  "schema": "LibraryQuery",
+  "direction": "request",
+  "note": "LIB-20 to LIB-23: one page of one category of the Campaign Library. It is a request BODY even when there is no search, because search text may never travel in a URL (X-7) and one shape is simpler than two. The Cues category lists cues, not documents, and belongs to the cue family.",
+  "valid": [
+    {
+      "name": "the first page of NPCs, most recently updated first",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "", "sort": "recent", "archived": false }
+    },
+    {
+      "name": "a search, by name, qualifier or tag",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "  tidewarden ", "sort": "name", "archived": false, "limit": 25 }
+    },
+    {
+      "name": "Documents filtered to one type, continuing from a cursor",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "category": "documents",
+        "search": "",
+        "sort": "recent",
+        "archived": false,
+        "type": "handout",
+        "cursor": "eyJhZnRlciI6ImRvY185azJmN2ExYyJ9",
+        "limit": 50
+      }
+    },
+    {
+      "name": "the Archived filter, where Delete lives (LIB-18)",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "bestiary", "search": "", "sort": "recent", "archived": true, "type": null, "cursor": null }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a one-character search",
+      "why": "LIB-20: at least two characters, after trimming",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": " t ", "sort": "recent", "archived": false }
+    },
+    {
+      "name": "a search of 101 characters",
+      "why": "a search is at most 100 characters",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "@repeat:a:101", "sort": "recent", "archived": false }
+    },
+    {
+      "name": "the Cues category",
+      "why": "LIB-5: cues are not documents; their listing is the cue family's",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "cues", "search": "", "sort": "recent", "archived": false }
+    },
+    {
+      "name": "a type filter outside Documents",
+      "why": "LIB-22: only Documents holds more than one type",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "", "sort": "recent", "archived": false, "type": "npc" }
+    },
+    {
+      "name": "a type that lives in another category",
+      "why": "LIB-6: membership is a registry fact; an NPC is never in Documents",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "documents", "search": "", "sort": "recent", "archived": false, "type": "npc" }
+    },
+    {
+      "name": "a sort that does not exist",
+      "why": "LIB-22: recent or name, each with a stable total order",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "", "sort": "relevance", "archived": false }
+    },
+    {
+      "name": "a page of 51",
+      "why": "LIB-23: 25 at a time, and never more than 50",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "", "sort": "recent", "archived": false, "limit": 51 }
+    },
+    {
+      "name": "no campaign",
+      "why": "LIB-25: lists are keyed by campaign",
+      "value": { "schema_version": 1, "category": "npcs", "search": "", "sort": "recent", "archived": false }
+    },
+    {
+      "name": "every category at once",
+      "why": "LIB-21: a single search across categories is not in v1",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "search": "tidewarden", "sort": "recent", "archived": false }
+    },
+    {
+      "name": "full-text search switched on by the client",
+      "why": "LIB-21: search matches name, qualifier and tags; a request is strict, so a stray key is a client bug",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "signet", "sort": "recent", "archived": false, "full_text": true }
+    }
+  ]
+}

@@ -9,8 +9,8 @@
  * The one deliberate difference from the server: **a client tolerates what a
  * newer server may add.** Response objects strip unknown fields instead of
  * rejecting them, and an error `code` is any well-formed string. Anything the
- * client cannot understand becomes a placeholder through `parseToolInvocation`
- * / `parseToolResult` — never a crash, and never a guess (X-8, RAIL-24).
+ * client cannot understand becomes a placeholder through the `parse*` readers
+ * at the end of this file — never a crash, and never a guess (X-8, RAIL-24).
  * Requests are the opposite: the client builds them, so they are strict.
  *
  * Wire keys stay snake_case here. `adapters.ts` is the one place they meet the
@@ -40,6 +40,20 @@ export const CHAT_TEXT_MAX_CHARS = 100_000
 export const MAX_SOURCES = 50
 export const TIMELINE_PAGE_MAX_ITEMS = 100
 
+/** Ceilings per field kind; 1kg.5.3 may set tighter caps per type. */
+export const TEXT_FIELD_MAX_CHARS = 200
+export const PROSE_FIELD_MAX_CHARS = 20_000
+export const LIST_FIELD_MAX_ITEMS = 100
+export const LIST_ITEM_MAX_CHARS = 2000
+export const MAX_CHANGED_FIELDS = 64
+/** CANVAS-27 pages history by 20 and LIB-23 the library by 25; a page may hold up to 50. */
+export const HISTORY_PAGE_MAX_ITEMS = 50
+export const LIBRARY_PAGE_MAX_ITEMS = 50
+/** Decision LIB-20. */
+export const SEARCH_MIN_CHARS = 2
+export const SEARCH_MAX_CHARS = 100
+export const VERSION_NUMBER_MAX = 1_000_000
+
 // ── Closed vocabularies (pinned by contracts/workbench/v1/registry.json) ─────
 
 export const TOOL_IDS = [
@@ -68,9 +82,21 @@ export type InvocationStatus = (typeof INVOCATION_STATUSES)[number]
 
 export type BriefPolicy = 'required' | 'optional'
 
-/** AI edits and attached cues join with the documents and cue families. */
-export const ENTRY_KINDS = ['chat', 'tool', 'session_divider', 'opaque'] as const
+/** The attached-cue entry joins with the cue family. */
+export const ENTRY_KINDS = ['chat', 'tool', 'edit', 'session_divider', 'opaque'] as const
 export type EntryKind = (typeof ENTRY_KINDS)[number]
+
+/** What a document field holds. A kind is a registry fact and never appears on
+ * the wire; 1kg.5.3 adds kinds as it defines the types that need them. */
+export const FIELD_KINDS = ['text', 'prose', 'text_list', 'asset'] as const
+export type FieldKind = (typeof FIELD_KINDS)[number]
+
+/** Decision AUD-1: one GM per campaign, and players cannot write. */
+export const AUTHORS = ['gm', 'assistant'] as const
+/** The SelectionBar's complete requests (CANVAS-23). */
+export const EDIT_ACTIONS = ['rewrite', 'shorter', 'darker'] as const
+/** Decision LIB-22. */
+export const LIBRARY_SORTS = ['recent', 'name'] as const
 
 export const SESSION_BOUNDARIES = ['start', 'end'] as const
 export const OPAQUE_REASONS = ['newer_version', 'unreadable'] as const
@@ -138,6 +164,49 @@ export const DOC_TYPE_LIBRARY_CATEGORY: Record<DocumentTypeId, LibraryCategory> 
   encounter: 'documents',
 }
 
+/** Every document type has these. `name` is the title everywhere, and the one
+ * field that cannot be empty (LIB-12). */
+export const COMMON_FIELDS: Record<string, FieldKind> = {
+  name: 'text',
+  qualifier: 'text',
+  tags: 'text_list',
+}
+
+/** A type's own fields. `npc` is the worked example; 1kg.5.3 owns all eight, and
+ * until it declares a type's fields that type has the common ones only. Nothing
+ * here says who may SEE a field: that is agent-forge-harness-1ir.1.2's decision. */
+export const DOC_TYPE_FIELDS: Record<DocumentTypeId, Record<string, FieldKind>> = {
+  npc: {
+    portrait: 'asset',
+    voice: 'text',
+    tell: 'text',
+    attitude: 'text',
+    wants: 'prose',
+    leverage: 'prose',
+    if_attacked: 'prose',
+    notes: 'prose',
+  },
+  statblock: {},
+  handout: {},
+  'session-notes': {},
+  'quest-log': {},
+  'character-sheet': {},
+  lore: {},
+  encounter: {},
+}
+
+/** The revision of each type's field definitions that this client understands. */
+export const DOC_TYPE_VERSION: Record<DocumentTypeId, number> = {
+  npc: 1,
+  statblock: 1,
+  handout: 1,
+  'session-notes': 1,
+  'quest-log': 1,
+  'character-sheet': 1,
+  lore: 1,
+  encounter: 1,
+}
+
 // ── Building blocks ──────────────────────────────────────────────────────────
 
 /** Characters as the server counts them. `'🎲'.length` is 2; this is 1. */
@@ -168,10 +237,40 @@ const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-](?
 export const TimestampSchema = z.iso.datetime({ offset: true }).regex(ISO_TIMESTAMP)
 /** Opaque, and base64url because a cursor may ride in a query string. */
 const CursorSchema = z.string().regex(/^[A-Za-z0-9_-]{1,512}$/)
+/** Client-minted idempotency key of a mutation that has no invocation. */
+const CommandIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/)
+/** Decision CANVAS-19: a field is a top-level key of a type's data — one flat,
+ * snake_case namespace, and the unit of concurrency, change lists, field scopes
+ * and reveal masks. There are no paths into a field. */
+const FieldKeySchema = z.string().regex(/^[a-z][a-z0-9_]{0,39}$/)
+/** Decision CANVAS-34: the concurrency token, never a history version. */
+const WriteRevisionSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)
+const VersionNumberSchema = z.number().int().min(1).max(VERSION_NUMBER_MAX)
+
+/** CR, LF and the Unicode line and paragraph separators — by code point, so that
+ * no invisible character ever sits in this file. */
+const LINE_BREAKS = [0x0a, 0x0d, 0x2028, 0x2029].map((code) => String.fromCharCode(code))
+
+/** One line of text, bounded in code points. */
+function oneLine(min: number, max: number) {
+  return text(min, max).refine((value) => !LINE_BREAKS.some((mark) => value.includes(mark)), {
+    message: 'must be a single line',
+  })
+}
 
 const ToolIdSchema = z.enum(TOOL_IDS)
 
 // ── Errors ───────────────────────────────────────────────────────────────────
+
+/** What moved, for a document write that lost a race (CANVAS-19, CANVAS-20). It
+ * names the fields and the revision to rebase on and never carries their text:
+ * an error body is where logs and traces look (X-7). The client reads the latest
+ * values through the document endpoint, then offers Keep mine / Use latest. */
+const ConflictInfoSchema = z.object({
+  write_revision: WriteRevisionSchema,
+  fields: z.array(FieldKeySchema).min(1).max(MAX_CHANGED_FIELDS),
+})
+export type ConflictInfo = z.infer<typeof ConflictInfoSchema>
 
 export const ErrorInfoSchema = z.object({
   // Any well-formed code: a newer server may know more than this client does.
@@ -181,6 +280,8 @@ export const ErrorInfoSchema = z.object({
   field: text(1, 64).nullish(),
   retry_after_s: z.number().int().min(0).max(86_400).nullish(),
   in_flight: z.array(InvocationIdSchema).max(8).nullish(),
+  /** Only for `conflict` on a document write or an AI edit. */
+  conflict: ConflictInfoSchema.nullish(),
 })
 export type ErrorInfo = z.infer<typeof ErrorInfoSchema>
 
@@ -234,15 +335,19 @@ export const DocumentLinkSchema = z
   })
 export type DocumentLink = z.infer<typeof DocumentLinkSchema>
 
-/** No URL, ever (X-10): the client builds a same-origin URL from the id. */
-export const AssetRefSchema = z.object({
+const assetRefShape = {
   asset_id: OpaqueIdSchema,
   media_type: z.literal('image'),
   alt: text(1, 300),
   width: z.number().int().min(1).max(20_000).nullish(),
   height: z.number().int().min(1).max(20_000).nullish(),
-})
+}
+
+/** No URL, ever (X-10): the client builds a same-origin URL from the id. */
+export const AssetRefSchema = z.object(assetRefShape)
 export type AssetRef = z.infer<typeof AssetRefSchema>
+/** In a request the client builds the reference, so a stray key — a URL — is an error. */
+const StrictAssetRefSchema = z.strictObject(assetRefShape)
 
 const StatBlockCardSchema = z.object({
   card_kind: z.literal('stat_block'),
@@ -330,6 +435,353 @@ export const ToolInvocationSchema = z
   })
 export type ToolInvocation = z.infer<typeof ToolInvocationSchema>
 
+// ── Documents ────────────────────────────────────────────────────────────────
+// A document's `data` is flat: one value per field key. Values are bare JSON;
+// what each key must hold is the type's definition (DOC_TYPE_FIELDS). The server
+// rejects a key the type does not declare. This client strips one instead, which
+// is what lets a type gain fields without a version bump — except in a request,
+// which the client builds itself, so there a stray key is a bug.
+
+export type FieldValue = string | string[] | AssetRef | null
+export type DocumentFields = Record<string, FieldValue>
+
+/** Text and prose clear to `''`, a list to `[]`, and only an asset to `null`. */
+function fieldValueSchema(kind: FieldKind, strict: boolean): ZodType<FieldValue> {
+  switch (kind) {
+    case 'text':
+      return oneLine(0, TEXT_FIELD_MAX_CHARS)
+    case 'prose':
+      return text(0, PROSE_FIELD_MAX_CHARS)
+    case 'text_list':
+      return z.array(text(1, LIST_ITEM_MAX_CHARS)).max(LIST_FIELD_MAX_ITEMS)
+    case 'asset':
+      return (strict ? StrictAssetRefSchema : AssetRefSchema).nullable()
+  }
+}
+
+interface TypedFields {
+  type: DocumentTypeId
+  type_version: number
+}
+
+/**
+ * Check field values against a type's definition, failing closed, and return
+ * only what this client understands. `whole` is a complete document, which must
+ * have a name; otherwise the fields are a patch. Lookups use `Object.hasOwn`: a
+ * key named `constructor` or `__proto__` must read as "not declared", not find
+ * something on a prototype.
+ */
+function readFields(
+  typed: TypedFields,
+  raw: Record<string, unknown>,
+  at: string,
+  options: { whole: boolean; strict: boolean },
+  ctx: z.RefinementCtx,
+): DocumentFields {
+  if (typed.type_version !== DOC_TYPE_VERSION[typed.type]) {
+    ctx.addIssue({ code: 'custom', path: ['type_version'], message: 'unknown version of the field definitions for this type' })
+  }
+  const declared = { ...COMMON_FIELDS, ...DOC_TYPE_FIELDS[typed.type] }
+  const fields: DocumentFields = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (!Object.hasOwn(declared, key)) {
+      if (options.strict) ctx.addIssue({ code: 'custom', path: [at, key], message: 'this type does not declare that field' })
+      continue
+    }
+    const parsed = fieldValueSchema(declared[key], options.strict).safeParse(value)
+    if (parsed.success) fields[key] = parsed.data
+    else for (const issue of parsed.error.issues) ctx.addIssue({ code: 'custom', path: [at, key, ...issue.path], message: issue.message })
+  }
+  const name = Object.hasOwn(fields, 'name') ? fields.name : undefined
+  if ((options.whole && name === undefined) || (typeof name === 'string' && name.trim() === '')) {
+    ctx.addIssue({ code: 'custom', path: [at, 'name'], message: 'a document has a name, and it cannot be blank' })
+  }
+  return fields
+}
+
+const typedShape = {
+  type: z.enum(DOCUMENT_TYPE_IDS),
+  type_version: z.number().int().min(1).max(1000),
+}
+const rawFields = z.record(z.string(), z.unknown())
+
+/** One row of a document's history (CANVAS-27). The handoff's `label` and display
+ * `time` are not on the wire; this client derives both. */
+export const DocumentVersionSchema = z
+  .object({
+    number: VersionNumberSchema,
+    author: z.enum(AUTHORS),
+    summary: oneLine(0, TEXT_FIELD_MAX_CHARS),
+    created_at: TimestampSchema,
+    /** CANVAS-34: only a sealed version may be pinned by a reveal or exported. */
+    sealed: z.boolean(),
+    /** Against the version before it. It survives the gold wash (CANVAS-29). */
+    changed_fields: z.array(FieldKeySchema).max(MAX_CHANGED_FIELDS),
+    /** CANVAS-26: a restore appends a version equal to an earlier one. */
+    restored_from: VersionNumberSchema.nullable(),
+  })
+  .refine((version) => version.restored_from === null || version.restored_from < version.number, {
+    path: ['restored_from'],
+    message: 'a version can only be restored from an earlier one',
+  })
+export type DocumentVersion = z.infer<typeof DocumentVersionSchema>
+
+/** The GM-side read of a document, and the answer to every document write. It
+ * carries its current version only, and nothing about reveal (CANVAS-33). */
+export const DocumentSchema = z
+  .object({
+    schema_version: z.literal(CONTRACT_VERSION),
+    document_id: OpaqueIdSchema,
+    campaign_id: OpaqueIdSchema,
+    ...typedShape,
+    data: rawFields,
+    write_revision: WriteRevisionSchema,
+    version: DocumentVersionSchema,
+    /** Decision LIB-16. */
+    archived: z.boolean(),
+    created_at: TimestampSchema,
+    updated_at: TimestampSchema,
+  })
+  .transform((doc, ctx) => ({ ...doc, data: readFields(doc, doc.data, 'data', { whole: true, strict: false }, ctx) }))
+export type Document = z.infer<typeof DocumentSchema>
+
+/** The content of one version. A read of history, so it has no write revision. */
+export const DocumentVersionSnapshotSchema = z
+  .object({
+    schema_version: z.literal(CONTRACT_VERSION),
+    document_id: OpaqueIdSchema,
+    ...typedShape,
+    version: DocumentVersionSchema,
+    data: rawFields,
+  })
+  .transform((doc, ctx) => ({ ...doc, data: readFields(doc, doc.data, 'data', { whole: true, strict: false }, ctx) }))
+export type DocumentVersionSnapshot = z.infer<typeof DocumentVersionSnapshotSchema>
+
+/** Newest first (CANVAS-27). */
+export const DocumentHistoryPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  document_id: OpaqueIdSchema,
+  items: z.array(DocumentVersionSchema).max(HISTORY_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type DocumentHistoryPage = z.infer<typeof DocumentHistoryPageSchema>
+
+/** CANVAS-10: one autosave. The author is always the GM and is never the client's
+ * to state. Answered with a Document, or a 409 whose `conflict` names what moved. */
+export const FieldPatchRequestSchema = z
+  .strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    ...typedShape,
+    base_write_revision: WriteRevisionSchema,
+    fields: rawFields,
+  })
+  .refine((patch) => Object.keys(patch.fields).length >= 1 && Object.keys(patch.fields).length <= MAX_CHANGED_FIELDS, {
+    path: ['fields'],
+    message: 'a patch touches at least one field',
+  })
+  .transform((patch, ctx) => ({ ...patch, fields: readFields(patch, patch.fields, 'fields', { whole: false, strict: true }, ctx) }))
+export type FieldPatchRequest = z.infer<typeof FieldPatchRequestSchema>
+
+/** LIB-12: New in a library category. `command_id` makes a retry open the
+ * document already made instead of making a second one. */
+export const DocumentCreateRequestSchema = z
+  .strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    command_id: CommandIdSchema,
+    campaign_id: OpaqueIdSchema,
+    ...typedShape,
+    data: rawFields,
+  })
+  .transform((request, ctx) => ({ ...request, data: readFields(request, request.data, 'data', { whole: true, strict: true }, ctx) }))
+export type DocumentCreateRequest = z.infer<typeof DocumentCreateRequestSchema>
+
+/** CANVAS-26. Additive, so it needs no base revision, and naturally idempotent. */
+export const RestoreRequestSchema = z.strictObject({
+  schema_version: z.literal(CONTRACT_VERSION),
+  version_number: VersionNumberSchema,
+})
+export type RestoreRequest = z.infer<typeof RestoreRequestSchema>
+
+// ── AI edits ─────────────────────────────────────────────────────────────────
+
+const documentScopeShape = { kind: z.literal('document') }
+const fieldScopeShape = { kind: z.literal('field'), field: FieldKeySchema }
+/** What the thread keeps of a selection: which field, never the text (EXPORT-12). */
+const selectionSummaryShape = { kind: z.literal('selection'), field: FieldKeySchema }
+/** A span of one field in CODE POINTS — not UTF-16 units, so convert before
+ * sending — with the exact text the GM saw. The server refuses a span that no
+ * longer matches before any provider work (1kg.5.5). */
+const selectionScopeShape = {
+  ...selectionSummaryShape,
+  start: z.number().int().min(0).max(PROSE_FIELD_MAX_CHARS),
+  end: z.number().int().min(1).max(PROSE_FIELD_MAX_CHARS),
+  text: text(1, PROSE_FIELD_MAX_CHARS),
+}
+
+const EditScopeSchema = z.discriminatedUnion('kind', [
+  z.strictObject(documentScopeShape),
+  z.strictObject(fieldScopeShape),
+  z.strictObject(selectionScopeShape).refine((scope) => scope.end - scope.start === codePointLength(scope.text), {
+    path: ['text'],
+    message: 'the selected text is not as long as its span',
+  }),
+])
+export type EditScope = z.infer<typeof EditScopeSchema>
+
+const EditScopeSummarySchema = z.discriminatedUnion('kind', [
+  z.object(documentScopeShape),
+  z.object(fieldScopeShape),
+  z.object(selectionSummaryShape),
+])
+
+/** RAIL-6: an instruction shares the brief's bound, counted after trimming. */
+const instructionText = z.string().refine(
+  (value) => {
+    const length = codePointLength(value.trim())
+    return length >= 1 && length <= BRIEF_MAX_CHARS
+  },
+  { message: `an instruction is 1 to ${BRIEF_MAX_CHARS} characters` },
+)
+const textInstructionShape = { kind: z.literal('text'), text: instructionText }
+const actionInstructionShape = { kind: z.literal('action'), action: z.enum(EDIT_ACTIONS) }
+
+const StrictEditInstructionSchema = z.discriminatedUnion('kind', [
+  z.strictObject(textInstructionShape),
+  z.strictObject(actionInstructionShape),
+])
+const EditInstructionSchema = z.discriminatedUnion('kind', [z.object(textInstructionShape), z.object(actionInstructionShape)])
+export type EditInstruction = z.infer<typeof EditInstructionSchema>
+
+/** CANVAS-23: this is what stops a one-line fix rewriting the dossier. */
+const actionNeedsSelection = {
+  check: (edit: { scope: { kind: string }; instruction: { kind: string } }) =>
+    edit.instruction.kind !== 'action' || edit.scope.kind === 'selection',
+  issue: { path: ['instruction', 'action'], message: 'a SelectionBar action is scoped to a selection' },
+}
+
+/** CANVAS-21 to CANVAS-25. The same lifecycle and cap as a tool (X-5). After a
+ * conflict, Try again re-sends the same `invocation_id` with a fresh base. */
+export const EditRequestSchema = z
+  .strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    invocation_id: InvocationIdSchema,
+    campaign_id: OpaqueIdSchema,
+    conversation_id: OpaqueIdSchema,
+    document_id: OpaqueIdSchema,
+    base_write_revision: WriteRevisionSchema,
+    scope: EditScopeSchema,
+    instruction: StrictEditInstructionSchema,
+  })
+  .refine(actionNeedsSelection.check, actionNeedsSelection.issue)
+export type EditRequest = z.infer<typeof EditRequestSchema>
+
+const editResultBase = {
+  prose: text(0, PROSE_MAX_CHARS),
+  suggestions: z.array(ToolSuggestionSchema).max(MAX_SUGGESTIONS),
+}
+
+/** A conflict is a FAILED invocation, not an outcome. */
+const EditResultSchema = z.discriminatedUnion('outcome', [
+  z.object({
+    outcome: z.literal('changed'),
+    ...editResultBase,
+    /** The lane's badge reads `EDIT · v<n>` (CANVAS-24). */
+    version_number: VersionNumberSchema,
+    write_revision: WriteRevisionSchema,
+    /** What to wash gold (CANVAS-28). */
+    changed_fields: z.array(FieldKeySchema).min(1).max(MAX_CHANGED_FIELDS),
+  }),
+  /** CANVAS-25: no version is created, so there is none to name. */
+  z.object({ outcome: z.literal('no_change'), ...editResultBase }),
+])
+export type EditResult = z.infer<typeof EditResultSchema>
+
+/** The status resource behind an edit lane. It never carries the document. */
+export const EditInvocationSchema = z
+  .object({
+    schema_version: z.literal(CONTRACT_VERSION),
+    invocation_id: InvocationIdSchema,
+    document_id: OpaqueIdSchema,
+    status: z.enum(INVOCATION_STATUSES),
+    attempt: z.number().int().min(1).max(100),
+    cancel_requested: z.boolean(),
+    created_at: TimestampSchema,
+    updated_at: TimestampSchema,
+    result: EditResultSchema.nullable(),
+    error: ErrorInfoSchema.nullable(),
+  })
+  .refine(
+    (invocation) => {
+      const wanted = PAYLOAD_FOR_STATUS[invocation.status]
+      return (invocation.result !== null) === wanted.result && (invocation.error !== null) === wanted.error
+    },
+    { path: ['status'], message: 'status and payload disagree' },
+  )
+export type EditInvocation = z.infer<typeof EditInvocationSchema>
+
+// ── Campaign Library ─────────────────────────────────────────────────────────
+
+/** LIB-5: cues are not documents; their listing belongs to the cue family. */
+const DocumentCategorySchema = z.enum(LIBRARY_CATEGORIES).refine((category) => category !== 'cues', {
+  message: 'cues are not documents',
+})
+
+/** LIB-20 to LIB-23. A request BODY even without a search: search text may never
+ * travel in a URL (X-7), and one shape is simpler than two. */
+export const LibraryQuerySchema = z
+  .strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    campaign_id: OpaqueIdSchema,
+    category: DocumentCategorySchema,
+    /** Empty for no search; otherwise 2 to 100 characters after trimming. */
+    search: z.string().refine(
+      (value) => {
+        const length = codePointLength(value.trim())
+        return length === 0 || (length >= SEARCH_MIN_CHARS && length <= SEARCH_MAX_CHARS)
+      },
+      { message: `a search is ${SEARCH_MIN_CHARS} to ${SEARCH_MAX_CHARS} characters` },
+    ),
+    sort: z.enum(LIBRARY_SORTS),
+    archived: z.boolean(),
+    /** Only in Documents, the one category that holds more than one type (LIB-22). */
+    type: z.enum(DOCUMENT_TYPE_IDS).nullish(),
+    cursor: CursorSchema.nullish(),
+    limit: z.number().int().min(1).max(LIBRARY_PAGE_MAX_ITEMS).nullish(),
+  })
+  .refine((query) => query.type == null || (query.category === 'documents' && DOC_TYPE_LIBRARY_CATEGORY[query.type] === 'documents'), {
+    path: ['type'],
+    message: 'only Documents can be filtered by type, and only by a type that lives there',
+  })
+export type LibraryQuery = z.infer<typeof LibraryQuerySchema>
+
+/** Enough to list, match and open a document, and nothing of its body. */
+const LibraryItemSchema = z.object({
+  document_id: OpaqueIdSchema,
+  type: z.enum(DOCUMENT_TYPE_IDS),
+  title: oneLine(1, TEXT_FIELD_MAX_CHARS),
+  qualifier: oneLine(0, TEXT_FIELD_MAX_CHARS),
+  tags: z.array(text(1, LIST_ITEM_MAX_CHARS)).max(LIST_FIELD_MAX_ITEMS),
+  archived: z.boolean(),
+  updated_at: TimestampSchema,
+})
+export type LibraryItem = z.infer<typeof LibraryItemSchema>
+
+/** It echoes the campaign and category it answers, so that a response for a
+ * campaign the GM has left is dropped and a stale row never flashes (LIB-25). */
+export const LibraryPageSchema = z
+  .object({
+    schema_version: z.literal(CONTRACT_VERSION),
+    campaign_id: OpaqueIdSchema,
+    category: DocumentCategorySchema,
+    items: z.array(LibraryItemSchema).max(LIBRARY_PAGE_MAX_ITEMS),
+    next_cursor: CursorSchema.nullable(),
+  })
+  .refine((page) => page.items.every((item) => DOC_TYPE_LIBRARY_CATEGORY[item.type] === page.category), {
+    path: ['items'],
+    message: 'a row does not belong in this category',
+  })
+export type LibraryPage = z.infer<typeof LibraryPageSchema>
+
 // ── Timeline ─────────────────────────────────────────────────────────────────
 // One entry per EXCHANGE: a turn carries its own outcome. A page boundary can
 // therefore never separate a prompt from its result (1kg.4.2), results sit
@@ -410,6 +862,25 @@ const ToolEntrySchema = z.object({
   invocation: ToolInvocationSchema,
 })
 
+/** An AI edit and its outcome. The GM's words are the turn, as a brief is for a
+ * tool; the thread keeps the scope's kind and field, and never the selected text
+ * or the document (EXPORT-12). */
+const EditEntrySchema = z
+  .object({
+    ...entryBase,
+    entry_kind: z.literal('edit'),
+    /** The title as it was when the edit was asked for. */
+    document: DocumentLinkSchema,
+    scope: EditScopeSummarySchema,
+    instruction: EditInstructionSchema,
+    invocation: EditInvocationSchema,
+  })
+  .refine((entry) => entry.document.document_id === entry.invocation.document_id, {
+    path: ['invocation', 'document_id'],
+    message: 'the edit touched another document than the one the entry links',
+  })
+  .refine(actionNeedsSelection.check, actionNeedsSelection.issue)
+
 /** The only thing that separates prep from play; `/recap` reads from the latest `start`. */
 const SessionDividerEntrySchema = z.object({
   ...entryBase,
@@ -428,6 +899,7 @@ const OpaqueEntrySchema = z.object({
 export const TimelineEntrySchema = z.discriminatedUnion('entry_kind', [
   ChatEntrySchema,
   ToolEntrySchema,
+  EditEntrySchema,
   SessionDividerEntrySchema,
   OpaqueEntrySchema,
 ])
@@ -458,6 +930,17 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   AssetRef: AssetRefSchema,
   ToolResult: ToolResultSchema,
   ToolInvocation: ToolInvocationSchema,
+  DocumentVersion: DocumentVersionSchema,
+  Document: DocumentSchema,
+  DocumentVersionSnapshot: DocumentVersionSnapshotSchema,
+  DocumentHistoryPage: DocumentHistoryPageSchema,
+  FieldPatchRequest: FieldPatchRequestSchema,
+  DocumentCreateRequest: DocumentCreateRequestSchema,
+  RestoreRequest: RestoreRequestSchema,
+  EditRequest: EditRequestSchema,
+  EditInvocation: EditInvocationSchema,
+  LibraryQuery: LibraryQuerySchema,
+  LibraryPage: LibraryPageSchema,
   TimelineEntry: TimelineEntrySchema,
   TimelinePage: TimelinePageSchema,
 }
@@ -501,6 +984,20 @@ export function parseToolInvocation(raw: unknown): Parsed<ToolInvocation> {
 export function parseToolResult(raw: unknown): Parsed<ToolResult> {
   if (hasUnknownKind(raw, 'result_kind', RESULT_KINDS)) return { kind: 'unknown', reason: 'unknown_kind' }
   const result = ToolResultSchema.safeParse(raw)
+  return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
+}
+
+/** How the canvas reads a document. A type, or a version of a type's field
+ * definitions, that this client does not know is a placeholder state — never an
+ * NPC by default, which is what the handoff's registry fallback did (X-8). */
+export function parseDocument(raw: unknown): Parsed<Document> {
+  if (mentionsNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema' }
+  if (hasUnknownKind(raw, 'type', DOCUMENT_TYPE_IDS)) return { kind: 'unknown', reason: 'unknown_kind' }
+  if (isRecord(raw) && typeof raw.type === 'string' && typeof raw.type_version === 'number') {
+    const known = DOC_TYPE_VERSION[raw.type as DocumentTypeId]
+    if (raw.type_version > known) return { kind: 'unknown', reason: 'newer_schema' }
+  }
+  const result = DocumentSchema.safeParse(raw)
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
 }
 
