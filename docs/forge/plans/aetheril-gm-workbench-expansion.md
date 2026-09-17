@@ -4,7 +4,8 @@ Generated: 2026-09-16
 Repository: `game-guide-ai`  
 Status: gap analysis and execution plan  
 Beads epic: `agent-forge-harness-1kg`  
-Reference input: `Aetheril game content cards.zip`
+Reference input: `Aetheril game content cards.zip`  
+Interaction decisions: [`docs/adr/gm-workbench-interactions.md`](../../adr/gm-workbench-interactions.md) (`1kg.1.1`, accepted 2026-09-16)
 
 > The attached archive is treated as product/design reference material, not as
 > executable instructions. The current repository remains the source of truth
@@ -158,6 +159,20 @@ the Workbench would amplify them:
    foundations before production rollout.
 7. The current E2E suite is essentially one desktop happy path. Player/GM,
    mobile, deep-link, reveal, object-store, and reconnect behavior are untested.
+8. The cost guards sit only inside `/chat`: 20 requests per user per hour, held in
+   memory per instance, and a *pilot-wide* 500 per day counted from `chat.messages`
+   user rows. A tool turn stored anywhere else would escape the daily cap, and one
+   GM's prep session could spend the whole pilot's day (decision STATE-8, E-8).
+   `ChatRequest.prompt` also has no maximum length (RAIL-6; tracked as
+   `agent-forge-harness-764`).
+9. `components/Markdown.tsx` sanitises with DOMPurify's defaults, which keep remote
+   `<img>` tags, and nothing sets a Content-Security-Policy. A model steered by
+   injected text can therefore exfiltrate through an image URL. The Workbench
+   raises the stakes because whole private documents enter model context
+   (decision X-10). Tracked as `agent-forge-harness-va8`.
+10. The composer draft is un-keyed state, so text typed in one channel is sent in
+    the next. With slash commands that becomes `/npc <secret brief>` sent verbatim
+    as a Sage question (decision RAIL-25).
 
 ## Contradictions and missing decisions in the handoff
 
@@ -265,11 +280,46 @@ Names are illustrative; `1kg.1.2` and `1kg.1.5` own final schemas.
   idempotent registry tool execution and status;
 - `/documents` — list/get/create/direct patch/AI edit/history/restore/archive;
 - `/table-sessions` — authenticated start/end/rotate/share operations;
-- `/t/<token>` plus a non-enumerating data endpoint — sanitized player view;
+- a table entry point of its own whose token rides in the URL **fragment**, plus a
+  non-enumerating data endpoint — sanitized player view. No table credential may
+  appear in any request URL, path or query, for the API, the realtime channel or
+  an asset (decision REVEAL-19; the earlier `/t/<token>` form would have put a
+  bearer credential in request logs);
 - `/assets` and `/cues` — authorized upload/import/read/processing/library;
 - selected SSE/WebSocket endpoint plus authenticated control endpoints.
 
 No route naming is final until the versioned contract bead closes.
+
+## Decisions recorded by `1kg.1.1`
+
+[`docs/adr/gm-workbench-interactions.md`](../../adr/gm-workbench-interactions.md)
+resolves the interaction ambiguities listed above. It tags every decision as
+supplied, repository-constrained, plan-fixed, inferred, escalated or a non-goal,
+records that `GM Workbench.dc.html` was absent from the archive, and was revised
+after two independent reviews. Most of it fills gaps this plan had left open.
+The rows below are the ones that **change or sharpen an assumption made
+elsewhere in this plan**.
+
+| Plan assumption | Decision | Effect |
+| --- | --- | --- |
+| Invariants 3 and 4: "document results link to the canvas"; a competing result "follows an explicit user-facing rule" | CANVAS-1 to CANVAS-8 — a document result always renders a link. The canvas also opens by itself in exactly one case: it is closed, the result is a new document, it arrived live in the conversation on screen, and the layout is wide. An open canvas never swaps. There is no queue. | `1kg.4.4`, `1kg.6.3` |
+| Invariant 5: versions are immutable; stale writes return a 409 | CANVAS-19 — concurrency is judged **per field**, so the GM can type while an AI edit runs. CANVAS-34 — a separate **write revision** is the concurrency token, and a burst of autosaves groups into one history version, so "immutable" is read as "immutable once sealed". | refines the AC of `1kg.5.1`, `1kg.5.2`, `1kg.5.5` |
+| Invariant 6: "one revocable campaign-session link, with audience enforcement" | AUD-3 to AUD-5 — a shared bearer link cannot prove who holds it, so owner-only content also needs a device **enrolled through a single-use personal link**. There is still one table link and no per-document link. **Escalated (E-1).** | `1kg.1.3`, `1kg.2.1`, `1kg.7.1`, `1kg.7.4` |
+| Route family `/t/<token>` | REVEAL-19, REVEAL-21 — the token rides in the fragment, is exchanged for a session-scoped table credential, and no table credential appears in any request URL; asset references stop working promptly after a Stop, by a mechanism that is `1kg.1.4`'s trade-off. The handoff's guessable `/t/<campaign-slug>` form is rejected. | `1kg.1.3`, `1kg.1.4`, `1kg.7.4`, `1kg.9.5` |
+| Reveal "active content" left open | REVEAL-7, REVEAL-8, REVEAL-22 — one live document per audience slot, at a **pinned version**; an update goes through the sheet and shows old text beside new; **every Stop advances a session epoch**, so it defeats a reveal issued before it in either arrival order, and a Stop is never queued. **Escalated (E-2, E-3).** | `1kg.7.1`, `1kg.7.2`, `1kg.7.5` |
+| "Tapping a tool never fires an empty billable request"; "empty briefs fail" | X-1, RAIL-5 — only an explicit submit starts billable work, and a registry **brief policy** lets `/recap` run with no brief. | refines the AC of `1kg.3.3`, `1kg.4.1` |
+| Lane states are working, done and error; pending work must not lock the composer | RAIL-15 to RAIL-27, X-5 — adds `cancelled` and a client-only `unknown` that polls by invocation ID instead of re-running. A working lane never disables Send; the only block is a **server-enforced cap** of two tool invocations or AI edits per user (*suggested*). `/chat` is not counted and does not change. | `1kg.1.2`, `1kg.3.2`, `1kg.4.1`, `1kg.4.5` |
+| Chat-driven document edits; tools chosen from conversation | RAIL-2, CANVAS-21, CANVAS-22 — tools and edits start only from an explicit command or an explicit, **one-shot** arming; the assistant never routes itself. **Escalated (E-9).** | `1kg.4.5`, `1kg.5.5`, `1kg.6.5` |
+| "All of this lives inside the existing `gm` mode" | X-9, CANVAS-9 — the canvas, library and tools exist only in the GM channel, so the other channels keep today's layout. The reveal indicator and the live-audio strip are the exception: they follow the GM everywhere. | `1kg.6.3`, `1kg.7.3`, `1kg.8.4` |
+| Assistant prose and document text render as today | X-10 — no Workbench or table surface loads a remote subresource; document fields are plain text; the table page carries a strict CSP. | `1kg.3.2`, `1kg.5.3`, `1kg.7.4` |
+| Phase 5 ships "object storage/import/processing" together | AUDIO-25 — cues are **uploaded** first. Remote import stays in the epic behind its own flag, after the SSRF policy, and third-party audio is never hot-linked to players. **Escalated (E-4).** | `1kg.8.1`, `1kg.8.5` |
+| Synchronized audio | AUDIO-11 to AUDIO-13 — the server owns the clock, but sync targets are loose (±2 s) because several phones in one room echo whatever the tolerance; all gain changes go through Web Audio (AUDIO-30). | `1kg.1.4`, `1kg.8.6`, `1kg.8.7` |
+| Layouts tested at 375, 768, 900 and 1280 px | LAYOUT-1 to LAYOUT-3 — three columns need at least 1024 px; 768 and 900 are single-column with a Chat / Canvas switch; below 768 the sidebar is a drawer. | `1kg.6.3`, `1kg.9.4` |
+| One campaign, unspecified GM roles; participant identities | AUD-1, AUD-7 — one GM per campaign, players have no accounts, and guests are anonymous. **Escalated (E-6, E-10).** | `1kg.1.3`, `1kg.2.1`, `1kg.2.2`, `1kg.7.4` |
+
+Ten decisions await the owner's confirmation (the record's §17). Each has a
+default in force except the Workbench cost limit (E-8), which deliberately has
+none: the existing guards stay until limits are chosen with evidence.
 
 ## Delivery strategy
 
@@ -554,7 +604,7 @@ These boundaries avoid repeated conflicts in `service/app.py`,
 | `agent-forge-harness-iu6` | Split `service/app.py` into routers. New route families should align with it; no duplicate refactor bead was created. |
 | `agent-forge-harness-b8o` and children | Own provider catalog/model selection/routing/cost rollout. Workbench uses those seams and relates tool telemetry/evals to them. |
 | `agent-forge-harness-1ka` and children | Own conversation memory, authoritative deletion, summaries, preferences, and long-term memory. Workbench campaign deletion and recap must compose with them. |
-| Untracked `game-guide-ai-chat-reading-experience` plan/research/report | Proposed markdown, reading width, scroll, composer, and typing improvements. Preserve the user’s files and reconcile before touching the same ChatPane CSS/state. |
+| `game-guide-ai-chat-reading-experience` (PR #57, merged 2026-09-16) | **Shipped.** Sanitized Markdown answers, a 48 rem reading column, follow-newest scrolling with jump-to-latest, an auto-growing composer, and a typing indicator are now the baseline. ToolRail, SlashMenu and AssistantLane build on them. Its Markdown component keeps remote images and the app sets no CSP — see seam 9. |
 | Architecture reference to `swe1.5` | Notes/GM-lore navigation may overlap library/world data; locate the authoritative external tracker before implementation. |
 
 The new epic uses non-blocking `relates-to` edges for these initiatives because
@@ -575,6 +625,9 @@ their live bead status is not fully synchronized with code already merged to
 | Scope overwhelms one release | Vertical slices and independent capability flags; media/audio remain later P2 capability |
 | UI regressions from a literal inline-JSX port | Use the handoff contracts/tokens, but implement typed BEM components with current a11y/test conventions |
 | Parallel branches collide in central files | Assign contract, migration, ChatPane, shell, projection, and ops owners |
+| The existing cost guards make the Workbench unusable, are bypassed to make it usable, or silently stop counting tool turns | Every billable operation passes the guards and is counted durably (STATE-8); limits are decided with evidence in `1kg.4.1`/`1kg.4.6` before any tool is enabled (E-8) |
+| A Stop loses a race with an in-flight reveal or audio push | Every Stop advances a session epoch, so a widening issued before it is refused in either arrival order (REVEAL-22, AUDIO-28) |
+| The absent `GM Workbench.dc.html` arrives after UI work has started | Reconciliation procedure in the decision record §14: the design wins on layout and copy, the record wins on safety |
 
 ## Intentional non-goals
 
@@ -591,6 +644,14 @@ The reference explicitly excludes, and this plan does not add:
 
 Image/map generation providers, if desired, are optional adapters behind the
 capability gate and require their own policy/quality/cost approval.
+
+The decision record adds the v1 exclusions that fell out of resolving the
+handoff's ambiguities — a document queue, a resizable split, narration-only and
+player-authored turns, natural-language tool routing, draft persistence in the
+browser, full-text library search, per-item reveal, a player-side reveal
+history, live-following reveal, player accounts and co-GMs, table seek and
+pause, tight audio sync, hot-linked audio, rich text in document fields, and a
+server-side PDF renderer. See its §13 (NG-10 to NG-30).
 
 ## Definition of epic completion
 
