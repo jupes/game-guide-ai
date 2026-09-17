@@ -10,6 +10,8 @@ documents live in the repo they belong to.
 - `plans/` — implementation plans (the `/forge-plan` output).
 - `research/` — research notes gathered before planning (`/forge-research`).
 - `reports/` — ship reports and plan reviews (`/forge-ship`, `/review-plan`).
+- `tools/` — scripts that generated or validated a plan's artifacts, such as the
+  Live Session Assistant bead specification, validator, and cost calculator.
 
 Files are grouped by feature slug (e.g. `dnd-cross-encoder-reranker`,
 `rag-chat-observability-evals`). They are point-in-time records of how a change
