@@ -715,7 +715,9 @@ Explicit P0 phase gates, the adversarial player-disclosure suite, multi-client E
 The hierarchy was validated **before** any bead was created. The validator is a
 scripted check over the plan's bead specification, combined with a JSON export
 of all **152** issues in the game-guide-ai tracker and their **308** existing
-`blocks` edges.
+`blocks` edges. The specification, validator, table generator, document checker,
+and cost calculator are in `docs/forge/tools/live-session-assistant/`; its README
+lists the commands.
 
 **Plan size:**
 
@@ -805,3 +807,6 @@ dependencies or scope this plan changes: `1kg.2.1`, `1kg.5.1`, `1kg.5.3`, and
 `1kg.7.1` (now blocked by `1ir.1.2`); `1kg.7.4` (now on the MVP path);
 `1kg.2.2`, `1kg.2.3`, and `1kg.7.2` (campaign lock and revision requirements);
 `va8`, `yje.6.6`, and `yje.5.2` (new downstream blockers).
+
+`docs/forge/tools/live-session-assistant/verify-created.ts` repeats the field check
+against the current tracker and reports drift from the specification.

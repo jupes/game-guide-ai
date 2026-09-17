@@ -591,7 +591,8 @@ infrastructure, so it belongs behind a premium price that funds its gates.
 
 ## 16. Reproducing the model
 
-The calculator applies these formulas.
+The calculator (`docs/forge/tools/live-session-assistant/costs.ts`) applies these
+formulas; its recorded output is `cost-tables.md` in the same folder.
 
 ```text
 listening_hour = STT + AI + overhead + infra

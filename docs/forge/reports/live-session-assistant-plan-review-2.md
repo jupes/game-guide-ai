@@ -4,6 +4,9 @@ Source: `docs/forge/research/live-session-assistant-gap-analysis.md` (gap), `doc
 
 Reviewer: independent, read-only turn-2 pass by the same model tier as the author. I ran `bun validate.ts`, `bun costs.ts` (diffed against `cost-tables.md`), the author's read-only `checkdocs.ts`, and inline `bun -e` closure analysis over spec.ts. I diffed the generated tables against the render and xdeps output. Code baseline: `origin/master` `2ca91e6`. Tracker: `bd list --all --json --limit 0` run from the repo root returned 152 issues and 308 `blocks` edges, identical to `bd-all.json` with no status drift. Line numbers are as of this review.
 
+> Note added 2026-09-17: the scratchpad `lsa/` tooling this review ran is committed, revised for portability, at
+> `docs/forge/tools/live-session-assistant/`.
+
 ## Verdict: NEEDS REVISION — 0/3/9/5
 
 - **Turn-1 fixes:** the bookkeeping fixes landed and reproduce exactly: validator counts, generated tables, external links, cost tables, and code claims. Of 25 turn-1 findings, 20 are resolved and 5 are partly resolved (H1, H3, H6, M6, M11).
