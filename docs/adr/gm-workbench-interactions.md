@@ -1119,3 +1119,25 @@ the table client, while the authenticated app's is tracked separately as
 The round-two changes were not themselves independently re-verified. They were
 checked mechanically — every ID defined once, every cross-reference resolving,
 every table well formed — and by the author against each finding.
+
+## 19. Amendments
+
+Decisions this record left to a later bead, now made there. None reverses a
+decision; each closes something a row above left open, and the row's own text
+stands as written. A downstream bead reads the row and then this table.
+
+| # | Decision | Amendment | Made by |
+| --- | --- | --- | --- |
+| A-1 | REVEAL-19 | The mechanism is fixed: one POST exchanges the token for an `HttpOnly; SameSite=Strict; Path=/table` cookie, `Secure` under the session cookie's switch; every table route, the realtime channel and table assets live under `/table/`. | threat model SEC-6, SEC-8 |
+| A-2 | REVEAL-21 | Table media is served **same-origin** by the service, a read authorised against the live slot every time and re-checked every 1 MB; a cross-origin signed URL is ruled out, and the 60 s signed-read alternative is not taken. | threat model SEC-16; media ADR MS-7 |
+| A-3 | AUD-5, E-1 | The interception residue is accepted *conditionally* (threat model S-3): if any amendment lets a participant slot carry more than a player's own sheet, enrolment gains GM approval of each new device before owner-only content flows. | threat model §12.1 |
+| A-4 | X-7 | Two more places private text was reaching: the framework's default 422 echoes request input, and a tracing callback records prompts. Both are closed by rule. | threat model SEC-23, SEC-24 |
+| A-5 | REVEAL-25 | A per-generation credential bound of 24 (*suggested*), with eviction only of a credential idle for 30 minutes; the connection bounds are numbers — 12 per session, 3 per device, a service-wide ceiling of 20 open streams of which 4 are the GM's, counted in a `connections` table under a per-session lock, and no per-instance cap. | threat model SEC-10; media ADR RT-8 |
+| A-6 | REVEAL-25, TABLE-10 | Successful joins gain a loose per-source and per-generation throttle, so the eviction rule cannot be farmed; failed joins keep the tight one. | threat model SEC-10 |
+| A-7 | TABLE-13 | Enrolment ignores every cookie it receives, and a device holds one participant per campaign; the guest line stays. | threat model SEC-11 |
+| A-8 | EXPORT-8 | Every export neutralises remote references in model-authored text, the GM copy included, not only the player-safe copy. | threat model SEC-33 |
+| A-9 | X-3 | An End and a Rotate stay unqueued and unrefusable for state, and gain a per-campaign bound; a Stop gains nothing. | threat model SEC-35 |
+| A-10 | AUDIO-24 | The mechanism is chosen: Postgres-held state, `LISTEN`/`NOTIFY` as a wake-up, delivery from the state itself, a job outbox, per-instance fanout. | media ADR RT-5 |
+| A-11 | TABLE-6 | The platform's 300 s cut becomes a jittered 240–280 s server-side close with a `reconnect` frame; the banner rule is unchanged. | media ADR RT-3 |
+| A-12 | AUDIO-26 | Audio is re-encoded to MP3 and images within their family; the formats accepted are unchanged. | media ADR MS-6 |
+| A-13 | REVEAL-24, TABLE-7 | A snapshot ends with a `ready` frame, the boundary before which nothing is trusted; a table frame carries no link generation and no epoch. | media ADR RT-4; wire contract slice 5 |

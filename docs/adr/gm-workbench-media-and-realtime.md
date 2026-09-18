@@ -203,13 +203,14 @@ None reverses a decision; each closes a choice the record left to this bead.
 
 1. **REVEAL-21** — the choice is made: table media is served same-origin by the
    service (MS-7); the 60 s signed-read alternative is not taken.
-2. **AUDIO-24** — the mechanism is chosen: Postgres-held state, a transactional
-   outbox, `LISTEN`/`NOTIFY` as the wake-up, per-instance fanout (RT-5).
-3. **TABLE-6** — the platform's 300 s cut becomes a deliberate 280 s server-side
-   close with a `reconnect` event (RT-3); the banner rule is unchanged.
-4. **REVEAL-25** — the bounds are numbers now: 12 per session, 3 per device, 10
-   streams per instance of which 2 are the GM's, counted in a `connections`
-   table across instances (RT-8).
+2. **AUDIO-24** — the mechanism is chosen: Postgres-held state, `LISTEN`/`NOTIFY`
+   as a wake-up, delivery from the state itself, a job outbox, per-instance
+   fanout (RT-5).
+3. **TABLE-6** — the platform's 300 s cut becomes a jittered 240–280 s
+   server-side close with a `reconnect` frame (RT-3); the banner rule is unchanged.
+4. **REVEAL-25** — the bounds are numbers now: 12 per session, 3 per device, and
+   a service-wide ceiling of 20 open streams of which 4 are the GM's, counted in
+   a `connections` table under a per-session lock; no per-instance cap (RT-8).
 5. **AUDIO-26** — audio is re-encoded to MP3 and images within their family; the
    formats accepted are unchanged (MS-6).
 
