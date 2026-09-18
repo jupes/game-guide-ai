@@ -1,0 +1,38 @@
+{
+  "schema": "Capabilities",
+  "direction": "response",
+  "note": "RAIL-10, AE-58: what the deployment has switched on, read once per GM-mode load. Every switch is off until the owner approves a provider (record 3.3). The registry (registry.json, capabilities) names the same switches, with the reason a disabled tool shows; a client strips a switch it does not know, because its registry cannot name a tool for it.",
+  "valid": [
+    {
+      "name": "the pilot's defaults: nothing approved yet",
+      "value": { "schema_version": 1, "image_generation": false, "audio_cues": false }
+    },
+    {
+      "name": "image generation approved",
+      "value": { "schema_version": 1, "image_generation": true, "audio_cues": false }
+    },
+    {
+      "name": "a client strips a switch a newer server added",
+      "applies_to": ["client"],
+      "value": { "schema_version": 1, "image_generation": false, "audio_cues": false, "voice_synthesis": true }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a switch as text",
+      "why": "no coercion: a switch is a boolean",
+      "value": { "schema_version": 1, "image_generation": "false", "audio_cues": false }
+    },
+    {
+      "name": "a switch left out",
+      "why": "every switch the registry names is answered, so absence can never be mistaken for off",
+      "value": { "schema_version": 1, "image_generation": false }
+    },
+    {
+      "name": "a switch the registry does not name",
+      "why": "the server emits exactly the registry's switches; adding one is a registry change first",
+      "applies_to": ["server"],
+      "value": { "schema_version": 1, "image_generation": false, "audio_cues": false, "voice_synthesis": true }
+    }
+  ]
+}
