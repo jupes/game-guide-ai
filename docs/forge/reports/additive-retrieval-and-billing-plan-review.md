@@ -139,7 +139,7 @@ Work the review identified but could not complete here is tracked in Beads:
 | Bead | Priority | Follow-up |
 |---|---|---|
 | `agent-forge-harness-yik` | P2 | Align the GM Workbench master plan and beads with these initiatives. The master plan is on PR #58, whose branch holds a newer copy than the one reviewed, so the review did not edit it. Covers the `/rules` grounding tension and edges such as `1kg.9.6` blocked by `yje.4.1` and the rules card tool in `1kg.4.3` using `xiu.1.2`. |
-| `agent-forge-harness-m51` | P1 | Decide where the Beads tracker syncs. The auto-detected Dolt remote is the public GitHub repository and has never been pushed; the session-completion step `bd dolt push` would publish the issue graph there. Do not push this tracker until the decision is made. |
+| `agent-forge-harness-m51` | P1 | Decide where the Beads tracker syncs. The auto-detected Dolt remote was the public GitHub repository and had never been pushed, so the session-completion step `bd dolt push` would have published the issue graph. Resolved 2026-09-17: that remote was removed from both trackers, which now export to JSONL into a private backup repository, daily and on demand, with a verified restore. |
 | `agent-forge-harness-88v` | P2 | Clear stale untracked documents from the shared main checkout, including local copies of this change's files, so it can fast-forward after the related PRs merge. |
 
 Workbench beads: no `1kg` bead's own dependencies, priority, or status changed.
