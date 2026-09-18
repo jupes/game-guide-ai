@@ -191,7 +191,7 @@ on both sides.
 | Reveal | to do, and **waiting** | the mutation with its epoch, Stop, GM-side state, the allowlisted projection, the table snapshot. Audience and slot shapes must not freeze before `agent-forge-harness-1ir.1.2` (field eligibility, shared with the Live Session Assistant) is decided; it blocks `1kg.7.1`. The projection needs an asset shape of its own — a per-slot opaque handle, never the GM-side `asset_id` — and its join and enrol answers are generic ([threat model](adr/gm-workbench-threat-model.md), §12.2) |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
 | Table sessions | **done** | `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest`, `EnrolResponse`, `TableSession`, `TableSessionRequest`, `TableSessionAnswer` |
-| Realtime events | **done** for the decided kinds | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `presence`, `reconnect`) and `TableEvent` (`session`, `inactive`, `audio`, `reconnect`). The `snapshot` and `slot` kinds arrive with the reveal family; the transport is the media ADR's |
+| Realtime events | **done** for the decided kinds | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `presence`, `asset`, `ready`, `reconnect`), `TableEvent` (`session`, `inactive`, `audio`, `ready`, `reconnect`), and the two snapshot resources `GmSnapshot` and `TableSnapshot`. The `slot` kind arrives with the reveal family; the transport is the media ADR's |
 | Tool and document-type registry | `1kg.3.1` | extends `registry.json` |
 
 ## The tool-invocation family
@@ -471,30 +471,39 @@ carries the token: a token is not re-readable.
 The transport is server-sent events (media ADR, RT-1 to RT-4): one stream per GM
 tab on the campaign, one per table device, every command a POST. Each frame is
 one event whose `data:` is one JSON object of this family, with its own
-`schema_version`; the heartbeat is an SSE comment line, not an event, and
-`retry:` is one second. A stream begins with a snapshot and is closed by the
-server at 280 s with a `reconnect` event, after which the client reopens and
-takes a fresh snapshot; nothing held before a reconnect is trusted afterwards
-(TABLE-7, AUDIO-15).
+`schema_version`; the heartbeat is an SSE comment line, not an event. The
+client reads the stream with `fetch` and a `ReadableStream`, not the native
+`EventSource` — which hides comment lines, response statuses and headers, so
+neither the heartbeat, nor a refused stream (an HTTP status with
+`Retry-After`), nor TABLE-7's *silence from the last byte* would be observable
+through it. A stream opens with the same frames its channel's **snapshot
+resource** (`GmSnapshot`, `TableSnapshot`) answers with — ending with `ready`,
+the boundary before which nothing is trusted — and is closed by the server
+between 240 and 280 s with a `reconnect` frame, after which the client reopens
+with jittered backoff and takes a fresh snapshot (TABLE-7, AUDIO-15). The
+snapshot resource is also the polling mode when no stream can be opened.
 
 Two channels, two unions, because they may not carry the same things (SEC-15,
 threat model §8.3):
 
 | Channel | Kinds | Carries |
 | --- | --- | --- |
-| GM, `GmEvent` | `tool_lane`, `edit_lane`, `session`, `audio`, `presence`, `reconnect` | lane status with the embedded invocation; the `TableSession`; audio slots by cue id and title; presence with participants' aliases and guest counts (AUDIO-21) |
-| Table, `TableEvent` | `session`, `inactive`, `audio`, `reconnect` | the link generation, whether table audio is on and this device's own role; the one generic inactive event, after which the connection closes (TABLE-9); audio slots by handle, never a title (AUDIO-29) |
+| GM, `GmEvent` | `tool_lane`, `edit_lane`, `session`, `audio`, `presence`, `asset`, `ready`, `reconnect` | lane status with the embedded invocation; the `TableSession` with the audio epoch; audio slots by cue id and title, with the audio epoch two GM tabs converge on (AUDIO-24); presence with participants' aliases and guest counts (AUDIO-21); an asset's state change (MS-3) |
+| Table, `TableEvent` | `session`, `inactive`, `audio`, `ready`, `reconnect` | whether table audio is on and this device's own role; the one generic inactive event, after which the connection closes (TABLE-9); audio slots by handle, never a title (AUDIO-29). No generation, no epoch, no id a table client has no use for (SEC-15) |
 
 Every audio frame names its slot and the slot's sequence (AUDIO-15: per slot,
-monotonic, assigned by the database) and the link generation it was produced
-under (SEC-9): a client applies a frame only above its mark for that slot, and a
-server writes a frame only to a stream of the same generation. A one-shot never
+monotonic, assigned by the database): a client applies a frame only above its
+mark for that slot. A GM frame also names the link generation it was produced
+under (SEC-9); a table frame does not, because it is the server that writes a
+frame only to a stream of the same generation, and the number is nothing a
+table client needs. A one-shot never
 loops and is at most 30 s, on both channels. The `snapshot` and `slot` kinds —
 the reveal projection — arrive with the reveal family once
-`agent-forge-harness-1ir.1.2` is decided; until then a table stream opens with a
-`session` frame and one `audio` frame per slot. Adding those kinds before v1 is
-declared complete is not a version bump; `parseGmEvent` and `parseTableEvent`
-already read an unknown kind as a placeholder.
+`agent-forge-harness-1ir.1.2` is decided; until then a table snapshot is a
+`session` frame, one `audio` frame per slot and `ready`. Adding that kind before
+v1 is declared complete is not a version bump; `parseGmEvent`, `parseTableEvent`,
+`parseGmSnapshot` and `parseTableSnapshot` already read an unknown kind as a
+placeholder.
 
 ## Legacy compatibility
 

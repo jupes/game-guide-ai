@@ -67,6 +67,7 @@
           "campaign_id": "cmp_4b1d9e7a",
           "state": "live",
           "gen": 1,
+          "audio_epoch": 3,
           "started_at": "2026-09-16T19:31:02Z",
           "ends_at": "2026-09-17T07:31:02Z",
           "ended_at": null,
@@ -76,12 +77,13 @@
       }
     },
     {
-      "name": "ambience is playing, by id and title (AUDIO-11)",
+      "name": "ambience is playing, by id and title, with the audio epoch two GM tabs converge on (AUDIO-11, AUDIO-24)",
       "value": {
         "schema_version": 1,
         "event": "audio",
         "session_id": "ses_0c1d2e3f",
         "gen": 1,
+        "audio_epoch": 3,
         "slot": "ambience",
         "seq": 7,
         "playing": {
@@ -101,9 +103,40 @@
         "event": "audio",
         "session_id": "ses_0c1d2e3f",
         "gen": 1,
+        "audio_epoch": 3,
         "slot": "one_shot",
         "seq": 3,
         "playing": null
+      }
+    },
+    {
+      "name": "the snapshot is complete; what follows is live (ADR RT-4)",
+      "value": {
+        "schema_version": 1,
+        "event": "ready"
+      }
+    },
+    {
+      "name": "an asset changed state (ADR MS-3): processing finished",
+      "value": {
+        "schema_version": 1,
+        "event": "asset",
+        "asset": {
+          "schema_version": 1,
+          "asset_id": "ast_77c1d0e2",
+          "campaign_id": "cmp_4b1d9e7a",
+          "kind": "image",
+          "state": "ready",
+          "media_type": "image/webp",
+          "size_bytes": 812304,
+          "width": 1024,
+          "height": 1280,
+          "duration_ms": null,
+          "alt": "A gaunt woman in salt-stained vestments",
+          "failure": null,
+          "created_at": "2026-09-16T19:31:02Z",
+          "updated_at": "2026-09-16T19:31:24Z"
+        }
       }
     },
     {
@@ -190,6 +223,7 @@
         "event": "audio",
         "session_id": "ses_0c1d2e3f",
         "gen": 1,
+        "audio_epoch": 3,
         "slot": "one_shot",
         "seq": 3,
         "playing": {
@@ -210,6 +244,7 @@
         "event": "audio",
         "session_id": "ses_0c1d2e3f",
         "gen": 1,
+        "audio_epoch": 3,
         "slot": "one_shot",
         "seq": 3,
         "playing": {
@@ -230,6 +265,7 @@
         "event": "audio",
         "session_id": "ses_0c1d2e3f",
         "gen": 1,
+        "audio_epoch": 3,
         "slot": "ambience",
         "seq": 7,
         "playing": {
@@ -240,6 +276,19 @@
           "loop": true,
           "duration_ms": 300000
         }
+      }
+    },
+    {
+      "name": "an audio frame without the epoch",
+      "why": "AUDIO-24: two GM tabs converge on the epoch the frame carries",
+      "value": {
+        "schema_version": 1,
+        "event": "audio",
+        "session_id": "ses_0c1d2e3f",
+        "gen": 1,
+        "slot": "ambience",
+        "seq": 7,
+        "playing": null
       }
     },
     {
@@ -295,11 +344,12 @@
     },
     {
       "name": "a frame without its generation",
-      "why": "SEC-9: every frame names the generation it was produced under",
+      "why": "SEC-9: a GM frame names the generation it was produced under",
       "value": {
         "schema_version": 1,
         "event": "audio",
         "session_id": "ses_0c1d2e3f",
+        "audio_epoch": 3,
         "slot": "ambience",
         "seq": 7,
         "playing": null

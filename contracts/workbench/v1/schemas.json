@@ -41,6 +41,8 @@
     "TableSessionAnswer",
     "GmEvent",
     "TableEvent",
+    "GmSnapshot",
+    "TableSnapshot",
     "LegacyChatResponse",
     "LegacyMessagesResponse"
   ]

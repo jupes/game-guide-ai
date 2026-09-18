@@ -1055,8 +1055,8 @@ export const SESSION_STATES = ['live', 'ended'] as const
 export const SESSION_ACTIONS = ['start', 'end', 'rotate'] as const
 /** AUDIO-21, AUDIO-22: listening means playing and unmuted. */
 export const PRESENCE_AUDIO = ['listening', 'muted', 'pending', 'absent'] as const
-export const GM_EVENT_KINDS = ['tool_lane', 'edit_lane', 'session', 'audio', 'presence', 'reconnect'] as const
-export const TABLE_EVENT_KINDS = ['session', 'inactive', 'audio', 'reconnect'] as const
+export const GM_EVENT_KINDS = ['tool_lane', 'edit_lane', 'session', 'audio', 'presence', 'asset', 'ready', 'reconnect'] as const
+export const TABLE_EVENT_KINDS = ['session', 'inactive', 'audio', 'ready', 'reconnect'] as const
 
 const MediaTypeSchema = z.string().regex(/^(image|audio)\/[a-z0-9.+-]{1,32}$/)
 const AltTextSchema = oneLine(1, ALT_MAX_CHARS)
@@ -1297,6 +1297,8 @@ export const TableSessionSchema = z
     campaign_id: OpaqueIdSchema,
     state: z.enum(SESSION_STATES),
     gen: LinkGenerationSchema,
+    /** AUDIO-24: two GM tabs converge on the epoch the resource carries. */
+    audio_epoch: AudioEpochSchema,
     started_at: TimestampSchema,
     ends_at: TimestampSchema,
     ended_at: TimestampSchema.nullable(),
@@ -1386,6 +1388,7 @@ const GmAudioEventSchema = z
     event: z.literal('audio'),
     session_id: OpaqueIdSchema,
     gen: LinkGenerationSchema,
+    audio_epoch: AudioEpochSchema,
     slot: z.enum(AUDIO_SLOTS),
     seq: SlotSequenceSchema,
     playing: GmPlayingSchema.nullable(),
@@ -1413,7 +1416,11 @@ const PresenceEventSchema = z.object({
   participants: z.array(ParticipantPresenceSchema).max(PRESENCE_MAX_PARTICIPANTS),
   guests: GuestPresenceSchema,
 })
-/** The server is closing this stream on purpose (ADR RT-3); reopen at once. */
+/** An asset changed state (ADR MS-3): the GM's `Still processing…` ends here. */
+const GmAssetEventSchema = z.object({ ...eventBase, event: z.literal('asset'), asset: AssetSchema })
+/** The snapshot is complete; what follows is live (ADR RT-4) — the boundary TABLE-7 needs. */
+const GmReadyEventSchema = z.object({ ...eventBase, event: z.literal('ready') })
+/** The server is closing this stream on purpose (ADR RT-3); reopen with backoff. */
 const GmReconnectEventSchema = z.object({ ...eventBase, event: z.literal('reconnect') })
 
 export const GmEventSchema = z.discriminatedUnion('event', [
@@ -1422,15 +1429,28 @@ export const GmEventSchema = z.discriminatedUnion('event', [
   GmSessionEventSchema,
   GmAudioEventSchema,
   PresenceEventSchema,
+  GmAssetEventSchema,
+  GmReadyEventSchema,
   GmReconnectEventSchema,
 ])
 export type GmEvent = z.infer<typeof GmEventSchema>
+
+/** A snapshot ends with `ready` and holds no `reconnect`: `ready` is the boundary a
+ * client trusts nothing before (TABLE-7); a reconnect belongs to a stream. */
+const endsWithReady = (frames: ReadonlyArray<{ event: string }>) =>
+  frames.length > 0 && frames[frames.length - 1].event === 'ready' && !frames.some((frame) => frame.event === 'reconnect')
+const SNAPSHOT_ISSUE = { path: ['frames'], message: 'a snapshot ends with ready and never carries a reconnect' }
+
+/** The GM channel read as a resource — a stream's opening frames, and the polling mode of ADR RT-9. */
+export const GmSnapshotSchema = z
+  .object({ schema_version: z.literal(CONTRACT_VERSION), frames: z.array(GmEventSchema).min(1).max(200) })
+  .refine((snapshot) => endsWithReady(snapshot.frames), SNAPSHOT_ISSUE)
+export type GmSnapshot = z.infer<typeof GmSnapshotSchema>
 
 /** A live session as a table client may know it (AUDIO-19), and this device's own role. */
 const TableSessionEventSchema = z.object({
   ...eventBase,
   event: z.literal('session'),
-  gen: LinkGenerationSchema,
   audio: z.boolean(),
   role: z.enum(TABLE_ROLES),
 })
@@ -1450,21 +1470,28 @@ const TableAudioEventSchema = z
   .object({
     ...eventBase,
     event: z.literal('audio'),
-    gen: LinkGenerationSchema,
     slot: z.enum(AUDIO_SLOTS),
     seq: SlotSequenceSchema,
     playing: TablePlayingSchema.nullable(),
   })
   .refine((frame) => playingFitsSlot(frame.slot, frame.playing), SLOT_ISSUE)
+const TableReadyEventSchema = z.object({ ...eventBase, event: z.literal('ready') })
 const TableReconnectEventSchema = z.object({ ...eventBase, event: z.literal('reconnect') })
 
 export const TableEventSchema = z.discriminatedUnion('event', [
   TableSessionEventSchema,
   TableInactiveEventSchema,
   TableAudioEventSchema,
+  TableReadyEventSchema,
   TableReconnectEventSchema,
 ])
 export type TableEvent = z.infer<typeof TableEventSchema>
+
+/** The table channel read as a resource: session, one audio frame per slot, later the reveal slots, then ready. */
+export const TableSnapshotSchema = z
+  .object({ schema_version: z.literal(CONTRACT_VERSION), frames: z.array(TableEventSchema).min(1).max(50) })
+  .refine((snapshot) => endsWithReady(snapshot.frames), SNAPSHOT_ISSUE)
+export type TableSnapshot = z.infer<typeof TableSnapshotSchema>
 
 /** Name → schema, in the order `contracts/workbench/v1/schemas.json` lists them. */
 export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
@@ -1508,6 +1535,8 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   TableSessionAnswer: TableSessionAnswerSchema,
   GmEvent: GmEventSchema,
   TableEvent: TableEventSchema,
+  GmSnapshot: GmSnapshotSchema,
+  TableSnapshot: TableSnapshotSchema,
 }
 
 // ── Forward-version behaviour ────────────────────────────────────────────────
@@ -1628,6 +1657,38 @@ export function parseTableEvent(raw: unknown): Parsed<TableEvent> {
   if (hasAnyUnknownKind(raw, TABLE_EVENT_DISCRIMINATORS)) return { kind: 'unknown', reason: 'unknown_kind' }
   const result = TableEventSchema.safeParse(raw)
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
+}
+
+export interface ReadSnapshot<T> {
+  /** One item per frame the server sent, none dropped; the last is `ready`. */
+  frames: Array<Parsed<T>>
+}
+
+const SnapshotEnvelopeSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  frames: z.array(z.unknown()).min(1).max(200),
+})
+
+function parseSnapshot<T>(raw: unknown, frame: (item: unknown) => Parsed<T>): Parsed<ReadSnapshot<T>> {
+  if (isRecord(raw)) {
+    const version = versionNamed(raw.schema_version)
+    if (version !== null && version > CONTRACT_VERSION) return { kind: 'unknown', reason: 'newer_schema' }
+  }
+  const envelope = SnapshotEnvelopeSchema.safeParse(raw)
+  if (!envelope.success) return { kind: 'unknown', reason: 'invalid' }
+  const last = envelope.data.frames[envelope.data.frames.length - 1]
+  if (!isRecord(last) || last.event !== 'ready') return { kind: 'unknown', reason: 'invalid' }
+  return { kind: 'ok', value: { frames: envelope.data.frames.map(frame) } }
+}
+
+/** How a channel reads its snapshot: the envelope strictly, each frame on its own,
+ * so one frame from a newer server becomes one placeholder (ADR RT-4). */
+export function parseGmSnapshot(raw: unknown): Parsed<ReadSnapshot<GmEvent>> {
+  return parseSnapshot(raw, parseGmEvent)
+}
+
+export function parseTableSnapshot(raw: unknown): Parsed<ReadSnapshot<TableEvent>> {
+  return parseSnapshot(raw, parseTableEvent)
 }
 
 /**

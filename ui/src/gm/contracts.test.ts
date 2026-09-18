@@ -52,7 +52,9 @@ import {
   isWellFormedText,
   parseDocument,
   parseGmEvent,
+  parseGmSnapshot,
   parseTableEvent,
+  parseTableSnapshot,
   parseTimelineEntry,
   parseTimelinePage,
   parseToolInvocation,
@@ -591,6 +593,20 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
       kind: 'unknown',
       reason: 'unknown_kind',
     })
+  })
+
+  it('reads a snapshot frame by frame, so one unknown kind is one placeholder (ADR RT-4)', () => {
+    const snapshot = readJson<Fixture>(join(FIXTURES, 'TableSnapshot.json')).valid[0].value as { frames: unknown[] }
+    const withUnknown = { schema_version: 1, frames: [...snapshot.frames.slice(0, -1), { schema_version: 1, event: 'slot', slot: 'table', seq: 1 }, { schema_version: 1, event: 'ready' }] }
+    const read = parseTableSnapshot(withUnknown)
+    expect(read.kind).toBe('ok')
+    if (read.kind !== 'ok') return
+    expect(read.value.frames.map((frame) => frame.kind)).toEqual(['ok', 'ok', 'ok', 'unknown', 'ok'])
+    expect(read.value.frames[3]).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    // Without its ready boundary a snapshot is not one (TABLE-7).
+    expect(parseTableSnapshot({ schema_version: 1, frames: snapshot.frames.slice(0, -1) })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    expect(parseGmSnapshot({ schema_version: 2, frames: [] })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+    for (const junk of [null, 42, {}, { schema_version: 1, frames: [] }]) expect(parseGmSnapshot(junk).kind).toBe('unknown')
   })
 
   it('reports a broken frame as invalid and never throws', () => {

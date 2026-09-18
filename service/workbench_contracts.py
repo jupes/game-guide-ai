@@ -1659,6 +1659,8 @@ class TableSession(_Contract):
     campaign_id: OpaqueId
     state: SessionState
     gen: LinkGeneration
+    #: Decision AUDIO-24: two GM tabs converge on the epoch the resource carries.
+    audio_epoch: AudioEpoch
     started_at: Timestamp
     ends_at: Timestamp
     ended_at: Timestamp | None
@@ -1769,6 +1771,7 @@ class GmAudioEvent(_EventBase):
     event: Literal["audio"]
     session_id: OpaqueId
     gen: LinkGeneration
+    audio_epoch: AudioEpoch
     slot: AudioSlot
     seq: SlotSequence
     playing: GmPlaying | None
@@ -1819,24 +1822,68 @@ class PresenceEvent(_EventBase):
     guests: GuestPresence
 
 
+class GmAssetEvent(_EventBase):
+    """An asset changed state (ADR MS-3): the GM's `Still processing…` ends here."""
+
+    event: Literal["asset"]
+    asset: Asset
+
+
+class GmReadyEvent(_EventBase):
+    """The snapshot is complete; what follows is live (ADR RT-4). This is the
+    boundary TABLE-7's *fresh snapshot* needs."""
+
+    event: Literal["ready"]
+
+
 class GmReconnectEvent(_EventBase):
-    """The server is closing this stream on purpose (ADR RT-3); reopen at once."""
+    """The server is closing this stream on purpose (ADR RT-3); reopen with backoff."""
 
     event: Literal["reconnect"]
 
 
 GmEvent = Annotated[
-    ToolLaneEvent | EditLaneEvent | GmSessionEvent | GmAudioEvent | PresenceEvent | GmReconnectEvent,
+    ToolLaneEvent
+    | EditLaneEvent
+    | GmSessionEvent
+    | GmAudioEvent
+    | PresenceEvent
+    | GmAssetEvent
+    | GmReadyEvent
+    | GmReconnectEvent,
     Field(discriminator="event"),
 ]
 
 
+def _ends_with_ready(frames: Sequence[Any]) -> None:
+    """A snapshot ends with ``ready`` and holds no ``reconnect``: ``ready`` is the
+    boundary a client trusts nothing before (TABLE-7), and a reconnect belongs to
+    a stream, never to a resource."""
+    if not frames or frames[-1].event != "ready":
+        raise ValueError("a snapshot ends with ready")
+    if any(frame.event == "reconnect" for frame in frames):
+        raise ValueError("a snapshot never carries a reconnect")
+
+
+class GmSnapshot(_Contract):
+    """The GM channel read as a resource — a stream's opening frames, and the
+    polling mode of ADR RT-9 — ending with ``ready``."""
+
+    schema_version: SchemaVersion
+    frames: Annotated[list[GmEvent], Field(min_length=1, max_length=200)]
+
+    @model_validator(mode="after")
+    def _complete(self) -> Self:
+        _ends_with_ready(self.frames)
+        return self
+
+
 class TableSessionEvent(_EventBase):
-    """A live session as a table client may know it: the generation its frames
-    carry, whether table audio is on (AUDIO-19), and this device's own role."""
+    """A live session as a table client may know it: whether table audio is on
+    (AUDIO-19) and this device's own role. The link generation a frame was
+    produced under is the server's to check, never the client's to see (SEC-15)."""
 
     event: Literal["session"]
-    gen: LinkGeneration
     audio: StrictBool
     role: TableRole
 
@@ -1866,7 +1913,6 @@ class TablePlaying(_Contract):
 
 class TableAudioEvent(_EventBase):
     event: Literal["audio"]
-    gen: LinkGeneration
     slot: AudioSlot
     seq: SlotSequence
     playing: TablePlaying | None
@@ -1878,14 +1924,31 @@ class TableAudioEvent(_EventBase):
         return self
 
 
+class TableReadyEvent(_EventBase):
+    event: Literal["ready"]
+
+
 class TableReconnectEvent(_EventBase):
     event: Literal["reconnect"]
 
 
 TableEvent = Annotated[
-    TableSessionEvent | TableInactiveEvent | TableAudioEvent | TableReconnectEvent,
+    TableSessionEvent | TableInactiveEvent | TableAudioEvent | TableReadyEvent | TableReconnectEvent,
     Field(discriminator="event"),
 ]
+
+
+class TableSnapshot(_Contract):
+    """The table channel read as a resource: the session, one audio frame per
+    slot, later the reveal slots, then ``ready`` (ADR RT-4, RT-9)."""
+
+    schema_version: SchemaVersion
+    frames: Annotated[list[TableEvent], Field(min_length=1, max_length=50)]
+
+    @model_validator(mode="after")
+    def _complete(self) -> Self:
+        _ends_with_ready(self.frames)
+        return self
 
 
 #: Name → validator, in the order ``contracts/workbench/v1/schemas.json`` lists them.
@@ -1930,4 +1993,6 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "TableSessionAnswer": TypeAdapter(TableSessionAnswer),
     "GmEvent": TypeAdapter(GmEvent, config=_HIDE_INPUT),
     "TableEvent": TypeAdapter(TableEvent, config=_HIDE_INPUT),
+    "GmSnapshot": TypeAdapter(GmSnapshot),
+    "TableSnapshot": TypeAdapter(TableSnapshot),
 }
