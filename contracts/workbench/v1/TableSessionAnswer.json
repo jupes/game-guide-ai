@@ -1,0 +1,107 @@
+{
+  "schema": "TableSessionAnswer",
+  "direction": "response",
+  "note": "The answer to a session request. A start or a rotation carries the new table token, the one time it is in a body (SEC-8); an end carries none.",
+  "valid": [
+    {
+      "name": "started: the session and its token",
+      "value": {
+        "schema_version": 1,
+        "session": {
+          "schema_version": 1,
+          "session_id": "ses_0c1d2e3f",
+          "campaign_id": "cmp_4b1d9e7a",
+          "state": "live",
+          "gen": 1,
+          "started_at": "2026-09-16T19:31:02Z",
+          "ends_at": "2026-09-17T07:31:02Z",
+          "ended_at": null,
+          "audio": true,
+          "devices": 5
+        },
+        "token": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8u"
+      }
+    },
+    {
+      "name": "ended: the session and no token",
+      "value": {
+        "schema_version": 1,
+        "session": {
+          "schema_version": 1,
+          "session_id": "ses_0c1d2e3f",
+          "campaign_id": "cmp_4b1d9e7a",
+          "state": "ended",
+          "gen": 2,
+          "started_at": "2026-09-16T19:31:02Z",
+          "ends_at": "2026-09-17T07:31:02Z",
+          "ended_at": "2026-09-16T19:31:24Z",
+          "audio": true,
+          "devices": 0
+        },
+        "token": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a live session without its token",
+      "why": "the GM has nothing to show the table",
+      "value": {
+        "schema_version": 1,
+        "session": {
+          "schema_version": 1,
+          "session_id": "ses_0c1d2e3f",
+          "campaign_id": "cmp_4b1d9e7a",
+          "state": "live",
+          "gen": 1,
+          "started_at": "2026-09-16T19:31:02Z",
+          "ends_at": "2026-09-17T07:31:02Z",
+          "ended_at": null,
+          "audio": true,
+          "devices": 5
+        },
+        "token": null
+      }
+    },
+    {
+      "name": "a token for an ended session",
+      "why": "SEC-9: End revokes; there is no link to give",
+      "value": {
+        "schema_version": 1,
+        "session": {
+          "schema_version": 1,
+          "session_id": "ses_0c1d2e3f",
+          "campaign_id": "cmp_4b1d9e7a",
+          "state": "ended",
+          "gen": 2,
+          "started_at": "2026-09-16T19:31:02Z",
+          "ends_at": "2026-09-17T07:31:02Z",
+          "ended_at": "2026-09-16T19:31:24Z",
+          "audio": true,
+          "devices": 0
+        },
+        "token": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8u"
+      }
+    },
+    {
+      "name": "a token of the wrong length",
+      "why": "SEC-5",
+      "value": {
+        "schema_version": 1,
+        "session": {
+          "schema_version": 1,
+          "session_id": "ses_0c1d2e3f",
+          "campaign_id": "cmp_4b1d9e7a",
+          "state": "live",
+          "gen": 1,
+          "started_at": "2026-09-16T19:31:02Z",
+          "ends_at": "2026-09-17T07:31:02Z",
+          "ended_at": null,
+          "audio": true,
+          "devices": 5
+        },
+        "token": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8"
+      }
+    }
+  ]
+}

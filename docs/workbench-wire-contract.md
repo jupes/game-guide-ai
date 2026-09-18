@@ -130,6 +130,10 @@ names it starts fresh rather than reading another caller's status or result
 | AI edit after a conflict | the same `invocation_id`, a fresh `base_write_revision` | starts a new attempt on the new base; the body of a replay is otherwise ignored |
 | Create a document | `command_id`, minted by the client | opens the document already made instead of making a second *Untitled NPC* |
 | Restore, archive, unarchive | none needed | restoring what the document already equals changes nothing and creates no version; the others set a state |
+| Create an asset, create a cue | `command_id`, minted by the client | opens the asset or cue already made; a retried upload sends its bytes to the same asset |
+| Play a cue | `command_id`, and the audio epoch it was issued under (AUDIO-28) | replays the first outcome; a stale epoch is `409 conflict` and is never retried automatically |
+| Stop a cue, Stop all | `command_id`, no epoch (X-3) | is idempotent by nature: a slot the cue no longer holds is left alone (AUDIO-9) |
+| Start, End, Rotate a session | `command_id` | a retried Start opens the session already started rather than a second one; End and Rotate are idempotent on an ended or rotated session |
 
 ### Pagination
 
@@ -165,7 +169,7 @@ What each side does with something it does not know:
 | Server | a *stored* entry with a field it does not declare | reads it the way a client reads a response, **undeclared keys ignored**: the table above lets a newer server add an optional field without a bump, and after a rollback that field must cost the entry nothing. What the server *emits* stays strict |
 | Server | a *stored* entry it cannot validate — written by a newer server before a rollback, or damaged | serves an **`opaque` entry** in its place: same id, same position, a closed `reason` (`newer_version` when the entry's own version, or its embedded invocation's, is beyond this contract; otherwise `unreadable`), and **nothing of the payload**, because a server never forwards bytes it has not validated. The stored row is left untouched, so it renders again after a roll-forward. `entry_or_opaque` in `workbench_contracts.py` is that rule as code, for `1kg.4.2` to call; the row's own columns are the authority on identity and on time |
 | Client | an additive field; an unknown error code | **tolerates** it: the field is stripped and never reaches a component |
-| Client | a newer `schema_version`, an unknown kind, or a payload that does not validate | renders a neutral placeholder — *This result was made by a newer version of Aetheril.* — through `parseToolInvocation`, `parseToolResult`, `parseDocument`, `parseTimelineEntry` and `parseTimelinePage`. It never crashes the thread, and it never falls back to an NPC (X-8, RAIL-24). A page is read entry by entry, so one entry from a newer server becomes one placeholder and the rest of the thread renders (AE-43) |
+| Client | a newer `schema_version`, an unknown kind, or a payload that does not validate | renders a neutral placeholder — *This result was made by a newer version of Aetheril.* — through `parseToolInvocation`, `parseToolResult`, `parseDocument`, `parseTimelineEntry`, `parseTimelinePage`, `parseGmEvent` and `parseTableEvent`. It never crashes the thread, and it never falls back to an NPC (X-8, RAIL-24). A page is read entry by entry, so one entry from a newer server becomes one placeholder and the rest of the thread renders (AE-43) |
 
 That asymmetry — a strict server, a tolerant client — is written into the
 fixtures. An example may carry `"applies_to": ["server"]` or `["client"]`: an
@@ -185,8 +189,9 @@ on both sides.
 | Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, and `conflict` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
 | Per-type document fields | the **frame is done**; `npc` is the worked example | `1kg.5.3` owns all eight types. Until it declares a type's fields that type has the common ones only and everything else fails closed — the same posture as card kinds |
 | Reveal | to do, and **waiting** | the mutation with its epoch, Stop, GM-side state, the allowlisted projection, the table snapshot. Audience and slot shapes must not freeze before `agent-forge-harness-1ir.1.2` (field eligibility, shared with the Live Session Assistant) is decided; it blocks `1kg.7.1`. The projection needs an asset shape of its own — a per-slot opaque handle, never the GM-side `asset_id` — and its join and enrol answers are generic ([threat model](adr/gm-workbench-threat-model.md), §12.2) |
-| Media assets and cues | to do | storage-dependent fields wait for `1kg.1.4` |
-| Realtime events | to do | the payloads are this bead's; the transport is `1kg.1.4`'s |
+| Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
+| Table sessions | **done** | `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest`, `EnrolResponse`, `TableSession`, `TableSessionRequest`, `TableSessionAnswer` |
+| Realtime events | **done** for the decided kinds | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `presence`, `reconnect`) and `TableEvent` (`session`, `inactive`, `audio`, `reconnect`). The `snapshot` and `slot` kinds arrive with the reveal family; the transport is the media ADR's |
 | Tool and document-type registry | `1kg.3.1` | extends `registry.json` |
 
 ## The tool-invocation family
@@ -409,6 +414,87 @@ user id. The server models forbid undeclared fields, and a client strips them.
 
 Entry-to-component adapters are `1kg.3.4`'s; the lane pieces they need
 (`toLaneStatus`, `toLaneSuggestions`) already exist in `adapters.ts`.
+
+## The media family
+
+Bytes travel in **two steps** ([media ADR](adr/gm-workbench-media-and-realtime.md), MS-3 to
+MS-5). First a JSON `AssetCreateRequest` — the kind, the declared media type, the
+declared size and, for an image, its alt text — which the server answers with an
+`Asset` in state `uploading` after checking the quota (SEC-31) and the caps
+(SEC-26). Then one raw request carries the bytes: `Content-Type` is the declared
+type, `Content-Length` is required (411 without it), the body is streamed and
+counted, and there is no multipart and no base64. The asset goes `processing`,
+then `ready` — measured, re-encoded, every tag and picture dropped (SEC-27) — or
+`failed` with a reason from a closed set and never a message. Nothing about an
+asset resolves until it is `ready`; a deleted asset is a 404 like anything else
+missing.
+
+| Kind | Accepted on upload (by magic bytes) | Served as | Caps |
+| --- | --- | --- | --- |
+| `image` | PNG, JPEG, WebP | the same family, re-encoded | 10 MB, 25 megapixels, 8,192 px a side |
+| `audio` | MP3, M4A, OGG, WAV | `audio/mpeg` | 20 MB; ambience 10 minutes, one-shots 30 s (checked when the cue is made) |
+
+A document field of kind `asset` still holds an `AssetRef` — an id, a type, alt
+text — and never a URL (X-10). A **table client** never sees an `asset_id`: it is
+given a `TableAssetRef`, a per-slot opaque handle with the type and the
+dimensions or duration a player needs to lay the asset out, and nothing that
+names it (SEC-15, AUDIO-29). The handle dies with its slot.
+
+A **cue** (LIB-26) is a title and an immutable kind — `ambience` or `one_shot`
+(AUDIO-1, AUDIO-4) — over a ready audio asset. `CueListQuery` is the Cues
+category of the library, with the library's search and sort rules. `CuePlayRequest`
+carries the audio epoch (AUDIO-28) and a `start_offset_ms` that is `0` today and
+stays for forward compatibility (AUDIO-8); `loop` on a one-shot is refused
+against the cue's kind (AUDIO-3). `CueStopRequest` names a cue, or `null` for
+Stop all (AUDIO-9), and carries no epoch, because a Stop is never stale (X-3).
+
+## The table-session family
+
+Four bearer secrets exist (threat model §6.2); two of them are on the wire, each
+exactly once, in a POST body: the **table token** a table link carries and the
+**enrolment code** a personal link carries. Both are 32 CSPRNG bytes as
+`secrets.token_urlsafe` spells them — 43 base64url characters — and the contract
+pins that length. Neither ever appears in a URL the server sees (REVEAL-19).
+
+| Request | Answer |
+| --- | --- |
+| `TableJoinRequest` — the token | `TableJoinResponse`: `joined` with the device's role (`participant`, or `guest` with TABLE-13's line), `full` (SEC-10), or `inactive` — the one answer for a wrong, ended, expired or rotated token (TABLE-9). No reason, ever |
+| `EnrolRequest` — the code | `EnrolResponse`: `enrolled` or `inactive` (TABLE-16). No reason, ever |
+| `TableSessionRequest` — `start`, `end` or `rotate`, idempotent by `command_id`; only `rotate` may also reset personal links (REVEAL-17) | `TableSessionAnswer`: the `TableSession` and, for a start or a rotation, the new token — the one time a token is in a body. An end carries `null` |
+
+`TableSession` is the GM's view: state, link generation, when it started and
+ends, whether table audio is on, and how many devices hold a credential. It never
+carries the token: a token is not re-readable.
+
+## The realtime family
+
+The transport is server-sent events (media ADR, RT-1 to RT-4): one stream per GM
+tab on the campaign, one per table device, every command a POST. Each frame is
+one event whose `data:` is one JSON object of this family, with its own
+`schema_version`; the heartbeat is an SSE comment line, not an event, and
+`retry:` is one second. A stream begins with a snapshot and is closed by the
+server at 280 s with a `reconnect` event, after which the client reopens and
+takes a fresh snapshot; nothing held before a reconnect is trusted afterwards
+(TABLE-7, AUDIO-15).
+
+Two channels, two unions, because they may not carry the same things (SEC-15,
+threat model §8.3):
+
+| Channel | Kinds | Carries |
+| --- | --- | --- |
+| GM, `GmEvent` | `tool_lane`, `edit_lane`, `session`, `audio`, `presence`, `reconnect` | lane status with the embedded invocation; the `TableSession`; audio slots by cue id and title; presence with participants' aliases and guest counts (AUDIO-21) |
+| Table, `TableEvent` | `session`, `inactive`, `audio`, `reconnect` | the link generation, whether table audio is on and this device's own role; the one generic inactive event, after which the connection closes (TABLE-9); audio slots by handle, never a title (AUDIO-29) |
+
+Every audio frame names its slot and the slot's sequence (AUDIO-15: per slot,
+monotonic, assigned by the database) and the link generation it was produced
+under (SEC-9): a client applies a frame only above its mark for that slot, and a
+server writes a frame only to a stream of the same generation. A one-shot never
+loops and is at most 30 s, on both channels. The `snapshot` and `slot` kinds —
+the reveal projection — arrive with the reveal family once
+`agent-forge-harness-1ir.1.2` is decided; until then a table stream opens with a
+`session` frame and one `audio` frame per slot. Adding those kinds before v1 is
+declared complete is not a version bump; `parseGmEvent` and `parseTableEvent`
+already read an unknown kind as a placeholder.
 
 ## Legacy compatibility
 

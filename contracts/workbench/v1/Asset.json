@@ -1,0 +1,355 @@
+{
+  "schema": "Asset",
+  "direction": "response",
+  "note": "The GM-side asset resource. Dimensions and duration exist only once the bytes are processed (ADR MS-3); a failure carries a closed reason and never a message; processed audio is always audio/mpeg (ADR MS-6).",
+  "valid": [
+    {
+      "name": "a ready portrait",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "ready",
+        "media_type": "image/webp",
+        "size_bytes": 812304,
+        "width": 1024,
+        "height": 1280,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "ready audio, transcoded",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_9a8b7c6d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "audio",
+        "state": "ready",
+        "media_type": "audio/mpeg",
+        "size_bytes": 4900112,
+        "width": null,
+        "height": null,
+        "duration_ms": 300000,
+        "alt": null,
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "an asset whose bytes have not arrived",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "uploading",
+        "media_type": "image/png",
+        "size_bytes": 2048000,
+        "width": null,
+        "height": null,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:02Z"
+      }
+    },
+    {
+      "name": "an asset being processed",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "processing",
+        "media_type": "image/png",
+        "size_bytes": 2048000,
+        "width": null,
+        "height": null,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:02Z"
+      }
+    },
+    {
+      "name": "a failed asset says why with a closed reason",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "failed",
+        "media_type": "image/png",
+        "size_bytes": 2048000,
+        "width": null,
+        "height": null,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": "too_many_pixels",
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a client strips a field a newer server added",
+      "applies_to": [
+        "client"
+      ],
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "ready",
+        "media_type": "image/webp",
+        "size_bytes": 812304,
+        "width": 1024,
+        "height": 1280,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "blurhash": "LEHV6nWB2yk8pyo0adR*.7kCMdnj"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a ready image without its dimensions",
+      "why": "a ready image has its dimensions",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "ready",
+        "media_type": "image/webp",
+        "size_bytes": 812304,
+        "width": null,
+        "height": null,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "dimensions before the bytes were processed",
+      "why": "nothing is measured until processing succeeds (SEC-27)",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "uploading",
+        "media_type": "image/png",
+        "size_bytes": 2048000,
+        "width": 1024,
+        "height": 1280,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:02Z"
+      }
+    },
+    {
+      "name": "a failure without a reason",
+      "why": "every failed asset says why, from the closed set",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "failed",
+        "media_type": "image/png",
+        "size_bytes": 2048000,
+        "width": null,
+        "height": null,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a reason on a ready asset",
+      "why": "only a failed asset carries a failure",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "ready",
+        "media_type": "image/webp",
+        "size_bytes": 812304,
+        "width": 1024,
+        "height": 1280,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": "unreadable",
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "ready audio that is not audio/mpeg",
+      "why": "processed audio is one format (ADR MS-6)",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_9a8b7c6d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "audio",
+        "state": "ready",
+        "media_type": "audio/wav",
+        "size_bytes": 4900112,
+        "width": null,
+        "height": null,
+        "duration_ms": 300000,
+        "alt": null,
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "an image over 25 megapixels",
+      "why": "SEC-26: sized to the instance's memory",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "ready",
+        "media_type": "image/webp",
+        "size_bytes": 812304,
+        "width": 5001,
+        "height": 5000,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a side over 8,192 px",
+      "why": "SEC-26",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "ready",
+        "media_type": "image/webp",
+        "size_bytes": 812304,
+        "width": 8193,
+        "height": 10,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "alt text on audio",
+      "why": "AUDIO-29",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_9a8b7c6d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "audio",
+        "state": "ready",
+        "media_type": "audio/mpeg",
+        "size_bytes": 4900112,
+        "width": null,
+        "height": null,
+        "duration_ms": 300000,
+        "alt": "Harbour at night",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "the tombstone state",
+      "why": "a deleted asset is never served; it is a 404 like anything else missing (SEC-3)",
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "deleted",
+        "media_type": "image/webp",
+        "size_bytes": 812304,
+        "width": 1024,
+        "height": 1280,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a URL on the asset",
+      "why": "X-10: assets are named by id and served same-origin (SEC-16)",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "ready",
+        "media_type": "image/webp",
+        "size_bytes": 812304,
+        "width": 1024,
+        "height": 1280,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "url": "https://storage.example.test/o/abc"
+      }
+    },
+    {
+      "name": "the uploaded filename",
+      "why": "SEC-28: a filename is private text and is not stored on the asset",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "asset_id": "ast_77c1d0e2",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "state": "ready",
+        "media_type": "image/webp",
+        "size_bytes": 812304,
+        "width": 1024,
+        "height": 1280,
+        "duration_ms": null,
+        "alt": "A gaunt woman in salt-stained vestments",
+        "failure": null,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "filename": "strahd_true_form.png"
+      }
+    }
+  ]
+}

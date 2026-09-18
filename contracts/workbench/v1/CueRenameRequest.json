@@ -1,0 +1,32 @@
+{
+  "schema": "CueRenameRequest",
+  "direction": "request",
+  "valid": [
+    {
+      "name": "a new title",
+      "value": {
+        "schema_version": 1,
+        "title": "Harbour, after midnight"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "changing the kind",
+      "why": "AUDIO-4: kind is immutable after upload; changing it means uploading again",
+      "value": {
+        "schema_version": 1,
+        "title": "Harbour at night",
+        "kind": "one_shot"
+      }
+    },
+    {
+      "name": "a title of 201 characters",
+      "why": "a title is at most 200 characters",
+      "value": {
+        "schema_version": 1,
+        "title": "@repeat:a:201"
+      }
+    }
+  ]
+}

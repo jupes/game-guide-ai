@@ -117,6 +117,10 @@ def test_registry_constants_match_the_shared_registry() -> None:
         assert (card.value if card else None) == tool["card_kind"]
 
     assert [doc_type.value for doc_type in wc.DocumentTypeId] == [d["id"] for d in registry["document_types"]]
+    assert [kind.value for kind in wc.AssetKind] == registry["asset_kinds"]
+    assert {kind.value: list(types) for kind, types in wc.MEDIA_TYPES.items()} == registry["media_types"]
+    assert [kind.value for kind in wc.CueKind] == registry["cue_kinds"]
+    assert [slot.value for slot in wc.AudioSlot] == registry["audio_slots"]
     assert [kind.value for kind in wc.FieldKind] == registry["field_kinds"]
     assert {key: kind.value for key, kind in wc.COMMON_FIELDS.items()} == registry["common_fields"]
     for doc_type in registry["document_types"]:
@@ -623,6 +627,63 @@ def test_a_write_revision_survives_javascript() -> None:
     assert top.validate_python(wc.WRITE_REVISION_MAX) == wc.WRITE_REVISION_MAX
     with pytest.raises(ValidationError):
         top.validate_python(wc.WRITE_REVISION_MAX + 1)
+
+
+# ── Media, sessions and realtime ─────────────────────────────────────────────
+
+
+def test_the_event_kind_vocabularies_are_the_unions() -> None:
+    """What ``1kg.7.5`` and ``1kg.8.6`` emit is pinned to the models, per channel."""
+    for union, kinds in ((wc.GmEvent, {"tool_lane", "edit_lane", "session", "audio", "presence", "reconnect"}),
+                         (wc.TableEvent, {"session", "inactive", "audio", "reconnect"})):
+        tags = {get_args(member.model_fields["event"].annotation)[0] for member in get_args(get_args(union)[0])}
+        assert tags == kinds
+
+
+def test_a_table_secret_is_what_the_server_mints() -> None:
+    """SEC-5: 32 bytes from the CSPRNG, as ``secrets.token_urlsafe`` spells them."""
+    import secrets
+
+    adapter = TypeAdapter(wc.TableSecret)
+    for _ in range(20):
+        adapter.validate_python(secrets.token_urlsafe(32))
+    for wrong in (secrets.token_urlsafe(31), secrets.token_urlsafe(33), secrets.token_hex(32)):
+        with pytest.raises(ValidationError):
+            adapter.validate_python(wrong)
+
+
+def test_a_session_answer_carries_the_token_once_and_the_session_never_does() -> None:
+    fixture = json.loads((FIXTURES / "TableSessionAnswer.json").read_text(encoding="utf-8"))
+    started = next(e["value"] for e in fixture["valid"] if e["name"].startswith("started"))
+    answer = wc.TableSessionAnswer.model_validate(started)
+    dumped = answer.model_dump(mode="json")
+    assert dumped["token"] == started["token"]
+    assert "token" not in dumped["session"]
+    with pytest.raises(ValidationError):
+        wc.TableSession.model_validate({**started["session"], "token": started["token"]})
+
+
+def test_an_asset_is_measured_only_once_it_is_ready() -> None:
+    fixture = json.loads((FIXTURES / "Asset.json").read_text(encoding="utf-8"))
+    ready = next(e["value"] for e in fixture["valid"] if e["name"] == "a ready portrait")
+    asset = wc.Asset.model_validate(ready)
+    assert (asset.width, asset.height, asset.duration_ms) == (1024, 1280, None)
+    with pytest.raises(ValidationError, match="dimensions"):
+        wc.Asset.model_validate({**ready, "state": "processing"})
+    with pytest.raises(ValidationError, match="pixels"):
+        wc.Asset.model_validate({**ready, "width": 5001, "height": 5000})
+
+
+def test_a_one_shot_never_loops_on_either_channel() -> None:
+    gm = json.loads((FIXTURES / "GmEvent.json").read_text(encoding="utf-8"))
+    table = json.loads((FIXTURES / "TableEvent.json").read_text(encoding="utf-8"))
+    gm_playing = next(e["value"] for e in gm["valid"] if e["name"].startswith("ambience is playing"))
+    table_playing = next(e["value"] for e in table["valid"] if e["name"].startswith("ambience is playing"))
+    for schema, frame in (("GmEvent", gm_playing), ("TableEvent", table_playing)):
+        short = {**frame["playing"], "loop": False, "duration_ms": 12_000}
+        wc.CONTRACT_SCHEMAS[schema].validate_python({**frame, "slot": "one_shot", "playing": short})
+        with pytest.raises(ValidationError, match="one-shot"):
+            wc.CONTRACT_SCHEMAS[schema].validate_python({**frame, "slot": "one_shot"})
 
 
 def test_a_stat_block_inside_an_entry_keeps_its_wire_alias() -> None:

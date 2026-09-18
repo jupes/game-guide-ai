@@ -17,11 +17,14 @@ import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
 import type { ZodType } from 'zod'
 import {
+  ASSET_KINDS,
+  AUDIO_SLOTS,
   BRIEF_POLICY,
   CARD_KINDS,
   COMMON_FIELDS,
   CONTRACT_SCHEMAS,
   CONTRACT_VERSION,
+  CUE_KINDS,
   DOCUMENT_TYPE_IDS,
   DOC_TYPE_FIELDS,
   DOC_TYPE_LIBRARY_CATEGORY,
@@ -31,18 +34,25 @@ import {
   EditRequestSchema,
   FIELD_KINDS,
   FieldPatchRequestSchema,
+  GM_EVENT_KINDS,
+  GmEventSchema,
   LIBRARY_CATEGORIES,
   LibraryQuerySchema,
+  MEDIA_TYPES,
   RESULT_KINDS,
+  TABLE_EVENT_KINDS,
   TOOL_CARD_KIND,
   TOOL_CREATES_DOC_TYPE,
   TOOL_IDS,
   TOOL_RESULT_KIND,
+  TableEventSchema,
   ToolInvocationRequestSchema,
   codePointLength,
   isKnownErrorCode,
   isWellFormedText,
   parseDocument,
+  parseGmEvent,
+  parseTableEvent,
   parseTimelineEntry,
   parseTimelinePage,
   parseToolInvocation,
@@ -162,8 +172,19 @@ describe('registry facts', () => {
     field_kinds: string[]
     common_fields: Record<string, string>
     document_types: Array<{ id: string; library_category: string; type_version: number; fields: Record<string, string> }>
+    asset_kinds: string[]
+    media_types: Record<string, string[]>
+    cue_kinds: string[]
+    audio_slots: string[]
   }
   const registry = readJson<Registry>(join(FIXTURES, 'registry.json'))
+
+  it('pin the media, cue and slot vocabularies', () => {
+    expect([...ASSET_KINDS]).toEqual(registry.asset_kinds)
+    expect(MEDIA_TYPES).toEqual(registry.media_types)
+    expect([...CUE_KINDS]).toEqual(registry.cue_kinds)
+    expect([...AUDIO_SLOTS]).toEqual(registry.audio_slots)
+  })
 
   it('match the shared registry, which 1kg.3.1 extends', () => {
     expect(registry.contract_version).toBe(CONTRACT_VERSION)
@@ -531,6 +552,52 @@ describe('reading a document (X-8, CANVAS-19)', () => {
   it('never throws on junk', () => {
     for (const junk of [null, undefined, 42, 'x', [], {}, { type: 'npc' }, { ...dossier, data: null }, { ...dossier, data: [] }]) {
       expect(parseDocument(junk).kind).toBe('unknown')
+    }
+  })
+})
+
+describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
+  const gm = readJson<Fixture>(join(FIXTURES, 'GmEvent.json'))
+  const table = readJson<Fixture>(join(FIXTURES, 'TableEvent.json'))
+  const first = (doc: Fixture, prefix: string) => {
+    const found = doc.valid.find((example) => example.name.startsWith(prefix))
+    if (!found) throw new Error(`no fixture example starting with ${prefix}`)
+    return found.value as Record<string, unknown>
+  }
+
+  it('pins each channel vocabulary to its union', () => {
+    expect(GmEventSchema.options.map((option) => option.shape.event.value).sort()).toEqual([...GM_EVENT_KINDS].sort())
+    expect(TableEventSchema.options.map((option) => option.shape.event.value).sort()).toEqual([...TABLE_EVENT_KINDS].sort())
+  })
+
+  it('reads the frames it understands', () => {
+    for (const example of gm.valid) expect(parseGmEvent(expand(example.value)).kind).toBe('ok')
+    for (const example of table.valid) expect(parseTableEvent(expand(example.value)).kind).toBe('ok')
+  })
+
+  it('turns a kind it does not know — snapshot and slot until the reveal family lands — into a placeholder', () => {
+    expect(parseGmEvent({ schema_version: 1, event: 'snapshot', slots: [] })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(parseTableEvent({ schema_version: 1, event: 'slot', slot: 'table', seq: 1 })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    // Presence never travels on the table channel; to a table client the kind is simply unknown.
+    expect(parseTableEvent(first(gm, 'who is listening'))).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+  })
+
+  it('reads a newer version, or a newer result kind inside a lane frame, as the future', () => {
+    expect(parseGmEvent({ schema_version: 2, event: 'reconnect' })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+    const lane = first(gm, 'a tool lane finished')
+    const invocation = lane.invocation as Record<string, unknown>
+    expect(parseGmEvent({ ...lane, invocation: { ...invocation, schema_version: 2 } })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+    expect(parseGmEvent({ ...lane, invocation: { ...invocation, result: { result_kind: 'table', tool_id: 'npc' } } })).toEqual({
+      kind: 'unknown',
+      reason: 'unknown_kind',
+    })
+  })
+
+  it('reports a broken frame as invalid and never throws', () => {
+    expect(parseTableEvent({ ...first(table, 'ambience is playing'), slot: 'one_shot' })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    for (const junk of [null, undefined, 42, 'x', [], {}, { event: 7 }]) {
+      expect(parseGmEvent(junk).kind).toBe('unknown')
+      expect(parseTableEvent(junk).kind).toBe('unknown')
     }
   })
 })

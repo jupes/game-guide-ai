@@ -1,0 +1,52 @@
+{
+  "schema": "CueStopRequest",
+  "direction": "request",
+  "note": "AUDIO-9: a card's Stop names its cue and clears a slot only if that cue still holds it; the strip's Stop is Stop all (cue_id null). A Stop carries no epoch and is never queued (X-3).",
+  "valid": [
+    {
+      "name": "stop one cue",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_8b9c0d1e2f3a4b5c",
+        "cue_id": "cue_3f9a1b2c"
+      }
+    },
+    {
+      "name": "stop all",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_8b9c0d1e2f3a4b5d",
+        "cue_id": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a Stop with an epoch",
+      "why": "X-3, AUDIO-28: a Stop is never stale, so it carries no epoch; a request is strict",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_8b9c0d1e2f3a4b5c",
+        "cue_id": "cue_3f9a1b2c",
+        "audio_epoch": 3
+      }
+    },
+    {
+      "name": "no cue key",
+      "why": "Stop all is an explicit null, never a missing key",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_8b9c0d1e2f3a4b5c"
+      }
+    },
+    {
+      "name": "a slot instead of a cue",
+      "why": "a Stop names a cue, so one queued in one tab cannot silence a newer cue from another (AUDIO-9)",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_8b9c0d1e2f3a4b5c",
+        "slot": "ambience"
+      }
+    }
+  ]
+}

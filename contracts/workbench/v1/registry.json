@@ -40,5 +40,12 @@
     { "id": "character-sheet", "library_category": "documents", "type_version": 1, "fields": {} },
     { "id": "lore", "library_category": "documents", "type_version": 1, "fields": {} },
     { "id": "encounter", "library_category": "documents", "type_version": 1, "fields": {} }
-  ]
+  ],
+  "asset_kinds": ["image", "audio"],
+  "media_types": {
+    "image": ["image/png", "image/jpeg", "image/webp"],
+    "audio": ["audio/mpeg", "audio/mp4", "audio/ogg", "audio/wav"]
+  },
+  "cue_kinds": ["ambience", "one_shot"],
+  "audio_slots": ["ambience", "one_shot"]
 }

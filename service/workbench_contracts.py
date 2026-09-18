@@ -1305,6 +1305,589 @@ def entry_or_opaque(raw: object, *, entry_id: str, created_at: datetime) -> AnyE
     return entry
 
 
+# ── Media assets and cues ────────────────────────────────────────────────────
+#
+# Bytes travel in two steps (``docs/adr/gm-workbench-media-and-realtime.md``,
+# MS-3 to MS-5): a JSON request creates the asset and reserves its declared size
+# against the quota, then one raw request — ``Content-Type`` the declared media
+# type, ``Content-Length`` required — carries the bytes. The state machine and
+# the caps are the ADR's and the threat model's (SEC-26); the shapes are here.
+
+IMAGE_MAX_BYTES = 10_000_000
+AUDIO_MAX_BYTES = 20_000_000
+IMAGE_MAX_SIDE = 8_192
+IMAGE_MAX_PIXELS = 25_000_000
+AMBIENCE_MAX_MS = 600_000
+ONE_SHOT_MAX_MS = 30_000
+ALT_MAX_CHARS = 300
+CUE_TITLE_MAX_CHARS = 200
+CUE_PAGE_MAX_ITEMS = 50
+PRESENCE_MAX_PARTICIPANTS = 100
+#: ``secrets.token_urlsafe(32)``: 32 CSPRNG bytes are 43 base64url characters (SEC-5).
+TABLE_SECRET_CHARS = 43
+
+
+class AssetKind(str, Enum):
+    IMAGE = "image"
+    AUDIO = "audio"
+
+
+class AssetState(str, Enum):
+    """ADR MS-3. ``deleted`` is a tombstone and is never served."""
+
+    UPLOADING = "uploading"
+    PROCESSING = "processing"
+    READY = "ready"
+    FAILED = "failed"
+
+
+class AssetFailure(str, Enum):
+    """Closed and free of user text, so a reason is safe as a metric label."""
+
+    UNSUPPORTED_TYPE = "unsupported_type"
+    TOO_LARGE = "too_large"
+    TOO_MANY_PIXELS = "too_many_pixels"
+    TOO_LONG = "too_long"
+    UNREADABLE = "unreadable"
+    TIMED_OUT = "timed_out"
+    QUOTA_EXCEEDED = "quota_exceeded"
+
+
+#: What a kind accepts, judged by magic bytes on upload (SEC-25). Audio is
+#: transcoded to ``audio/mpeg`` (ADR MS-6), so a ready audio asset is always that.
+MEDIA_TYPES: dict[AssetKind, tuple[str, ...]] = {
+    AssetKind.IMAGE: ("image/png", "image/jpeg", "image/webp"),
+    AssetKind.AUDIO: ("audio/mpeg", "audio/mp4", "audio/ogg", "audio/wav"),
+}
+ASSET_MAX_BYTES: dict[AssetKind, int] = {AssetKind.IMAGE: IMAGE_MAX_BYTES, AssetKind.AUDIO: AUDIO_MAX_BYTES}
+
+MediaType = Annotated[str, StringConstraints(strict=True, pattern=r"^(image|audio)/[a-z0-9.+-]{1,32}$")]
+AltText = Annotated[
+    str, StringConstraints(strict=True, min_length=1, max_length=ALT_MAX_CHARS), AfterValidator(_one_line)
+]
+Pixels = Annotated[WireInt, Field(ge=1, le=IMAGE_MAX_SIDE)]
+DurationMs = Annotated[WireInt, Field(ge=1, le=AMBIENCE_MAX_MS)]
+
+
+def _media_type_fits(kind: AssetKind, media_type: str) -> None:
+    if media_type not in MEDIA_TYPES[kind]:
+        raise ValueError(f"{media_type} is not a type this contract accepts for {kind.value}")
+
+
+def _alt_fits(kind: AssetKind, alt: str | None) -> None:
+    """An image needs alt text (X-10 renders it, and a screen reader hears it);
+    an audio asset carries no text at all — its title is the cue's (AUDIO-29)."""
+    if (kind is AssetKind.IMAGE) != (alt is not None):
+        raise ValueError("an image has alt text and an audio asset has none")
+
+
+class AssetCreateRequest(_Contract):
+    """Step one of an upload: what is coming, so that the quota (SEC-31) and the
+    caps (SEC-26) are checked before a byte is accepted (ADR MS-4)."""
+
+    schema_version: SchemaVersion
+    command_id: CommandId
+    campaign_id: OpaqueId
+    kind: AssetKind
+    media_type: MediaType
+    size_bytes: Annotated[WireInt, Field(ge=1, le=AUDIO_MAX_BYTES)]
+    alt: AltText | None = None
+
+    @model_validator(mode="after")
+    def _fits_its_kind(self) -> Self:
+        _media_type_fits(self.kind, self.media_type)
+        _alt_fits(self.kind, self.alt)
+        if self.size_bytes > ASSET_MAX_BYTES[self.kind]:
+            raise ValueError(f"{self.kind.value} assets are at most {ASSET_MAX_BYTES[self.kind]:,} bytes")
+        return self
+
+
+class Asset(_Contract):
+    """The GM-side asset resource. Dimensions and duration exist only once the
+    bytes are processed; a failure carries a closed reason and never a message."""
+
+    schema_version: SchemaVersion
+    asset_id: OpaqueId
+    campaign_id: OpaqueId
+    kind: AssetKind
+    state: AssetState
+    #: Declared until ``ready``, then the type the server recorded (SEC-19).
+    media_type: MediaType
+    #: Declared until ``ready``, then real.
+    size_bytes: Annotated[WireInt, Field(ge=1, le=AUDIO_MAX_BYTES)]
+    width: Pixels | None
+    height: Pixels | None
+    duration_ms: DurationMs | None
+    alt: AltText | None
+    failure: AssetFailure | None
+    created_at: Timestamp
+    updated_at: Timestamp
+
+    @model_validator(mode="after")
+    def _agrees_with_its_state(self) -> Self:
+        _media_type_fits(self.kind, self.media_type)
+        _alt_fits(self.kind, self.alt)
+        if (self.failure is not None) != (self.state is AssetState.FAILED):
+            raise ValueError("only a failed asset carries a failure, and every failed asset does")
+        ready = self.state is AssetState.READY
+        measured_image = self.width is not None and self.height is not None
+        if (self.kind is AssetKind.IMAGE and ready) != measured_image or (self.kind is AssetKind.AUDIO and ready) != (
+            self.duration_ms is not None
+        ):
+            raise ValueError(
+                "a ready image has its dimensions and a ready audio asset its duration; nothing else has them"
+            )
+        if measured_image and (self.width or 0) * (self.height or 0) > IMAGE_MAX_PIXELS:
+            raise ValueError(f"an image is at most {IMAGE_MAX_PIXELS:,} pixels")
+        if ready and self.kind is AssetKind.AUDIO and self.media_type != "audio/mpeg":
+            raise ValueError("processed audio is audio/mpeg")
+        return self
+
+
+class TableAssetRef(_Contract):
+    """What a table client is given instead of an asset id (SEC-15): a per-slot
+    handle that dies with its slot, the type, and what a player needs to lay it
+    out — never a title, a filename or the GM-side id."""
+
+    handle: OpaqueId
+    kind: AssetKind
+    media_type: MediaType
+    width: Pixels | None
+    height: Pixels | None
+    duration_ms: DurationMs | None
+
+    @model_validator(mode="after")
+    def _measured_for_its_kind(self) -> Self:
+        _media_type_fits(self.kind, self.media_type)
+        image = self.kind is AssetKind.IMAGE
+        if image != (self.width is not None and self.height is not None) or image == (self.duration_ms is not None):
+            raise ValueError("an image handle carries its dimensions and an audio handle its duration")
+        return self
+
+
+class CueKind(str, Enum):
+    """Decision AUDIO-1: one ambience slot, one one-shot slot. A cue's kind is
+    immutable after upload (AUDIO-4)."""
+
+    AMBIENCE = "ambience"
+    ONE_SHOT = "one_shot"
+
+
+CUE_MAX_MS: dict[CueKind, int] = {CueKind.AMBIENCE: AMBIENCE_MAX_MS, CueKind.ONE_SHOT: ONE_SHOT_MAX_MS}
+CueTitle = Annotated[
+    str, StringConstraints(strict=True, min_length=1, max_length=CUE_TITLE_MAX_CHARS), AfterValidator(_one_line)
+]
+
+
+class Cue(_Contract):
+    """A cue record (LIB-26): a title and a kind over a ready audio asset. The
+    GM's own resource; a table client never sees one (AUDIO-29)."""
+
+    schema_version: SchemaVersion
+    cue_id: OpaqueId
+    campaign_id: OpaqueId
+    title: CueTitle
+    kind: CueKind
+    asset_id: OpaqueId
+    duration_ms: DurationMs
+    archived: StrictBool
+    created_at: Timestamp
+    updated_at: Timestamp
+
+    @model_validator(mode="after")
+    def _fits_its_kind(self) -> Self:
+        if self.duration_ms > CUE_MAX_MS[self.kind]:
+            raise ValueError(f"a {self.kind.value} cue is at most {CUE_MAX_MS[self.kind]:,} ms")
+        return self
+
+
+class CueCreateRequest(_Contract):
+    """Upload takes a title and a kind (LIB-26). The asset must be ready audio of
+    a length the kind allows — a state check the route makes (AUDIO-26)."""
+
+    schema_version: SchemaVersion
+    command_id: CommandId
+    campaign_id: OpaqueId
+    asset_id: OpaqueId
+    title: CueTitle
+    kind: CueKind
+
+
+class CueRenameRequest(_Contract):
+    """The title can be edited; the kind cannot (AUDIO-4), so it is not here."""
+
+    schema_version: SchemaVersion
+    title: CueTitle
+
+
+class CueListQuery(_Contract):
+    """The Cues category of the library (LIB-5, LIB-26), with the library's search
+    and sort rules; a request body for the same reason as :class:`LibraryQuery`."""
+
+    schema_version: SchemaVersion
+    campaign_id: OpaqueId
+    search: WireText
+    sort: LibrarySort
+    archived: StrictBool
+    cursor: Cursor | None = None
+    limit: Annotated[WireInt, Field(ge=1, le=CUE_PAGE_MAX_ITEMS)] | None = None
+
+    @field_validator("search")
+    @classmethod
+    def _trimmed_and_bounded(cls, value: str) -> str:
+        trimmed = trim(value)
+        if trimmed and not SEARCH_MIN_CHARS <= len(trimmed) <= SEARCH_MAX_CHARS:
+            raise ValueError(f"a search is {SEARCH_MIN_CHARS} to {SEARCH_MAX_CHARS} characters")
+        return trimmed
+
+
+class CuePage(_Contract):
+    schema_version: SchemaVersion
+    campaign_id: OpaqueId
+    items: Annotated[list[Cue], Field(max_length=CUE_PAGE_MAX_ITEMS)]
+    next_cursor: Cursor | None
+
+
+class AudioSlot(str, Enum):
+    AMBIENCE = "ambience"
+    ONE_SHOT = "one_shot"
+
+
+#: Decision AUDIO-8: a push always starts at zero; the field stays for forward
+#: compatibility, and today only zero is a valid value.
+StartOffsetMs = Annotated[Literal[0], BeforeValidator(_an_integer)]
+#: The audio epoch (AUDIO-28): every Stop and every committed push advances it.
+AudioEpoch = Annotated[WireInt, Field(ge=0, le=WRITE_REVISION_MAX)]
+#: A slot's sequence (AUDIO-15): per slot, monotonic, assigned by the database.
+SlotSequence = Annotated[WireInt, Field(ge=0, le=WRITE_REVISION_MAX)]
+#: A link generation (SEC-9): counts rotations, and every frame names the one it was produced under.
+LinkGeneration = Annotated[WireInt, Field(ge=1, le=WRITE_REVISION_MAX)]
+
+
+class CuePlayRequest(_Contract):
+    """Play to table (AUDIO-8). Idempotent by ``command_id``; a stale epoch is a
+    409 (AUDIO-28). ``loop`` on a one-shot is refused against the cue's kind by
+    the route (AUDIO-3)."""
+
+    schema_version: SchemaVersion
+    command_id: CommandId
+    cue_id: OpaqueId
+    audio_epoch: AudioEpoch
+    loop: StrictBool
+    start_offset_ms: StartOffsetMs = 0
+
+
+class CueStopRequest(_Contract):
+    """Decision AUDIO-9: a card's Stop names its cue and clears a slot only if that
+    cue still holds it; the strip's Stop is Stop all (``cue_id`` null). A Stop
+    carries no epoch and is never queued (X-3)."""
+
+    schema_version: SchemaVersion
+    command_id: CommandId
+    cue_id: OpaqueId | None
+
+
+# ── Table sessions ───────────────────────────────────────────────────────────
+
+#: A table token or an enrolment code as it travels — once, in a POST body (SEC-8, SEC-11).
+TableSecret = Annotated[str, StringConstraints(strict=True, pattern=rf"^[A-Za-z0-9_-]{{{TABLE_SECRET_CHARS}}}$")]
+
+
+class TableRole(str, Enum):
+    PARTICIPANT = "participant"
+    GUEST = "guest"
+
+
+class JoinStatus(str, Enum):
+    """``inactive`` is the one answer for a wrong, ended, expired or rotated token
+    (TABLE-9); ``full`` is the device bound (SEC-10)."""
+
+    JOINED = "joined"
+    FULL = "full"
+    INACTIVE = "inactive"
+
+
+class TableJoinRequest(_Contract):
+    schema_version: SchemaVersion
+    token: TableSecret
+
+
+class TableJoinResponse(_Contract):
+    """One shape for every outcome, and the role the device joined with — a
+    participant, or a guest with TABLE-13's line — only when it joined."""
+
+    schema_version: SchemaVersion
+    status: JoinStatus
+    role: TableRole | None
+
+    @model_validator(mode="after")
+    def _role_only_when_joined(self) -> Self:
+        if (self.role is not None) != (self.status is JoinStatus.JOINED):
+            raise ValueError("a role comes with a join, and only with a join")
+        return self
+
+
+class EnrolStatus(str, Enum):
+    """``inactive`` covers used, replaced, expired and invalid alike (TABLE-16)."""
+
+    ENROLLED = "enrolled"
+    INACTIVE = "inactive"
+
+
+class EnrolRequest(_Contract):
+    schema_version: SchemaVersion
+    code: TableSecret
+
+
+class EnrolResponse(_Contract):
+    schema_version: SchemaVersion
+    status: EnrolStatus
+
+
+class SessionState(str, Enum):
+    LIVE = "live"
+    ENDED = "ended"
+
+
+class TableSession(_Contract):
+    """The GM's view of a session (REVEAL-2, REVEAL-17): its state, its link
+    generation, when it ends, whether table audio is on, and how many devices
+    hold a credential (SEC-10). The token itself is not here — it travels once."""
+
+    schema_version: SchemaVersion
+    session_id: OpaqueId
+    campaign_id: OpaqueId
+    state: SessionState
+    gen: LinkGeneration
+    started_at: Timestamp
+    ends_at: Timestamp
+    ended_at: Timestamp | None
+    audio: StrictBool
+    devices: Annotated[WireInt, Field(ge=0, le=1000)]
+
+    @model_validator(mode="after")
+    def _times_agree(self) -> Self:
+        if (self.ended_at is not None) != (self.state is SessionState.ENDED):
+            raise ValueError("an ended session says when, and a live one does not")
+        if self.ends_at <= self.started_at:
+            raise ValueError("a session ends after it starts")
+        return self
+
+
+class SessionAction(str, Enum):
+    START = "start"
+    END = "end"
+    ROTATE = "rotate"
+
+
+class TableSessionRequest(_Contract):
+    """Start, End and Rotate (REVEAL-17), idempotent by ``command_id``. Rotate may
+    also reset every personal link; nothing else may."""
+
+    schema_version: SchemaVersion
+    command_id: CommandId
+    campaign_id: OpaqueId
+    action: SessionAction
+    reset_personal_links: StrictBool = False
+
+    @model_validator(mode="after")
+    def _reset_only_with_rotate(self) -> Self:
+        if self.reset_personal_links and self.action is not SessionAction.ROTATE:
+            raise ValueError("personal links are reset with a rotation, not with a start or an end")
+        return self
+
+
+class TableSessionAnswer(_Contract):
+    """The answer to a session request. A start or a rotation carries the new
+    table token — the one time it is in a body (SEC-8) — and an end carries none."""
+
+    schema_version: SchemaVersion
+    session: TableSession
+    token: TableSecret | None
+
+    @model_validator(mode="after")
+    def _token_only_while_live(self) -> Self:
+        if (self.token is not None) != (self.session.state is SessionState.LIVE):
+            raise ValueError("a live session answers with its token, and an ended one with none")
+        return self
+
+
+# ── Realtime events ──────────────────────────────────────────────────────────
+#
+# Two channels, two unions (ADR RT-1, threat model 8.3): the GM channel carries
+# lane status, sessions, audio with titles, and presence with aliases; the table
+# channel carries the session, audio by handle, and nothing that names anyone.
+# Every frame carries its own ``schema_version``. The heartbeat is an SSE comment,
+# not an event. The ``snapshot`` and ``slot`` kinds arrive with the reveal family
+# (``agent-forge-harness-1ir.1.2`` first); until v1 is declared complete, adding
+# them is not a version bump.
+
+
+class _EventBase(_Contract):
+    schema_version: SchemaVersion
+
+
+class ToolLaneEvent(_EventBase):
+    """A tool lane's status changed (RAIL-15 to RAIL-27)."""
+
+    event: Literal["tool_lane"]
+    conversation_id: OpaqueId
+    entry_id: OpaqueId
+    invocation: ToolInvocation
+
+
+class EditLaneEvent(_EventBase):
+    event: Literal["edit_lane"]
+    conversation_id: OpaqueId
+    entry_id: OpaqueId
+    invocation: EditInvocation
+
+
+class GmSessionEvent(_EventBase):
+    event: Literal["session"]
+    session: TableSession
+
+
+class GmPlaying(_Contract):
+    """What a slot holds, as the GM sees it: the cue by id and title (AUDIO-11)."""
+
+    cue_id: OpaqueId
+    title: CueTitle
+    started_at: Timestamp
+    start_offset_ms: StartOffsetMs
+    loop: StrictBool
+    duration_ms: DurationMs
+
+
+def _playing_fits_its_slot(slot: AudioSlot, loop: bool, duration_ms: int) -> None:
+    """Decision AUDIO-3: a one-shot never loops, and is at most 30 s."""
+    if slot is AudioSlot.ONE_SHOT and (loop or duration_ms > ONE_SHOT_MAX_MS):
+        raise ValueError("a one-shot never loops and is at most 30 seconds")
+
+
+class GmAudioEvent(_EventBase):
+    event: Literal["audio"]
+    session_id: OpaqueId
+    gen: LinkGeneration
+    slot: AudioSlot
+    seq: SlotSequence
+    playing: GmPlaying | None
+
+    @model_validator(mode="after")
+    def _fits_its_slot(self) -> Self:
+        if self.playing is not None:
+            _playing_fits_its_slot(self.slot, self.playing.loop, self.playing.duration_ms)
+        return self
+
+
+class PresenceAudio(str, Enum):
+    """Decision AUDIO-21, AUDIO-22: listening means playing and unmuted."""
+
+    LISTENING = "listening"
+    MUTED = "muted"
+    PENDING = "pending"
+    ABSENT = "absent"
+
+
+class ParticipantPresence(_Contract):
+    participant_id: OpaqueId
+    #: Decision AUD-11: an alias travels only on the GM's channel.
+    alias: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=60), AfterValidator(_one_line)]
+    audio: PresenceAudio
+
+
+class GuestPresence(_Contract):
+    """Guests are counted, never named (AUDIO-21)."""
+
+    connected: Annotated[WireInt, Field(ge=0, le=1000)]
+    listening: Annotated[WireInt, Field(ge=0, le=1000)]
+    muted: Annotated[WireInt, Field(ge=0, le=1000)]
+    pending: Annotated[WireInt, Field(ge=0, le=1000)]
+
+    @model_validator(mode="after")
+    def _adds_up(self) -> Self:
+        if self.listening + self.muted + self.pending > self.connected:
+            raise ValueError("guest states cannot exceed the guests connected")
+        return self
+
+
+class PresenceEvent(_EventBase):
+    event: Literal["presence"]
+    session_id: OpaqueId
+    gen: LinkGeneration
+    participants: Annotated[list[ParticipantPresence], Field(max_length=PRESENCE_MAX_PARTICIPANTS)]
+    guests: GuestPresence
+
+
+class GmReconnectEvent(_EventBase):
+    """The server is closing this stream on purpose (ADR RT-3); reopen at once."""
+
+    event: Literal["reconnect"]
+
+
+GmEvent = Annotated[
+    ToolLaneEvent | EditLaneEvent | GmSessionEvent | GmAudioEvent | PresenceEvent | GmReconnectEvent,
+    Field(discriminator="event"),
+]
+
+
+class TableSessionEvent(_EventBase):
+    """A live session as a table client may know it: the generation its frames
+    carry, whether table audio is on (AUDIO-19), and this device's own role."""
+
+    event: Literal["session"]
+    gen: LinkGeneration
+    audio: StrictBool
+    role: TableRole
+
+
+class TableInactiveEvent(_EventBase):
+    """Ended, expired or rotated: one generic event, then the connection closes
+    (TABLE-9, SEC-9). It never says which."""
+
+    event: Literal["inactive"]
+
+
+class TablePlaying(_Contract):
+    """What a slot holds, as a table client sees it: a handle, never a title (AUDIO-29)."""
+
+    asset: TableAssetRef
+    started_at: Timestamp
+    start_offset_ms: StartOffsetMs
+    loop: StrictBool
+    duration_ms: DurationMs
+
+    @model_validator(mode="after")
+    def _is_audio(self) -> Self:
+        if self.asset.kind is not AssetKind.AUDIO:
+            raise ValueError("a slot plays audio")
+        return self
+
+
+class TableAudioEvent(_EventBase):
+    event: Literal["audio"]
+    gen: LinkGeneration
+    slot: AudioSlot
+    seq: SlotSequence
+    playing: TablePlaying | None
+
+    @model_validator(mode="after")
+    def _fits_its_slot(self) -> Self:
+        if self.playing is not None:
+            _playing_fits_its_slot(self.slot, self.playing.loop, self.playing.duration_ms)
+        return self
+
+
+class TableReconnectEvent(_EventBase):
+    event: Literal["reconnect"]
+
+
+TableEvent = Annotated[
+    TableSessionEvent | TableInactiveEvent | TableAudioEvent | TableReconnectEvent,
+    Field(discriminator="event"),
+]
+
+
 #: Name → validator, in the order ``contracts/workbench/v1/schemas.json`` lists them.
 CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "Timestamp": TypeAdapter(Timestamp, config=_HIDE_INPUT),
@@ -1328,4 +1911,23 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "LibraryPage": TypeAdapter(LibraryPage),
     "TimelineEntry": _ENTRY_ADAPTER,
     "TimelinePage": TypeAdapter(TimelinePage),
+    "AssetCreateRequest": TypeAdapter(AssetCreateRequest),
+    "Asset": TypeAdapter(Asset),
+    "TableAssetRef": TypeAdapter(TableAssetRef),
+    "Cue": TypeAdapter(Cue),
+    "CueCreateRequest": TypeAdapter(CueCreateRequest),
+    "CueRenameRequest": TypeAdapter(CueRenameRequest),
+    "CueListQuery": TypeAdapter(CueListQuery),
+    "CuePage": TypeAdapter(CuePage),
+    "CuePlayRequest": TypeAdapter(CuePlayRequest),
+    "CueStopRequest": TypeAdapter(CueStopRequest),
+    "TableJoinRequest": TypeAdapter(TableJoinRequest),
+    "TableJoinResponse": TypeAdapter(TableJoinResponse),
+    "EnrolRequest": TypeAdapter(EnrolRequest),
+    "EnrolResponse": TypeAdapter(EnrolResponse),
+    "TableSession": TypeAdapter(TableSession),
+    "TableSessionRequest": TypeAdapter(TableSessionRequest),
+    "TableSessionAnswer": TypeAdapter(TableSessionAnswer),
+    "GmEvent": TypeAdapter(GmEvent, config=_HIDE_INPUT),
+    "TableEvent": TypeAdapter(TableEvent, config=_HIDE_INPUT),
 }

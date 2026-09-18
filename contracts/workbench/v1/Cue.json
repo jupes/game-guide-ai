@@ -1,0 +1,153 @@
+{
+  "schema": "Cue",
+  "direction": "response",
+  "note": "A cue record (LIB-26, AUDIO-4): a title and an immutable kind over a ready audio asset. The GM's own resource; a table client never sees one (AUDIO-29).",
+  "valid": [
+    {
+      "name": "an ambience cue of five minutes",
+      "value": {
+        "schema_version": 1,
+        "cue_id": "cue_3f9a1b2c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Harbour at night",
+        "kind": "ambience",
+        "asset_id": "ast_9a8b7c6d",
+        "duration_ms": 300000,
+        "archived": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a one-shot",
+      "value": {
+        "schema_version": 1,
+        "cue_id": "cue_9d8e7f6a",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Ambush!",
+        "kind": "one_shot",
+        "asset_id": "ast_0f1e2d3c",
+        "duration_ms": 12000,
+        "archived": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "an archived cue",
+      "value": {
+        "schema_version": 1,
+        "cue_id": "cue_3f9a1b2c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Harbour at night",
+        "kind": "ambience",
+        "asset_id": "ast_9a8b7c6d",
+        "duration_ms": 300000,
+        "archived": true,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a one-shot over thirty seconds",
+      "why": "AUDIO-26: one-shots are at most 30 s; ambience up to 10 minutes",
+      "value": {
+        "schema_version": 1,
+        "cue_id": "cue_9d8e7f6a",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Ambush!",
+        "kind": "one_shot",
+        "asset_id": "ast_0f1e2d3c",
+        "duration_ms": 31000,
+        "archived": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "ambience over ten minutes",
+      "why": "AUDIO-26",
+      "value": {
+        "schema_version": 1,
+        "cue_id": "cue_3f9a1b2c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Harbour at night",
+        "kind": "ambience",
+        "asset_id": "ast_9a8b7c6d",
+        "duration_ms": 600001,
+        "archived": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a title with a line break",
+      "why": "a title is one line",
+      "value": {
+        "schema_version": 1,
+        "cue_id": "cue_3f9a1b2c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Harbour\nat night",
+        "kind": "ambience",
+        "asset_id": "ast_9a8b7c6d",
+        "duration_ms": 300000,
+        "archived": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a kind that does not exist",
+      "why": "ambience or one_shot (AUDIO-1)",
+      "value": {
+        "schema_version": 1,
+        "cue_id": "cue_3f9a1b2c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Harbour at night",
+        "kind": "music",
+        "asset_id": "ast_9a8b7c6d",
+        "duration_ms": 300000,
+        "archived": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "no asset",
+      "why": "a cue is a title over an asset",
+      "value": {
+        "schema_version": 1,
+        "cue_id": "cue_3f9a1b2c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Harbour at night",
+        "kind": "ambience",
+        "duration_ms": 300000,
+        "archived": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a filename on the cue",
+      "why": "SEC-28: private text, never stored on the record",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "cue_id": "cue_3f9a1b2c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Harbour at night",
+        "kind": "ambience",
+        "asset_id": "ast_9a8b7c6d",
+        "duration_ms": 300000,
+        "archived": false,
+        "created_at": "2026-09-16T19:31:02Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "filename": "harbour.mp3"
+      }
+    }
+  ]
+}

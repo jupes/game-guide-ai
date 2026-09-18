@@ -1010,6 +1010,462 @@ export const TimelinePageSchema = z.object({
 })
 export type TimelinePage = z.infer<typeof TimelinePageSchema>
 
+// ── Media assets and cues ────────────────────────────────────────────────────
+// Bytes travel in two steps (docs/adr/gm-workbench-media-and-realtime.md, MS-3 to
+// MS-5): a JSON request creates the asset and reserves its declared size, then
+// one raw request — Content-Type the declared type, Content-Length required —
+// carries the bytes. The caps are the threat model's (SEC-26).
+
+export const IMAGE_MAX_BYTES = 10_000_000
+export const AUDIO_MAX_BYTES = 20_000_000
+export const IMAGE_MAX_SIDE = 8192
+export const IMAGE_MAX_PIXELS = 25_000_000
+export const AMBIENCE_MAX_MS = 600_000
+export const ONE_SHOT_MAX_MS = 30_000
+export const ALT_MAX_CHARS = 300
+export const CUE_TITLE_MAX_CHARS = 200
+export const CUE_PAGE_MAX_ITEMS = 50
+export const PRESENCE_MAX_PARTICIPANTS = 100
+/** `secrets.token_urlsafe(32)`: 32 CSPRNG bytes are 43 base64url characters (SEC-5). */
+export const TABLE_SECRET_CHARS = 43
+
+export const ASSET_KINDS = ['image', 'audio'] as const
+export type AssetKind = (typeof ASSET_KINDS)[number]
+/** ADR MS-3. `deleted` is a tombstone and is never served. */
+export const ASSET_STATES = ['uploading', 'processing', 'ready', 'failed'] as const
+/** Closed and free of user text, so a reason is safe as a metric label. */
+export const ASSET_FAILURES = [
+  'unsupported_type', 'too_large', 'too_many_pixels', 'too_long', 'unreadable', 'timed_out', 'quota_exceeded',
+] as const
+/** What a kind accepts, judged by magic bytes on upload (SEC-25); processed audio is always `audio/mpeg`. */
+export const MEDIA_TYPES: Record<AssetKind, readonly string[]> = {
+  image: ['image/png', 'image/jpeg', 'image/webp'],
+  audio: ['audio/mpeg', 'audio/mp4', 'audio/ogg', 'audio/wav'],
+}
+const ASSET_MAX_BYTES: Record<AssetKind, number> = { image: IMAGE_MAX_BYTES, audio: AUDIO_MAX_BYTES }
+/** AUDIO-1: one ambience slot, one one-shot slot; a cue's kind is immutable (AUDIO-4). */
+export const CUE_KINDS = ['ambience', 'one_shot'] as const
+export type CueKind = (typeof CUE_KINDS)[number]
+export const AUDIO_SLOTS = ['ambience', 'one_shot'] as const
+const CUE_MAX_MS: Record<CueKind, number> = { ambience: AMBIENCE_MAX_MS, one_shot: ONE_SHOT_MAX_MS }
+export const TABLE_ROLES = ['participant', 'guest'] as const
+export const JOIN_STATUSES = ['joined', 'full', 'inactive'] as const
+export const ENROL_STATUSES = ['enrolled', 'inactive'] as const
+export const SESSION_STATES = ['live', 'ended'] as const
+export const SESSION_ACTIONS = ['start', 'end', 'rotate'] as const
+/** AUDIO-21, AUDIO-22: listening means playing and unmuted. */
+export const PRESENCE_AUDIO = ['listening', 'muted', 'pending', 'absent'] as const
+export const GM_EVENT_KINDS = ['tool_lane', 'edit_lane', 'session', 'audio', 'presence', 'reconnect'] as const
+export const TABLE_EVENT_KINDS = ['session', 'inactive', 'audio', 'reconnect'] as const
+
+const MediaTypeSchema = z.string().regex(/^(image|audio)\/[a-z0-9.+-]{1,32}$/)
+const AltTextSchema = oneLine(1, ALT_MAX_CHARS)
+const PixelsSchema = z.number().int().min(1).max(IMAGE_MAX_SIDE)
+const DurationMsSchema = z.number().int().min(1).max(AMBIENCE_MAX_MS)
+const CueTitleSchema = oneLine(1, CUE_TITLE_MAX_CHARS)
+const mediaTypeFits = (kind: AssetKind, mediaType: string) => MEDIA_TYPES[kind].includes(mediaType)
+/** An image needs alt text; an audio asset carries no text at all — its title is the cue's (AUDIO-29). */
+const altFits = (kind: AssetKind, alt: string | null | undefined) => (kind === 'image') === (alt != null)
+const MEDIA_TYPE_ISSUE = { path: ['media_type'], message: 'not a type this kind accepts' }
+const ALT_ISSUE = { path: ['alt'], message: 'an image has alt text and an audio asset has none' }
+
+/** Step one of an upload: what is coming, so the quota and the caps are checked before a byte (ADR MS-4). */
+export const AssetCreateRequestSchema = refusingProtoKeys(
+  z
+    .strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      command_id: CommandIdSchema,
+      campaign_id: OpaqueIdSchema,
+      kind: z.enum(ASSET_KINDS),
+      media_type: MediaTypeSchema,
+      size_bytes: z.number().int().min(1).max(AUDIO_MAX_BYTES),
+      alt: AltTextSchema.nullish(),
+    })
+    .refine((request) => mediaTypeFits(request.kind, request.media_type), MEDIA_TYPE_ISSUE)
+    .refine((request) => altFits(request.kind, request.alt), ALT_ISSUE)
+    .refine((request) => request.size_bytes <= ASSET_MAX_BYTES[request.kind], {
+      path: ['size_bytes'],
+      message: 'over the cap for its kind',
+    }),
+)
+export type AssetCreateRequest = z.infer<typeof AssetCreateRequestSchema>
+
+/** The GM-side asset resource. Dimensions and duration exist only once the bytes
+ * are processed; a failure carries a closed reason and never a message. */
+export const AssetSchema = z
+  .object({
+    schema_version: z.literal(CONTRACT_VERSION),
+    asset_id: OpaqueIdSchema,
+    campaign_id: OpaqueIdSchema,
+    kind: z.enum(ASSET_KINDS),
+    state: z.enum(ASSET_STATES),
+    media_type: MediaTypeSchema,
+    size_bytes: z.number().int().min(1).max(AUDIO_MAX_BYTES),
+    width: PixelsSchema.nullable(),
+    height: PixelsSchema.nullable(),
+    duration_ms: DurationMsSchema.nullable(),
+    alt: AltTextSchema.nullable(),
+    failure: z.enum(ASSET_FAILURES).nullable(),
+    created_at: TimestampSchema,
+    updated_at: TimestampSchema,
+  })
+  .refine((asset) => mediaTypeFits(asset.kind, asset.media_type), MEDIA_TYPE_ISSUE)
+  .refine((asset) => altFits(asset.kind, asset.alt), ALT_ISSUE)
+  .refine((asset) => (asset.failure !== null) === (asset.state === 'failed'), {
+    path: ['failure'],
+    message: 'only a failed asset carries a failure, and every failed asset does',
+  })
+  .refine(
+    (asset) => {
+      const ready = asset.state === 'ready'
+      const measured = asset.width !== null && asset.height !== null
+      return (asset.kind === 'image' && ready) === measured && (asset.kind === 'audio' && ready) === (asset.duration_ms !== null)
+    },
+    { path: ['state'], message: 'a ready image has its dimensions, a ready audio asset its duration, and nothing else has them' },
+  )
+  .refine((asset) => asset.width === null || asset.height === null || asset.width * asset.height <= IMAGE_MAX_PIXELS, {
+    path: ['width'],
+    message: `an image is at most ${IMAGE_MAX_PIXELS} pixels`,
+  })
+  .refine((asset) => !(asset.state === 'ready' && asset.kind === 'audio') || asset.media_type === 'audio/mpeg', {
+    path: ['media_type'],
+    message: 'processed audio is audio/mpeg',
+  })
+export type Asset = z.infer<typeof AssetSchema>
+
+/** What a table client is given instead of an asset id (SEC-15): a per-slot handle
+ * that dies with its slot, the type, and what a player needs to lay it out. */
+export const TableAssetRefSchema = z
+  .object({
+    handle: OpaqueIdSchema,
+    kind: z.enum(ASSET_KINDS),
+    media_type: MediaTypeSchema,
+    width: PixelsSchema.nullable(),
+    height: PixelsSchema.nullable(),
+    duration_ms: DurationMsSchema.nullable(),
+  })
+  .refine((ref) => mediaTypeFits(ref.kind, ref.media_type), MEDIA_TYPE_ISSUE)
+  .refine(
+    (ref) => {
+      const image = ref.kind === 'image'
+      return image === (ref.width !== null && ref.height !== null) && image !== (ref.duration_ms !== null)
+    },
+    { path: ['kind'], message: 'an image handle carries its dimensions and an audio handle its duration' },
+  )
+export type TableAssetRef = z.infer<typeof TableAssetRefSchema>
+
+/** A cue record (LIB-26): a title and an immutable kind over a ready audio asset. */
+export const CueSchema = z
+  .object({
+    schema_version: z.literal(CONTRACT_VERSION),
+    cue_id: OpaqueIdSchema,
+    campaign_id: OpaqueIdSchema,
+    title: CueTitleSchema,
+    kind: z.enum(CUE_KINDS),
+    asset_id: OpaqueIdSchema,
+    duration_ms: DurationMsSchema,
+    archived: z.boolean(),
+    created_at: TimestampSchema,
+    updated_at: TimestampSchema,
+  })
+  .refine((cue) => cue.duration_ms <= CUE_MAX_MS[cue.kind], { path: ['duration_ms'], message: 'too long for its kind' })
+export type Cue = z.infer<typeof CueSchema>
+
+export const CueCreateRequestSchema = refusingProtoKeys(
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    command_id: CommandIdSchema,
+    campaign_id: OpaqueIdSchema,
+    asset_id: OpaqueIdSchema,
+    title: CueTitleSchema,
+    kind: z.enum(CUE_KINDS),
+  }),
+)
+export type CueCreateRequest = z.infer<typeof CueCreateRequestSchema>
+
+/** The title can be edited; the kind cannot (AUDIO-4), so it is not here. */
+export const CueRenameRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), title: CueTitleSchema }),
+)
+export type CueRenameRequest = z.infer<typeof CueRenameRequestSchema>
+
+/** Empty for no search; otherwise 2 to 100 characters after trimming (LIB-20). */
+const searchTextSchema = z
+  .string()
+  .refine(isWellFormedText, WELL_FORMED)
+  .refine(
+    (value) => {
+      const length = codePointLength(trimWire(value))
+      return length === 0 || (length >= SEARCH_MIN_CHARS && length <= SEARCH_MAX_CHARS)
+    },
+    { message: `a search is ${SEARCH_MIN_CHARS} to ${SEARCH_MAX_CHARS} characters` },
+  )
+
+/** The Cues category of the library (LIB-5, LIB-26), a request body like LibraryQuery. */
+export const CueListQuerySchema = refusingProtoKeys(
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    campaign_id: OpaqueIdSchema,
+    search: searchTextSchema,
+    sort: z.enum(LIBRARY_SORTS),
+    archived: z.boolean(),
+    cursor: CursorSchema.nullish(),
+    limit: z.number().int().min(1).max(CUE_PAGE_MAX_ITEMS).nullish(),
+  }),
+)
+export type CueListQuery = z.infer<typeof CueListQuerySchema>
+
+export const CuePageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  campaign_id: OpaqueIdSchema,
+  items: z.array(CueSchema).max(CUE_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type CuePage = z.infer<typeof CuePageSchema>
+
+/** AUDIO-8: a push always starts at zero; the field stays for forward compatibility. */
+const StartOffsetSchema = z.literal(0)
+/** The audio epoch (AUDIO-28): every Stop and every committed push advances it. */
+const AudioEpochSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
+/** A slot's sequence (AUDIO-15): per slot, monotonic, assigned by the database. */
+const SlotSequenceSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
+/** A link generation (SEC-9): every frame names the one it was produced under. */
+const LinkGenerationSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)
+
+/** Play to table (AUDIO-8); idempotent by command id, refused with a stale epoch (AUDIO-28). */
+export const CuePlayRequestSchema = refusingProtoKeys(
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    command_id: CommandIdSchema,
+    cue_id: OpaqueIdSchema,
+    audio_epoch: AudioEpochSchema,
+    loop: z.boolean(),
+    start_offset_ms: StartOffsetSchema.optional(),
+  }),
+)
+export type CuePlayRequest = z.infer<typeof CuePlayRequestSchema>
+
+/** AUDIO-9: a card's Stop names its cue; Stop all is `cue_id: null`. No epoch, never queued (X-3). */
+export const CueStopRequestSchema = refusingProtoKeys(
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    command_id: CommandIdSchema,
+    cue_id: OpaqueIdSchema.nullable(),
+  }),
+)
+export type CueStopRequest = z.infer<typeof CueStopRequestSchema>
+
+// ── Table sessions ───────────────────────────────────────────────────────────
+
+/** A table token or an enrolment code as it travels — once, in a POST body (SEC-8, SEC-11). */
+const TableSecretSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+
+export const TableJoinRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), token: TableSecretSchema }),
+)
+export type TableJoinRequest = z.infer<typeof TableJoinRequestSchema>
+
+/** One shape for every outcome (SEC-8); the role comes only with a join. */
+export const TableJoinResponseSchema = z
+  .object({
+    schema_version: z.literal(CONTRACT_VERSION),
+    status: z.enum(JOIN_STATUSES),
+    role: z.enum(TABLE_ROLES).nullable(),
+  })
+  .refine((answer) => (answer.role !== null) === (answer.status === 'joined'), {
+    path: ['role'],
+    message: 'a role comes with a join, and only with a join',
+  })
+export type TableJoinResponse = z.infer<typeof TableJoinResponseSchema>
+
+export const EnrolRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), code: TableSecretSchema }),
+)
+export type EnrolRequest = z.infer<typeof EnrolRequestSchema>
+
+export const EnrolResponseSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  status: z.enum(ENROL_STATUSES),
+})
+export type EnrolResponse = z.infer<typeof EnrolResponseSchema>
+
+/** The GM's view of a session (REVEAL-2, REVEAL-17). The token is not here: it travels once. */
+export const TableSessionSchema = z
+  .object({
+    schema_version: z.literal(CONTRACT_VERSION),
+    session_id: OpaqueIdSchema,
+    campaign_id: OpaqueIdSchema,
+    state: z.enum(SESSION_STATES),
+    gen: LinkGenerationSchema,
+    started_at: TimestampSchema,
+    ends_at: TimestampSchema,
+    ended_at: TimestampSchema.nullable(),
+    audio: z.boolean(),
+    devices: z.number().int().min(0).max(1000),
+  })
+  .refine((session) => (session.ended_at !== null) === (session.state === 'ended'), {
+    path: ['ended_at'],
+    message: 'an ended session says when, and a live one does not',
+  })
+  .refine((session) => Date.parse(session.ends_at) > Date.parse(session.started_at), {
+    path: ['ends_at'],
+    message: 'a session ends after it starts',
+  })
+export type TableSession = z.infer<typeof TableSessionSchema>
+
+/** Start, End and Rotate (REVEAL-17), idempotent by command id; only Rotate may reset personal links. */
+export const TableSessionRequestSchema = refusingProtoKeys(
+  z
+    .strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      command_id: CommandIdSchema,
+      campaign_id: OpaqueIdSchema,
+      action: z.enum(SESSION_ACTIONS),
+      reset_personal_links: z.boolean().optional(),
+    })
+    .refine((request) => !request.reset_personal_links || request.action === 'rotate', {
+      path: ['reset_personal_links'],
+      message: 'personal links are reset with a rotation',
+    }),
+)
+export type TableSessionRequest = z.infer<typeof TableSessionRequestSchema>
+
+/** A start or a rotation carries the new token, the one time it is in a body (SEC-8); an end carries none. */
+export const TableSessionAnswerSchema = z
+  .object({
+    schema_version: z.literal(CONTRACT_VERSION),
+    session: TableSessionSchema,
+    token: TableSecretSchema.nullable(),
+  })
+  .refine((answer) => (answer.token !== null) === (answer.session.state === 'live'), {
+    path: ['token'],
+    message: 'a live session answers with its token, and an ended one with none',
+  })
+export type TableSessionAnswer = z.infer<typeof TableSessionAnswerSchema>
+
+// ── Realtime events ──────────────────────────────────────────────────────────
+// Two channels, two unions (ADR RT-1, threat model 8.3). Every frame carries its
+// own schema_version; the heartbeat is an SSE comment, not an event. `snapshot`
+// and `slot` arrive with the reveal family.
+
+const eventBase = { schema_version: z.literal(CONTRACT_VERSION) }
+
+/** AUDIO-3: a one-shot never loops, and is at most 30 s. */
+const playingFitsSlot = (slot: string, playing: { loop: boolean; duration_ms: number } | null) =>
+  playing === null || slot !== 'one_shot' || (!playing.loop && playing.duration_ms <= ONE_SHOT_MAX_MS)
+const SLOT_ISSUE = { path: ['playing'], message: 'a one-shot never loops and is at most 30 seconds' }
+
+/** What a slot holds, as the GM sees it: the cue by id and title (AUDIO-11). */
+const GmPlayingSchema = z.object({
+  cue_id: OpaqueIdSchema,
+  title: CueTitleSchema,
+  started_at: TimestampSchema,
+  start_offset_ms: StartOffsetSchema,
+  loop: z.boolean(),
+  duration_ms: DurationMsSchema,
+})
+
+const ToolLaneEventSchema = z.object({
+  ...eventBase,
+  event: z.literal('tool_lane'),
+  conversation_id: OpaqueIdSchema,
+  entry_id: OpaqueIdSchema,
+  invocation: ToolInvocationSchema,
+})
+const EditLaneEventSchema = z.object({
+  ...eventBase,
+  event: z.literal('edit_lane'),
+  conversation_id: OpaqueIdSchema,
+  entry_id: OpaqueIdSchema,
+  invocation: EditInvocationSchema,
+})
+const GmSessionEventSchema = z.object({ ...eventBase, event: z.literal('session'), session: TableSessionSchema })
+const GmAudioEventSchema = z
+  .object({
+    ...eventBase,
+    event: z.literal('audio'),
+    session_id: OpaqueIdSchema,
+    gen: LinkGenerationSchema,
+    slot: z.enum(AUDIO_SLOTS),
+    seq: SlotSequenceSchema,
+    playing: GmPlayingSchema.nullable(),
+  })
+  .refine((frame) => playingFitsSlot(frame.slot, frame.playing), SLOT_ISSUE)
+/** AUD-11: an alias travels only on the GM's channel. */
+const ParticipantPresenceSchema = z.object({
+  participant_id: OpaqueIdSchema,
+  alias: oneLine(1, 60),
+  audio: z.enum(PRESENCE_AUDIO),
+})
+const count = z.number().int().min(0).max(1000)
+/** Guests are counted, never named (AUDIO-21). */
+const GuestPresenceSchema = z
+  .object({ connected: count, listening: count, muted: count, pending: count })
+  .refine((guests) => guests.listening + guests.muted + guests.pending <= guests.connected, {
+    path: ['connected'],
+    message: 'guest states cannot exceed the guests connected',
+  })
+const PresenceEventSchema = z.object({
+  ...eventBase,
+  event: z.literal('presence'),
+  session_id: OpaqueIdSchema,
+  gen: LinkGenerationSchema,
+  participants: z.array(ParticipantPresenceSchema).max(PRESENCE_MAX_PARTICIPANTS),
+  guests: GuestPresenceSchema,
+})
+/** The server is closing this stream on purpose (ADR RT-3); reopen at once. */
+const GmReconnectEventSchema = z.object({ ...eventBase, event: z.literal('reconnect') })
+
+export const GmEventSchema = z.discriminatedUnion('event', [
+  ToolLaneEventSchema,
+  EditLaneEventSchema,
+  GmSessionEventSchema,
+  GmAudioEventSchema,
+  PresenceEventSchema,
+  GmReconnectEventSchema,
+])
+export type GmEvent = z.infer<typeof GmEventSchema>
+
+/** A live session as a table client may know it (AUDIO-19), and this device's own role. */
+const TableSessionEventSchema = z.object({
+  ...eventBase,
+  event: z.literal('session'),
+  gen: LinkGenerationSchema,
+  audio: z.boolean(),
+  role: z.enum(TABLE_ROLES),
+})
+/** Ended, expired or rotated: one generic event, then the connection closes (TABLE-9). */
+const TableInactiveEventSchema = z.object({ ...eventBase, event: z.literal('inactive') })
+/** What a slot holds, as a table client sees it: a handle, never a title (AUDIO-29). */
+const TablePlayingSchema = z
+  .object({
+    asset: TableAssetRefSchema,
+    started_at: TimestampSchema,
+    start_offset_ms: StartOffsetSchema,
+    loop: z.boolean(),
+    duration_ms: DurationMsSchema,
+  })
+  .refine((playing) => playing.asset.kind === 'audio', { path: ['asset', 'kind'], message: 'a slot plays audio' })
+const TableAudioEventSchema = z
+  .object({
+    ...eventBase,
+    event: z.literal('audio'),
+    gen: LinkGenerationSchema,
+    slot: z.enum(AUDIO_SLOTS),
+    seq: SlotSequenceSchema,
+    playing: TablePlayingSchema.nullable(),
+  })
+  .refine((frame) => playingFitsSlot(frame.slot, frame.playing), SLOT_ISSUE)
+const TableReconnectEventSchema = z.object({ ...eventBase, event: z.literal('reconnect') })
+
+export const TableEventSchema = z.discriminatedUnion('event', [
+  TableSessionEventSchema,
+  TableInactiveEventSchema,
+  TableAudioEventSchema,
+  TableReconnectEventSchema,
+])
+export type TableEvent = z.infer<typeof TableEventSchema>
+
 /** Name → schema, in the order `contracts/workbench/v1/schemas.json` lists them. */
 export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   Timestamp: TimestampSchema,
@@ -1033,6 +1489,25 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   LibraryPage: LibraryPageSchema,
   TimelineEntry: TimelineEntrySchema,
   TimelinePage: TimelinePageSchema,
+  AssetCreateRequest: AssetCreateRequestSchema,
+  Asset: AssetSchema,
+  TableAssetRef: TableAssetRefSchema,
+  Cue: CueSchema,
+  CueCreateRequest: CueCreateRequestSchema,
+  CueRenameRequest: CueRenameRequestSchema,
+  CueListQuery: CueListQuerySchema,
+  CuePage: CuePageSchema,
+  CuePlayRequest: CuePlayRequestSchema,
+  CueStopRequest: CueStopRequestSchema,
+  TableJoinRequest: TableJoinRequestSchema,
+  TableJoinResponse: TableJoinResponseSchema,
+  EnrolRequest: EnrolRequestSchema,
+  EnrolResponse: EnrolResponseSchema,
+  TableSession: TableSessionSchema,
+  TableSessionRequest: TableSessionRequestSchema,
+  TableSessionAnswer: TableSessionAnswerSchema,
+  GmEvent: GmEventSchema,
+  TableEvent: TableEventSchema,
 }
 
 // ── Forward-version behaviour ────────────────────────────────────────────────
@@ -1127,6 +1602,31 @@ export function parseDocument(raw: unknown): Parsed<Document> {
     if (version !== null && version > DOC_TYPE_VERSION[raw.type as DocumentTypeId]) return { kind: 'unknown', reason: 'newer_schema' }
   }
   const result = DocumentSchema.safeParse(raw)
+  return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
+}
+
+const GM_EVENT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
+  [['event'], GM_EVENT_KINDS],
+  ...RESULT_DISCRIMINATORS.map(([path, known]): [readonly string[], readonly string[]] => [['invocation', 'result', ...path], known]),
+  [['invocation', 'result', 'outcome'], EDIT_OUTCOMES],
+]
+const TABLE_EVENT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [[['event'], TABLE_EVENT_KINDS]]
+
+/** How a GM channel reads a frame: a kind this client does not know — `snapshot`
+ * and `slot` until the reveal family lands, anything newer after — is a
+ * placeholder, never a crash; the stream carries on with the next frame. */
+export function parseGmEvent(raw: unknown): Parsed<GmEvent> {
+  if (namesNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema' }
+  if (hasAnyUnknownKind(raw, GM_EVENT_DISCRIMINATORS)) return { kind: 'unknown', reason: 'unknown_kind' }
+  const result = GmEventSchema.safeParse(raw)
+  return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
+}
+
+/** The same for a table channel. */
+export function parseTableEvent(raw: unknown): Parsed<TableEvent> {
+  if (namesNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema' }
+  if (hasAnyUnknownKind(raw, TABLE_EVENT_DISCRIMINATORS)) return { kind: 'unknown', reason: 'unknown_kind' }
+  const result = TableEventSchema.safeParse(raw)
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
 }
 
