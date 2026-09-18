@@ -1,0 +1,20 @@
+{
+  "schema": "ToolSuggestion",
+  "direction": "response",
+  "valid": [
+    {
+      "name": "a suggestion with an icon and a prefilled brief",
+      "value": { "tool_id": "encounter", "label": "Build an encounter around it", "icon": "swords", "brief": "an encounter around the Tidewarden Drowned" }
+    },
+    { "name": "minimal", "value": { "tool_id": "portrait", "label": "Portrait" } },
+    { "name": "explicit nulls", "value": { "tool_id": "hooks", "label": "Three hooks", "icon": null, "brief": null } },
+    { "name": "a prefilled brief of exactly 200 characters (RAIL-8)", "value": { "tool_id": "npc", "label": "Write her up", "brief": "@repeat:b:200" } }
+  ],
+  "invalid": [
+    { "name": "a target that is not a registry tool", "why": "RAIL-8: suggestion targets are validated", "value": { "tool_id": "summon", "label": "Summon it" } },
+    { "name": "an empty label", "why": "bounded 1..60", "value": { "tool_id": "npc", "label": "" } },
+    { "name": "a label of 61 characters", "why": "bounded 1..60", "value": { "tool_id": "npc", "label": "@repeat:x:61" } },
+    { "name": "a prefilled brief of 201 characters", "why": "RAIL-8", "value": { "tool_id": "npc", "label": "Write her up", "brief": "@repeat:b:201" } },
+    { "name": "an icon that is not a Material Symbols ligature", "why": "lower-case letters, digits and underscores only", "value": { "tool_id": "npc", "label": "Write her up", "icon": "Person Add" } }
+  ]
+}

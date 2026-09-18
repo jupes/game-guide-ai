@@ -1,0 +1,46 @@
+{
+  "schema": "EnrolResponse",
+  "direction": "response",
+  "valid": [
+    {
+      "name": "enrolled",
+      "value": {
+        "schema_version": 1,
+        "status": "enrolled"
+      }
+    },
+    {
+      "name": "the one answer for a used, replaced, expired or invalid code (TABLE-16)",
+      "value": {
+        "schema_version": 1,
+        "status": "inactive"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a reason",
+      "why": "TABLE-16: never says which case applied",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "status": "inactive",
+        "reason": "used"
+      }
+    },
+    {
+      "name": "the participant's alias",
+      "why": "an alias reaches a device only through its own snapshot, never through enrolment (AUD-11)",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "status": "enrolled",
+        "alias": "Mara"
+      }
+    }
+  ]
+}

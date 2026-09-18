@@ -1,0 +1,76 @@
+{
+  "schema": "CueListQuery",
+  "direction": "request",
+  "note": "The Cues category of the library (LIB-5, LIB-26): a request body, with the library's search and sort rules.",
+  "valid": [
+    {
+      "name": "the first page of cues",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "search": "",
+        "sort": "recent",
+        "archived": false
+      }
+    },
+    {
+      "name": "a search by title, continuing from a cursor",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "search": " harbour ",
+        "sort": "name",
+        "archived": false,
+        "cursor": "eyJhZnRlciI6ImN1ZV8zZjlhMWIyYyJ9",
+        "limit": 25
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a one-character search",
+      "why": "LIB-20: at least two characters after trimming",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "search": "h",
+        "sort": "recent",
+        "archived": false
+      }
+    },
+    {
+      "name": "a page of 51",
+      "why": "at most 50",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "search": "",
+        "sort": "recent",
+        "archived": false,
+        "limit": 51
+      }
+    },
+    {
+      "name": "a library category on a cue query",
+      "why": "cues are their own list (LIB-5); a request is strict",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "category": "cues",
+        "search": "",
+        "sort": "recent",
+        "archived": false
+      }
+    },
+    {
+      "name": "no campaign",
+      "why": "lists are keyed by campaign (LIB-25)",
+      "value": {
+        "schema_version": 1,
+        "search": "",
+        "sort": "recent",
+        "archived": false
+      }
+    }
+  ]
+}

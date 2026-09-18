@@ -1,0 +1,38 @@
+{
+  "schema": "DocumentLink",
+  "direction": "response",
+  "valid": [
+    {
+      "name": "an NPC dossier",
+      "value": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" }
+    },
+    {
+      "name": "session notes live in the session log",
+      "value": { "document_id": "doc_31aa90ce", "type": "session-notes", "title": "Session 12", "library_category": "session-log" }
+    },
+    {
+      "name": "an encounter is a Documents entry",
+      "value": { "document_id": "doc_5e5e5e5e", "type": "encounter", "title": "The reeds at dusk", "library_category": "documents" }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a category that does not belong to the type",
+      "why": "LIB-6: membership is a registry fact, not a free field",
+      "value": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "bestiary" }
+    },
+    {
+      "name": "an unknown document type",
+      "why": "X-8: unknown is never NPC",
+      "value": { "document_id": "doc_9k2f7a1c", "type": "spellbook", "title": "Ondrey's spells", "library_category": "documents" }
+    },
+    { "name": "an empty title", "why": "bounded 1..200", "value": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "", "library_category": "npcs" } },
+    { "name": "an id outside the opaque-id alphabet", "why": "ids are [A-Za-z0-9_-]", "value": { "document_id": "doc 9k2f", "type": "npc", "title": "Ondrey", "library_category": "npcs" } },
+    {
+      "name": "a link never carries the document body",
+      "why": "1kg.4.4: the response links the document and does not embed hidden data",
+      "applies_to": ["server"],
+      "value": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Ondrey", "library_category": "npcs", "data": { "wants": "the signet" } }
+    }
+  ]
+}

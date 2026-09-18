@@ -1,0 +1,171 @@
+{
+  "schema": "AssetCreateRequest",
+  "direction": "request",
+  "note": "Step one of an upload (ADR MS-3 to MS-5): what is coming, so the quota (SEC-31) and the caps (SEC-26) are checked before a byte is accepted. The bytes follow in one raw request whose Content-Type is the declared type and whose Content-Length is required.",
+  "valid": [
+    {
+      "name": "a portrait, with the alt text a screen reader will hear",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "media_type": "image/png",
+        "size_bytes": 2048000,
+        "alt": "A gaunt woman in salt-stained vestments"
+      }
+    },
+    {
+      "name": "a cue's audio; an audio asset carries no text of its own (AUDIO-29)",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "audio",
+        "media_type": "audio/mp4",
+        "size_bytes": 8400000
+      }
+    },
+    {
+      "name": "an image at exactly its cap",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "media_type": "image/png",
+        "size_bytes": 10000000,
+        "alt": "A gaunt woman in salt-stained vestments"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an image without alt text",
+      "why": "X-10 renders images with alt text; a portrait without one is not accessible",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "media_type": "image/png",
+        "size_bytes": 2048000
+      }
+    },
+    {
+      "name": "alt text on an audio asset",
+      "why": "an audio asset carries no text: its title is the cue's, and a table client never sees it (AUDIO-29)",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "audio",
+        "media_type": "audio/mp4",
+        "size_bytes": 8400000,
+        "alt": "Harbour at night"
+      }
+    },
+    {
+      "name": "an image declared as an audio type",
+      "why": "the type must be one the kind accepts",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "media_type": "audio/mpeg",
+        "size_bytes": 2048000,
+        "alt": "A gaunt woman in salt-stained vestments"
+      }
+    },
+    {
+      "name": "SVG",
+      "why": "SEC-25: a document format that carries script is refused",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "media_type": "image/svg+xml",
+        "size_bytes": 2048000,
+        "alt": "A gaunt woman in salt-stained vestments"
+      }
+    },
+    {
+      "name": "an image one byte over its cap",
+      "why": "SEC-26: images are at most 10 MB",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "media_type": "image/png",
+        "size_bytes": 10000001,
+        "alt": "A gaunt woman in salt-stained vestments"
+      }
+    },
+    {
+      "name": "audio over its cap",
+      "why": "SEC-26: audio is at most 20 MB",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "audio",
+        "media_type": "audio/mp4",
+        "size_bytes": 20000001
+      }
+    },
+    {
+      "name": "a size of zero",
+      "why": "there is nothing to upload",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "media_type": "image/png",
+        "size_bytes": 0,
+        "alt": "A gaunt woman in salt-stained vestments"
+      }
+    },
+    {
+      "name": "no command id",
+      "why": "an upload must be retryable without making a second asset",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "image",
+        "media_type": "image/png",
+        "size_bytes": 2048000,
+        "alt": "A gaunt woman in salt-stained vestments"
+      }
+    },
+    {
+      "name": "a URL to fetch instead of bytes to receive",
+      "why": "import by URL is its own request, off behind a flag (AUDIO-25, SEC-30)",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "audio",
+        "media_type": "audio/mp4",
+        "size_bytes": 8400000,
+        "url": "https://cdn.example.test/harbour.mp3"
+      }
+    },
+    {
+      "name": "a kind that does not exist",
+      "why": "image or audio",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "kind": "video",
+        "media_type": "image/png",
+        "size_bytes": 2048000,
+        "alt": "A gaunt woman in salt-stained vestments"
+      }
+    }
+  ]
+}

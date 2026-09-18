@@ -1,0 +1,51 @@
+{
+  "contract_version": 1,
+  "result_kinds": ["card", "document", "media"],
+  "card_kinds": ["stat_block"],
+  "library_categories": ["npcs", "bestiary", "documents", "session-log", "cues"],
+  "tools": [
+    { "id": "npc", "result_kind": "document", "creates_doc_type": "npc", "card_kind": null, "brief": "required" },
+    { "id": "monster", "result_kind": "card", "creates_doc_type": null, "card_kind": "stat_block", "brief": "required" },
+    { "id": "loot", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required" },
+    { "id": "names", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required" },
+    { "id": "rules", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required" },
+    { "id": "portrait", "result_kind": "media", "creates_doc_type": null, "card_kind": null, "brief": "required" },
+    { "id": "encounter", "result_kind": "document", "creates_doc_type": "encounter", "card_kind": null, "brief": "required" },
+    { "id": "hooks", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required" },
+    { "id": "recap", "result_kind": "document", "creates_doc_type": "session-notes", "card_kind": null, "brief": "optional" },
+    { "id": "map", "result_kind": "media", "creates_doc_type": null, "card_kind": null, "brief": "required" }
+  ],
+  "field_kinds": ["text", "prose", "text_list", "asset"],
+  "common_fields": { "name": "text", "qualifier": "text", "tags": "text_list" },
+  "document_types": [
+    {
+      "id": "npc",
+      "library_category": "npcs",
+      "type_version": 1,
+      "fields": {
+        "portrait": "asset",
+        "voice": "text",
+        "tell": "text",
+        "attitude": "text",
+        "wants": "prose",
+        "leverage": "prose",
+        "if_attacked": "prose",
+        "notes": "prose"
+      }
+    },
+    { "id": "statblock", "library_category": "bestiary", "type_version": 1, "fields": {} },
+    { "id": "handout", "library_category": "documents", "type_version": 1, "fields": {} },
+    { "id": "session-notes", "library_category": "session-log", "type_version": 1, "fields": {} },
+    { "id": "quest-log", "library_category": "documents", "type_version": 1, "fields": {} },
+    { "id": "character-sheet", "library_category": "documents", "type_version": 1, "fields": {} },
+    { "id": "lore", "library_category": "documents", "type_version": 1, "fields": {} },
+    { "id": "encounter", "library_category": "documents", "type_version": 1, "fields": {} }
+  ],
+  "asset_kinds": ["image", "audio"],
+  "media_types": {
+    "image": ["image/png", "image/jpeg", "image/webp"],
+    "audio": ["audio/mpeg", "audio/mp4", "audio/ogg", "audio/wav"]
+  },
+  "cue_kinds": ["ambience", "one_shot"],
+  "audio_slots": ["ambience", "one_shot"]
+}

@@ -1,0 +1,576 @@
+{
+  "schema": "Document",
+  "direction": "response",
+  "note": "The GM-side read of a document, and what every document write answers with. A FIELD is a top-level key of data - one flat, snake_case namespace per type (CANVAS-19). Which keys a type has, and what kind of value each holds, is a registry fact (registry.json): common fields for every type, plus the type's own. npc is the worked example; 1kg.5.3 defines the other seven, and until it does they have common fields only. Nothing here says who may see a field: that is agent-forge-harness-1ir.1.2's decision.",
+  "valid": [
+    {
+      "name": "an NPC dossier after an assistant edit",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": {
+          "name": "Sister Ondrey Vashe",
+          "qualifier": "Tidewarden chaplain",
+          "tags": ["tidewardens", "the sunken tavern"],
+          "portrait": { "asset_id": "ast_77c1d0e2", "media_type": "image", "alt": "A gaunt woman in salt-stained vestments" },
+          "voice": "Low, unhurried",
+          "tell": "Touches her signet when she lies",
+          "attitude": "Wary",
+          "wants": "The signet of the drowned saint, returned to the reliquary.",
+          "leverage": "She knows who scuttled the Marrow.\nShe will not say it twice.",
+          "if_attacked": "She walks into the water and is gone.",
+          "notes": ""
+        },
+        "write_revision": 14,
+        "version": {
+          "number": 3,
+          "author": "assistant",
+          "summary": "Wants the signet",
+          "created_at": "2026-09-16T19:36:02Z",
+          "sealed": true,
+          "changed_fields": ["wants", "leverage"],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T19:31:24Z",
+        "updated_at": "2026-09-16T19:36:02Z"
+      }
+    },
+    {
+      "name": "a document made by hand a moment ago: a name, and an open working version (LIB-12, CANVAS-34)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_0a0a0a01",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Untitled NPC" },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": ["name"],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a cleared portrait is null, and a cleared list is empty",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "tags": [], "portrait": null },
+        "write_revision": 15,
+        "version": {
+          "number": 4,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T19:40:00Z",
+          "sealed": false,
+          "changed_fields": ["tags", "portrait"],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T19:31:24Z",
+        "updated_at": "2026-09-16T19:40:10Z"
+      }
+    },
+    {
+      "name": "a restore appends a version that says where it came from (CANVAS-26)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "wants": "To be left alone." },
+        "write_revision": 16,
+        "version": {
+          "number": 5,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T19:50:00Z",
+          "sealed": true,
+          "changed_fields": ["wants", "leverage"],
+          "restored_from": 2
+        },
+        "archived": false,
+        "created_at": "2026-09-16T19:31:24Z",
+        "updated_at": "2026-09-16T19:50:00Z"
+      }
+    },
+    {
+      "name": "an archived document of a type whose own fields 1kg.5.3 has yet to define",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5e55109a",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "session-notes",
+        "type_version": 1,
+        "data": { "name": "Session 12 — The Marrow", "qualifier": "16 September", "tags": ["recap"] },
+        "write_revision": 2,
+        "version": {
+          "number": 1,
+          "author": "assistant",
+          "summary": "Recap of session 12",
+          "created_at": "2026-09-16T23:01:00Z",
+          "sealed": true,
+          "changed_fields": ["name", "qualifier", "tags"],
+          "restored_from": null
+        },
+        "archived": true,
+        "created_at": "2026-09-16T23:01:00Z",
+        "updated_at": "2026-09-17T08:00:00Z"
+      }
+    },
+    {
+      "name": "a text field of exactly 200 characters and a prose field of exactly 20,000",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "@repeat:a:200", "notes": "@repeat:🎲:20000" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name", "notes"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a client strips a field key it does not know, so a type can gain fields without a version bump",
+      "applies_to": ["client"],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "pronouns": "she/her" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "field keys named like JavaScript built-ins",
+      "why": "not declared, like any other stray key. The client half of this case is in contracts.test.ts: such a key must read as 'not declared' there too, never resolve to something on a prototype",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "constructor": "x", "toString": "y" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a field the type does not declare",
+      "why": "X-8 and the bead's AC: invalid document fields fail closed. The server never stores or emits a key outside the type's definition",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "secret_plan": "Drown the harbourmaster." },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "the handoff's camelCase key",
+      "why": "snake_case everywhere on the wire, nested document data included: ifAttacked is if_attacked",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "ifAttacked": "She walks into the water and is gone." },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "another type's field",
+      "why": "fields are declared per type: wants belongs to an NPC, not to session notes",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5e55109a",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "session-notes",
+        "type_version": 1,
+        "data": { "name": "Session 12", "wants": "A quiet night." },
+        "write_revision": 2,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a portrait that carries a URL",
+      "why": "X-10: an asset is named by id and a client builds a same-origin URL; a document can never point a browser at a remote host",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": {
+          "name": "Sister Ondrey Vashe",
+          "portrait": { "asset_id": "ast_77c1d0e2", "media_type": "image", "alt": "Portrait", "url": "https://cdn.example.test/p.png" }
+        },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a document without a name",
+      "why": "LIB-12: every document has a name from the moment it exists; it is its title everywhere",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "wants": "To be left alone." },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["wants"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an empty name",
+      "why": "a name is 1 to 200 characters; it is the one field that cannot be cleared",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a text field of 201 characters",
+      "why": "a text field is one line of at most 200 characters",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "voice": "@repeat:a:201" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a lone surrogate in a text field",
+      "why": "JSON allows the escape; UTF-8 does not, so no stored field can hold one and neither validator accepts one",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "voice": "Low \ud83c" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a line break in a text field",
+      "why": "a text field is one line; paragraphs belong in a prose field",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "voice": "Low.\nUnhurried." },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a prose field of 20,001 characters",
+      "why": "RAIL-6: field caps are checked before any provider work, so a pasted book is not re-sent on every edit",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "notes": "@repeat:a:20001" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a number where prose belongs",
+      "why": "no coercion",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "wants": 42 },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "tags as one comma-separated string",
+      "why": "a list field is a list",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "tags": "tidewardens, the sunken tavern" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an empty item in a list",
+      "why": "a list item is 1 to 2,000 characters; removing an item removes it",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "tags": ["tidewardens", ""] },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "101 tags",
+      "why": "a list holds at most 100 items",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "tags": { "@repeat_value": "tide", "@count": 101 } },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a cleared text field written as null",
+      "why": "one way to say empty per kind: text and prose clear to the empty string, a list to [], only an asset to null",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "voice": null },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a document type that does not exist",
+      "why": "X-8: a closed set; never rendered as an NPC by default, which is what the handoff's registry fallback did",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "faction",
+        "type_version": 1,
+        "data": { "name": "The Tidewardens" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a type version this contract does not know",
+      "why": "field definitions are versioned per type (1kg.5.3); the strict schema knows version 1, and parseDocument turns a newer one into a placeholder",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 2,
+        "data": { "name": "Sister Ondrey Vashe" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a write revision of zero",
+      "why": "CANVAS-34: the write revision counts committed writes, and creating a document is the first",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe" },
+        "write_revision": 0,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "the handoff's version id used as the concurrency token",
+      "why": "CANVAS-34: history and concurrency are different things; a write revision is an integer counter, never a version label",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe" },
+        "write_revision": "v3",
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "the handoff's reveal mask riding on the document",
+      "why": "reveal is server state with its own resource (REVEAL-5, CANVAS-33), and what may be shown to whom waits for 1ir.1.2; a document body carries neither",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z",
+        "reveal_mask": ["portrait", "name"]
+      }
+    },
+    {
+      "name": "the whole history riding on the document",
+      "why": "CANVAS-27: history is its own page, 20 at a time; a document carries its current version only",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "versions": [],
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "no campaign",
+      "why": "a document belongs to exactly one campaign; a client drops a response for another (LIB-25)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    }
+  ]
+}
