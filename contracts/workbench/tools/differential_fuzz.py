@@ -51,6 +51,11 @@ FIXTURES = ROOT / "contracts" / "workbench" / "v1"
 #: One of each JSON type, plus the values that coercion likes to mistake for
 #: something else: ``True`` for 1, ``"1"`` for 1, a large int for a timestamp.
 REPLACEMENTS: list[Any] = [True, False, 0, 1, -1, 1.5, 10**12, "1", "", "x", " ", None, [], {}]
+#: Characters the two languages' string libraries treat differently, by code
+#: point so that none sits in this file: the byte order mark (JavaScript trims
+#: it, Python does not), NEL (the reverse), a lone surrogate (JSON allows the
+#: escape; UTF-8 does not) and NUL.
+_BOM, _NEL, _LONE_SURROGATE, _NUL = chr(0xFEFF), chr(0x85), chr(0xD83C), chr(0)
 
 Path_ = tuple[str | int, ...]
 
@@ -97,13 +102,28 @@ def _same(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b
 
 
-def mutations(value: Any) -> Iterator[tuple[Path_, str, Any]]:
-    """One break at a time, so a disagreement names the field that caused it."""
+def _added_keys(node: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
+    """A stray key, and the one JavaScript treats specially: ``JSON.parse`` makes
+    ``__proto__`` an ordinary own key, which a record parser may then drop."""
+    yield "+extra", {**node, "zz_extra": 1}
+    yield "+__proto__", {**node, "__proto__": {"zz": 1}}
+
+
+def mutations(value: Any, *, request: bool) -> Iterator[tuple[Path_, str, Any]]:
+    """One break at a time, so a disagreement names the field that caused it.
+
+    Keys are only *added* to a request: a response with an undeclared key is
+    invalid for the server to emit and valid for a client to receive, and that
+    recorded asymmetry is not a finding.
+    """
     if not isinstance(value, dict | list) or _is_directive(value):
         for replacement in REPLACEMENTS:
             if not _same(replacement, value):
                 yield (), f"={replacement!r}", replacement
         return
+    if request and isinstance(value, dict):
+        for how, mutated in _added_keys(value):
+            yield (), how, mutated
     for path in _paths(value):
         original = _get(value, path)
         yield path, "delete", _without(value, path)
@@ -113,12 +133,22 @@ def mutations(value: Any) -> Iterator[tuple[Path_, str, Any]]:
         if isinstance(original, str) and not original.startswith("@repeat:"):
             yield path, "pad", _with(value, path, f"  {original}  ")
             yield path, "newline", _with(value, path, f"{original}\n")
+            yield path, "bom-prefix", _with(value, path, _BOM + original)
+            yield path, "nel-suffix", _with(value, path, original + _NEL)
+            yield path, "lone-surrogate", _with(value, path, original + _LONE_SURROGATE)
+            yield path, "nul", _with(value, path, original + _NUL + "x")
             if original.upper() != original:
                 yield path, "upper", _with(value, path, original.upper())
         if isinstance(original, int | float) and not isinstance(original, bool):
             yield path, "+0.5", _with(value, path, original + 0.5)
+            # JSON has one number type: ``14.0`` in the text reaches Python as a
+            # float and JavaScript as the number 14.
+            yield path, "as-float", _with(value, path, float(original))
             yield path, "as-text", _with(value, path, str(original))
             yield path, "negated", _with(value, path, -original)
+        if request and isinstance(original, dict) and not _is_directive(original):
+            for how, mutated in _added_keys(original):
+                yield path, how, _with(value, path, mutated)
 
 
 def _server_reads(schema: str, value: Any) -> tuple[bool, Any]:
@@ -141,7 +171,7 @@ def build_cases() -> list[dict[str, Any]]:
             # An example limited to one side is a *recorded* asymmetry, not a finding.
             if set(example.get("applies_to", ["server", "client"])) != {"server", "client"}:
                 continue
-            for path, how, mutated in mutations(example["value"]):
+            for path, how, mutated in mutations(example["value"], request=doc.get("direction") == "request"):
                 expanded = expand(mutated)
                 accepted, emitted = _server_reads(doc["schema"], expanded)
                 cases.append(
@@ -170,7 +200,9 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as scratch:
         cases_file = args.keep or Path(scratch) / "cases.json"
-        cases_file.write_text(json.dumps(cases, ensure_ascii=False), encoding="utf-8")
+        # ASCII escapes, so that a lone surrogate — which UTF-8 cannot carry —
+        # reaches JavaScript as the JSON escape it would arrive as on the wire.
+        cases_file.write_text(json.dumps(cases, ensure_ascii=True), encoding="utf-8")
         client = Path(__file__).with_suffix(".ts")
         # From ui/, so that bun resolves zod and the app's tsconfig.
         command = ["bun", "run", str(client), str(ROOT), str(cases_file.resolve())]

@@ -41,9 +41,11 @@ const contracts = (await import(join(root, 'ui', 'src', 'gm', 'contracts.ts'))) 
   CONTRACT_SCHEMAS: Record<string, SafeParser>
 }
 
-/** Paths that run through service/models.py shapes the contract reuses as they
- * are: lax by an older contract's design, and normalised when emitted. */
-const INHERITED = /(^|\.)(sources|stat_block|spell_content|routing|suggestions_routing)(\.|$)|(^|\.)answer\.suggestions(\.|$)/
+/** Paths INSIDE the service/models.py shapes the contract reuses as they are:
+ * lax by an older contract's design, and normalised when emitted. The container
+ * itself — whether `sources` is present, nullable, a list, and how long — is the
+ * contract's own, so a path has to go one segment further to be inherited. */
+const INHERITED = /(^|\.)(sources|stat_block|spell_content|routing|suggestions_routing)\.|(^|\.)answer\.suggestions\./
 
 const findings = new Map<string, number>()
 const unreadable: string[] = []

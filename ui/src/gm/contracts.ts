@@ -101,6 +101,11 @@ export const LIBRARY_SORTS = ['recent', 'name'] as const
 export const SESSION_BOUNDARIES = ['start', 'end'] as const
 export const OPAQUE_REASONS = ['newer_version', 'unreadable'] as const
 
+/** The discriminators an edit carries. A newer server may add to any of them. */
+export const EDIT_OUTCOMES = ['changed', 'no_change'] as const
+export const EDIT_SCOPE_KINDS = ['document', 'field', 'selection'] as const
+export const EDIT_INSTRUCTION_KINDS = ['text', 'action'] as const
+
 /** The codes this client knows. A newer server may send others; see `isKnownErrorCode`. */
 export const KNOWN_ERROR_CODES = [
   'validation_failed', 'unsupported_schema_version', 'brief_required', 'brief_too_long', 'unknown_tool',
@@ -215,15 +220,51 @@ export function codePointLength(value: string): number {
   return [...value].length
 }
 
-/** A string bounded in code points, so both sides agree on "2,000 characters". */
+/** JSON allows the escape of a lone surrogate; UTF-8, the database and the
+ * server do not. (`String.prototype.isWellFormed` says the same, but is ES2024.) */
+export function isWellFormedText(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0
+    if (code >= 0xd800 && code <= 0xdfff) return false
+  }
+  return true
+}
+
+const WELL_FORMED = { message: 'must be well-formed Unicode text' }
+
+/** What `String.prototype.trim` removes, by code point, so that the server can
+ * trim exactly the same set (`trim` in workbench_contracts.py): ASCII whitespace,
+ * the Unicode space separators, the line and paragraph separators and the byte
+ * order mark. Python's `strip()` would also take NEL and the ASCII separators,
+ * and leave the mark — and then one side finds a brief empty that the other
+ * finds two characters long. */
+const TRIMMED = new Set<number>([
+  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0xa0, 0x1680,
+  0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+  0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff,
+])
+
+/** Trim as the server does. Every character in the set is one UTF-16 unit. */
+export function trimWire(value: string): string {
+  let start = 0
+  let end = value.length
+  while (start < end && TRIMMED.has(value.charCodeAt(start))) start += 1
+  while (end > start && TRIMMED.has(value.charCodeAt(end - 1))) end -= 1
+  return value.slice(start, end)
+}
+
+/** A well-formed string bounded in code points, so both sides agree on "2,000 characters". */
 function text(min: number, max: number) {
-  return z.string().refine(
-    (value) => {
-      const length = codePointLength(value)
-      return length >= min && length <= max
-    },
-    { message: `must be ${min} to ${max} characters` },
-  )
+  return z
+    .string()
+    .refine(isWellFormedText, WELL_FORMED)
+    .refine(
+      (value) => {
+        const length = codePointLength(value)
+        return length >= min && length <= max
+      },
+      { message: `must be ${min} to ${max} characters` },
+    )
 }
 
 /** Opaque, fragment-safe and log-safe. Conversation ids are UUIDs today and fit. */
@@ -292,24 +333,26 @@ export const ErrorBodySchema = z.object({ detail: ErrorInfoSchema })
 
 /** Decisions RAIL-5 to RAIL-9. Strict: the client builds this, so a stray key is
  * a client bug — and there is no free-form `context` (RAIL-7). */
-export const ToolInvocationRequestSchema = z
-  .strictObject({
-    schema_version: z.literal(CONTRACT_VERSION),
-    invocation_id: InvocationIdSchema,
-    tool_id: ToolIdSchema,
-    brief: z.string(),
-    campaign_id: OpaqueIdSchema,
-    conversation_id: OpaqueIdSchema,
-    source_entry_id: OpaqueIdSchema.nullish(),
-  })
-  .refine((request) => codePointLength(request.brief.trim()) <= BRIEF_MAX_CHARS, {
-    path: ['brief'],
-    message: `a brief can be at most ${BRIEF_MAX_CHARS} characters`,
-  })
-  .refine((request) => request.brief.trim() !== '' || BRIEF_POLICY[request.tool_id] === 'optional', {
-    path: ['brief'],
-    message: 'this tool needs a brief',
-  })
+export const ToolInvocationRequestSchema = refusingProtoKeys(
+  z
+    .strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      invocation_id: InvocationIdSchema,
+      tool_id: ToolIdSchema,
+      brief: z.string().refine(isWellFormedText, WELL_FORMED),
+      campaign_id: OpaqueIdSchema,
+      conversation_id: OpaqueIdSchema,
+      source_entry_id: OpaqueIdSchema.nullish(),
+    })
+    .refine((request) => codePointLength(trimWire(request.brief)) <= BRIEF_MAX_CHARS, {
+      path: ['brief'],
+      message: `a brief can be at most ${BRIEF_MAX_CHARS} characters`,
+    })
+    .refine((request) => trimWire(request.brief) !== '' || BRIEF_POLICY[request.tool_id] === 'optional', {
+      path: ['brief'],
+      message: 'this tool needs a brief',
+    }),
+)
 export type ToolInvocationRequest = z.infer<typeof ToolInvocationRequestSchema>
 
 /** Decision RAIL-8: a suggestion arms the composer; it never runs. */
@@ -493,7 +536,7 @@ function readFields(
     else for (const issue of parsed.error.issues) ctx.addIssue({ code: 'custom', path: [at, key, ...issue.path], message: issue.message })
   }
   const name = Object.hasOwn(fields, 'name') ? fields.name : undefined
-  if ((options.whole && name === undefined) || (typeof name === 'string' && name.trim() === '')) {
+  if ((options.whole && name === undefined) || (typeof name === 'string' && trimWire(name) === '')) {
     ctx.addIssue({ code: 'custom', path: [at, 'name'], message: 'a document has a name, and it cannot be blank' })
   }
   return fields
@@ -504,6 +547,37 @@ const typedShape = {
   type_version: z.number().int().min(1).max(1000),
 }
 const rawFields = z.record(z.string(), z.unknown())
+
+/** The path of the first own key named `__proto__` anywhere in a value. */
+function protoKeyPath(value: unknown, path: PropertyKey[] = [], depth = 0): PropertyKey[] | null {
+  if (depth > 32) return null
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const found = protoKeyPath(item, [...path, index], depth + 1)
+      if (found) return found
+    }
+    return null
+  }
+  if (!isRecord(value)) return null
+  if (Object.hasOwn(value, '__proto__')) return [...path, '__proto__']
+  for (const [key, item] of Object.entries(value)) {
+    const found = protoKeyPath(item, [...path, key], depth + 1)
+    if (found) return found
+  }
+  return null
+}
+
+/** For a request. `JSON.parse` makes `__proto__` an ordinary own key, which Zod's
+ * object and record parsers leave out rather than read — so a stray key the
+ * server refuses as undeclared would otherwise vanish on the client instead of
+ * failing here, where the client can still say what was wrong. */
+function refusingProtoKeys<T extends ZodType>(schema: T) {
+  return z.preprocess((input, ctx) => {
+    const path = protoKeyPath(input)
+    if (path) ctx.addIssue({ code: 'custom', path, message: 'a key named __proto__ is never a field' })
+    return input
+  }, schema)
+}
 
 /** One row of a document's history (CANVAS-27). The handoff's `label` and display
  * `time` are not on the wire; this client derives both. */
@@ -568,38 +642,44 @@ export type DocumentHistoryPage = z.infer<typeof DocumentHistoryPageSchema>
 
 /** CANVAS-10: one autosave. The author is always the GM and is never the client's
  * to state. Answered with a Document, or a 409 whose `conflict` names what moved. */
-export const FieldPatchRequestSchema = z
-  .strictObject({
-    schema_version: z.literal(CONTRACT_VERSION),
-    ...typedShape,
-    base_write_revision: WriteRevisionSchema,
-    fields: rawFields,
-  })
-  .refine((patch) => Object.keys(patch.fields).length >= 1 && Object.keys(patch.fields).length <= MAX_CHANGED_FIELDS, {
-    path: ['fields'],
-    message: 'a patch touches at least one field',
-  })
-  .transform((patch, ctx) => ({ ...patch, fields: readFields(patch, patch.fields, 'fields', { whole: false, strict: true }, ctx) }))
+export const FieldPatchRequestSchema = refusingProtoKeys(
+  z
+    .strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      ...typedShape,
+      base_write_revision: WriteRevisionSchema,
+      fields: rawFields,
+    })
+    .refine((patch) => Object.keys(patch.fields).length >= 1 && Object.keys(patch.fields).length <= MAX_CHANGED_FIELDS, {
+      path: ['fields'],
+      message: 'a patch touches at least one field',
+    })
+    .transform((patch, ctx) => ({ ...patch, fields: readFields(patch, patch.fields, 'fields', { whole: false, strict: true }, ctx) })),
+)
 export type FieldPatchRequest = z.infer<typeof FieldPatchRequestSchema>
 
 /** LIB-12: New in a library category. `command_id` makes a retry open the
  * document already made instead of making a second one. */
-export const DocumentCreateRequestSchema = z
-  .strictObject({
-    schema_version: z.literal(CONTRACT_VERSION),
-    command_id: CommandIdSchema,
-    campaign_id: OpaqueIdSchema,
-    ...typedShape,
-    data: rawFields,
-  })
-  .transform((request, ctx) => ({ ...request, data: readFields(request, request.data, 'data', { whole: true, strict: true }, ctx) }))
+export const DocumentCreateRequestSchema = refusingProtoKeys(
+  z
+    .strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      command_id: CommandIdSchema,
+      campaign_id: OpaqueIdSchema,
+      ...typedShape,
+      data: rawFields,
+    })
+    .transform((request, ctx) => ({ ...request, data: readFields(request, request.data, 'data', { whole: true, strict: true }, ctx) })),
+)
 export type DocumentCreateRequest = z.infer<typeof DocumentCreateRequestSchema>
 
 /** CANVAS-26. Additive, so it needs no base revision, and naturally idempotent. */
-export const RestoreRequestSchema = z.strictObject({
-  schema_version: z.literal(CONTRACT_VERSION),
-  version_number: VersionNumberSchema,
-})
+export const RestoreRequestSchema = refusingProtoKeys(
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    version_number: VersionNumberSchema,
+  }),
+)
 export type RestoreRequest = z.infer<typeof RestoreRequestSchema>
 
 // ── AI edits ─────────────────────────────────────────────────────────────────
@@ -635,13 +715,16 @@ const EditScopeSummarySchema = z.discriminatedUnion('kind', [
 ])
 
 /** RAIL-6: an instruction shares the brief's bound, counted after trimming. */
-const instructionText = z.string().refine(
-  (value) => {
-    const length = codePointLength(value.trim())
-    return length >= 1 && length <= BRIEF_MAX_CHARS
-  },
-  { message: `an instruction is 1 to ${BRIEF_MAX_CHARS} characters` },
-)
+const instructionText = z
+  .string()
+  .refine(isWellFormedText, WELL_FORMED)
+  .refine(
+    (value) => {
+      const length = codePointLength(trimWire(value))
+      return length >= 1 && length <= BRIEF_MAX_CHARS
+    },
+    { message: `an instruction is 1 to ${BRIEF_MAX_CHARS} characters` },
+  )
 const textInstructionShape = { kind: z.literal('text'), text: instructionText }
 const actionInstructionShape = { kind: z.literal('action'), action: z.enum(EDIT_ACTIONS) }
 
@@ -661,18 +744,20 @@ const actionNeedsSelection = {
 
 /** CANVAS-21 to CANVAS-25. The same lifecycle and cap as a tool (X-5). After a
  * conflict, Try again re-sends the same `invocation_id` with a fresh base. */
-export const EditRequestSchema = z
-  .strictObject({
-    schema_version: z.literal(CONTRACT_VERSION),
-    invocation_id: InvocationIdSchema,
-    campaign_id: OpaqueIdSchema,
-    conversation_id: OpaqueIdSchema,
-    document_id: OpaqueIdSchema,
-    base_write_revision: WriteRevisionSchema,
-    scope: EditScopeSchema,
-    instruction: StrictEditInstructionSchema,
-  })
-  .refine(actionNeedsSelection.check, actionNeedsSelection.issue)
+export const EditRequestSchema = refusingProtoKeys(
+  z
+    .strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      invocation_id: InvocationIdSchema,
+      campaign_id: OpaqueIdSchema,
+      conversation_id: OpaqueIdSchema,
+      document_id: OpaqueIdSchema,
+      base_write_revision: WriteRevisionSchema,
+      scope: EditScopeSchema,
+      instruction: StrictEditInstructionSchema,
+    })
+    .refine(actionNeedsSelection.check, actionNeedsSelection.issue),
+)
 export type EditRequest = z.infer<typeof EditRequestSchema>
 
 const editResultBase = {
@@ -728,30 +813,35 @@ const DocumentCategorySchema = z.enum(LIBRARY_CATEGORIES).refine((category) => c
 
 /** LIB-20 to LIB-23. A request BODY even without a search: search text may never
  * travel in a URL (X-7), and one shape is simpler than two. */
-export const LibraryQuerySchema = z
-  .strictObject({
-    schema_version: z.literal(CONTRACT_VERSION),
-    campaign_id: OpaqueIdSchema,
-    category: DocumentCategorySchema,
-    /** Empty for no search; otherwise 2 to 100 characters after trimming. */
-    search: z.string().refine(
-      (value) => {
-        const length = codePointLength(value.trim())
-        return length === 0 || (length >= SEARCH_MIN_CHARS && length <= SEARCH_MAX_CHARS)
-      },
-      { message: `a search is ${SEARCH_MIN_CHARS} to ${SEARCH_MAX_CHARS} characters` },
-    ),
-    sort: z.enum(LIBRARY_SORTS),
-    archived: z.boolean(),
-    /** Only in Documents, the one category that holds more than one type (LIB-22). */
-    type: z.enum(DOCUMENT_TYPE_IDS).nullish(),
-    cursor: CursorSchema.nullish(),
-    limit: z.number().int().min(1).max(LIBRARY_PAGE_MAX_ITEMS).nullish(),
-  })
-  .refine((query) => query.type == null || (query.category === 'documents' && DOC_TYPE_LIBRARY_CATEGORY[query.type] === 'documents'), {
-    path: ['type'],
-    message: 'only Documents can be filtered by type, and only by a type that lives there',
-  })
+export const LibraryQuerySchema = refusingProtoKeys(
+  z
+    .strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      campaign_id: OpaqueIdSchema,
+      category: DocumentCategorySchema,
+      /** Empty for no search; otherwise 2 to 100 characters after trimming. */
+      search: z
+        .string()
+        .refine(isWellFormedText, WELL_FORMED)
+        .refine(
+          (value) => {
+            const length = codePointLength(trimWire(value))
+            return length === 0 || (length >= SEARCH_MIN_CHARS && length <= SEARCH_MAX_CHARS)
+          },
+          { message: `a search is ${SEARCH_MIN_CHARS} to ${SEARCH_MAX_CHARS} characters` },
+        ),
+      sort: z.enum(LIBRARY_SORTS),
+      archived: z.boolean(),
+      /** Only in Documents, the one category that holds more than one type (LIB-22). */
+      type: z.enum(DOCUMENT_TYPE_IDS).nullish(),
+      cursor: CursorSchema.nullish(),
+      limit: z.number().int().min(1).max(LIBRARY_PAGE_MAX_ITEMS).nullish(),
+    })
+    .refine((query) => query.type == null || (query.category === 'documents' && DOC_TYPE_LIBRARY_CATEGORY[query.type] === 'documents'), {
+      path: ['type'],
+      message: 'only Documents can be filtered by type, and only by a type that lives there',
+    }),
+)
 export type LibraryQuery = z.infer<typeof LibraryQuerySchema>
 
 /** Enough to list, match and open a document, and nothing of its body. */
@@ -961,28 +1051,67 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** Whether any `schema_version` inside a payload is beyond this client — the
- * payload's own, or one embedded in it (an entry's invocation). */
-function mentionsNewerVersion(value: unknown, depth = 0): boolean {
-  if (depth > 8) return false
-  if (Array.isArray(value)) return value.some((item) => mentionsNewerVersion(item, depth + 1))
-  if (!isRecord(value)) return false
-  if (typeof value.schema_version === 'number' && value.schema_version > CONTRACT_VERSION) return true
-  return Object.values(value).some((item) => mentionsNewerVersion(item, depth + 1))
+/** A version is an integral number; `1.5` and `'2'` are not. */
+function versionNamed(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) ? value : null
 }
 
-function hasUnknownKind(raw: unknown, key: string, known: readonly string[]): boolean {
-  return isRecord(raw) && typeof raw[key] === 'string' && !known.includes(raw[key])
+/** Whether the payload's own `schema_version` — or its embedded invocation's, the
+ * one other versioned object an entry holds — is beyond this client. A version
+ * anywhere deeper is content, not a version. */
+function namesNewerVersion(raw: unknown): boolean {
+  if (!isRecord(raw)) return false
+  const invocation = isRecord(raw.invocation) ? raw.invocation : null
+  return [raw.schema_version, invocation?.schema_version].some((value) => {
+    const version = versionNamed(value)
+    return version !== null && version > CONTRACT_VERSION
+  })
+}
+
+/** The value at a path into nested records, or `undefined`. */
+function at(raw: unknown, path: readonly string[]): unknown {
+  let node = raw
+  for (const key of path) {
+    if (!isRecord(node)) return undefined
+    node = node[key]
+  }
+  return node
+}
+
+function hasUnknownKind(raw: unknown, path: readonly string[], known: readonly string[]): boolean {
+  const value = at(raw, path)
+  return typeof value === 'string' && !known.includes(value)
+}
+
+/** Every discriminator a result carries; 1kg.4.3 adds card kinds. */
+const RESULT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
+  [['result_kind'], RESULT_KINDS],
+  [['card', 'card_kind'], CARD_KINDS],
+]
+
+/** Every discriminator an entry carries. A value this client does not know at
+ * any of them reads as "made by a newer version", never as damage. */
+const ENTRY_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
+  [['entry_kind'], ENTRY_KINDS],
+  ...RESULT_DISCRIMINATORS.map(([path, known]): [readonly string[], readonly string[]] => [['invocation', 'result', ...path], known]),
+  [['invocation', 'result', 'outcome'], EDIT_OUTCOMES],
+  [['scope', 'kind'], EDIT_SCOPE_KINDS],
+  [['instruction', 'kind'], EDIT_INSTRUCTION_KINDS],
+]
+
+function hasAnyUnknownKind(raw: unknown, discriminators: ReadonlyArray<[readonly string[], readonly string[]]>): boolean {
+  return discriminators.some(([path, known]) => hasUnknownKind(raw, path, known))
 }
 
 export function parseToolInvocation(raw: unknown): Parsed<ToolInvocation> {
-  if (mentionsNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema' }
+  if (namesNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema' }
+  if (isRecord(raw) && hasAnyUnknownKind(raw.result, RESULT_DISCRIMINATORS)) return { kind: 'unknown', reason: 'unknown_kind' }
   const result = ToolInvocationSchema.safeParse(raw)
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
 }
 
 export function parseToolResult(raw: unknown): Parsed<ToolResult> {
-  if (hasUnknownKind(raw, 'result_kind', RESULT_KINDS)) return { kind: 'unknown', reason: 'unknown_kind' }
+  if (hasAnyUnknownKind(raw, RESULT_DISCRIMINATORS)) return { kind: 'unknown', reason: 'unknown_kind' }
   const result = ToolResultSchema.safeParse(raw)
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
 }
@@ -991,11 +1120,11 @@ export function parseToolResult(raw: unknown): Parsed<ToolResult> {
  * definitions, that this client does not know is a placeholder state — never an
  * NPC by default, which is what the handoff's registry fallback did (X-8). */
 export function parseDocument(raw: unknown): Parsed<Document> {
-  if (mentionsNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema' }
-  if (hasUnknownKind(raw, 'type', DOCUMENT_TYPE_IDS)) return { kind: 'unknown', reason: 'unknown_kind' }
-  if (isRecord(raw) && typeof raw.type === 'string' && typeof raw.type_version === 'number') {
-    const known = DOC_TYPE_VERSION[raw.type as DocumentTypeId]
-    if (raw.type_version > known) return { kind: 'unknown', reason: 'newer_schema' }
+  if (namesNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema' }
+  if (hasUnknownKind(raw, ['type'], DOCUMENT_TYPE_IDS)) return { kind: 'unknown', reason: 'unknown_kind' }
+  if (isRecord(raw) && typeof raw.type === 'string') {
+    const version = versionNamed(raw.type_version)
+    if (version !== null && version > DOC_TYPE_VERSION[raw.type as DocumentTypeId]) return { kind: 'unknown', reason: 'newer_schema' }
   }
   const result = DocumentSchema.safeParse(raw)
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
@@ -1014,12 +1143,8 @@ export type TimelineItem =
 export function parseTimelineEntry(raw: unknown): TimelineItem {
   const id = isRecord(raw) ? OpaqueIdSchema.safeParse(raw.entry_id) : null
   const entry_id = id?.success ? id.data : null
-  if (mentionsNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema', entry_id }
-
-  const invocation = isRecord(raw) && isRecord(raw.invocation) ? raw.invocation : null
-  if (hasUnknownKind(raw, 'entry_kind', ENTRY_KINDS) || hasUnknownKind(invocation?.result, 'result_kind', RESULT_KINDS)) {
-    return { kind: 'unknown', reason: 'unknown_kind', entry_id }
-  }
+  if (namesNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema', entry_id }
+  if (hasAnyUnknownKind(raw, ENTRY_DISCRIMINATORS)) return { kind: 'unknown', reason: 'unknown_kind', entry_id }
   const result = TimelineEntrySchema.safeParse(raw)
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid', entry_id }
 }
@@ -1039,8 +1164,9 @@ const TimelineEnvelopeSchema = z.object({
 /** How a component reads a page: the envelope strictly, each entry on its own,
  * so one entry from a newer server cannot take the thread down with it. */
 export function parseTimelinePage(raw: unknown): Parsed<ReadTimelinePage> {
-  if (isRecord(raw) && typeof raw.schema_version === 'number' && raw.schema_version > CONTRACT_VERSION) {
-    return { kind: 'unknown', reason: 'newer_schema' }
+  if (isRecord(raw)) {
+    const version = versionNamed(raw.schema_version)
+    if (version !== null && version > CONTRACT_VERSION) return { kind: 'unknown', reason: 'newer_schema' }
   }
   const envelope = TimelineEnvelopeSchema.safeParse(raw)
   if (!envelope.success) return { kind: 'unknown', reason: 'invalid' }

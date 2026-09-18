@@ -76,6 +76,18 @@
         "type_version": 1,
         "data": { "name": "A letter", "wants": "To be read." }
       }
+    },
+    {
+      "name": "a key named __proto__ in the data",
+      "why": "not declared, like any stray key; and never dropped silently by a record parser on the client (see FieldPatchRequest)",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Untitled NPC", "__proto__": { "wants": "polluted" } }
+      }
     }
   ]
 }

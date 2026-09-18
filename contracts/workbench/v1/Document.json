@@ -315,6 +315,23 @@
       }
     },
     {
+      "name": "a lone surrogate in a text field",
+      "why": "JSON allows the escape; UTF-8 does not, so no stored field can hold one and neither validator accepts one",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Sister Ondrey Vashe", "voice": "Low \ud83c" },
+        "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
       "name": "a line break in a text field",
       "why": "a text field is one line; paragraphs belong in a prose field",
       "value": {

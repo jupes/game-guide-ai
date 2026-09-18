@@ -15,7 +15,7 @@ here: a page cannot fail a build.
 | **The specification** — examples every implementation must accept or reject | [`contracts/workbench/v1/`](../contracts/workbench/v1/) |
 | Server models (Pydantic) | `service/workbench_contracts.py` |
 | Client schemas (Zod), safe parsers, the error reader | `ui/src/gm/contracts.ts` |
-| Server helpers every route uses: `validation_error_body`, `check_fields`, `entry_or_opaque` | `service/workbench_contracts.py` |
+| Server helpers every route uses: `validation_error_body`, `redacted_errors`, `check_fields`, `trim`, `entry_or_opaque` | `service/workbench_contracts.py` |
 | Wire → design-system adapters | `ui/src/gm/adapters.ts` |
 | The two suites that read the same fixtures | `service/tests/test_workbench_contracts.py`, `ui/src/gm/contracts.test.ts` |
 | The differential fuzz, and the CI job that runs it | `contracts/workbench/tools/differential_fuzz.py` (+ `.ts`), job `contract-parity` |
@@ -41,8 +41,9 @@ second source of truth.
 | Identifiers | Opaque: `[A-Za-z0-9_-]{1,64}`. Safe in a URL fragment and in a log line, and never meaningful. Conversation ids are UUIDs today and fit. An invocation id is client-minted and is 16–64 characters, because it is an idempotency key. |
 | Timestamps | **One grammar**, pinned by `Timestamp.json`: `YYYY-MM-DDTHH:MM:SS`, an optional fraction of up to six digits, then `Z` or `+HH:MM`. The server emits UTC with `Z`. Formatting for people is the client's job; a display string such as `7:36 PM` is rejected (CANVAS-27). The grammar is spelled out because the libraries disagree when left alone: Pydantic reads `1758050000` as a moment and Zod accepts a time without seconds. |
 | String bounds | Counted in **Unicode code points**, on both sides, so an emoji costs one. The client uses `codePointLength`, never `.length`. |
-| Trimming | A brief is trimmed before its bound is checked, and the server stores it trimmed. JavaScript's `trim()` and Python's `strip()` disagree about a few exotic code points, so **the server's judgement is final** and the client's check exists only to save a round trip. |
-| Coercion | None. A `brief` of `42` is an error, not the string `"42"`, and a `schema_version` of `true` is not `1` — which a bare Python `Literal[1]` would accept, because to Python `True == 1`. |
+| Text | Every string is **well-formed Unicode**. JSON allows the escape of a lone surrogate (`U+D800` to `U+DFFF` on its own); UTF-8, the database and a response do not, so both validators refuse it, and it is a 422 rather than a failure to store or to answer. |
+| Trimming | A brief, an edit instruction and a search are trimmed before their bounds are checked and are stored trimmed; a name is blank if trimming empties it. Both sides trim **exactly the set `String.prototype.trim` removes** — ASCII whitespace, the Unicode space separators, the line and paragraph separators and the byte order mark — spelled out by code point in both languages (`trim` on the server, `trimWire` on the client). Python's `strip()` would also take NEL and the ASCII separators and leave the mark, and then one side finds a brief empty that the other finds two characters long. |
+| Coercion | None between JSON types. A `brief` of `42` is an error, not the string `"42"`, and a `schema_version` of `true` is not `1` — which a bare Python `Literal[1]` would accept, because to Python `True == 1`. Within JSON's one number type, an **integer field accepts any integral value**: `14.0` is `14` on both sides, because JavaScript cannot tell them apart; `14.5` is an error. |
 | Not recorded | Where an older row never stored a fact, the key is **present and `null`**: `answerable: null`, `sources: null`. A missing key is invalid, so a client cannot mistake "not recorded" for `true` or for "none". |
 | Text format | Document fields are plain text. Assistant prose in a lane is Markdown, rendered without remote subresources (X-10). |
 | What never appears | A URL in an asset reference (X-10). A document body in a link (`1kg.4.4`). A free-form `context` object in a request (RAIL-7). A player's name or a cue's title in anything sent to a table client (AUD-11, AUDIO-29). |
@@ -75,6 +76,17 @@ each error's `input` — the request itself, GM-private text included; a test in
 `validation_error_body(exc.errors())` instead. It reads only an error's type and
 location, uses fixed sentences, never names an undeclared key back (that key is
 the client's text, not a field of ours), and maps to the specific codes below.
+When a stale client fails in several places at once, a version error wins
+whatever its position in the list, because the answer to it is *reload*: an
+unknown `schema_version`, or a `type_version` this server does not know, both
+map to `unsupported_schema_version`.
+
+The same discipline holds for what a route **logs or traces**. `str(exc)` and
+`exc.errors()` carry the request; `redacted_errors(exc.errors())` keeps `type`,
+`loc` and `msg` only, and replaces the location of an undeclared key, which is
+that key. The contract models hide their input from `str(exc)` as well, and
+`check_fields` cuts the cause of the errors it re-raises, so a traceback names
+what was wrong and never what was sent.
 
 Codes are a **closed set on the server**, lower-case and free of user text, so a
 code is always safe as a metric label. A client treats a code it does not know as
@@ -104,7 +116,11 @@ client has one error path.
 
 ### Idempotency
 
-Every Workbench mutation can be retried safely.
+Every Workbench mutation can be retried safely. A key is **scoped to the
+caller**: the server matches it together with the authenticated GM and the
+campaign, so a key someone else minted is a different key, and a request that
+names it starts fresh rather than reading another caller's status or result
+([threat model](adr/gm-workbench-threat-model.md), §12.2).
 
 | Mutation | Key | A repeat… |
 | --- | --- | --- |
@@ -146,7 +162,8 @@ What each side does with something it does not know:
 | Side | Meets | Does |
 | --- | --- | --- |
 | Server | a request with an unknown `schema_version`, an undeclared field, an unknown tool, kind or type | **fails closed**: 422, before any provider work |
-| Server | a *stored* entry it cannot validate — written by a newer server before a rollback, or damaged | serves an **`opaque` entry** in its place: same id, same position, a closed `reason` (`newer_version` or `unreadable`), and **nothing of the payload**, because a server never forwards bytes it has not validated. The stored row is left untouched, so it renders again after a roll-forward. `entry_or_opaque` in `workbench_contracts.py` is that rule as code, for `1kg.4.2` to call |
+| Server | a *stored* entry with a field it does not declare | reads it the way a client reads a response, **undeclared keys ignored**: the table above lets a newer server add an optional field without a bump, and after a rollback that field must cost the entry nothing. What the server *emits* stays strict |
+| Server | a *stored* entry it cannot validate — written by a newer server before a rollback, or damaged | serves an **`opaque` entry** in its place: same id, same position, a closed `reason` (`newer_version` when the entry's own version, or its embedded invocation's, is beyond this contract; otherwise `unreadable`), and **nothing of the payload**, because a server never forwards bytes it has not validated. The stored row is left untouched, so it renders again after a roll-forward. `entry_or_opaque` in `workbench_contracts.py` is that rule as code, for `1kg.4.2` to call; the row's own columns are the authority on identity and on time |
 | Client | an additive field; an unknown error code | **tolerates** it: the field is stripped and never reaches a component |
 | Client | a newer `schema_version`, an unknown kind, or a payload that does not validate | renders a neutral placeholder — *This result was made by a newer version of Aetheril.* — through `parseToolInvocation`, `parseToolResult`, `parseDocument`, `parseTimelineEntry` and `parseTimelinePage`. It never crashes the thread, and it never falls back to an NPC (X-8, RAIL-24). A page is read entry by entry, so one entry from a newer server becomes one placeholder and the rest of the thread renders (AE-43) |
 
@@ -167,7 +184,7 @@ on both sides.
 | Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The attached-cue entry arrives with the cue family; until v1 is declared complete, adding it is not a version bump |
 | Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, and `conflict` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
 | Per-type document fields | the **frame is done**; `npc` is the worked example | `1kg.5.3` owns all eight types. Until it declares a type's fields that type has the common ones only and everything else fails closed — the same posture as card kinds |
-| Reveal | to do, and **waiting** | the mutation with its epoch, Stop, GM-side state, the allowlisted projection, the table snapshot. Audience and slot shapes must not freeze before `agent-forge-harness-1ir.1.2` (field eligibility, shared with the Live Session Assistant) is decided; it blocks `1kg.7.1` |
+| Reveal | to do, and **waiting** | the mutation with its epoch, Stop, GM-side state, the allowlisted projection, the table snapshot. Audience and slot shapes must not freeze before `agent-forge-harness-1ir.1.2` (field eligibility, shared with the Live Session Assistant) is decided; it blocks `1kg.7.1`. The projection needs an asset shape of its own — a per-slot opaque handle, never the GM-side `asset_id` — and its join and enrol answers are generic ([threat model](adr/gm-workbench-threat-model.md), §12.2) |
 | Media assets and cues | to do | storage-dependent fields wait for `1kg.1.4` |
 | Realtime events | to do | the payloads are this bead's; the transport is `1kg.1.4`'s |
 | Tool and document-type registry | `1kg.3.1` | extends `registry.json` |
@@ -380,7 +397,11 @@ timeline without a second definition: it extends those shapes, or lands as one
 new optional field on `answer`, and neither is a version bump. Those shapes keep
 their own, laxer validation — they coerce `"12"` to `12` — and the differential
 fuzz checks that whatever the server accepts through them it emits in a form the
-client reads.
+client reads. They are also unbounded where this contract is bounded (a source's
+snippet, a stat block's trait), which is accepted: they are filled by the
+service from model output, never by a client, and a page of 100 entries at every
+bound this contract does set (two texts of 100,000 characters each) parses on
+the client in well under a second.
 
 What an entry can never carry: a document body (a result links, EXPORT-12), the
 prompt the server assembled, attachment text, a provider payload, or the owner's

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, get_args
 
 import pytest
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from service import workbench_contracts as wc
 from service.models import ChatResponse, MessagesResponse
@@ -178,6 +178,11 @@ def _valid_entry(name: str) -> dict[str, Any]:
     return next(e["value"] for e in fixture["valid"] if e["name"] == name)
 
 
+def _entry_starting(prefix: str) -> dict[str, Any]:
+    fixture = json.loads((FIXTURES / "TimelineEntry.json").read_text(encoding="utf-8"))
+    return next(e["value"] for e in fixture["valid"] if e["name"].startswith(prefix))
+
+
 def test_the_entry_kind_vocabulary_is_the_union() -> None:
     """``EntryKind`` is what ``1kg.4.2`` stores by; it may not drift from the models."""
     tags = {get_args(member.model_fields["entry_kind"].annotation)[0] for member in get_args(wc.AnyEntry)}
@@ -201,7 +206,12 @@ def test_a_readable_stored_entry_is_served_as_itself() -> None:
         # at version 1 is damage, not the future.
         ({"entry_kind": "player_turn"}, "unreadable"),
         ({"brief": 42}, "unreadable"),
-        # ``True`` is an int in Python; it is not a version.
+        # A version is an integral JSON number, however it is spelled — ``2.0`` in
+        # the text is a float here and the number 2 in JavaScript — and nothing else:
+        # ``True`` is an int in Python, but it is not a version.
+        ({"schema_version": 2.0, "entry_kind": "player_turn"}, "newer_version"),
+        ({"schema_version": "2", "entry_kind": "player_turn"}, "unreadable"),
+        ({"schema_version": 1.5}, "unreadable"),
         ({"schema_version": True}, "unreadable"),
     ],
 )
@@ -228,8 +238,49 @@ def test_junk_in_storage_never_raises() -> None:
     for junk in [None, 7, "x", [], {}, deep]:
         entry = wc.entry_or_opaque(junk, entry_id="398", created_at=_ROW_TIME)
         assert isinstance(entry, wc.OpaqueEntry)
-        # Too deep to look for a version in: damage, which is the safe reading.
+        # A version anywhere but at the top is content: damage, the safe reading.
         assert entry.reason is wc.OpaqueReason.UNREADABLE
+
+
+def test_a_field_a_newer_server_added_costs_a_stored_entry_nothing_after_a_rollback() -> None:
+    """The versioning table allows an optional field without a bump. A stored
+    entry is therefore read the way a client reads a response — undeclared keys
+    ignored — while what the server emits stays strict."""
+    chat = _entry_starting("a chat exchange with its complete outcome")
+    newer = {**chat, "answer": {**chat["answer"], "evidence": {"grounded": True}}, "pinned": True}
+    entry = wc.entry_or_opaque(newer, entry_id=chat["entry_id"], created_at=_ROW_TIME)
+    assert isinstance(entry, wc.ChatEntry)
+    dumped = entry.model_dump(mode="json")
+    assert "pinned" not in dumped and "evidence" not in dumped["answer"]
+    with pytest.raises(ValidationError):
+        wc.CONTRACT_SCHEMAS["TimelineEntry"].validate_python(newer)
+
+
+def test_a_version_deeper_in_the_payload_is_content_not_a_version() -> None:
+    chat = _entry_starting("a chat exchange with its complete outcome")
+    stray = {**chat, "answer": {**chat["answer"], "schema_version": 9}}
+    # Ignored on the way in, like any undeclared key: the entry is served.
+    assert isinstance(wc.entry_or_opaque(stray, entry_id=chat["entry_id"], created_at=_ROW_TIME), wc.ChatEntry)
+    # And when the row is damaged as well, that is damage, not the future.
+    entry = wc.entry_or_opaque({**stray, "mode": 42}, entry_id=chat["entry_id"], created_at=_ROW_TIME)
+    assert isinstance(entry, wc.OpaqueEntry) and entry.reason is wc.OpaqueReason.UNREADABLE
+
+
+def test_the_row_is_the_authority_on_identity() -> None:
+    raw = _entry_starting("a session starts")
+    entry = wc.entry_or_opaque(raw, entry_id="ent_another", created_at=_ROW_TIME)
+    assert isinstance(entry, wc.OpaqueEntry) and entry.reason is wc.OpaqueReason.UNREADABLE
+    assert entry.entry_id == "ent_another"
+
+
+def test_unusable_row_columns_raise_rather_than_serve() -> None:
+    """The columns are what a placeholder is built from; without them there is
+    nothing to serve in the row's place, and that is a storage fault."""
+    raw = _entry_starting("a session starts")
+    with pytest.raises(ValidationError):
+        wc.entry_or_opaque(raw, entry_id="ent/../398", created_at=_ROW_TIME)
+    with pytest.raises(ValidationError):
+        wc.entry_or_opaque(raw, entry_id=raw["entry_id"], created_at=_ROW_TIME.replace(tzinfo=None))
 
 
 def test_a_page_serialises_exactly_as_the_fixtures_show() -> None:
@@ -371,6 +422,152 @@ def test_an_empty_error_list_is_still_an_answer() -> None:
     assert wc.validation_error_body([]).detail.code is wc.ErrorCode.VALIDATION_FAILED
 
 
+def test_a_stale_client_is_told_to_reload_whatever_pydantic_lists_first() -> None:
+    """A v2 client fails on its version and on what v2 added, and Pydantic lists
+    the errors in the model's field order. The answer must not depend on it."""
+    stale: dict[str, Any] = {"schema_version": 2, "type": "faction", "type_version": 1, "base_write_revision": 3}
+    stale["fields"] = {"name": "x"}
+    with pytest.raises(ValidationError) as caught:
+        wc.FieldPatchRequest.model_validate(stale)  # here ``type`` is listed before ``schema_version``
+    body = wc.validation_error_body(caught.value.errors())
+    assert (body.detail.code, body.detail.field) == (wc.ErrorCode.UNSUPPORTED_SCHEMA_VERSION, "schema_version")
+
+    # A client built against older field definitions is out of date in the same way.
+    with pytest.raises(ValidationError) as caught:
+        wc.FieldPatchRequest.model_validate({**stale, "schema_version": 1, "type": "npc", "type_version": 2})
+    body = wc.validation_error_body(caught.value.errors())
+    assert (body.detail.code, body.detail.field) == (wc.ErrorCode.UNSUPPORTED_SCHEMA_VERSION, "type_version")
+
+
+@pytest.mark.parametrize(
+    ("loc", "field"),
+    [
+        (("body", "brief"), "brief"),
+        (("query", "limit"), "limit"),
+        (("path", "document_id"), "document_id"),
+        (("header", "x_request_id"), "x_request_id"),
+        (("cookie", "gga_session"), "gga_session"),
+        # Only the first element says which part of the request FastAPI read.
+        (("body", "body"), "body"),
+        ((), None),
+    ],
+)
+def test_the_request_part_is_stripped_from_the_location(loc: tuple[str, ...], field: str | None) -> None:
+    body = wc.validation_error_body([{"type": "missing", "loc": loc, "msg": "Field required"}])
+    assert (body.detail.code, body.detail.field) == (wc.ErrorCode.VALIDATION_FAILED, field)
+
+
+@pytest.mark.parametrize(
+    ("version", "code"),
+    [
+        (1.0, None),
+        (2.0, "unsupported_schema_version"),
+        (1.5, "validation_failed"),
+        (True, "validation_failed"),
+        ("1", "validation_failed"),
+    ],
+)
+def test_a_version_is_an_integral_json_number(version: Any, code: str | None) -> None:
+    """``1.0`` in JSON text reaches Python as a float and JavaScript as the number
+    1. The two must agree, so an integral value is an integer on both sides."""
+    if code is None:
+        request = wc.ToolInvocationRequest.model_validate({**_REQUEST, "schema_version": version})
+        assert request.schema_version == 1 and isinstance(request.schema_version, int)
+        assert request.model_dump_json().startswith('{"schema_version":1,')
+        return
+    with pytest.raises(ValidationError) as caught:
+        wc.ToolInvocationRequest.model_validate({**_REQUEST, "schema_version": version})
+    assert wc.validation_error_body(caught.value.errors()).detail.code.value == code
+
+
+def test_an_integral_float_is_an_integer_and_is_emitted_as_one() -> None:
+    top = TypeAdapter(wc.WriteRevision)
+    assert top.validate_python(14.0) == 14
+    assert top.dump_json(top.validate_python(14.0)) == b"14"
+    for bad in [14.5, float("inf"), float("nan"), True, "14"]:
+        with pytest.raises(ValidationError):
+            top.validate_python(bad)
+
+
+_LONE_SURROGATE = "x" + chr(0xD83C)
+_QUERY = {"schema_version": 1, "campaign_id": "cmp_1", "category": "npcs", "sort": "name", "archived": False}
+
+
+@pytest.mark.parametrize(
+    ("model", "value"),
+    [
+        (wc.ToolInvocationRequest, {**_REQUEST, "brief": _LONE_SURROGATE}),
+        (wc.TextInstruction, {"kind": "text", "text": _LONE_SURROGATE}),
+        (wc.LibraryQuery, {**_QUERY, "search": _LONE_SURROGATE}),
+        # A bounded string refuses one by itself; this pins that it keeps doing so.
+        (wc.SelectionScope, {"kind": "selection", "field": "notes", "start": 0, "end": 2, "text": _LONE_SURROGATE}),
+    ],
+)
+def test_a_lone_surrogate_is_a_422_not_a_500(model: type[BaseModel], value: dict[str, Any]) -> None:
+    """JSON allows the escape; UTF-8 does not. Accepted, it would fail on the way
+    into the database, or on the way out — this is what a JSONResponse does."""
+    with pytest.raises(UnicodeEncodeError):
+        json.dumps({"text": _LONE_SURROGATE}, ensure_ascii=False).encode("utf-8")
+    with pytest.raises(ValidationError) as caught:
+        model.model_validate(value)
+    assert wc.validation_error_body(caught.value.errors()).detail.code is wc.ErrorCode.VALIDATION_FAILED
+
+
+def test_trimming_is_what_javascript_trims() -> None:
+    """Both sides trim one explicit set, so neither can find a brief empty that
+    the other finds two characters long."""
+    bom, nel, ideographic_space = chr(0xFEFF), chr(0x85), chr(0x3000)
+    assert wc.trim(f"{bom} CR 5{ideographic_space}\t\n") == "CR 5"
+    # NEL is not in JavaScript's set, so it stays — on both sides.
+    assert wc.trim(f"{nel}CR 5{nel}") == f"{nel}CR 5{nel}"
+    # The disagreements ``str.strip`` would have introduced.
+    assert nel.strip() == "" and bom.strip() == bom and wc.trim(bom) == ""
+
+    assert wc.ToolInvocationRequest.model_validate({**_REQUEST, "tool_id": "recap", "brief": bom}).brief == ""
+    with pytest.raises(ValidationError) as caught:
+        wc.ToolInvocationRequest.model_validate({**_REQUEST, "brief": bom})
+    assert wc.validation_error_body(caught.value.errors()).detail.code is wc.ErrorCode.BRIEF_REQUIRED
+    with pytest.raises(ValueError, match="cannot be blank"):
+        wc.check_fields(wc.DocumentTypeId.NPC, 1, {"name": bom}, whole=True)
+
+
+def test_nothing_of_a_rejected_request_reaches_a_traceback() -> None:
+    """X-7 for logs: ``str(exc)``, ``repr(exc)`` and a formatted traceback name
+    what was wrong and never what was sent — for a value-level error, for a field
+    error re-raised from ``check_fields`` (its cause is cut), and for an undeclared
+    key among the fields."""
+    import traceback
+
+    cases: list[tuple[type[BaseModel], dict[str, Any]]] = [
+        (wc.ToolInvocationRequest, {**_REQUEST, "brief": [_SECRET]}),
+        (wc.Document, _document(wants=[_SECRET])),
+        (
+            wc.FieldPatchRequest,
+            {"schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 3, "fields": {_SECRET: "x"}},
+        ),
+    ]
+    for model, value in cases:
+        with pytest.raises(ValidationError) as caught:
+            model.model_validate(value)
+        exc = caught.value
+        rendered = "\n".join([str(exc), repr(exc), *traceback.format_exception(exc)])
+        assert "drowned saint" not in rendered, model.__name__
+        assert "drowned saint" not in json.dumps(exc.errors(include_input=False), default=str)
+
+
+def test_redacted_errors_are_fit_for_a_log_line() -> None:
+    with pytest.raises(ValidationError) as caught:
+        wc.ToolInvocationRequest.model_validate({**_REQUEST, "brief": [_SECRET], _SECRET: "x"})
+    raw = caught.value.errors()
+    # The hazard: ``errors()`` carries the input, and an undeclared key is its own location.
+    assert all("drowned saint" in json.dumps(error, default=str) for error in raw)
+    redacted = wc.redacted_errors(raw)
+    assert "drowned saint" not in json.dumps(redacted)
+    assert {error["type"] for error in redacted} == {"string_type", "extra_forbidden"}
+    assert all(set(error) == {"type", "loc", "msg"} for error in redacted)
+    assert [error["loc"] for error in redacted if error["type"] == "extra_forbidden"] == [["(undeclared)"]]
+
+
 def test_a_route_that_uses_it_echoes_nothing_where_the_default_echoes_everything() -> None:
     """X-7, shown end to end. FastAPI's default 422 returns each error's ``input``
     — the request itself. A Workbench route installs this handler instead."""
@@ -378,6 +575,8 @@ def test_a_route_that_uses_it_echoes_nothing_where_the_default_echoes_everything
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import JSONResponse
     from fastapi.testclient import TestClient
+
+    logged: list[tuple[str, list[dict[str, Any]]]] = []
 
     def build(*, safe: bool) -> TestClient:
         app = FastAPI()
@@ -390,6 +589,7 @@ def test_a_route_that_uses_it_echoes_nothing_where_the_default_echoes_everything
 
             @app.exception_handler(RequestValidationError)
             async def answer(_request: Request, exc: RequestValidationError) -> JSONResponse:
+                logged.append((str(exc), wc.redacted_errors(exc.errors())))
                 body = wc.validation_error_body(exc.errors())
                 return JSONResponse(status_code=422, content=body.model_dump(mode="json", exclude_none=True))
 
@@ -411,6 +611,9 @@ def test_a_route_that_uses_it_echoes_nothing_where_the_default_echoes_everything
     assert safe.json() == {
         "detail": {"code": "validation_failed", "message": "That request isn't valid.", "retryable": False}
     }
+    # FastAPI's exception prints the request; a handler logs the redacted list, never ``str(exc)``.
+    [(printed, redacted)] = logged
+    assert _SECRET in printed and _SECRET not in json.dumps(redacted)
 
 
 def test_a_write_revision_survives_javascript() -> None:

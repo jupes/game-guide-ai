@@ -26,23 +26,29 @@ import {
   DOC_TYPE_FIELDS,
   DOC_TYPE_LIBRARY_CATEGORY,
   DOC_TYPE_VERSION,
+  DocumentCreateRequestSchema,
   DocumentSchema,
+  EditRequestSchema,
   FIELD_KINDS,
   FieldPatchRequestSchema,
   LIBRARY_CATEGORIES,
+  LibraryQuerySchema,
   RESULT_KINDS,
   TOOL_CARD_KIND,
   TOOL_CREATES_DOC_TYPE,
   TOOL_IDS,
   TOOL_RESULT_KIND,
+  ToolInvocationRequestSchema,
   codePointLength,
   isKnownErrorCode,
+  isWellFormedText,
   parseDocument,
   parseTimelineEntry,
   parseTimelinePage,
   parseToolInvocation,
   parseToolResult,
   readErrorBody,
+  trimWire,
 } from './contracts'
 import { ChatResponseSchema, MessagesResponseSchema } from '../schemas'
 
@@ -89,6 +95,11 @@ function expand(value: unknown): unknown {
 
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, 'utf-8')) as T
+}
+
+/** The first valid example of a schema's fixture, as a request or response to vary. */
+function firstValid(schema: string): Record<string, unknown> {
+  return readJson<Fixture>(join(FIXTURES, `${schema}.json`)).valid[0].value as Record<string, unknown>
 }
 
 function fixtureFiles(dir: string = FIXTURES): string[] {
@@ -195,6 +206,59 @@ describe('codePointLength', () => {
   })
 })
 
+describe('text on the wire', () => {
+  const request = firstValid('ToolInvocationRequest')
+  const query = firstValid('LibraryQuery')
+  const edit = firstValid('EditRequest')
+  const lone = `x${String.fromCharCode(0xd83c)}`
+
+  it('refuses a lone surrogate wherever the server would: a 422, never a 500', () => {
+    expect(isWellFormedText('🎲')).toBe(true)
+    expect(isWellFormedText(lone)).toBe(false)
+    expect(ToolInvocationRequestSchema.safeParse({ ...request, brief: lone }).success).toBe(false)
+    expect(LibraryQuerySchema.safeParse({ ...query, search: lone }).success).toBe(false)
+    expect(EditRequestSchema.safeParse({ ...edit, instruction: { kind: 'text', text: lone } }).success).toBe(false)
+    expect(
+      EditRequestSchema.safeParse({ ...edit, scope: { kind: 'selection', field: 'notes', start: 0, end: 2, text: lone } }).success,
+    ).toBe(false)
+    expect(DocumentSchema.safeParse({ ...firstValid('Document'), data: { name: lone } }).success).toBe(false)
+  })
+
+  it('trims exactly what the server trims', () => {
+    const [bom, nel, ideographicSpace, nbsp, lineSeparator] = [0xfeff, 0x85, 0x3000, 0xa0, 0x2028].map((code) =>
+      String.fromCharCode(code),
+    )
+    expect(trimWire(`${bom} CR 5${ideographicSpace}\t\n`)).toBe('CR 5')
+    // NEL is not in the set, so it stays — on both sides.
+    expect(trimWire(`${nel}CR 5${nel}`)).toBe(`${nel}CR 5${nel}`)
+    expect(trimWire(bom)).toBe('')
+    // The same answer as String.prototype.trim today, spelled out so that it cannot drift.
+    for (const sample of [`${bom} CR 5${ideographicSpace}`, `${nel}x`, ` ${nbsp}x${lineSeparator}`, '', '  ']) {
+      expect(trimWire(sample)).toBe(sample.trim())
+    }
+    // A brief of only a byte order mark is empty, and a required brief that is empty is refused.
+    expect(ToolInvocationRequestSchema.safeParse({ ...request, brief: bom }).success).toBe(false)
+    expect(ToolInvocationRequestSchema.safeParse({ ...request, tool_id: 'recap', brief: bom }).success).toBe(true)
+  })
+
+  it('refuses __proto__ among the fields of a request instead of dropping it', () => {
+    const patch = (fields: string, beside = '') =>
+      JSON.parse(
+        `{"schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 3, "fields": ${fields}${beside}}`,
+      ) as unknown
+    const inside = FieldPatchRequestSchema.safeParse(patch('{"wants": "x", "__proto__": {"notes": "polluted"}}'))
+    expect(inside.success).toBe(false)
+    if (!inside.success) expect(inside.error.issues[0].path).toEqual(['fields', '__proto__'])
+    expect(FieldPatchRequestSchema.safeParse(patch('{"wants": "x"}', ', "__proto__": {"x": 1}')).success).toBe(false)
+    expect(FieldPatchRequestSchema.safeParse(patch('{"wants": "x"}')).success).toBe(true)
+
+    const create = JSON.parse(
+      '{"schema_version": 1, "command_id": "cmd_4d1c2b3a9f8e7d6c", "campaign_id": "cmp_1", "type": "npc", "type_version": 1, "data": {"name": "x", "__proto__": {"wants": "y"}}}',
+    ) as unknown
+    expect(DocumentCreateRequestSchema.safeParse(create).success).toBe(false)
+  })
+})
+
 describe('forward-version behaviour (RAIL-24, X-8)', () => {
   const working = {
     schema_version: 1,
@@ -227,6 +291,18 @@ describe('forward-version behaviour (RAIL-24, X-8)', () => {
       kind: 'unknown',
       reason: 'unknown_kind',
     })
+  })
+
+  it('turns an unknown card kind into the same placeholder (1kg.4.3 adds four)', () => {
+    const loot = { result_kind: 'card', tool_id: 'loot', prose: '', suggestions: [], card: { card_kind: 'loot', items: [] } }
+    expect(parseToolResult(loot)).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(parseToolInvocation({ ...working, status: 'done', result: loot })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+  })
+
+  it('reads a version as an integral number only', () => {
+    expect(parseToolInvocation({ ...working, schema_version: 1.5 })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    expect(parseToolInvocation({ ...working, schema_version: '2' })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    expect(parseToolInvocation({ ...working, schema_version: 2.0 })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
   })
 
   it('reports a known kind with a broken payload as invalid', () => {
@@ -265,9 +341,17 @@ describe('reading a timeline (AE-43, RAIL-24)', () => {
     if (!found) throw new Error(`no fixture example named ${name}`)
     return found.value as Record<string, unknown>
   }
+  const validStarting = (prefix: string) => {
+    const found = entries.valid.find((example) => example.name.startsWith(prefix))
+    if (!found) throw new Error(`no fixture example starting with ${prefix}`)
+    return found.value as Record<string, unknown>
+  }
   const toolTurn = valid('a tool turn is a tool and a brief, never the slash string (RAIL-9)')
   const divider = valid('a session starts: the boundary recap reads from')
+  const chat = validStarting('a chat exchange with its complete outcome')
+  const editTurn = validStarting('an edit')
   const invocation = toolTurn.invocation as Record<string, unknown>
+  const editInvocation = editTurn.invocation as Record<string, unknown>
 
   it('reads an entry it understands', () => {
     const item = parseTimelineEntry(toolTurn)
@@ -289,11 +373,41 @@ describe('reading a timeline (AE-43, RAIL-24)', () => {
       { ...toolTurn, invocation: { ...invocation, result: { result_kind: 'table', tool_id: 'npc', prose: '', rows: [], suggestions: [] } } },
       'unknown_kind',
     ],
+    [
+      'a card kind it does not know',
+      {
+        ...toolTurn,
+        invocation: {
+          ...invocation,
+          status: 'done',
+          result: { result_kind: 'card', tool_id: 'monster', prose: '', suggestions: [], card: { card_kind: 'loot', items: [] } },
+        },
+      },
+      'unknown_kind',
+    ],
+    [
+      'an edit outcome it does not know',
+      { ...editTurn, invocation: { ...editInvocation, status: 'done', error: null, result: { outcome: 'partial' } } },
+      'unknown_kind',
+    ],
+    ['a scope kind it does not know', { ...editTurn, scope: { kind: 'entry', field: 'tags', index: 2 } }, 'unknown_kind'],
+    ['an instruction kind it does not know', { ...editTurn, instruction: { kind: 'voice', clip: 'aud_1' } }, 'unknown_kind'],
     ['a known kind with a broken payload', { ...divider, boundary: 'paused' }, 'invalid'],
+    // A version is an integral number; anything else is not a version, and not the future.
+    ['a version that is not an integer', { ...divider, schema_version: 1.5 }, 'invalid'],
   ]
 
   it.each(unusable)('turns %s into a placeholder that keeps its id', (_name, raw, reason) => {
     expect(parseTimelineEntry(raw)).toEqual({ kind: 'unknown', reason, entry_id: raw.entry_id })
+  })
+
+  it('does not mistake a number deeper in the payload for a version', () => {
+    const answer = chat.answer as Record<string, unknown>
+    const stray = { ...chat, answer: { ...answer, schema_version: 9 } }
+    // Stripped like any additive field: the entry is read.
+    expect(parseTimelineEntry(stray).kind).toBe('ok')
+    // And when the entry is broken as well, that is damage, not the future.
+    expect(parseTimelineEntry({ ...stray, mode: 42 })).toEqual({ kind: 'unknown', reason: 'invalid', entry_id: chat.entry_id })
   })
 
   it('does not keep an id it could not trust as a key', () => {
@@ -371,6 +485,8 @@ describe('reading a document (X-8, CANVAS-19)', () => {
   it('shows a placeholder for newer field definitions rather than half a document', () => {
     expect(parseDocument({ ...dossier, type_version: 2 })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
     expect(parseDocument({ ...dossier, schema_version: 2 })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+    // A version is an integral number; 1.5 is not a version, and not the future.
+    expect(parseDocument({ ...dossier, type_version: 1.5 })).toEqual({ kind: 'unknown', reason: 'invalid' })
   })
 
   it('strips a field a newer server added, so the type can grow without a version bump', () => {

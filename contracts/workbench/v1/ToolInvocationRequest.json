@@ -79,6 +79,25 @@
         "campaign_id": "cmp_4b1d9e7a",
         "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
       }
+    },
+    {
+      "name": "an integral JSON number is an integer however it is spelled: 1.0 is 1 on both sides",
+      "value": {
+        "schema_version": 1.0,
+        "invocation_id": "inv_1111222233337777",
+        "tool_id": "monster",
+        "brief": "CR 5, drowned",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "trimming removes what JavaScript's trim removes, the byte order mark and the ideographic space included, on both sides",
+      "value": { "schema_version": 1, "invocation_id": "inv_1111222233339999", "tool_id": "monster", "brief": "\ufeffCR 5, drowned\u3000", "campaign_id": "cmp_4b1d9e7a", "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d" }
+    },
+    {
+      "name": "NEL is not in that set, so it is kept on both sides: this brief is not empty",
+      "value": { "schema_version": 1, "invocation_id": "inv_111122223333aaaa", "tool_id": "monster", "brief": "\u0085CR 5", "campaign_id": "cmp_4b1d9e7a", "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d" }
     }
   ],
   "invalid": [
@@ -105,6 +124,11 @@
         "campaign_id": "cmp_4b1d9e7a",
         "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
       }
+    },
+    {
+      "name": "a required brief that is only a byte order mark",
+      "why": "trimming is one explicit set on both sides: a mark JavaScript's trim removes is removed by the server too, so this brief is empty",
+      "value": { "schema_version": 1, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "monster", "brief": "\ufeff", "campaign_id": "cmp_4b1d9e7a", "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d" }
     },
     {
       "name": "a brief of 2,001 characters",
@@ -238,6 +262,18 @@
       }
     },
     {
+      "name": "a schema version that is not an integer",
+      "why": "1.5 is no more a version than true is; only an integral number is an integer",
+      "value": {
+        "schema_version": 1.5,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "a guard",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
       "name": "a schema version sent as text",
       "why": "no coercion",
       "value": {
@@ -257,6 +293,18 @@
         "invocation_id": "inv_9f2c4e1a7b3d4c5e",
         "tool_id": "npc",
         "brief": 42,
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a lone surrogate in the brief",
+      "why": "JSON allows the escape; UTF-8 does not, so the brief could be neither stored nor answered. Refused here it is a 422, not a 500",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "the hooded \ud83c stranger",
         "campaign_id": "cmp_4b1d9e7a",
         "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
       }

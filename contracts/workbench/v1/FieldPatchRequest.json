@@ -30,6 +30,10 @@
     {
       "name": "clearing a portrait",
       "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 15, "fields": { "portrait": null } }
+    },
+    {
+      "name": "an integral number is an integer however it is spelled: JavaScript cannot tell 14.0 from 14",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1.0, "base_write_revision": 14.0, "fields": { "wants": "The signet." } }
     }
   ],
   "invalid": [
@@ -57,6 +61,21 @@
       "name": "the handoff's camelCase key",
       "why": "snake_case on the wire: if_attacked",
       "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "fields": { "ifAttacked": "She is gone." } }
+    },
+    {
+      "name": "a key named __proto__ among the fields",
+      "why": "not declared, like any stray key. JSON.parse makes it an ordinary own key, which a record parser then drops silently; the client must refuse it where the server would, not lose it on the way",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "fields": { "wants": "The signet.", "__proto__": { "notes": "polluted" } } }
+    },
+    {
+      "name": "a key named __proto__ beside the fields",
+      "why": "a request is strict; a key JavaScript treats specially is still a stray key",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "fields": { "wants": "The signet." }, "__proto__": { "reveal_mask": ["wants"] } }
+    },
+    {
+      "name": "a base revision that is not an integer",
+      "why": "14.5 is not a count of writes; only an integral number is an integer",
+      "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14.5, "fields": { "wants": "The signet." } }
     },
     {
       "name": "clearing the name",

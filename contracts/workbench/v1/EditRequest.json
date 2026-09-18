@@ -210,6 +210,34 @@
         "scope": { "kind": "field", "field": "ifAttacked" },
         "instruction": { "kind": "text", "text": "make it colder" }
       }
+    },
+    {
+      "name": "a lone surrogate in the instruction",
+      "why": "JSON allows the escape; UTF-8 does not. Refused on both sides, so it is a 422 and never a failure to store or to answer",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "document" },
+        "instruction": { "kind": "text", "text": "make her \ud83c older" }
+      }
+    },
+    {
+      "name": "a lone surrogate in the selected text",
+      "why": "the same, for a bounded string: the span could never match stored text, because none can hold it",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "document_id": "doc_9k2f7a1c",
+        "base_write_revision": 14,
+        "scope": { "kind": "selection", "field": "notes", "start": 0, "end": 2, "text": "x\ud83c" },
+        "instruction": { "kind": "action", "action": "rewrite" }
+      }
     }
   ]
 }

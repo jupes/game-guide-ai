@@ -11,9 +11,11 @@ Three rules shape everything here:
   validated by this module *and* by ``ui/src/gm/contracts.ts``, so the two cannot
   drift apart without a test failing.
 * **The server fails closed.** Every model forbids undeclared fields, every enum
-  is closed, and no primitive is coerced — a ``brief`` of ``42`` is an error, not
-  the string ``"42"``. A client, by contrast, tolerates additive fields from a
-  newer server; that asymmetry is recorded per example with ``applies_to``.
+  is closed, and nothing is coerced between JSON types — a ``brief`` of ``42`` is
+  an error, not the string ``"42"``. (Within JSON's one number type, ``1.0`` *is*
+  the integer ``1``, on both sides, because JavaScript cannot tell them apart.)
+  A client, by contrast, tolerates additive fields from a newer server; that
+  asymmetry is recorded per example with ``applies_to``.
 * **The registry facts below are not the registry.** They are the minimum the
   validators need (which tool lands as which kind, which may run without a
   brief). ``1kg.3.1`` owns the full catalogue and extends the shared
@@ -39,7 +41,6 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
-    StrictInt,
     StrictStr,
     StringConstraints,
     TypeAdapter,
@@ -121,15 +122,63 @@ def _iso_text_or_datetime(value: object) -> object:
 Timestamp = Annotated[AwareDatetime, BeforeValidator(_iso_text_or_datetime)]
 
 
-def _a_real_integer(value: object) -> object:
-    """No coercion. To Python ``True == 1``, so a bare ``Literal[1]`` accepts
-    ``true``; Zod does not."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError("schema_version is an integer")
+def _an_integer(value: object) -> object:
+    """An integer is any JSON number with an integral value: ``1.0`` is ``1``,
+    as it is in JavaScript, which cannot tell the two apart. Nothing else is —
+    not ``true`` (to Python ``True == 1``, so a bare ``Literal[1]`` would take
+    it; Zod does not) and not ``"1"``."""
+    if isinstance(value, bool):
+        raise ValueError("must be an integer")
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if not isinstance(value, int):
+        raise ValueError("must be an integer")
     return value
 
 
-SchemaVersion = Annotated[Literal[1], BeforeValidator(_a_real_integer)]
+WireInt = Annotated[int, BeforeValidator(_an_integer)]
+SchemaVersion = Annotated[Literal[1], BeforeValidator(_an_integer)]
+
+
+def _well_formed(value: str) -> str:
+    """JSON allows the escape of a lone surrogate; UTF-8 does not, so neither
+    does anything that stores or answers. Refused here, it is a 422, not a 500."""
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("must be well-formed Unicode text") from None
+    return value
+
+
+#: A bounded string refuses a lone surrogate by itself (Pydantic decodes it to
+#: count). The three fields bounded only after trimming need the refusal added.
+WireText = Annotated[StrictStr, AfterValidator(_well_formed)]
+
+#: What ``String.prototype.trim`` removes, by code point: ASCII whitespace, the
+#: Unicode space separators, the line and paragraph separators and the byte
+#: order mark. ``str.strip`` differs at the edges — it also takes NEL and the
+#: ASCII separators, and leaves the mark — so both sides trim exactly this set.
+_TRIMMED = "".join(
+    chr(code)
+    for code in (
+        *range(0x09, 0x0E),
+        0x20,
+        0xA0,
+        0x1680,
+        *range(0x2000, 0x200B),
+        0x2028,
+        0x2029,
+        0x202F,
+        0x205F,
+        0x3000,
+        0xFEFF,
+    )
+)
+
+
+def trim(value: str) -> str:
+    """Trim as the client does, so the two never disagree about emptiness or length."""
+    return value.strip(_TRIMMED)
 
 #: Opaque to clients and base64url, because a cursor may ride in a query string.
 #: Search text may not (X-7), which is why a cursor never encodes any.
@@ -143,9 +192,9 @@ CommandId = Annotated[str, StringConstraints(strict=True, pattern=r"^[A-Za-z0-9_
 FieldKey = Annotated[str, StringConstraints(strict=True, pattern=r"^[a-z][a-z0-9_]{0,39}$")]
 #: Decision CANVAS-34: the concurrency token. It counts committed writes and is
 #: never a history version.
-WriteRevision = Annotated[StrictInt, Field(ge=1, le=WRITE_REVISION_MAX)]
+WriteRevision = Annotated[WireInt, Field(ge=1, le=WRITE_REVISION_MAX)]
 #: For people, and for pinning a reveal to a sealed version (REVEAL-8).
-VersionNumber = Annotated[StrictInt, Field(ge=1, le=VERSION_NUMBER_MAX)]
+VersionNumber = Annotated[WireInt, Field(ge=1, le=VERSION_NUMBER_MAX)]
 
 
 # ── Closed vocabularies ──────────────────────────────────────────────────────
@@ -369,9 +418,18 @@ DOC_TYPE_VERSION: dict[DocumentTypeId, int] = {doc_type: 1 for doc_type in Docum
 
 class _Contract(BaseModel):
     """Every Workbench payload forbids undeclared fields: a typo, a smuggled
-    document body or a remote URL fails instead of riding along."""
+    document body or a remote URL fails instead of riding along.
 
-    model_config = ConfigDict(extra="forbid")
+    Its errors hide their input: ``str(exc)`` says what was wrong, never what
+    was sent (X-7). ``exc.errors()`` still carries ``input``; a log line takes
+    :func:`redacted_errors` instead."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+
+#: For an adapter of a union or an annotated type, which has no model config of
+#: its own to hide the input with.
+_HIDE_INPUT = ConfigDict(hide_input_in_errors=True)
 
 
 class ConflictInfo(_Contract):
@@ -394,7 +452,7 @@ class ErrorInfo(_Contract):
     #: The request field at fault, for a validation failure.
     field: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=64)] | None = None
     #: Only for ``throttled_user`` (RAIL-20): the daily cap has no window to wait out.
-    retry_after_s: Annotated[StrictInt, Field(ge=0, le=86_400)] | None = None
+    retry_after_s: Annotated[WireInt, Field(ge=0, le=86_400)] | None = None
     #: Only for ``cap_reached`` (X-5): what is holding the cap.
     in_flight: Annotated[list[InvocationId], Field(max_length=8)] | None = None
     #: Only for ``conflict`` on a document write or an AI edit.
@@ -417,19 +475,34 @@ _VALIDATION_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.BRIEF_TOO_LONG: f"A brief can be at most {BRIEF_MAX_CHARS:,} characters.",
 }
 _SAFE_FIELD_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+#: The first element of a FastAPI ``loc``: which part of the request it came from.
+_REQUEST_PARTS = frozenset({"body", "query", "path", "header", "cookie"})
 
 
-def _validation_code(error: Mapping[str, Any], loc: list[Any]) -> tuple[ErrorCode, str | None]:
-    kind, value = error.get("type"), error.get("input")
+def _location(error: Mapping[str, Any]) -> list[Any]:
+    loc = list(error.get("loc", ()))
+    return loc[1:] if loc and loc[0] in _REQUEST_PARTS else loc
+
+
+def _is_a_version_error(error: Mapping[str, Any]) -> bool:
+    """A well-formed version this server does not speak — the contract's, or a
+    document type's field definitions'. A missing or malformed version is an
+    ordinary validation failure: there is nothing to be out of date about."""
+    kind = error.get("type")
+    return (kind == "literal_error" and _location(error) == ["schema_version"]) or kind == "unsupported_type_version"
+
+
+def _validation_code(error: Mapping[str, Any]) -> tuple[ErrorCode, str | None]:
+    kind, loc = error.get("type"), _location(error)
     if kind == "brief_required":
         return ErrorCode.BRIEF_REQUIRED, "brief"
     if kind == "brief_too_long":
         return ErrorCode.BRIEF_TOO_LONG, "brief"
     if loc == ["tool_id"] and kind == "enum":
         return ErrorCode.UNKNOWN_TOOL, "tool_id"
-    # A well-formed version this server does not speak; a missing or malformed
-    # one is an ordinary validation failure.
-    if loc == ["schema_version"] and isinstance(value, int) and not isinstance(value, bool):
+    if kind == "unsupported_type_version":
+        return ErrorCode.UNSUPPORTED_SCHEMA_VERSION, "type_version"
+    if _is_a_version_error(error):
         return ErrorCode.UNSUPPORTED_SCHEMA_VERSION, "schema_version"
     # An undeclared key is the client's text, not a field name of ours: never echoed.
     named = kind != "extra_forbidden" and loc and isinstance(loc[0], str) and _SAFE_FIELD_NAME.fullmatch(loc[0])
@@ -442,14 +515,37 @@ def validation_error_body(errors: Sequence[Mapping[str, Any]]) -> ErrorBody:
     Every Workbench route must answer with this rather than FastAPI's default,
     which returns each error's ``input`` — the request itself, GM-private text
     included (X-7). Pass ``exc.errors()`` from a ``RequestValidationError`` or a
-    ``ValidationError``; only its ``type``, ``loc`` and the *type* of ``input`` are
-    read, and nothing of the request is echoed.
+    ``ValidationError``; only ``type`` and ``loc`` are read, and nothing of the
+    request is echoed.
+
+    A stale client tends to fail in more than one place at once — the version it
+    names and a key it sends — and Pydantic lists the errors in field order. A
+    version error wins whatever its position, because the answer to it is *reload*.
     """
     code, field = ErrorCode.VALIDATION_FAILED, None
-    if errors:
-        loc = [part for part in errors[0].get("loc", ()) if part != "body"]
-        code, field = _validation_code(errors[0], loc)
+    first = next((error for error in errors if _is_a_version_error(error)), errors[0] if errors else None)
+    if first is not None:
+        code, field = _validation_code(first)
     return ErrorBody(detail=ErrorInfo(code=code, message=_VALIDATION_MESSAGES[code], retryable=False, field=field))
+
+
+def redacted_errors(errors: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """A validation error list fit for a log line or a trace: ``type``, ``loc``
+    and ``msg`` only.
+
+    ``exc.errors()`` carries each error's ``input`` — the request — and
+    ``str(exc)`` prints it: always for FastAPI's ``RequestValidationError``, and
+    for a Pydantic error unless its model hides it, as every model here does.
+    Neither is ever logged. The location of an undeclared key is that key, which
+    is the client's text, so it is replaced as well.
+    """
+    out: list[dict[str, Any]] = []
+    for error in errors:
+        loc = list(error.get("loc", ()))
+        if error.get("type") == "extra_forbidden" and loc:
+            loc[-1] = "(undeclared)"
+        out.append({"type": error.get("type"), "loc": loc, "msg": error.get("msg")})
+    return out
 
 
 class ToolInvocationRequest(_Contract):
@@ -460,7 +556,7 @@ class ToolInvocationRequest(_Contract):
     invocation_id: InvocationId
     tool_id: ToolId
     #: Always present; a brief-optional tool sends the empty string.
-    brief: StrictStr
+    brief: WireText
     campaign_id: OpaqueId
     conversation_id: OpaqueId
     #: The timeline entry a suggestion was armed from (RAIL-8).
@@ -469,7 +565,7 @@ class ToolInvocationRequest(_Contract):
     @field_validator("brief")
     @classmethod
     def _trim(cls, value: str) -> str:
-        return value.strip()
+        return trim(value)
 
     @model_validator(mode="after")
     def _brief_fits_its_tool(self) -> Self:
@@ -520,8 +616,8 @@ class AssetRef(_Contract):
     #: Audio is a cue, never a media result.
     media_type: Literal["image"]
     alt: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=300)]
-    width: Annotated[StrictInt, Field(ge=1, le=20_000)] | None = None
-    height: Annotated[StrictInt, Field(ge=1, le=20_000)] | None = None
+    width: Annotated[WireInt, Field(ge=1, le=20_000)] | None = None
+    height: Annotated[WireInt, Field(ge=1, le=20_000)] | None = None
 
 
 class StatBlockCard(_Contract):
@@ -612,7 +708,7 @@ class ToolInvocation(_Contract):
     tool_id: ToolId
     status: InvocationStatus
     #: Counts from one; a retry of a failed attempt increments it (RAIL-18).
-    attempt: Annotated[StrictInt, Field(ge=1, le=100)]
+    attempt: Annotated[WireInt, Field(ge=1, le=100)]
     #: With ``status: done`` this is "finished before it could be cancelled" (RAIL-23).
     cancel_requested: StrictBool
     created_at: Timestamp
@@ -655,10 +751,10 @@ _TextListValue = Annotated[list[_ListItem], Field(max_length=LIST_FIELD_MAX_ITEM
 
 #: Text and prose clear to ``""``, a list to ``[]``, and only an asset to ``None``.
 _FIELD_VALUE: dict[FieldKind, TypeAdapter[Any]] = {
-    FieldKind.TEXT: TypeAdapter(_TextValue),
-    FieldKind.PROSE: TypeAdapter(_ProseValue),
-    FieldKind.TEXT_LIST: TypeAdapter(_TextListValue),
-    FieldKind.ASSET: TypeAdapter(AssetRef | None),
+    FieldKind.TEXT: TypeAdapter(_TextValue, config=_HIDE_INPUT),
+    FieldKind.PROSE: TypeAdapter(_ProseValue, config=_HIDE_INPUT),
+    FieldKind.TEXT_LIST: TypeAdapter(_TextListValue, config=_HIDE_INPUT),
+    FieldKind.ASSET: TypeAdapter(AssetRef | None, config=_HIDE_INPUT),
 }
 
 
@@ -672,7 +768,13 @@ def check_fields(
     values: they can reach a response body (X-7).
     """
     if type_version != DOC_TYPE_VERSION[doc_type]:
-        raise ValueError(f"{doc_type.value} field definitions are at version {DOC_TYPE_VERSION[doc_type]}")
+        # Typed, so that ``validation_error_body`` answers "reload" (the client
+        # is out of date) rather than "malformed".
+        raise PydanticCustomError(
+            "unsupported_type_version",
+            "{type} field definitions are at version {version}",
+            {"type": doc_type.value, "version": DOC_TYPE_VERSION[doc_type]},
+        )
     declared = {**COMMON_FIELDS, **DOC_TYPE_FIELDS[doc_type]}
     checked: dict[str, Any] = {}
     for key, value in fields.items():
@@ -682,9 +784,10 @@ def check_fields(
         try:
             checked[key] = _FIELD_VALUE[kind].validate_python(value)
         except ValidationError as err:
-            raise ValueError(f"{key} is not a valid {kind.value} field: {err.errors()[0]['msg']}") from err
+            # ``from None``: a chained cause would put the value in the traceback.
+            raise ValueError(f"{key} is not a valid {kind.value} field: {err.errors()[0]['msg']}") from None
     name = checked.get("name")
-    if (whole and name is None) or (name is not None and not name.strip()):
+    if (whole and name is None) or (name is not None and not trim(name)):
         raise ValueError("a document has a name, and it cannot be blank")
     return checked
 
@@ -715,7 +818,7 @@ class DocumentVersion(_Contract):
 
 class _TypedFields(_Contract):
     type: DocumentTypeId
-    type_version: Annotated[StrictInt, Field(ge=1, le=1000)]
+    type_version: Annotated[WireInt, Field(ge=1, le=1000)]
 
 
 class Document(_TypedFields):
@@ -823,8 +926,8 @@ class SelectionScope(_Contract):
 
     kind: Literal["selection"]
     field: FieldKey
-    start: Annotated[StrictInt, Field(ge=0, le=PROSE_FIELD_MAX_CHARS)]
-    end: Annotated[StrictInt, Field(ge=1, le=PROSE_FIELD_MAX_CHARS)]
+    start: Annotated[WireInt, Field(ge=0, le=PROSE_FIELD_MAX_CHARS)]
+    end: Annotated[WireInt, Field(ge=1, le=PROSE_FIELD_MAX_CHARS)]
     text: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=PROSE_FIELD_MAX_CHARS)]
 
     @model_validator(mode="after")
@@ -848,12 +951,12 @@ EditScopeSummary = Annotated[DocumentScope | FieldScope | SelectionScopeSummary,
 class TextInstruction(_Contract):
     kind: Literal["text"]
     #: Decision RAIL-6: an instruction shares the brief's bound, and is stored trimmed.
-    text: StrictStr
+    text: WireText
 
     @field_validator("text")
     @classmethod
     def _trimmed_and_bounded(cls, value: str) -> str:
-        trimmed = value.strip()
+        trimmed = trim(value)
         if not 1 <= len(trimmed) <= BRIEF_MAX_CHARS:
             raise ValueError(f"an instruction is 1 to {BRIEF_MAX_CHARS} characters")
         return trimmed
@@ -925,7 +1028,7 @@ class EditInvocation(_Contract):
     invocation_id: InvocationId
     document_id: OpaqueId
     status: InvocationStatus
-    attempt: Annotated[StrictInt, Field(ge=1, le=100)]
+    attempt: Annotated[WireInt, Field(ge=1, le=100)]
     cancel_requested: StrictBool
     created_at: Timestamp
     updated_at: Timestamp
@@ -954,18 +1057,18 @@ class LibraryQuery(_Contract):
     campaign_id: OpaqueId
     category: LibraryCategory
     #: Trimmed; empty for no search, otherwise 2 to 100 characters.
-    search: StrictStr
+    search: WireText
     sort: LibrarySort
     archived: StrictBool
     #: Only in Documents, the one category that holds more than one type (LIB-22).
     type: DocumentTypeId | None = None
     cursor: Cursor | None = None
-    limit: Annotated[StrictInt, Field(ge=1, le=LIBRARY_PAGE_MAX_ITEMS)] | None = None
+    limit: Annotated[WireInt, Field(ge=1, le=LIBRARY_PAGE_MAX_ITEMS)] | None = None
 
     @field_validator("search")
     @classmethod
     def _trimmed_and_bounded(cls, value: str) -> str:
-        trimmed = value.strip()
+        trimmed = trim(value)
         if trimmed and not SEARCH_MIN_CHARS <= len(trimmed) <= SEARCH_MAX_CHARS:
             raise ValueError(f"a search is {SEARCH_MIN_CHARS} to {SEARCH_MAX_CHARS} characters")
         return trimmed
@@ -1136,22 +1239,37 @@ class TimelinePage(_Contract):
     next_cursor: Cursor | None
 
 
-_ENTRY_ADAPTER: TypeAdapter[Any] = TypeAdapter(TimelineEntry)
+_ENTRY_ADAPTER: TypeAdapter[Any] = TypeAdapter(TimelineEntry, config=_HIDE_INPUT)
 
 
-def _mentions_newer_version(value: object, depth: int = 0) -> bool:
-    """Whether any ``schema_version`` inside a stored payload is beyond this
-    contract — the entry's own, or an embedded invocation's."""
-    if depth > 8:
+def _version_named(value: object) -> int | None:
+    """A version is an integral JSON number; ``true``, ``"2"`` and ``1.5`` are not."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    return value if isinstance(value, int) else None
+
+
+def _names_a_newer_version(raw: object) -> bool:
+    """Whether the payload's own ``schema_version`` — or its embedded
+    invocation's, the one other versioned object an entry holds — is beyond
+    this contract. A ``schema_version`` anywhere deeper is content, not a
+    version, and does not make a damaged row look like the future."""
+    if not isinstance(raw, dict):
         return False
-    if isinstance(value, dict):
-        version = value.get("schema_version")
-        if isinstance(version, int) and not isinstance(version, bool) and version > CONTRACT_VERSION:
-            return True
-        return any(_mentions_newer_version(item, depth + 1) for item in value.values())
-    if isinstance(value, list):
-        return any(_mentions_newer_version(item, depth + 1) for item in value)
-    return False
+    invocation = raw.get("invocation")
+    named = [raw.get("schema_version"), invocation.get("schema_version") if isinstance(invocation, dict) else None]
+    return any((version := _version_named(value)) is not None and version > CONTRACT_VERSION for value in named)
+
+
+#: The row's columns, checked before the payload is read.
+_ROW_ID: TypeAdapter[str] = TypeAdapter(OpaqueId, config=_HIDE_INPUT)
+_ROW_TIME: TypeAdapter[datetime] = TypeAdapter(Timestamp, config=_HIDE_INPUT)
+
+
+def _placeholder(entry_id: str, created_at: datetime, reason: OpaqueReason) -> OpaqueEntry:
+    return OpaqueEntry(schema_version=1, entry_kind="opaque", entry_id=entry_id, created_at=created_at, reason=reason)
 
 
 def entry_or_opaque(raw: object, *, entry_id: str, created_at: datetime) -> AnyEntry:
@@ -1161,26 +1279,41 @@ def entry_or_opaque(raw: object, *, entry_id: str, created_at: datetime) -> AnyE
     version's after a rollback, an unknown kind, a damaged row — becomes an
     :class:`OpaqueEntry` in the same place. It is never dropped, never
     rewritten, and never forwarded unvalidated.
+
+    The payload is read the way a client reads a response: **undeclared keys
+    are ignored**. The versioning table lets a newer server add an optional
+    field without a bump, and after a rollback that field must cost the entry
+    nothing. What the server *emits* stays strict; that is the adapter's
+    default, and the fixtures pin it.
+
+    ``entry_id`` and ``created_at`` are the row's own columns, validated when
+    the row was written. They are what the placeholder is built from, so a row
+    whose columns are unusable raises before the payload is read — a storage
+    fault, not a version gap. The row is also the authority on identity: a
+    payload that validates but names another entry's id is served as
+    ``unreadable``.
     """
+    _ROW_ID.validate_python(entry_id)
+    _ROW_TIME.validate_python(created_at)
     try:
-        entry: AnyEntry = _ENTRY_ADAPTER.validate_python(raw)
+        entry: AnyEntry = _ENTRY_ADAPTER.validate_python(raw, extra="ignore")
     except ValidationError:
-        reason = OpaqueReason.NEWER_VERSION if _mentions_newer_version(raw) else OpaqueReason.UNREADABLE
-        return OpaqueEntry(
-            schema_version=1, entry_kind="opaque", entry_id=entry_id, created_at=created_at, reason=reason
-        )
+        reason = OpaqueReason.NEWER_VERSION if _names_a_newer_version(raw) else OpaqueReason.UNREADABLE
+        return _placeholder(entry_id, created_at, reason)
+    if entry.entry_id != entry_id:
+        return _placeholder(entry_id, created_at, OpaqueReason.UNREADABLE)
     return entry
 
 
 #: Name → validator, in the order ``contracts/workbench/v1/schemas.json`` lists them.
 CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
-    "Timestamp": TypeAdapter(Timestamp),
+    "Timestamp": TypeAdapter(Timestamp, config=_HIDE_INPUT),
     "ErrorBody": TypeAdapter(ErrorBody),
     "ToolInvocationRequest": TypeAdapter(ToolInvocationRequest),
     "ToolSuggestion": TypeAdapter(ToolSuggestion),
     "DocumentLink": TypeAdapter(DocumentLink),
     "AssetRef": TypeAdapter(AssetRef),
-    "ToolResult": TypeAdapter(ToolResult),
+    "ToolResult": TypeAdapter(ToolResult, config=_HIDE_INPUT),
     "ToolInvocation": TypeAdapter(ToolInvocation),
     "DocumentVersion": TypeAdapter(DocumentVersion),
     "Document": TypeAdapter(Document),

@@ -28,6 +28,14 @@
     {
       "name": "the Archived filter, where Delete lives (LIB-18)",
       "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "bestiary", "search": "", "sort": "recent", "archived": true, "type": null, "cursor": null }
+    },
+    {
+      "name": "a search of only a byte order mark is no search: trimmed away on both sides",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "\ufeff", "sort": "recent", "archived": false }
+    },
+    {
+      "name": "NEL is not trimmed on either side, so this search is two characters long",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "\u0085t", "sort": "recent", "archived": false }
     }
   ],
   "invalid": [
@@ -80,6 +88,11 @@
       "name": "full-text search switched on by the client",
       "why": "LIB-21: search matches name, qualifier and tags; a request is strict, so a stray key is a client bug",
       "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "signet", "sort": "recent", "archived": false, "full_text": true }
+    },
+    {
+      "name": "a lone surrogate in the search",
+      "why": "JSON allows the escape; UTF-8 does not. Refused on both sides, so it is a 422 and never a failure to query",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "ti\ud83c", "sort": "recent", "archived": false }
     }
   ]
 }
