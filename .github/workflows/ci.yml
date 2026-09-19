@@ -20,7 +20,11 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
+    # INTEGRATION BRANCH ONLY - this line never reaches master. The stacked
+    # Workbench branches are merged into integration/1kg-workbench so that work
+    # built on them gets this pipeline, PostgreSQL job included, from a pull
+    # request into that branch. A pull request never deploys (see `deploy`).
+    branches: [master, "integration/**"]
   workflow_dispatch:
     inputs:
       force_deploy:
