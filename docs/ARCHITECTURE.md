@@ -125,8 +125,9 @@ pass fed by `build_vocab.py`); `qa_chunks.py` quarantines failure signatures pre
   seen, once, under an advisory lock, before the service serves anything, and
   records each file's checksum in `app.schema_migrations`. A fresh database and an
   old one converge; drift stops startup. The files ship inside the installed
-  package. Database access goes through bounded pools and one transaction boundary
-  (`service/db.py`); multi-step writes enqueue their follow-up work in the same
+  package. Database access goes through a bounded connection gate (plus a small pool
+  for the realtime path) and one transaction boundary (`service/db.py`); multi-step
+  writes enqueue their follow-up work in the same
   transaction (`service/jobs.py`). See [migrations.md](migrations.md).
 - `dnd.hybrid_search()` (vector+FTS RRF) exists but is **not adopted** — tied Hit@1, slightly
   worse Recall@10 (3q3). `verify_db.py` is an insert+kNN smoke test.

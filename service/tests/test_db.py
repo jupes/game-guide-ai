@@ -1,9 +1,10 @@
 """Bounded pools and the transaction boundary (1kg.1.5) — without a database.
 
-The settings and their bounds, the in-memory twin's all-or-nothing contract, and
-the Postgres unit of work against a scripted connection. What needs a server —
-that the pool really refuses a connection too many, replaces a dead one, and
-closes cleanly — is in `tests/test_db_postgres.py`, which CI runs.
+The settings and their bounds, the in-memory twin's all-or-nothing contract, the
+gate, and the Postgres unit of work against a scripted connection. What needs a
+server — that the gate really refuses a connection too many, that nothing is held
+between operations, that the realtime pool closes cleanly — is in
+`tests/test_db_postgres.py`, which CI runs.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from contextlib import contextmanager
 
 import psycopg
 import pytest
-from psycopg_pool import PoolClosed
+from psycopg_pool import PoolClosed, PoolTimeout
 
 from service import db as dbmod
 from service.db import (
@@ -29,18 +30,19 @@ from service.db import (
 # ── Settings ─────────────────────────────────────────────────────────────────
 
 
-def test_the_defaults_are_the_reviewed_numbers():
-    """Six for routes, three for the realtime path, one listener (F-3, RT-5)."""
+def test_the_defaults_fit_a_rollout():
+    """Four for routes — two revisions of two instances overlap during a rollout —
+    three for the realtime path, one listener (F-3, RT-5)."""
     settings = PoolSettings.from_env({})
-    assert (settings.sync_max, settings.async_max, settings.per_instance) == (6, 3, 10)
-    assert settings.acquire_timeout_s == 5
+    assert (settings.sync_max, settings.async_max, settings.per_instance) == (4, 3, 8)
+    assert (settings.acquire_timeout_s, settings.max_idle_s, settings.idle_session_timeout_s) == (5, 60, 120)
 
 
 def test_settings_come_from_the_environment():
     settings = PoolSettings.from_env({"DB_POOL_MAX": "4", "DB_ASYNC_POOL_MAX": "0", "DB_POOL_TIMEOUT_S": "9"})
     assert (settings.sync_max, settings.async_max, settings.acquire_timeout_s) == (4, 0, 9)
     assert settings.per_instance == 5
-    assert PoolSettings.from_env({"DB_POOL_MAX": ""}).sync_max == 6
+    assert PoolSettings.from_env({"DB_POOL_MAX": ""}).sync_max == 4
 
 
 @pytest.mark.parametrize(
@@ -198,8 +200,8 @@ class _Connection:
 
 
 @pytest.fixture
-def unpooled(monkeypatch):
-    """`DB_POOL_MAX=0`: a connection per operation, as before 1kg.1.5."""
+def scripted(monkeypatch):
+    """psycopg.connect replaced by a recorder: what the gate does around it."""
     log: list[str] = []
     seen: dict[str, object] = {}
 
@@ -208,26 +210,87 @@ def unpooled(monkeypatch):
         return _Connection(log)
 
     monkeypatch.setattr(psycopg, "connect", connect)
-    return Database("postgresql://test/db", PoolSettings(sync_max=0, async_max=0)), log, seen
+    return log, seen
 
 
-def test_without_a_pool_every_operation_opens_and_closes_its_own_connection(unpooled):
-    db, log, seen = unpooled
+def test_every_operation_opens_and_closes_a_connection_of_its_own(scripted):
+    """Nothing is kept between operations, so an idle or frozen instance holds
+    nothing and no connection is ever stale."""
+    log, seen = scripted
+    db = Database("postgresql://test/db", PoolSettings(sync_max=2, async_max=0))
     with db.connection() as conn:
         conn.execute("SELECT 1")
     assert log == ["connect", "SELECT 1 None", "commit+close"]
     assert seen["dsn"] == "postgresql://test/db"
-    assert seen["kwargs"] == {"connect_timeout": 10, "application_name": "game-guide-ai:direct"}
-    db.open()
-    db.close()  # nothing to open, nothing to close, no error
+    assert seen["kwargs"] == {"connect_timeout": 10, "application_name": "game-guide-ai:sync"}
 
 
-def test_the_unit_of_work_commits_then_releases_then_calls_back(unpooled):
-    db, log, _ = unpooled
+def test_the_gate_admits_only_its_number_and_frees_a_place_on_the_way_out(scripted):
+    db = Database("postgresql://test/db", PoolSettings(sync_max=2, async_max=0, acquire_timeout_s=1))
+    with db.connection(), db.connection():
+        with pytest.raises(PoolTimeout, match="no database connection came free in 1 s"):
+            with db.connection():
+                pass  # pragma: no cover
+    with db.connection():
+        pass  # both places are free again
+
+
+def test_a_failed_operation_gives_its_place_back(scripted):
+    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=1))
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            with db.connection():
+                raise RuntimeError("boom")
+    with db.connection():
+        pass
+
+
+def test_a_connection_that_cannot_be_made_gives_its_place_back(monkeypatch):
+    def refuse(dsn, **kwargs):
+        raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr(psycopg, "connect", refuse)
+    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=1))
+    for _ in range(3):
+        with pytest.raises(psycopg.OperationalError, match="connection refused"):
+            with db.connection():
+                pass  # pragma: no cover
+
+
+def test_a_gate_timeout_is_the_kind_of_error_routes_already_answer_503_for():
+    assert issubclass(PoolTimeout, psycopg.OperationalError)
+    assert issubclass(PoolClosed, psycopg.OperationalError)
+
+
+def test_without_a_gate_connections_are_unbounded_as_before(scripted):
+    """`DB_POOL_MAX=0`: the behaviour before 1kg.1.5, kept as a switch."""
+    db = Database("postgresql://test/db", PoolSettings(sync_max=0, async_max=0))
+    with db.connection(), db.connection(), db.connection(), db.connection(), db.connection():
+        pass
+
+
+def test_a_closed_database_refuses_and_closing_twice_is_fine(scripted):
+    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0))
+    db.close()
+    db.close()
+    with pytest.raises(PoolClosed):
+        with db.connection():
+            pass  # pragma: no cover
+
+
+def test_the_unit_of_work_commits_then_releases_then_calls_back(scripted):
+    log, _ = scripted
+    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=1))
+
+    def after_commit() -> None:
+        log.append("after-commit")
+        with db.connection():  # the only place is free again: a callback may use the database
+            pass
+
     with db.transaction() as unit:
         unit.lock(AdvisoryLock.TABLE_SESSION, "s-1")
         unit.notify("table_session", "s-1")
-        unit.on_commit(lambda: log.append("after-commit"))
+        unit.on_commit(after_commit)
     assert log == [
         "connect",
         "begin",
@@ -235,12 +298,15 @@ def test_the_unit_of_work_commits_then_releases_then_calls_back(unpooled):
         "SELECT pg_notify(%s, %s) ('table_session', 's-1')",
         "commit",
         "commit+close",
-        "after-commit",  # after the connection is back: a callback may need one itself
+        "after-commit",
+        "connect",
+        "commit+close",
     ]
 
 
-def test_a_failed_unit_of_work_rolls_back_and_never_calls_back(unpooled):
-    db, log, _ = unpooled
+def test_a_failed_unit_of_work_rolls_back_and_never_calls_back(scripted):
+    log, _ = scripted
+    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0))
     with pytest.raises(RuntimeError):
         with db.transaction() as unit:
             unit.on_commit(lambda: log.append("after-commit"))
@@ -248,48 +314,90 @@ def test_a_failed_unit_of_work_rolls_back_and_never_calls_back(unpooled):
     assert log == ["connect", "begin", "rollback", "rollback+close"]
 
 
-def test_the_postgres_unit_of_work_checks_notifications_too(unpooled):
-    db, log, _ = unpooled
+def test_the_postgres_unit_of_work_checks_notifications_too(scripted):
+    log, _ = scripted
+    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0))
     with pytest.raises(ValueError, match="lowercase identifier"):
         with db.transaction() as unit:
             unit.notify("Table Session")
     assert not any("pg_notify" in line for line in log)
 
 
-# ── The pools themselves (no server: neither keeps an idle minimum) ──────────
+# ── A connection string that does not parse is refused without being repeated ─
 
 
-def test_the_pools_are_bounded_and_start_empty():
+@pytest.mark.parametrize(
+    "dsn",
+    [" postgresql://postgres:S3cretPW@/app?host=/cloudsql/p:r:i", '"postgresql://u:S3cretPW@h/app"'],
+)
+def test_a_malformed_dsn_is_a_verdict_that_never_quotes_the_dsn(dsn):
+    """psycopg quotes the whole string, password included, when it cannot parse
+    one — and a pool would log that on every retry (SEC-21)."""
+    with pytest.raises(ValueError) as caught:
+        Database(dsn)
+    assert str(caught.value) == "DATABASE_URL is not a valid PostgreSQL connection string"
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert dbmod.check_dsn("X", "postgresql://u:pw@h/app") == "postgresql://u:pw@h/app"
+
+
+# ── The realtime pool (no server: it keeps no idle minimum) ──────────────────
+
+
+def test_the_realtime_pool_is_bounded_starts_empty_and_asks_the_server_to_reap_it():
     db = Database("postgresql://nobody@127.0.0.1:1/none", PoolSettings(sync_max=4, async_max=2))
-    assert (db._pool.min_size, db._pool.max_size) == (0, 4)
-    assert (db._async_pool.min_size, db._async_pool.max_size) == (0, 2)
-    assert db._pool.timeout == 5 and db._pool.max_idle == 60
-    assert db._pool.closed and db._async_pool.closed
+    pool = db._async_pool
+    assert (pool.min_size, pool.max_size, pool.timeout, pool.max_idle) == (0, 2, 5, 60)
+    assert pool.closed, "nothing realtime has asked for it yet"
+    assert pool.kwargs["options"] == "-c idle_session_timeout=120s", (
+        "a frozen instance cannot shed its own connections; the server must"
+    )
+    assert pool.kwargs["application_name"] == "game-guide-ai:async"
 
 
-def test_opening_connects_to_nothing_and_closing_is_clean_and_idempotent():
-    """With no idle minimum, `open()` cannot fail because the database is down —
-    startup does not depend on it — and `close()` leaves a pool that refuses."""
-    db = Database("postgresql://nobody@127.0.0.1:1/none", PoolSettings(sync_max=2, async_max=0))
-    db.open()
-    assert not db._pool.closed and db._pool.get_stats().get("pool_size", 0) == 0
-    db.close()
-    db.close()
-    assert db._pool.closed
-    with pytest.raises(PoolClosed):
-        with db.connection():
-            pass  # pragma: no cover
+class _StubAsyncPool:
+    def __init__(self) -> None:
+        self.closed = True
+        self.opened = 0
+
+    async def open(self, wait: bool = False) -> None:
+        self.opened += 1
+        self.closed = False
+
+    def connection(self):
+        class _Borrowed:
+            async def __aenter__(self):
+                return "conn"
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Borrowed()
+
+    async def close(self) -> None:
+        self.closed = True
 
 
-def test_the_async_pool_opens_on_first_use_and_closes_with_the_rest():
+def test_the_realtime_pool_opens_on_first_use_and_closes_with_the_rest():
+    async def scenario() -> tuple[int, bool, bool]:
+        db = Database("postgresql://nobody@127.0.0.1:1/none", PoolSettings(sync_max=1, async_max=1))
+        pool = db._async_pool = _StubAsyncPool()
+        async with db.async_connection() as conn:
+            assert conn == "conn"
+        async with db.async_connection():
+            pass
+        await db.aclose()
+        return pool.opened, pool.closed, db._closed
+
+    assert asyncio.run(scenario()) == (1, True, True)
+
+
+def test_a_real_realtime_pool_opens_without_a_server_and_closes():
     async def scenario() -> tuple[bool, bool]:
         db = Database("postgresql://nobody@127.0.0.1:1/none", PoolSettings(sync_max=1, async_max=1))
-        db.open()
-        assert db._async_pool.closed, "nothing realtime has asked for it yet"
         await db._async_pool.open(wait=False)
         opened = not db._async_pool.closed
         await db.aclose()
-        return opened, db._async_pool.closed and db._pool.closed
+        return opened, db._async_pool.closed
 
     assert asyncio.run(scenario()) == (True, True)
 
@@ -299,79 +407,6 @@ def test_a_disabled_async_pool_says_so():
         db = Database("postgresql://nobody@127.0.0.1:1/none", PoolSettings(sync_max=1, async_max=0))
         async with db.async_connection():
             pass  # pragma: no cover
-        await db.aclose()  # pragma: no cover
 
     with pytest.raises(RuntimeError, match="DB_ASYNC_POOL_MAX=0"):
         asyncio.run(scenario())
-
-
-# ── A pool that sat idle is swept before it lends again ──────────────────────
-
-
-class _SweepablePool:
-    closed = False
-
-    def __init__(self) -> None:
-        self.sweeps = 0
-
-    def check(self) -> None:
-        self.sweeps += 1
-
-    @contextmanager
-    def connection(self):
-        yield "conn"
-
-
-def test_an_idle_pool_is_swept_once_and_a_busy_one_never():
-    """Cloud Run freezes an instance between requests and its sockets die quietly.
-    Met one at a time at checkout, each costs a growing backoff; swept first,
-    they cost one new connection."""
-    db = Database("postgresql://nobody@127.0.0.1:1/none", PoolSettings(sync_max=2, async_max=0))
-    pool = db._pool = _SweepablePool()
-    with db.connection():
-        pass
-    assert pool.sweeps == 0, "borrowed from a moment ago: nothing to suspect"
-
-    db._last_borrowed["sync"] -= dbmod.IDLE_SUSPECT_S + 1
-    with db.connection():
-        pass
-    with db.connection():
-        pass
-    assert pool.sweeps == 1
-
-
-def test_the_async_pool_is_swept_the_same_way():
-    class _AsyncPool:
-        closed = False
-        sweeps = 0
-
-        async def check(self) -> None:
-            type(self).sweeps += 1
-
-        def connection(self):
-            class _Borrowed:
-                async def __aenter__(self):
-                    return "conn"
-
-                async def __aexit__(self, *exc):
-                    return False
-
-            return _Borrowed()
-
-        async def close(self) -> None:
-            return None
-
-    async def scenario() -> int:
-        db = Database("postgresql://nobody@127.0.0.1:1/none", PoolSettings(sync_max=0, async_max=1))
-        db._async_pool = _AsyncPool()
-        async with db.async_connection():
-            pass
-        db._last_borrowed["async"] -= dbmod.IDLE_SUSPECT_S + 1
-        async with db.async_connection():
-            pass
-        async with db.async_connection():
-            pass
-        await db.aclose()
-        return _AsyncPool.sweeps
-
-    assert asyncio.run(scenario()) == 1

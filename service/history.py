@@ -7,7 +7,7 @@ recent N of a conversation (served oldest-first for display). Two impls:
 - `PostgresMessageStore` — the real one, `chat.*` in the same Postgres instance
   as the RAG corpus. The schema comes from the ordered migrations
   (`service/migrations.py`), which the app runs once at startup;
-  `ensure_schema()` runs them on demand for the CLIs and the tests.
+  `ensure_schema()` only checks that they have been applied.
 - `InMemoryMessageStore` — the test/dev fake with identical ordering + limit
   semantics.
 
@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
 from .db import Database, default_dsn
-from .migrations import migrate
+from .migrations import Mode, migrate
 from .models import ChatMode, MessageRole, StoredMessage, Suggestion
 
 
@@ -173,8 +173,8 @@ def _to_message(r: _Row) -> StoredMessage:
 
 class PostgresMessageStore:
     """`chat.messages` in the corpus Postgres. One short-lived connection per
-    operation: borrowed from the service's bounded pool when it is given one
-    (`db`, 1kg.1.5), opened and closed on the spot otherwise (CLIs, tests)."""
+    operation: through the service's bounded gate when it is given one (`db`,
+    1kg.1.5), opened and closed on the spot otherwise (CLIs, tests)."""
 
     def __init__(self, dsn: str | None = None, *, db: Database | None = None):
         self._given_dsn = dsn
@@ -189,9 +189,15 @@ class PostgresMessageStore:
         return psycopg.connect(self._dsn)
 
     def ensure_schema(self) -> None:
-        # With no DSN of its own the runner chooses, and it prefers the schema
-        # owner's (`MIGRATIONS_DATABASE_URL`) over the runtime's.
-        migrate(self._given_dsn)
+        """Check — never change — that the database is at this build's schema.
+
+        An operator's checkout is not the deployed image: applying whatever
+        migrations it happens to hold, as a side effect of listing invites,
+        would put unreviewed DDL into production. Only the service's startup
+        and an explicit `python -m service.migrations migrate` change a schema;
+        this raises `MigrationsPending` and says so. With no DSN of its own
+        the runner chooses one, preferring the schema owner's."""
+        migrate(self._given_dsn, mode=Mode.VERIFY)
 
     def calls_today(self) -> int:
         """User turns recorded since UTC midnight — the daily cost ceiling (x5bz.3.3).

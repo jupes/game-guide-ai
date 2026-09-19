@@ -16,7 +16,7 @@ Out-of-corpus questions are refused, not hallucinated. Beyond chat it persists
 | `rag.py` | `RagService` — thin invoke wrapper around the graph; dependency injection seams (retriever, reranker, LLM client, secondary retriever). Home of the stubbed **secondary world-corpus retriever** seam for GM mode. |
 | `generate.py` | Context assembly (full chunk texts, never previews), per-mode persona prompts, grounded answer + spell-suggestion LLM calls, `Source` building. |
 | `models.py` | Pydantic request/response contract (mirrored by `ui/src/api.ts`). Home of the canonical `REFUSAL` string. |
-| `history.py` | `MessageStore` protocol + Postgres/in-memory impls — `chat.messages` / `chat.attachments` in the same DB as the corpus; borrows from the bounded pool (`db.py`). |
+| `history.py` | `MessageStore` protocol + Postgres/in-memory impls — `chat.messages` / `chat.attachments` in the same DB as the corpus; goes through the bounded connection gate (`db.py`). |
 | `attachments.py` | Pure text extraction for uploaded files (`.txt`/`.md` decode, `.pdf` via PyMuPDF) + `cap_text`. Deliberately separate from `ingestion/extract*.py` (those are whole-book, path-based). |
 | `tracing.py` | Env-gated Langfuse tracing (`RAG_TRACING`, off by default) — node-level trace + token/cost span per request. |
 

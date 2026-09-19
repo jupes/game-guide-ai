@@ -1,33 +1,42 @@
 """
-Database access (1kg.1.5): bounded pools, one transaction boundary, and the
-in-memory twin unit tests use.
+Database access (1kg.1.5): a bounded gate for routes, a small pool for the
+realtime path, one transaction boundary, and the in-memory twin unit tests use.
 
-**Why pools.** Every store used to open a connection per operation, which cannot
-be bounded: twenty concurrent requests on each of two instances is forty
-connections against a `db-f1-micro` that accepts twenty-two. `Database` holds a
-synchronous pool for routes and an asynchronous one for the realtime path, so a
-reconnect storm's snapshots never take request threads. Both are sized so that
-`PoolSettings.per_instance` times the deployed instance count, plus the
-operator's own sessions, fits the server (`tests/test_deploy_contract.py`).
+**Why a bound.** Every store used to open a connection per operation with
+nothing limiting how many: twenty concurrent requests on each of two instances
+is forty connections against a `db-f1-micro` that accepts twenty-two.
 
-Both pools keep **no idle minimum**. Cloud Run gives an instance CPU only while
-a request is in flight, so a pool's housekeeping cannot be relied on to shed
-connections from an idle instance; starting from zero and checking every
-connection as it is handed out (a frozen instance's sockets die quietly) is what
-fits that platform.
+**Why routes keep no connections.** Cloud Run gives an instance CPU only while a
+request is in flight, so a keep-alive pool cannot shed its idle connections from
+an instance that has gone quiet — and during a rollout the previous revision's
+instances go quiet all at once, still holding theirs. The synchronous side is
+therefore a **gate**, not a cache: at most `DB_POOL_MAX` connections open at the
+same moment per instance, each opened for one operation and closed after it,
+which is what the stores always did. An idle or frozen instance holds nothing,
+no connection is ever stale, and the only thing that changed for a request is
+that it may wait its turn. `tests/test_deploy_contract.py` checks the arithmetic
+against `scripts/deploy.sh`, including a rollout's overlap of two revisions.
+
+**The realtime path** is different: a stream is a request, so its instance has
+CPU for as long as it matters, and state reads are frequent. It gets a small
+`AsyncConnectionPool`, opened on first use, checked on checkout, and marked with
+`idle_session_timeout` so that the *server* reaps whatever a frozen instance left
+behind. A dedicated LISTEN connection (RT-5) is counted in the budget and owned
+by the realtime beads.
 
 **The transaction boundary.** `Database.transaction()` yields a unit of work.
 Whatever a repository writes through it — an aggregate, its outbox job
 (`service/jobs.py`), a wake-up notification — commits or rolls back together.
 `on_commit` callbacks run only after the commit, and after the connection has
-gone back to the pool, so a callback may use the database itself.
+been given back, so a callback may use the database itself.
 
 **The fake.** `InMemoryDatabase` gives unit tests the same boundary: changes
-register their own undo, a failed block takes them back in reverse, and
-notifications and callbacks are released on commit only. Every store keeps the
-repository's pattern — a `Protocol`, an in-memory implementation, a Postgres one.
+register their own undo, a failed block takes them back in reverse, and what a
+transaction publishes — rows other readers may see, notifications, callbacks —
+is released on commit only. Every store keeps the repository's pattern: a
+`Protocol`, an in-memory implementation, a Postgres one.
 
-`DB_POOL_MAX=0` turns pooling off and restores a connection per operation.
+`DB_POOL_MAX=0` removes the gate: a connection per operation, unbounded, as before.
 """
 
 from __future__ import annotations
@@ -37,12 +46,14 @@ import logging
 import os
 import re
 import threading
-import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Protocol
+
+import psycopg
+from psycopg_pool import AsyncConnectionPool, PoolClosed, PoolTimeout
 
 log = logging.getLogger(__name__)
 
@@ -51,17 +62,12 @@ DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai"
 
 CONNECT_TIMEOUT_S = 10
 
-#: A pool nobody has borrowed from for this long is checked before it lends
-#: again. Cloud Run freezes an instance between requests and the sockets it was
-#: holding die quietly; met one at a time during checkout, each dead connection
-#: costs a growing backoff, and four of them cost the request. Swept up front,
-#: they cost one new connection.
-IDLE_SUSPECT_S = 30.0
-
 #: What `db-f1-micro` accepts from non-superusers (docs/deploy-gcp.md §3).
 SERVER_CONNECTION_LIMIT = 22
 #: Kept free for the operator: a proxy session and `python -m service.admin_invites`.
 RESERVED_FOR_OPERATORS = 2
+#: One per starting instance, for as long as its migration check takes.
+MIGRATION_SESSIONS = 1
 
 #: A channel is a Postgres identifier; a payload is an id, never content (SEC-20).
 _CHANNEL = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
@@ -70,6 +76,24 @@ NOTIFY_PAYLOAD_MAX_CHARS = 200
 
 def default_dsn() -> str:
     return os.environ.get("DATABASE_URL") or DEFAULT_DSN
+
+
+def check_dsn(name: str, dsn: str) -> str:
+    """Refuse a connection string that does not parse — without repeating it.
+
+    psycopg quotes the whole string, password included, when it cannot parse
+    one, and a pool would log that text on every retry (SEC-21). A bad setting is
+    a verdict, so it is raised here, once, by the variable's name only.
+    """
+    try:
+        psycopg.conninfo.conninfo_to_dict(dsn)
+    except psycopg.Error:
+        parsed = False
+    else:
+        parsed = True
+    if not parsed:  # outside the except block: the driver's message is not chained
+        raise ValueError(f"{name} is not a valid PostgreSQL connection string")
+    return dsn
 
 
 class AdvisoryLock(IntEnum):
@@ -105,17 +129,22 @@ def _int_setting(env: Mapping[str, str], name: str, default: int, low: int, high
 class PoolSettings:
     """Bounded on purpose: a typo must not become six hundred connections."""
 
-    #: `DB_POOL_MAX`. Zero means no pool — a connection per operation, as before.
-    sync_max: int = 6
+    #: `DB_POOL_MAX`: connections routes may have open at once. Zero removes the
+    #: gate. Four, not more: a rollout overlaps two revisions of two instances,
+    #: and 4 x 4 plus a migration session and the operator's two is 19 of 22.
+    sync_max: int = 4
     #: `DB_ASYNC_POOL_MAX`. Opened on first use, so it costs nothing until then.
     async_max: int = 3
-    #: `DB_POOL_TIMEOUT_S`: how long a request waits for a connection before it
+    #: `DB_POOL_TIMEOUT_S`: how long a request waits for its turn before it
     #: fails as "backend unavailable". Short, so an outage does not stack threads.
     acquire_timeout_s: int = 5
+    #: The realtime pool sheds a connection it has not used for this long ...
     max_idle_s: int = 60
     max_lifetime_s: int = 1800
+    #: ... and the server ends the session of one that could not (a frozen instance).
+    idle_session_timeout_s: int = 120
 
-    #: One dedicated LISTEN connection per instance, outside both pools (RT-5).
+    #: One dedicated LISTEN connection per instance, outside both (RT-5).
     LISTENERS = 1
 
     @classmethod
@@ -129,7 +158,7 @@ class PoolSettings:
 
     @property
     def per_instance(self) -> int:
-        """The most connections one instance can hold open at once."""
+        """The most connections one instance can have open at once."""
         return self.sync_max + self.async_max + self.LISTENERS
 
 
@@ -172,7 +201,7 @@ def _run_after_commit(callbacks: list[Callable[[], None]]) -> None:
 
 
 class PgTransaction:
-    """A unit of work on one pooled connection, inside one transaction."""
+    """A unit of work on one connection, inside one transaction."""
 
     def __init__(self, conn: Any) -> None:
         self.conn = conn
@@ -196,36 +225,23 @@ class TransactionalDatabase(Protocol):
 
 
 class Database:
-    """The service's Postgres: two bounded pools and the transaction boundary."""
+    """The service's Postgres: a gate for routes, a pool for the realtime path,
+    and the transaction boundary."""
 
     def __init__(self, dsn: str | None = None, settings: PoolSettings | None = None) -> None:
-        self._dsn = dsn or default_dsn()
+        self._dsn = check_dsn("DATABASE_URL", dsn or default_dsn())
         self.settings = settings if settings is not None else PoolSettings()
-        self._pool: Any = None
+        self._closed = False
+        self._gate = threading.BoundedSemaphore(self.settings.sync_max) if self.settings.sync_max > 0 else None
         self._async_pool: Any = None
-        self._last_borrowed = {"sync": time.monotonic(), "async": time.monotonic()}
-        self._clock_lock = threading.Lock()
-        if self.settings.sync_max > 0:
-            from psycopg_pool import ConnectionPool
-
-            self._pool = ConnectionPool(
-                self._dsn,
-                kwargs=self._connect_kwargs("sync"),
-                min_size=0,
-                max_size=self.settings.sync_max,
-                open=False,
-                check=ConnectionPool.check_connection,
-                timeout=self.settings.acquire_timeout_s,
-                max_idle=self.settings.max_idle_s,
-                max_lifetime=self.settings.max_lifetime_s,
-                name="sync",
-            )
         if self.settings.async_max > 0:
-            from psycopg_pool import AsyncConnectionPool
-
             self._async_pool = AsyncConnectionPool(
                 self._dsn,
-                kwargs=self._connect_kwargs("async"),
+                kwargs={
+                    **self._connect_kwargs("async"),
+                    # The server ends what a frozen instance cannot: see the module docstring.
+                    "options": f"-c idle_session_timeout={self.settings.idle_session_timeout_s}s",
+                },
                 min_size=0,
                 max_size=self.settings.async_max,
                 open=False,
@@ -235,50 +251,42 @@ class Database:
                 max_lifetime=self.settings.max_lifetime_s,
                 name="async",
             )
+            # The pool logs the driver's own text for every failed connect, at
+            # WARNING, with retries. Borrowers get the exception; logs do not need it.
+            logging.getLogger("psycopg.pool").setLevel(logging.ERROR)
 
     @staticmethod
     def _connect_kwargs(role: str) -> dict[str, Any]:
         # application_name: `pg_stat_activity` then says who holds each connection.
         return {"connect_timeout": CONNECT_TIMEOUT_S, "application_name": f"game-guide-ai:{role}"}
 
-    def open(self) -> None:
-        """Start the synchronous pool. With no idle minimum this connects to
-        nothing, so it cannot fail because the database happens to be down."""
-        if self._pool is not None:
-            self._pool.open(wait=False)
-
     def close(self) -> None:
-        """Close the synchronous pool and every connection it holds. Idempotent."""
-        if self._pool is not None:
-            self._pool.close()
+        """Refuse new borrowers. Nothing is held between operations, so there is
+        nothing else to close on the synchronous side. Idempotent."""
+        self._closed = True
 
     async def aclose(self) -> None:
-        """Close both pools — the shutdown path of an async application."""
+        """Close the realtime pool and the gate — an async application's shutdown."""
         if self._async_pool is not None:
             await self._async_pool.close()
         self.close()
 
-    def _was_idle(self, pool: str) -> bool:
-        now = time.monotonic()
-        with self._clock_lock:
-            idle = now - self._last_borrowed[pool]
-            self._last_borrowed[pool] = now
-        return idle > IDLE_SUSPECT_S
-
     @contextmanager
     def connection(self) -> Iterator[Any]:
-        """One connection for one short operation: committed on a clean exit,
-        rolled back on an exception, then returned (or closed, without a pool)."""
-        if self._pool is None:
-            import psycopg
-
-            with psycopg.connect(self._dsn, **self._connect_kwargs("direct")) as conn:
+        """One connection for one short operation: opened when its turn comes,
+        committed on a clean exit, rolled back on an exception, then closed."""
+        if self._closed:
+            raise PoolClosed("the database is closed")
+        gate = self._gate
+        if gate is not None and not gate.acquire(timeout=self.settings.acquire_timeout_s):
+            # An OperationalError, like the driver's own: routes already answer 503.
+            raise PoolTimeout(f"no database connection came free in {self.settings.acquire_timeout_s} s")
+        try:
+            with psycopg.connect(self._dsn, **self._connect_kwargs("sync")) as conn:
                 yield conn
-            return
-        if self._was_idle("sync"):
-            self._pool.check()
-        with self._pool.connection() as conn:
-            yield conn
+        finally:
+            if gate is not None:
+                gate.release()
 
     @contextmanager
     def transaction(self) -> Iterator[PgTransaction]:
@@ -293,10 +301,8 @@ class Database:
         """A connection from the realtime pool, which opens on first use."""
         if self._async_pool is None:
             raise RuntimeError("the async pool is disabled (DB_ASYNC_POOL_MAX=0)")
-        if self._async_pool.closed:
+        if self._async_pool.closed and not self._closed:
             await self._async_pool.open(wait=False)
-        elif self._was_idle("async"):
-            await self._async_pool.check()
         async with self._async_pool.connection() as conn:
             yield conn
 
@@ -305,17 +311,25 @@ class Database:
 
 
 class InMemoryTransaction:
-    """The unit of work of `InMemoryDatabase`. A fake store mutates its state at
-    once and registers how to take the change back."""
+    """The unit of work of `InMemoryDatabase`. A fake store either changes its
+    state at once and registers how to take the change back (`on_rollback`), or
+    stages what other readers must not see yet and registers how to make it
+    visible (`on_publish`)."""
 
     def __init__(self) -> None:
         self._after_commit: list[Callable[[], None]] = []
+        self._publish: list[Callable[[], None]] = []
         self._undo: list[Callable[[], None]] = []
         self.notifications: list[tuple[str, str]] = []
         self.locks: list[tuple[AdvisoryLock, str]] = []
 
     def on_commit(self, callback: Callable[[], None]) -> None:
         self._after_commit.append(callback)
+
+    def on_publish(self, publish: Callable[[], None]) -> None:
+        """Runs as part of the commit, before any `on_commit` callback: the
+        moment a row becomes visible outside its transaction."""
+        self._publish.append(publish)
 
     def on_rollback(self, undo: Callable[[], None]) -> None:
         self._undo.append(undo)
@@ -332,7 +346,8 @@ class InMemoryTransaction:
 
 class InMemoryDatabase:
     """Transactions for fakes: serial, all-or-nothing, with commit-time release
-    of notifications and callbacks — the observable contract of `Database`."""
+    of published rows, notifications and callbacks — the observable contract of
+    `Database`."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -349,5 +364,7 @@ class InMemoryDatabase:
                 for undo in reversed(unit._undo):
                     undo()
                 raise
+            for publish in unit._publish:
+                publish()
             self.notifications.extend(unit.notifications)
         _run_after_commit(unit._after_commit)

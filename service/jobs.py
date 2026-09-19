@@ -12,7 +12,7 @@ delivery reads current state, and a notification is only a wake-up (RT-5,
 1kg.1.4).
 
 **Claims are leases.** A handler calls other services, and a row lock held
-across that call would pin one of very few pooled connections. `claim()` is one
+across that call would pin one of very few connections. `claim()` is one
 short statement — `FOR UPDATE SKIP LOCKED`, so two instances never take the same
 job — that stamps `locked_until` and counts the attempt. An instance that dies
 mid-job lets its lease run out and the job is claimed again, so **handlers must
@@ -25,6 +25,12 @@ the three places RT-15 names — after the commit that created the job
 (`run_after_commit`), from a hook on ordinary requests, and from an
 authenticated `/internal/jobs` that Cloud Scheduler calls. The last two are
 wired by the beads that introduce the first job kinds (`1kg.8.1`, `1kg.9.5`).
+
+**Dedupe absorbs only into a job nobody has started.** Once a job has been
+claimed, its handler may already have read the state it acts on, so a new
+request for the same work gets a row of its own and runs afterwards. Two jobs
+for one key are harmless — handlers are idempotent; a request swallowed by a
+job that then finishes without it is not.
 
 **Rows are content-free** (SEC-20): a payload is a flat object of identifiers,
 which `check_payload` enforces by shape, and a failure records the exception's
@@ -118,8 +124,9 @@ class JobQueue(Protocol):
         now: datetime | None = None,
     ) -> int:
         """Add a job inside `unit`'s transaction; returns its id. With a
-        `dedupe_key`, a live job of the same kind and key absorbs this one and
-        its id is returned instead."""
+        `dedupe_key`, a job of the same kind and key that nobody has claimed yet
+        absorbs this one: its id is returned, and it keeps its own payload and
+        `run_after`."""
         ...  # pragma: no cover - structural type
 
     def claim(
@@ -131,7 +138,7 @@ class JobQueue(Protocol):
         lease_seconds: int = LEASE_SECONDS,
         now: datetime | None = None,
     ) -> list[Job]:
-        """Lease up to `limit` due jobs of the given kinds, oldest first."""
+        """Lease up to `limit` due jobs of the given kinds, returned oldest due first."""
         ...  # pragma: no cover - structural type
 
     def complete(self, job: Job) -> None:
@@ -145,20 +152,26 @@ class JobQueue(Protocol):
 
 # ── Postgres ─────────────────────────────────────────────────────────────────
 
+#: MATERIALIZED, not `WHERE id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)`: the
+#: planner may run that subquery once per outer row, and each rerun skips the rows
+#: this statement has already locked, so the LIMIT window slides and one claim
+#: leases the whole backlog.
 _CLAIM = """
+WITH due AS MATERIALIZED (
+  SELECT id FROM app.jobs
+   WHERE dead_at IS NULL
+     AND run_after <= %(now)s
+     AND (locked_until IS NULL OR locked_until < %(now)s)
+     AND kind = ANY(%(kinds)s)
+     AND (%(job_id)s::bigint IS NULL OR id = %(job_id)s::bigint)
+   ORDER BY run_after, id
+   LIMIT %(limit)s
+   FOR UPDATE SKIP LOCKED)
 UPDATE app.jobs AS j
    SET locked_until = %(lease_until)s, attempts = j.attempts + 1
- WHERE j.id IN (
-   SELECT id FROM app.jobs
-    WHERE dead_at IS NULL
-      AND run_after <= %(now)s
-      AND (locked_until IS NULL OR locked_until < %(now)s)
-      AND kind = ANY(%(kinds)s)
-      AND (%(job_id)s::bigint IS NULL OR id = %(job_id)s::bigint)
-    ORDER BY run_after, id
-    LIMIT %(limit)s
-    FOR UPDATE SKIP LOCKED)
-RETURNING j.id, j.kind, j.payload, j.attempts, j.created_at
+  FROM due
+ WHERE j.id = due.id
+RETURNING j.id, j.kind, j.payload, j.attempts, j.created_at, j.run_after
 """
 
 
@@ -188,19 +201,21 @@ class PostgresJobQueue:
             run_after or moment,
             moment,
         )
-        # Twice at most: the live job that absorbed the insert can finish (and be
-        # deleted) before the SELECT sees it, in which case the insert now wins.
+        # Twice at most: the job that absorbed the insert can be claimed (and so
+        # leave the index) before the SELECT sees it, in which case the insert wins.
         for _ in range(3):
             row = unit.conn.execute(
                 "INSERT INTO app.jobs (kind, payload, dedupe_key, run_after, created_at) "
                 "VALUES (%s, %s::jsonb, %s, %s, %s) "
-                "ON CONFLICT (kind, dedupe_key) WHERE dedupe_key IS NOT NULL AND dead_at IS NULL "
+                "ON CONFLICT (kind, dedupe_key) "
+                "WHERE dedupe_key IS NOT NULL AND dead_at IS NULL AND attempts = 0 "
                 "DO NOTHING RETURNING id",
                 params,
             ).fetchone()
             if row is None:
                 row = unit.conn.execute(
-                    "SELECT id FROM app.jobs WHERE kind = %s AND dedupe_key = %s AND dead_at IS NULL",
+                    "SELECT id FROM app.jobs "
+                    "WHERE kind = %s AND dedupe_key = %s AND dead_at IS NULL AND attempts = 0",
                     (kind, dedupe_key),
                 ).fetchone()
             if row is not None:
@@ -230,8 +245,8 @@ class PostgresJobQueue:
                     "limit": limit,
                 },
             ).fetchall()
-        jobs = [Job(int(r[0]), str(r[1]), dict(r[2]), int(r[3]), r[4]) for r in rows]
-        return sorted(jobs, key=lambda job: job.id)
+        rows = sorted(rows, key=lambda r: (r[5], r[0]))
+        return [Job(int(r[0]), str(r[1]), dict(r[2]), int(r[3]), r[4]) for r in rows]
 
     def complete(self, job: Job) -> None:
         with self._db.connection() as conn:
@@ -263,10 +278,13 @@ class _Row:
 
 @dataclass
 class InMemoryJobQueue:
-    """The fake, with the same ordering, lease, fencing and dedupe semantics."""
+    """The fake, with the same visibility, ordering, lease, fencing and dedupe
+    semantics: a job exists for `claim` only once its transaction has committed."""
 
     db: InMemoryDatabase = field(default_factory=InMemoryDatabase)
     _rows: dict[int, _Row] = field(default_factory=dict)
+    #: Enqueued but not committed, per open unit of work.
+    _staged: dict[int, dict[int, _Row]] = field(default_factory=dict)
     _next_id: int = 1
 
     def enqueue(
@@ -283,20 +301,35 @@ class InMemoryJobQueue:
             raise TypeError("an in-memory job is enqueued inside an in-memory transaction")
         check_kind(kind)
         checked = check_payload(payload)
+        mine = self._staged_by(unit)
         if check_dedupe_key(dedupe_key) is not None:
-            for row in self._rows.values():
-                if row.job.kind == kind and row.dedupe_key == dedupe_key and row.dead_at is None:
+            # What this transaction can see: committed rows, and its own.
+            for row in (*self._rows.values(), *mine.values()):
+                unstarted = row.dead_at is None and row.job.attempts == 0
+                if row.job.kind == kind and row.dedupe_key == dedupe_key and unstarted:
                     return row.job.id
         moment = _now(now)
         job_id = self._next_id
         self._next_id += 1
-        self._rows[job_id] = _Row(Job(job_id, kind, checked, 0, moment), dedupe_key, run_after or moment)
-
-        def undo() -> None:
-            self._rows.pop(job_id, None)
-
-        unit.on_rollback(undo)
+        mine[job_id] = _Row(Job(job_id, kind, checked, 0, moment), dedupe_key, run_after or moment)
         return job_id
+
+    def _staged_by(self, unit: InMemoryTransaction) -> dict[int, _Row]:
+        """This unit's uncommitted jobs: published when it commits, dropped when it
+        rolls back, and until then invisible to `claim`."""
+        key = id(unit)
+        if key not in self._staged:
+            self._staged[key] = {}
+
+            def publish() -> None:
+                self._rows.update(self._staged.pop(key, {}))
+
+            def discard() -> None:
+                self._staged.pop(key, None)
+
+            unit.on_publish(publish)
+            unit.on_rollback(discard)
+        return self._staged[key]
 
     def claim(
         self,
@@ -323,7 +356,7 @@ class InMemoryJobQueue:
         for row in due:
             row.locked_until = moment + timedelta(seconds=lease_seconds)
             row.job = replace(row.job, attempts=row.job.attempts + 1)
-        return sorted((row.job for row in due), key=lambda job: job.id)
+        return [row.job for row in due]
 
     def complete(self, job: Job) -> None:
         self._rows.pop(job.id, None)
@@ -375,8 +408,14 @@ class JobRunner:
         self._clock = clock
 
     def run_due(self, limit: int = 1) -> int:
-        """Run up to `limit` due jobs; returns how many ran, whatever their outcome."""
-        return self._run(self._queue.claim(self._handlers.keys(), limit=limit, now=self._clock()))
+        """Run up to `limit` due jobs; returns how many ran, whatever their outcome.
+
+        One claim per job: a lease starts when its handler does, not while the
+        jobs ahead of it in a batch are still running."""
+        ran = 0
+        while ran < limit and self._run(self._queue.claim(self._handlers.keys(), now=self._clock())):
+            ran += 1
+        return ran
 
     def run_after_commit(self, unit: UnitOfWork, job_id: int) -> None:
         """Try the job as soon as `unit` commits; its row stays as the retry record."""

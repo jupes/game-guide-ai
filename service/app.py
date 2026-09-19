@@ -6,7 +6,7 @@ The `RagService` (vocabulary loaded once) is built at startup and supplied via a
 dependency so tests can override it without a DB or LLM.
 
 Run:
-    uv run --with fastapi --with uvicorn --with openai --with "psycopg[binary]" \
+    uv run --with fastapi --with uvicorn --with openai --with "psycopg[binary,pool]" \
         uvicorn service.app:app --port 8000
 """
 
@@ -187,31 +187,52 @@ def build_reranker(enabled: bool | None = None) -> Any | None:
     return CrossEncoderReranker()
 
 
-def prepare_database() -> Database | None:
+#: One refused connection at a cold start must not decide the instance's whole
+#: life: a Cloud SQL blip or a full server (53300) is over in seconds. Three tries
+#: cost at most ~35 s, well inside the startup window.
+STARTUP_CONNECT_ATTEMPTS = 3
+STARTUP_CONNECT_PAUSE_S = 2.0
+_pause = time.sleep
+
+
+def prepare_database() -> Database:
     """The schema first (1kg.1.5): ordered migrations, before anything is served.
 
     Two kinds of failure, deliberately treated differently. A `MigrationError`
     is a verdict — drift, a migration that failed, a broken package — and so is
     a bad setting. Retrying cannot change either, so both may stop startup:
     on Cloud Run that fails the new revision and keeps traffic on the old one.
-    An unreachable database is an outage, and degrades exactly as it always
-    has: history off, auth endpoints 503, `/healthz` still answering.
+    An unreachable database is an outage: after a few tries it degrades exactly
+    as it always has — history off, auth endpoints 503, `/healthz` answering —
+    and `_state["migrations"]` says `unavailable`.
+
+    The `Database` is returned either way. It connects to nothing until it is
+    used, and retrieval must stay inside the connection budget even on an
+    instance that started during an outage.
     """
-    settings = PoolSettings.from_env()
+    db = Database(settings=PoolSettings.from_env())
     mode = Mode(os.environ.get("MIGRATIONS_MODE") or Mode.APPLY.value)
-    try:
-        _state["migrations"] = migrate(mode=mode).state
-    except MigrationError:
-        raise
-    except _AUTH_BACKEND_ERRORS:  # psycopg's hierarchy and socket errors; defined below
-        _state["migrations"] = "unavailable"
-        log.warning(
-            "startup: database unavailable; history is disabled and auth endpoints will 503",
-            exc_info=True,
-        )
-        return None
-    db = Database(settings=settings)
-    db.open()
+    for attempt in range(1, STARTUP_CONNECT_ATTEMPTS + 1):
+        try:
+            _state["migrations"] = migrate(mode=mode).state
+            return db
+        except MigrationError:
+            raise
+        except _AUTH_BACKEND_ERRORS as exc:  # psycopg's hierarchy and socket errors; defined below
+            # The class and SQLSTATE only: the driver's text names hosts and users,
+            # and libpq quotes whatever it could not parse (SEC-21).
+            sqlstate = getattr(exc, "sqlstate", None)
+            log.warning(
+                "startup: database unreachable, attempt %d of %d (%s%s)",
+                attempt,
+                STARTUP_CONNECT_ATTEMPTS,
+                type(exc).__name__,
+                f", SQLSTATE {sqlstate}" if sqlstate else "",
+            )
+        if attempt < STARTUP_CONNECT_ATTEMPTS:
+            _pause(STARTUP_CONNECT_PAUSE_S)
+    _state["migrations"] = "unavailable"
+    log.warning("startup: database unavailable; history is disabled and auth endpoints will 503")
     return db
 
 
@@ -222,23 +243,21 @@ async def lifespan(app: FastAPI):
     # Build the service once (loads corpus vocabulary). Guarded so the app can
     # still start for endpoint tests that override the dependency without a DB.
     try:
-        _state["rag"] = RagService(
-            reranker=build_reranker(), connect=db.connection if db is not None else None
-        )
+        _state["rag"] = RagService(reranker=build_reranker(), connect=db.connection)
     except Exception:  # pragma: no cover - depends on live DB
         log.warning(
             "startup: RagService unavailable; /chat will 503 until ready", exc_info=True
         )
     # Message history (best-effort: chat answers work without it) and the auth
-    # store — invite-gated accounts (x5bz.2). Both borrow from the one bounded
-    # pool; with no database at startup neither exists, as before.
-    if db is not None:
+    # store — invite-gated accounts (x5bz.2). Both go through the one bounded
+    # gate; with no database at startup neither exists, as before — the schema
+    # was never checked, so nothing may write to it.
+    if _state["migrations"] != "unavailable":
         _state["store"] = PostgresMessageStore(db=db)
         _state["auth"] = PostgresAuthStore(db=db)
     yield
     _state.clear()
-    if db is not None:
-        await db.aclose()
+    await db.aclose()
     del app.state.metrics_sink
 
 

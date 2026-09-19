@@ -62,6 +62,21 @@ def test_an_aggregate_and_its_job_roll_back_together():
     assert assets == {} and queue.snapshot() == []
 
 
+def test_a_job_does_not_exist_for_anyone_else_until_its_transaction_commits():
+    """The fake has the real visibility rule. Without it, code that enqueues and
+    runs inside one block passes here and finds nothing on PostgreSQL — and a
+    rolled-back job, which by the outbox's own contract never existed, would run."""
+    queue = _queue()
+    ran: list[int] = []
+    runner = JobRunner(queue, {"asset.delete": JobHandler(lambda job: ran.append(job.id))}, clock=lambda: T0)
+    with pytest.raises(RuntimeError):
+        with queue.db.transaction() as unit:
+            queue.enqueue(unit, "asset.delete", now=T0)
+            assert queue.claim(["asset.delete"], now=T0) == [] and runner.run_due() == 0
+            raise RuntimeError("the tombstone could not be written")
+    assert ran == [] and queue.snapshot() == [] and runner.run_due() == 0
+
+
 def test_a_job_can_only_be_enqueued_inside_a_transaction_of_its_own_kind():
     """The signature is the guarantee: there is no way to enqueue without the
     unit of work of the change that needs the job."""
@@ -134,6 +149,30 @@ def test_a_live_job_absorbs_the_same_work_enqueued_again():
     assert _enqueue(queue, kind="asset.sweep", dedupe_key="asset:a-1") != first, "a key is scoped by kind"
     assert _enqueue(queue) != _enqueue(queue), "no key, no deduplication"
     assert len(queue.snapshot()) == 4
+
+
+def test_a_job_somebody_has_started_absorbs_nothing():
+    """Its handler may already have read the state it acts on. Work requested
+    after that must get a row of its own — absorbed into the running job, it
+    would be deleted with it, never having run."""
+    queue = _queue()
+    first = _enqueue(queue, kind="upload.sweep", dedupe_key="session:S")
+    (running,) = queue.claim(["upload.sweep"], now=T0)
+
+    second = _enqueue(queue, kind="upload.sweep", dedupe_key="session:S")
+    assert second != first
+    assert _enqueue(queue, kind="upload.sweep", dedupe_key="session:S") == second, "unstarted: absorbs again"
+
+    queue.complete(running)
+    assert queue.snapshot() == [(second, "upload.sweep", 0, None, False)], "the later request still runs"
+
+
+def test_a_transaction_sees_its_own_uncommitted_job():
+    queue = _queue()
+    with queue.db.transaction() as unit:
+        first = queue.enqueue(unit, "asset.delete", dedupe_key="asset:a-1", now=T0)
+        assert queue.enqueue(unit, "asset.delete", dedupe_key="asset:a-1", now=T0) == first
+    assert len(queue.snapshot()) == 1
 
 
 def test_a_dead_job_no_longer_holds_its_key():
@@ -209,6 +248,24 @@ def test_a_job_that_succeeds_is_forgotten():
         ("asset.delete", {"asset_id": "a-9"}, 1, T0)
     ]
     assert queue.snapshot() == [] and runner.run_due() == 0
+
+
+def test_the_runner_claims_one_job_at_a_time():
+    """A lease starts when its handler does. Leased in a batch, the last job's
+    lease would already be as old as everything that ran before it; and a hook on
+    an ordinary request asking for one job must never be handed the backlog."""
+    queue = _queue()
+    ids = [_enqueue(queue) for _ in range(3)]
+    unclaimed_while_running: list[list[int]] = []
+
+    def handler(job: Job) -> None:
+        unclaimed_while_running.append([row[0] for row in queue.snapshot() if row[2] == 0])
+
+    runner = JobRunner(queue, {"asset.delete": JobHandler(handler)}, clock=lambda: T0)
+    assert runner.run_due(limit=2) == 2
+    assert unclaimed_while_running == [ids[1:], ids[2:]]
+    assert queue.snapshot() == [(ids[2], "asset.delete", 0, None, False)]
+    assert runner.run_due(limit=5) == 1 and runner.run_due(limit=5) == 0
 
 
 def test_a_failing_job_backs_off_and_a_deletion_is_never_abandoned():

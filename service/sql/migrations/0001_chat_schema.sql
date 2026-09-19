@@ -79,7 +79,7 @@ END $$;
 -- START, so a request already in flight when an account is deleted must not be
 -- able to append into a conversation whose ownership row is gone; and deleting
 -- an account must take its content with it (the cascade chains from auth.users
--- — see 05-auth-schema.sql). NOT VALID leaves pre-ownership-table rows alone
+-- — see 0002_auth_schema.sql). NOT VALID leaves pre-ownership-table rows alone
 -- and enforces every new write.
 --
 -- Guarded so that adopting a database which already has the right constraint is

@@ -68,7 +68,7 @@ class RagService:
         secondary_retriever=None,
         connect=None,
     ):
-        # `connect`: the service's pooled connection factory (service/db.py).
+        # `connect`: the service's gated connection factory (service/db.py).
         self.retriever = retriever or RagRetriever(dsn, connect=connect)
         self.reranker = reranker
         self.model = model

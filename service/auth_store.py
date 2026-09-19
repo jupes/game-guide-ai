@@ -5,7 +5,7 @@ Mirrors `history.py`: an `AuthStore` Protocol the app talks to, with a Postgres
 impl (`auth` schema in the same instance as the corpus) and an in-memory fake
 with identical semantics for pure tests. The schema comes from the ordered
 migrations (`service/migrations.py`), which the app runs once at startup;
-`ensure_schema()` runs them on demand for the admin CLI and the tests.
+`ensure_schema()` only checks that they have been applied.
 
 The single load-bearing invariant here is **atomic invite consumption**: a
 concurrent second redemption of one invite must fail. The Postgres impl enforces
@@ -27,7 +27,7 @@ from .invites import (
     Role,
     new_invite_token,
 )
-from .migrations import migrate
+from .migrations import Mode, migrate
 
 
 class EmailTaken(Exception):
@@ -164,8 +164,8 @@ class InMemoryAuthStore:
 
 class PostgresAuthStore:
     """`auth.users` / `auth.invites` in the corpus Postgres. One short-lived
-    connection per operation: borrowed from the service's bounded pool when it
-    is given one (`db`, 1kg.1.5), opened and closed on the spot otherwise."""
+    connection per operation: through the service's bounded gate when it is
+    given one (`db`, 1kg.1.5), opened and closed on the spot otherwise."""
 
     def __init__(self, dsn: str | None = None, *, db: Database | None = None):
         self._given_dsn = dsn
@@ -180,9 +180,15 @@ class PostgresAuthStore:
         return psycopg.connect(self._dsn)
 
     def ensure_schema(self) -> None:
-        # With no DSN of its own the runner chooses, and it prefers the schema
-        # owner's (`MIGRATIONS_DATABASE_URL`) over the runtime's.
-        migrate(self._given_dsn)
+        """Check — never change — that the database is at this build's schema.
+
+        An operator's checkout is not the deployed image: applying whatever
+        migrations it happens to hold, as a side effect of listing invites,
+        would put unreviewed DDL into production. Only the service's startup
+        and an explicit `python -m service.migrations migrate` change a schema;
+        this raises `MigrationsPending` and says so. With no DSN of its own
+        the runner chooses one, preferring the schema owner's."""
+        migrate(self._given_dsn, mode=Mode.VERIFY)
 
     def create_invite(self, role: Role, expires_at: datetime) -> Invite:
         token = new_invite_token()

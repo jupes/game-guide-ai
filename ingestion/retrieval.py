@@ -485,8 +485,8 @@ class RagRetriever:
 
     def __init__(self, dsn: str | None = None, *, connect=None):
         self.dsn = dsn or os.environ.get("DATABASE_URL", DEFAULT_DSN)
-        # `connect` lets the service lend its bounded pool (service/db.py,
-        # 1kg.1.5); the CLIs and evals keep a connection per operation.
+        # `connect` lets the service put retrieval behind its connection gate
+        # (service/db.py, 1kg.1.5); the CLIs and evals connect for themselves.
         self._connect = connect or (lambda: psycopg.connect(self.dsn))
         self._openai = None  # shared embeddings client, built on first embed()
         with self._connect() as conn:

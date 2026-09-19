@@ -97,10 +97,10 @@ DATABASE_URL="$PROXY" python -m service.migrations migrate
 The script applies the corpus schema in order and stops at the first failure
 (exit 1). The application schema belongs to the migration runner
 ([migrations.md](migrations.md)): the service runs it at every startup before it
-serves anything, and `python -m service.admin_invites` runs it before minting an
-invite, so the explicit `migrate` above is about seeing its result now rather
-than at the first cold start. `python -m service.migrations status` shows what a
-database has.
+serves anything. `python -m service.admin_invites` only *checks* the schema and
+stops if a migration is pending — an operator's checkout is not the deployed image —
+so run the explicit `migrate` above before minting the first invite.
+`python -m service.migrations status` shows what a database has.
 
 The `INSTANCE_CONNECTION_NAME` is `"$PROJECT:$REGION:game-guide-ai"` — used by
 `deploy.sh` (`CLOUDSQL_INSTANCE`) and the `DATABASE_URL` secret below.
@@ -313,7 +313,7 @@ the service, add the probe, and re-apply:
 startupProbe:
   httpGet: { path: /healthz, port: 8000 }
   periodSeconds: 5
-  failureThreshold: 12
+  failureThreshold: 48   # 240 s: a start may apply migrations, or wait up to 150 s for another instance's run
 # then: gcloud run services replace svc.yaml
 ```
 

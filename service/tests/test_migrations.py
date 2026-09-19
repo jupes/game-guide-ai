@@ -12,9 +12,11 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import psycopg
 import pytest
+from psycopg.pq import TransactionStatus
 
 from service import migrations as mig
 from service.migrations import (
@@ -244,6 +246,7 @@ class FakePostgres:
         self.executed: list[str] = []
         self.settings: dict[str, str] = {}
         self.fail_on: str | None = None
+        self.error: Exception = FakeDbError()
         self.busy_for = 0  # try-lock calls that find another instance holding the lock
         self.other_instance_applies: list[Migration] = []  # ...and what that instance does meanwhile
         self.lock_attempts = 0
@@ -277,17 +280,22 @@ class _Rows:
 class FakeConnection:
     def __init__(self, server: FakePostgres) -> None:
         self.server = server
+        self.info = SimpleNamespace(transaction_status=TransactionStatus.IDLE)
 
     @contextmanager
     def transaction(self):
         server = self.server
         ledger = dict(server.ledger) if server.ledger is not None else None
         executed, settings = list(server.executed), dict(server.settings)
+        self.info.transaction_status = TransactionStatus.INTRANS
         try:
             yield
         except BaseException:
-            server.ledger, server.executed, server.settings = ledger, executed, settings
+            if self.info.transaction_status == TransactionStatus.INTRANS:
+                server.ledger, server.executed, server.settings = ledger, executed, settings
             raise
+        finally:
+            self.info.transaction_status = TransactionStatus.IDLE
 
     def execute(self, sql: str, params=None) -> _Rows:  # noqa: C901 - a dispatch table, flat on purpose
         server = self.server
@@ -325,8 +333,10 @@ class FakeConnection:
             server.ledger[version] = (name, digest, applied_by)
             return _Rows([])
         if server.fail_on is not None and server.fail_on in sql:
-            raise FakeDbError()
+            raise server.error
         server.executed.append(sql)
+        if "END;" in sql:  # the file committed by itself: what ran before is permanent
+            self.info.transaction_status = TransactionStatus.IDLE
         return _Rows([])
 
 
@@ -391,6 +401,48 @@ def test_a_failed_migration_rolls_back_and_names_no_row_values():
     assert server.executed == [ONE.sql]
     assert server.ledger is not None and sorted(server.ledger) == [1]
     assert server.unlocks == 1
+
+
+class FakeConversionError(FakeDbError):
+    """Class 22: PostgreSQL puts the offending datum in the PRIMARY message."""
+
+    sqlstate = "22P02"
+
+    class diag:  # noqa: N801 - mirrors psycopg's attribute name
+        message_primary = 'invalid input syntax for type uuid: "Seraphine, the hooded stranger"'
+        message_detail = None
+
+
+def test_a_conversion_failure_does_not_quote_the_value_it_choked_on():
+    """A later migration tightens a free-text column users wrote into. The deploy
+    log must name the file and the SQLSTATE — not one user's text (SEC-20)."""
+    server = FakePostgres()
+    server.fail_on, server.error = ONE.sql, FakeConversionError()
+    with pytest.raises(MigrationFailed) as caught:
+        mig.migrate(connect=server.connect, packaged=[ONE])
+    assert "SQLSTATE 22P02" in str(caught.value) and "FakeConversionError" in str(caught.value)
+    assert "Seraphine" not in str(caught.value) and "invalid input syntax" not in str(caught.value)
+
+
+def test_a_file_that_commits_by_itself_is_caught_by_what_the_server_says():
+    """The lint knows `COMMIT;` at the start of a line. `END;`, `COMMIT WORK;` and a
+    COMMIT in mid-line get past it, so the runner asks the connection whether it
+    is still inside its transaction — and never writes a ledger row outside one,
+    which would record a half-applied file as cleanly applied."""
+    sneaky = _migration(2, sql="CREATE TABLE a (id int);\nEND;\nCREATE TABLE b (id int);")
+    server = FakePostgres()
+    with pytest.raises(MigrationFailed, match="0002_m.sql ended the runner's transaction"):
+        mig.migrate(connect=server.connect, packaged=[ONE, sneaky, THREE])
+    assert server.ledger is not None and sorted(server.ledger) == [1], "no ledger row for the half-applied file"
+    assert THREE.sql not in server.executed and server.unlocks == 1
+
+
+def test_an_image_without_its_migrations_directory_is_a_packaging_verdict(tmp_path):
+    """As a bare `OSError` this would be taken for "the database is unreachable"
+    at startup, and the broken revision would come up degraded and take traffic."""
+    with pytest.raises(mig.MigrationPackageError, match="missing or unreadable") as caught:
+        mig.discover(tmp_path / "not-shipped")
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
 
 
 def test_the_loser_of_a_concurrent_startup_waits_then_finds_nothing_to_do():
@@ -484,6 +536,11 @@ def test_the_owner_dsn_is_a_seam_of_its_own(monkeypatch):
     assert mig.migrations_dsn() == "postgresql://runtime@db/app"
     monkeypatch.setenv("MIGRATIONS_DATABASE_URL", "postgresql://owner@db/app")
     assert mig.migrations_dsn() == "postgresql://owner@db/app"
+
+    monkeypatch.setenv("MIGRATIONS_DATABASE_URL", " postgresql://owner:S3cretPW@db/app")
+    with pytest.raises(ValueError) as caught:
+        mig.migrations_dsn()
+    assert str(caught.value) == "MIGRATIONS_DATABASE_URL is not a valid PostgreSQL connection string"
 
 
 # ── The CLI ──────────────────────────────────────────────────────────────────

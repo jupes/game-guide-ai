@@ -10,9 +10,9 @@ seen yet — once, in order, each file in its own transaction — and records it
     no second mechanism to drift from. A database that predates the ledger is
     adopted by the idempotent baseline (0001, 0002), applied over it once.
   * **Concurrent startups** serialise on a session advisory lock, and the loser
-    finds nothing left to do. A database that is already current costs one
-    SELECT and takes no lock at all — unlike the DDL this replaces, which took
-    ACCESS EXCLUSIVE locks on live tables at every cold start.
+    finds nothing left to do. A database that is already current costs two
+    small reads and takes no lock at all — unlike the DDL this replaces, which
+    took ACCESS EXCLUSIVE locks on live tables at every cold start.
   * **Drift fails loudly.** A released file whose bytes changed, a renamed file,
     or a migration slotted in below one already applied stops startup, which on
     Cloud Run keeps traffic on the previous revision.
@@ -30,9 +30,10 @@ The corpus schema (`dnd`, `vector-db/init/`) is deliberately not here. It needs
 the `vector` extension and an ingested corpus, and belongs to the ingestion
 pipeline (`scripts/bootstrap-db.sh`).
 
-Diagnostics never carry a DSN, and a failed statement is reported by SQLSTATE and
-primary message only: the DETAIL line of a constraint violation quotes row
-values, and logs are not a place for those (SEC-20, SEC-21).
+Diagnostics never carry a DSN. A failed statement is reported by SQLSTATE, plus
+the server's primary message only for the error classes that cannot quote a
+value: the DETAIL line of a constraint violation does, and so does the primary
+message of a conversion error, and logs are no place for either (SEC-20, SEC-21).
 
     python -m service.migrations status     # what is applied, what is pending
     python -m service.migrations migrate    # apply pending migrations
@@ -57,7 +58,7 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any
 
-from .db import AdvisoryLock, default_dsn
+from .db import AdvisoryLock, check_dsn, default_dsn
 
 log = logging.getLogger(__name__)
 
@@ -69,13 +70,18 @@ _FILE_NAME = re.compile(r"^(?P<version>\d{4})_(?P<name>[a-z0-9]+(?:_[a-z0-9]+)*)
 #: A migration runs inside the runner's transaction, together with its ledger
 #: row. Its own `COMMIT;` would end that transaction half way and leave a schema
 #: change the ledger never heard of. (PL/pgSQL's `BEGIN` takes no semicolon.)
+#: This is a lint for the common spellings, at review time; `END;`, `COMMIT WORK;`
+#: and a COMMIT in mid-line get past it, so `_apply` checks the real thing.
 _TRANSACTION_CONTROL = re.compile(
     r"^\s*(begin|start\s+transaction|commit|rollback)\s*;", re.IGNORECASE | re.MULTILINE
 )
 
-#: How long a starting instance waits for another one's migration run. Longer
-#: than any one migration may take (STATEMENT_TIMEOUT_S), shorter than Cloud
-#: Run's startup probe window (240 s) so the failure that surfaces is this one.
+#: How long a starting instance waits for another one's migration run, which
+#: holds the lock across every pending file. Nothing bounds a whole run —
+#: STATEMENT_TIMEOUT_S bounds one statement — so this is a judgement: longer
+#: than a release's migrations should ever take, and inside Cloud Run's default
+#: startup window (240 s), so that the failure which surfaces is this one. A
+#: custom startup probe must allow as long (docs/deploy-gcp.md §7).
 LOCK_WAIT_S = 150.0
 LOCK_POLL_S = 0.5
 #: A migration that cannot get its table lock gives up rather than queueing in
@@ -198,10 +204,21 @@ def read_manifest(text: str) -> list[tuple[str, str]]:
     return entries
 
 
+def _list_sql(root: Traversable) -> list[str]:
+    """An image that shipped the code without its SQL must not start. Left as
+    an `OSError` this would read as "the database is unreachable" at startup,
+    and the broken revision would come up degraded and take the traffic."""
+    try:
+        return sorted(entry.name for entry in root.iterdir() if entry.name.endswith(".sql"))
+    except OSError:
+        pass  # raised below, outside the handler: the OSError and its path are not chained
+    raise MigrationPackageError("the packaged migrations directory is missing or unreadable")
+
+
 def _read_files(root: Traversable) -> tuple[list[Migration], list[str]]:
     migrations: list[Migration] = []
     problems: list[str] = []
-    for filename in sorted(entry.name for entry in root.iterdir() if entry.name.endswith(".sql")):
+    for filename in _list_sql(root):
         match = _FILE_NAME.match(filename)
         if match is None:
             problems.append(f"{filename} is not named NNNN_snake_case.sql")
@@ -297,7 +314,10 @@ def migrations_dsn() -> str:
     """The owner's DSN when one is configured apart from the runtime's
     (`MIGRATIONS_DATABASE_URL`, the seam for least-privilege roles), else the
     service's own."""
-    return os.environ.get("MIGRATIONS_DATABASE_URL") or default_dsn()
+    owner = os.environ.get("MIGRATIONS_DATABASE_URL")
+    if owner:
+        return check_dsn("MIGRATIONS_DATABASE_URL", owner)
+    return check_dsn("DATABASE_URL", default_dsn())
 
 
 def _connector(dsn: str | None) -> Connect:
@@ -348,16 +368,40 @@ def _release_lock(conn: Any) -> None:
         log.warning("migrations: could not release the lock (%s)", type(exc).__name__)
 
 
+#: SQLSTATE classes whose primary message names objects, never values: feature
+#: not supported, integrity violations (the values are in DETAIL), syntax and
+#: access rules, resources, object state (lock timeouts), operator intervention.
+#: Class 22 (`invalid input syntax for type integer: "<the text>"`) and a
+#: migration's own RAISE (P0001) quote data in the primary message itself.
+_VALUE_FREE_CLASSES = frozenset({"0A", "23", "42", "53", "55", "57"})
+
+
 def _describe(exc: BaseException) -> str:
-    """SQLSTATE and primary message. Never DETAIL (row values), never `str(exc)`."""
+    """The class, the SQLSTATE, and the primary message where it cannot carry a
+    value. Never DETAIL, never `str(exc)`."""
     sqlstate = getattr(exc, "sqlstate", None)
     primary = getattr(getattr(exc, "diag", None), "message_primary", None)
     parts = [type(exc).__name__]
     if sqlstate:
         parts.append(f"SQLSTATE {sqlstate}")
-    if primary:
+    if primary and sqlstate and str(sqlstate)[:2] in _VALUE_FREE_CLASSES:
         parts.append(str(primary))
     return ", ".join(parts)
+
+
+class _EndedTransaction(Exception):
+    """Raised inside `_apply` when a file committed or rolled back by itself."""
+
+
+def _left_the_transaction(conn: Any) -> bool:
+    """True when the file itself ended the runner's transaction (`COMMIT;`,
+    `END;`, `ROLLBACK;` in any spelling). What it did before that point is
+    committed and cannot be taken back; what must not happen is a ledger row
+    written outside the transaction, recording the file as cleanly applied."""
+    from psycopg.pq import TransactionStatus
+
+    status = getattr(getattr(conn, "info", None), "transaction_status", TransactionStatus.INTRANS)
+    return status != TransactionStatus.INTRANS
 
 
 def _apply(conn: Any, migration: Migration, *, applied_by: str, clock: Callable[[], float]) -> None:
@@ -368,6 +412,8 @@ def _apply(conn: Any, migration: Migration, *, applied_by: str, clock: Callable[
             conn.execute("SELECT set_config('lock_timeout', %s, true)", (f"{LOCK_TIMEOUT_S}s",))
             conn.execute("SELECT set_config('statement_timeout', %s, true)", (f"{STATEMENT_TIMEOUT_S}s",))
             conn.execute(migration.sql)
+            if _left_the_transaction(conn):
+                raise _EndedTransaction
             conn.execute(
                 "INSERT INTO app.schema_migrations (version, name, checksum, duration_ms, applied_by) "
                 "VALUES (%s, %s, %s, %s, %s)",
@@ -379,6 +425,11 @@ def _apply(conn: Any, migration: Migration, *, applied_by: str, clock: Callable[
                     applied_by,
                 ),
             )
+    except _EndedTransaction:
+        failure = (
+            f"{migration.filename} ended the runner's transaction (a COMMIT, END or ROLLBACK of its "
+            "own): whatever preceded it is committed and unrecorded — repair the database by hand"
+        )
     except Exception as exc:
         failure = f"{migration.filename} failed and was rolled back ({_describe(exc)})"
     if failure:  # outside the except block, so the driver's exception is not chained

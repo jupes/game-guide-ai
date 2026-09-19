@@ -4,8 +4,9 @@ PostgreSQL (1kg.1.5).
 
 The in-memory twins are held to the same contracts in `service/tests/test_db.py`
 and `service/tests/test_jobs.py`; this is where the real thing earns them: a pool
-that really refuses one connection too many, a dead connection replaced on
-checkout, an aggregate and its job that really commit or vanish together, a
+that really refuses one connection too many and holds none between operations,
+a realtime pool that replaces a dead connection and closes cleanly, an
+aggregate and its job that really commit or vanish together, a
 notification that really waits for the commit, and claims that really skip a
 locked row.
 
@@ -23,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
-from psycopg_pool import PoolTimeout
+from psycopg_pool import PoolClosed, PoolTimeout
 
 from service import migrations as mig
 from service.db import AdvisoryLock, Database, PoolSettings
@@ -44,7 +45,6 @@ def dsn():
 @pytest.fixture
 def db(dsn):
     database = Database(dsn, PoolSettings(sync_max=2, async_max=2, acquire_timeout_s=1))
-    database.open()
     yield database
     database.close()
 
@@ -54,64 +54,34 @@ def _count(dsn: str, sql: str, params: tuple = ()) -> int:
         return int(conn.execute(sql, params).fetchone()[0])
 
 
-def _pooled_sessions(dsn: str) -> int:
+def _sessions(dsn: str, role: str = "sync") -> int:
+    """Sessions the service holds right now, by the label it gives them."""
     return _count(
         dsn,
-        "SELECT count(*) FROM pg_stat_activity "
-        "WHERE datname = current_database() "
-        "AND application_name IN ('game-guide-ai:sync', 'game-guide-ai:async', 'game-guide-ai:direct')",
+        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND application_name = %s",
+        (f"game-guide-ai:{role}",),
     )
 
 
-# ── The pool is bounded, heals, and closes ───────────────────────────────────
+# ── The gate is bounded and holds nothing; the realtime pool heals and closes ──
 
 
-def test_the_pool_starts_empty_and_never_exceeds_its_bound(db, dsn):
-    assert _pooled_sessions(dsn) == 0, "no idle minimum: an unused instance holds nothing"
+def test_the_gate_never_exceeds_its_bound_and_holds_nothing_between_operations(db, dsn):
+    """The property the whole design rests on: an instance that is idle — or frozen
+    by Cloud Run, or belongs to the revision a rollout just replaced — holds no
+    share of the server's twenty-two connections."""
+    assert _sessions(dsn) == 0
     with db.connection() as first, db.connection() as second:
         assert first.execute("SELECT 1").fetchone() == (1,)
         assert second.execute("SELECT 2").fetchone() == (2,)
+        assert _sessions(dsn) == 2
         started = time.monotonic()
         with pytest.raises(PoolTimeout):
             with db.connection():
                 pass  # pragma: no cover
         assert 0.5 < time.monotonic() - started < 5, "a request waits its second, then fails as unavailable"
-        assert _pooled_sessions(dsn) == 2
+    assert _sessions(dsn) == 0, "nothing is kept once the operations end"
     assert isinstance(PoolTimeout("x"), psycopg.OperationalError), "which the routes already map to a 503"
-
-
-def test_a_connection_that_died_while_idle_is_replaced_on_checkout(db, dsn):
-    """A Cloud Run instance is frozen between requests; its sockets die quietly."""
-    with db.connection() as conn:
-        dead_pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
-    with connect(dsn) as admin:
-        admin.execute("SELECT pg_terminate_backend(%s)", (dead_pid,))
-    time.sleep(0.2)
-    with db.connection() as conn:
-        assert conn.execute("SELECT pg_backend_pid()").fetchone()[0] != dead_pid
-
-
-def test_an_instance_that_thaws_with_every_connection_dead_still_answers_at_once(dsn, monkeypatch):
-    """Met one by one at checkout, dead connections cost a doubling backoff and a
-    handful of them cost the request. A pool that sat idle is swept first."""
-    from service import db as dbmod
-
-    database = Database(dsn, PoolSettings(sync_max=4, async_max=0, acquire_timeout_s=3))
-    database.open()
-    try:
-        with database.connection() as a, database.connection() as b, database.connection() as c:
-            pids = [conn.execute("SELECT pg_backend_pid()").fetchone()[0] for conn in (a, b, c)]
-        with connect(dsn) as admin:
-            for pid in pids:
-                admin.execute("SELECT pg_terminate_backend(%s)", (pid,))
-        time.sleep(0.2)
-        monkeypatch.setattr(dbmod, "IDLE_SUSPECT_S", 0.0)
-        started = time.monotonic()
-        with database.connection() as conn:
-            assert conn.execute("SELECT pg_backend_pid()").fetchone()[0] not in pids
-        assert time.monotonic() - started < 2
-    finally:
-        database.close()
 
 
 def test_a_clean_exit_commits_and_an_exception_rolls_back(db, dsn):
@@ -124,39 +94,54 @@ def test_a_clean_exit_commits_and_an_exception_rolls_back(db, dsn):
     assert _count(dsn, "SELECT count(*) FROM app.things") == 1
 
 
-def test_closing_the_pool_leaves_no_session_behind(dsn):
-    database = Database(dsn, PoolSettings(sync_max=3, async_max=0))
-    database.open()
-    with database.connection() as a, database.connection() as b:
-        a.execute("SELECT 1")
-        b.execute("SELECT 1")
-    assert _pooled_sessions(dsn) == 2
+def test_a_closed_database_refuses_new_operations(dsn):
+    database = Database(dsn, PoolSettings(sync_max=2, async_max=0))
+    with database.connection() as conn:
+        conn.execute("SELECT 1")
     database.close()
-    deadline = time.monotonic() + 5
-    while _pooled_sessions(dsn) and time.monotonic() < deadline:
-        time.sleep(0.1)
-    assert _pooled_sessions(dsn) == 0
+    with pytest.raises(PoolClosed):
+        with database.connection():
+            pass  # pragma: no cover
+    assert _sessions(dsn) == 0
 
 
-def test_without_a_pool_every_operation_has_a_connection_of_its_own(dsn):
+def test_without_a_gate_every_operation_still_has_a_connection_of_its_own(dsn):
     database = Database(dsn, PoolSettings(sync_max=0, async_max=0))
     with database.connection() as conn:
         conn.execute("INSERT INTO app.things VALUES ('direct')")
-    assert _pooled_sessions(dsn) == 0 and _count(dsn, "SELECT count(*) FROM app.things") == 1
+    assert _sessions(dsn) == 0 and _count(dsn, "SELECT count(*) FROM app.things") == 1
 
 
-def test_the_async_pool_serves_the_realtime_path_and_closes(dsn):
-    async def scenario() -> int:
-        database = Database(dsn, PoolSettings(sync_max=1, async_max=2, acquire_timeout_s=2))
+def _run(scenario):
+    # psycopg's async connections need a selector loop, which is not Windows' default.
+    return asyncio.run(scenario, loop_factory=asyncio.SelectorEventLoop)
+
+
+def test_the_realtime_pool_serves_heals_asks_to_be_reaped_and_closes(dsn):
+    async def scenario() -> dict[str, object]:
+        database = Database(dsn, PoolSettings(sync_max=1, async_max=2, acquire_timeout_s=3))
+        seen: dict[str, object] = {}
         try:
             async with database.async_connection() as conn:
-                cursor = await conn.execute("SELECT 41 + 1")
-                return (await cursor.fetchone())[0]
+                seen["answer"] = (await (await conn.execute("SELECT 41 + 1")).fetchone())[0]
+                seen["idle_session_timeout"] = (await (await conn.execute("SHOW idle_session_timeout")).fetchone())[0]
+                dead_pid = (await (await conn.execute("SELECT pg_backend_pid()")).fetchone())[0]
+            seen["held while open"] = _sessions(dsn, "async")
+            with connect(dsn) as admin:  # what the server does to a frozen instance's session
+                admin.execute("SELECT pg_terminate_backend(%s)", (dead_pid,))
+            await asyncio.sleep(0.2)
+            async with database.async_connection() as conn:
+                seen["replaced"] = (await (await conn.execute("SELECT pg_backend_pid()")).fetchone())[0] != dead_pid
         finally:
             await database.aclose()
+        return seen
 
-    # psycopg's async connections need a selector loop, which is not Windows' default.
-    assert asyncio.run(scenario(), loop_factory=asyncio.SelectorEventLoop) == 42
+    seen = _run(scenario())
+    assert seen == {"answer": 42, "idle_session_timeout": "2min", "held while open": 1, "replaced": True}
+    deadline = time.monotonic() + 5
+    while _sessions(dsn, "async") and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert _sessions(dsn, "async") == 0, "shutdown leaves no session behind"
 
 
 # ── Aggregate plus outbox, atomically ────────────────────────────────────────
@@ -187,22 +172,18 @@ def test_an_aggregate_and_its_job_roll_back_together(db, dsn):
 
 
 def test_after_commit_callbacks_run_once_the_connection_is_back(dsn):
-    """With a pool of one, a callback that needs the database would deadlock if
-    it ran while the transaction still held the only connection."""
+    """With a gate of one, a callback that needs the database would deadlock if
+    it ran while the transaction still held the only place."""
     database = Database(dsn, PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
-    database.open()
-    try:
-        queue = PostgresJobQueue(database)
-        ran: list[str] = []
-        handler = JobHandler(lambda job: ran.append(str(job.payload["asset_id"])))
-        runner = JobRunner(queue, {"asset.delete": handler})
-        with database.transaction() as unit:
-            runner.run_after_commit(unit, queue.enqueue(unit, "asset.delete", {"asset_id": "asset-1"}))
-            assert ran == []
-        assert ran == ["asset-1"]
-        assert _count(dsn, "SELECT count(*) FROM app.jobs") == 0, "a finished job is deleted"
-    finally:
-        database.close()
+    queue = PostgresJobQueue(database)
+    ran: list[str] = []
+    handler = JobHandler(lambda job: ran.append(str(job.payload["asset_id"])))
+    runner = JobRunner(queue, {"asset.delete": handler})
+    with database.transaction() as unit:
+        runner.run_after_commit(unit, queue.enqueue(unit, "asset.delete", {"asset_id": "asset-1"}))
+        assert ran == []
+    assert ran == ["asset-1"]
+    assert _count(dsn, "SELECT count(*) FROM app.jobs") == 0, "a finished job is deleted"
 
 
 def test_a_notification_waits_for_the_commit_and_dies_with_a_rollback(db, dsn):
@@ -273,6 +254,39 @@ def test_a_claim_skips_a_row_another_instance_is_claiming(db, dsn):
         assert time.monotonic() - started < 3, "skipped, not waited for"
         other_instance.rollback()
     assert [job.id for job in queue.claim(["asset.delete"], limit=5, now=T0)] == [first]
+
+
+def test_a_claim_leases_exactly_as_many_jobs_as_it_asked_for(db, dsn):
+    """`WHERE id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)` may be run more
+    than once by the planner, and each rerun skips the rows this statement has
+    already locked — so the LIMIT slides and one claim takes the backlog. The
+    plan forced below is the one that does it; the materialized CTE is immune."""
+    queue = PostgresJobQueue(db)
+    ids = [_enqueue(db, queue) for _ in range(4)]
+    with connect(dsn) as admin:  # every later connection to this database plans with nested loops
+        name = admin.execute("SELECT current_database()").fetchone()[0]
+        for setting in ("enable_hashjoin", "enable_mergejoin", "enable_material"):
+            admin.execute(f'ALTER DATABASE "{name}" SET {setting} = off')
+        admin.execute("ANALYZE app.jobs")
+    (claimed,) = queue.claim(["asset.delete"], limit=1, now=T0)
+    assert claimed.id == ids[0]
+    assert _count(dsn, "SELECT count(*) FROM app.jobs WHERE attempts = 0") == 3
+    assert [job.id for job in queue.claim(["asset.delete"], limit=2, now=T0)] == ids[1:3]
+    assert _count(dsn, "SELECT count(*) FROM app.jobs WHERE attempts = 0") == 1
+
+
+def test_a_job_somebody_has_started_absorbs_nothing(db, dsn):
+    """Absorbed into a running job, later work would be deleted with it, never
+    having run. Once claimed, a job leaves the dedupe index."""
+    queue = PostgresJobQueue(db)
+    first = _enqueue(db, queue, kind="upload.sweep", dedupe_key="session:S")
+    (running,) = queue.claim(["upload.sweep"], now=T0)
+    second = _enqueue(db, queue, kind="upload.sweep", dedupe_key="session:S")
+    assert second != first
+    assert _enqueue(db, queue, kind="upload.sweep", dedupe_key="session:S") == second
+    queue.complete(running)
+    with connect(dsn) as conn:
+        assert conn.execute("SELECT id, attempts FROM app.jobs").fetchall() == [(second, 0)]
 
 
 def test_due_order_kinds_and_claim_by_id(db):

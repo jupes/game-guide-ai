@@ -159,13 +159,18 @@ def test_a_pre_expansion_database_is_adopted_and_ends_up_identical_to_a_fresh_on
         assert _ledger(dsn) == _ledger(fresh)
 
 
-def test_the_stores_reach_the_schema_through_the_same_runner(dsn):
-    """`python -m service.admin_invites` calls this on a database that has never
-    seen the service: it must leave a complete, recorded schema, not half of one."""
+def test_the_stores_and_the_admin_cli_check_the_schema_and_never_change_it(dsn):
+    """`python -m service.admin_invites` runs from an operator's checkout, which is
+    not the deployed image: applying whatever migrations it holds, as a side effect
+    of listing invites, would put unreviewed DDL into production."""
     from service.auth_store import PostgresAuthStore
 
+    with pytest.raises(MigrationsPending, match="python -m service.migrations migrate"):
+        PostgresAuthStore(dsn).ensure_schema()
+    assert not _exists(dsn, "app.schema_migrations") and not _exists(dsn, "auth.users")
+
+    mig.migrate(dsn)
     PostgresAuthStore(dsn).ensure_schema()
-    assert [row[0] for row in _ledger(dsn)] == [m.version for m in PACKAGED]
 
 
 # ── Drift fails loudly ───────────────────────────────────────────────────────
@@ -237,6 +242,38 @@ def test_a_failure_never_quotes_row_values(dsn):
     assert "SQLSTATE 23505" in str(caught.value)
     assert "gm@example.com" not in str(caught.value)
     assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
+def test_a_conversion_failure_does_not_quote_the_value_it_choked_on(dsn):
+    """Class 22 puts the datum in the PRIMARY message, not in DETAIL."""
+    tighten = _extra(
+        len(PACKAGED) + 1,
+        "tighten",
+        "CREATE TABLE app.handles (handle text);\n"
+        "INSERT INTO app.handles VALUES ('Seraphine, the hooded stranger');\n"
+        "ALTER TABLE app.handles ALTER COLUMN handle TYPE integer USING handle::integer;",
+    )
+    with pytest.raises(MigrationFailed) as caught:
+        mig.migrate(dsn, packaged=[*PACKAGED, tighten])
+    assert "SQLSTATE 22P02" in str(caught.value)
+    assert "Seraphine" not in str(caught.value)
+    assert not _exists(dsn, "app.handles")
+
+
+def test_a_file_that_commits_by_itself_never_gets_a_ledger_row(dsn):
+    """`END;` is SQL for COMMIT and cannot be banned textually (PL/pgSQL uses it),
+    so the runner asks the server whether it is still inside its transaction.
+    What the file did before its COMMIT is permanent — this pins that honestly —
+    but it is never recorded as a clean apply, and the failure says what to do."""
+    sneaky = _extra(
+        len(PACKAGED) + 1,
+        "sneaky",
+        "CREATE TABLE app.before_commit (id int);\nEND;\nCREATE TABLE app.after_commit (id int);",
+    )
+    with pytest.raises(MigrationFailed, match="sneaky.sql ended the runner's transaction"):
+        mig.migrate(dsn, packaged=[*PACKAGED, sneaky])
+    assert [row[0] for row in _ledger(dsn)] == [m.version for m in PACKAGED]
+    assert _exists(dsn, "app.before_commit"), "committed by the file itself; the message says to repair by hand"
 
 
 def test_a_migration_that_cannot_get_its_table_lock_gives_up(dsn, monkeypatch):

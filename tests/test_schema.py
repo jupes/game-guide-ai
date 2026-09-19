@@ -71,6 +71,23 @@ def test_every_file_in_the_migrations_directory_is_shipped():
     assert all(name.endswith(".sql") or name == "manifest.txt" for name in names), names
 
 
+def test_the_image_build_context_keeps_the_migrations():
+    """Both Dockerfiles `COPY service/` and `pip install .`; the package-data
+    globs then pick the files up. A `.dockerignore` line that dropped SQL or text
+    files from the context would build an image that refuses to start — and only
+    the image, never a checkout."""
+    ignored = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    patterns = [line.strip() for line in ignored if line.strip() and not line.startswith("#")]
+    dropped = ("service/sql", "service/**", "**/*.sql", "*.sql", "**/*.txt", "*.txt")
+    for pattern in patterns:
+        assert not pattern.startswith(dropped), (
+            f".dockerignore excludes the migrations from the build context: {pattern}"
+        )
+    for dockerfile in ("Dockerfile.cloud", "Dockerfile.service"):
+        text = (REPO_ROOT / dockerfile).read_text(encoding="utf-8")
+        assert "COPY service/ service/" in text, f"{dockerfile} must copy the whole service package"
+
+
 def test_there_is_one_path_to_the_application_schema():
     """Compose initialises the corpus schema and nothing of the application's:
     the service's migration runner builds that, for a fresh volume and an old

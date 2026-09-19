@@ -266,13 +266,22 @@ def test_deploy_sets_memory_and_concurrency_explicitly() -> None:
     )
 
 
-def test_the_connection_pools_fit_the_database_at_full_scale() -> None:
-    """`db-f1-micro` accepts 22 application connections. Every instance may hold
-    its synchronous pool, its asynchronous pool and one listener open at once
-    (service/db.py, 1kg.1.5), so the pool defaults and `--max-instances` are one
-    number in two files: raise either without the other and the second instance's
-    logins start failing under load, which no unit test would show."""
-    from service.db import RESERVED_FOR_OPERATORS, SERVER_CONNECTION_LIMIT, PoolSettings
+def test_the_connection_bounds_fit_the_database_at_full_scale_and_during_a_rollout() -> None:
+    """`db-f1-micro` accepts 22 application connections. Every instance may have
+    its gate, its realtime pool and one listener open at once (service/db.py,
+    1kg.1.5), so the defaults and `--max-instances` are one number in two files:
+    raise either without the other and logins start failing under load, which no
+    unit test would show.
+
+    `--max-instances` is per REVISION, and a rollout overlaps two of them. The
+    gate is what is in use today, so it must fit that overlap too; the realtime
+    pool and the listener must be added to that sum by the beads that turn them on."""
+    from service.db import (
+        MIGRATION_SESSIONS,
+        RESERVED_FOR_OPERATORS,
+        SERVER_CONNECTION_LIMIT,
+        PoolSettings,
+    )
 
     found = re.search(r"--max-instances\s+(\d+)", _read(DEPLOY_SH))
     assert found is not None, "deploy.sh must state --max-instances: the pool budget depends on it"
@@ -283,6 +292,15 @@ def test_the_connection_pools_fit_the_database_at_full_scale() -> None:
         f"{instances} instances x {PoolSettings().per_instance} connections + "
         f"{RESERVED_FOR_OPERATORS} for the operator = {needed}, but the database accepts "
         f"{SERVER_CONNECTION_LIMIT}"
+    )
+
+    overlapping_revisions = 2
+    during_a_rollout = (
+        PoolSettings().sync_max * instances * overlapping_revisions + MIGRATION_SESSIONS + RESERVED_FOR_OPERATORS
+    )
+    assert during_a_rollout <= SERVER_CONNECTION_LIMIT, (
+        f"a rollout needs {during_a_rollout} connections for routes alone, but the database accepts "
+        f"{SERVER_CONNECTION_LIMIT}: lower DB_POOL_MAX's default or --max-instances"
     )
 
 

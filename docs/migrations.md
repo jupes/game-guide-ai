@@ -8,7 +8,7 @@ every epic that adds a table (`1kg`, `1ir`, `yje`).
 |---|---|
 | Ordered migrations and their manifest | `service/sql/migrations/` |
 | The runner and its CLI | `service/migrations.py` |
-| Pools, the transaction boundary, the in-memory twin | `service/db.py` |
+| The connection gate and the realtime pool, the transaction boundary, the in-memory twin | `service/db.py` |
 | The job outbox and its runner | `service/jobs.py` |
 | Tests without a database | `service/tests/test_migrations.py`, `test_db.py`, `test_jobs.py`, `test_startup_migrations.py` |
 | Tests against a real PostgreSQL (CI) | `tests/test_migrations_db.py`, `tests/test_db_postgres.py`, `tests/test_schema.py` |
@@ -30,7 +30,7 @@ each file in its own transaction together with its row in `app.schema_migrations
   there is no second mechanism to drift from.
 - **Concurrent startups** serialise on a session advisory lock; the loser re-reads
   the ledger under the lock and finds nothing to do. It waits at most 150 s.
-- **A current database costs one `SELECT` and takes no lock.** The DDL this replaced
+- **A current database costs two small reads and takes no lock.** The DDL this replaced
   was re-run at every cold start and took `ACCESS EXCLUSIVE` locks on live tables
   each time.
 - **Each migration runs under `lock_timeout = 10s` and `statement_timeout = 120s`**,
@@ -45,9 +45,11 @@ each file in its own transaction together with its row in `app.schema_migrations
 | Another instance held the lock for 150 s | `MigrationLockTimeout` — **startup fails** |
 | The database answers but refuses (no privilege to create or read the ledger) | `MigrationFailed` — **startup fails**; it would refuse again at every start |
 | The packaged files do not match `manifest.txt`, have a gap or a duplicate number | `MigrationPackageError` — **startup fails** (and CI failed first) |
-| A pool or mode setting is out of bounds | `ValueError` — **startup fails** |
+| A pool or mode setting is out of bounds, or a connection string does not parse | `ValueError` — **startup fails**; the string is never repeated |
+| The image shipped without its migrations directory | `MigrationPackageError` — **startup fails** (as an `OSError` it would have read as an outage, and the broken revision would have taken the traffic) |
+| A file ended the runner's transaction (`COMMIT;`, `END;` …) | `MigrationFailed` — **startup fails**, with no ledger row; what the file committed itself has to be repaired by hand |
 | The database has migrations this build does not know | **Served.** `/healthz` says `migrations: "ahead"` — an older image mid-rollout or after a rollback |
-| The database is unreachable | **Served, degraded, as before**: no history, auth endpoints 503, `migrations: "unavailable"` |
+| The database is unreachable | Three tries, two seconds apart; then **served, degraded, as before**: no history, auth endpoints 503, `migrations: "unavailable"`. The log names the error class and SQLSTATE, never the driver's text |
 
 On Cloud Run a revision that fails to start never receives traffic, so a verdict
 leaves the previous revision serving the schema it understands. `/healthz` gains
@@ -65,6 +67,21 @@ python -m service.migrations manifest   # append new files to the manifest
 
 They read `MIGRATIONS_DATABASE_URL`, then `DATABASE_URL`. They never print a DSN.
 
+**Only two things change a schema: the service's startup and an explicit
+`migrate`.** `python -m service.admin_invites` (and the stores' `ensure_schema()`)
+only *check*: run from an operator's checkout, which is not the deployed image, they
+would otherwise apply whatever migrations that checkout happens to hold. With
+something pending they stop and name the command to run.
+
+### Adopting an existing database
+
+Every database that predates the ledger — production included — already holds the
+`chat` and `auth` objects. The first run finds no `app.schema_migrations`, creates
+it, and applies 0001 and 0002 *over* what is there: both are idempotent and guard
+every constraint change, so existing rows are untouched and nothing is rebuilt. From
+then on the database is indistinguishable from a fresh one, which
+`tests/test_migrations_db.py` proves by comparing the two column for column.
+
 ## 2. Adding a migration
 
 1. Create `service/sql/migrations/NNNN_what_it_does.sql` with the next number.
@@ -81,8 +98,10 @@ Rules the runner or CI enforce:
 - **One number, one file.** Two branches that each add a migration both append to
   `manifest.txt`, so git reports a conflict instead of merging two `0007`s. Renumber
   the later one before merging.
-- **No transaction control** (`BEGIN;`, `COMMIT;`). The runner owns the transaction;
-  a `COMMIT` half way would leave a change the ledger never recorded.
+- **No transaction control** (`BEGIN;`, `COMMIT;`, `END;`). The runner owns the
+  transaction; a `COMMIT` half way would leave a change the ledger never recorded.
+  A lint catches the common spellings in CI, and the runner asks the server after
+  every file whether it is still inside its transaction.
 - **Not supported yet:** statements that cannot run in a transaction (`CREATE INDEX
   CONCURRENTLY`). Tables are pilot-sized; add a no-transaction mode when one is not.
 - **Only 0001 and 0002 are idempotent**, because every database that predates the
@@ -135,6 +154,16 @@ for unit tests, a Postgres one. `InMemoryDatabase` gives the fakes the same boun
 block undoes in reverse and releases no notification and no callback. Keep
 transactions short, and make no network call inside one.
 
+### Ownership belongs in the query
+
+Every aggregate table carries the key it is owned through (`campaign_id`, and
+through the campaign its owner), so that a read or a write can name the caller in
+the same statement that names the row — `... WHERE id = %s AND campaign_id IN
+(SELECT id FROM campaigns WHERE owner_id = %s)` — and a row that is not the caller's
+is indistinguishable from one that does not exist (SEC-2: one query, one 404).
+Fetch-then-check is two chances to forget the check; a schema that cannot express
+the single query is a schema bug, caught in the review of its migration.
+
 ### The outbox carries jobs only
 
 `app.jobs` (migration 0003) holds work that must happen because a transaction
@@ -143,8 +172,10 @@ current state (RT-5). A claim is a lease taken with `FOR UPDATE SKIP LOCKED`, so
 handler holds no connection while it calls another service, an instance that dies
 lets its lease expire, and **handlers must be idempotent**. Only kinds the running
 build has a handler for are claimed, so an older instance leaves a newer build's jobs
-alone. A payload is a flat object of identifiers; a failure stores the exception's
-class name, never its message.
+alone. A `dedupe_key` absorbs a second request only into a job **nobody has claimed
+yet**: a running handler may already have read the state it acts on, so later work
+gets a row of its own. A payload is a flat object of identifiers; a failure stores
+the exception's class name, never its message.
 
 Nothing runs by itself: Cloud Run allocates CPU only during a request. RT-15 names
 three callers for `JobRunner` — after the commit (`run_after_commit`, available now),
@@ -154,26 +185,39 @@ adding them with no job to run would only add a query to every chat request.
 
 ## 5. Connections
 
-`db-f1-micro` accepts 22 application connections. Per instance the service may hold
-6 (synchronous pool, routes) + 3 (asynchronous pool, realtime; opened on first use) +
-1 (the realtime listener, outside the pools) = 10; two instances is 20, leaving 2 for
-the operator. `tests/test_deploy_contract.py` checks that arithmetic against
-`scripts/deploy.sh`.
+`db-f1-micro` accepts 22 application connections, and Cloud Run gives an instance CPU
+only while a request is in flight. The second fact decides the design:
+
+- **Routes go through a gate, not a keep-alive pool.** At most `DB_POOL_MAX`
+  connections are open at once per instance, each opened for one operation and closed
+  after it — what the stores always did, now bounded. A keep-alive pool cannot shed
+  idle connections from an instance that has been frozen, so every quiet instance,
+  and during a rollout every instance of the *previous revision*, would keep holding
+  its share of the 22. With the gate an idle instance holds nothing, no connection is
+  ever stale, and the only cost is the connect the service was already paying.
+- **The realtime path gets a small keep-alive pool.** A stream is a request, so its
+  instance has CPU while it matters. The pool opens on first use, checks a connection
+  as it lends it, sheds one idle for 60 s, and marks its sessions
+  `idle_session_timeout = 120s` so the *server* reaps what a frozen instance left.
+- **The budget**, checked by `tests/test_deploy_contract.py` against
+  `scripts/deploy.sh`: steady state is (4 gate + 3 realtime + 1 listener) × 2
+  instances + 2 for the operator = 18; a rollout overlaps two revisions, so the gate
+  alone is 4 × 4 + 1 migration session + 2 = 19. The realtime pool and the listener
+  are not in use yet; the beads that turn them on must redo the overlap sum
+  (`1kg.7.5`, `1kg.9.5`). Raise a bound only together with the database tier.
 
 | Variable | Default | Bounds | Meaning |
 |---|---|---|---|
-| `DB_POOL_MAX` | 6 | 0–10 | Synchronous pool. `0` turns pooling off: a connection per operation, as before |
-| `DB_ASYNC_POOL_MAX` | 3 | 0–5 | Asynchronous pool |
-| `DB_POOL_TIMEOUT_S` | 5 | 1–60 | How long a request waits for a connection before it fails as 503 |
+| `DB_POOL_MAX` | 4 | 0–10 | The gate: connections routes may have open at once. `0` removes it (unbounded, as before) |
+| `DB_ASYNC_POOL_MAX` | 3 | 0–5 | The realtime pool |
+| `DB_POOL_TIMEOUT_S` | 5 | 1–60 | How long a request waits for its turn before it fails as 503 |
 | `MIGRATIONS_DATABASE_URL` | — | | The schema owner's DSN, when it differs from the runtime's |
 | `MIGRATIONS_MODE` | `apply` | `apply`, `verify` | `verify` never applies; pending migrations then stop startup |
 
-Both pools keep **no idle minimum**: an instance that serves nothing holds nothing.
-Every connection is checked as it is lent, and a pool nobody borrowed from for 30 s is
-swept first — Cloud Run freezes an instance between requests and its sockets die
-quietly. The message and auth stores and retrieval all borrow from the synchronous
-pool. Sessions are labelled `game-guide-ai:sync`, `:async`, `:direct` or `:migrate`
-in `pg_stat_activity`. Shutdown closes both pools.
+The message and auth stores and retrieval all go through the gate — also on an
+instance that started during an outage, so retrieval never leaves the budget. Sessions
+are labelled `game-guide-ai:sync`, `:async` or `:migrate` in `pg_stat_activity`.
+Shutdown closes the realtime pool and refuses new operations.
 
 `MIGRATIONS_DATABASE_URL` and `MIGRATIONS_MODE=verify` are the seam for
 least-privilege roles: a runtime role without DDL rights, and a deploy step that runs
