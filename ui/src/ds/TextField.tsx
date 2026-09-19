@@ -37,6 +37,28 @@ export interface TextFieldProps {
   fullWidth?: boolean
   style?: React.CSSProperties
   className?: string
+  /**
+   * DS extension (record SLASH-12): the underlying control, so a composer can
+   * focus it, place the caret and read its value without a wrapper. React 19
+   * passes `ref` to a function component as an ordinary prop, so no
+   * `forwardRef` is needed.
+   */
+  ref?: React.Ref<HTMLInputElement | HTMLTextAreaElement>
+  onFocus?: (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => void
+  onBlur?: (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => void
+  /**
+   * DS extension (record SLASH-12): ARIA forwarded to the control itself.
+   * A textarea that drives a `listbox` needs `aria-autocomplete`,
+   * `aria-controls` and `aria-activedescendant` on the textarea — on a wrapper
+   * they mean nothing. The set is deliberately small and explicit rather than a
+   * prop spread, so the DS still says what it supports.
+   */
+  'aria-label'?: string
+  'aria-describedby'?: string
+  'aria-controls'?: string
+  'aria-activedescendant'?: string
+  'aria-autocomplete'?: 'none' | 'inline' | 'list' | 'both'
+  'aria-invalid'?: boolean
 }
 
 export function TextField({
@@ -59,9 +81,28 @@ export function TextField({
   fullWidth = false,
   style,
   className,
+  ref,
+  onFocus,
+  onBlur,
+  'aria-label': ariaLabel,
+  'aria-describedby': ariaDescribedby,
+  'aria-controls': ariaControls,
+  'aria-activedescendant': ariaActivedescendant,
+  'aria-autocomplete': ariaAutocomplete,
+  'aria-invalid': ariaInvalid,
 }: TextFieldProps): React.JSX.Element {
   const [focus, setFocus] = React.useState(false)
-  const textareaRef = React.useRef<HTMLTextAreaElement>(null)
+  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null)
+
+  // One node, two consumers: autoGrow measures it, and the caller holds it.
+  const setControlRef = React.useCallback(
+    (node: HTMLInputElement | HTMLTextAreaElement | null) => {
+      textareaRef.current = node instanceof HTMLTextAreaElement ? node : null
+      if (typeof ref === 'function') ref(node)
+      else if (ref) ref.current = node
+    },
+    [ref],
+  )
 
   // autoGrow: measure content, then size to it (pp6q.1.4). Height must be
   // reset before measuring — scrollHeight never reports LESS than the current
@@ -142,28 +183,53 @@ export function TextField({
         {multiline ? (
           <textarea
             id={controlId}
-            ref={textareaRef}
+            ref={setControlRef}
             rows={rows}
             value={value}
             onChange={onChange}
             onKeyDown={onKeyDown}
             placeholder={placeholder}
             disabled={disabled}
-            onFocus={() => setFocus(true)}
-            onBlur={() => setFocus(false)}
+            onFocus={(e) => {
+              setFocus(true)
+              onFocus?.(e)
+            }}
+            onBlur={(e) => {
+              setFocus(false)
+              onBlur?.(e)
+            }}
+            aria-label={ariaLabel}
+            aria-describedby={ariaDescribedby}
+            aria-controls={ariaControls}
+            aria-activedescendant={ariaActivedescendant}
+            aria-autocomplete={ariaAutocomplete}
+            aria-invalid={ariaInvalid}
             className={inputClasses}
           />
         ) : (
           <input
             id={controlId}
+            ref={setControlRef}
             type={type}
             value={value}
             onChange={onChange}
             onKeyDown={onKeyDown}
             placeholder={placeholder}
             disabled={disabled}
-            onFocus={() => setFocus(true)}
-            onBlur={() => setFocus(false)}
+            onFocus={(e) => {
+              setFocus(true)
+              onFocus?.(e)
+            }}
+            onBlur={(e) => {
+              setFocus(false)
+              onBlur?.(e)
+            }}
+            aria-label={ariaLabel}
+            aria-describedby={ariaDescribedby}
+            aria-controls={ariaControls}
+            aria-activedescendant={ariaActivedescendant}
+            aria-autocomplete={ariaAutocomplete}
+            aria-invalid={ariaInvalid}
             className={inputClasses}
           />
         )}
