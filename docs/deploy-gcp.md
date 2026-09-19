@@ -430,7 +430,12 @@ Watch: `gh run watch` and `gcloud run revisions list --service game-guide-ai --r
 
 `ci.yml` also declares `workflow_dispatch`, so once the three settings above
 exist the same deploy is available on demand: Actions → CI → *Run workflow*, or
-`gh workflow run ci.yml --ref master`.
+`gh workflow run ci.yml --ref master`. A manual run deploys **only from
+`master`**: the `deploy` job's `if:` requires `github.ref == 'refs/heads/master'`,
+so a run on any other ref tests without deploying — the job is skipped instead
+of running and failing at authentication. That guard is for accidents, not a
+replacement for the `ref` pin in the trust condition above: a branch can edit
+its own copy of `ci.yml`, so the WIF condition stays the security boundary.
 
 ### Verify a deploy actually landed by hand
 
