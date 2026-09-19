@@ -49,12 +49,13 @@ each file in its own transaction together with its row in `app.schema_migrations
 | The image shipped without its migrations directory | `MigrationPackageError` — **startup fails** (as an `OSError` it would have read as an outage, and the broken revision would have taken the traffic) |
 | A file ended the runner's transaction (`COMMIT;`, `END;` …) | `MigrationFailed` — **startup fails**, with no ledger row; what the file committed itself has to be repaired by hand |
 | The database has migrations this build does not know | **Served.** `/healthz` says `migrations: "ahead"` — an older image mid-rollout or after a rollback |
-| The database is unreachable | Three tries, two seconds apart; then **served, degraded, as before**: no history, auth endpoints 503, `migrations: "unavailable"`. The log names the error class and SQLSTATE, never the driver's text |
+| The database is unreachable | Three tries, two seconds apart; then **served, degraded**: no history, auth endpoints 503, `migrations: "unavailable"`. The log names the error class and SQLSTATE, never the driver's text. The instance **looks again by itself** — at most one short attempt every 15 s, made by one request at a time — checks or applies the schema exactly as at startup, and builds its stores when that succeeds |
+| …and the database comes back with a schema this build refuses | The looking stops, the refusal is logged as an error, `migrations: "failed"`, and the instance stays degraded: a running instance cannot be kept out of traffic the way a starting one can, but it must not serve a schema it does not understand |
 
 On Cloud Run a revision that fails to start never receives traffic, so a verdict
 leaves the previous revision serving the schema it understands. `/healthz` gains
-`migrations` (`current`, `ahead`, `unavailable`, or `unchecked` for a process that
-never ran the startup path); `status` and `ready` are unchanged.
+`migrations` (`current`, `ahead`, `unavailable`, `failed`, or `unchecked` for a
+process that never ran the startup path); `status` and `ready` are unchanged.
 
 ### The operator's commands
 

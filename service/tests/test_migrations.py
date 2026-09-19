@@ -528,6 +528,27 @@ def test_a_connection_that_does_not_survive_is_still_an_outage():
         mig.migrate(connect=server.connect, packaged=[ONE])
 
 
+def test_the_runner_connects_with_the_timeout_it_is_given_and_a_label_of_its_own(monkeypatch):
+    """Startup may wait ten seconds for a connection; a look made on a request's own
+    thread (1kg.9.8) may not. `pg_stat_activity` names the session either way."""
+    server = FakePostgres()
+    seen: dict[str, object] = {}
+
+    def connect(dsn, **kwargs):
+        seen.update(kwargs, dsn=dsn)
+        return server.connect()
+
+    monkeypatch.setattr(psycopg, "connect", connect)
+    mig.migrate("postgresql://owner@db/app", packaged=[ONE], connect_timeout_s=3)
+    assert seen == {
+        "dsn": "postgresql://owner@db/app",
+        "autocommit": True,
+        "connect_timeout": 3,
+        "application_name": "game-guide-ai:migrate",
+    }
+    assert server.ledger is not None and sorted(server.ledger) == [1]
+
+
 def test_the_owner_dsn_is_a_seam_of_its_own(monkeypatch):
     """Least-privilege roles (1ir.1.13): the runner may connect as the schema
     owner while the service connects as something smaller."""
@@ -553,7 +574,7 @@ def test_verify_checks_the_package_without_a_database(capsys):
 
 def test_status_exits_1_while_migrations_are_pending_and_0_once_current(monkeypatch, capsys):
     server = FakePostgres()
-    monkeypatch.setattr(mig, "_connector", lambda dsn: server.connect)
+    monkeypatch.setattr(mig, "_connector", lambda *_: server.connect)
 
     assert mig.main(["status"]) == 1
     assert "pending" in capsys.readouterr().out
@@ -570,7 +591,7 @@ def test_status_exits_1_while_migrations_are_pending_and_0_once_current(monkeypa
 
 def test_status_shows_what_a_newer_build_applied(monkeypatch, capsys):
     server = FakePostgres()
-    monkeypatch.setattr(mig, "_connector", lambda dsn: server.connect)
+    monkeypatch.setattr(mig, "_connector", lambda *_: server.connect)
     mig.main(["migrate"])
     assert server.ledger is not None
     server.ledger[99] = ("from_the_future", "0" * 64, "newer")
@@ -581,7 +602,7 @@ def test_status_shows_what_a_newer_build_applied(monkeypatch, capsys):
 
 def test_the_cli_reports_a_verdict_and_an_outage_without_a_dsn(monkeypatch, capsys):
     server = FakePostgres()
-    monkeypatch.setattr(mig, "_connector", lambda dsn: server.connect)
+    monkeypatch.setattr(mig, "_connector", lambda *_: server.connect)
     mig.main(["migrate"])
     assert server.ledger is not None
     server.ledger[2] = ("auth_schema", "f" * 64, "local")
@@ -594,7 +615,7 @@ def test_the_cli_reports_a_verdict_and_an_outage_without_a_dsn(monkeypatch, caps
         raise ConnectionRefusedError("postgresql://rag:hunter2@db:5432/app refused")
         yield  # pragma: no cover
 
-    monkeypatch.setattr(mig, "_connector", lambda dsn: unreachable)
+    monkeypatch.setattr(mig, "_connector", lambda *_: unreachable)
     assert mig.main(["migrate"]) == 2
     out = capsys.readouterr().out
     assert "could not reach the database (ConnectionRefusedError)" in out

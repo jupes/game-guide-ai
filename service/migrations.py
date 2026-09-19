@@ -320,7 +320,7 @@ def migrations_dsn() -> str:
     return check_dsn("DATABASE_URL", default_dsn())
 
 
-def _connector(dsn: str | None) -> Connect:
+def _connector(dsn: str | None, connect_timeout_s: int = CONNECT_TIMEOUT_S) -> Connect:
     def connect() -> AbstractContextManager[Any]:
         import psycopg
 
@@ -329,7 +329,7 @@ def _connector(dsn: str | None) -> Connect:
         return psycopg.connect(
             dsn or migrations_dsn(),
             autocommit=True,
-            connect_timeout=CONNECT_TIMEOUT_S,
+            connect_timeout=connect_timeout_s,
             application_name="game-guide-ai:migrate",
         )
 
@@ -444,6 +444,7 @@ def migrate(
     connect: Connect | None = None,
     packaged: Sequence[Migration] | None = None,
     lock_wait_s: float = LOCK_WAIT_S,
+    connect_timeout_s: int = CONNECT_TIMEOUT_S,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> Report:
@@ -458,7 +459,7 @@ def migrate(
     migrations = tuple(packaged) if packaged is not None else discover()
     refusal: str | None = None
     try:
-        with (connect or _connector(dsn))() as conn:
+        with (connect or _connector(dsn, connect_timeout_s))() as conn:
             return _migrate(conn, migrations, mode=mode, lock_wait_s=lock_wait_s, sleep=sleep, clock=clock)
     except Exception as exc:
         if not _is_a_refusal(exc):

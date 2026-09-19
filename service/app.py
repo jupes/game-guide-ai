@@ -16,6 +16,7 @@ import base64
 import binascii
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -236,10 +237,24 @@ def prepare_database() -> Database:
     return db
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.metrics_sink = build_metrics_sink()
-    db = prepare_database()
+#: A degraded instance looks for its database again this often and no more: the
+#: look is a connection attempt on a request's own thread, so it is rationed,
+#: short, and made by one request at a time.
+RECOVERY_INTERVAL_S = 15.0
+RECOVERY_CONNECT_TIMEOUT_S = 3
+_recovery_lock = threading.Lock()
+_clock = time.monotonic
+
+
+def _build_stores(db: Database) -> None:
+    """Message history (best-effort: chat answers work without it) and the auth
+    store — invite-gated accounts (x5bz.2). Both go through the one bounded gate.
+    Only ever called once the schema has been checked."""
+    _state["store"] = PostgresMessageStore(db=db)
+    _state["auth"] = PostgresAuthStore(db=db)
+
+
+def _build_rag(db: Database) -> None:
     # Build the service once (loads corpus vocabulary). Guarded so the app can
     # still start for endpoint tests that override the dependency without a DB.
     try:
@@ -248,13 +263,62 @@ async def lifespan(app: FastAPI):
         log.warning(
             "startup: RagService unavailable; /chat will 503 until ready", exc_info=True
         )
-    # Message history (best-effort: chat answers work without it) and the auth
-    # store — invite-gated accounts (x5bz.2). Both go through the one bounded
-    # gate; with no database at startup neither exists, as before — the schema
-    # was never checked, so nothing may write to it.
+
+
+def recover_database() -> None:
+    """An instance that started while the database was away gets it back without
+    a restart (1kg.9.8).
+
+    Until now nothing ever looked again: every login answered 503 until Cloud Run
+    recycled the instance, which it does not do while the instance keeps receiving
+    traffic. The dependencies below call this when they find nothing to hand out.
+    A healthy instance pays one dictionary lookup; a degraded one makes at most one
+    short attempt every RECOVERY_INTERVAL_S, by one request at a time — the others
+    answer 503 at once, as before, instead of queueing behind it.
+
+    The schema is checked (or applied, per MIGRATIONS_MODE) before any store
+    exists, exactly as at startup. A verdict ends the looking: it is logged as
+    an error, `/healthz` says `failed`, and the instance stays as it was — it
+    cannot be stopped from here the way a starting one can, but it must not
+    serve a schema it does not understand, and it must not loop."""
+    if _state.get("migrations") != "unavailable":
+        return
+    db = _state.get("db")
+    if db is None:
+        return
+    if _clock() < _state.get("recover_after", 0.0) or not _recovery_lock.acquire(blocking=False):
+        return
+    try:
+        _state["recover_after"] = _clock() + RECOVERY_INTERVAL_S
+        mode = Mode(os.environ.get("MIGRATIONS_MODE") or Mode.APPLY.value)
+        try:
+            report = migrate(mode=mode, connect_timeout_s=RECOVERY_CONNECT_TIMEOUT_S)
+        except MigrationError as exc:
+            _state["migrations"] = "failed"
+            log.error("recovery: the database is back but its schema is refused; not retrying (%s)", exc)
+            return
+        except _AUTH_BACKEND_ERRORS as exc:
+            log.warning("recovery: database still unreachable (%s)", type(exc).__name__)
+            return
+        _build_stores(db)
+        if "rag" not in _state:
+            _build_rag(db)
+        _state["migrations"] = report.state  # last: this is what every reader keys off
+        log.info("recovery: database reachable again; stores built")
+    finally:
+        _recovery_lock.release()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.metrics_sink = build_metrics_sink()
+    db = prepare_database()
+    _state["db"] = db
+    _build_rag(db)
+    # With no database at startup no store exists yet — the schema was never
+    # checked, so nothing may write to it. `recover_database` looks again later.
     if _state["migrations"] != "unavailable":
-        _state["store"] = PostgresMessageStore(db=db)
-        _state["auth"] = PostgresAuthStore(db=db)
+        _build_stores(db)
     yield
     _state.clear()
     await db.aclose()
@@ -265,6 +329,8 @@ app = FastAPI(title="D&D 5e RAG — Agent Service", version="1.0", lifespan=life
 
 
 def get_service() -> RagService:
+    if "rag" not in _state:
+        recover_database()
     svc = _state.get("rag")
     if svc is None:
         raise HTTPException(status_code=503, detail="service not ready")
@@ -274,6 +340,8 @@ def get_service() -> RagService:
 def get_message_store() -> MessageStore | None:
     # None is a valid state (history disabled) — /chat degrades gracefully;
     # only the history endpoint itself hard-fails without a store.
+    if "store" not in _state:
+        recover_database()
     return _state.get("store")
 
 
@@ -284,6 +352,8 @@ def get_metrics_sink(request: Request) -> MetricsSink:
 # ── Auth (x5bz.2) ─────────────────────────────────────────────────────────────
 
 def get_auth_store() -> AuthStore:
+    if "auth" not in _state:
+        recover_database()
     store = _state.get("auth")
     if store is None:
         raise HTTPException(status_code=503, detail="auth backend unavailable")
@@ -665,8 +735,10 @@ def healthz() -> dict[str, str | bool]:
     # `migrations` (1kg.1.5) is a field of its own: `status` and `ready` are what
     # both Compose health checks assert, and neither changes meaning. It says
     # `current`, `ahead` (an older build on a newer schema, mid-rollout),
-    # `unavailable` (no database at startup) or `unchecked` (a process that
-    # never ran the startup path, like the E2E stub) — and never a version.
+    # `unavailable` (no database yet; the instance keeps looking), `failed` (the
+    # database came back with a schema this build refuses) or `unchecked` (a
+    # process that never ran the startup path, like the E2E stub) — and never a
+    # version.
     return {
         "status": "ok",
         "ready": "rag" in _state,
