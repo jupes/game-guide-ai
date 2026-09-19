@@ -1,0 +1,25 @@
+/* ── AssistantText (1kg.3.2) ──────────────────────────────────────────────────
+   Prep, not story: the lane sets assistant prose in the UI sans while the
+   narration bubble keeps the serif. Only the type role and colour are set here
+   — block rhythm is Markdown.css's, which this class sits alongside on the same
+   element. Every value is a token, so both themes follow the palette. */
+
+.assistant-text {
+  font-family: var(--aether-font-ui);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--md-sys-typescale-body-medium-line-height);
+  color: var(--md-sys-color-on-surface);
+  text-wrap: pretty;
+}
+
+/* Inside the lane the prose never carries the bubble's own margins. */
+.assistant-text > :first-child { margin-top: 0; }
+.assistant-text > :last-child { margin-bottom: 0; }
+
+.assistant-text a { color: var(--md-sys-color-primary); }
+
+.assistant-text code,
+.assistant-text pre {
+  font-family: var(--aether-font-mono);
+  color: var(--md-sys-color-on-surface-variant);
+}
