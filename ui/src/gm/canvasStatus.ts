@@ -182,8 +182,11 @@ export function formatTimestamp(iso: string, locale?: string | string[]): string
  */
 export function fieldLabel(key: string, documentType?: string): string {
   const type = documentType === undefined ? undefined : documentTypeById(documentType)
-  const declared = type?.field_labels[key] ?? REGISTRY.common_field_labels[key]
-  if (declared !== undefined) return declared
+  // Own properties only: `constructor` is a legal field key (it matches the wire's
+  // key pattern), and on a plain object it would otherwise read `Object` itself.
+  for (const labels of [type?.field_labels, REGISTRY.common_field_labels]) {
+    if (labels !== undefined && Object.hasOwn(labels, key)) return labels[key]
+  }
   const words = key.split('_').filter((word) => word.length > 0)
   if (words.length === 0) return key
   const humanised = words.join(' ')

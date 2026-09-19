@@ -147,6 +147,10 @@ describe('changed-field labels', () => {
 
   it('does not borrow the NPC labels for an unknown type (X-8)', () => {
     expect(fieldLabel('if_attacked', 'not-a-type')).toBe('If attacked')
+    // `constructor` matches the wire's field-key pattern. Read off a plain object
+    // without an own-property check it is `Object` itself, not a label.
+    expect(fieldLabel('constructor', 'npc')).toBe('Constructor')
+    expect(fieldLabel('constructor')).toBe('Constructor')
     expect(fieldLabel('if_attacked')).toBe('If attacked')
   })
 })
