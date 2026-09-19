@@ -58,7 +58,8 @@ def _pooled_sessions(dsn: str) -> int:
     return _count(
         dsn,
         "SELECT count(*) FROM pg_stat_activity "
-        "WHERE datname = current_database() AND left(application_name, 14) = 'game-guide-ai:'",
+        "WHERE datname = current_database() "
+        "AND application_name IN ('game-guide-ai:sync', 'game-guide-ai:async', 'game-guide-ai:direct')",
     )
 
 

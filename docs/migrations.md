@@ -171,8 +171,8 @@ Both pools keep **no idle minimum**: an instance that serves nothing holds nothi
 Every connection is checked as it is lent, and a pool nobody borrowed from for 30 s is
 swept first — Cloud Run freezes an instance between requests and its sockets die
 quietly. The message and auth stores and retrieval all borrow from the synchronous
-pool. Sessions are labelled `game-guide-ai:sync`, `:async` or `:direct` in
-`pg_stat_activity`. Shutdown closes both pools.
+pool. Sessions are labelled `game-guide-ai:sync`, `:async`, `:direct` or `:migrate`
+in `pg_stat_activity`. Shutdown closes both pools.
 
 `MIGRATIONS_DATABASE_URL` and `MIGRATIONS_MODE=verify` are the seam for
 least-privilege roles: a runtime role without DDL rights, and a deploy step that runs

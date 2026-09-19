@@ -307,7 +307,10 @@ def _connector(dsn: str | None) -> Connect:
         # autocommit: the session advisory lock must outlive each migration's
         # transaction, and `conn.transaction()` then issues a real BEGIN/COMMIT.
         return psycopg.connect(
-            dsn or migrations_dsn(), autocommit=True, connect_timeout=CONNECT_TIMEOUT_S
+            dsn or migrations_dsn(),
+            autocommit=True,
+            connect_timeout=CONNECT_TIMEOUT_S,
+            application_name="game-guide-ai:migrate",
         )
 
     return connect
