@@ -1,0 +1,284 @@
+/* ── AudioCue ────────────────────────────────────────────────────────────────
+   The GM's cue card. Colour comes only from design tokens, so both themes and
+   any future palette edit follow automatically (LAYOUT-9).
+
+   The card is a container: below 480px of its own width it stacks, which is
+   what §10.2 asks of the narrow layout without the card having to know the
+   viewport. The seek slider keeps a 44px-tall hit area at every width. */
+
+.gm-audio-cue {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-card);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--aether-font-ui);
+  overflow: hidden;
+}
+
+/* Live to the table: the card carries the ember edge the live strip uses. */
+.gm-audio-cue[data-live='true'] {
+  border-color: var(--md-sys-color-primary);
+}
+
+/* ── Header ── */
+.gm-audio-cue__header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--aether-space-2);
+  padding: var(--aether-space-3) var(--aether-space-4);
+  background: var(--md-sys-color-surface-container-high);
+  border-bottom: 2px solid var(--aether-gold-leaf);
+}
+
+.gm-audio-cue__glyph {
+  font-size: 18px;
+  line-height: 1;
+  color: var(--md-sys-color-on-surface-variant);
+  flex-shrink: 0;
+}
+
+.gm-audio-cue__title {
+  font-family: var(--aether-font-display);
+  font-size: var(--md-sys-typescale-title-medium-size);
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface);
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.gm-audio-cue__kind {
+  font-family: var(--aether-font-body);
+  font-style: italic;
+  font-size: var(--md-sys-typescale-body-small-size);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-audio-cue__duration {
+  margin-left: auto;
+  font-family: var(--aether-font-mono);
+  font-size: var(--md-sys-typescale-body-small-size);
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ── Preview row (AUDIO-5 to AUDIO-7) ── */
+.gm-audio-cue__preview {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-3);
+  padding: var(--aether-space-3) var(--aether-space-4);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.gm-audio-cue__control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--aether-space-2);
+  min-width: var(--aether-touch-min);
+  min-height: var(--aether-touch-min);
+  border: 1px solid transparent;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: none;
+  color: var(--md-sys-color-on-surface-variant);
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
+}
+
+.gm-audio-cue__control:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent);
+}
+
+.gm-audio-cue__control:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.gm-audio-cue__transport {
+  flex-shrink: 0;
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+.gm-audio-cue__transport:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--md-sys-color-primary) 88%, var(--md-sys-color-on-primary));
+}
+
+.gm-audio-cue__transport .material-symbols-rounded {
+  font-size: 24px;
+}
+
+/* ── Waveform and slider (AUDIO-10) ── */
+.gm-audio-cue__seek {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-1);
+}
+
+.gm-audio-cue__bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 30px;
+  pointer-events: none;
+}
+
+.gm-audio-cue__bar {
+  flex: 1;
+  min-width: 1px;
+  border-radius: 1px;
+  background: var(--md-sys-color-outline-variant);
+}
+
+.gm-audio-cue__bar--played {
+  background: var(--md-sys-color-primary);
+}
+
+/* §10.2: the waveform keeps a 44px-tall slider. The bars sit behind it, so the
+   whole waveform is the hit area rather than a thin line under it. */
+.gm-audio-cue__slider {
+  width: 100%;
+  min-height: var(--aether-touch-min);
+  margin: 0;
+  background: none;
+  accent-color: var(--md-sys-color-primary);
+  cursor: pointer;
+}
+
+.gm-audio-cue__slider:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.gm-audio-cue__times {
+  display: flex;
+  justify-content: space-between;
+  margin: 0;
+  font-family: var(--aether-font-mono);
+  font-size: var(--md-sys-typescale-label-small-size);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ── This device's own controls (AUDIO-5, AUDIO-6) ── */
+.gm-audio-cue__local {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--aether-space-2);
+  padding: var(--aether-space-3) var(--aether-space-4);
+}
+
+.gm-audio-cue__volume {
+  width: 96px;
+  min-height: var(--aether-touch-min);
+  margin: 0;
+  background: none;
+  accent-color: var(--md-sys-color-primary);
+  cursor: pointer;
+}
+
+.gm-audio-cue__toggle {
+  padding-inline: var(--aether-space-3);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  font-weight: 700;
+}
+
+.gm-audio-cue__toggle[aria-pressed='true'] {
+  color: var(--md-sys-color-primary);
+  border-color: var(--md-sys-color-primary);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 12%, transparent);
+}
+
+.gm-audio-cue__loop {
+  margin-left: auto;
+}
+
+/* The named Stop (AUDIO-9): an outlined button built from the same tokens the
+   design system's outlined variant uses, because it needs its own aria-label. */
+.gm-audio-cue__stop {
+  padding-inline: var(--aether-space-4);
+  border-color: var(--md-sys-color-outline);
+  color: var(--md-sys-color-primary);
+  font-size: var(--md-sys-typescale-label-large-size);
+  font-weight: 600;
+  border-radius: var(--aether-radius-button);
+}
+
+.gm-audio-cue__stop .material-symbols-rounded {
+  font-size: 18px;
+}
+
+/* AUDIO-6 */
+.gm-audio-cue__monitor {
+  margin: 0;
+  padding: 0 var(--aether-space-4) var(--aether-space-2);
+  font-size: var(--md-sys-typescale-body-small-size);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ── The table's two controls (AUDIO-8) ── */
+.gm-audio-cue__table,
+.gm-audio-cue__recovery {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--aether-space-2);
+  padding: var(--aether-space-3) var(--aether-space-4);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container);
+}
+
+.gm-audio-cue__status {
+  margin: 0;
+  padding: 0 var(--aether-space-4);
+  font-size: var(--md-sys-typescale-body-small-size);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-audio-cue__status:not(:empty) {
+  padding-block: var(--aether-space-2);
+}
+
+/* ── Focus ── */
+.gm-audio-cue__control:focus-visible,
+.gm-audio-cue__slider:focus-visible,
+.gm-audio-cue__volume:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+/* ── Narrow layout (§10.2): full width, controls stack, slider stays 44px ── */
+@container (max-width: 480px) {
+  .gm-audio-cue__preview {
+    flex-wrap: wrap;
+  }
+
+  .gm-audio-cue__seek {
+    flex-basis: 100%;
+  }
+
+  .gm-audio-cue__loop {
+    margin-left: 0;
+  }
+
+  .gm-audio-cue__volume {
+    width: 100%;
+    flex: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-audio-cue__control {
+    transition: none;
+  }
+}
