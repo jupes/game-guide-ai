@@ -16,7 +16,7 @@ Out-of-corpus questions are refused, not hallucinated. Beyond chat it persists
 | `rag.py` | `RagService` — thin invoke wrapper around the graph; dependency injection seams (retriever, reranker, LLM client, secondary retriever). Home of the stubbed **secondary world-corpus retriever** seam for GM mode. |
 | `generate.py` | Context assembly (full chunk texts, never previews), per-mode persona prompts, grounded answer + spell-suggestion LLM calls, `Source` building. |
 | `models.py` | Pydantic request/response contract (mirrored by `ui/src/api.ts`). Home of the canonical `REFUSAL` string. |
-| `history.py` | `MessageStore` protocol + Postgres/in-memory impls — `chat.messages` / `chat.attachments` in the same DB as the corpus; idempotent `ensure_schema()` at startup. |
+| `history.py` | `MessageStore` protocol + Postgres/in-memory impls — `chat.messages` / `chat.attachments` in the same DB as the corpus; goes through the bounded connection gate (`db.py`). |
 | `attachments.py` | Pure text extraction for uploaded files (`.txt`/`.md` decode, `.pdf` via PyMuPDF) + `cap_text`. Deliberately separate from `ingestion/extract*.py` (those are whole-book, path-based). |
 | `tracing.py` | Env-gated Langfuse tracing (`RAG_TRACING`, off by default) — node-level trace + token/cost span per request. |
 
@@ -131,7 +131,7 @@ Access is invite-gated; `/chat` and `/conversations/*` require a session.
 
 | Module | Role |
 | --- | --- |
-| `auth_store.py` | `AuthStore` protocol + Postgres/in-memory impls — `auth.users` / `auth.invites`, idempotent `ensure_schema()`. Invite redemption is **atomic** (`UPDATE ... WHERE used_at IS NULL ... RETURNING`), so concurrent redeemers can't both win. |
+| `auth_store.py` | `AuthStore` protocol + Postgres/in-memory impls — `auth.users` / `auth.invites`; `ensure_schema()` runs the ordered migrations. Invite redemption is **atomic** (`UPDATE ... WHERE used_at IS NULL ... RETURNING`), so concurrent redeemers can't both win. |
 | `hashing.py` | argon2id hash/verify with **explicit** parameters, plus a semaphore capping concurrent hashes — argon2 is memory-hard and `/auth/login` hashes on every attempt, so unbounded concurrency is an OOM lever. |
 | `session.py` | itsdangerous-signed httpOnly cookie carrying user id + role. Stateless: no session table; rotating `SESSION_SECRET` logs everyone out. |
 | `invites.py` | Token generation (`secrets.token_urlsafe(32)`) + redeemability rules (used / expired / revoked). |
@@ -172,11 +172,11 @@ The constraint migrations check `pg_constraint` and only run when a constraint i
 **missing or wrong** — the predicate pins the child and referenced tables, the delete
 action (`confdeltype`) *and* the exact columns (`conkey`/`confkey`), so a same-named
 foreign key on a different column can't pass for the real one and leave the intended
-column unprotected. `ensure_schema()` runs at every startup and
-Cloud Run scales to zero, so an unconditional `DROP`/`ADD` would take an `ACCESS
-EXCLUSIVE` lock on a live table at each cold start — blocking queries until the startup
-transaction commits and serializing simultaneous starts — and would re-scan the table to
-re-validate the invites FK every time.
+column unprotected. These files were re-applied at every startup until the ordered
+migration runner (`migrations.py`, [docs/migrations.md](../docs/migrations.md)) made them
+migrations 0001 and 0002: they now run once per database, and the guards are what let
+them adopt a database that already holds these tables without an `ACCESS EXCLUSIVE`
+`DROP`/`ADD` or a re-validation of the invites FK.
 
 ## Run
 

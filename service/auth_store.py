@@ -3,8 +3,9 @@ Auth store — users + invites persistence.
 
 Mirrors `history.py`: an `AuthStore` Protocol the app talks to, with a Postgres
 impl (`auth` schema in the same instance as the corpus) and an in-memory fake
-with identical semantics for pure tests. `ensure_schema()` applies the canonical
-DDL (`service/sql/05-auth-schema.sql`) at startup.
+with identical semantics for pure tests. The schema comes from the ordered
+migrations (`service/migrations.py`), which the app runs once at startup;
+`ensure_schema()` only checks that they have been applied.
 
 The single load-bearing invariant here is **atomic invite consumption**: a
 concurrent second redemption of one invite must fail. The Postgres impl enforces
@@ -14,11 +15,11 @@ serializes the two writers); the in-memory impl replicates the logical checks.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from .db import Database, default_dsn
 from .invites import (
     Invite,
     InviteError,
@@ -26,7 +27,7 @@ from .invites import (
     Role,
     new_invite_token,
 )
-from .schema import AUTH_SCHEMA, load
+from .migrations import Mode, migrate
 
 
 class EmailTaken(Exception):
@@ -162,22 +163,32 @@ class InMemoryAuthStore:
 
 
 class PostgresAuthStore:
-    """`auth.users` / `auth.invites` in the corpus Postgres. One connection per
-    operation (chat/auth traffic is single-user scale)."""
+    """`auth.users` / `auth.invites` in the corpus Postgres. One short-lived
+    connection per operation: through the service's bounded gate when it is
+    given one (`db`, 1kg.1.5), opened and closed on the spot otherwise."""
 
-    def __init__(self, dsn: str | None = None):
-        self._dsn = dsn or os.environ.get(
-            "DATABASE_URL", "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai"
-        )
+    def __init__(self, dsn: str | None = None, *, db: Database | None = None):
+        self._given_dsn = dsn
+        self._dsn = dsn or default_dsn()
+        self._db = db
 
     def _connect(self):
+        if self._db is not None:
+            return self._db.connection()
         import psycopg
 
         return psycopg.connect(self._dsn)
 
     def ensure_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(load(AUTH_SCHEMA))
+        """Check — never change — that the database is at this build's schema.
+
+        An operator's checkout is not the deployed image: applying whatever
+        migrations it happens to hold, as a side effect of listing invites,
+        would put unreviewed DDL into production. Only the service's startup
+        and an explicit `python -m service.migrations migrate` change a schema;
+        this raises `MigrationsPending` and says so. With no DSN of its own
+        the runner chooses one, preferring the schema owner's."""
+        migrate(self._given_dsn, mode=Mode.VERIFY)
 
     def create_invite(self, role: Role, expires_at: datetime) -> Invite:
         token = new_invite_token()
