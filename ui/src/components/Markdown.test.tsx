@@ -106,3 +106,104 @@ describe('Markdown — sanitization', () => {
     expect(a?.textContent).toBe('docs')
   })
 })
+
+// ── X-10 — no remote subresources (1kg.3.2) ──────────────────────────────────
+// AE-66: an answer carrying a remote markdown image, a <video src> and a style
+// with url(), all pointing at example.test, must send nothing there. The flag
+// is opt-in, so the first test pins that today's channels are unchanged.
+
+function restricted(source: string): HTMLElement {
+  const { container } = render(<Markdown source={source} noRemoteSubresources />)
+  return container
+}
+
+describe('Markdown — X-10, no remote subresources', () => {
+  it('leaves chat behaviour alone: without the flag a remote image still renders', () => {
+    // The hole this flag closes. If DOMPurify ever starts dropping remote
+    // images by itself, this test fails and the flag can go.
+    expect(md('![sigil](https://example.test/pixel.png)').querySelector('img')).not.toBeNull()
+  })
+
+  it('drops a remote markdown image', () => {
+    const c = restricted('Before ![sigil](https://example.test/pixel.png) after')
+    expect(c.querySelector('img')).toBeNull()
+    expect(c.textContent).toContain('Before')
+  })
+
+  it('drops a protocol-relative image, whose origin is the remote host', () => {
+    expect(restricted('![x](//example.test/pixel.png)').querySelector('img')).toBeNull()
+  })
+
+  it('drops a data: image', () => {
+    const source = '![x](data:image/gif;base64,R0lGODlhAQABAAAAACw=)'
+    expect(restricted(source).querySelector('img')).toBeNull()
+  })
+
+  it('KEEPS a same-origin asset reference', () => {
+    // The other half of the rule: a portrait the service serves must survive,
+    // or the restriction has simply broken images.
+    const img = restricted('![Ondrey](/workbench/assets/ast_1.png)').querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img!.getAttribute('src')).toBe('/workbench/assets/ast_1.png')
+    expect(img!.getAttribute('alt')).toBe('Ondrey')
+  })
+
+  it('KEEPS a relative asset reference', () => {
+    expect(restricted('![x](assets/ast_1.png)').querySelector('img')?.getAttribute('src'))
+      .toBe('assets/ast_1.png')
+  })
+
+  it('drops a javascript: link', () => {
+    expect(restricted('[click](javascript:alert(1))').querySelector('a')?.getAttribute('href') ?? null)
+      .toBeNull()
+  })
+
+  it('KEEPS an ordinary https link — a link is not a subresource', () => {
+    expect(restricted('[docs](https://example.com/page)').querySelector('a')?.getAttribute('href'))
+      .toBe('https://example.com/page')
+  })
+
+  it('removes a <video src> and its <source>', () => {
+    const c = restricted('<video src="https://example.test/clip.mp4"><source src="https://example.test/clip.webm"></video>')
+    expect(c.querySelector('video')).toBeNull()
+    expect(c.querySelector('source')).toBeNull()
+  })
+
+  it('removes a style attribute carrying url()', () => {
+    const c = restricted('<p style="background-image: url(https://example.test/p.png)">boo</p>')
+    expect(c.querySelector('p')?.getAttribute('style') ?? null).toBeNull()
+    expect(c.textContent).toContain('boo')
+  })
+
+  it('keeps a style attribute that fetches nothing', () => {
+    expect(restricted('<p style="font-weight: 700">bold</p>').querySelector('p')?.getAttribute('style'))
+      .toContain('font-weight')
+  })
+
+  it('drops an image whose src is not a URL at all', () => {
+    // `new URL()` throws on this; a reference nobody can resolve is not
+    // same-origin, so the image goes.
+    expect(restricted('<img src="http://[">').querySelector('img')).toBeNull()
+  })
+
+  it('removes srcset and poster even where the element survives', () => {
+    const c = restricted('<img src="/ok.png" srcset="https://example.test/2x.png 2x">')
+    expect(c.querySelector('img')?.hasAttribute('srcset')).toBe(false)
+  })
+
+  it('leaves nothing whose src, srcset, poster or style could reach the remote host', () => {
+    // The AE-66 sweep, asserted over the whole rendered tree at once.
+    const c = restricted(
+      '![a](https://example.test/a.png)\n\n'
+      + '<video src="https://example.test/v.mp4" poster="https://example.test/p.png"></video>\n\n'
+      + '<p style="background: url(https://example.test/b.png)">x</p>\n\n'
+      + '<iframe src="https://example.test/f"></iframe>\n\n'
+      + '<link rel="stylesheet" href="https://example.test/s.css">',
+    )
+    for (const element of c.querySelectorAll('*')) {
+      for (const attribute of element.attributes) {
+        expect(attribute.value).not.toContain('example.test')
+      }
+    }
+  })
+})
