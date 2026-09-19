@@ -1,0 +1,209 @@
+/* ── AssistantLane (1kg.3.2) ──────────────────────────────────────────────────
+   The third lane: the bubble's left edge, none of its shape. Squared right
+   corners, a 2px rule down the left, the UI sans throughout — prep never reads
+   as story.
+
+   Every colour, radius, space and duration is a token, so Light Parchment and
+   Dark Tavern both follow the palette and neither is hand-tuned here. The
+   handoff's inline pixel values (50px indent, 640px maximum, §10.2) live on the
+   class instead of in props, which is what lets the narrow layout drop the
+   indent without every caller passing a number. */
+
+.assistant-lane {
+  margin: 2px 0 var(--aether-space-4) 50px;
+  max-width: 640px;
+  padding: var(--aether-space-3) var(--aether-space-4) var(--aether-space-4);
+  border-left: 2px solid var(--md-sys-color-primary);
+  border-radius: 0 var(--md-sys-shape-corner-medium) var(--md-sys-shape-corner-medium) 0;
+  background: var(--md-sys-color-surface-container);
+  font-family: var(--aether-font-ui);
+  color: var(--md-sys-color-on-surface);
+}
+
+/* RAIL-18: a failure changes the rule and the message, and nothing else —
+   STATE-1, an error never blanks what is already on screen. */
+.assistant-lane[data-state='error'] {
+  border-left-color: var(--md-sys-color-error);
+}
+
+.assistant-lane > :last-child {
+  margin-bottom: 0;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+
+.assistant-lane__header {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-2);
+  margin-bottom: var(--aether-space-2);
+}
+
+/* The focus rule (LAYOUT-6) lands here; it is never in the tab order, so the
+   ring shows only when focus was moved to it deliberately. */
+.assistant-lane__header:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+  border-radius: var(--md-sys-shape-corner-extra-small);
+}
+
+.assistant-lane__icon {
+  font-size: 15px;
+  color: var(--md-sys-color-primary);
+}
+
+.assistant-lane__author {
+  font-size: var(--md-sys-typescale-label-small-size);
+  line-height: var(--md-sys-typescale-label-small-line-height);
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* The tool badge. Its text is the registry's label, so an unknown id has no
+   badge at all rather than a borrowed one (X-8). */
+.assistant-lane__tool {
+  margin-left: auto;
+  padding: 1px var(--aether-space-2);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: var(--aether-font-mono);
+  font-size: var(--md-sys-typescale-label-small-size);
+  line-height: var(--md-sys-typescale-label-small-line-height);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+/* ── Status line and the live region ──────────────────────────────────────── */
+
+.assistant-lane__progress {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-2);
+  margin-bottom: var(--aether-space-2);
+}
+
+/* `done` announces without showing: the region holds screen-reader-only text,
+   so the row must take no space. */
+.assistant-lane__progress--announce-only {
+  margin-bottom: 0;
+}
+
+.assistant-lane__status-text {
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--md-sys-typescale-body-medium-line-height);
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.assistant-lane[data-state='error'] .assistant-lane__status-text {
+  color: var(--md-sys-color-error);
+}
+
+.assistant-lane__error-icon {
+  font-size: 16px;
+  color: var(--md-sys-color-error);
+}
+
+.assistant-lane__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Three-dot indicator (RAIL-15) ────────────────────────────────────────── */
+
+.assistant-lane__dots {
+  display: flex;
+  gap: var(--aether-space-1);
+  flex: none;
+}
+
+.assistant-lane__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--md-sys-color-primary);
+}
+
+/* Static opacities carry the indicator's shape when nothing may move, so the
+   reduced-motion rendering still reads as three dots rather than one blob. */
+.assistant-lane__dot:nth-child(1) { opacity: 1; }
+.assistant-lane__dot:nth-child(2) { opacity: 0.55; }
+.assistant-lane__dot:nth-child(3) { opacity: 0.25; }
+
+/* Animation is guarded twice, as DiceRoll is: the keyframes only exist under
+   `no-preference`, and the component only adds this class when matchMedia
+   agrees. Either guard alone would be enough; both mean a change to one cannot
+   quietly re-enable motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .assistant-lane__dots--animated .assistant-lane__dot {
+    animation: assistant-lane-pulse 1.2s var(--md-sys-motion-easing-standard) infinite;
+  }
+
+  .assistant-lane__dots--animated .assistant-lane__dot:nth-child(2) { animation-delay: 0.15s; }
+  .assistant-lane__dots--animated .assistant-lane__dot:nth-child(3) { animation-delay: 0.3s; }
+
+  @keyframes assistant-lane-pulse {
+    0%, 100% { opacity: 0.25; }
+    50% { opacity: 1; }
+  }
+}
+
+/* ── Notes, placeholders and the result body ──────────────────────────────── */
+
+.assistant-lane__note,
+.assistant-lane__placeholder {
+  margin: 0 0 var(--aether-space-2);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+  font-family: var(--aether-font-ui);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.assistant-lane__placeholder {
+  padding: var(--aether-space-2) var(--aether-space-3);
+  border: 1px dashed var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.assistant-lane__body {
+  margin-bottom: var(--aether-space-2);
+}
+
+.assistant-lane__body > * + * {
+  margin-top: var(--aether-space-3);
+}
+
+/* ── Actions and suggestions ──────────────────────────────────────────────── */
+
+.assistant-lane__actions,
+.assistant-lane__suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--aether-space-2);
+  margin-top: var(--aether-space-3);
+}
+
+.assistant-lane__actions {
+  margin-left: calc(-1 * var(--aether-space-2));
+}
+
+/* ── §10.2: narrow drops the indent and runs full width ───────────────────── */
+
+@media (max-width: 767px) {
+  .assistant-lane {
+    margin-left: 0;
+    max-width: 100%;
+  }
+}
