@@ -177,3 +177,93 @@ describe('TextField — autoGrow', () => {
     expect(ta.style.overflowY).toBe('auto')
   })
 })
+
+// ── ref and ARIA forwarding (record SLASH-12) ────────────────────────────────
+// A composer that drives a listbox has to reach the control itself: to focus
+// it, to place the caret, and to put aria-activedescendant where a screen
+// reader looks for it — on the textarea, not on a wrapper.
+
+describe('TextField — ref forwarding', () => {
+  it('gives an object ref the underlying textarea', () => {
+    const ref = React.createRef<HTMLInputElement | HTMLTextAreaElement>()
+    render(<TextField multiline label="Ask" value="" onChange={vi.fn()} ref={ref} />)
+    expect(ref.current).toBe(screen.getByLabelText('Ask'))
+    expect(ref.current?.tagName).toBe('TEXTAREA')
+  })
+
+  it('gives an object ref the underlying input for a single-line field', () => {
+    const ref = React.createRef<HTMLInputElement | HTMLTextAreaElement>()
+    render(<TextField label="Name" value="" onChange={vi.fn()} ref={ref} />)
+    expect(ref.current?.tagName).toBe('INPUT')
+  })
+
+  it('calls a callback ref with the control', () => {
+    const seen: (HTMLElement | null)[] = []
+    render(<TextField multiline label="Ask" value="" onChange={vi.fn()} ref={(node) => { seen.push(node) }} />)
+    expect(seen[0]).toBe(screen.getByLabelText('Ask'))
+  })
+
+  it('still grows, so the ref did not displace the internal one', () => {
+    const ref = React.createRef<HTMLInputElement | HTMLTextAreaElement>()
+    function Harness() {
+      const [v, setV] = React.useState('')
+      return <TextField multiline autoGrow value={v} onChange={(e) => setV(e.target.value)} label="Ask" ref={ref} />
+    }
+    render(<Harness />)
+    const ta = screen.getByLabelText('Ask') as HTMLTextAreaElement
+    stubScrollHeight(ta, 96)
+    fireEvent.change(ta, { target: { value: 'several\nlines' } })
+    expect(ta.style.height).toBe('96px')
+    expect(ref.current).toBe(ta)
+  })
+})
+
+describe('TextField — ARIA and focus forwarding', () => {
+  it('puts the listbox wiring on the control itself, where a screen reader reads it', () => {
+    render(
+      <TextField
+        multiline
+        value=""
+        onChange={vi.fn()}
+        aria-label="Message"
+        aria-autocomplete="list"
+        aria-controls="tools-listbox"
+        aria-activedescendant="tools-option-2"
+        aria-describedby="brief-hint"
+        aria-invalid
+      />,
+    )
+    const control = screen.getByRole('textbox', { name: 'Message' })
+    expect(control).toHaveAttribute('aria-autocomplete', 'list')
+    expect(control).toHaveAttribute('aria-controls', 'tools-listbox')
+    expect(control).toHaveAttribute('aria-activedescendant', 'tools-option-2')
+    expect(control).toHaveAttribute('aria-describedby', 'brief-hint')
+    expect(control).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('forwards the same ARIA on a single-line field', () => {
+    render(<TextField value="" onChange={vi.fn()} aria-label="Search" aria-controls="results" />)
+    expect(screen.getByRole('textbox', { name: 'Search' })).toHaveAttribute('aria-controls', 'results')
+  })
+
+  it('reports focus and blur without losing its own focus styling', async () => {
+    const onFocus = vi.fn()
+    const onBlur = vi.fn()
+    render(<TextField multiline label="Ask" value="" onChange={vi.fn()} onFocus={onFocus} onBlur={onBlur} />)
+    const control = screen.getByLabelText('Ask')
+    await userEvent.click(control)
+    expect(onFocus).toHaveBeenCalledTimes(1)
+    expect(control.parentElement).toHaveClass('aether-field__row--focus')
+    await userEvent.tab()
+    expect(onBlur).toHaveBeenCalledTimes(1)
+    expect(control.parentElement).not.toHaveClass('aether-field__row--focus')
+  })
+
+  it('adds no ARIA attribute that was not asked for', () => {
+    render(<TextField multiline label="Ask" value="" onChange={vi.fn()} />)
+    const control = screen.getByLabelText('Ask')
+    for (const attribute of ['aria-controls', 'aria-activedescendant', 'aria-autocomplete', 'aria-invalid', 'aria-label']) {
+      expect(control).not.toHaveAttribute(attribute)
+    }
+  })
+})
