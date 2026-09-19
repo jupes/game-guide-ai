@@ -1,0 +1,121 @@
+/* ── ToolMenu (More) ─────────────────────────────────────────────────────────
+   The rail's overflow menu (record SLASH-13, SLASH-14). Opens above the rail,
+   which sits above the composer, so the menu never covers the draft.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.gm-tool-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.gm-tool-menu__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--aether-touch-min);
+  padding: 0 14px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-chip);
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: var(--aether-font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+.gm-tool-menu__button[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (hover: hover) {
+  .gm-tool-menu__button:not([aria-disabled='true']):hover {
+    background: var(--md-sys-color-surface-container-high);
+  }
+}
+
+.gm-tool-menu__button:focus-visible,
+.gm-tool-menu__item:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.gm-tool-menu__button-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.gm-tool-menu__menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: var(--aether-z-overlay);
+  min-width: 248px;
+  padding: 6px 0;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container-low);
+  box-shadow: var(--md-sys-elevation-level3);
+}
+
+.gm-tool-menu__item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 4px 11px;
+  width: 100%;
+  min-height: var(--aether-touch-min);
+  padding: 9px 16px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--aether-font-ui);
+  color: var(--md-sys-color-on-surface);
+  transition: background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+@media (hover: hover) {
+  .gm-tool-menu__item:not([aria-disabled='true']):hover {
+    background: var(--md-sys-color-surface-container-high);
+  }
+}
+
+/* RAIL-10: still listed, still reachable, plainly unavailable. */
+.gm-tool-menu__item[aria-disabled='true'] {
+  cursor: not-allowed;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-tool-menu__icon {
+  font-size: 18px;
+  line-height: 1;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-tool-menu__label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gm-tool-menu__reason {
+  grid-column: 2;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-tool-menu__separator {
+  height: 1px;
+  margin: 5px 0;
+  background: var(--md-sys-color-outline-variant);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-tool-menu__button,
+  .gm-tool-menu__item {
+    transition: none;
+  }
+}

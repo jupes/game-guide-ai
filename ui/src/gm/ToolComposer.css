@@ -1,0 +1,82 @@
+/* ── ToolComposer ────────────────────────────────────────────────────────────
+   The rail, the slash menu, the armed-tool row and the composer as one stack
+   (record §3, §4, §10.2). The menu sits above the field; the armed row sits
+   between them, immediately above the text it describes.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.gm-composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-2);
+  padding: var(--aether-space-3) var(--aether-gutter);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface);
+  font-family: var(--aether-font-ui);
+}
+
+.gm-composer__menu {
+  align-self: flex-start;
+  width: 100%;
+}
+
+/* RAIL-3 — the armed-tool row. Status text: no control, no affordance that
+   could be mistaken for "run it now". */
+.gm-composer__armed {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-2);
+  padding: var(--aether-space-2) var(--aether-space-3);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-chip);
+  background: var(--md-sys-color-surface-container-low);
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+  flex-wrap: wrap;
+}
+
+.gm-composer__armed-icon {
+  font-size: 18px;
+  line-height: 1;
+  color: var(--md-sys-color-primary);
+}
+
+.gm-composer__armed-label {
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface);
+}
+
+.gm-composer__armed-hint {
+  margin-left: auto;
+  font-family: var(--aether-font-mono);
+  font-size: 11px;
+}
+
+/* RAIL-5, RAIL-6, SLASH-3, SLASH-4 — one inline line for every refusal. */
+.gm-composer__message {
+  margin: 0;
+  font-size: 12px;
+  color: var(--md-sys-color-error);
+}
+
+.gm-composer__row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--aether-space-2);
+}
+
+.gm-composer__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 767px) {
+  .gm-composer__armed-hint {
+    margin-left: 0;
+  }
+}
