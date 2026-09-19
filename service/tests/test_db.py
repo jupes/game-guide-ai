@@ -21,6 +21,7 @@ from psycopg_pool import PoolClosed, PoolTimeout
 from service import db as dbmod
 from service.db import (
     AdvisoryLock,
+    CampaignLockSettings,
     Database,
     InMemoryDatabase,
     PoolSettings,
@@ -61,6 +62,83 @@ def test_a_setting_out_of_bounds_is_refused_by_name(name, value):
     accepts twenty-two."""
     with pytest.raises(ValueError, match=f"{name} must be a whole number from"):
         PoolSettings.from_env({name: value})
+
+
+# ── The campaign lock's bounds (1kg.2.1, RQ-8) ───────────────────────────────
+
+
+def test_the_campaign_lock_defaults_are_rq8s_suggested_numbers():
+    """RQ-8 suggests two seconds to wait for the lock and five as a bound on the
+    whole transaction. Both are settings because a campaign deletion or an
+    enforcement scan legitimately needs longer than a display does."""
+    settings = CampaignLockSettings.from_env({})
+    assert (settings.lock_timeout_s, settings.transaction_timeout_s) == (2, 5)
+
+
+def test_the_campaign_lock_settings_come_from_the_environment():
+    settings = CampaignLockSettings.from_env(
+        {"CAMPAIGN_LOCK_TIMEOUT_S": "3", "CAMPAIGN_TRANSACTION_TIMEOUT_S": "30"}
+    )
+    assert (settings.lock_timeout_s, settings.transaction_timeout_s) == (3, 30)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("CAMPAIGN_LOCK_TIMEOUT_S", "0"),
+        ("CAMPAIGN_LOCK_TIMEOUT_S", "5"),
+        ("CAMPAIGN_LOCK_TIMEOUT_S", "two"),
+        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "0"),
+        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "61"),
+        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "2.5"),
+    ],
+)
+def test_a_campaign_lock_setting_out_of_bounds_is_refused_by_name(name, value):
+    with pytest.raises(ValueError, match=f"{name} must be a whole number from"):
+        CampaignLockSettings.from_env({name: value})
+
+
+def test_the_lock_timeout_must_be_below_the_gates_acquire_timeout():
+    """RQ-8: "the lock timeout always below the gate's acquire timeout". A request
+    waiting for the campaign lock is holding one of the gate's four connections,
+    so a lock wait that outlasts the gate's own timeout turns one slow campaign
+    into a 503 for unrelated traffic.
+
+    Checked against whatever `DB_POOL_TIMEOUT_S` is set to — not against its
+    default of five — because the gate's bound moves anywhere in 1..60.
+    """
+    # Default gate (5 s): 4 is allowed, and nothing above it can be reached
+    # anyway because CAMPAIGN_LOCK_TIMEOUT_S is itself bounded at 4.
+    assert CampaignLockSettings.from_env({"CAMPAIGN_LOCK_TIMEOUT_S": "4"}).lock_timeout_s == 4
+
+    # A narrowed gate makes the same value illegal.
+    with pytest.raises(ValueError, match="CAMPAIGN_LOCK_TIMEOUT_S must be below DB_POOL_TIMEOUT_S"):
+        CampaignLockSettings.from_env({"CAMPAIGN_LOCK_TIMEOUT_S": "4", "DB_POOL_TIMEOUT_S": "4"})
+    with pytest.raises(ValueError, match="CAMPAIGN_LOCK_TIMEOUT_S must be below DB_POOL_TIMEOUT_S"):
+        CampaignLockSettings.from_env({"DB_POOL_TIMEOUT_S": "2"})
+
+
+def test_a_gate_of_one_second_refuses_every_valid_lock_timeout():
+    """The bounds' own consequence, asserted so it is a documented refusal rather
+    than a surprise: CAMPAIGN_LOCK_TIMEOUT_S is bounded at 1..4, so a gate of one
+    second leaves no legal value. It fails closed, at startup, by name."""
+    with pytest.raises(ValueError, match="CAMPAIGN_LOCK_TIMEOUT_S must be below DB_POOL_TIMEOUT_S"):
+        CampaignLockSettings.from_env({"CAMPAIGN_LOCK_TIMEOUT_S": "1", "DB_POOL_TIMEOUT_S": "1"})
+
+
+def test_the_caller_may_pass_its_own_pool_settings():
+    """`Database` already holds a `PoolSettings`; the check reads that object
+    rather than re-reading the environment, so a programmatically-built
+    `Database` is checked against its own gate."""
+    settings = CampaignLockSettings.from_env(
+        {"CAMPAIGN_LOCK_TIMEOUT_S": "3"}, pool=PoolSettings(acquire_timeout_s=10)
+    )
+    assert settings.lock_timeout_s == 3
+
+    with pytest.raises(ValueError, match="must be below DB_POOL_TIMEOUT_S"):
+        CampaignLockSettings.from_env(
+            {"CAMPAIGN_LOCK_TIMEOUT_S": "3"}, pool=PoolSettings(acquire_timeout_s=3)
+        )
 
 
 def test_an_advisory_key_is_a_stable_signed_32_bit_number():

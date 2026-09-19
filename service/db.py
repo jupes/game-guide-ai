@@ -162,6 +162,68 @@ class PoolSettings:
         return self.sync_max + self.async_max + self.LISTENERS
 
 
+@dataclass(frozen=True)
+class CampaignLockSettings:
+    """How long a transaction may wait for the campaign lock, and how long it may
+    then live (1kg.2.1, RQ-8 of the shared eligibility decision).
+
+    **Why both are bounded.** No network or model call is made while the campaign's
+    authorisation row is held, so a holder that lives for minutes is a bug rather
+    than a slow caller — and every display of that campaign waits behind it.
+
+    **Why the lock timeout must be under the gate's.** A request blocked on the
+    lock is holding one of its instance's `DB_POOL_MAX` connections, so a lock wait
+    that outlasts `DB_POOL_TIMEOUT_S` turns one contended campaign into a 503 for
+    unrelated traffic. The check is against whatever the gate is *set* to, not
+    against its default.
+
+    **Why `transaction_timeout` and not `statement_timeout`.** RQ-8 wants a bound
+    on the transaction; `statement_timeout` bounds one statement, so a transaction
+    made of many short statements escapes it. `transaction_timeout` is PostgreSQL
+    17, which is what CI runs and what the deployment targets.
+    """
+
+    #: `CAMPAIGN_LOCK_TIMEOUT_S`, RQ-8's *suggested* 2 s. Bounded at 4 so that it
+    #: stays under the gate's default of 5 without further configuration.
+    lock_timeout_s: int = 2
+    #: `CAMPAIGN_TRANSACTION_TIMEOUT_S`, RQ-8's *suggested* 5 s. A long caller — a
+    #: campaign deletion, an enforcement scan, a type migration — passes its own
+    #: bound to `lock_campaign` instead of raising this for everyone.
+    transaction_timeout_s: int = 5
+
+    @classmethod
+    def from_env(
+        cls,
+        env: Mapping[str, str] | None = None,
+        *,
+        pool: PoolSettings | None = None,
+    ) -> CampaignLockSettings:
+        source = os.environ if env is None else env
+        settings = cls(
+            lock_timeout_s=_int_setting(source, "CAMPAIGN_LOCK_TIMEOUT_S", cls.lock_timeout_s, 1, 4),
+            transaction_timeout_s=_int_setting(
+                source, "CAMPAIGN_TRANSACTION_TIMEOUT_S", cls.transaction_timeout_s, 1, 60
+            ),
+        )
+        gate = pool if pool is not None else PoolSettings.from_env(source)
+        if settings.lock_timeout_s >= gate.acquire_timeout_s:
+            raise ValueError(
+                "CAMPAIGN_LOCK_TIMEOUT_S must be below DB_POOL_TIMEOUT_S "
+                f"(currently {gate.acquire_timeout_s}): a request waiting for the campaign "
+                "lock holds one of the gate's connections"
+            )
+        return settings
+
+    @property
+    def lock_timeout(self) -> str:
+        """As PostgreSQL spells a duration in `set_config`."""
+        return f"{self.lock_timeout_s}s"
+
+    @property
+    def transaction_timeout(self) -> str:
+        return f"{self.transaction_timeout_s}s"
+
+
 # ── The unit of work ─────────────────────────────────────────────────────────
 
 
