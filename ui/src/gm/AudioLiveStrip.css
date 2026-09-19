@@ -1,0 +1,163 @@
+/* ── AudioLiveStrip ──────────────────────────────────────────────────────────
+   The workspace-header strip (AUDIO-31). Ember-edged so it reads as "live"
+   without relying on colour alone — the slot rows name what is sounding.
+   Tokens only, both themes. */
+
+.gm-audio-strip {
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-3);
+  padding: var(--aether-space-2) var(--aether-space-3);
+  border: 1px solid var(--md-sys-color-primary);
+  border-radius: var(--aether-radius-card);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--aether-font-ui);
+}
+
+/* ── The pulse: decoration, and the first thing reduced motion switches off ── */
+.gm-audio-strip__pulse {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 26px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.gm-audio-strip__pulse-bar {
+  flex: 1;
+  border-radius: 1px;
+  background: var(--md-sys-color-primary);
+  animation: gm-audio-strip-pulse 1100ms var(--md-sys-motion-easing-standard) infinite alternate;
+}
+
+.gm-audio-strip__pulse-bar:nth-child(1) { height: 45%; animation-delay: 0ms; }
+.gm-audio-strip__pulse-bar:nth-child(2) { height: 95%; animation-delay: 120ms; }
+.gm-audio-strip__pulse-bar:nth-child(3) { height: 65%; animation-delay: 240ms; }
+.gm-audio-strip__pulse-bar:nth-child(4) { height: 100%; animation-delay: 360ms; }
+
+@keyframes gm-audio-strip-pulse {
+  from { transform: scaleY(0.45); }
+  to { transform: scaleY(1); }
+}
+
+/* While the stream is down the pulse stops: it must not claim sound we cannot
+   confirm is still reaching the table (AUDIO-17). */
+.gm-audio-strip[data-connection='reconnecting'] .gm-audio-strip__pulse-bar {
+  animation: none;
+  background: var(--md-sys-color-outline);
+}
+
+/* ── Slots ── */
+.gm-audio-strip__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.gm-audio-strip__slots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--aether-space-1) var(--aether-space-3);
+}
+
+.gm-audio-strip__slot {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-2);
+  min-width: 0;
+}
+
+.gm-audio-strip__slot-title {
+  font-size: var(--md-sys-typescale-label-large-size);
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface);
+  overflow-wrap: anywhere;
+}
+
+.gm-audio-strip__slot-kind {
+  font-size: var(--md-sys-typescale-label-small-size);
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ── Presence (AUDIO-21) ── */
+.gm-audio-strip__presence {
+  margin: 0;
+  font-size: var(--md-sys-typescale-label-small-size);
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-audio-strip__status {
+  margin: 0;
+  font-size: var(--md-sys-typescale-label-small-size);
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-audio-strip__status:not(:empty) {
+  padding-inline-start: var(--aether-space-2);
+  border-inline-start: 1px solid var(--md-sys-color-outline-variant);
+}
+
+/* A per-slot Stop (AUDIO-9) for §10.2's named list; it needs its own
+   aria-label, so it is built from tokens rather than the ds Button. */
+.gm-audio-strip__slot-stop {
+  min-height: var(--aether-touch-min);
+  padding-inline: var(--aether-space-2);
+  border: 0;
+  border-radius: var(--aether-radius-button);
+  background: none;
+  color: var(--md-sys-color-primary);
+  font: inherit;
+  font-size: var(--md-sys-typescale-label-medium-size);
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
+}
+
+.gm-audio-strip__slot-stop:hover {
+  background: color-mix(in srgb, var(--md-sys-color-primary) 10%, transparent);
+}
+
+.gm-audio-strip :focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+/* Every control in the strip holds the 44px floor (LAYOUT-9). */
+.gm-audio-strip button {
+  min-height: var(--aether-touch-min);
+}
+
+/* ── Narrow (§10.2): the strip stacks rather than scrolling sideways ── */
+@container (max-width: 480px) {
+  .gm-audio-strip {
+    flex-wrap: wrap;
+  }
+
+  .gm-audio-strip__body {
+    flex-basis: 100%;
+  }
+
+  .gm-audio-strip__status:not(:empty) {
+    padding-inline-start: 0;
+    border-inline-start: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-audio-strip__pulse-bar {
+    animation: none;
+  }
+
+  .gm-audio-strip__slot-stop {
+    transition: none;
+  }
+}
