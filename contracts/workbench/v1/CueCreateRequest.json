@@ -1,0 +1,67 @@
+{
+  "schema": "CueCreateRequest",
+  "direction": "request",
+  "valid": [
+    {
+      "name": "upload takes a title and a kind (LIB-26)",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5e2d3c4b5a697887",
+        "campaign_id": "cmp_4b1d9e7a",
+        "asset_id": "ast_9a8b7c6d",
+        "title": "Harbour at night",
+        "kind": "ambience"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an empty title",
+      "why": "a title is 1 to 200 characters",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5e2d3c4b5a697887",
+        "campaign_id": "cmp_4b1d9e7a",
+        "asset_id": "ast_9a8b7c6d",
+        "title": "",
+        "kind": "ambience"
+      }
+    },
+    {
+      "name": "a kind that does not exist",
+      "why": "AUDIO-1",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5e2d3c4b5a697887",
+        "campaign_id": "cmp_4b1d9e7a",
+        "asset_id": "ast_9a8b7c6d",
+        "title": "Harbour at night",
+        "kind": "music"
+      }
+    },
+    {
+      "name": "a duration supplied by the client",
+      "why": "the server measures the asset it processed; a request is strict",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5e2d3c4b5a697887",
+        "campaign_id": "cmp_4b1d9e7a",
+        "asset_id": "ast_9a8b7c6d",
+        "title": "Harbour at night",
+        "kind": "ambience",
+        "duration_ms": 300000
+      }
+    },
+    {
+      "name": "no command id",
+      "why": "every Workbench mutation can be retried safely",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "asset_id": "ast_9a8b7c6d",
+        "title": "Harbour at night",
+        "kind": "ambience"
+      }
+    }
+  ]
+}

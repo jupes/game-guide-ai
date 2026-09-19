@@ -1,0 +1,90 @@
+/* ── AssistantDocumentLink (1kg.3.2, CANVAS-3) ───────────────────────────────
+   A real <button>, so it keeps the platform's focus ring, Enter/Space and
+   forced-colours behaviour for free. Colours are tokens only, which is what
+   makes the row legible in both Light Parchment and Dark Tavern. */
+
+.assistant-document-link {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-2);
+  width: 100%;
+  min-height: var(--aether-touch-min);
+  padding: var(--aether-space-2) var(--aether-space-3);
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--md-sys-color-primary);
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--aether-font-ui);
+  transition: background-color var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+.assistant-document-link:hover {
+  background: var(--md-sys-color-surface-container);
+}
+
+.assistant-document-link:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.assistant-document-link__icon {
+  font-size: 18px;
+  color: var(--md-sys-color-primary);
+}
+
+.assistant-document-link__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.assistant-document-link__title {
+  display: block;
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface);
+  overflow-wrap: anywhere;
+}
+
+.assistant-document-link__meta {
+  display: block;
+  font-size: var(--md-sys-typescale-label-small-size);
+  line-height: var(--md-sys-typescale-label-small-line-height);
+  font-weight: var(--md-sys-typescale-label-small-weight);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* The action names itself in the row rather than hiding in a tooltip: it is
+   part of the button's accessible name. */
+.assistant-document-link__action {
+  flex: none;
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
+  font-weight: var(--md-sys-typescale-label-medium-weight);
+  color: var(--md-sys-color-primary);
+}
+
+.assistant-document-link__chevron {
+  font-size: 17px;
+  color: var(--md-sys-color-primary);
+}
+
+/* §10.2 — narrow keeps the row usable rather than squeezing four columns. */
+@media (max-width: 480px) {
+  .assistant-document-link {
+    flex-wrap: wrap;
+  }
+
+  .assistant-document-link__text {
+    flex-basis: 100%;
+    order: -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-document-link {
+    transition: none;
+  }
+}

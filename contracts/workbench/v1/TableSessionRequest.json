@@ -1,0 +1,67 @@
+{
+  "schema": "TableSessionRequest",
+  "direction": "request",
+  "note": "Start, End and Rotate (REVEAL-17), idempotent by command_id. Rotate may also reset every personal link (AUD-5); nothing else may.",
+  "valid": [
+    {
+      "name": "start",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_9c0d1e2f3a4b5c6d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "action": "start"
+      }
+    },
+    {
+      "name": "end",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_9c0d1e2f3a4b5c6e",
+        "campaign_id": "cmp_4b1d9e7a",
+        "action": "end"
+      }
+    },
+    {
+      "name": "rotate, and also reset personal links",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_9c0d1e2f3a4b5c6f",
+        "campaign_id": "cmp_4b1d9e7a",
+        "action": "rotate",
+        "reset_personal_links": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a start that resets personal links",
+      "why": "REVEAL-17: only Rotate offers it",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_9c0d1e2f3a4b5c6d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "action": "start",
+        "reset_personal_links": true
+      }
+    },
+    {
+      "name": "an action that does not exist",
+      "why": "start, end or rotate; there is no pause",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_9c0d1e2f3a4b5c6d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "action": "pause"
+      }
+    },
+    {
+      "name": "no command id",
+      "why": "a retried Start must not start a second session",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "action": "start"
+      }
+    }
+  ]
+}

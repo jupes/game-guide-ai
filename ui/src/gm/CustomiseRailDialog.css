@@ -1,0 +1,241 @@
+/* ── CustomiseRailDialog ─────────────────────────────────────────────────────
+   SLASH-15. A dialog on the wide and medium layouts, a full-screen sheet on
+   narrow (§10.2). Tokens only, so both themes follow the palette.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.gm-customise__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--aether-z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--aether-space-4);
+  /* The scrim token is opaque; a modal dims the page rather than hiding it, so
+     the transparency is mixed into the token instead of hard-coded. */
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 55%, transparent);
+}
+
+.gm-customise {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3);
+  width: min(480px, 100%);
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: var(--aether-space-5);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-sheet);
+  background: var(--md-sys-color-surface-container-low);
+  box-shadow: var(--md-sys-elevation-level3);
+  font-family: var(--aether-font-ui);
+  color: var(--md-sys-color-on-surface);
+}
+
+.gm-customise:focus-visible,
+.gm-customise__move:focus-visible,
+.gm-customise__pin:focus-visible,
+.gm-customise__action:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.gm-customise__title {
+  margin: 0;
+  font-family: var(--aether-font-display);
+  font-size: var(--md-sys-typescale-headline-small-size);
+  font-weight: var(--md-sys-typescale-headline-small-weight);
+}
+
+.gm-customise__lede {
+  margin: 0;
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-customise__list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gm-customise__row {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-3);
+  padding: var(--aether-space-2) 0;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.gm-customise__row:last-child {
+  border-bottom: none;
+}
+
+.gm-customise__icon {
+  font-size: 20px;
+  line-height: 1;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-customise__names {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.gm-customise__label {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.gm-customise__blurb,
+.gm-customise__refusal {
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-customise__refusal {
+  font-style: italic;
+}
+
+.gm-customise__moves {
+  display: flex;
+  gap: var(--aether-space-1);
+}
+
+.gm-customise__move {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--aether-touch-min);
+  height: var(--aether-touch-min);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  cursor: pointer;
+}
+
+.gm-customise__move:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.gm-customise__move .material-symbols-rounded {
+  font-size: 18px;
+}
+
+/* The pin toggle. It carries `role="switch"` and `aria-disabled` rather than a
+   native `disabled`, so a refused toggle stays focusable and its reason
+   ("Unpin one to add another") can be read aloud — which is exactly what the
+   design system's Switch, with only a native `disabled`, cannot do. */
+.gm-customise__pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--aether-touch-min);
+  height: var(--aether-touch-min);
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.gm-customise__pin[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+
+.gm-customise__pin[aria-disabled='true'] .gm-customise__pin-track {
+  opacity: 0.38;
+}
+
+.gm-customise__pin-track {
+  position: relative;
+  display: block;
+  width: 44px;
+  height: 24px;
+  border: 2px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-highest);
+  transition: background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+.gm-customise__pin[aria-checked='true'] .gm-customise__pin-track {
+  background: var(--md-sys-color-primary);
+  border-color: var(--md-sys-color-primary);
+}
+
+.gm-customise__pin-handle {
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-outline);
+  transform: translateY(-50%);
+  transition: left var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard),
+    background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+.gm-customise__pin[aria-checked='true'] .gm-customise__pin-handle {
+  left: 24px;
+  width: 16px;
+  height: 16px;
+  background: var(--md-sys-color-on-primary);
+}
+
+.gm-customise__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-2);
+  flex-wrap: wrap;
+}
+
+.gm-customise__spacer {
+  flex: 1;
+}
+
+.gm-customise__action {
+  min-height: var(--aether-touch-min);
+  padding: 0 16px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-button);
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.gm-customise__action--primary {
+  background: var(--md-sys-color-primary);
+  border-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+/* §10.2 — a full-screen sheet on narrow. */
+@media (max-width: 767px) {
+  .gm-customise__scrim {
+    padding: 0;
+  }
+
+  .gm-customise {
+    width: 100%;
+    max-height: 100%;
+    height: 100dvh;
+    border-radius: 0;
+    border: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-customise__pin-track,
+  .gm-customise__pin-handle {
+    transition: none;
+  }
+}

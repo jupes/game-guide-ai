@@ -1,0 +1,28 @@
+{
+  "schema": "Timestamp",
+  "direction": "both",
+  "note": "One grammar for every timestamp on the wire (CANVAS-27): YYYY-MM-DDTHH:MM:SS, an optional fraction of up to six digits, then Z or a +HH:MM offset. Pydantic alone would read 1758050000 as a moment and Zod alone would accept a time without seconds; pinning the grammar here is what keeps 'no coercion' true on both sides.",
+  "valid": [
+    { "name": "UTC, as the server emits it", "value": "2026-09-16T19:31:02Z" },
+    { "name": "with microseconds", "value": "2026-09-16T19:31:02.123456Z" },
+    { "name": "with a positive offset", "value": "2026-09-17T04:31:02+09:00" },
+    { "name": "with a negative offset", "value": "2026-09-16T15:31:02-04:00" },
+    { "name": "with a half-hour offset", "value": "2026-09-17T01:01:02+05:30" }
+  ],
+  "invalid": [
+    { "name": "a display time", "why": "CANVAS-27: formatting for people is the client's job", "value": "7:36 PM" },
+    { "name": "no offset", "why": "a bare local time is a different moment on every device", "value": "2026-09-16T19:31:02" },
+    { "name": "a date alone", "why": "a timestamp is a moment", "value": "2026-09-16" },
+    { "name": "seconds since the epoch, as a number", "why": "no coercion", "value": 1758050000 },
+    { "name": "seconds since the epoch, as text", "why": "no coercion", "value": "1758050000" },
+    { "name": "no seconds", "why": "one grammar, and the server always emits seconds", "value": "2026-09-16T19:31Z" },
+    { "name": "a space instead of T", "why": "one grammar", "value": "2026-09-16 19:31:02+00:00" },
+    { "name": "lower-case markers", "why": "one grammar", "value": "2026-09-16t19:31:02z" },
+    { "name": "an offset without its colon", "why": "one grammar", "value": "2026-09-16T19:31:02+0200" },
+    { "name": "more than six fractional digits", "why": "neither side keeps more than microseconds", "value": "2026-09-16T19:31:02.1234567Z" },
+    { "name": "a day that does not exist", "why": "well-formed is not enough; it must be a real moment", "value": "2026-02-30T19:31:02Z" },
+    { "name": "an hour that does not exist", "why": "well-formed is not enough; it must be a real moment", "value": "2026-09-16T24:00:00Z" },
+    { "name": "an offset that does not exist", "why": "well-formed is not enough; it must be a real moment", "value": "2026-09-16T19:31:02+24:00" },
+    { "name": "null", "why": "a schema that allows no timestamp says so itself", "value": null }
+  ]
+}

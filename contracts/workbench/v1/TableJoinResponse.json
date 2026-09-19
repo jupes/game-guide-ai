@@ -1,0 +1,81 @@
+{
+  "schema": "TableJoinResponse",
+  "direction": "response",
+  "note": "One shape for every outcome (SEC-8). inactive covers wrong, ended, expired and rotated alike (TABLE-9); full is the device bound (SEC-10); the role comes only with a join.",
+  "valid": [
+    {
+      "name": "joined as an enrolled participant",
+      "value": {
+        "schema_version": 1,
+        "status": "joined",
+        "role": "participant"
+      }
+    },
+    {
+      "name": "joined as a guest (TABLE-13)",
+      "value": {
+        "schema_version": 1,
+        "status": "joined",
+        "role": "guest"
+      }
+    },
+    {
+      "name": "the table is full (SEC-10)",
+      "value": {
+        "schema_version": 1,
+        "status": "full",
+        "role": null
+      }
+    },
+    {
+      "name": "the one answer for a wrong, ended, expired or rotated token (TABLE-9)",
+      "value": {
+        "schema_version": 1,
+        "status": "inactive",
+        "role": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "joined without a role",
+      "why": "a device that joined is a participant or a guest",
+      "value": {
+        "schema_version": 1,
+        "status": "joined",
+        "role": null
+      }
+    },
+    {
+      "name": "a role without a join",
+      "why": "nothing is known about a device that did not join",
+      "value": {
+        "schema_version": 1,
+        "status": "inactive",
+        "role": "guest"
+      }
+    },
+    {
+      "name": "a reason",
+      "why": "TABLE-9: the answer never says which case applied",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "status": "inactive",
+        "role": null,
+        "reason": "rotated"
+      }
+    },
+    {
+      "name": "a status that says why",
+      "why": "closed set: joined, full, inactive",
+      "value": {
+        "schema_version": 1,
+        "status": "expired",
+        "role": null
+      }
+    }
+  ]
+}

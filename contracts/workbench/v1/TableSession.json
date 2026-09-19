@@ -1,0 +1,147 @@
+{
+  "schema": "TableSession",
+  "direction": "response",
+  "note": "The GM's view of a session (REVEAL-2, REVEAL-17): its state, its link generation, when it ends, whether table audio is on, and how many devices hold a credential (SEC-10). The token is not here; it travels once, in the answer to a start or a rotation.",
+  "valid": [
+    {
+      "name": "a live session",
+      "value": {
+        "schema_version": 1,
+        "session_id": "ses_0c1d2e3f",
+        "campaign_id": "cmp_4b1d9e7a",
+        "state": "live",
+        "gen": 1,
+        "audio_epoch": 3,
+        "started_at": "2026-09-16T19:31:02Z",
+        "ends_at": "2026-09-17T07:31:02Z",
+        "ended_at": null,
+        "audio": true,
+        "devices": 5
+      }
+    },
+    {
+      "name": "an ended session",
+      "value": {
+        "schema_version": 1,
+        "session_id": "ses_0c1d2e3f",
+        "campaign_id": "cmp_4b1d9e7a",
+        "state": "ended",
+        "gen": 2,
+        "audio_epoch": 3,
+        "started_at": "2026-09-16T19:31:02Z",
+        "ends_at": "2026-09-17T07:31:02Z",
+        "ended_at": "2026-09-16T19:31:24Z",
+        "audio": true,
+        "devices": 0
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a live session with an end time",
+      "why": "an ended session says when, and a live one does not",
+      "value": {
+        "schema_version": 1,
+        "session_id": "ses_0c1d2e3f",
+        "campaign_id": "cmp_4b1d9e7a",
+        "state": "live",
+        "gen": 1,
+        "audio_epoch": 3,
+        "started_at": "2026-09-16T19:31:02Z",
+        "ends_at": "2026-09-17T07:31:02Z",
+        "ended_at": "2026-09-16T19:31:24Z",
+        "audio": true,
+        "devices": 5
+      }
+    },
+    {
+      "name": "an ended session without one",
+      "why": "",
+      "value": {
+        "schema_version": 1,
+        "session_id": "ses_0c1d2e3f",
+        "campaign_id": "cmp_4b1d9e7a",
+        "state": "ended",
+        "gen": 2,
+        "audio_epoch": 3,
+        "started_at": "2026-09-16T19:31:02Z",
+        "ends_at": "2026-09-17T07:31:02Z",
+        "ended_at": null,
+        "audio": true,
+        "devices": 0
+      }
+    },
+    {
+      "name": "ending before it started",
+      "why": "",
+      "value": {
+        "schema_version": 1,
+        "session_id": "ses_0c1d2e3f",
+        "campaign_id": "cmp_4b1d9e7a",
+        "state": "live",
+        "gen": 1,
+        "audio_epoch": 3,
+        "started_at": "2026-09-16T19:31:02Z",
+        "ends_at": "2026-09-16T19:31:02Z",
+        "ended_at": null,
+        "audio": true,
+        "devices": 5
+      }
+    },
+    {
+      "name": "the token on the session",
+      "why": "SEC-8: a token travels once and is never re-read",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "session_id": "ses_0c1d2e3f",
+        "campaign_id": "cmp_4b1d9e7a",
+        "state": "live",
+        "gen": 1,
+        "audio_epoch": 3,
+        "started_at": "2026-09-16T19:31:02Z",
+        "ends_at": "2026-09-17T07:31:02Z",
+        "ended_at": null,
+        "audio": true,
+        "devices": 5,
+        "token": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8u"
+      }
+    },
+    {
+      "name": "generation zero",
+      "why": "the first link is generation 1",
+      "value": {
+        "schema_version": 1,
+        "session_id": "ses_0c1d2e3f",
+        "campaign_id": "cmp_4b1d9e7a",
+        "state": "live",
+        "gen": 0,
+        "audio_epoch": 3,
+        "started_at": "2026-09-16T19:31:02Z",
+        "ends_at": "2026-09-17T07:31:02Z",
+        "ended_at": null,
+        "audio": true,
+        "devices": 5
+      }
+    },
+    {
+      "name": "a thousand and one devices",
+      "why": "SEC-10 bounds a session's devices",
+      "value": {
+        "schema_version": 1,
+        "session_id": "ses_0c1d2e3f",
+        "campaign_id": "cmp_4b1d9e7a",
+        "state": "live",
+        "gen": 1,
+        "audio_epoch": 3,
+        "started_at": "2026-09-16T19:31:02Z",
+        "ends_at": "2026-09-17T07:31:02Z",
+        "ended_at": null,
+        "audio": true,
+        "devices": 1001
+      }
+    }
+  ]
+}

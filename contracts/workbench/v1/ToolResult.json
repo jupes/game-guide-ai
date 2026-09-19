@@ -1,0 +1,162 @@
+{
+  "schema": "ToolResult",
+  "direction": "response",
+  "valid": [
+    {
+      "name": "a monster card with two suggestions",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "monster",
+        "prose": "Built one from the Tidewarden thread: grapple pressure, not raw damage.",
+        "card": {
+          "card_kind": "stat_block",
+          "stat_block": {
+            "name": "Tidewarden Drowned",
+            "size": "Medium",
+            "type": "undead",
+            "alignment": "neutral evil",
+            "ac": 16,
+            "hp": 82,
+            "hit_dice": "11d8 + 33",
+            "speed": "30 ft, swim 40 ft",
+            "abilities": { "str": 18, "dex": 12, "con": 17, "int": 9, "wis": 14, "cha": 8 },
+            "cr": "5"
+          }
+        },
+        "suggestions": [
+          { "tool_id": "encounter", "label": "Build an encounter around it", "icon": "swords", "brief": "an encounter around the Tidewarden Drowned" },
+          { "tool_id": "portrait", "label": "Portrait", "icon": "image" }
+        ]
+      }
+    },
+    {
+      "name": "an NPC document result links the document and embeds nothing",
+      "value": {
+        "result_kind": "document",
+        "tool_id": "npc",
+        "prose": "Wrote her up as a dossier.",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+        "suggestions": []
+      }
+    },
+    {
+      "name": "a recap creates session notes",
+      "value": {
+        "result_kind": "document",
+        "tool_id": "recap",
+        "prose": "",
+        "document": { "document_id": "doc_31aa90ce", "type": "session-notes", "title": "Session 12", "library_category": "session-log" },
+        "suggestions": []
+      }
+    },
+    {
+      "name": "a portrait media result",
+      "value": {
+        "result_kind": "media",
+        "tool_id": "portrait",
+        "prose": "Painted her in the lamplight.",
+        "asset": { "asset_id": "ast_77c1d0e2", "media_type": "image", "alt": "A hooded woman with a silver pin", "width": 768, "height": 1024 },
+        "suggestions": [{ "tool_id": "npc", "label": "Write her up" }]
+      }
+    },
+    {
+      "name": "an additive field from a newer server is tolerated by the client",
+      "applies_to": ["client"],
+      "value": {
+        "result_kind": "document",
+        "tool_id": "npc",
+        "prose": "Wrote her up as a dossier.",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Sister Ondrey Vashe", "library_category": "npcs" },
+        "suggestions": [],
+        "generated_by": "a-newer-server"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an unknown result kind",
+      "why": "X-8: fails closed; the client renders a placeholder instead",
+      "value": { "result_kind": "table", "tool_id": "loot", "prose": "", "rows": [], "suggestions": [] }
+    },
+    {
+      "name": "a result kind that contradicts the registry",
+      "why": "npc is a document tool; size decides placement and the registry is the rule",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "npc",
+        "prose": "",
+        "card": { "card_kind": "stat_block", "stat_block": { "name": "Ondrey", "ac": 12, "hp": 22 } },
+        "suggestions": []
+      }
+    },
+    {
+      "name": "a document of the wrong type for its tool",
+      "why": "encounter creates an encounter document",
+      "value": {
+        "result_kind": "document",
+        "tool_id": "encounter",
+        "prose": "",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Ondrey", "library_category": "npcs" },
+        "suggestions": []
+      }
+    },
+    {
+      "name": "an unknown card kind",
+      "why": "X-8: card payloads are a closed union",
+      "value": { "result_kind": "card", "tool_id": "monster", "prose": "", "card": { "card_kind": "spell_scroll", "text": "..." }, "suggestions": [] }
+    },
+    {
+      "name": "a card for a tool whose card schema does not exist yet",
+      "why": "loot, names, rules and hooks gain their card kinds in 1kg.4.3; until then they cannot produce a valid card",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "loot",
+        "prose": "",
+        "card": { "card_kind": "stat_block", "stat_block": { "name": "A chest", "ac": 10, "hp": 5 } },
+        "suggestions": []
+      }
+    },
+    {
+      "name": "four suggestions",
+      "why": "three at most",
+      "value": {
+        "result_kind": "media",
+        "tool_id": "map",
+        "prose": "",
+        "asset": { "asset_id": "ast_77c1d0e2", "media_type": "image", "alt": "Battlemap" },
+        "suggestions": [
+          { "tool_id": "npc", "label": "One" },
+          { "tool_id": "loot", "label": "Two" },
+          { "tool_id": "hooks", "label": "Three" },
+          { "tool_id": "names", "label": "Four" }
+        ]
+      }
+    },
+    {
+      "name": "a stat block without its core fields",
+      "why": "the existing StatBlockContent contract: name, ac and hp are required",
+      "value": { "result_kind": "card", "tool_id": "monster", "prose": "", "card": { "card_kind": "stat_block", "stat_block": { "name": "Nameless" } }, "suggestions": [] }
+    },
+    {
+      "name": "the suggestions key is always present",
+      "why": "one shape; no suggestions is the empty list",
+      "value": {
+        "result_kind": "document",
+        "tool_id": "npc",
+        "prose": "",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Ondrey", "library_category": "npcs" }
+      }
+    },
+    {
+      "name": "prose longer than 4,000 characters",
+      "why": "bounded; long content belongs in a document",
+      "value": {
+        "result_kind": "document",
+        "tool_id": "npc",
+        "prose": "@repeat:p:4001",
+        "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Ondrey", "library_category": "npcs" },
+        "suggestions": []
+      }
+    }
+  ]
+}

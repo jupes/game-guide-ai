@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import { Markdown } from './Markdown'
 
@@ -104,5 +104,128 @@ describe('Markdown — sanitization', () => {
     const a = md('[docs](https://example.com/page)').querySelector('a')
     expect(a?.getAttribute('href')).toBe('https://example.com/page')
     expect(a?.textContent).toBe('docs')
+  })
+})
+
+// ── X-10 — no remote subresources (1kg.3.2) ──────────────────────────────────
+// AE-66: an answer carrying a remote markdown image, a <video src> and a style
+// with url(), all pointing at example.test, must send nothing there. The flag
+// is opt-in, so the first test pins that today's channels are unchanged.
+
+function restricted(source: string): HTMLElement {
+  const { container } = render(<Markdown source={source} noRemoteSubresources />)
+  return container
+}
+
+describe('Markdown — X-10, no remote subresources', () => {
+  it('leaves chat behaviour alone: without the flag a remote image still renders', () => {
+    // The hole this flag closes. If DOMPurify ever starts dropping remote
+    // images by itself, this test fails and the flag can go.
+    expect(md('![sigil](https://example.test/pixel.png)').querySelector('img')).not.toBeNull()
+  })
+
+  it('drops a remote markdown image', () => {
+    const c = restricted('Before ![sigil](https://example.test/pixel.png) after')
+    expect(c.querySelector('img')).toBeNull()
+    expect(c.textContent).toContain('Before')
+  })
+
+  it('drops a protocol-relative image, whose origin is the remote host', () => {
+    expect(restricted('![x](//example.test/pixel.png)').querySelector('img')).toBeNull()
+  })
+
+  it('drops a data: image', () => {
+    const source = '![x](data:image/gif;base64,R0lGODlhAQABAAAAACw=)'
+    expect(restricted(source).querySelector('img')).toBeNull()
+  })
+
+  it('KEEPS a reference to a campaign asset this origin serves', () => {
+    // The other half of the rule: a portrait the service serves must survive,
+    // or the restriction has simply broken images (MS-7's GM asset route).
+    const img = restricted('![Ondrey](/campaigns/cmp_1/assets/ast_1)').querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img!.getAttribute('src')).toBe('/campaigns/cmp_1/assets/ast_1')
+    expect(img!.getAttribute('alt')).toBe('Ondrey')
+  })
+
+  it.each([
+    ['any other same-origin path', '/auth/logout'],
+    ['a relative path', 'assets/ast_1.png'],
+    ['the built bundle', '/assets/index.js'],
+    ['an asset reference with a query, which could carry text out', '/campaigns/c/assets/a?d=the-secret'],
+    ['an asset reference with a fragment', '/campaigns/c/assets/a#the-secret'],
+    ['a deeper path under the asset route', '/campaigns/c/assets/a/../../../auth/logout'],
+  ])('drops %s', (_name, src) => {
+    // Same origin alone is too wide: every GET the service answers would be
+    // something a steered model could make the GM's browser request.
+    expect(restricted(`![x](${src})`).querySelector('img')).toBeNull()
+  })
+
+  it('strips in a document that cannot fetch, never in the live one', () => {
+    // An <img> begins loading as soon as it exists in a document with a browsing
+    // context, attached or not. jsdom fetches nothing, so this pins the mechanism:
+    // the sanitizer hands back a string, and the DOM pass runs on an inert document.
+    const inert = vi.spyOn(document.implementation, 'createHTMLDocument')
+    const created = vi.spyOn(document, 'createElement')
+    restricted('![a](https://example.test/a.png)')
+    expect(inert).toHaveBeenCalledTimes(1)
+    const images = created.mock.calls.filter((call) => String(call[0]).toLowerCase() === 'img')
+    expect(images).toEqual([])
+    inert.mockRestore()
+    created.mockRestore()
+  })
+
+  it('drops a javascript: link', () => {
+    expect(restricted('[click](javascript:alert(1))').querySelector('a')?.getAttribute('href') ?? null)
+      .toBeNull()
+  })
+
+  it('KEEPS an ordinary https link — a link is not a subresource', () => {
+    expect(restricted('[docs](https://example.com/page)').querySelector('a')?.getAttribute('href'))
+      .toBe('https://example.com/page')
+  })
+
+  it('removes a <video src> and its <source>', () => {
+    const c = restricted('<video src="https://example.test/clip.mp4"><source src="https://example.test/clip.webm"></video>')
+    expect(c.querySelector('video')).toBeNull()
+    expect(c.querySelector('source')).toBeNull()
+  })
+
+  it('removes a style attribute carrying url()', () => {
+    const c = restricted('<p style="background-image: url(https://example.test/p.png)">boo</p>')
+    expect(c.querySelector('p')?.getAttribute('style') ?? null).toBeNull()
+    expect(c.textContent).toContain('boo')
+  })
+
+  it('keeps a style attribute that fetches nothing', () => {
+    expect(restricted('<p style="font-weight: 700">bold</p>').querySelector('p')?.getAttribute('style'))
+      .toContain('font-weight')
+  })
+
+  it('drops an image whose src is not a URL at all', () => {
+    // `new URL()` throws on this; a reference nobody can resolve is not
+    // same-origin, so the image goes.
+    expect(restricted('<img src="http://[">').querySelector('img')).toBeNull()
+  })
+
+  it('removes srcset and poster even where the element survives', () => {
+    const c = restricted('<img src="/campaigns/c/assets/a" srcset="https://example.test/2x.png 2x">')
+    expect(c.querySelector('img')?.hasAttribute('srcset')).toBe(false)
+  })
+
+  it('leaves nothing whose src, srcset, poster or style could reach the remote host', () => {
+    // The AE-66 sweep, asserted over the whole rendered tree at once.
+    const c = restricted(
+      '![a](https://example.test/a.png)\n\n'
+      + '<video src="https://example.test/v.mp4" poster="https://example.test/p.png"></video>\n\n'
+      + '<p style="background: url(https://example.test/b.png)">x</p>\n\n'
+      + '<iframe src="https://example.test/f"></iframe>\n\n'
+      + '<link rel="stylesheet" href="https://example.test/s.css">',
+    )
+    for (const element of c.querySelectorAll('*')) {
+      for (const attribute of element.attributes) {
+        expect(attribute.value).not.toContain('example.test')
+      }
+    }
   })
 })

@@ -3,6 +3,8 @@
 #
 # Activation state (jobs light up as infrastructure lands, nothing is faked):
 #   tests            — always run.
+#   contract-parity  — always runs. Informational: it does not gate deploy,
+#                       because no route serves the Workbench contract yet.
 #   ui-e2e           — always runs against the production Compose stack.
 #   retrieval-metrics — needs secrets EVAL_DATABASE_URL + OPENAI_API_KEY
 #                       (a reachable corpus DB; the corpus is deliberately not
@@ -18,7 +20,11 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
+    # INTEGRATION BRANCH ONLY - this line never reaches master. The stacked
+    # Workbench branches are merged into integration/1kg-workbench so that work
+    # built on them gets this pipeline, PostgreSQL job included, from a pull
+    # request into that branch. A pull request never deploys (see `deploy`).
+    branches: [master, "integration/**"]
   workflow_dispatch:
     inputs:
       force_deploy:
@@ -35,8 +41,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # A real PostgreSQL, for the tests whose whole subject is behaviour no fake
-    # reproduces: the atomic single-use invite guarantee (row locks) and what the
-    # canonical schema actually enforces (cascades, SET NULL, NOT VALID).
+    # reproduces: the atomic single-use invite guarantee (row locks), what the
+    # schema actually enforces (cascades, SET NULL, NOT VALID), the migration
+    # runner (adoption, drift, concurrent startups), and the bounded pools, the
+    # transaction boundary and the job outbox (1kg.1.5).
     #
     # It is an EMPTY database: no corpus, no book text. The corpus is deliberately
     # not in git (licensing), and none of these tests need it.
@@ -82,7 +90,8 @@ jobs:
           DATABASE_URL: postgresql://rag:ci_throwaway_not_a_secret@localhost:5432/game_guide_ai
         run: |
           uv run --frozen --no-sync python -m pytest -q --no-cov \
-            service/tests/test_invite_atomic.py tests/test_schema.py
+            service/tests/test_invite_atomic.py tests/test_schema.py \
+            tests/test_migrations_db.py tests/test_db_postgres.py
 
   ui-tests:
     runs-on: ubuntu-latest
@@ -186,6 +195,27 @@ jobs:
         with:
           name: eval-results-${{ github.sha }}
           path: ingestion/eval_results.json
+
+  # Do the Pydantic and Zod halves of the Workbench wire contract agree? The
+  # shared fixtures cover the examples someone wrote; this mutates every valid
+  # one and compares the two validators' verdicts (docs/workbench-wire-contract.md).
+  # It is the only job that needs both toolchains, which is why it is its own job.
+  contract-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: oven-sh/setup-bun@v2
+      - name: Install the service from the lockfile
+        run: uv sync --frozen --extra dev
+      - name: Install the UI from the lockfile
+        working-directory: ui
+        run: bun install --frozen-lockfile
+      - name: Differential fuzz (Pydantic vs Zod)
+        run: uv run --frozen --no-sync python contracts/workbench/tools/differential_fuzz.py
 
   # Auto-deploy when everything above is green. A metrics REGRESSION blocks
   # this job; override by re-running the workflow with force_deploy=true

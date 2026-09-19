@@ -84,19 +84,23 @@ gcloud sql instances create game-guide-ai \
 gcloud sql databases create game_guide_ai --instance=game-guide-ai
 gcloud sql users set-password postgres --instance=game-guide-ai --password="$DBPW"
 
-# Enable pgvector + create the schema. Via the Auth Proxy in one terminal:
+# Enable pgvector + create the corpus schema. Via the Auth Proxy in one terminal:
 #   cloud-sql-proxy "$PROJECT:$REGION:game-guide-ai" --port 6543
 # then, in another. $PROXY is the operator DSN through that proxy; §6 and the
 # §10/§11 incident sections all reuse it, so re-export it in every new shell:
 export PROXY="postgresql://postgres:<PW>@localhost:6543/game_guide_ai"
 scripts/bootstrap-db.sh "$PROXY"
+# The application schema (chat, auth, app) — the ordered migrations:
+DATABASE_URL="$PROXY" python -m service.migrations migrate
 ```
 
-The script applies every schema file in order and stops at the first failure
-(exit 1). Do not skip it because the service re-applies the same DDL at startup:
-that self-heals only once it boots, and minting the first invite with
-`python -m service.admin_invites` needs `auth.users`/`auth.invites` to exist
-before then.
+The script applies the corpus schema in order and stops at the first failure
+(exit 1). The application schema belongs to the migration runner
+([migrations.md](migrations.md)): the service runs it at every startup before it
+serves anything. `python -m service.admin_invites` only *checks* the schema and
+stops if a migration is pending — an operator's checkout is not the deployed image —
+so run the explicit `migrate` above before minting the first invite.
+`python -m service.migrations status` shows what a database has.
 
 The `INSTANCE_CONNECTION_NAME` is `"$PROJECT:$REGION:game-guide-ai"` — used by
 `deploy.sh` (`CLOUDSQL_INSTANCE`) and the `DATABASE_URL` secret below.
@@ -309,7 +313,7 @@ the service, add the probe, and re-apply:
 startupProbe:
   httpGet: { path: /healthz, port: 8000 }
   periodSeconds: 5
-  failureThreshold: 12
+  failureThreshold: 48   # 240 s: a start may apply migrations, or wait up to 150 s for another instance's run
 # then: gcloud run services replace svc.yaml
 ```
 
