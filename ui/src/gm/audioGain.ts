@@ -18,7 +18,8 @@ import * as React from 'react'
 import { clampUnit } from './audioHelpers'
 
 /** The one key this feature writes. Its name carries no GM-private text (X-7). */
-export const PREVIEW_VOLUME_KEY = 'aetheril.gm.audio.previewVolume'
+/** Per device, not per account (AUDIO-5), in the app's `game-guide-ai:` key space. */
+export const PREVIEW_VOLUME_KEY = 'game-guide-ai:gm-preview-volume'
 /** The handoff's resting volume, kept so a first load sounds the same. */
 export const DEFAULT_PREVIEW_VOLUME = 0.66
 
@@ -140,7 +141,9 @@ export function createPreviewGainStage({
       build()
       if (!context || !gain) return
       gain.gain.value = wanted
-      if (context.state === 'suspended') void context.resume()
+      // A refused resume leaves the preview silent, which the card already says
+      // (`Press play again to allow sound`); it must not become an unhandled rejection.
+      if (context.state === 'suspended') context.resume().catch(() => undefined)
     },
     setGain(value: number) {
       if (disposed) return
@@ -153,7 +156,7 @@ export function createPreviewGainStage({
       try {
         source?.disconnect()
         gain?.disconnect()
-        void context?.close()
+        context?.close().catch(() => undefined)
       } catch {
         // A context the platform already tore down; nothing left to release.
       }

@@ -29,7 +29,6 @@ import type { Cue } from './contracts'
 import type { AudioConnection, CuePlayability } from './audioHelpers'
 import {
   canPlayToTable,
-  canStopCue,
   clampPositionMs,
   clampUnit,
   cueStatusMessage,
@@ -288,14 +287,15 @@ export function AudioCue({
           Play to table
         </Button>
         {/* AUDIO-9: this Stop names its cue, so it can never silence a newer
-            one. A native button, because the accessible name has to carry the
-            title while the visible label stays short (ds Button forwards no
+            one — and it is NEVER disabled (X-3): a push is in flight before this
+            client calls it live, and the server ignores a Stop that finds
+            nothing. A native button, because the accessible name has to carry
+            the title while the visible label stays short (ds Button forwards no
             ARIA attributes). */}
         <button
           type="button"
           className="gm-audio-cue__stop gm-audio-cue__control"
           onClick={onStop}
-          disabled={!canStopCue(live, connection)}
           aria-label={`Stop ${cue.title}`}
           data-touch-target="true"
         >

@@ -160,14 +160,15 @@ export const Live: Story = {
   },
 }
 
-/** Not live: Stop has nothing to clear while the stream is healthy. */
+/** Not live as far as this client knows — and Stop is enabled all the same: a push
+ * may be in flight, and a Stop that finds nothing is a no-op (AUDIO-9, X-3). */
 export const NotLive: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
 
     await expect(canvas.queryByText('LIVE')).toBeNull()
     await expect(canvas.getByRole('button', { name: 'Play to table' })).toBeEnabled()
-    await expect(canvas.getByRole('button', { name: `Stop ${AMBIENCE_CUE.title}` })).toBeDisabled()
+    await expect(canvas.getByRole('button', { name: `Stop ${AMBIENCE_CUE.title}` })).toBeEnabled()
   },
 }
 

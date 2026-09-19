@@ -155,6 +155,26 @@ describe('createPreviewGainStage (AUDIO-30)', () => {
     expect(graph.resumes).toBe(1)
   })
 
+  it('swallows a refused resume and a refused close instead of leaving them unhandled', async () => {
+    // A browser may refuse to resume (no gesture credit left) and a context may
+    // already be closed. Neither is worth an `unhandledrejection` in the GM's console.
+    const graph = makeGraph('suspended')
+    const refused = graph.context as unknown as { resume: () => Promise<void>; close: () => Promise<void> }
+    refused.resume = () => Promise.reject(new DOMException('not allowed', 'NotAllowedError'))
+    refused.close = () => Promise.reject(new DOMException('already closed', 'InvalidStateError'))
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    try {
+      const stage = createPreviewGainStage({ media: makeMedia(() => {}), createContext: () => graph.context })
+      stage.unlock()
+      stage.dispose()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
+    expect(unhandled).not.toHaveBeenCalled()
+  })
+
   it('builds the graph once however often it is unlocked', () => {
     const graph = makeGraph()
     const createContext = vi.fn(() => graph.context)

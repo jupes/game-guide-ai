@@ -229,11 +229,9 @@ export function canPlayToTable(playability: CuePlayability, connection: AudioCon
   return playability === 'ready' && connection === 'connected'
 }
 
-/**
- * AUDIO-17 and X-3: Stop is never disabled while disconnected, because then
- * liveness is unknown and silence must stay one action. While the stream is
- * healthy a cue that does not hold a slot has nothing to stop.
- */
-export function canStopCue(live: boolean, connection: AudioConnection): boolean {
-  return live || connection === 'reconnecting'
-}
+// There is deliberately no `canStopCue`. A cue card's Stop is never disabled
+// (AUDIO-9, AUDIO-17, X-3): what this client believes about liveness is exactly
+// what a Stop must not depend on. A push is in flight before it is `live`; another
+// tab may have pushed a moment ago; the stream may be behind. The server clears a
+// slot only if this cue still holds it, so a Stop that finds nothing is a harmless
+// no-op — and a Stop the GM cannot press is the one failure X-3 exists to prevent.

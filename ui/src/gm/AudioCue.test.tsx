@@ -391,9 +391,15 @@ describe('Stop and reconnection (AUDIO-9, AUDIO-17)', () => {
     expect(screen.getByRole('button', { name: `Stop ${AMBIENCE_CUE.title}` })).toBeEnabled()
   })
 
-  it('has nothing to stop on a healthy stream when the cue holds no slot', () => {
-    setup({ live: false })
-    expect(screen.getByRole('button', { name: `Stop ${AMBIENCE_CUE.title}` })).toBeDisabled()
+  it('never disables Stop — not even for a cue this client believes is silent (X-3)', async () => {
+    // A push is in flight before it is `live`, and another tab may have pushed a
+    // moment ago. The server clears a slot only if this cue still holds it, so a
+    // Stop that finds nothing is a no-op; a Stop that cannot be pressed is not.
+    const { spies } = setup({ live: false })
+    const stop = screen.getByRole('button', { name: `Stop ${AMBIENCE_CUE.title}` })
+    expect(stop).toBeEnabled()
+    await userEvent.click(stop)
+    expect(spies.onStop).toHaveBeenCalledTimes(1)
   })
 })
 

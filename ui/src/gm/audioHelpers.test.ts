@@ -10,7 +10,6 @@ import {
   SEEK_ARROW_MS,
   SEEK_PAGE_MS,
   canPlayToTable,
-  canStopCue,
   clampPositionMs,
   clampUnit,
   consentStatusMessage,
@@ -309,14 +308,3 @@ describe('canPlayToTable (AUDIO-17, §12.2)', () => {
   })
 })
 
-describe('canStopCue (AUDIO-17, X-3)', () => {
-  it('is never refused while disconnected, whatever we last knew', () => {
-    expect(canStopCue(false, 'reconnecting')).toBe(true)
-    expect(canStopCue(true, 'reconnecting')).toBe(true)
-  })
-
-  it('has nothing to stop when the cue holds no slot on a healthy stream', () => {
-    expect(canStopCue(true, 'connected')).toBe(true)
-    expect(canStopCue(false, 'connected')).toBe(false)
-  })
-})
