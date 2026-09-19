@@ -483,10 +483,13 @@ class RagRetriever:
     `retrieve(prompt)` remains the composed pipeline for direct callers, with
     the optional gated cross-encoder rerank."""
 
-    def __init__(self, dsn: str | None = None):
+    def __init__(self, dsn: str | None = None, *, connect=None):
         self.dsn = dsn or os.environ.get("DATABASE_URL", DEFAULT_DSN)
+        # `connect` lets the service lend its bounded pool (service/db.py,
+        # 1kg.1.5); the CLIs and evals keep a connection per operation.
+        self._connect = connect or (lambda: psycopg.connect(self.dsn))
         self._openai = None  # shared embeddings client, built on first embed()
-        with psycopg.connect(self.dsn) as conn:
+        with self._connect() as conn:
             (self.known_classes, self.known_entities,
              self.entity_to_ctype, self.class_to_ctype) = load_vocabulary(conn)
 
@@ -513,7 +516,7 @@ class RagRetriever:
     ) -> list[RetrievedChunk]:
         """Stage 3 — filtered vector search (content_types/book_slugs come from
         scope_for_mode; None means unscoped for that dimension)."""
-        with psycopg.connect(self.dsn) as conn:
+        with self._connect() as conn:
             return retrieve_top_k(
                 conn, emb, prompt, k, mode="vector",
                 classes=classes, entities=entities,
@@ -524,7 +527,7 @@ class RagRetriever:
         self, chunks: list[RetrievedChunk],
     ) -> tuple[dict[str, str], dict[str, str]]:
         """Stage 4 — (full_texts, book_by_id) for the retrieved chunks."""
-        with psycopg.connect(self.dsn) as conn:
+        with self._connect() as conn:
             details = fetch_chunk_details(conn, [c.chunk_id for c in chunks])
         full = {cid: t for cid, (t, _b) in details.items()}
         book_by_id = {cid: b for cid, (_t, b) in details.items()}

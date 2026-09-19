@@ -1,12 +1,11 @@
--- Auth schema: per-user accounts + one-time invite links.
+-- Migration 0002 — auth schema: per-user accounts + one-time invite links.
 --
--- CANONICAL. This file is the only definition of the `auth` schema. It is
--- applied by both paths and must stay idempotent:
---   * fresh database — mounted into the container's init directory
---   * existing database — re-applied at every service startup
---     (service/auth_store.py PostgresAuthStore.ensure_schema)
+-- BASELINE, and FROZEN, like 0001: formerly the idempotent definition of the
+-- `auth` schema re-applied at every startup, now applied once by the ordered
+-- runner (service/migrations.py) and never edited again. Idempotent so that a
+-- database which predates the migration ledger is adopted, not rebuilt.
 --
--- Runs AFTER 04-chat-schema.sql: the ownership foreign key below points at
+-- Runs AFTER 0001: the ownership foreign key below points at
 -- chat.conversations, and is skipped when that table does not exist.
 
 CREATE SCHEMA IF NOT EXISTS auth;
@@ -40,10 +39,9 @@ CREATE TABLE IF NOT EXISTS auth.invites (
 
 CREATE INDEX IF NOT EXISTS invites_created_idx ON auth.invites (created_at);
 
--- Two constraint migrations, each applied ONLY when missing or wrong. This runs
--- at every startup, where an unconditional DROP/ADD would take an ACCESS
--- EXCLUSIVE lock on a live table at each cold start and re-validate the invites
--- FK every time. `confdeltype` is the delete action: 'n' = SET NULL, 'c' =
+-- Two constraint repairs, each applied ONLY when missing or wrong: an
+-- unconditional DROP/ADD would take an ACCESS EXCLUSIVE lock on a live table
+-- and re-validate the invites FK. `confdeltype` is the delete action: 'n' = SET NULL, 'c' =
 -- CASCADE; conkey/confkey pin the exact COLUMNS, so a same-named FK on the
 -- wrong column cannot pass for the real one.
 --
@@ -54,8 +52,8 @@ CREATE INDEX IF NOT EXISTS invites_created_idx ON auth.invites (created_at);
 --    real account, so a request in flight when an account is deleted cannot
 --    re-create a row for a user id that no longer exists, and deleting an
 --    account removes its content (the cascade chains on to chat.messages /
---    chat.attachments, see 04-chat-schema.sql). Guarded on the chat table
---    existing: a deployment that skips the chat schema must still start.
+--    chat.attachments, see 0001_chat_schema.sql). Guarded on the chat table
+--    existing, as it always was.
 DO $$
 DECLARE
   users    regclass := to_regclass('auth.users');

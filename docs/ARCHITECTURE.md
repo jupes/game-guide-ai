@@ -119,12 +119,15 @@ pass fed by `build_vocab.py`); `qa_chunks.py` quarantines failure signatures pre
 
 - **Postgres 17 + pgvector.** Corpus schema in `vector-db/init/`: `01-extensions.sql`,
   `02-schema.sql` (dnd.chunks + HNSW/GIN indexes), `03-hybrid-search.sql`.
-- **Application schema is canonical in `service/sql/`** (`04-chat-schema.sql`,
-  `05-auth-schema.sql`) — one definition, applied by both paths: mounted into the
-  container's init directory for a fresh database (or `scripts/bootstrap-db.sh` for
-  Cloud SQL), and re-applied by `ensure_schema()` at every service startup, which is
-  the migration path for existing databases. It ships inside the installed package,
-  so the Cloud image can migrate what it connects to.
+- **Application schema is ordered migrations in `service/sql/migrations/`**
+  (`0001_chat_schema.sql`, `0002_auth_schema.sql`, `0003_jobs_outbox.sql`, …) — one
+  definition and one path: `service/migrations.py` applies what a database has not
+  seen, once, under an advisory lock, before the service serves anything, and
+  records each file's checksum in `app.schema_migrations`. A fresh database and an
+  old one converge; drift stops startup. The files ship inside the installed
+  package. Database access goes through bounded pools and one transaction boundary
+  (`service/db.py`); multi-step writes enqueue their follow-up work in the same
+  transaction (`service/jobs.py`). See [migrations.md](migrations.md).
 - `dnd.hybrid_search()` (vector+FTS RRF) exists but is **not adopted** — tied Hit@1, slightly
   worse Recall@10 (3q3). `verify_db.py` is an insert+kNN smoke test.
 

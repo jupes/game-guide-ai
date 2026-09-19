@@ -266,6 +266,26 @@ def test_deploy_sets_memory_and_concurrency_explicitly() -> None:
     )
 
 
+def test_the_connection_pools_fit_the_database_at_full_scale() -> None:
+    """`db-f1-micro` accepts 22 application connections. Every instance may hold
+    its synchronous pool, its asynchronous pool and one listener open at once
+    (service/db.py, 1kg.1.5), so the pool defaults and `--max-instances` are one
+    number in two files: raise either without the other and the second instance's
+    logins start failing under load, which no unit test would show."""
+    from service.db import RESERVED_FOR_OPERATORS, SERVER_CONNECTION_LIMIT, PoolSettings
+
+    found = re.search(r"--max-instances\s+(\d+)", _read(DEPLOY_SH))
+    assert found is not None, "deploy.sh must state --max-instances: the pool budget depends on it"
+    instances = int(found.group(1))
+
+    needed = PoolSettings().per_instance * instances + RESERVED_FOR_OPERATORS
+    assert needed <= SERVER_CONNECTION_LIMIT, (
+        f"{instances} instances x {PoolSettings().per_instance} connections + "
+        f"{RESERVED_FOR_OPERATORS} for the operator = {needed}, but the database accepts "
+        f"{SERVER_CONNECTION_LIMIT}"
+    )
+
+
 def test_deploy_wires_the_session_secret() -> None:
     """The auth session-signing key (x5bz.2) must reach the service as a Secret
     Manager reference. Without it the service fails closed — every auth endpoint

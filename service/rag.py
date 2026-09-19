@@ -66,8 +66,10 @@ class RagService:
         model: str = DEFAULT_MODEL, llm_client: LLMClient | None = None,
         factory: ProviderClientFactory | None = None,
         secondary_retriever=None,
+        connect=None,
     ):
-        self.retriever = retriever or RagRetriever(dsn)
+        # `connect`: the service's pooled connection factory (service/db.py).
+        self.retriever = retriever or RagRetriever(dsn, connect=connect)
         self.reranker = reranker
         self.model = model
         # ProviderClientFactory is the only path generation reads a client
