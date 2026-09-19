@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -70,5 +70,15 @@ describe('LAYOUT-9: the 44px touch floor and a visible focus ring', () => {
 
   it.each(['ToolRail.css', 'ToolMenu.css', 'CustomiseRailDialog.css'])('%s draws a focus ring', (name) => {
     expect(css(name)).toMatch(/:focus-visible[\s\S]*?outline: 3px solid var\(--md-sys-color-secondary\)/)
+  })
+})
+
+describe('the GM sources are text a reviewer can read', () => {
+  const SOURCES = readdirSync(HERE).filter((name) => /\.(ts|tsx|css)$/.test(name))
+
+  it.each(SOURCES)('%s holds no control character', (name) => {
+    // A literal NUL once made git treat a module as binary, which hid it from review.
+    const bytes = readFileSync(join(HERE, name))
+    expect([...bytes].filter((byte) => byte < 9 || (byte > 13 && byte < 32))).toEqual([])
   })
 })

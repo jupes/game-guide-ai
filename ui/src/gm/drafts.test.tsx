@@ -133,3 +133,31 @@ describe('useConversationDrafts — RAIL-25', () => {
     expect(seen.every((snapshot) => snapshot.a === '')).toBe(true)
   })
 })
+
+describe('useConversationDrafts — keys that are not ordinary strings', () => {
+  it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty'])(
+    'treats a conversation called %s like any other',
+    async (conversationId) => {
+      // Conversation ids are client-generated. On a plain object these would
+      // read and write the prototype, and another conversation would see them.
+      const view = render(<Harness conversationId={conversationId} />)
+      expect(screen.getByLabelText('draft')).toHaveValue('')
+      await userEvent.type(screen.getByLabelText('draft'), '/npc the ferryman')
+      view.rerender(<Harness conversationId="another" />)
+      expect(screen.getByLabelText('draft')).toHaveValue('')
+      view.rerender(<Harness conversationId={conversationId} />)
+      expect(screen.getByLabelText('draft')).toHaveValue('/npc the ferryman')
+    },
+  )
+
+  it('keeps the not-yet-created conversation apart from every named one', async () => {
+    const view = render(<Harness conversationId={null} />)
+    await userEvent.type(screen.getByLabelText('draft'), 'first thoughts')
+    for (const named of ['', 'null', 'unscoped']) {
+      view.rerender(<Harness conversationId={named} />)
+      expect(screen.getByLabelText('draft')).toHaveValue('')
+    }
+    view.rerender(<Harness conversationId={null} />)
+    expect(screen.getByLabelText('draft')).toHaveValue('first thoughts')
+  })
+})
