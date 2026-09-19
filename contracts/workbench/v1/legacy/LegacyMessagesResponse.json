@@ -1,0 +1,33 @@
+{
+  "schema": "LegacyMessagesResponse",
+  "direction": "response",
+  "note": "A guard, not a new contract. These are today's GET /conversations/{id}/messages responses, validated by the EXISTING service.models.MessagesResponse and ui/src/schemas.ts MessagesResponseSchema. The typed timeline (1kg.4.2) must leave this endpoint's shape alone.",
+  "valid": [
+    {
+      "name": "a stored exchange",
+      "value": {
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "messages": [
+          { "id": 1, "role": "user", "content": "What does a basilisk do?", "mode": "sage", "created_at": "2026-07-25T18:20:11Z" },
+          { "id": 2, "role": "assistant", "content": "It petrifies with its gaze [1].", "mode": "sage", "created_at": "2026-07-25T18:20:14Z", "suggestions": null }
+        ]
+      }
+    },
+    { "name": "an empty conversation", "value": { "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d", "messages": [] } }
+  ],
+  "invalid": [
+    {
+      "name": "a role the legacy endpoint never emits",
+      "why": "user and assistant only",
+      "value": {
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "messages": [{ "id": 1, "role": "system", "content": "x", "mode": "sage", "created_at": "2026-07-25T18:20:11Z" }]
+      }
+    },
+    {
+      "name": "a message without its timestamp",
+      "why": "required today",
+      "value": { "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d", "messages": [{ "id": 1, "role": "user", "content": "x", "mode": "sage" }] }
+    }
+  ]
+}

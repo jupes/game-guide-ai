@@ -1,0 +1,93 @@
+{
+  "schema": "DocumentCreateRequest",
+  "direction": "request",
+  "note": "LIB-12: New in a library category. The client mints command_id, so a retry after a lost response opens the document that was already made instead of making a second 'Untitled NPC'. The server records author gm. Documents made by a tool are created by the tool invocation, not by this.",
+  "valid": [
+    {
+      "name": "a new NPC, named Untitled with the name selected for typing",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Untitled NPC" }
+      }
+    },
+    {
+      "name": "a handout started with a name and a tag",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "handout",
+        "type_version": 1,
+        "data": { "name": "A letter, water-stained", "tags": ["the marrow"] }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no name",
+      "why": "LIB-12: nothing is stored until a document has a name",
+      "value": { "schema_version": 1, "command_id": "cmd_4d1c2b3a9f8e7d6c", "campaign_id": "cmp_4b1d9e7a", "type": "npc", "type_version": 1, "data": {} }
+    },
+    {
+      "name": "no campaign",
+      "why": "RAIL-13: a document belongs to a campaign from its first moment",
+      "value": { "schema_version": 1, "command_id": "cmd_4d1c2b3a9f8e7d6c", "type": "npc", "type_version": 1, "data": { "name": "Untitled NPC" } }
+    },
+    {
+      "name": "no command id",
+      "why": "every Workbench mutation can be retried safely; without a key a retry makes a second document",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "type": "npc", "type_version": 1, "data": { "name": "Untitled NPC" } }
+    },
+    {
+      "name": "a command id too short to be an idempotency key",
+      "why": "16..64 characters of [A-Za-z0-9_-], like an invocation id",
+      "value": { "schema_version": 1, "command_id": "cmd_1", "campaign_id": "cmp_4b1d9e7a", "type": "npc", "type_version": 1, "data": { "name": "Untitled NPC" } }
+    },
+    {
+      "name": "a document id chosen by the client",
+      "why": "ids are the server's to mint; nothing on the wire may let a client aim at someone else's row",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Untitled NPC" }
+      }
+    },
+    {
+      "name": "a type that does not exist",
+      "why": "X-8",
+      "value": { "schema_version": 1, "command_id": "cmd_4d1c2b3a9f8e7d6c", "campaign_id": "cmp_4b1d9e7a", "type": "faction", "type_version": 1, "data": { "name": "The Tidewardens" } }
+    },
+    {
+      "name": "a field the type does not declare",
+      "why": "invalid document fields fail closed, before anything is stored",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "handout",
+        "type_version": 1,
+        "data": { "name": "A letter", "wants": "To be read." }
+      }
+    },
+    {
+      "name": "a key named __proto__ in the data",
+      "why": "not declared, like any stray key; and never dropped silently by a record parser on the client (see FieldPatchRequest)",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": { "name": "Untitled NPC", "__proto__": { "wants": "polluted" } }
+      }
+    }
+  ]
+}

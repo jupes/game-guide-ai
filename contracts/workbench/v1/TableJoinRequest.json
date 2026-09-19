@@ -1,0 +1,56 @@
+{
+  "schema": "TableJoinRequest",
+  "direction": "request",
+  "note": "SEC-8: the table page reads the token from the fragment, strips it, and POSTs it once. 32 CSPRNG bytes are 43 base64url characters (SEC-5).",
+  "valid": [
+    {
+      "name": "a table token",
+      "value": {
+        "schema_version": 1,
+        "token": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8u"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a token one character short",
+      "why": "SEC-5: exactly 32 bytes, base64url",
+      "value": {
+        "schema_version": 1,
+        "token": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8"
+      }
+    },
+    {
+      "name": "a token one character long",
+      "why": "SEC-5",
+      "value": {
+        "schema_version": 1,
+        "token": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8ux"
+      }
+    },
+    {
+      "name": "a token with padding",
+      "why": "base64url without padding",
+      "value": {
+        "schema_version": 1,
+        "token": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8="
+      }
+    },
+    {
+      "name": "an alias chosen at the door",
+      "why": "aliases are the GM's to give (AUD-11); a join carries the token and nothing else",
+      "value": {
+        "schema_version": 1,
+        "token": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8u",
+        "alias": "Mara"
+      }
+    },
+    {
+      "name": "no token",
+      "why": "",
+      "value": {
+        "schema_version": 1
+      }
+    }
+  ]
+}
