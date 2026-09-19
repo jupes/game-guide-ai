@@ -1,0 +1,116 @@
+/* ── SlashMenu ───────────────────────────────────────────────────────────────
+   The composer's autocomplete (record §4.3, §10.2). Above the composer, up to
+   320px wide on the wide and medium layouts; composer width and at most 40% of
+   the viewport height on narrow, scrolling.
+
+   Colour comes from design tokens only, so both themes follow the palette.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.gm-slash-menu {
+  max-width: 320px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-extra-large);
+  background: var(--md-sys-color-surface-container-low);
+  box-shadow: var(--md-sys-elevation-level3);
+  overflow: hidden;
+  font-family: var(--aether-font-ui);
+  color: var(--md-sys-color-on-surface);
+}
+
+.gm-slash-menu__heading {
+  margin: 0;
+  padding: 9px 14px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.gm-slash-menu__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.gm-slash-menu__option {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 14px;
+  cursor: pointer;
+  color: var(--md-sys-color-on-surface);
+  transition: background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+/* The active option is the one `aria-activedescendant` names. It must be
+   visible without focus, since focus never leaves the composer. */
+.gm-slash-menu__option[data-active='true'] {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+/* RAIL-10: a disabled tool is listed and reachable, but reads as unavailable. */
+.gm-slash-menu__option[aria-disabled='true'] {
+  cursor: not-allowed;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-slash-menu__icon {
+  font-size: 18px;
+  line-height: 1;
+  color: inherit;
+}
+
+.gm-slash-menu__text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.gm-slash-menu__command {
+  font-family: var(--aether-font-mono);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.gm-slash-menu__blurb {
+  font-size: 12px;
+  color: inherit;
+}
+
+.gm-slash-menu__reason {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-slash-menu__enter {
+  font-family: var(--aether-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* SLASH-9: one inert row, never a vanished menu. */
+.gm-slash-menu__empty {
+  padding: 12px 14px;
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+@media (max-width: 767px) {
+  .gm-slash-menu {
+    max-width: none;
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-slash-menu__option {
+    transition: none;
+  }
+}
