@@ -39,6 +39,9 @@ import logging
 from collections.abc import Hashable
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
+# Runtime import (not TYPE_CHECKING): `add_node` resolves each node's type hints.
+from langchain_core.runnables import RunnableConfig
+
 from config import CONTEXT_TOP_N, SNIPPET_MAX, TOP_K
 from ingestion.rerank import should_rerank
 from ingestion.retrieval import RetrievalResult, RetrievedChunk, assemble_result
@@ -207,9 +210,20 @@ def build_rag_graph(svc: RagService) -> Any:
     def gate_route(state: GraphState) -> Literal["generate", "refuse"]:
         return state["route"]
 
-    def generate_node(state: GraphState, config: Any = None) -> GraphState:
+    def generate_node(state: GraphState, config: RunnableConfig) -> GraphState:
         # LangGraph injects the run `config` (Langfuse callbacks) as the 2nd arg;
         # forward it to the LLM call so the generation emits a token/cost span.
+        #
+        # The annotation is load-bearing, here and on the two nodes below. Since
+        # LangGraph 1.0 `config` is injected ONLY when it is annotated as
+        # `RunnableConfig`; anything else is warned about and skipped, so the node
+        # gets None. A LangChain chat model handed None can still recover the
+        # callbacks from a context variable, which is why that fails quietly — but
+        # an `LLMClient` that is not a LangChain runnable sees only what it is
+        # handed. This module has `from __future__ import annotations`, so
+        # LangGraph compares the annotation as a STRING: it accepts
+        # "RunnableConfig" and "Optional[RunnableConfig]", and does NOT accept
+        # "RunnableConfig | None".
         result = state["result"]
         # D2 (agent-forge-harness-b8o.1): assembly extracted into
         # service/generate.py so the eval capture harness (Checkpoint 3) can
@@ -244,7 +258,7 @@ def build_rag_graph(svc: RagService) -> Any:
             return "structure"
         return "cite"
 
-    def suggest_node(state: GraphState, config: Any = None) -> GraphState:
+    def suggest_node(state: GraphState, config: RunnableConfig) -> GraphState:
         # Best-effort garnish: any LLM/parse failure degrades to no suggestions
         # rather than failing an answer that already generated.
         context = build_context(state["result"], top_n=CONTEXT_TOP_N)
@@ -258,7 +272,7 @@ def build_rag_graph(svc: RagService) -> Any:
             return {"suggestions": None}
         return {"suggestions": suggestions}
 
-    def structure_node(state: GraphState, config: Any = None) -> GraphState:
+    def structure_node(state: GraphState, config: RunnableConfig) -> GraphState:
         # Best-effort structuring: any LLM/parse failure degrades to None
         # rather than failing an answer that already generated.
         if state["mode"] == "spell":
