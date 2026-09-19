@@ -43,6 +43,7 @@ each file in its own transaction together with its row in `app.schema_migrations
 | A released file's bytes changed; a file was renamed; a migration sits below one already applied | `MigrationDriftError` — **startup fails** |
 | A migration's SQL fails | Rolled back whole; `MigrationFailed` — **startup fails**. The message carries the SQLSTATE and primary message, never the `DETAIL` line (it quotes row values) |
 | Another instance held the lock for 150 s | `MigrationLockTimeout` — **startup fails** |
+| The database answers but refuses (no privilege to create or read the ledger) | `MigrationFailed` — **startup fails**; it would refuse again at every start |
 | The packaged files do not match `manifest.txt`, have a gap or a duplicate number | `MigrationPackageError` — **startup fails** (and CI failed first) |
 | A pool or mode setting is out of bounds | `ValueError` — **startup fails** |
 | The database has migrations this build does not know | **Served.** `/healthz` says `migrations: "ahead"` — an older image mid-rollout or after a rollback |

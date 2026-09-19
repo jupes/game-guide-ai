@@ -13,6 +13,7 @@ import logging
 from contextlib import contextmanager
 from pathlib import Path
 
+import psycopg
 import pytest
 
 from service import migrations as mig
@@ -248,6 +249,7 @@ class FakePostgres:
         self.lock_attempts = 0
         self.unlocks = 0
         self.unlock_breaks = False
+        self.ledger_error: Exception | None = None
         self.connections = 0
 
     @contextmanager
@@ -308,6 +310,8 @@ class FakeConnection:
                 raise ConnectionError("the connection is gone")
             return _Rows([(True,)])
         if sql == mig._LEDGER_DDL:
+            if server.ledger_error is not None:
+                raise server.ledger_error
             server.ledger = server.ledger if server.ledger is not None else {}
             return _Rows([])
         if sql.startswith("SELECT set_config"):
@@ -451,6 +455,25 @@ def test_a_lock_that_cannot_be_released_does_not_mask_the_outcome(caplog):
         report = mig.migrate(connect=server.connect, packaged=[ONE])
     assert report.applied == ("0001_m.sql",)
     assert "could not release the lock (ConnectionError)" in caplog.text
+
+
+def test_a_database_that_refuses_the_ledger_is_a_verdict_not_an_outage():
+    """Startup treats the driver's errors as an outage and comes up degraded. A
+    role that may not create the ledger will be refused again at every start, so
+    that must stop the process instead — and still release the lock."""
+    server = FakePostgres()
+    server.ledger_error = psycopg.errors.InsufficientPrivilege("permission denied for database app")
+    with pytest.raises(MigrationFailed, match=r"refused the migration ledger \(InsufficientPrivilege") as caught:
+        mig.migrate(connect=server.connect, packaged=[ONE])
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert server.unlocks == 1 and server.executed == []
+
+
+def test_a_connection_that_does_not_survive_is_still_an_outage():
+    server = FakePostgres()
+    server.ledger_error = psycopg.OperationalError("server closed the connection unexpectedly")
+    with pytest.raises(psycopg.OperationalError):
+        mig.migrate(connect=server.connect, packaged=[ONE])
 
 
 def test_the_owner_dsn_is_a_seam_of_its_own(monkeypatch):

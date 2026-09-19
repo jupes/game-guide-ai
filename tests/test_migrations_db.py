@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 
 import pytest
 from _pg import connect, needs_db, throwaway_database
@@ -251,6 +252,24 @@ def test_a_migration_that_cannot_get_its_table_lock_gives_up(dsn, monkeypatch):
         assert time.monotonic() - started < 8
         holder.rollback()
     assert mig.migrate(dsn, packaged=[*PACKAGED, blocked]).applied == (blocked.filename,)
+
+
+def test_a_role_that_may_not_create_the_ledger_is_a_verdict_not_an_outage(dsn):
+    """Startup degrades around an unreachable database. A database that answers
+    "no" will answer it again at every start, so the process must not come up
+    half-working on it."""
+    from psycopg.conninfo import make_conninfo
+
+    role = f"mig_limited_{uuid.uuid4().hex[:8]}"
+    with connect(dsn) as admin:
+        admin.execute(f"CREATE ROLE {role} LOGIN PASSWORD 'limited_not_a_secret'")
+    try:
+        limited = make_conninfo(dsn, user=role, password="limited_not_a_secret")
+        with pytest.raises(MigrationFailed, match="refused the migration ledger .*SQLSTATE 42501"):
+            mig.migrate(limited)
+    finally:
+        with connect(dsn) as admin:
+            admin.execute(f"DROP ROLE {role}")
 
 
 # ── Concurrent startups ──────────────────────────────────────────────────────

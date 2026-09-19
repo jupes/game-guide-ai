@@ -399,39 +399,67 @@ def migrate(
     """Bring the database up to this build's schema, or say exactly why not.
 
     Raises `MigrationError` for anything deterministic (fatal at startup) and
-    lets the driver's own connection errors through: an unreachable database is
-    an outage, which the caller already knows how to degrade around.
+    lets the driver's connection errors through: an unreachable database is an
+    outage, which the caller already knows how to degrade around. Anything else
+    the database says — no privilege on the ledger, a ledger that is not the
+    table we expect — it will say again next time, so that is a verdict too.
     """
     migrations = tuple(packaged) if packaged is not None else discover()
-    applied_by = (os.environ.get("K_REVISION") or "local")[:200]
+    refusal: str | None = None
+    try:
+        with (connect or _connector(dsn))() as conn:
+            return _migrate(conn, migrations, mode=mode, lock_wait_s=lock_wait_s, sleep=sleep, clock=clock)
+    except Exception as exc:
+        if not _is_a_refusal(exc):
+            raise
+        refusal = f"the database refused the migration ledger ({_describe(exc)})"
+    raise MigrationFailed(refusal)  # outside the except block: nothing of the driver's is chained
 
-    with (connect or _connector(dsn))() as conn:
-        todo = plan(migrations, _read_ledger(conn))
-        if todo.pending and mode is Mode.VERIFY:
-            raise MigrationsPending(
-                "this build needs " + ", ".join(m.filename for m in todo.pending)
-                + " — run `python -m service.migrations migrate` as the schema owner"
-            )
-        applied: list[str] = []
-        if todo.pending:
-            _acquire_lock(conn, wait_s=lock_wait_s, sleep=sleep, clock=clock)
-            try:
-                conn.execute(_LEDGER_DDL)
-                # Again, under the lock: whoever held it has probably done the work.
-                todo = plan(migrations, _read_ledger(conn))
-                for migration in todo.pending:
-                    _apply(conn, migration, applied_by=applied_by, clock=clock)
-                    applied.append(migration.filename)
-            finally:
-                _release_lock(conn)
-        if todo.ahead:
-            log.warning(
-                "migrations: the database is ahead of this build (versions %s); "
-                "running on the expand/contract guarantee",
-                ", ".join(f"{v:04d}" for v in todo.ahead),
-            )
-        newest = max((m.version for m in migrations), default=0)
-        return Report(applied=tuple(applied), current=max([newest, *todo.ahead]), ahead=todo.ahead)
+
+def _is_a_refusal(exc: BaseException) -> bool:
+    """A database error that is not about the connection. `OperationalError` —
+    unreachable, shut down, out of connections — is an outage and passes through."""
+    import psycopg
+
+    return isinstance(exc, psycopg.Error) and not isinstance(exc, psycopg.OperationalError)
+
+
+def _migrate(
+    conn: Any,
+    migrations: tuple[Migration, ...],
+    *,
+    mode: Mode,
+    lock_wait_s: float,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+) -> Report:
+    applied_by = (os.environ.get("K_REVISION") or "local")[:200]
+    todo = plan(migrations, _read_ledger(conn))
+    if todo.pending and mode is Mode.VERIFY:
+        raise MigrationsPending(
+            "this build needs " + ", ".join(m.filename for m in todo.pending)
+            + " — run `python -m service.migrations migrate` as the schema owner"
+        )
+    applied: list[str] = []
+    if todo.pending:
+        _acquire_lock(conn, wait_s=lock_wait_s, sleep=sleep, clock=clock)
+        try:
+            conn.execute(_LEDGER_DDL)
+            # Again, under the lock: whoever held it has probably done the work.
+            todo = plan(migrations, _read_ledger(conn))
+            for migration in todo.pending:
+                _apply(conn, migration, applied_by=applied_by, clock=clock)
+                applied.append(migration.filename)
+        finally:
+            _release_lock(conn)
+    if todo.ahead:
+        log.warning(
+            "migrations: the database is ahead of this build (versions %s); "
+            "running on the expand/contract guarantee",
+            ", ".join(f"{v:04d}" for v in todo.ahead),
+        )
+    newest = max((m.version for m in migrations), default=0)
+    return Report(applied=tuple(applied), current=max([newest, *todo.ahead]), ahead=todo.ahead)
 
 
 def status(dsn: str | None = None, *, connect: Connect | None = None) -> list[tuple[str, str]]:
@@ -491,7 +519,7 @@ def main(argv: list[str] | None = None) -> int:
     except MigrationError as exc:
         print(f"error: {exc}")
         return 2
-    except Exception as exc:  # a connection failure: say so without the DSN or the driver's text
+    except Exception as exc:  # an outage: say so without the DSN or the driver's text
         print(f"error: could not reach the database ({type(exc).__name__})")
         return 2
 
