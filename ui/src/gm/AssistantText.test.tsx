@@ -39,8 +39,9 @@ describe('AssistantText', () => {
     expect(prose('![sigil](https://example.test/pixel.png)').querySelector('img')).toBeNull()
   })
 
-  it('keeps a same-origin asset reference', () => {
-    expect(prose('![Ondrey](/workbench/assets/ast_1.png)').querySelector('img')).not.toBeNull()
+  it('keeps a campaign asset reference and no other same-origin image', () => {
+    expect(prose('![Ondrey](/campaigns/cmp_1/assets/ast_1)').querySelector('img')).not.toBeNull()
+    expect(prose('![x](/workbench/assets/ast_1.png)').querySelector('img')).toBeNull()
   })
 
   it('still strips script, as the sanitizer always did', () => {

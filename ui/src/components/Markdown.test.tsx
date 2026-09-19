@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import { Markdown } from './Markdown'
 
@@ -139,18 +139,40 @@ describe('Markdown — X-10, no remote subresources', () => {
     expect(restricted(source).querySelector('img')).toBeNull()
   })
 
-  it('KEEPS a same-origin asset reference', () => {
+  it('KEEPS a reference to a campaign asset this origin serves', () => {
     // The other half of the rule: a portrait the service serves must survive,
-    // or the restriction has simply broken images.
-    const img = restricted('![Ondrey](/workbench/assets/ast_1.png)').querySelector('img')
+    // or the restriction has simply broken images (MS-7's GM asset route).
+    const img = restricted('![Ondrey](/campaigns/cmp_1/assets/ast_1)').querySelector('img')
     expect(img).not.toBeNull()
-    expect(img!.getAttribute('src')).toBe('/workbench/assets/ast_1.png')
+    expect(img!.getAttribute('src')).toBe('/campaigns/cmp_1/assets/ast_1')
     expect(img!.getAttribute('alt')).toBe('Ondrey')
   })
 
-  it('KEEPS a relative asset reference', () => {
-    expect(restricted('![x](assets/ast_1.png)').querySelector('img')?.getAttribute('src'))
-      .toBe('assets/ast_1.png')
+  it.each([
+    ['any other same-origin path', '/auth/logout'],
+    ['a relative path', 'assets/ast_1.png'],
+    ['the built bundle', '/assets/index.js'],
+    ['an asset reference with a query, which could carry text out', '/campaigns/c/assets/a?d=the-secret'],
+    ['an asset reference with a fragment', '/campaigns/c/assets/a#the-secret'],
+    ['a deeper path under the asset route', '/campaigns/c/assets/a/../../../auth/logout'],
+  ])('drops %s', (_name, src) => {
+    // Same origin alone is too wide: every GET the service answers would be
+    // something a steered model could make the GM's browser request.
+    expect(restricted(`![x](${src})`).querySelector('img')).toBeNull()
+  })
+
+  it('strips in a document that cannot fetch, never in the live one', () => {
+    // An <img> begins loading as soon as it exists in a document with a browsing
+    // context, attached or not. jsdom fetches nothing, so this pins the mechanism:
+    // the sanitizer hands back a string, and the DOM pass runs on an inert document.
+    const inert = vi.spyOn(document.implementation, 'createHTMLDocument')
+    const created = vi.spyOn(document, 'createElement')
+    restricted('![a](https://example.test/a.png)')
+    expect(inert).toHaveBeenCalledTimes(1)
+    const images = created.mock.calls.filter((call) => String(call[0]).toLowerCase() === 'img')
+    expect(images).toEqual([])
+    inert.mockRestore()
+    created.mockRestore()
   })
 
   it('drops a javascript: link', () => {
@@ -187,7 +209,7 @@ describe('Markdown — X-10, no remote subresources', () => {
   })
 
   it('removes srcset and poster even where the element survives', () => {
-    const c = restricted('<img src="/ok.png" srcset="https://example.test/2x.png 2x">')
+    const c = restricted('<img src="/campaigns/c/assets/a" srcset="https://example.test/2x.png 2x">')
     expect(c.querySelector('img')?.hasAttribute('srcset')).toBe(false)
   })
 

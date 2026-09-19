@@ -306,7 +306,8 @@ export function AssistantLane({
         </div>
       )}
 
-      {view.state === 'done' && view.chips.length > 0 && (
+      {/* No handler, no chips: a suggestion that cannot arm anything is a dead end (STATE-2). */}
+      {view.state === 'done' && onArmSuggestion !== undefined && view.chips.length > 0 && (
         <div className="assistant-lane__suggestions">
           {view.chips.map((chip) => (
             <Chip
@@ -314,7 +315,7 @@ export function AssistantLane({
               type="suggestion"
               label={chip.label}
               icon={chip.icon}
-              onClick={onArmSuggestion ? () => onArmSuggestion(chip.armed) : undefined}
+              onClick={() => onArmSuggestion(chip.armed)}
             />
           ))}
         </div>
