@@ -700,10 +700,21 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     const serverOnly = projection.invalid.filter((example) => example.applies_to?.length === 1 && example.applies_to[0] === 'server')
     expect(serverOnly.length).toBeGreaterThanOrEqual(11)
 
-    // The whole vocabulary a projection may use, at every level. Two of the
+    // The whole vocabulary a projection may use, at every level — read from the
+    // schema itself, so it cannot drift from what the shapes declare. Two of the
     // eleven examples smuggle their key *inside* a field object rather than at
     // the top, so a top-level check alone would assert nothing about them.
-    const declared = new Set(['content_kind', 'type', 'fields', 'key', 'label', 'value', 'handle', 'kind', 'media_type', 'width', 'height', 'duration_ms'])
+    const declaredBy = (node: unknown): string[] =>
+      node !== null && typeof node === 'object'
+        ? Object.entries(node).flatMap(([key, child]) =>
+            key === 'properties' && child !== null && typeof child === 'object'
+              ? [...Object.keys(child), ...declaredBy(child)]
+              : declaredBy(child),
+          )
+        : []
+    const declared = new Set(declaredBy(z.toJSONSchema(TableProjectionSchema, { io: 'output' })))
+    expect(declared.size).toBeGreaterThan(0)
+
     const keysAtEveryDepth = (node: unknown): string[] =>
       Array.isArray(node)
         ? node.flatMap(keysAtEveryDepth)
@@ -720,8 +731,7 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
       // And the example really did carry something to strip, wherever it sat —
       // otherwise this would pass by asserting nothing.
       const sent = [...new Set(keysAtEveryDepth(expand(example.value)))].filter((key) => !declared.has(key))
-      expect([example.name, sent.length]).toEqual([example.name, sent.length])
-      expect(sent.length).toBeGreaterThan(0)
+      expect([example.name, sent]).not.toEqual([example.name, []])
     }
   })
 
