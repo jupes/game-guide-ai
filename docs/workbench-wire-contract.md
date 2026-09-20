@@ -775,6 +775,22 @@ a version or an id could ride to a table with every gate green. The page title i
 still built from the projection, so a document's name reaches a player only when
 `name` is masked (TABLE-3).
 
+**The emitter is the confidentiality boundary.** Every refusal above is a
+refusal *by the server*: by the time a table client's Zod schemas run, the bytes
+are already on the device, so what the client does with an undeclared key —
+strip it, as the versioning table requires of every response — cannot be the
+guard. Both halves are pinned: the server refuses each smuggled key (the
+`applies_to: ["server"]` fixtures, `extra="forbid"` at every level) and the
+client's strip is asserted at every depth, by feeding what it kept back through
+the strict server model. Two requirements follow for `1kg.7.2`:
+
+- **Every emitted table frame is validated against its Pydantic model before it
+  is sent.** The model is the last thing between a builder's mistake and a
+  player's screen, and it only helps if the route runs it.
+- **The canary suite (T-1) asserts on the raw response bytes, never on a parsed
+  result.** A parse is exactly the step that would hide a smuggled key, so a
+  canary that reads one proves nothing.
+
 A masked key is present and non-empty in the pinned version (REVEAL-5, ED-9), so
 nothing arrives as a blank heading: text and prose are non-blank after trimming,
 a list has at least one item, an `integer` is a number rather than `null`, an

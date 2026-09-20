@@ -35,6 +35,9 @@ Conventions, versioning rules and the status of each schema family are in
 - `"applies_to": ["server"]` or `["client"]` limits an example to one side. Use it
   only for the deliberate asymmetry — a strict server, a client that tolerates
   additive fields and unknown error codes — never to hide a disagreement.
+  A `["server"]` example is **refused by the server and stripped by the client**,
+  and both halves are pinned: the emitter is the confidentiality boundary,
+  because by the time a client parses, the bytes are already on the device.
 - The string `"@repeat:a:2000"` expands to 2,000 `a`s in both suites, so boundary
   cases stay readable. The repeated unit is one code point: `"@repeat:🎲:2000"`
   is 2,000 characters on both sides.
