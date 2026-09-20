@@ -239,17 +239,27 @@ of the five methods that mint one. `argon2` (`service/hashing.py`) is deliberate
 not used for these: they are 256-bit random values with nothing to brute-force,
 and a slow hash on a route anyone can call is a denial-of-service lever.
 
-An alias, a conversation title and a campaign name are never in a log line, an
-exception, a URL or an audit row (SEC-20). Two different things enforce that.
-In the stores, the records hide those fields from `repr()` — a traceback is a
-log line — and every refusal names the rule or the key, never the value. In the
-ledger, the **writer** does it: `0005_audit_events.sql` types `actor_ref`,
-`object_ref` and `campaign_id_tombstone` as free `TEXT` and only bounds lengths,
-so `service/audit_log.check_detail` and `check_ref` require every string in a
-row to be an identifier — letters, digits and `_ . : -`, at most 64 characters.
-An alias has a space in it and is refused; so is a sentence. That is stricter
-than `jobs.check_payload`, which admits any short string, because a job is read
-and deleted while an audit row outlives everything it describes.
+An alias, a conversation title and a campaign name belong in no log line, no
+exception, no URL and no audit row (SEC-20). Two different things work towards
+that, and they are worth telling apart.
+
+**In the stores it is enforced.** The records hide those fields from `repr()` —
+a traceback is a log line — and every refusal names the rule or the key, never
+the value. A test sweeps the whole store and audit surface for a canary alias,
+title, secret and digest.
+
+**In the ledger it is a shape rule, and shape is all it is.**
+`0005_audit_events.sql` bounds lengths and types `actor_ref`, `object_ref` and
+`campaign_id_tombstone` as free `TEXT` with no CHECK, so `service/audit_log`'s
+`as_identifier` is the enforcement: every string a caller supplies must be an
+identifier — letters, digits and `_ . : -` — each against its own column's bound
+(64 for the references and `detail` values, 40 for `object_kind` and `detail`
+keys, 60 for `reason_code`). That refuses a sentence, a brief, a filename and
+any multi-word name. It **cannot** tell a one-word alias from an id, so what
+keeps an alias out of a row is that callers pass minted ids; the rule's
+guarantee is that nothing which reads as text gets in. It is stricter than
+`jobs.check_payload`, which admits any short string, because a job is read and
+deleted while an audit row outlives everything it describes.
 
 ### The campaign lock
 

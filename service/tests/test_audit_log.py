@@ -140,6 +140,19 @@ def test_a_refusal_never_repeats_the_value_it_refused():
     assert "alias" in str(refused.value), "it still says which key was wrong"
 
 
+def test_the_rule_is_shape_and_a_one_word_alias_is_shaped_like_an_identifier():
+    """The limit of what a validator can do, asserted so that the docstring
+    beside it is never read as a stronger guarantee than the code gives. A
+    sentence, a filename and a multi-word name are refused because they do not
+    read as identifiers; `Rook` does, and passes. What keeps an alias out of a
+    row is that the callers — 1kg.2.2's and 1kg.2.3's routes — pass minted ids,
+    and `object_ref` is the field for saying which seat something happened to."""
+    assert check_detail({"alias": "Rook"}) == {"alias": "Rook"}
+    for multi_word in ("Wren the Unseen", "The Nocturne of Vex", "session notes.pdf"):
+        with pytest.raises(ValueError, match="never text"):
+            check_detail({"alias": multi_word})
+
+
 def test_the_object_kind_is_a_kind_and_not_a_name():
     assert audit_log._check_object_kind("table_session") == "table_session"
     with pytest.raises(ValueError, match="at most 40 characters"):

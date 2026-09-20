@@ -15,22 +15,32 @@ not here: ED-18(a) makes the table shared, and those belong to `1kg.7.1` and
 writer in this bead for the sixteen that are here — their callers are
 `1kg.2.2`'s and `1kg.2.3`'s routes. The reason is ownership, not use.
 
-**A row carries identifiers, never content** (SEC-20, ED-26). No alias, no
-campaign name, no conversation title, no field text, no filename — and no hash
-of any of them: ED-26 is explicit that no value derived from field text may
+**A row carries identifiers, never content** (SEC-20, ED-26) — and no hash of
+any content either: ED-26 is explicit that no value derived from field text may
 outlive the text, and a digest of a brief outlives it while still answering
 "was it this one?" to anyone holding a guess.
 
-That is enforced **here, by the writer**, not by `0005_audit_events.sql`, whose
-CHECK constraints only bound lengths and closed vocabularies. `check_detail` and
-`check_ref` require every string a caller supplies to be an **identifier**:
-letters, digits, and `_ . : -`. That is every string in a row — each `detail`
-value **and each `detail` key**, `actor_ref`, `object_ref`,
-`campaign_id_tombstone`, `object_kind` and `reason_code` — because a row is only
-as content-free as its least-checked field. The length bound is each column's
-own; 64 characters, `OpaqueId`'s ceiling, for the references and the values. An
-alias contains a space and is refused; a sentence is refused; a brief is
-refused. This is deliberately stricter than
+**What actually enforces that, and what it cannot do.** `0005_audit_events.sql`
+bounds lengths and two closed vocabularies; it types `actor_ref`, `object_ref`
+and `campaign_id_tombstone` as free `TEXT` with no CHECK at all. So the writer
+is the enforcement, and it is a **shape** rule: every string a caller supplies
+must be an identifier — letters, digits and `_ . : -` — with no space and no
+other punctuation. `as_identifier` applies it to every one of them, each against
+its own column's bound: each `detail` value and each `detail` key,
+`actor_ref`, `object_ref`, `campaign_id_tombstone` (64, `OpaqueId`'s ceiling),
+`object_kind` (40) and `reason_code` (60). A row is only as content-free as its
+least-checked field, so no string field is exempt.
+
+A shape rule refuses a sentence, a brief, a filename and any multi-word name.
+It **cannot** tell a one-word alias from an identifier: `{"alias": "Rook"}` is a
+well-formed identifier and passes. What keeps an alias out of a row is that no
+caller puts one there — the callers are `1kg.2.2`'s and `1kg.2.3`'s routes, and
+they pass minted ids — and what this rule guarantees is that the failure cannot
+be a silent one of degree: nothing that reads as text gets in. A caller that
+must record which seat something happened to passes `object_ref`, the
+participant's minted id.
+
+This is deliberately stricter than
 `service/jobs.check_payload`, which admits any short string: a job payload is
 read by this service and deleted, while an audit row is retained past the
 deletion of everything it describes.
