@@ -2014,15 +2014,6 @@ class RevealRequest(_Contract):
     audience: RevealAudience
 
 
-class StopScope(str, Enum):
-    """What a Stop clears. ``document`` covers every slot the document is live in
-    (REVEAL-7); ``all`` is the workspace indicator's panic button (REVEAL-6)."""
-
-    SLOT = "slot"
-    DOCUMENT = "document"
-    ALL = "all"
-
-
 class _StopBase(_Contract):
     """Decision X-3: **no epoch on any Stop.** A narrowing is never stale, never
     queued and never refused for state, so there is no number to be stale
@@ -2032,12 +2023,20 @@ class _StopBase(_Contract):
     command_id: CommandId
 
 
-class StopSlot(_StopBase):
-    scope: Literal["slot"]
-    audience: RevealAudience
-
-
 class StopDocument(_StopBase):
+    """Stop showing **this document**, wherever it is live (REVEAL-6, REVEAL-7).
+
+    Decision REVEAL-22: *a Stop clears a slot only if it holds what the Stop
+    names*. A **slot**-scoped Stop could not honour that — it names an audience
+    and nothing else — so tab A's retried slot Stop (REVEAL-16 retries with
+    backoff) would clear whatever tab B had deliberately revealed into that slot
+    in the meantime. Naming the document makes the rule hold by construction: a
+    GM client always knows the document, because every slot's document id is in
+    the GM's reveal picture, and a document is live in at most one slot (ED-15).
+    The scope exists so that the canvas header can stop *that document* without
+    knowing which slot holds it.
+    """
+
     scope: Literal["document"]
     document_id: OpaqueId
 
@@ -2048,8 +2047,9 @@ class StopAll(_StopBase):
     scope: Literal["all"]
 
 
-#: Stop showing (REVEAL-6, REVEAL-22, ED-16 — there is no Retract in v1).
-RevealStopRequest = Annotated[StopSlot | StopDocument | StopAll, Field(discriminator="scope")]
+#: Stop showing (REVEAL-6, REVEAL-22, ED-16 — there is no Retract in v1). A Stop
+#: names a **document**, or **all**.
+RevealStopRequest = Annotated[StopDocument | StopAll, Field(discriminator="scope")]
 
 
 class ContentKind(str, Enum):

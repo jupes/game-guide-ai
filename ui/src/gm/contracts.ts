@@ -1443,8 +1443,6 @@ export function revealableFields(type: DocumentTypeId): Record<string, FieldKind
   return Object.fromEntries(Object.entries(declared).filter(([key]) => allowed.has(key)))
 }
 
-export const AUDIENCE_KINDS = ['table', 'participant'] as const
-
 /** Who a reveal is for (AUD-2, ED-10): the whole table, or one participant by
  * **id** — an identity, never a credential and never an alias (AUD-11). Nothing
  * ties an audience to a document type: AUD-9 is a service rule (ED-14). */
@@ -1487,22 +1485,24 @@ export const RevealRequestSchema = refusingProtoKeys(
 )
 export type RevealRequest = z.infer<typeof RevealRequestSchema>
 
-export const STOP_SCOPES = ['slot', 'document', 'all'] as const
-
 /**
- * Stop showing (REVEAL-6, REVEAL-22). **No epoch on any Stop** (X-3): a narrowing
- * is never stale, never queued and never refused for state, so there is no number
- * to be stale against — `strictObject` is what makes sending one an error. There
- * is no Retract in v1 (ED-16).
+ * Stop showing (REVEAL-6, REVEAL-22). A Stop names a **document**, or **all**.
+ *
+ * REVEAL-22 is *a Stop clears a slot only if it holds what the Stop names*. A
+ * slot-scoped Stop could not honour that — it named an audience and nothing
+ * else — so tab A's retried slot Stop (REVEAL-16 retries with backoff) would
+ * clear whatever tab B had deliberately revealed into that slot meanwhile.
+ * Naming the document makes the rule hold by construction: a GM client always
+ * knows the document, because every slot's document id is in the reveal
+ * picture, and a document is live in at most one slot (ED-15).
+ *
+ * **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and
+ * never refused for state, so there is no number to be stale against —
+ * `strictObject` is what makes sending one an error. There is no Retract in v1
+ * (ED-16).
  */
 export const RevealStopRequestSchema = refusingProtoKeys(
   z.discriminatedUnion('scope', [
-    z.strictObject({
-      schema_version: z.literal(CONTRACT_VERSION),
-      command_id: CommandIdSchema,
-      scope: z.literal('slot'),
-      audience: RevealAudienceSchema,
-    }),
     z.strictObject({
       schema_version: z.literal(CONTRACT_VERSION),
       command_id: CommandIdSchema,

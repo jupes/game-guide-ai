@@ -746,7 +746,19 @@ the rule it copies.
 | --- | --- |
 | `RevealAudience` | `table`, or one participant by **id** — an identity, never a credential and never an alias (AUD-2, AUD-11, ED-10). Nothing ties an audience to a document type: AUD-9 is a service rule, so lifting ED-14 later changes no slot, mask or eligibility row |
 | `RevealRequest` | Confirm: the document, the **sealed** version the sheet displayed, the mask, the audience, and **both** the session it was composed for and that session's reveal epoch (REVEAL-5, ED-9). One shape covers reveal, update, replace and move — the server derives which. It names a session so that a number from last night can never match tonight. No campaign id: the session names the campaign and ownership is the route's (SEC-3) |
-| `RevealStopRequest` | Stop showing, by `scope`: one `slot`, every slot a `document` is live in, or `all` (REVEAL-6, REVEAL-7). **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and never refused for state, so there is no number to be stale against, and sending one is an error. There is no Retract in v1 (ED-16) |
+| `RevealStopRequest` | Stop showing, by `scope`: a `document`, or `all` (REVEAL-6, REVEAL-7). **There is no slot scope** — see below. **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and never refused for state, so there is no number to be stale against, and sending one is an error. There is no Retract in v1 (ED-16) |
+
+**Why a Stop names a document and not a slot.** REVEAL-22 is *a Stop clears a
+slot only if it holds what the Stop names*; a slot-scoped Stop names an audience
+and nothing else, so it could not honour that. Since a Stop is retried until it
+is acknowledged (REVEAL-16), tab A's retry would clear whatever tab B had
+deliberately revealed into that slot meanwhile — the "kill a later, deliberate
+reveal" REVEAL-16 rules out. Naming the document makes both rules hold by
+construction: a GM client always knows the document, because every slot's
+document id is in its reveal picture, and a document is live in at most one slot
+(ED-15). The `document` scope exists so that the canvas header can stop *that
+document* without knowing which slot holds it, and `all` is the workspace
+indicator's panic button.
 
 ### What the GM sees
 
