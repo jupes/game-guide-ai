@@ -191,7 +191,12 @@ class _CampaignLockOrder:
         if transaction_timeout_s is None:
             bound = self.campaign_lock.transaction_timeout
         else:
-            if not TRANSACTION_BOUND_MIN_S <= transaction_timeout_s <= TRANSACTION_BOUND_MAX_S:
+            # A bool is an int to Python, so it passes a range check and renders
+            # as `'Trues'` — a duration the server refuses in the middle of the
+            # transaction the bound was meant to protect.
+            if isinstance(transaction_timeout_s, bool) or not (
+                TRANSACTION_BOUND_MIN_S <= transaction_timeout_s <= TRANSACTION_BOUND_MAX_S
+            ):
                 raise ValueError(
                     f"a transaction bound is from {TRANSACTION_BOUND_MIN_S} to "
                     f"{TRANSACTION_BOUND_MAX_S} seconds"

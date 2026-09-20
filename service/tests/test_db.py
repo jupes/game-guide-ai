@@ -212,15 +212,20 @@ def test_the_lock_timeout_reaches_the_server_in_whole_milliseconds():
 
 
 @pytest.mark.parametrize(
-    "bound", [0, -1, 601, float("nan"), 1e-05], ids=["zero", "negative", "too-long", "nan", "tiny"]
+    "bound",
+    [0, -1, 601, float("nan"), 1e-05, True],
+    ids=["zero", "negative", "too-long", "nan", "tiny", "bool"],
 )
 def test_a_caller_cannot_switch_the_transaction_bound_off_through_the_parameter(bound):
     """`0` is how PostgreSQL spells "no timeout"; its unit here is the
     millisecond, so `1e-05s` rounds to the same thing; and a negative or a NaN
-    would be the server's error, whose text is not this module's. The parameter
-    exists so that a long caller can RAISE the bound RQ-8 requires, never remove
-    it — and the check is in both units of work, because a test that can only
-    run against the twin must still catch it."""
+    would be the server's error, whose text is not this module's. A bool is not
+    a duration either, and it passed the range check because Python makes it an
+    int: `transaction_bound(True)` answered `'Trues'`, which the server would
+    have refused in the middle of a transaction with an error of its own (G-5).
+    The parameter exists so that a long caller can RAISE the bound RQ-8
+    requires, never remove it — and the check is in both units of work, because
+    a test that can only run against the twin must still catch it."""
     for unit in (PgTransaction(conn=None), InMemoryTransaction()):
         with pytest.raises(ValueError, match="a transaction bound is from"):
             unit.transaction_bound(bound)

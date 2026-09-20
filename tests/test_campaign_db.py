@@ -737,6 +737,10 @@ def test_an_alias_is_unique_within_its_campaign_and_case_does_not_help(world: Wo
         ),
         pytest.param("Straße", "STRASSE", id="a-sharp-s-and-its-expansion"),
         pytest.param("ΑΣ", "ας", id="a-final-sigma"),
+        # The one pair only NFKC separates: casefold alone leaves these two
+        # apart, so without the compatibility normalisation `alias_key` is
+        # doing nothing here and every other pair in this list still passes.
+        pytest.param("Ａｎａ", "Ana", id="full-width-and-ascii"),
     ],
 )
 def test_two_aliases_a_gm_could_not_tell_apart_cannot_both_be_seated(
@@ -1028,6 +1032,27 @@ def test_a_hold_may_name_the_campaign_and_then_answers_for_no_other_ones_seat(
         )
 
 
+def test_a_hold_obeys_the_lock_order_and_cannot_be_left_unbounded(world: World) -> None:
+    """G-5. RQ-2 and RQ-8 through the participant store, in both worlds. The
+    campaign lock is the first lock a transaction takes, so a transaction that
+    has held a seat may not go on to take one — `hold` declares its row lock,
+    and the refusal is the unit of work's rather than a deadlock later. And the
+    bound cannot be switched off through the parameter that exists to raise it:
+    `0` is how PostgreSQL spells "no timeout at all", and a value below a
+    millisecond rounds to it."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign, "Rook")
+    with world.db.transaction() as unit:
+        assert world.participants.hold(unit, seat, campaign_id=campaign) is not None
+        with pytest.raises(CampaignLockOrder, match="first lock"):
+            unit.lock_campaign(campaign, shared=True)
+
+    with world.db.transaction() as unit:
+        for switched_off in (0, -1, 1e-05):
+            with pytest.raises(ValueError, match="a transaction bound is from"):
+                world.participants.hold(unit, seat, transaction_timeout_s=switched_off)
+
+
 def test_holding_a_participant_hands_back_the_row_so_the_caller_can_read_it(world: World) -> None:
     """F-1: the lock the ADR says "the caller holds" (RQ-5, RC-13) is a
     primitive rather than something private to two methods. It returns the row
@@ -1201,6 +1226,32 @@ def test_an_ending_can_be_recorded_as_an_expiry_rather_than_the_gms_decision(wor
         assert world.sessions.get(unit, session.id).state == "expired"
 
 
+def _a_stray_credential_of_the_retired_generation(world: World, unit: Any, session_id: str) -> str:
+    """The row a join racing a Rotate leaves behind: unrevoked, and belonging to
+    the generation the Rotate has just retired.
+
+    It has to be written by hand, in each world's own way, because no store
+    method will make one — `issue_credential` reads the session's *current*
+    generation, so a credential issued after the Rotate belongs to the new one
+    and an ending that revoked only the current generation would revoke it
+    anyway. That is precisely why the earlier version of this test could not
+    fail (G-5).
+    """
+    stray = "tcr_" + "s" * 22
+    digest = sha256(b"a credential of the retired generation").hexdigest()
+    if world.kind == "fake":
+        world.db.tables["table_credentials"].add(
+            unit, stray, TableCredential(stray, session_id, 1, digest, datetime.now(UTC))
+        )
+    else:
+        unit.conn.execute(
+            "INSERT INTO campaign.table_credentials "
+            "(id, session_id, link_generation, credential_digest) VALUES (%s, %s, 1, %s)",
+            (stray, session_id, digest),
+        )
+    return stray
+
+
 def test_ending_a_session_revokes_every_generation_it_ever_had(world: World) -> None:
     """A join that commits just after a Rotate holds an unrevoked credential of
     the generation the Rotate retired — `issue_credential` reads the generation
@@ -1215,17 +1266,17 @@ def test_ending_a_session_revokes_every_generation_it_ever_had(world: World) -> 
         second, _ = world.sessions.issue_credential(unit, campaign, session.id)
         assert (first.link_generation, second.link_generation) == (1, 2)
 
-    # Put the first generation's credential back to unrevoked, which is the
-    # state the race leaves it in: made in generation 1, committed after the
-    # Rotate that retired it.
     with world.db.transaction() as unit:
-        stray, _ = world.sessions.issue_credential(unit, campaign, session.id)
+        stray = _a_stray_credential_of_the_retired_generation(world, unit, session.id)
 
     with world.db.transaction() as unit:
         world.sessions.end(unit, campaign, session.id)
         held = {c.id: c for c in world.sessions.credentials(unit, session.id)}
+        assert held[stray].link_generation == 1 and held[second.id].link_generation == 2, (
+            "one retired generation and one current, or this test proves nothing"
+        )
         assert [c.id for c in held.values() if c.is_active] == []
-        assert held[stray.id].revoked_at is not None and held[second.id].revoked_at is not None
+        assert held[stray].revoked_at is not None and held[second.id].revoked_at is not None
 
 
 def test_rotating_the_link_retires_the_old_generation_and_leaves_the_session_live(
@@ -2024,6 +2075,7 @@ def test_the_alias_key_is_the_comparison_both_worlds_make() -> None:
     assert alias_key("ROOK") == alias_key("rook") == "rook"
     assert alias_key("Straße") == alias_key("STRASSE") == "strasse"
     assert alias_key("ΑΣ") == alias_key("ας")
+    assert alias_key("Ａｎａ") == alias_key("Ana") == "ana", "NFKC, not only casefold"
 
 
 def test_the_slot_clearing_extension_point_is_empty_in_this_bead() -> None:
