@@ -739,6 +739,28 @@ def test_two_aliases_a_gm_could_not_tell_apart_cannot_both_be_seated(
             world.participants.add(unit, campaign, alias=second)
 
 
+def test_an_alias_whose_key_folds_past_the_columns_bound_is_refused_in_both_worlds(
+    world: World,
+) -> None:
+    """G-1. NFKC expands, and `alias_key` is what the column holds: one
+    `U+FDFA` is a single character a GM can type and eighteen in the key, so a
+    legal twelve-character alias folds to 216 — past the 200
+    `0004_campaign_schema.sql` allows. The twin seated it; PostgreSQL refused
+    the INSERT with a check violation whose DETAIL quotes the failing row, alias
+    included, and left the transaction aborted. The bound belongs in
+    `check_alias`, which already owns the alias's own bound."""
+    campaign = _a_campaign(world)
+    overflowing = "ﷺ" * 12
+    with world.db.transaction() as unit:
+        with pytest.raises(ValueError, match="folds to at most") as refused:
+            world.participants.add(unit, campaign, alias=overflowing)
+        assert overflowing not in str(refused.value), "a refusal never repeats private text"
+        assert world.participants.list_for_campaign(unit, campaign) == [], "nothing was seated"
+        # The refusal is raised before any statement, so this transaction is
+        # still usable — which is exactly what a driver's error would not leave.
+        assert world.participants.add(unit, campaign, alias="Rook").alias == "Rook"
+
+
 def test_an_alias_is_stored_normalised_and_a_blank_one_is_not_an_alias(world: World) -> None:
     campaign = _a_campaign(world)
     with world.db.transaction() as unit:

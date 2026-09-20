@@ -79,11 +79,18 @@ from .campaign_store import (
 from .db import InMemoryDatabase, InMemoryTransaction, UnitOfWork
 
 ALIAS_MAX_CHARS = 40
+#: The bound `0004_campaign_schema.sql` puts on `alias_key`, pinned to the
+#: migration's own text by `service/tests/test_campaign_schema_sql.py`. It is not
+#: five times `ALIAS_MAX_CHARS` by accident and it is not enough by arithmetic:
+#: NFKC expands, and four assigned code points expand by more than five (`U+FDFA`
+#: by eighteen), so the alias's bound does not bound the key and this one is
+#: checked separately.
+ALIAS_KEY_MAX = 200
 
 
 def check_alias(alias: str) -> str:
-    """The bound `0004_campaign_schema.sql` carries, and the normalisation the
-    column is stored in. The refusal names the rule, never the alias.
+    """The two bounds `0004_campaign_schema.sql` carries, and the normalisation
+    the column is stored in. The refusal names the rule, never the alias.
 
     NFC first, then trimmed and with inner whitespace collapsed to one space:
     `'Ana'`, `'Ana '` and an `'Ana'` written with a no-break space must not be
@@ -93,12 +100,21 @@ def check_alias(alias: str) -> str:
     Unicode's C categories — a control, a format character, a lone surrogate —
     is refused outright: it is invisible, it survives no round trip intact, and
     it is how two aliases are made to look identical to a GM.
+
+    **The key is bounded here too**, because the column that holds it is: NFKC
+    expands, so twelve legal characters can fold to 216 and the row PostgreSQL
+    then refuses comes back as a check violation whose DETAIL quotes the whole
+    failing row — the alias with it (SEC-20). The twin would have seated it. The
+    bound is the column's, not a rule of its own, so widening one means widening
+    the other, and the pinning test says so.
     """
     normalised = " ".join(unicodedata.normalize("NFC", alias).split())
     if any(unicodedata.category(character)[0] == "C" for character in normalised):
         raise ValueError("an alias carries no control or formatting characters")
     if not 1 <= len(normalised) <= ALIAS_MAX_CHARS:
         raise ValueError(f"an alias is 1 to {ALIAS_MAX_CHARS} characters")
+    if len(alias_key(normalised)) > ALIAS_KEY_MAX:
+        raise ValueError(f"an alias folds to at most {ALIAS_KEY_MAX} characters")
     return normalised
 
 

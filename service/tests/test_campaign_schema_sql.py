@@ -218,6 +218,19 @@ def test_the_alias_index_compares_a_key_the_application_computes():
     assert "lower(alias)" not in statements, "the index no longer asks the database to fold"
 
 
+def test_the_alias_key_bound_is_the_number_the_migration_checks():
+    """G-1. NFKC expands — one `U+FDFA` folds to eighteen characters — so the
+    alias's own bound of 40 does not bound the key. `check_alias` refuses a key
+    over `ALIAS_KEY_MAX`; if that number and the column's CHECK ever disagreed,
+    the twin would seat a row PostgreSQL refuses with an error quoting the
+    alias, which is the one thing SEC-20 forbids."""
+    found = re.search(
+        r"alias_key\s+TEXT NOT NULL CHECK \(length\(alias_key\) BETWEEN 1 AND (\d+)\)", CAMPAIGN_SQL
+    )
+    assert found is not None, "0004 no longer bounds alias_key"
+    assert participant_store.ALIAS_KEY_MAX == int(found.group(1))
+
+
 def test_the_conversation_columns_are_the_four_agreed_and_carry_no_cascade():
     """Requirement 5, and the fail-closed half of it: until 1kg.2.6 decides the
     deletion order, deleting a campaign that still has conversations is refused
