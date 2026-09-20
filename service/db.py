@@ -167,6 +167,11 @@ class _CampaignLockOrder:
     def __init__(self, campaign_lock: CampaignLockSettings | None = None) -> None:
         #: `(campaign_id, mode)` per call, in order — what a test asserts on.
         self.campaign_locks: list[tuple[str, str]] = []
+        #: Every bound this transaction has asked for, in order, in the same
+        #: spirit: a store that holds a row bounds the transaction first, and
+        #: this is how a test says so in either world. Only the FIRST of them is
+        #: ever armed — see `transaction_bound`.
+        self.transaction_bounds: list[str] = []
         self._locked_anything_else = False
         #: One source for the two bounds. A store that holds a row reads it from
         #: here rather than keeping a second settings object of its own.
@@ -184,13 +189,16 @@ class _CampaignLockOrder:
         ten minutes, and a bound nobody can reach is not a bound.
         """
         if transaction_timeout_s is None:
-            return self.campaign_lock.transaction_timeout
-        if not TRANSACTION_BOUND_MIN_S <= transaction_timeout_s <= TRANSACTION_BOUND_MAX_S:
-            raise ValueError(
-                f"a transaction bound is from {TRANSACTION_BOUND_MIN_S} to "
-                f"{TRANSACTION_BOUND_MAX_S} seconds"
-            )
-        return f"{transaction_timeout_s}s"
+            bound = self.campaign_lock.transaction_timeout
+        else:
+            if not TRANSACTION_BOUND_MIN_S <= transaction_timeout_s <= TRANSACTION_BOUND_MAX_S:
+                raise ValueError(
+                    f"a transaction bound is from {TRANSACTION_BOUND_MIN_S} to "
+                    f"{TRANSACTION_BOUND_MAX_S} seconds"
+                )
+            bound = f"{transaction_timeout_s}s"
+        self.transaction_bounds.append(bound)
+        return bound
 
     def note_row_lock(self) -> None:
         """A store that takes an explicit row lock says so here, so that taking

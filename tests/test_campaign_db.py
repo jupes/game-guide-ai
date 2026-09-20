@@ -60,6 +60,7 @@ from service.campaign_store import (
 )
 from service.db import (
     CampaignAuthzMissing,
+    CampaignLockOrder,
     CampaignLockSettings,
     Database,
     InMemoryDatabase,
@@ -798,6 +799,7 @@ def test_a_participant_of_another_campaign_cannot_be_changed_through_this_one(wo
     otherwise let GM A remove, reset or re-enrol GM B's participant by id."""
     mine, theirs = _a_campaign(world), _a_campaign(world, owner=world.other_owner, name="Theirs")
     seat = _a_participant(world, theirs, "Rook")
+    nobody = "prt_" + "z" * 22
     with world.db.transaction() as unit:
         assert not world.participants.remove(unit, mine, seat)
         assert world.participants.revoke_codes(unit, mine, seat) == 0
@@ -807,6 +809,16 @@ def test_a_participant_of_another_campaign_cannot_be_changed_through_this_one(wo
         with pytest.raises(MissingParent):
             world.participants.issue_device_credential(unit, mine, seat)
         assert not world.participants.consume_code(unit, mine, seat, "0" * 64)
+
+        # The same answers a participant that is not there gets, which is the
+        # point: the seat of another campaign must be indistinguishable from one
+        # that does not exist, now that the mutators hold the row themselves.
+        assert not world.participants.remove(unit, mine, nobody)
+        assert world.participants.revoke_codes(unit, mine, nobody) == 0
+        assert world.participants.revoke_device_credentials(unit, mine, nobody) == 0
+        with pytest.raises(MissingParent):
+            world.participants.issue_code(unit, mine, nobody)
+        assert not world.participants.consume_code(unit, mine, nobody, "0" * 64)
     with world.db.transaction() as unit:
         still = world.participants.get(unit, seat)
         assert still is not None and still.is_active
@@ -923,6 +935,83 @@ def test_revoking_the_codes_mints_nothing_and_says_how_many_it_revoked(world: Wo
         assert world.participants.revoke_codes(unit, campaign, seat) == 0
         assert world.participants.codes(unit, seat) != [], "revoked, never deleted"
         assert [c for c in world.participants.codes(unit, seat) if c.revoked_at is None] == []
+
+
+#: The six methods that change a participant's own rows, each called the way a
+#: caller who has composed nothing else would call it. Every one of them takes
+#: the seat's row lock itself (G-6): two did and four relied on the caller, so
+#: the participant-first order RC-13 rests on was advisory rather than true.
+PARTICIPANT_MUTATORS: dict[str, Callable[[Any, Any, str, str, str], object]] = {
+    "remove": lambda store, unit, campaign, seat, digest: store.remove(unit, campaign, seat),
+    "revoke_codes": lambda store, unit, campaign, seat, digest: store.revoke_codes(
+        unit, campaign, seat
+    ),
+    "revoke_device_credentials": (
+        lambda store, unit, campaign, seat, digest: store.revoke_device_credentials(
+            unit, campaign, seat
+        )
+    ),
+    "consume_code": lambda store, unit, campaign, seat, digest: store.consume_code(
+        unit, campaign, seat, digest
+    ),
+    "issue_code": lambda store, unit, campaign, seat, digest: store.issue_code(unit, campaign, seat),
+    "issue_device_credential": (
+        lambda store, unit, campaign, seat, digest: store.issue_device_credential(
+            unit, campaign, seat
+        )
+    ),
+}
+
+
+@pytest.mark.parametrize("mutator", sorted(PARTICIPANT_MUTATORS))
+def test_every_participant_mutator_takes_the_seats_row_and_bounds_its_transaction(
+    world: World, mutator: str
+) -> None:
+    """G-6, and the residue of F-15. `issue_code` and `issue_device_credential`
+    held the row; `remove`, `consume_code` and the two `revoke_*` relied on the
+    caller to have done it. So the order was one forgotten call away from F-1's
+    deadlock — a Reset taking device rows before the participant row while an
+    enrolment takes the participant row first — and a bare Remove, which is the
+    composition the Protocol documents, ran in a transaction with no bound at
+    all. A second `FOR NO KEY UPDATE` on a row this transaction already holds is
+    free, so the caller's own hold stays where it is.
+
+    Both halves are read off the unit of work, which keeps them assertable in
+    both worlds: the bound the mutator asked for, and the refusal that proves it
+    declared a row lock (`lock_campaign` is the first lock a transaction takes,
+    RQ-2, so a declared row lock makes a later one illegal).
+    """
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign, "Rook")
+    digest = _a_code(world, campaign, seat)
+    with world.db.transaction() as unit:
+        PARTICIPANT_MUTATORS[mutator](world.participants, unit, campaign, seat, digest)
+        assert unit.transaction_bounds[:1] == ["5s"], "bounded before anything else (RQ-8)"
+        with pytest.raises(CampaignLockOrder):
+            unit.lock_campaign(campaign, shared=True)
+
+
+def test_a_hold_may_name_the_campaign_and_then_answers_for_no_other_ones_seat(
+    world: World,
+) -> None:
+    """G-11. Ids are not secrets (SEC-4), so an unscoped hold let GM A take
+    `FOR NO KEY UPDATE` on GM B's participant row — for as long as the
+    transaction bound allows — and be handed B's alias and campaign id, before
+    the scoped call that followed refused. A GM path names its campaign; the
+    answer is then the one a participant that does not exist gets, and the row
+    is neither locked nor returned."""
+    mine, theirs = _a_campaign(world), _a_campaign(world, owner=world.other_owner, name="Theirs")
+    seat = _a_participant(world, theirs, "Rook")
+    with world.db.transaction() as unit:
+        assert world.participants.hold(unit, seat, campaign_id=mine) is None
+        assert world.participants.hold(unit, "prt_" + "z" * 22, campaign_id=mine) is None
+        assert world.participants.hold(unit, seat, campaign_id=theirs) is not None
+
+    with world.db.transaction() as unit:
+        held = world.participants.hold(unit, seat)
+        assert held is not None and held.campaign_id == theirs, (
+            "the unauthenticated enrolment route knows a code and nothing else"
+        )
 
 
 def test_holding_a_participant_hands_back_the_row_so_the_caller_can_read_it(world: World) -> None:
@@ -1833,6 +1922,30 @@ def test_an_enrolment_waiting_behind_a_remove_binds_nothing(dsn: str, owner: int
     with db.transaction() as unit:
         with pytest.raises(ParticipantRemoved):
             participants.issue_device_credential(unit, CAMPAIGN, seat)
+
+
+@pytest.mark.parametrize(
+    "mutator", ["consume_code", "remove", "revoke_codes", "revoke_device_credentials"]
+)
+@needs_db
+def test_a_bare_participant_mutator_waits_for_the_seat_another_transaction_holds(
+    dsn: str, owner: int, mutator: str
+) -> None:
+    """G-6 on the server rather than in the unit of work's bookkeeping: called
+    with nothing composed around it, each of these really is behind the
+    participant row. Before, only `remove` was — and only by accident, because
+    its own UPDATE takes the row — while `consume_code` and the two `revoke_*`
+    touched code and credential rows and sailed past a seat somebody else was
+    holding. `pg_stat_activity` is asked whether the second transaction is
+    blocked before the first is released, so nothing here depends on timing."""
+    with _a_seat_with_a_code(dsn) as (db, participants, seat, digest):
+        def nothing_else(unit: Any) -> None:
+            """The harness's own `hold` is the whole of the holder's work."""
+
+        def mutate(unit: Any) -> object:
+            return PARTICIPANT_MUTATORS[mutator](participants, unit, CAMPAIGN, seat, digest)
+
+        _while_another_transaction_holds_the_seat(dsn, db, seat, nothing_else, mutate)
 
 
 # The guards and bounds, which belong to neither world ────────────────────────
