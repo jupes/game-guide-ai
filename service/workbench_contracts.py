@@ -1794,7 +1794,7 @@ class AudienceKind(str, Enum):
 class TableAudience(_Contract):
     """The whole table: everyone holding a live table credential, guests included."""
 
-    audience: Literal["table"]
+    audience: Literal[AudienceKind.TABLE]
 
 
 class ParticipantAudience(_Contract):
@@ -1802,7 +1802,7 @@ class ParticipantAudience(_Contract):
     a credential; an alias is a display name and never leaves the GM's channel
     (AUD-11)."""
 
-    audience: Literal["participant"]
+    audience: Literal[AudienceKind.PARTICIPANT]
     participant_id: OpaqueId
 
 
@@ -1971,6 +1971,79 @@ class TableProjection(_Contract):
         return self
 
 
+class RevealLive(_Contract):
+    """What one slot holds, as the **GM** sees it.
+
+    The GM channel and ``GmSnapshot`` only: the threat model's §8.3 row reads
+    *reveal state, with the epoch, every slot, version numbers and mask keys —
+    GM yes, participant never, guest never*.
+
+    ``stale_text`` is the alignment's *whether a newer version exists*, named for
+    the predicate REVEAL-8 actually fixes: **the comparison is of text, not of
+    version numbers**, so ten autosaves raise one notice and reverting the text
+    clears it. It is what raises ``Table is seeing an earlier version`` and its
+    *Use latest version*. ``pending_delivery`` is AUD-10 — a reveal to a
+    participant with no device confirms normally and waits, and never falls back
+    to the table.
+    """
+
+    document_id: OpaqueId
+    type: DocumentTypeId
+    #: The **sealed** version the table is pinned to (REVEAL-8, CANVAS-34).
+    version: VersionNumber
+    mask: Mask
+    stale_text: StrictBool
+    pending_delivery: StrictBool
+
+    @model_validator(mode="after")
+    def _mask_is_revealable_for_its_type(self) -> Self:
+        revealable = revealable_fields(self.type)
+        if any(key not in revealable for key in self.mask):
+            raise ValueError("a slot's mask names only fields that are revealable for its type")
+        return self
+
+
+class RevealSlot(_Contract):
+    """One slot of the live session, GM-side. ``live`` is ``None`` for a slot the
+    GM can see and which is empty. A slot a client is **not** entitled to is
+    absent rather than marked: a marker would confirm that it exists (WT-7,
+    threat model §8.2)."""
+
+    slot: RevealAudience
+    seq: SlotSequence
+    live: RevealLive | None
+
+    @model_validator(mode="after")
+    def _only_a_participant_waits_for_a_device(self) -> Self:
+        """Decision AUD-10: the table has no one to wait for."""
+        if self.live is not None and self.live.pending_delivery and self.slot.audience is AudienceKind.TABLE:
+            raise ValueError("only a participant slot can be waiting for a device")
+        return self
+
+
+class RevealState(_Contract):
+    """The GM's whole reveal picture, carried by the GM channel's ``snapshot``
+    frame and nothing else: the session, its link generation, its reveal epoch,
+    and one entry per slot (AUD-8)."""
+
+    session_id: OpaqueId
+    gen: LinkGeneration
+    reveal_epoch: RevealEpoch
+    slots: Annotated[list[RevealSlot], Field(max_length=REVEAL_MAX_SLOTS)]
+
+    @model_validator(mode="after")
+    def _one_entry_per_audience(self) -> Self:
+        """Decision ED-15: a slot holds one live projection, so an audience names
+        one slot."""
+        named = [
+            slot.slot.participant_id if isinstance(slot.slot, ParticipantAudience) else None  #
+            for slot in self.slots
+        ]
+        if len(set(named)) != len(named):
+            raise ValueError("an audience names one slot")
+        return self
+
+
 # ── Realtime events ──────────────────────────────────────────────────────────
 #
 # Two channels, two unions (ADR RT-1, threat model 8.3): the GM channel carries
@@ -2079,6 +2152,36 @@ class PresenceEvent(_EventBase):
     guests: GuestPresence
 
 
+class GmSlotEvent(_EventBase):
+    """One reveal slot changed (REVEAL-22, ADR RT-4). The GM's twin of
+    ``GmAudioEvent``: it names the session, the link generation it was produced
+    under (SEC-9) and the reveal epoch, because the GM's next Confirm must carry
+    that number (REVEAL-13). ``live`` is ``None`` for a slot that was stopped."""
+
+    event: Literal["slot"]
+    session_id: OpaqueId
+    gen: LinkGeneration
+    reveal_epoch: RevealEpoch
+    slot: RevealAudience
+    seq: SlotSequence
+    live: RevealLive | None
+
+    @model_validator(mode="after")
+    def _only_a_participant_waits_for_a_device(self) -> Self:
+        if self.live is not None and self.live.pending_delivery and isinstance(self.slot, TableAudience):
+            raise ValueError("only a participant slot can be waiting for a device")
+        return self
+
+
+class GmRevealSnapshotEvent(_EventBase):
+    """The whole reveal picture in one frame (ADR RT-4), so a GM tab that has seen
+    ``ready`` knows every slot and the epoch — and never reads missing state as
+    *nothing revealed* (REVEAL-13)."""
+
+    event: Literal["snapshot"]
+    state: RevealState
+
+
 class GmAssetEvent(_EventBase):
     """An asset changed state (ADR MS-3): the GM's `Still processing…` ends here."""
 
@@ -2104,6 +2207,8 @@ GmEvent = Annotated[
     | EditLaneEvent
     | GmSessionEvent
     | GmAudioEvent
+    | GmSlotEvent
+    | GmRevealSnapshotEvent
     | PresenceEvent
     | GmAssetEvent
     | GmReadyEvent
@@ -2122,6 +2227,21 @@ def _ends_with_ready(frames: Sequence[Any]) -> None:
         raise ValueError("a snapshot never carries a reconnect")
 
 
+def _one_reveal_picture_while_live(frames: Sequence[Any], *, live: bool) -> None:
+    """Decision ADR RT-4: a snapshot is **complete** before ``ready``, so a client
+    that has seen ``ready`` knows every slot it is entitled to — and never reads
+    the absence of the picture as *nothing revealed* (REVEAL-13).
+
+    A live channel therefore carries exactly one ``snapshot`` frame, and a channel
+    with no live session carries none: there is no epoch and there are no slots to
+    describe. That is why ``GmSnapshot``'s *no session running* and
+    ``TableSnapshot``'s *inactive table* stay valid as they are (TABLE-9).
+    """
+    pictures = sum(1 for frame in frames if frame.event == "snapshot")
+    if pictures != (1 if live else 0):
+        raise ValueError("a live snapshot carries one reveal picture, and one with no session carries none")
+
+
 class GmSnapshot(_Contract):
     """The GM channel read as a resource — a stream's opening frames, and the
     polling mode of ADR RT-9 — ending with ``ready``."""
@@ -2132,6 +2252,8 @@ class GmSnapshot(_Contract):
     @model_validator(mode="after")
     def _complete(self) -> Self:
         _ends_with_ready(self.frames)
+        live = any(frame.event == "session" and frame.session.state is SessionState.LIVE for frame in self.frames)
+        _one_reveal_picture_while_live(self.frames, live=live)
         return self
 
 
@@ -2252,6 +2374,8 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "RevealAudience": TypeAdapter(RevealAudience, config=_HIDE_INPUT),
     "RevealRequest": TypeAdapter(RevealRequest),
     "RevealStopRequest": TypeAdapter(RevealStopRequest, config=_HIDE_INPUT),
+    "RevealLive": TypeAdapter(RevealLive),
+    "RevealState": TypeAdapter(RevealState),
     "TableProjection": TypeAdapter(TableProjection),
     "GmEvent": TypeAdapter(GmEvent, config=_HIDE_INPUT),
     "TableEvent": TypeAdapter(TableEvent, config=_HIDE_INPUT),

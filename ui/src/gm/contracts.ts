@@ -1055,7 +1055,7 @@ export const SESSION_STATES = ['live', 'ended'] as const
 export const SESSION_ACTIONS = ['start', 'end', 'rotate'] as const
 /** AUDIO-21, AUDIO-22: listening means playing and unmuted. */
 export const PRESENCE_AUDIO = ['listening', 'muted', 'pending', 'absent'] as const
-export const GM_EVENT_KINDS = ['tool_lane', 'edit_lane', 'session', 'audio', 'presence', 'asset', 'ready', 'reconnect'] as const
+export const GM_EVENT_KINDS = ['tool_lane', 'edit_lane', 'session', 'audio', 'slot', 'snapshot', 'presence', 'asset', 'ready', 'reconnect'] as const
 export const TABLE_EVENT_KINDS = ['session', 'inactive', 'audio', 'ready', 'reconnect'] as const
 
 const MediaTypeSchema = z.string().regex(/^(image|audio)\/[a-z0-9.+-]{1,32}$/)
@@ -1543,6 +1543,61 @@ export const TableProjectionSchema = z
   })
 export type TableProjection = z.infer<typeof TableProjectionSchema>
 
+/**
+ * What one slot holds, as the **GM** sees it — the GM channel and `GmSnapshot`
+ * only (threat model 8.3: reveal state, with the epoch, every slot, version
+ * numbers and mask keys, is GM yes / participant never / guest never).
+ *
+ * `stale_text` is the alignment's "whether a newer version exists", named for
+ * the predicate REVEAL-8 fixes: the comparison is of **text**, not of version
+ * numbers, so ten autosaves raise one notice and reverting the text clears it.
+ * `pending_delivery` is AUD-10 — a reveal to a participant with no device waits,
+ * and never falls back to the table.
+ */
+export const RevealLiveSchema = z
+  .object({
+    document_id: OpaqueIdSchema,
+    type: z.enum(DOCUMENT_TYPE_IDS),
+    version: VersionNumberSchema,
+    mask: MaskSchema,
+    stale_text: z.boolean(),
+    pending_delivery: z.boolean(),
+  })
+  .refine((live) => live.mask.every((key) => Object.hasOwn(revealableFields(live.type), key)), {
+    path: ['mask'],
+    message: "a slot's mask names only fields that are revealable for its type",
+  })
+export type RevealLive = z.infer<typeof RevealLiveSchema>
+
+/** One slot of the live session, GM-side. `live` is null for a slot the GM can
+ * see and which is empty; a slot a client is **not** entitled to is absent
+ * rather than marked, because a marker would confirm it exists (WT-7). */
+const RevealSlotSchema = z
+  .object({ slot: RevealAudienceSchema, seq: SlotSequenceSchema, live: RevealLiveSchema.nullable() })
+  .refine((entry) => !(entry.live?.pending_delivery && entry.slot.audience === 'table'), {
+    path: ['live', 'pending_delivery'],
+    message: 'only a participant slot can be waiting for a device',
+  })
+
+/** The GM's whole reveal picture, carried by the GM channel's `snapshot` frame
+ * and nothing else: the session, its generation, its epoch, one entry per slot. */
+export const RevealStateSchema = z
+  .object({
+    session_id: OpaqueIdSchema,
+    gen: LinkGenerationSchema,
+    reveal_epoch: RevealEpochSchema,
+    slots: z.array(RevealSlotSchema).max(REVEAL_MAX_SLOTS),
+  })
+  .refine(
+    (state) => {
+      // ED-15: a slot holds one live projection, so an audience names one slot.
+      const named = state.slots.map((entry) => (entry.slot.audience === 'participant' ? entry.slot.participant_id : 'table'))
+      return new Set(named).size === named.length
+    },
+    { path: ['slots'], message: 'an audience names one slot' },
+  )
+export type RevealState = z.infer<typeof RevealStateSchema>
+
 // ── Realtime events ──────────────────────────────────────────────────────────
 // Two channels, two unions (ADR RT-1, threat model 8.3). Every frame carries its
 // own schema_version; the heartbeat is an SSE comment, not an event. `snapshot`
@@ -1615,6 +1670,28 @@ const PresenceEventSchema = z.object({
   guests: GuestPresenceSchema,
 })
 /** An asset changed state (ADR MS-3): the GM's `Still processing…` ends here. */
+/** One reveal slot changed (REVEAL-22, ADR RT-4) — the GM's twin of GmAudioEvent:
+ * it names the session, the generation it was produced under (SEC-9) and the
+ * reveal epoch, because the GM's next Confirm must carry that number. */
+const GmSlotEventSchema = z
+  .object({
+    ...eventBase,
+    event: z.literal('slot'),
+    session_id: OpaqueIdSchema,
+    gen: LinkGenerationSchema,
+    reveal_epoch: RevealEpochSchema,
+    slot: RevealAudienceSchema,
+    seq: SlotSequenceSchema,
+    live: RevealLiveSchema.nullable(),
+  })
+  .refine((frame) => !(frame.live?.pending_delivery && frame.slot.audience === 'table'), {
+    path: ['live', 'pending_delivery'],
+    message: 'only a participant slot can be waiting for a device',
+  })
+/** The whole reveal picture in one frame (ADR RT-4), so a GM tab that has seen
+ * `ready` knows every slot and the epoch — and never reads missing state as
+ * "nothing revealed" (REVEAL-13). */
+const GmRevealSnapshotEventSchema = z.object({ ...eventBase, event: z.literal('snapshot'), state: RevealStateSchema })
 const GmAssetEventSchema = z.object({ ...eventBase, event: z.literal('asset'), asset: AssetSchema })
 /** The snapshot is complete; what follows is live (ADR RT-4) — the boundary TABLE-7 needs. */
 const GmReadyEventSchema = z.object({ ...eventBase, event: z.literal('ready') })
@@ -1626,6 +1703,8 @@ export const GmEventSchema = z.discriminatedUnion('event', [
   EditLaneEventSchema,
   GmSessionEventSchema,
   GmAudioEventSchema,
+  GmSlotEventSchema,
+  GmRevealSnapshotEventSchema,
   PresenceEventSchema,
   GmAssetEventSchema,
   GmReadyEventSchema,
@@ -1639,10 +1718,30 @@ const endsWithReady = (frames: ReadonlyArray<{ event: string }>) =>
   frames.length > 0 && frames[frames.length - 1].event === 'ready' && !frames.some((frame) => frame.event === 'reconnect')
 const SNAPSHOT_ISSUE = { path: ['frames'], message: 'a snapshot ends with ready and never carries a reconnect' }
 
+/** ADR RT-4: a snapshot is **complete** before `ready`, so a client that has seen
+ * `ready` knows every slot it is entitled to — and never reads the absence of the
+ * picture as "nothing revealed" (REVEAL-13). A live channel carries exactly one
+ * `snapshot` frame; one with no live session carries none, which is why the
+ * no-session and inactive-table snapshots stay valid as they are (TABLE-9). */
+const oneRevealPictureWhileLive = (frames: ReadonlyArray<{ event: string }>, live: boolean) =>
+  frames.filter((frame) => frame.event === 'snapshot').length === (live ? 1 : 0)
+const PICTURE_ISSUE = {
+  path: ['frames'],
+  message: 'a live snapshot carries one reveal picture, and one with no session carries none',
+}
+
 /** The GM channel read as a resource — a stream's opening frames, and the polling mode of ADR RT-9. */
 export const GmSnapshotSchema = z
   .object({ schema_version: z.literal(CONTRACT_VERSION), frames: z.array(GmEventSchema).min(1).max(200) })
   .refine((snapshot) => endsWithReady(snapshot.frames), SNAPSHOT_ISSUE)
+  .refine(
+    (snapshot) =>
+      oneRevealPictureWhileLive(
+        snapshot.frames,
+        snapshot.frames.some((frame) => frame.event === 'session' && frame.session.state === 'live'),
+      ),
+    PICTURE_ISSUE,
+  )
 export type GmSnapshot = z.infer<typeof GmSnapshotSchema>
 
 /** A live session as a table client may know it (AUDIO-19), and this device's own role. */
@@ -1735,6 +1834,8 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   RevealAudience: RevealAudienceSchema,
   RevealRequest: RevealRequestSchema,
   RevealStopRequest: RevealStopRequestSchema,
+  RevealLive: RevealLiveSchema,
+  RevealState: RevealStateSchema,
   TableProjection: TableProjectionSchema,
   GmEvent: GmEventSchema,
   TableEvent: TableEventSchema,

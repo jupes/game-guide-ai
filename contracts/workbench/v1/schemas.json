@@ -42,6 +42,8 @@
     "RevealAudience",
     "RevealRequest",
     "RevealStopRequest",
+    "RevealLive",
+    "RevealState",
     "TableProjection",
     "GmEvent",
     "TableEvent",

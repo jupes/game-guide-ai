@@ -610,8 +610,10 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     for (const example of table.valid) expect(parseTableEvent(expand(example.value)).kind).toBe('ok')
   })
 
-  it('turns a kind it does not know — snapshot and slot until the reveal family lands — into a placeholder', () => {
-    expect(parseGmEvent({ schema_version: 1, event: 'snapshot', slots: [] })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+  it('turns a kind it does not know into a placeholder', () => {
+    // `snapshot` and `slot` were the stand-ins here until the reveal family landed;
+    // both are known kinds now, so the probe moves to one this contract does not define.
+    expect(parseGmEvent({ schema_version: 1, event: 'excerpt', span: {} })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
     expect(parseTableEvent({ schema_version: 1, event: 'slot', slot: 'table', seq: 1 })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
     // Presence never travels on the table channel; to a table client the kind is simply unknown.
     expect(parseTableEvent(first(gm, 'who is listening'))).toEqual({ kind: 'unknown', reason: 'unknown_kind' })

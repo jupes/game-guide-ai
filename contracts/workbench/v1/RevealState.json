@@ -1,0 +1,1023 @@
+{
+  "schema": "RevealState",
+  "direction": "response",
+  "note": "The GM's whole reveal picture: the session, its link generation, its reveal epoch, and one entry per slot — the table slot and one per participant (AUD-8). It rides the GM channel's snapshot frame and nothing else (threat model 8.3). An entry whose live is null is a slot the GM is entitled to see and which is empty; a table client is never given an entry for a slot it is not entitled to, which is why absence, not a marker, is how that is expressed (WT-7).",
+  "valid": [
+    {
+      "name": "the table showing a dossier and one private slot empty",
+      "value": {
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 4,
+        "slots": [
+          {
+            "slot": {
+              "audience": "table"
+            },
+            "seq": 12,
+            "live": {
+              "document_id": "doc_9k2f7a1c",
+              "type": "npc",
+              "version": 3,
+              "mask": [
+                "name",
+                "portrait"
+              ],
+              "stale_text": false,
+              "pending_delivery": false
+            }
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_4c1b9e7a"
+            },
+            "seq": 3,
+            "live": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "nothing revealed",
+      "value": {
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 0,
+        "slots": []
+      }
+    },
+    {
+      "name": "a private reveal waiting for a device",
+      "value": {
+        "session_id": "ses_7d3e1f0a",
+        "gen": 2,
+        "reveal_epoch": 9,
+        "slots": [
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_4c1b9e7a"
+            },
+            "seq": 1,
+            "live": {
+              "document_id": "doc_1a2b3c4d",
+              "type": "handout",
+              "version": 1,
+              "mask": [
+                "name"
+              ],
+              "stale_text": false,
+              "pending_delivery": true
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "the same audience twice",
+      "why": "ED-15: a slot holds one live projection, so an audience names one slot",
+      "value": {
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 4,
+        "slots": [
+          {
+            "slot": {
+              "audience": "table"
+            },
+            "seq": 12,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "table"
+            },
+            "seq": 13,
+            "live": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "the table slot waiting for a device",
+      "why": "AUD-10: only a participant can lack a device; a table slot has no one to wait for",
+      "value": {
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 4,
+        "slots": [
+          {
+            "slot": {
+              "audience": "table"
+            },
+            "seq": 12,
+            "live": {
+              "document_id": "doc_9k2f7a1c",
+              "type": "npc",
+              "version": 3,
+              "mask": [
+                "name"
+              ],
+              "stale_text": false,
+              "pending_delivery": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a slot named by alias",
+      "why": "AUD-2, AUD-11: a slot is named by its audience, and an audience is an id",
+      "value": {
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 4,
+        "slots": [
+          {
+            "slot": "Bex",
+            "seq": 1,
+            "live": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "no epoch",
+      "why": "REVEAL-22: the GM's client needs the epoch it must name in the next Confirm; REVEAL-13 forbids reading missing state as 'nothing revealed'",
+      "value": {
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "slots": []
+      }
+    },
+    {
+      "name": "a slot with no sequence",
+      "why": "ADR RT-4: every slot carries the sequence its state was read at, so a client can drop anything at or below its mark",
+      "value": {
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 4,
+        "slots": [
+          {
+            "slot": {
+              "audience": "table"
+            },
+            "live": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "a slot marked as withheld",
+      "why": "WT-7, threat model 8.2: a slot a client is not entitled to is absent, never marked — a marker would confirm that it exists — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 4,
+        "slots": [
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_4c1b9e7a"
+            },
+            "seq": 1,
+            "live": null,
+            "entitled": false
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "more slots than a session can have",
+      "why": "AUD-8: one table slot plus one per participant, and presence is bounded at 100; the audiences here are distinct, so the bound is the only reason it fails",
+      "value": {
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 4,
+        "slots": [
+          {
+            "slot": {
+              "audience": "table"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0000"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0001"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0002"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0003"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0004"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0005"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0006"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0007"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0008"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0009"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0010"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0011"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0012"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0013"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0014"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0015"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0016"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0017"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0018"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0019"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0020"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0021"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0022"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0023"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0024"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0025"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0026"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0027"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0028"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0029"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0030"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0031"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0032"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0033"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0034"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0035"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0036"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0037"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0038"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0039"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0040"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0041"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0042"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0043"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0044"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0045"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0046"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0047"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0048"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0049"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0050"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0051"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0052"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0053"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0054"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0055"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0056"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0057"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0058"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0059"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0060"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0061"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0062"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0063"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0064"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0065"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0066"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0067"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0068"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0069"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0070"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0071"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0072"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0073"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0074"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0075"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0076"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0077"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0078"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0079"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0080"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0081"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0082"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0083"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0084"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0085"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0086"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0087"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0088"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0089"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0090"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0091"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0092"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0093"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0094"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0095"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0096"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0097"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0098"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0099"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "pt_0100"
+            },
+            "seq": 1,
+            "live": null
+          }
+        ]
+      }
+    }
+  ]
+}
