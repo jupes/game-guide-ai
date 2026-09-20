@@ -27,21 +27,35 @@
 -- references it, and the whole statement is refused. That is plain referential
 -- integrity and tests/test_migrations_db.py pins it.
 --
--- The owner's OWN conversations are a subtler case and this file asserts
--- nothing about it. The NO ACTION check is an AFTER DELETE row trigger on
--- campaign.campaigns, queued at the end of the NESTED cascade query rather than
--- of the outer DELETE, so whether U's conversations are already gone depends on
--- the firing order of two referential-integrity triggers on auth.users — and
--- their names embed the trigger's OID rendered as text, which means the outcome
--- falls out of constraint CREATION order rather than any documented guarantee.
--- The test records what CI actually does and reports it either way.
+-- WHY THE EDGE IS DEFERRABLE INITIALLY DEFERRED. The owner's OWN conversations
+-- were the subtle case. An immediate NO ACTION check is an AFTER DELETE row
+-- trigger on campaign.campaigns, queued at the end of the NESTED cascade query
+-- rather than of the outer DELETE, so whether U's conversations were already
+-- gone depended on the firing order of two referential-integrity triggers on
+-- auth.users — and their names embed the trigger's OID rendered as text, so the
+-- outcome fell out of constraint CREATION order rather than any documented
+-- guarantee. On a freshly initialised cluster (CI) those OIDs are five digits
+-- and monotonic, and the delete cascaded; on a long-lived cluster whose OID
+-- counter has crossed into six digits, `..._a_100123` sorts before
+-- `..._a_24601` and the same delete is REFUSED.
+--
+-- Deferring the check to the end of the transaction removes the question. By
+-- then the owner's own conversations have already gone with the user cascade,
+-- so nothing is left to check and the delete succeeds — while another user's
+-- conversation still refuses it, which is the fail-closed answer requirement 5
+-- asks for. Same outcome on every cluster, and it stops depending on the order
+-- two constraints happened to be created in.
+--
+-- Still NO ACTION and still no cascade: 1kg.2.6 decides whether deleting a
+-- campaign detaches its conversations or refuses while any remain.
 --
 -- There is no conversation-level `mode` column: a mode is per turn
 -- (chat.messages.mode, 0001) and docs/workbench-wire-contract.md carries it on
 -- a timeline entry, not on the conversation.
 
 ALTER TABLE chat.conversations
-  ADD COLUMN campaign_id TEXT REFERENCES campaign.campaigns (id),
+  ADD COLUMN campaign_id TEXT REFERENCES campaign.campaigns (id)
+                           DEFERRABLE INITIALLY DEFERRED,
   ADD COLUMN title       TEXT CHECK (title IS NULL OR length(title) BETWEEN 1 AND 200),
   ADD COLUMN updated_at  TIMESTAMPTZ,
   ADD COLUMN archived_at TIMESTAMPTZ;

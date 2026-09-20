@@ -15,8 +15,10 @@
 --
 -- SECRETS (SEC-5). An enrolment code, a device credential and a table link token
 -- are 32 random bytes each, and only the lowercase-hex SHA-256 digest is stored.
--- Every lookup is an exact match on a unique index over the digest. No column
--- here holds a token, a code or a credential in any recoverable form.
+-- Every lookup is an exact match on a unique index over the digest — partial
+-- where the column is nullable, which is `table_sessions.link_digest` alone (a
+-- retired link has none, and PostgreSQL would let NULLs repeat anyway). No
+-- column here holds a token, a code or a credential in any recoverable form.
 --
 -- PRIVATE TEXT (SEC-20). A participant's alias is private text: it is stored
 -- here and nowhere else — never a log line, never an exception message, never an
@@ -33,7 +35,15 @@ CREATE TABLE campaign.campaigns (
   name        TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  archived_at TIMESTAMPTZ
+  archived_at TIMESTAMPTZ,
+  -- Redundant with the primary key, and there so that table_sessions can carry
+  -- a composite foreign key to (id, owner_id): in v1 the GM of a session IS the
+  -- campaign's owner (AUD-1), and an invariant the database holds cannot be
+  -- forgotten by a route. What it costs: `owner_id` becomes a key column, so an
+  -- UPDATE of it would take FOR UPDATE rather than FOR NO KEY UPDATE. Nothing
+  -- updates it — a campaign does not change hands — and every other column
+  -- (name, updated_at, archived_at) is untouched by this, so RQ-3 is intact.
+  UNIQUE (id, owner_id)
 );
 CREATE INDEX campaigns_owner_idx ON campaign.campaigns (owner_id, created_at);
 
@@ -64,15 +74,25 @@ CREATE TRIGGER campaigns_authz_state_ai AFTER INSERT ON campaign.campaigns
 -- compared case-insensitively. RQ-3/W-3: a participant is MARKED removed and
 -- never deleted, so that a row another transaction references cannot vanish
 -- under it — and a removed alias becomes free again.
+--
+-- WHY alias_key AND NOT lower(alias). `lower()` answers according to the
+-- database's collation provider (libc or ICU, and which locale), while the
+-- in-memory twin answers with Python — and the two disagree about a final
+-- sigma and a dotted capital I, silently. `alias_key` is computed by the
+-- application (service/participant_store.alias_key: NFKC, then casefold, which
+-- is the full case-insensitive comparison Unicode defines and lower() is not),
+-- so the two worlds agree by construction. It is longer than the alias on
+-- purpose: casefolding can expand (ß becomes ss), and NFKC more so.
 CREATE TABLE campaign.participants (
   id          TEXT PRIMARY KEY CHECK (id ~ '^prt_[A-Za-z0-9_-]{22,60}$'),
   campaign_id TEXT NOT NULL REFERENCES campaign.campaigns (id) ON DELETE CASCADE,
   alias       TEXT NOT NULL CHECK (length(alias) BETWEEN 1 AND 40),
+  alias_key   TEXT NOT NULL CHECK (length(alias_key) BETWEEN 1 AND 200),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   removed_at  TIMESTAMPTZ
 );
 CREATE UNIQUE INDEX participants_alias_uidx
-  ON campaign.participants (campaign_id, lower(alias)) WHERE removed_at IS NULL;
+  ON campaign.participants (campaign_id, alias_key) WHERE removed_at IS NULL;
 
 -- AUD-4: single-use, and an unused code expires seven days after it is issued.
 -- SEC-5: the digest only, looked up by digest.
@@ -88,7 +108,11 @@ CREATE TABLE campaign.enrolment_codes (
   expires_at     TIMESTAMPTZ NOT NULL,
   consumed_at    TIMESTAMPTZ,
   revoked_at     TIMESTAMPTZ,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- A code is spent or it is cancelled, never both: the two say different
+  -- things to an audit reader, and a row that claimed both would make
+  -- "was this link ever used?" unanswerable.
+  CHECK (consumed_at IS NULL OR revoked_at IS NULL)
 );
 CREATE UNIQUE INDEX enrolment_codes_digest_uidx ON campaign.enrolment_codes (code_digest);
 CREATE UNIQUE INDEX enrolment_codes_live_uidx ON campaign.enrolment_codes (participant_id)
@@ -120,9 +144,13 @@ CREATE UNIQUE INDEX device_credentials_active_uidx
 -- past it is still `live` until something ends it, which is why
 -- `expired_live_sessions_for_gm` exists: a start ends the GM's stale session
 -- first rather than being refused by an index.
+-- AUD-1: the GM of a session IS the campaign's owner, and the composite foreign
+-- key below is what holds that rather than a route remembering to compare two
+-- values. `gm_user_id` still cascades from auth.users so that deleting the
+-- account takes the sessions with it whichever edge fires first.
 CREATE TABLE campaign.table_sessions (
   id              TEXT PRIMARY KEY CHECK (id ~ '^ses_[A-Za-z0-9_-]{22,60}$'),
-  campaign_id     TEXT NOT NULL REFERENCES campaign.campaigns (id) ON DELETE CASCADE,
+  campaign_id     TEXT NOT NULL,
   gm_user_id      BIGINT NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
   state           TEXT NOT NULL CHECK (state IN ('live', 'ended', 'expired')),
   started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -132,13 +160,30 @@ CREATE TABLE campaign.table_sessions (
   link_digest     TEXT CHECK (link_digest IS NULL OR link_digest ~ '^[0-9a-f]{64}$'),
   reveal_epoch    BIGINT NOT NULL DEFAULT 0 CHECK (reveal_epoch >= 0),
   audio_epoch     BIGINT NOT NULL DEFAULT 0 CHECK (audio_epoch >= 0),
-  table_audio     BOOLEAN NOT NULL DEFAULT TRUE
+  table_audio     BOOLEAN NOT NULL DEFAULT TRUE,
+  FOREIGN KEY (campaign_id, gm_user_id)
+    REFERENCES campaign.campaigns (id, owner_id) ON DELETE CASCADE,
+  -- `live` and `ended_at` are one fact written twice, so the database keeps
+  -- them in step: a live session has no ending, and an ended or expired one
+  -- has exactly one.
+  CHECK ((state = 'live') = (ended_at IS NULL)),
+  -- A session that expired before it began is a clock bug, not a session.
+  CHECK (expires_at > started_at)
 );
 CREATE UNIQUE INDEX table_sessions_one_live_per_gm_uidx
   ON campaign.table_sessions (gm_user_id) WHERE state = 'live';
 CREATE INDEX table_sessions_campaign_idx ON campaign.table_sessions (campaign_id, started_at);
 CREATE INDEX table_sessions_expiry_idx
   ON campaign.table_sessions (expires_at) WHERE state = 'live';
+-- The digest every unauthenticated join is looked up by, so it is an index, and
+-- unique because nothing but 256-bit luck would otherwise make the lookup
+-- single-valued. It must stay PARTIAL: PostgreSQL counts the columns of a
+-- non-partial unique index as key columns, so a full one here would make
+-- Rotate's `UPDATE ... SET link_digest` take FOR UPDATE and start conflicting
+-- with the FOR KEY SHARE every join's foreign-key check takes — exactly what
+-- RQ-3 forbids. `tests/test_campaign_db.py` proves the partial one does not.
+CREATE UNIQUE INDEX table_sessions_link_digest_uidx
+  ON campaign.table_sessions (link_digest) WHERE link_digest IS NOT NULL;
 
 -- SEC-9: a credential belongs to the generation it was made in, so End and
 -- Rotate can revoke exactly that generation's credentials in the same

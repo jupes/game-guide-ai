@@ -96,6 +96,15 @@ Rules the runner or CI enforce:
   the tool only ever appends, so an edit fails `discover()` in CI; changing a pinned
   line has to be done by hand, in a diff a reviewer sees. The only legitimate case is
   a file that *could not* apply anywhere — say so in the pull request.
+- **An *unreleased* one may still be edited in place**, and only while it is
+  unreleased: the file has been applied nowhere but CI's throwaway databases, so
+  there is no ledger row anywhere that its checksum would contradict, and a
+  seventh file to correct a sixth that nothing has ever run would be history
+  nobody needs. It is the same mechanical act as the rule above — re-pin the
+  line by hand, in the diff — so the pull request must **say which lines it
+  re-pinned and why**, and a reviewer must confirm the file is really
+  unreleased. Once a build carrying it has been deployed, it is released and
+  the first rule applies.
 - **One number, one file.** Two branches that each add a migration both append to
   `manifest.txt`, so git reports a conflict instead of merging two `0007`s. Renumber
   the later one before merging.

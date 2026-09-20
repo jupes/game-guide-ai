@@ -151,6 +151,73 @@ def test_the_only_digest_columns_are_the_four_the_threat_model_names():
     }
 
 
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        ("campaign.enrolment_codes", "code_digest"),
+        ("campaign.device_credentials", "credential_digest"),
+        ("campaign.table_sessions", "link_digest"),
+        ("campaign.table_credentials", "credential_digest"),
+    ],
+)
+def test_every_digest_is_looked_up_by_a_unique_index(table: str, column: str):
+    """"Digest lookups are exact matches on a unique index" — the alignment's
+    words, and the migration header's, and ARCHITECTURE.md's. `link_digest` is
+    the one every unauthenticated join is found by and it had no index at all,
+    so the sentence was three-quarters true; this is what makes it four."""
+    index = re.search(
+        rf"CREATE UNIQUE INDEX (\w+)\s+ON {re.escape(table)} \({column}\)(.*)", CAMPAIGN_SQL
+    )
+    assert index is not None, f"{table}.{column} has no unique index"
+    if column == "link_digest":
+        # It must stay PARTIAL: PostgreSQL counts the columns of a non-partial
+        # unique index as key columns, so a full one here would make Rotate's
+        # UPDATE take FOR UPDATE and start conflicting with the FOR KEY SHARE a
+        # join's foreign-key check takes (RQ-3). Proved on a server in
+        # `tests/test_campaign_db.py`; pinned as text here.
+        assert "WHERE link_digest IS NOT NULL" in index.group(2)
+
+
+def test_a_sessions_gm_is_the_campaigns_owner_by_foreign_key():
+    """AUD-1 held by the database rather than by a route remembering to compare
+    two values, which is what `docs/migrations.md` section 4 asks for."""
+    assert re.search(
+        r"FOREIGN KEY \(campaign_id, gm_user_id\)\s*\n?\s*"
+        r"REFERENCES campaign\.campaigns \(id, owner_id\)",
+        CAMPAIGN_SQL,
+    ), "table_sessions does not tie its GM to the campaign's owner"
+    assert "UNIQUE (id, owner_id)" in CAMPAIGN_SQL, "the key that edge references"
+
+
+@pytest.mark.parametrize(
+    "invariant",
+    [
+        "CHECK ((state = 'live') = (ended_at IS NULL))",
+        "CHECK (expires_at > started_at)",
+        "CHECK (consumed_at IS NULL OR revoked_at IS NULL)",
+    ],
+)
+def test_the_states_the_schema_will_not_hold(invariant: str):
+    """Each of these was a pair of columns that could contradict each other: a
+    live session with an ending, a session that expired before it began, and a
+    code that was both spent and cancelled — which would make "was this link
+    ever used?" unanswerable."""
+    assert invariant in CAMPAIGN_SQL
+
+
+def test_the_alias_index_compares_a_key_the_application_computes():
+    """`lower(alias)` answered according to the database's collation provider
+    while the twin answered with Python, and the two disagree about a final
+    sigma and a dotted capital I — silently. The key is computed in one place
+    now (`service/participant_store.alias_key`), so the two worlds agree by
+    construction rather than by luck."""
+    assert "ON campaign.participants (campaign_id, alias_key) WHERE removed_at IS NULL" in CAMPAIGN_SQL
+    statements = "\n".join(
+        line for line in CAMPAIGN_SQL.splitlines() if not line.lstrip().startswith("--")
+    )
+    assert "lower(alias)" not in statements, "the index no longer asks the database to fold"
+
+
 def test_the_conversation_columns_are_the_four_agreed_and_carry_no_cascade():
     """Requirement 5, and the fail-closed half of it: until 1kg.2.6 decides the
     deletion order, deleting a campaign that still has conversations is refused
@@ -159,9 +226,14 @@ def test_the_conversation_columns_are_the_four_agreed_and_carry_no_cascade():
     assert added == {"campaign_id", "title", "updated_at", "archived_at"}
     assert "mode" not in added, "a mode is per turn, not per conversation"
 
-    reference = re.search(r"campaign_id\s+TEXT REFERENCES campaign\.campaigns \(id\)(.*)", CONVERSATION_SQL)
+    reference = re.search(
+        r"campaign_id\s+TEXT REFERENCES campaign\.campaigns \(id\)(.*?),\n", CONVERSATION_SQL, re.S
+    )
     assert reference is not None
     assert "ON DELETE" not in reference.group(1), "the campaign reference takes no delete action"
+    assert "DEFERRABLE INITIALLY DEFERRED" in reference.group(1), (
+        "checked at commit, so deleting an account no longer depends on trigger OID order"
+    )
 
 
 # ── Digests only, in output ──────────────────────────────────────────────────

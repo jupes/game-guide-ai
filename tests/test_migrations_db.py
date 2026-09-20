@@ -281,7 +281,8 @@ def _a_whole_campaign(conn, owner: int) -> None:
         (CAMPAIGN_ID, owner),
     )
     conn.execute(
-        "INSERT INTO campaign.participants (id, campaign_id, alias) VALUES (%s, %s, 'Rook')",
+        "INSERT INTO campaign.participants (id, campaign_id, alias, alias_key) "
+        "VALUES (%s, %s, 'Rook', 'rook')",
         ("prt_" + "a" * 22, CAMPAIGN_ID),
     )
     conn.execute(
@@ -395,10 +396,15 @@ def test_a_conversation_written_before_the_migration_reads_back_uncampaigned(dsn
 
 def test_deleting_the_campaign_owner_is_refused_while_another_users_conversation_links_to_it(dsn):
     """The cost of the second edge into chat.conversations, case (a): user V's
-    conversation points at user U's campaign, so deleting U is refused outright.
-    Unconditional referential integrity, and the fail-closed answer requirement 5
-    asks for — no conversation is silently detached or destroyed before 1kg.2.6
-    decides the deletion order."""
+    conversation points at user U's campaign, so deleting U is refused. The edge
+    is DEFERRABLE INITIALLY DEFERRED, so the refusal arrives at the COMMIT
+    rather than at the statement — which is why this test commits explicitly
+    instead of relying on autocommit to do it out of sight.
+
+    Unconditional referential integrity, and the fail-closed answer requirement
+    5 asks for: no conversation is silently detached or destroyed before 1kg.2.6
+    decides the deletion order.
+    """
     import psycopg
 
     mig.migrate(dsn)
@@ -415,35 +421,37 @@ def test_deleting_the_campaign_owner_is_refused_while_another_users_conversation
             (guest, CAMPAIGN_ID),
         )
 
+    with connect(dsn, autocommit=False) as conn:
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+            conn.commit()
+        conn.rollback()
 
     with connect(dsn) as conn:
         assert conn.execute("SELECT count(*) FROM campaign.campaigns").fetchone()[0] == 1
         assert conn.execute(
             "SELECT campaign_id FROM chat.conversations WHERE conversation_id = 'theirs'"
         ).fetchone()[0] == CAMPAIGN_ID, "nothing was detached on the way to the refusal"
+        assert conn.execute("SELECT count(*) FROM auth.users WHERE id = %s", (owner,)).fetchone()[0] == 1
 
 
-def test_deleting_an_owner_whose_own_conversation_links_to_their_campaign_is_fail_closed(dsn):
-    """Case (b), which this bead deliberately does not assert an outcome for.
+def test_deleting_an_owner_whose_own_conversation_links_to_their_campaign_deletes_both(dsn):
+    """Case (b), which used to have no determinate answer and now has one.
 
-    The NO ACTION check is an AFTER DELETE row trigger on campaign.campaigns,
-    queued at the end of the NESTED cascade query rather than of the outer
-    DELETE, so whether the owner's conversations are already gone depends on the
+    With an IMMEDIATE NO ACTION edge the check was an AFTER DELETE row trigger
+    on campaign.campaigns queued at the end of the NESTED cascade query, so
+    whether the owner's own conversations were already gone fell out of the
     firing order of two referential-integrity triggers on auth.users — and their
-    names embed the trigger's OID rendered as text, which makes the outcome fall
-    out of constraint creation order rather than any documented guarantee.
+    names embed an OID rendered as text. CI's freshly initialised cluster
+    cascaded; a long-lived cluster whose OID counter has six digits would have
+    refused the very same delete.
 
-    What IS asserted is the property requirement 5 actually asks for, and it
-    holds either way: nothing is silently detached, and nothing is orphaned. The
-    branch that ran is reported as a warning, because it is what 1kg.2.6 needs
-    in order to decide detach-or-refuse.
+    DEFERRABLE INITIALLY DEFERRED removes the question: the check runs at the
+    end of the transaction, by which time the owner's conversations have gone
+    with the user cascade and there is nothing left to check. The account goes,
+    its campaign goes, its conversations go, and no row is left pointing at a
+    campaign that is not there — on every cluster.
     """
-    import warnings
-
-    import psycopg
-
     mig.migrate(dsn)
     with connect(dsn) as conn:
         owner = _one_user(conn)
@@ -456,33 +464,29 @@ def test_deleting_an_owner_whose_own_conversation_links_to_their_campaign_is_fai
             "VALUES ('mine', %s, %s)",
             (owner, CAMPAIGN_ID),
         )
-        try:
-            conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
-        except psycopg.errors.ForeignKeyViolation:
-            outcome = "refused"
-        else:
-            outcome = "cascaded"
-
-    warnings.warn(
-        f"1kg.2.1: deleting a campaign owner whose own conversation links to their "
-        f"campaign is {outcome} on this PostgreSQL — 1kg.2.6 decides what it should be",
-        stacklevel=1,
-    )
+        conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
 
     with connect(dsn) as conn:
-        rows = conn.execute(
-            "SELECT conversation_id, campaign_id FROM chat.conversations"
-        ).fetchall()
-        campaigns = conn.execute("SELECT count(*) FROM campaign.campaigns").fetchone()[0]
+        assert conn.execute("SELECT count(*) FROM chat.conversations").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM campaign.campaigns").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM auth.users").fetchone()[0] == 0
 
-    if outcome == "refused":
-        assert rows == [("mine", CAMPAIGN_ID)] and campaigns == 1, "a refusal changes nothing"
-    else:
-        assert rows == [], "the conversation went with its owner, not with its campaign"
-        assert campaigns == 0
-    assert not [row for row in rows if row[1] is not None and campaigns == 0], (
-        "no conversation may be left pointing at a campaign that is gone"
-    )
+
+def test_the_conversation_edge_is_deferred_and_still_takes_no_delete_action(dsn):
+    """The mechanism behind the two tests above, asserted directly: a later
+    migration that made the edge immediate again, or gave it a cascade, would
+    reintroduce the OID-order dependency or silently destroy conversations."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        [(definition, deferrable, deferred)] = conn.execute(
+            "SELECT pg_get_constraintdef(c.oid), c.condeferrable, c.condeferred "
+            "FROM pg_constraint c JOIN pg_class rel ON rel.oid = c.conrelid "
+            "JOIN pg_namespace n ON n.oid = rel.relnamespace "
+            "WHERE n.nspname = 'chat' AND rel.relname = 'conversations' "
+            "AND c.contype = 'f' AND pg_get_constraintdef(c.oid) LIKE '%%campaign.campaigns%%'"
+        ).fetchall()
+    assert (deferrable, deferred) == (True, True), definition
+    assert "ON DELETE" not in definition, "still NO ACTION: 1kg.2.6 decides the deletion order"
 
 
 # ── Drift fails loudly ───────────────────────────────────────────────────────
