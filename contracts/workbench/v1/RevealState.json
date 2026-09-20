@@ -73,6 +73,31 @@
           }
         ]
       }
+    },
+    {
+      "name": "a participant whose id is the word table",
+      "value": {
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 2,
+        "slots": [
+          {
+            "slot": {
+              "audience": "table"
+            },
+            "seq": 1,
+            "live": null
+          },
+          {
+            "slot": {
+              "audience": "participant",
+              "participant_id": "table"
+            },
+            "seq": 2,
+            "live": null
+          }
+        ]
+      }
     }
   ],
   "invalid": [

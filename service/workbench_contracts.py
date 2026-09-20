@@ -462,6 +462,11 @@ class ErrorInfo(_Contract):
     #: look, and the key shape makes prose unrepresentable. Additive, so it is
     #: no version bump; the field is declared where ``ConflictInfo`` already sets
     #: the precedent of naming fields and never their values.
+    #:
+    #: ``FieldKey`` rather than ``MaskKey``, which is defined further down with
+    #: the reveal family: the envelope is declared before it. Nothing is lost —
+    #: a request whose mask says ``all`` is refused by ``MaskKey`` before any
+    #: key can be at fault, so ``keys`` never carries one.
     keys: Annotated[list[FieldKey], Field(min_length=1, max_length=MAX_CHANGED_FIELDS)] | None = None
 
 

@@ -1508,7 +1508,14 @@ function projectionValueSchema(kind: FieldKind): ZodType<unknown> {
 const ProjectedFieldSchema = z.object({
   key: MaskKeySchema,
   label: oneLine(1, FIELD_LABEL_MAX_CHARS),
-  value: z.unknown(),
+  /** The shapes a field kind can take on a table, mirroring the server's
+   * `StrictStr | list[StrictStr] | TableAssetRef`. It is NOT `z.unknown()`: the
+   * refinement below only *tests* the value against the type's declared kind, so
+   * an unknown would survive verbatim and carry whatever rode inside it — an
+   * `asset_id`, a filename, a GM note — straight through a client that is
+   * supposed to strip them (SEC-15, REVEAL-21). Declaring the union is what makes
+   * the strip happen. */
+  value: z.union([z.string(), z.array(z.string()), TableAssetRefSchema]),
 })
 
 /**
@@ -1595,7 +1602,10 @@ export const RevealStateSchema = z
   .refine(
     (state) => {
       // ED-15: a slot holds one live projection, so an audience names one slot.
-      const named = state.slots.map((entry) => (entry.slot.audience === 'participant' ? entry.slot.participant_id : 'table'))
+      // Namespaced, because `table` is a legal participant id and would otherwise
+      // collide with the table slot — a divergence from the server, which keys
+      // table slots on a value no id can take.
+      const named = state.slots.map((entry) => (entry.slot.audience === 'participant' ? `p:${entry.slot.participant_id}` : 'table'))
       return new Set(named).size === named.length
     },
     { path: ['slots'], message: 'an audience names one slot' },
@@ -1953,14 +1963,14 @@ function hasUnknownKind(raw: unknown, path: readonly string[], known: readonly s
 }
 
 /** Every discriminator a result carries; 1kg.4.3 adds card kinds. */
-const RESULT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
+export const RESULT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
   [['result_kind'], RESULT_KINDS],
   [['card', 'card_kind'], CARD_KINDS],
 ]
 
 /** Every discriminator an entry carries. A value this client does not know at
  * any of them reads as "made by a newer version", never as damage. */
-const ENTRY_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
+export const ENTRY_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
   [['entry_kind'], ENTRY_KINDS],
   ...RESULT_DISCRIMINATORS.map(([path, known]): [readonly string[], readonly string[]] => [['invocation', 'result', ...path], known]),
   [['invocation', 'result', 'outcome'], EDIT_OUTCOMES],
@@ -1999,7 +2009,7 @@ export function parseDocument(raw: unknown): Parsed<Document> {
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
 }
 
-const GM_EVENT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
+export const GM_EVENT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
   [['event'], GM_EVENT_KINDS],
   ...RESULT_DISCRIMINATORS.map(([path, known]): [readonly string[], readonly string[]] => [['invocation', 'result', ...path], known]),
   [['invocation', 'result', 'outcome'], EDIT_OUTCOMES],

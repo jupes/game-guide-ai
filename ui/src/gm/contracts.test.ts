@@ -42,7 +42,10 @@ import {
   MEDIA_TYPES,
   NEVER_REVEALABLE,
   NEVER_REVEALABLE_BY_TYPE,
+  ENTRY_DISCRIMINATORS,
+  GM_EVENT_DISCRIMINATORS,
   RESERVED_MASK_KEYS,
+  RESULT_DISCRIMINATORS,
   RESULT_KINDS,
   TABLE_EVENT_KINDS,
   TOOL_CARD_KIND,
@@ -644,6 +647,34 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     expect(parseTableEvent(first(gm, 'who is listening'))).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
   })
 
+  it('strips what a table client may never see, however deep it rides (SEC-15)', () => {
+    // The client is deliberately tolerant of a field a newer server added, so it
+    // cannot *refuse* these — but it must not pass them on either. A value typed
+    // `unknown` would survive verbatim, which is how a GM-side asset id, a
+    // filename and a GM note reached a component in an earlier revision.
+    const slot = first(table, 'the table slot is now showing') as { content: { fields: Array<Record<string, unknown>> } }
+    const portrait = slot.content.fields.find((field) => field.key === 'portrait')
+    if (!portrait) throw new Error('the fixture needs an asset field')
+    const smuggled = {
+      ...slot,
+      content: {
+        ...slot.content,
+        fields: [
+          {
+            ...portrait,
+            value: { ...(portrait.value as object), asset_id: 'ast_77c1d0e2', filename: 'ondrey-true-face.webp', gm_note: 'she is the lich' },
+          },
+        ],
+      },
+    }
+    const read = parseTableEvent(smuggled)
+    expect(read.kind).toBe('ok')
+    const rendered = JSON.stringify(read)
+    for (const secret of ['ast_77c1d0e2', 'ondrey-true-face.webp', 'she is the lich', 'asset_id', 'filename', 'gm_note']) {
+      expect([secret, rendered.includes(secret)]).toEqual([secret, false])
+    }
+  })
+
   it('reads a content kind it does not know as a placeholder, in both frames that carry one (ADR 7.4)', () => {
     // Reserving `content_kind` is only worth something if a v1 client meets a
     // future member as a placeholder rather than as a parse failure. The snapshot
@@ -660,9 +691,13 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
       kind: 'unknown',
       reason: 'unknown_kind',
     })
-    // …and the object-only paths are untouched: a known kind still reads as itself.
+    // …and the object-only paths are untouched: a known kind still reads as itself,
+    // which holds by construction because none of them names the array segment.
     expect(parseTableEvent(snapshot).kind).toBe('ok')
     for (const example of gm.valid) expect(parseGmEvent(expand(example.value)).kind).toBe('ok')
+    for (const paths of [RESULT_DISCRIMINATORS, ENTRY_DISCRIMINATORS, GM_EVENT_DISCRIMINATORS]) {
+      for (const [path] of paths) expect(path).not.toContain('[]')
+    }
   })
 
   it('reads a newer version, or a newer result kind inside a lane frame, as the future', () => {

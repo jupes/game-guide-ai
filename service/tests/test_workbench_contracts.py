@@ -181,13 +181,24 @@ def test_no_request_a_table_client_sends_names_a_participant() -> None:
     asking beyond the table slot gets what an empty table gives, never a refusal
     — which is only possible if there is no shape in which it can *ask*.
     """
-    table_side = {"TableJoinRequest", "EnrolRequest"}
-    for name in table_side:
-        model = getattr(wc, name)
-        assert not any("participant" in field for field in model.model_fields), name
-    # And the reveal family's own request shapes are GM-side only: a table client
-    # holds no credential that reaches them (SEC-1), and none is served under /table.
-    assert "participant_id" not in wc.RevealRequest.model_fields
+    def names_a_participant(schema: dict[str, Any]) -> bool:
+        """The whole schema, not its top-level field names: a shape that nests an
+        audience carries the id one level down and would read as clean.
+
+        The *word* is not the test — ``TableRole`` is the enum ``participant |
+        guest`` and belongs on the table channel (TABLE-13). The **identifier**
+        is: the field, or the shape that holds it.
+        """
+        text = json.dumps(schema)
+        return "participant_id" in text or "ParticipantAudience" in text
+
+    for name in ("TableJoinRequest", "EnrolRequest"):
+        assert not names_a_participant(wc.CONTRACT_SCHEMAS[name].json_schema(ref_template="{model}")), name
+
+    # The frames a table client receives name their slot ``table`` or ``mine``,
+    # never an audience, so no id travels that way either (SEC-15).
+    for member in get_args(get_args(wc.TableEvent)[0]):
+        assert not names_a_participant(TypeAdapter(member).json_schema(ref_template="{model}")), member.__name__
 
 
 def test_no_shape_in_v1_declares_an_eligibility_field() -> None:

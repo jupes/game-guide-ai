@@ -584,8 +584,8 @@
       }
     },
     {
-      "name": "a snapshot with two of this device's own slots",
-      "why": "AUD-8: one private slot per participant, and a device holds one participant's credential",
+      "name": "a snapshot with no table slot, only two of this device's own",
+      "why": "every table client is entitled to the table slot, so its absence is a shape no device can be in — which is what this trips first; the one-of-each rule is exercised by the two-table-slots example below",
       "value": {
         "schema_version": 1,
         "event": "snapshot",
@@ -721,6 +721,48 @@
             "seq": 0,
             "content": null,
             "entitled": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "a snapshot with the table slot twice",
+      "why": "AUD-8: one table slot and one private slot per participant, and a device holds one participant's credential — this is the only shape that reaches the one-of-each rule, since a missing table slot and a third entry both fail earlier",
+      "value": {
+        "schema_version": 1,
+        "event": "snapshot",
+        "slots": [
+          {
+            "slot": "table",
+            "seq": 12,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "label": "Name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "portrait",
+                  "label": "Portrait",
+                  "value": {
+                    "handle": "hdl_5e6f7a8b9c0d1e2f",
+                    "kind": "image",
+                    "media_type": "image/webp",
+                    "width": 1024,
+                    "height": 1280,
+                    "duration_ms": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "slot": "table",
+            "seq": 13,
+            "content": null
           }
         ]
       }

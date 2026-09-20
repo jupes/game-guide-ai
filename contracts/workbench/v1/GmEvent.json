@@ -499,6 +499,31 @@
         "schema_version": 1,
         "event": "snapshot"
       }
+    },
+    {
+      "name": "the table slot waiting for a device",
+      "why": "AUD-10: only a participant can lack a device; the table has no one to wait for",
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 4,
+        "slot": {
+          "audience": "table"
+        },
+        "seq": 12,
+        "live": {
+          "document_id": "doc_9k2f7a1c",
+          "type": "npc",
+          "version": 3,
+          "mask": [
+            "name"
+          ],
+          "stale_text": false,
+          "pending_delivery": true
+        }
+      }
     }
   ]
 }
