@@ -48,6 +48,23 @@
       }
     },
     {
+      "name": "session notes, every field of the type in one autosave",
+      "value": {
+        "schema_version": 1,
+        "type": "session-notes",
+        "type_version": 1,
+        "base_write_revision": 2,
+        "fields": {
+          "session": 12,
+          "date": "16 September, the second Tideday",
+          "present": ["Bryn", "Oda", "Kesh"],
+          "recap": "They found the ledger, and then the tide found them.",
+          "beats": ["The ledger names the harbourmaster"],
+          "loose_threads": ["Who paid for the scuttling?"]
+        }
+      }
+    },
+    {
       "name": "a quest log thread moved to resolved",
       "value": {
         "schema_version": 1,

@@ -22,7 +22,8 @@
           "wants": "The signet of the drowned saint, returned to the reliquary.",
           "leverage": "She knows who scuttled the Marrow.\nShe will not say it twice.",
           "if_attacked": "She walks into the water and is gone.",
-          "notes": ""
+          "notes": "",
+          "true_identity": "The drowned saint herself, and she knows it."
         },
         "write_revision": 14,
         "version": {
@@ -171,6 +172,96 @@
       }
     },
     {
+      "name": "a stat block that uses every field the type declares",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c3f",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": {
+          "name": "The Harbourmaster, Drowned",
+          "qualifier": "Large undead, lawful evil",
+          "tags": ["tidewardens", "the marrow"],
+          "ac": 16,
+          "ac_note": "natural armour, and a coat of barnacles",
+          "hp": 104,
+          "hit_dice": "11d10 + 44",
+          "speed": "20 ft., swim 40 ft.",
+          "size": "Large",
+          "creature_type": "Undead",
+          "alignment": "Lawful evil",
+          "abilities": { "str": 18, "dex": 9, "con": 18, "int": 11, "wis": 13, "cha": 15 },
+          "saving_throws": "Con +7, Wis +4",
+          "skills": "Athletics +7, Intimidation +5",
+          "damage_immunities": "Poison, cold",
+          "condition_immunities": "Exhaustion, poisoned",
+          "senses": "Darkvision 120 ft., passive Perception 11",
+          "languages": "Common, Aquan",
+          "challenge_rating": "7",
+          "xp": 2900,
+          "traits": [
+            { "name": "Amphibious", "text": "It breathes air and water." },
+            { "name": "Ledger-bound", "text": "It cannot attack a creature whose name it has struck through." }
+          ],
+          "actions": [
+            { "name": "Multiattack", "text": "It makes two gaff attacks." },
+            { "name": "Gaff", "text": "Melee weapon attack: +7 to hit, reach 10 ft., one target. 11 (2d6 + 4) piercing damage." }
+          ],
+          "bonus_actions": [{ "name": "Undertow", "text": "It drags a grappled creature 10 feet toward the water." }],
+          "reactions": [{ "name": "Turn of the Tide", "text": "When a creature it can see stands up, it may make one gaff attack." }],
+          "legendary_actions": [{ "name": "Call the Water", "text": "The water rises a foot. At three feet, the lanterns go out." }]
+        },
+        "write_revision": 6,
+        "version": {
+          "number": 2,
+          "author": "assistant",
+          "summary": "Promoted from the bestiary",
+          "created_at": "2026-09-16T20:10:00Z",
+          "sealed": true,
+          "changed_fields": ["actions", "legendary_actions"],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:10:00Z"
+      }
+    },
+    {
+      "name": "session notes that use every field the type declares (REVEAL-23)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5e55109b",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "session-notes",
+        "type_version": 1,
+        "data": {
+          "name": "Session 12 — The Marrow",
+          "qualifier": "Three hours, one drowning",
+          "tags": ["recap", "the marrow"],
+          "session": 12,
+          "date": "16 September, the second Tideday",
+          "present": ["Bryn", "Oda", "Kesh", "Marta (late)"],
+          "recap": "They found the ledger, and then the tide found them.\nOndrey was not where she said she would be.",
+          "beats": ["The ledger names the harbourmaster", "The Marrow was scuttled on purpose"],
+          "loose_threads": ["Who paid for the scuttling?", "The reliquary is still empty"]
+        },
+        "write_revision": 3,
+        "version": {
+          "number": 2,
+          "author": "assistant",
+          "summary": "Recap of session 12",
+          "created_at": "2026-09-16T23:01:00Z",
+          "sealed": true,
+          "changed_fields": ["recap", "beats", "loose_threads"],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T23:01:00Z",
+        "updated_at": "2026-09-16T23:20:00Z"
+      }
+    },
+    {
       "name": "an archived session-notes document, with the common fields alone",
       "value": {
         "schema_version": 1,
@@ -205,6 +296,91 @@
         "data": { "name": "@repeat:a:200", "notes": "@repeat:🎲:20000" },
         "write_revision": 3,
         "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name", "notes"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an integer field at the top of its range",
+      "why": "1kg.5.3: an integer field holds a count, a score or a budget - never an id and never a revision. Both languages stop at 1,000,000, and these files are where that number is agreed",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c40",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Whole Tide", "ac": 1000000, "xp": 1000000 },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["ac", "xp"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an integer field at the bottom of its range",
+      "why": "the range is symmetric on both sides, and -1,000,000 is the floor",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c41",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Undertow", "ac": -1000000, "xp": -1000000 },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["ac", "xp"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "ability scores at both ends of their range",
+      "why": "0 because a creature can lack an ability outright, and 99 is the ceiling on both sides - well past anything the rules produce",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c42",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Scoured", "abilities": { "str": 99, "dex": 0, "con": 99, "int": 0, "wis": 0, "cha": 99 } },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["abilities"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an entry list of exactly 100 entries",
+      "why": "an entry_list holds at most 100 entries, the same ceiling a text_list has",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c43",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Hundred Habits", "traits": { "@repeat_value": { "name": "Habit", "text": "It does this again." }, "@count": 100 } },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an entry at its name and text ceilings",
+      "why": "an entry's name is a text field (1 to 200 characters, one line) and its text a list item (up to 2,000)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c44",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Long-Winded", "traits": [{ "name": "@repeat:a:200", "text": "@repeat:a:2000" }] },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
         "archived": false,
         "created_at": "2026-09-16T20:00:00Z",
         "updated_at": "2026-09-16T20:00:00Z"
@@ -322,6 +498,11 @@
         "data": {
           "name": "Bryn Alder",
           "qualifier": "Level 3 half-elf bard",
+          "portrait": {
+            "asset_id": "ast_3c2b1a09",
+            "media_type": "image",
+            "alt": "A bard with a borrowed lute"
+          },
           "ac": 14,
           "hp": 22,
           "speed": "30 ft.",
@@ -864,9 +1045,6 @@
     {
       "name": "a handout whose illustration is an audio asset",
       "why": "an asset field on a document is an image; audio is a cue and never a document field",
-      "applies_to": [
-        "server"
-      ],
       "value": {
         "schema_version": 1,
         "document_id": "doc_1a2b3c01",
@@ -901,9 +1079,6 @@
     {
       "name": "a quest log whose threads are bare strings",
       "why": "1kg.5.3: an entry_list holds {name, text} entries, not a text_list - the renderer shows the name as a heading",
-      "applies_to": [
-        "server"
-      ],
       "value": {
         "schema_version": 1,
         "document_id": "doc_1a2b3c02",
@@ -936,9 +1111,6 @@
     {
       "name": "a character sheet whose armour class is text",
       "why": "1kg.5.3: ac is an integer field, so no renderer ever has to parse it",
-      "applies_to": [
-        "server"
-      ],
       "value": {
         "schema_version": 1,
         "document_id": "doc_1a2b3c03",
@@ -1002,9 +1174,6 @@
     {
       "name": "an encounter whose party level is a decimal",
       "why": "an integer field takes a whole number, and 3.5 is not one on either side",
-      "applies_to": [
-        "server"
-      ],
       "value": {
         "schema_version": 1,
         "document_id": "doc_1a2b3c05",
@@ -1027,6 +1196,142 @@
           ],
           "restored_from": null
         },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an integer field one past the top of its range",
+      "why": "1,000,001 is one past the ceiling. A drift in either language's constant would make this example pass on one side only",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c40",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Whole Tide", "ac": 1000001 },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["ac"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an integer field one past the bottom of its range",
+      "why": "-1,000,001 is one past the floor; the range is symmetric and both ends are checked",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c41",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Undertow", "ac": -1000001 },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["ac"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an ability score one past its ceiling",
+      "why": "an ability score stops at 99. A client that reads a higher one and a server that stores it are the drift this example exists to catch",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c42",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Scoured", "abilities": { "str": 100 } },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["abilities"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an ability score below its floor",
+      "why": "0 is the floor - a creature that lacks an ability has none of it, and a modifier is never stored here",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c42",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Scoured", "abilities": { "str": -1 } },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["abilities"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an entry list of 101 entries",
+      "why": "an entry_list holds at most 100 entries",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c43",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Hundred Habits", "traits": { "@repeat_value": { "name": "Habit", "text": "It does this again." }, "@count": 101 } },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an entry name of 201 characters",
+      "why": "an entry's name is a text field: one line of at most 200 characters, because a renderer shows it as a heading",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c44",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Long-Winded", "traits": [{ "name": "@repeat:a:201", "text": "" }] },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an entry text of 2,001 characters",
+      "why": "RAIL-6: an entry's text is a list item, capped at 2,000 characters so a pasted page is refused before any provider work",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c44",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Long-Winded", "traits": [{ "name": "Habit", "text": "@repeat:a:2001" }] },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a line break in an entry name",
+      "why": "an entry's name is one line, like every other text field; the body of the entry is where paragraphs go",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c44",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Long-Winded", "traits": [{ "name": "Amphibious.\nSalt-bound.", "text": "" }] },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
         "archived": false,
         "created_at": "2026-09-16T20:00:00Z",
         "updated_at": "2026-09-16T20:00:00Z"
