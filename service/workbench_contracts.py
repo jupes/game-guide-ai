@@ -1974,8 +1974,14 @@ class TableProjection(_Contract):
             kind = revealable.get(field.key)
             if kind is None:
                 raise ValueError("that field is not revealable for this type")
+            # ``.get``, not ``[]``: a kind ``1kg.5.3`` adds without a projection
+            # shape must refuse the payload, not raise out of validation and
+            # answer 500. The TypeScript side gets this from an exhaustive switch.
+            shape = _PROJECTION_VALUE.get(kind)
+            if shape is None:
+                raise ValueError(f"{kind.value} fields have no shape a table can be shown")
             try:
-                _PROJECTION_VALUE[kind].validate_python(field.value)
+                shape.validate_python(field.value)
             except ValidationError:
                 # ``from None``: a chained cause would put revealed text in a traceback.
                 raise ValueError(f"{field.key} is not a present {kind.value} value") from None

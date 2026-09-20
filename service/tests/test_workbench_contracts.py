@@ -188,6 +188,10 @@ def test_no_request_a_table_client_sends_names_a_participant() -> None:
         The *word* is not the test — ``TableRole`` is the enum ``participant |
         guest`` and belongs on the table channel (TABLE-13). The **identifier**
         is: the field, or the shape that holds it.
+
+        What this cannot catch, and no textual guard can: an id under another
+        name. It is a tripwire against the shape drifting, not a proof; the
+        fixtures are what pin each frame's actual content.
         """
         text = json.dumps(schema)
         return "participant_id" in text or "ParticipantAudience" in text

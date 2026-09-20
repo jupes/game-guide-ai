@@ -173,14 +173,28 @@ describe('shared fixtures', () => {
 })
 
 describe('what v1 deliberately has no shape for', () => {
-  it('has no request a table client sends that names a participant (threat model 8.2)', () => {
+  it('names no participant in anything a table client sends or receives (threat model 8.2, SEC-15)', () => {
     // The table client is not a restricted view of the GM API, it is a separate,
     // smaller API with its own principal. A guest asking beyond the table slot
     // gets what an empty table gives, never a refusal — which is only possible
     // if there is no shape in which it can ask.
+    //
+    // The *word* is not the test: `TableRole` is the enum `participant | guest`
+    // and belongs on the table channel (TABLE-13). The identifier is. And what
+    // no textual guard can catch is an id under another name — this is a
+    // tripwire against the shape drifting, not a proof; the fixtures pin the
+    // actual content of each frame.
+    const namesAParticipant = (schema: ZodType) => {
+      const json = JSON.stringify(z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }))
+      return json.includes('participant_id')
+    }
     for (const name of ['TableJoinRequest', 'EnrolRequest']) {
-      const shape = JSON.stringify(z.toJSONSchema(CONTRACT_SCHEMAS[name], { io: 'input' }))
-      expect(shape).not.toContain('participant')
+      expect([name, namesAParticipant(CONTRACT_SCHEMAS[name])]).toEqual([name, false])
+    }
+    // The frames a table client receives name their slot `table` or `mine`,
+    // never an audience, so no id travels that way either.
+    for (const option of TableEventSchema.options) {
+      expect([option.shape.event.value, namesAParticipant(option)]).toEqual([option.shape.event.value, false])
     }
   })
 
