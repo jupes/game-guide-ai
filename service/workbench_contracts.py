@@ -2083,9 +2083,11 @@ class StopDocument(_StopBase):
     backoff) would clear whatever tab B had deliberately revealed into that slot
     in the meantime. Naming the document makes the rule hold by construction: a
     GM client always knows the document, because every slot's document id is in
-    the GM's reveal picture, and a document is live in at most one slot (ED-15).
-    The scope exists so that the canvas header can stop *that document* without
-    knowing which slot holds it.
+    the GM's reveal picture, and a document has **at most one live disclosure**
+    (owner decision O-3, amending ED-15's "at most one slot"), so *what the Stop
+    names* is unambiguous however many copies that disclosure has — a Stop on
+    the document clears every copy. The scope exists so that the canvas header
+    can stop *that document* without knowing which slots hold it.
     """
 
     scope: Literal["document"]

@@ -1528,7 +1528,10 @@ export type RevealRequest = z.infer<typeof RevealRequestSchema>
  * clear whatever tab B had deliberately revealed into that slot meanwhile.
  * Naming the document makes the rule hold by construction: a GM client always
  * knows the document, because every slot's document id is in the reveal
- * picture, and a document is live in at most one slot (ED-15).
+ * picture, and a document has at most one live disclosure (owner decision O-3,
+ * amending ED-15's "at most one slot"), so what the Stop names is unambiguous
+ * however many copies that disclosure has — a Stop on the document clears every
+ * copy.
  *
  * **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and
  * never refused for state, so there is no number to be stale against —

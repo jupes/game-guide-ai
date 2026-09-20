@@ -1,7 +1,7 @@
 {
   "schema": "RevealStopRequest",
   "direction": "request",
-  "note": "Stop showing (REVEAL-6, REVEAL-22, X-3). TWO scopes: every slot holding one document, or every slot of the session. There is no slot scope: REVEAL-22 is `a Stop clears a slot only if it holds what the Stop names`, and a Stop that named an audience and nothing else could not honour it — tab A's retried Stop (REVEAL-16 retries with backoff) would clear whatever tab B had deliberately revealed into that slot meanwhile. Naming the document makes the rule hold by construction: a GM client always knows the document, because every slot's document id is in the GM's reveal picture, and a document is live in at most one slot (ED-15). A Stop carries NO epoch — it is never stale, never queued, never refused for state, and succeeds on an empty slot — so a stale number can never turn a narrowing into a refusal. There is no Retract in v1 (ED-16).",
+  "note": "Stop showing (REVEAL-6, REVEAL-22, X-3). TWO scopes: every copy of one document's disclosure, or every slot of the session. There is no slot scope: REVEAL-22 is `a Stop clears a slot only if it holds what the Stop names`, and a Stop that named an audience and nothing else could not honour it — tab A's retried Stop (REVEAL-16 retries with backoff) would clear whatever tab B had deliberately revealed into that slot meanwhile. Naming the document makes the rule hold by construction: a GM client always knows the document, because every slot's document id is in the GM's reveal picture, and a document has at most one live disclosure (owner decision O-3, amending ED-15's `at most one slot`), so what the Stop names is unambiguous however many copies that disclosure has - a Stop on the document clears every copy. A Stop carries NO epoch — it is never stale, never queued, never refused for state, and succeeds on an empty slot — so a stale number can never turn a narrowing into a refusal. There is no Retract in v1 (ED-16).",
   "valid": [
     {
       "name": "stop showing this document, wherever it is live",
@@ -65,7 +65,7 @@
     },
     {
       "name": "a document scope naming an audience as well",
-      "why": "one scope per Stop: a document Stop clears the slot the document is live in (REVEAL-7, ED-15), and an audience beside it would be a second rule with no way to tell which applied",
+      "why": "one scope per Stop: a document Stop clears every copy of that document's disclosure (REVEAL-7, O-3), and an audience beside it would be a second rule with no way to tell which applied",
       "value": {
         "schema_version": 1,
         "command_id": "cmd_5c6d7e8f90a1b2c5",
