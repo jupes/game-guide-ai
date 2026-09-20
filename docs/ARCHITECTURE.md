@@ -195,6 +195,86 @@ py-module `config`; extras `test` / `eval` / `rerank` / `extract`). `docker comp
 → `vector-db` + `service` + `ui` (nginx, :5173); or a single `uvicorn` process serves the built
 `ui/dist` plus the API on :8000.
 
+## Campaign schema (GM Workbench)
+
+Storage for the Workbench, added by `1kg.2.1`. Migrations `0004`–`0006`; stores in
+`service/campaign_store.py`, `service/participant_store.py`,
+`service/table_session_store.py` and `service/audit_log.py`. **No routes read any
+of it yet** — those are `1kg.2.2`'s and `1kg.2.3`'s.
+
+### The tables
+
+| Table | Holds | The rule that shapes it |
+|---|---|---|
+| `campaign.campaigns` | a GM's table: owner, name, created/updated/archived | owner is `NOT NULL` and cascades from `auth.users` |
+| `campaign.authz_state` | `authz_revision`, and `lock_token` (never written) | an `AFTER INSERT` trigger on `campaigns` creates it, so no path can leave a campaign without one (RQ-1) |
+| `campaign.participants` | a seat: alias, created, `removed_at` | marked removed, never deleted; the alias is unique within the campaign, case-insensitively, among seats that are not removed |
+| `campaign.enrolment_codes` | the personal link a GM hands a player | digest only; single-use; expires after 7 days; at most one live per seat |
+| `campaign.device_credentials` | the one device a seat is bound to | digest only; at most one unrevoked per seat |
+| `campaign.table_sessions` | a GM running a table now | at most one `live` session **per GM across campaigns** (a partial unique index), both epochs, the current link's digest |
+| `campaign.table_credentials` | a joined device | bound to the `link_generation` it was made in |
+| `campaign.session_join_counters` | the durable per-generation join count and its window start | storage only in this bead; `1kg.2.3` owns the arithmetic |
+| `audit.events` | one recorded decision | append-only; `campaign_id_tombstone` has **no** foreign key, so rows outlive their campaign |
+
+### The uncampaigned state
+
+`chat.conversations.campaign_id` is nullable, and **`NULL` is the documented
+uncampaigned state**: every conversation that existed before `0006`, and plain
+chat from now on. Nothing about `/chat` changes because the column exists;
+`service/history.py` is untouched and reading or writing the new columns is
+`1kg.2.4`'s.
+
+The reference takes **no delete action**. Until `1kg.2.6` decides whether deleting
+a campaign detaches its conversations or refuses while any remain, the database
+refuses — so nothing is silently detached. One consequence is worth knowing
+before it is met in a traceback: if user V has a conversation linked to user U's
+campaign, **deleting the account U fails**.
+
+### Digests, and what is private
+
+A code, a device credential and a table link token are 32 random bytes; only the
+lowercase-hex SHA-256 digest is stored, and every lookup is an exact match on a
+unique index over it (SEC-5). A plain-text secret exists only as the return value
+of the five methods that mint one. `argon2` (`service/hashing.py`) is deliberately
+not used for these: they are 256-bit random values with nothing to brute-force,
+and a slow hash on a route anyone can call is a denial-of-service lever.
+
+An alias, a conversation title and a campaign name are never in a log line, an
+exception, a URL or an audit row (SEC-20), and the records hide them from
+`repr()` because a traceback is a log line.
+
+### The campaign lock
+
+`UnitOfWork.lock_campaign(campaign_id, shared=...)` holds a campaign's
+authorisation still for the rest of a transaction — `FOR SHARE` to read under it,
+`FOR UPDATE` to change it — and `advance_authz_revision` is the only code that
+writes `authz_revision`, refusing unless the caller holds the lock exclusively.
+
+Three rules are enforced in both the PostgreSQL implementation and the in-memory
+twin, so the two cannot disagree about which calls are refused: it is the
+**first** lock a transaction takes, it is the **only** campaign that transaction
+locks, and a shared holder never upgrades to exclusive in place. Who *blocks*
+whom is the database's, and is tested there (`tests/test_campaign_db.py`).
+`Database.transaction()` opens every transaction **explicitly READ COMMITTED**, so
+no server, database or role default can change what the lock is reasoning about.
+
+### One setting interaction to know about
+
+`CAMPAIGN_LOCK_TIMEOUT_S` is bounded 1–4 and must be **below** `DB_POOL_TIMEOUT_S`,
+which is bounded 1–60: a request waiting for the campaign lock is holding one of
+the gate's connections, so a lock wait that outlasts the gate turns one contended
+campaign into a 503 for unrelated traffic. The consequence is that
+**`DB_POOL_TIMEOUT_S=1` refuses every valid lock timeout**: the lower bound of
+the one is the value of the other, so `CampaignLockSettings.from_env` raises
+whatever `CAMPAIGN_LOCK_TIMEOUT_S` is set to. That is RQ-8's own arithmetic and
+it fails closed, but an operator should not have to discover it from a
+traceback.
+
+Neither setting is read from the environment yet: nothing takes a campaign lock
+in this bead, so `Database` uses `CampaignLockSettings()`'s defaults. The bead
+that first takes one on a route passes `CampaignLockSettings.from_env(pool=...)`,
+the way `service/app.py` already passes `PoolSettings.from_env()`.
+
 ## Running it
 
 ```bash

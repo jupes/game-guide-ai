@@ -11,7 +11,7 @@ every epic that adds a table (`1kg`, `1ir`, `yje`).
 | The connection gate and the realtime pool, the transaction boundary, the in-memory twin | `service/db.py` |
 | The job outbox and its runner | `service/jobs.py` |
 | Tests without a database | `service/tests/test_migrations.py`, `test_db.py`, `test_jobs.py`, `test_startup_migrations.py` |
-| Tests against a real PostgreSQL (CI) | `tests/test_migrations_db.py`, `tests/test_db_postgres.py`, `tests/test_schema.py` |
+| Tests against a real PostgreSQL (CI) | `tests/test_migrations_db.py`, `tests/test_db_postgres.py`, `tests/test_campaign_db.py`, `tests/test_schema.py` |
 
 The **corpus** schema (`dnd`, `vector-db/init/`) is not part of this. It needs the
 `vector` extension and an ingested corpus, belongs to the ingestion pipeline, and is
@@ -20,7 +20,7 @@ still applied by the container's init directory or `scripts/bootstrap-db.sh`.
 ## 1. How the schema is applied
 
 `service/sql/migrations/NNNN_snake_case.sql` is the one definition of the `chat`,
-`auth` and `app` schemas. At startup — before anything is served — the service calls
+`auth`, `app`, `campaign` and `audit` schemas. At startup — before anything is served — the service calls
 `migrate()`, which applies whatever the database has not seen yet: once, in order,
 each file in its own transaction together with its row in `app.schema_migrations`
 (version, name, SHA-256 of the LF-normalised file, when, how long, which revision).
@@ -110,6 +110,17 @@ Rules the runner or CI enforce:
   ("adoption"). Later migrations run exactly once and need no `IF NOT EXISTS`.
 - **Rows that are not user content stay that way**: the outbox, the ledger and any
   audit table hold ids and codes, never text a user wrote (SEC-20).
+
+### The files, and what each one owns
+
+| File | Schema | What it adds |
+|---|---|---|
+| `0001_chat_schema.sql` | `chat` | conversations, messages, attachments |
+| `0002_auth_schema.sql` | `auth` | users, invites, and the ownership foreign keys |
+| `0003_jobs_outbox.sql` | `app` | the job outbox (`service/jobs.py`) |
+| `0004_campaign_schema.sql` | `campaign` | campaigns and their authorisation row, participants, enrolment codes, device credentials, table sessions, table credentials, the per-generation join counter (`1kg.2.1`) |
+| `0005_audit_events.sql` | `audit` | the append-only ledger (`service/audit_log.py`) |
+| `0006_conversation_metadata.sql` | `chat` | `campaign_id`, `title`, `updated_at`, `archived_at` on `chat.conversations` |
 
 ## 3. Roll forward, never back
 

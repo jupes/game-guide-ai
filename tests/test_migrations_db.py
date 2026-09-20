@@ -371,6 +371,120 @@ def test_the_audit_table_is_reachable_from_no_foreign_key(dsn):
         assert edges == []
 
 
+# ── Conversation metadata, and the uncampaigned state (0006) ─────────────────
+
+
+def test_a_conversation_written_before_the_migration_reads_back_uncampaigned(dsn):
+    """RAIL-13. A NULL campaign_id is the documented uncampaigned state — every
+    conversation that exists today, and plain chat from now on. It is not a
+    migration that has yet to finish."""
+    with connect(dsn) as conn:
+        conn.execute(PRE_EXPANSION)
+
+    mig.migrate(dsn)
+
+    with connect(dsn) as conn:
+        kept = conn.execute(
+            "SELECT conversation_id, campaign_id, title, updated_at, archived_at "
+            "FROM chat.conversations ORDER BY conversation_id"
+        ).fetchall()
+    assert kept == [("owned", None, None, None, None)], (
+        "a conversation older than the campaign schema must still read back, uncampaigned"
+    )
+
+
+def test_deleting_the_campaign_owner_is_refused_while_another_users_conversation_links_to_it(dsn):
+    """The cost of the second edge into chat.conversations, case (a): user V's
+    conversation points at user U's campaign, so deleting U is refused outright.
+    Unconditional referential integrity, and the fail-closed answer requirement 5
+    asks for — no conversation is silently detached or destroyed before 1kg.2.6
+    decides the deletion order."""
+    import psycopg
+
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn, "gm@example.com")
+        guest = _one_user(conn, "player@example.com")
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
+            (CAMPAIGN_ID, owner),
+        )
+        conn.execute(
+            "INSERT INTO chat.conversations (conversation_id, user_id, campaign_id) "
+            "VALUES ('theirs', %s, %s)",
+            (guest, CAMPAIGN_ID),
+        )
+
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+
+    with connect(dsn) as conn:
+        assert conn.execute("SELECT count(*) FROM campaign.campaigns").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT campaign_id FROM chat.conversations WHERE conversation_id = 'theirs'"
+        ).fetchone()[0] == CAMPAIGN_ID, "nothing was detached on the way to the refusal"
+
+
+def test_deleting_an_owner_whose_own_conversation_links_to_their_campaign_is_fail_closed(dsn):
+    """Case (b), which this bead deliberately does not assert an outcome for.
+
+    The NO ACTION check is an AFTER DELETE row trigger on campaign.campaigns,
+    queued at the end of the NESTED cascade query rather than of the outer
+    DELETE, so whether the owner's conversations are already gone depends on the
+    firing order of two referential-integrity triggers on auth.users — and their
+    names embed the trigger's OID rendered as text, which makes the outcome fall
+    out of constraint creation order rather than any documented guarantee.
+
+    What IS asserted is the property requirement 5 actually asks for, and it
+    holds either way: nothing is silently detached, and nothing is orphaned. The
+    branch that ran is reported as a warning, because it is what 1kg.2.6 needs
+    in order to decide detach-or-refuse.
+    """
+    import warnings
+
+    import psycopg
+
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
+            (CAMPAIGN_ID, owner),
+        )
+        conn.execute(
+            "INSERT INTO chat.conversations (conversation_id, user_id, campaign_id) "
+            "VALUES ('mine', %s, %s)",
+            (owner, CAMPAIGN_ID),
+        )
+        try:
+            conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+        except psycopg.errors.ForeignKeyViolation:
+            outcome = "refused"
+        else:
+            outcome = "cascaded"
+
+    warnings.warn(
+        f"1kg.2.1: deleting a campaign owner whose own conversation links to their "
+        f"campaign is {outcome} on this PostgreSQL — 1kg.2.6 decides what it should be",
+        stacklevel=1,
+    )
+
+    with connect(dsn) as conn:
+        rows = conn.execute(
+            "SELECT conversation_id, campaign_id FROM chat.conversations"
+        ).fetchall()
+        campaigns = conn.execute("SELECT count(*) FROM campaign.campaigns").fetchone()[0]
+
+    if outcome == "refused":
+        assert rows == [("mine", CAMPAIGN_ID)] and campaigns == 1, "a refusal changes nothing"
+    else:
+        assert rows == [], "the conversation went with its owner, not with its campaign"
+        assert campaigns == 0
+    assert not [row for row in rows if row[1] is not None and campaigns == 0], (
+        "no conversation may be left pointing at a campaign that is gone"
+    )
+
+
 # ── Drift fails loudly ───────────────────────────────────────────────────────
 
 
