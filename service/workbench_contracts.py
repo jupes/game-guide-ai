@@ -1889,6 +1889,88 @@ class StopAll(_StopBase):
 RevealStopRequest = Annotated[StopSlot | StopDocument | StopAll, Field(discriminator="scope")]
 
 
+class ContentKind(str, Enum):
+    """Decision ADR §7.4: ``document`` is the **only** member in v1. Adding one
+    later *is* a version bump; what reserving the discriminator buys is that a v1
+    table client meets an unknown kind as its neutral placeholder rather than as
+    a parse failure."""
+
+    DOCUMENT = "document"
+
+
+_PresentText = Annotated[
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=TEXT_FIELD_MAX_CHARS),
+    AfterValidator(_one_line),
+]
+_PresentProse = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=PROSE_FIELD_MAX_CHARS)]
+_PresentList = Annotated[list[_ListItem], Field(min_length=1, max_length=LIST_FIELD_MAX_ITEMS)]
+
+#: The same kinds a document declares, but a masked key is **present and
+#: non-empty** in the pinned version (REVEAL-5, ED-9), so nothing clears to a
+#: blank heading on a table; and an asset is the per-slot handle, never the
+#: GM-side ``AssetRef`` (SEC-15).
+_PROJECTION_VALUE: dict[FieldKind, TypeAdapter[Any]] = {
+    FieldKind.TEXT: TypeAdapter(_PresentText, config=_HIDE_INPUT),
+    FieldKind.PROSE: TypeAdapter(_PresentProse, config=_HIDE_INPUT),
+    FieldKind.TEXT_LIST: TypeAdapter(_PresentList, config=_HIDE_INPUT),
+    FieldKind.ASSET: TypeAdapter(TableAssetRef),
+}
+
+
+class ProjectedField(_Contract):
+    """One masked field as a player sees it: the key, the heading to render it
+    under, and the text. The label travels with the payload so a table client
+    renders without the registry, and so the page title is built from the
+    projection — the document's name appears only when ``name`` is masked
+    (TABLE-3)."""
+
+    key: MaskKey
+    label: Annotated[
+        str,
+        StringConstraints(strict=True, min_length=1, max_length=FIELD_LABEL_MAX_CHARS),
+        AfterValidator(_one_line),
+    ]
+    #: The shapes a field kind can take on a table; which one this key must be,
+    #: and its bounds, are checked against the type in ``TableProjection``.
+    value: StrictStr | list[StrictStr] | TableAssetRef
+
+
+class TableProjection(_Contract):
+    """What a table client is given, and the whole of it (SEC-14, SEC-15).
+
+    It is **built** from a sealed version, a mask and an audience by one
+    server-side builder, never derived by deleting keys from a GM payload, and
+    the same builder answers the player-safe export and print (EXPORT-3,
+    EXPORT-7). This schema is the second half of that guarantee: it forbids
+    everything outside the type's revealable set, so an asset id, a version
+    number, either epoch, another slot's sequence, a title outside the mask, an
+    alias or any eligibility class is a validation failure rather than a leak.
+    """
+
+    content_kind: Literal[ContentKind.DOCUMENT]
+    type: DocumentTypeId
+    fields: Annotated[list[ProjectedField], Field(min_length=1, max_length=MASK_MAX_KEYS)]
+
+    @model_validator(mode="after")
+    def _only_revealable_fields_of_this_type(self) -> Self:
+        revealable = revealable_fields(self.type)
+        seen: set[str] = set()
+        for field in self.fields:
+            if field.key in seen:
+                raise ValueError("a projection shows each field once")
+            seen.add(field.key)
+            kind = revealable.get(field.key)
+            if kind is None:
+                raise ValueError("that field is not revealable for this type")
+            try:
+                _PROJECTION_VALUE[kind].validate_python(field.value)
+            except ValidationError:
+                # ``from None``: a chained cause would put revealed text in a traceback.
+                raise ValueError(f"{field.key} is not a present {kind.value} value") from None
+        return self
+
+
 # ── Realtime events ──────────────────────────────────────────────────────────
 #
 # Two channels, two unions (ADR RT-1, threat model 8.3): the GM channel carries
@@ -2170,6 +2252,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "RevealAudience": TypeAdapter(RevealAudience, config=_HIDE_INPUT),
     "RevealRequest": TypeAdapter(RevealRequest),
     "RevealStopRequest": TypeAdapter(RevealStopRequest, config=_HIDE_INPUT),
+    "TableProjection": TypeAdapter(TableProjection),
     "GmEvent": TypeAdapter(GmEvent, config=_HIDE_INPUT),
     "TableEvent": TypeAdapter(TableEvent, config=_HIDE_INPUT),
     "GmSnapshot": TypeAdapter(GmSnapshot),

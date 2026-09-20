@@ -42,6 +42,7 @@
     "RevealAudience",
     "RevealRequest",
     "RevealStopRequest",
+    "TableProjection",
     "GmEvent",
     "TableEvent",
     "GmSnapshot",

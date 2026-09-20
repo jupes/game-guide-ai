@@ -1475,6 +1475,74 @@ export const RevealStopRequestSchema = refusingProtoKeys(
 )
 export type RevealStopRequest = z.infer<typeof RevealStopRequestSchema>
 
+/** ADR 7.4: `document` is the **only** member in v1. Adding one later *is* a
+ * version bump; reserving the discriminator buys a v1 table client a neutral
+ * placeholder for an unknown kind rather than a parse failure. */
+export const CONTENT_KINDS = ['document'] as const
+export type ContentKind = (typeof CONTENT_KINDS)[number]
+
+/** The same kinds a document declares, but a masked key is **present and
+ * non-empty** in the pinned version (REVEAL-5, ED-9), so nothing clears to a
+ * blank heading on a table; and an asset is the per-slot handle, never the
+ * GM-side AssetRef (SEC-15). */
+function projectionValueSchema(kind: FieldKind): ZodType<unknown> {
+  switch (kind) {
+    case 'text':
+      return oneLine(1, TEXT_FIELD_MAX_CHARS)
+    case 'prose':
+      return text(1, PROSE_FIELD_MAX_CHARS)
+    case 'text_list':
+      return z.array(text(1, LIST_ITEM_MAX_CHARS)).min(1).max(LIST_FIELD_MAX_ITEMS)
+    case 'asset':
+      return TableAssetRefSchema
+  }
+}
+
+/** One masked field as a player sees it. The label travels with the payload, so
+ * a table client renders without the registry and the page title is built from
+ * the projection — the name appears only when `name` is masked (TABLE-3). */
+const ProjectedFieldSchema = z.object({
+  key: MaskKeySchema,
+  label: oneLine(1, FIELD_LABEL_MAX_CHARS),
+  value: z.unknown(),
+})
+
+/**
+ * What a table client is given, and the whole of it (SEC-14, SEC-15). It is
+ * **built** from a sealed version, a mask and an audience by one server-side
+ * builder, never derived by deleting keys from a GM payload, and the same
+ * builder answers the player-safe export and print (EXPORT-3, EXPORT-7). This
+ * schema is the second half of that guarantee: an asset id, a version number,
+ * either epoch, another slot's sequence, a title outside the mask, an alias or
+ * any eligibility class is a validation failure rather than a leak.
+ */
+export const TableProjectionSchema = z
+  .object({
+    content_kind: z.literal('document'),
+    type: z.enum(DOCUMENT_TYPE_IDS),
+    fields: z.array(ProjectedFieldSchema).min(1).max(MASK_MAX_KEYS),
+  })
+  .superRefine((projection, ctx) => {
+    const revealable = revealableFields(projection.type)
+    const seen = new Set<string>()
+    projection.fields.forEach((field, index) => {
+      if (seen.has(field.key)) {
+        ctx.addIssue({ code: 'custom', path: ['fields', index, 'key'], message: 'a projection shows each field once' })
+        return
+      }
+      seen.add(field.key)
+      if (!Object.hasOwn(revealable, field.key)) {
+        ctx.addIssue({ code: 'custom', path: ['fields', index, 'key'], message: 'that field is not revealable for this type' })
+        return
+      }
+      const kind = revealable[field.key]
+      if (!projectionValueSchema(kind).safeParse(field.value).success) {
+        ctx.addIssue({ code: 'custom', path: ['fields', index, 'value'], message: `not a present ${kind} value` })
+      }
+    })
+  })
+export type TableProjection = z.infer<typeof TableProjectionSchema>
+
 // ── Realtime events ──────────────────────────────────────────────────────────
 // Two channels, two unions (ADR RT-1, threat model 8.3). Every frame carries its
 // own schema_version; the heartbeat is an SSE comment, not an event. `snapshot`
@@ -1667,6 +1735,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   RevealAudience: RevealAudienceSchema,
   RevealRequest: RevealRequestSchema,
   RevealStopRequest: RevealStopRequestSchema,
+  TableProjection: TableProjectionSchema,
   GmEvent: GmEventSchema,
   TableEvent: TableEventSchema,
   GmSnapshot: GmSnapshotSchema,
