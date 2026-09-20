@@ -133,6 +133,48 @@ def test_registry_constants_match_the_shared_registry() -> None:
         assert all(re.fullmatch(r"[a-z][a-z0-9_]{0,39}", key) for key in doc_type["fields"])
 
 
+def test_the_revealable_set_is_the_registry_s_and_excludes_what_never_reaches_a_table() -> None:
+    """Decisions REVEAL-10, ED-5, ED-20: the allowlist is derived from the type's
+    declared fields minus what the registry withholds, so a type that grows a
+    field grows its set, and ``1kg.5.3`` marks an identity link without touching
+    this family."""
+    registry = json.loads((FIXTURES / "registry.json").read_text(encoding="utf-8"))["reveal"]
+    assert sorted(wc.NEVER_REVEALABLE) == sorted(registry["never_revealable"])
+    assert {t.value: sorted(keys) for t, keys in wc.NEVER_REVEALABLE_BY_TYPE.items()} == {
+        key: sorted(value) for key, value in registry["never_revealable_by_type"].items()
+    }
+
+    # REVEAL-10: portrait, name, qualifier and every section are revealable…
+    assert set(wc.revealable_fields(wc.DocumentTypeId.NPC)) == {
+        "name",
+        "qualifier",
+        "portrait",
+        "voice",
+        "tell",
+        "attitude",
+        "wants",
+        "leverage",
+        "if_attacked",
+        "notes",
+    }
+    # …and tags never are, on any type (SEC-15).
+    assert all("tags" not in wc.revealable_fields(doc_type) for doc_type in wc.DocumentTypeId)
+    # A type whose fields 1kg.5.3 has not declared has the common ones only.
+    assert set(wc.revealable_fields(wc.DocumentTypeId.HANDOUT)) == {"name", "qualifier"}
+
+
+def test_a_mask_key_is_never_a_wildcard() -> None:
+    """Decisions REVEAL-9, ED-8. ``all`` matches the field-key pattern, so it is
+    refused by name; ``*`` and ``%`` never matched it in the first place."""
+    keys = TypeAdapter(wc.MaskKey)
+    assert keys.validate_python("notes") == "notes"
+    for wildcard in ("all", "*", "**", "%", "ALL"):
+        with pytest.raises(ValidationError):
+            keys.validate_python(wildcard)
+    # A registry that declared a field called `all` would make a mask unspeakable.
+    assert all("all" not in wc.revealable_fields(doc_type) for doc_type in wc.DocumentTypeId)
+
+
 def test_error_codes_are_safe_metric_labels() -> None:
     """Plan invariant 10: a code may become a metric label, so it is bounded and
     can never carry user text."""

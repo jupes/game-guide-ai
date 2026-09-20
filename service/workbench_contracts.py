@@ -1725,6 +1725,93 @@ class Capabilities(_Contract):
     audio_cues: StrictBool
 
 
+# ── Reveal ───────────────────────────────────────────────────────────────────
+#
+# The family through which GM-private text could reach a player, so its shapes
+# are a security boundary (`agent-forge-harness-1kg.1.6`). Decisions:
+# ``docs/adr/gm-workbench-interactions.md`` §7–8 (REVEAL, AUD, X),
+# ``gm-workbench-threat-model.md`` (SEC-13 to SEC-16, §8.2, §8.3) and
+# ``shared-eligibility-display-disclosure.md`` (ED-8 to ED-16, ED-25).
+
+
+#: Decision REVEAL-22, ED-9: every narrowing advances it, on an empty slot too.
+#: ``AudioEpoch``'s twin, and a session row carries both.
+RevealEpoch = Annotated[WireInt, Field(ge=0, le=WRITE_REVISION_MAX)]
+#: A mask never lists more keys than a document has fields to change.
+MASK_MAX_KEYS = MAX_CHANGED_FIELDS
+#: One table slot, plus one per participant (AUD-8, ``PRESENCE_MAX_PARTICIPANTS``).
+REVEAL_MAX_SLOTS = PRESENCE_MAX_PARTICIPANTS + 1
+#: A projection carries its own labels, so a table client renders without the
+#: registry (TABLE-3). Bounded like an alias, and one line for the same reason.
+FIELD_LABEL_MAX_CHARS = 60
+
+#: Decisions REVEAL-9, ED-8: ``all`` is never stored and never sent — the client
+#: expands it into the keys that exist at the moment the GM decides, so a field
+#: added later is never revealed by a wildcard. It is a *word*, not a pattern:
+#: ``all`` matches ``FieldKey``, while ``*`` and ``%`` do not, so it is refused
+#: by name. A document type may therefore not declare a field called ``all``.
+RESERVED_MASK_KEYS = frozenset({"all"})
+
+
+def _not_a_wildcard(value: str) -> str:
+    if value in RESERVED_MASK_KEYS:
+        raise PydanticCustomError("wildcard_mask_key", "a mask lists field keys, never a wildcard")
+    return value
+
+
+#: A field key as a mask, a GM-side slot and a projection name it.
+MaskKey = Annotated[FieldKey, AfterValidator(_not_a_wildcard)]
+
+#: Decision REVEAL-10: **never revealable** — tags, sources and citation text,
+#: version history, authorship, changed-field lists, asset metadata, and any id
+#: the projection does not need. Of those, ``tags`` is the only one that is a
+#: document *field*; the rest are not on the wire as fields at all. Pinned by
+#: the ``reveal`` key of ``registry.json``.
+NEVER_REVEALABLE: frozenset[str] = frozenset({"tags"})
+#: Decision ED-20, ED-5: a type marks a field of its own not revealable — an
+#: identity link is the worked case. ``1kg.5.3`` fills this as it declares each
+#: type's fields; empty in v1, because only ``npc`` declares any.
+NEVER_REVEALABLE_BY_TYPE: dict[DocumentTypeId, frozenset[str]] = {}
+
+
+def revealable_fields(doc_type: DocumentTypeId) -> dict[str, FieldKind]:
+    """The keys of ``doc_type`` a mask may name, and the kind each holds.
+
+    Decisions REVEAL-10 and ED-5. A type whose fields ``1kg.5.3`` has not yet
+    declared has the common ones only, which is the same fail-closed posture
+    documents already take.
+    """
+    declared = {**COMMON_FIELDS, **DOC_TYPE_FIELDS[doc_type]}
+    withheld = NEVER_REVEALABLE | NEVER_REVEALABLE_BY_TYPE.get(doc_type, frozenset())
+    return {key: kind for key, kind in declared.items() if key not in withheld}
+
+
+class AudienceKind(str, Enum):
+    TABLE = "table"
+    PARTICIPANT = "participant"
+
+
+class TableAudience(_Contract):
+    """The whole table: everyone holding a live table credential, guests included."""
+
+    audience: Literal["table"]
+
+
+class ParticipantAudience(_Contract):
+    """One participant, by **id** (AUD-2, ED-10). An audience is an identity, not
+    a credential; an alias is a display name and never leaves the GM's channel
+    (AUD-11)."""
+
+    audience: Literal["participant"]
+    participant_id: OpaqueId
+
+
+#: Decision ED-14: nothing here ties an audience to a document type. AUD-9 —
+#: a participant audience only for an owner-audience type — is a service rule,
+#: so lifting it later changes no slot, mask or eligibility row.
+RevealAudience = Annotated[TableAudience | ParticipantAudience, Field(discriminator="audience")]
+
+
 # ── Realtime events ──────────────────────────────────────────────────────────
 #
 # Two channels, two unions (ADR RT-1, threat model 8.3): the GM channel carries
@@ -2003,6 +2090,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "TableSessionRequest": TypeAdapter(TableSessionRequest),
     "TableSessionAnswer": TypeAdapter(TableSessionAnswer),
     "Capabilities": TypeAdapter(Capabilities),
+    "RevealAudience": TypeAdapter(RevealAudience, config=_HIDE_INPUT),
     "GmEvent": TypeAdapter(GmEvent, config=_HIDE_INPUT),
     "TableEvent": TypeAdapter(TableEvent, config=_HIDE_INPUT),
     "GmSnapshot": TypeAdapter(GmSnapshot),

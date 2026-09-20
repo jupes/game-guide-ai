@@ -1,0 +1,47 @@
+{
+  "schema": "RevealAudience",
+  "direction": "both",
+  "note": "Who a reveal is for (AUD-2, ED-10): the whole table, or one participant by id. An audience is an identity, never a credential and never an alias (AUD-11). Nothing here ties an audience to a document type — AUD-9 is a service rule, not a schema shape (ED-14) — so lifting it later changes no slot, mask or eligibility row. On the GM channel a slot is named by its audience; a table client is never told one (SEC-15).",
+  "valid": [
+    {
+      "name": "the whole table",
+      "value": { "audience": "table" }
+    },
+    {
+      "name": "one participant",
+      "value": { "audience": "participant", "participant_id": "pt_4c1b9e7a" }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a participant named by alias",
+      "why": "AUD-11: an alias is a display name, never an identifier, and never leaves the GM's channel",
+      "value": { "audience": "participant", "alias": "Bex" }
+    },
+    {
+      "name": "a participant with no id",
+      "why": "ED-10: a participant audience is an identity; there is nothing to evaluate without one",
+      "value": { "audience": "participant" }
+    },
+    {
+      "name": "the table audience carrying a participant id",
+      "why": "the table is not a participant; one shape per audience, and no half-named slot",
+      "value": { "audience": "table", "participant_id": "pt_4c1b9e7a" }
+    },
+    {
+      "name": "a bare string",
+      "why": "an audience is a discriminated object, so a second kind cannot be added by string",
+      "value": "table"
+    },
+    {
+      "name": "an audience kind this contract does not define",
+      "why": "closed vocabulary: a group audience is an amendment with a device-approval story (ED-14), not a value",
+      "value": { "audience": "group", "group_id": "grp_1a2b3c4d" }
+    },
+    {
+      "name": "a participant id outside the id alphabet",
+      "why": "identifiers are opaque: [A-Za-z0-9_-]{1,64}",
+      "value": { "audience": "participant", "participant_id": "pt/4c1b" }
+    }
+  ]
+}

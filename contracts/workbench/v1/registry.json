@@ -41,5 +41,9 @@
     "audio": ["audio/mpeg", "audio/mp4", "audio/ogg", "audio/wav"]
   },
   "cue_kinds": ["ambience", "one_shot"],
-  "audio_slots": ["ambience", "one_shot"]
+  "audio_slots": ["ambience", "one_shot"],
+  "reveal": {
+    "never_revealable": ["tags"],
+    "never_revealable_by_type": {}
+  }
 }

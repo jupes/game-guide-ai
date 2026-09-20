@@ -39,6 +39,7 @@
     "TableSession",
     "TableSessionRequest",
     "TableSessionAnswer",
+    "RevealAudience",
     "GmEvent",
     "TableEvent",
     "GmSnapshot",

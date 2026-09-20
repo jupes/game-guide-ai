@@ -1355,6 +1355,62 @@ export const CapabilitiesSchema = z.object({
 })
 export type Capabilities = z.infer<typeof CapabilitiesSchema>
 
+// ── Reveal ───────────────────────────────────────────────────────────────────
+// The family through which GM-private text could reach a player, so its shapes
+// are a security boundary (1kg.1.6). A table client is told less than the GM at
+// every turn: no epoch, no link generation, no session id, no participant id
+// (SEC-15, REVEAL-24, threat model 8.2 and 8.3).
+
+/** A mask never lists more keys than a document has fields to change. */
+export const MASK_MAX_KEYS = MAX_CHANGED_FIELDS
+/** One table slot, plus one per participant (AUD-8). */
+export const REVEAL_MAX_SLOTS = PRESENCE_MAX_PARTICIPANTS + 1
+/** A projection carries its own labels, so a table client renders without the registry (TABLE-3). */
+export const FIELD_LABEL_MAX_CHARS = 60
+
+/**
+ * REVEAL-9, ED-8: `all` is never stored and never sent — the client expands it
+ * into the keys that exist at the moment the GM decides, so a field added later
+ * is never revealed by a wildcard. It is a *word*, not a pattern: `all` matches
+ * the field-key shape, while `*` and `%` do not, so it is refused by name.
+ */
+export const RESERVED_MASK_KEYS: readonly string[] = ['all']
+
+/** A field key as a mask, a GM-side slot and a projection name it. */
+export const MaskKeySchema = FieldKeySchema.refine((key) => !RESERVED_MASK_KEYS.includes(key), {
+  message: 'a mask lists field keys, never a wildcard',
+})
+
+/**
+ * REVEAL-10: **never revealable** — tags, sources and citation text, version
+ * history, authorship, changed-field lists, asset metadata, and any id the
+ * projection does not need. Of those, `tags` is the only one that is a document
+ * *field*. Pinned by `registry.json` → `reveal.never_revealable`.
+ */
+export const NEVER_REVEALABLE: readonly string[] = ['tags']
+/** ED-20, ED-5: a type marks a field of its own not revealable — an identity link
+ * is the worked case. `1kg.5.3` fills this; empty in v1. */
+export const NEVER_REVEALABLE_BY_TYPE: Partial<Record<DocumentTypeId, readonly string[]>> = {}
+
+/** The keys of `type` a mask may name, and the kind each holds (REVEAL-10, ED-5).
+ * A type whose fields `1kg.5.3` has not declared has the common ones only. */
+export function revealableFields(type: DocumentTypeId): Record<string, FieldKind> {
+  const withheld = new Set([...NEVER_REVEALABLE, ...(NEVER_REVEALABLE_BY_TYPE[type] ?? [])])
+  const declared = { ...COMMON_FIELDS, ...DOC_TYPE_FIELDS[type] }
+  return Object.fromEntries(Object.entries(declared).filter(([key]) => !withheld.has(key)))
+}
+
+export const AUDIENCE_KINDS = ['table', 'participant'] as const
+
+/** Who a reveal is for (AUD-2, ED-10): the whole table, or one participant by
+ * **id** — an identity, never a credential and never an alias (AUD-11). Nothing
+ * ties an audience to a document type: AUD-9 is a service rule (ED-14). */
+export const RevealAudienceSchema = z.discriminatedUnion('audience', [
+  z.strictObject({ audience: z.literal('table') }),
+  z.strictObject({ audience: z.literal('participant'), participant_id: OpaqueIdSchema }),
+])
+export type RevealAudience = z.infer<typeof RevealAudienceSchema>
+
 // ── Realtime events ──────────────────────────────────────────────────────────
 // Two channels, two unions (ADR RT-1, threat model 8.3). Every frame carries its
 // own schema_version; the heartbeat is an SSE comment, not an event. `snapshot`
@@ -1544,6 +1600,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   TableSessionRequest: TableSessionRequestSchema,
   TableSessionAnswer: TableSessionAnswerSchema,
   Capabilities: CapabilitiesSchema,
+  RevealAudience: RevealAudienceSchema,
   GmEvent: GmEventSchema,
   TableEvent: TableEventSchema,
   GmSnapshot: GmSnapshotSchema,

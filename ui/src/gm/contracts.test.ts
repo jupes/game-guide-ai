@@ -38,7 +38,11 @@ import {
   GmEventSchema,
   LIBRARY_CATEGORIES,
   LibraryQuerySchema,
+  MaskKeySchema,
   MEDIA_TYPES,
+  NEVER_REVEALABLE,
+  NEVER_REVEALABLE_BY_TYPE,
+  RESERVED_MASK_KEYS,
   RESULT_KINDS,
   TABLE_EVENT_KINDS,
   TOOL_CARD_KIND,
@@ -60,6 +64,7 @@ import {
   parseToolInvocation,
   parseToolResult,
   readErrorBody,
+  revealableFields,
   trimWire,
 } from './contracts'
 import { ChatResponseSchema, MessagesResponseSchema } from '../schemas'
@@ -178,6 +183,7 @@ describe('registry facts', () => {
     media_types: Record<string, string[]>
     cue_kinds: string[]
     audio_slots: string[]
+    reveal: { never_revealable: string[]; never_revealable_by_type: Record<string, string[]> }
   }
   const registry = readJson<Registry>(join(FIXTURES, 'registry.json'))
 
@@ -207,6 +213,33 @@ describe('registry facts', () => {
     for (const type of DOCUMENT_TYPE_IDS) {
       expect(DOC_TYPE_LIBRARY_CATEGORY[type]).toBe(registry.document_types.find((d) => d.id === type)?.library_category)
     }
+  })
+
+  it('pin the revealable set, which excludes what never reaches a table', () => {
+    // REVEAL-10, ED-5, ED-20: derived from the declared fields minus what the
+    // registry withholds, so a type that grows a field grows its set.
+    expect([...NEVER_REVEALABLE].sort()).toEqual([...registry.reveal.never_revealable].sort())
+    expect(NEVER_REVEALABLE_BY_TYPE).toEqual(registry.reveal.never_revealable_by_type)
+
+    expect(Object.keys(revealableFields('npc')).sort()).toEqual(
+      ['attitude', 'if_attacked', 'leverage', 'name', 'notes', 'portrait', 'qualifier', 'tell', 'voice', 'wants'].sort(),
+    )
+    for (const type of DOCUMENT_TYPE_IDS) {
+      expect(Object.hasOwn(revealableFields(type), 'tags')).toBe(false)
+      expect(Object.hasOwn(revealableFields(type), 'all')).toBe(false)
+    }
+    // A type whose fields 1kg.5.3 has not declared has the common ones only.
+    expect(Object.keys(revealableFields('handout')).sort()).toEqual(['name', 'qualifier'])
+  })
+
+  it('refuse a wildcard where a mask key is expected', () => {
+    // REVEAL-9, ED-8: `all` matches the field-key shape, so it is refused by name;
+    // `*` and `%` never matched it in the first place.
+    expect(MaskKeySchema.safeParse('notes').success).toBe(true)
+    for (const wildcard of ['all', '*', '**', '%', 'ALL']) {
+      expect(MaskKeySchema.safeParse(wildcard).success).toBe(false)
+    }
+    expect([...RESERVED_MASK_KEYS]).toEqual(['all'])
   })
 
   it('declare the same fields for every document type', () => {
