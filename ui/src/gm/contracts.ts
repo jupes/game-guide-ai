@@ -323,6 +323,10 @@ export const ErrorInfoSchema = z.object({
   in_flight: z.array(InvocationIdSchema).max(8).nullish(),
   /** Only for `conflict` on a document write or an AI edit. */
   conflict: ConflictInfoSchema.nullish(),
+  /** The mask keys at fault, for a 422 answering a reveal (1kg.1.6). **Keys only,
+   * never their text** (X-7): an error body is where logs and traces look, and
+   * the key shape makes prose unrepresentable. Additive, so no version bump. */
+  keys: z.array(FieldKeySchema).min(1).max(MAX_CHANGED_FIELDS).nullish(),
 })
 export type ErrorInfo = z.infer<typeof ErrorInfoSchema>
 

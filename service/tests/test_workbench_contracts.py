@@ -175,6 +175,33 @@ def test_a_mask_key_is_never_a_wildcard() -> None:
     assert all("all" not in wc.revealable_fields(doc_type) for doc_type in wc.DocumentTypeId)
 
 
+def test_no_request_a_table_client_sends_names_a_participant() -> None:
+    """Decision threat model §8.2: the table client is not a restricted view of
+    the GM API, it is a separate, smaller API with its own principal. A guest
+    asking beyond the table slot gets what an empty table gives, never a refusal
+    — which is only possible if there is no shape in which it can *ask*.
+    """
+    table_side = {"TableJoinRequest", "EnrolRequest"}
+    for name in table_side:
+        model = getattr(wc, name)
+        assert not any("participant" in field for field in model.model_fields), name
+    # And the reveal family's own request shapes are GM-side only: a table client
+    # holds no credential that reaches them (SEC-1), and none is served under /table.
+    assert "participant_id" not in wc.RevealRequest.model_fields
+
+
+def test_no_shape_in_v1_declares_an_eligibility_field() -> None:
+    """Decision ED-11: Workbench v1 ships mask-only. Eligibility binds reveal from
+    the assistant's enforcement release (``1ir.11.1``), and the refusal it needs
+    is an additive error code — so nothing here carries a class or a revision,
+    and nothing about eligibility ever reaches a table client (ED-25, REVEAL-24).
+    """
+    forbidden = ("eligibility", "classification", "authz_revision", "projection_revision")
+    for name, adapter in wc.CONTRACT_SCHEMAS.items():
+        schema = json.dumps(adapter.json_schema(ref_template="{model}"))
+        assert not any(f'"{word}"' in schema for word in forbidden), name
+
+
 def test_error_codes_are_safe_metric_labels() -> None:
     """Plan invariant 10: a code may become a metric label, so it is bounded and
     can never carry user text."""

@@ -15,7 +15,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
-import type { ZodType } from 'zod'
+import { z, type ZodType } from 'zod'
 import {
   ASSET_KINDS,
   AUDIO_SLOTS,
@@ -165,6 +165,31 @@ describe('shared fixtures', () => {
     for (const doc of seen.values()) {
       expect(doc.valid.length).toBeGreaterThan(0)
       expect(doc.invalid.length).toBeGreaterThan(0)
+    }
+  })
+})
+
+describe('what v1 deliberately has no shape for', () => {
+  it('has no request a table client sends that names a participant (threat model 8.2)', () => {
+    // The table client is not a restricted view of the GM API, it is a separate,
+    // smaller API with its own principal. A guest asking beyond the table slot
+    // gets what an empty table gives, never a refusal — which is only possible
+    // if there is no shape in which it can ask.
+    for (const name of ['TableJoinRequest', 'EnrolRequest']) {
+      const shape = JSON.stringify(z.toJSONSchema(CONTRACT_SCHEMAS[name], { io: 'input' }))
+      expect(shape).not.toContain('participant')
+    }
+  })
+
+  it('declares no eligibility field anywhere (ED-11, ED-25)', () => {
+    // v1 ships mask-only: eligibility binds reveal from 1ir.11.1, and the refusal
+    // it needs is an additive error code. Nothing about classes or revisions ever
+    // reaches a table client (REVEAL-24).
+    for (const [name, schema] of Object.entries(CONTRACT_SCHEMAS)) {
+      const json = JSON.stringify(z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }))
+      for (const word of ['eligibility', 'classification', 'authz_revision', 'projection_revision']) {
+        expect([name, json.includes(`"${word}"`)]).toEqual([name, false])
+      }
     }
   })
 })

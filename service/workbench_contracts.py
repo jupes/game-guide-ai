@@ -457,6 +457,12 @@ class ErrorInfo(_Contract):
     in_flight: Annotated[list[InvocationId], Field(max_length=8)] | None = None
     #: Only for ``conflict`` on a document write or an AI edit.
     conflict: ConflictInfo | None = None
+    #: The mask keys at fault, for a 422 answering a reveal (``1kg.1.6``). **Keys
+    #: only, never their text** (X-7): an error body is where logs and traces
+    #: look, and the key shape makes prose unrepresentable. Additive, so it is
+    #: no version bump; the field is declared where ``ConflictInfo`` already sets
+    #: the precedent of naming fields and never their values.
+    keys: Annotated[list[FieldKey], Field(min_length=1, max_length=MAX_CHANGED_FIELDS)] | None = None
 
 
 class ErrorBody(_Contract):

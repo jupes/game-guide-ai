@@ -42,11 +42,17 @@ service. A lookup of an unknown id answers nothing — never the NPC config the
 handoff fell back to (X-8). The wire contract's own validators pin the subset
 of the registry they need as constants.
 
-What the registry does not carry yet, on purpose: which fields a table may see,
-reveal groups and warnings, audiences and per-audience default masks. Those are
-`agent-forge-harness-1ir.1.2`'s decision and arrive with the reveal family
-(`1kg.1.6`). The seven document types whose fields `1kg.5.3` has yet to declare
-carry no field labels until it does.
+`agent-forge-harness-1ir.1.2` is now decided, and its §10 row for `1kg.1.6`
+settles which of the four things that paragraph once deferred belong to this
+family. **Which fields a table may see** is here: the registry's `reveal` key
+carries `never_revealable` (`tags` — the only entry of REVEAL-10's never-list
+that is a document *field*) and `never_revealable_by_type`, which `1kg.5.3`
+fills as it declares each type's fields, ED-20's identity links first.
+**Audiences** are here too, as `RevealAudience`. **Reveal groups and per-field
+warnings** are not: REVEAL-11 is based on `1kg.7.3`'s acceptance criteria and is
+the sheet's to declare. **Per-audience default masks** are REVEAL-4's draft
+seeding, also the sheet's. The seven document types whose fields `1kg.5.3` has
+yet to declare carry no field labels until it does.
 
 ## Conventions
 
@@ -205,7 +211,7 @@ on both sides.
 | Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The attached-cue entry arrives with the cue family; until v1 is declared complete, adding it is not a version bump |
 | Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, and `conflict` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
 | Per-type document fields | the **frame is done**; `npc` is the worked example | `1kg.5.3` owns all eight types. Until it declares a type's fields that type has the common ones only and everything else fails closed — the same posture as card kinds |
-| Reveal | to do, and **waiting** | the mutation with its epoch, Stop, GM-side state, the allowlisted projection, the table snapshot. Audience and slot shapes must not freeze before `agent-forge-harness-1ir.1.2` (field eligibility, shared with the Live Session Assistant) is decided; it blocks `1kg.7.1`. The projection needs an asset shape of its own — a per-slot opaque handle, never the GM-side `asset_id` — and its join and enrol answers are generic ([threat model](adr/gm-workbench-threat-model.md), §12.2) |
+| Reveal | **done** | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealLive`, `RevealState`, `TableProjection`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
 | Table sessions | **done** | `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest`, `EnrolResponse`, `TableSession`, `TableSessionRequest`, `TableSessionAnswer` |
 | Realtime events | **done** for the decided kinds | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `presence`, `asset`, `ready`, `reconnect`), `TableEvent` (`session`, `inactive`, `audio`, `ready`, `reconnect`), and the two snapshot resources `GmSnapshot` and `TableSnapshot`. The `slot` kind arrives with the reveal family; the transport is the media ADR's |
@@ -505,8 +511,8 @@ threat model §8.3):
 
 | Channel | Kinds | Carries |
 | --- | --- | --- |
-| GM, `GmEvent` | `tool_lane`, `edit_lane`, `session`, `audio`, `presence`, `asset`, `ready`, `reconnect` | lane status with the embedded invocation; the `TableSession` with the audio epoch; audio slots by cue id and title, with the audio epoch two GM tabs converge on (AUDIO-24); presence with participants' aliases and guest counts (AUDIO-21); an asset's state change (MS-3) |
-| Table, `TableEvent` | `session`, `inactive`, `audio`, `ready`, `reconnect` | whether table audio is on and this device's own role; the one generic inactive event, after which the connection closes (TABLE-9); audio slots by handle, never a title (AUDIO-29). No generation, no epoch, no id a table client has no use for (SEC-15) |
+| GM, `GmEvent` | `tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect` | lane status with the embedded invocation; the `TableSession` with the audio epoch; audio slots by cue id and title, with the audio epoch two GM tabs converge on (AUDIO-24); presence with participants' aliases and guest counts (AUDIO-21); an asset's state change (MS-3) |
+| Table, `TableEvent` | `session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect` | whether table audio is on and this device's own role; the one generic inactive event, after which the connection closes (TABLE-9); audio slots by handle, never a title (AUDIO-29). No generation, no epoch, no id a table client has no use for (SEC-15) |
 
 Every audio frame names its slot and the slot's sequence (AUDIO-15: per slot,
 monotonic, assigned by the database): a client applies a frame only above its
@@ -514,13 +520,157 @@ mark for that slot. A GM frame also names the link generation it was produced
 under (SEC-9); a table frame does not, because it is the server that writes a
 frame only to a stream of the same generation, and the number is nothing a
 table client needs. A one-shot never
-loops and is at most 30 s, on both channels. The `snapshot` and `slot` kinds —
-the reveal projection — arrive with the reveal family once
-`agent-forge-harness-1ir.1.2` is decided; until then a table snapshot is a
-`session` frame, one `audio` frame per slot and `ready`. Adding that kind before
-v1 is declared complete is not a version bump; `parseGmEvent`, `parseTableEvent`,
-`parseGmSnapshot` and `parseTableSnapshot` already read an unknown kind as a
-placeholder.
+loops and is at most 30 s, on both channels. The `snapshot` and `slot` kinds are
+the reveal family's, and both channels now carry them — see *The reveal family*.
+Adding them before v1 was declared complete was not a version bump;
+`parseGmEvent`, `parseTableEvent`, `parseGmSnapshot` and `parseTableSnapshot`
+read an unknown kind as a placeholder, which is what made that safe.
+
+## The reveal family
+
+The family through which GM-private text could reach a player, so its shapes are
+a security boundary rather than a convenience. Two rules govern all of it. First,
+**a projection is built, never filtered** (SEC-14): one server-side builder takes
+a sealed version, a mask and an audience and emits only allowlisted keys, and the
+player-safe export and print call the same builder (EXPORT-3, EXPORT-7). Second,
+**a table client is told less than the GM at every turn** — no epoch, no link
+generation, no session id, no participant id, no sequence of a slot it is not
+entitled to (SEC-15, REVEAL-24).
+
+### What may be revealed
+
+A mask names **explicit field keys**, never a wildcard: `all` is expanded by the
+client into the keys that exist at the moment the GM decides, so a field added to
+a type later is never revealed by an old wildcard (REVEAL-9, ED-8). Because `all`
+matches the field-key shape, it is refused by name wherever a mask key is
+expected; `*` and `%` never matched it.
+
+The revealable set is a registry fact, derived rather than enumerated:
+
+```
+revealable(type) = (common_fields ∪ type.fields) − reveal.never_revealable − reveal.never_revealable_by_type[type]
+```
+
+`never_revealable` is `["tags"]` — of REVEAL-10's never-list (tags, sources and
+citation text, version history, authorship, changed-field lists, asset metadata,
+any id the projection does not need), `tags` is the only entry that is a document
+*field*; the rest are not fields at all. `never_revealable_by_type` is empty in
+v1 and is where `1kg.5.3` marks ED-20's identity links. A type grows its
+revealable set by declaring a field, and a type whose fields `1kg.5.3` has not
+declared has the common ones only — the same fail-closed posture documents take.
+
+### The mutations
+
+| Shape | Says |
+| --- | --- |
+| `RevealAudience` | `table`, or one participant by **id** — an identity, never a credential and never an alias (AUD-2, AUD-11, ED-10). Nothing ties an audience to a document type: AUD-9 is a service rule, so lifting ED-14 later changes no slot, mask or eligibility row |
+| `RevealRequest` | Confirm: the document, the **sealed** version the sheet displayed, the mask, the audience, and **both** the session it was composed for and that session's reveal epoch (REVEAL-5, ED-9). One shape covers reveal, update, replace and move — the server derives which. It names a session so that a number from last night can never match tonight. No campaign id: the session names the campaign and ownership is the route's (SEC-3) |
+| `RevealStopRequest` | Stop showing, by `scope`: one `slot`, every slot a `document` is live in, or `all` (REVEAL-6, REVEAL-7). **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and never refused for state, so there is no number to be stale against, and sending one is an error. There is no Retract in v1 (ED-16) |
+
+### What the GM sees
+
+`RevealLive` is what one slot holds: the document, the pinned version, the mask,
+`stale_text` and `pending_delivery`. `stale_text` is REVEAL-8's notice, and the
+comparison behind it is **of text, not of version numbers** — ten autosaves raise
+one notice and reverting the text clears it. `pending_delivery` is AUD-10: a
+reveal to a participant with no device confirms normally and waits, and never
+falls back to the table.
+
+`RevealState` is the whole picture — session, generation, epoch, one entry per
+slot — and rides the GM channel's `snapshot` frame and nothing else. The threat
+model's §8.3 row is the rule: *reveal state, with the epoch, every slot, version
+numbers and mask keys* is GM **yes**, participant **never**, guest **never**.
+
+### What a player sees
+
+`TableProjection` carries `content_kind`, the type, and one entry per masked key
+with its key, its **label** and its value. Labels travel with the payload so a
+table client renders without the registry, and so the page title is built from
+the projection: a document's name reaches a player only when `name` is masked
+(TABLE-3). A masked key is present and non-empty in the pinned version (REVEAL-5,
+ED-9), so nothing arrives as a blank heading. An `asset` value is a
+**`TableAssetRef`** — a per-slot opaque handle that dies with its slot — never
+the GM-side `AssetRef`, which carries an `asset_id` that would let two slots
+showing one portrait be correlated (SEC-15, REVEAL-21).
+
+`content_kind` has exactly **one** member in v1, `document`. Adding a member
+later **is** a version bump; what reserving the discriminator buys is that a v1
+table client meets an unknown kind as its **neutral placeholder** rather than as
+a parse failure. That is why `TABLE_EVENT_DISCRIMINATORS` names the kind at both
+paths it can arrive on — a `slot` frame's `content`, and a `snapshot` frame's
+`slots[].content` — and why the path walker gained an array segment to reach the
+second.
+
+### The frames
+
+| Channel | Kind | Carries |
+| --- | --- | --- |
+| GM | `slot` | the session, the link generation, the reveal epoch, the slot as a `RevealAudience`, its sequence and `RevealLive` or `null` — the twin of `GmAudioEvent` |
+| GM | `snapshot` | `RevealState`: the whole picture in one frame |
+| Table | `slot` | the slot as **`table` or `mine`**, its sequence, and a `TableProjection` or `null` — the twin of `TableAudioEvent`, and nothing else |
+| Table | `snapshot` | one or two slots: the table slot, always, and with the enrolled device credential this device's own |
+
+A table client is never told a participant id. Every table-side shape in this
+contract is already id-free — `TableRole` is an enum, `TableJoinResponse` answers
+with a role and no id, `EnrolResponse` with a status alone — and which
+participant `mine` is, the server resolves from the credential pair, *never from
+request fields*. A slot a device is not entitled to is **absent**, never marked:
+a marker would confirm both that the slot exists and that a private reveal is
+happening (WT-7, T-8, threat model §8.2).
+
+Both snapshot resources carry **one** reveal picture while their session is live
+and **none** when there is none — `GmSnapshot`'s *no session running* and
+`TableSnapshot`'s *inactive table* (TABLE-9) are unchanged by this family. A
+snapshot is complete before `ready`, so a client that has seen `ready` knows
+every slot it is entitled to, and a GM client never reads missing state as
+"nothing revealed" (ADR RT-4, REVEAL-13).
+
+### Refusals
+
+A mask the server will not accept is a **422** whose error names the keys at
+fault in `keys` — **keys only, never their text**, because an error body is where
+logs and traces look (X-7), and the field-key shape makes prose unrepresentable.
+It is an additive field and no version bump. A stale epoch is `409 conflict` and
+is never retried automatically: the sheet reloads live state, keeps the GM's
+draft and asks for a fresh Confirm (REVEAL-15, REVEAL-22).
+
+**There are no eligibility fields in v1.** Workbench v1 ships mask-only: the GM's
+explicit Confirm, which names every field it shows and previews its exact text,
+is the authorisation (ED-11, X-2). Eligibility binds reveal from `1ir.11.1`, and
+the refusal it needs is an **additive error code**, which this contract's own
+rules allow without a bump. A suite test asserts that no schema declares a class
+or a revision, and another that no request shape a table client can send names a
+participant.
+
+### Amendments the interaction record needs
+
+These shapes are consistent with `docs/adr/gm-workbench-interactions.md`, but
+four of its rows are now less precise than the contract they govern. The lead
+applies these to the record; this bead only lists them.
+
+1. **REVEAL-5** says a Confirm carries "the document, the sealed version, the
+   explicit mask, the audience and the reveal epoch". It must also say **the
+   session** — ED-9 added it so that an epoch from an earlier session can never
+   match, and the wire now requires it.
+2. **REVEAL-6** describes Stop as stopping "that document" or "every reveal". The
+   wire has three scopes, and the middle one is worth naming: a `document` Stop
+   clears every slot the document is live in, which is what REVEAL-7's *move*
+   and *replace* leave behind.
+3. **REVEAL-8** is the source of the rule that the comparison is of text, not of
+   version numbers. The GM-side field is named `stale_text` for that reason,
+   while the `1kg.1.6` alignment calls it "whether a newer version exists". The
+   record should carry the field name so the two readings cannot drift apart.
+   **This is the one place where the alignment's wording and the ADR differ, and
+   the ADR was followed.**
+4. **AUD-8** says "one table slot, plus one private slot per participant". The
+   table channel names them `table` and `mine`, because an audience is an id and
+   a table client is told no ids (SEC-15); the record should say so, or a reader
+   will expect `participant:<id>` on both channels.
+
+A fifth, smaller one: **REVEAL-10**'s never-list mixes document fields with
+things that are not fields at all. Only `tags` is a field, which is why
+`never_revealable` has one entry; the record could say which of its items are
+fields and which are simply never on the wire.
 
 ## Legacy compatibility
 
