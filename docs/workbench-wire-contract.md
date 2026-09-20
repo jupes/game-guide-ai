@@ -152,6 +152,8 @@ names it starts fresh rather than reading another caller's status or result
 | Create an asset, create a cue | `command_id`, minted by the client | opens the asset or cue already made; a retried upload sends its bytes to the same asset |
 | Play a cue | `command_id`, and the audio epoch it was issued under (AUDIO-28) | replays the first outcome; a stale epoch is `409 conflict` and is never retried automatically |
 | Stop a cue, Stop all | `command_id`, no epoch (X-3) | is idempotent by nature: a slot the cue no longer holds is left alone (AUDIO-9) |
+| Confirm a reveal | `command_id`, and the **session** and reveal epoch it was composed under (REVEAL-5, ED-9) | replays the first outcome; a stale epoch, or an epoch from another session, is `409 conflict` and is never retried automatically — the sheet reloads live state, keeps the GM's draft and asks for a fresh Confirm (REVEAL-15) |
+| Stop a reveal, Stop all reveals | `command_id`, no epoch (X-3) | is idempotent by nature: a document that is no longer live is left alone, and a Stop succeeds on an empty slot (REVEAL-22) |
 | Start, End, Rotate a session | `command_id` | a retried Start opens the session already started rather than a second one; End and Rotate are idempotent on an ended or rotated session |
 
 ### Pagination
@@ -742,11 +744,27 @@ the rule it copies.
 
 ### The mutations
 
-| Shape | Says |
-| --- | --- |
-| `RevealAudience` | `table`, or **one or more participants by id** — an identity, never a credential and never an alias (AUD-2, AUD-11, ED-10). A reveal to one player is a list of one; there is no singular shape. Nothing ties an audience to a document type: under owner decision O-2 a participant audience is legal for **any** type, and the registry's `audience` flag now says only whose default reveal a type seeds |
-| `RevealRequest` | Confirm: the document, the **sealed** version the sheet displayed, the mask, the audience, and **both** the session it was composed for and that session's reveal epoch (REVEAL-5, ED-9). One shape covers reveal, update, replace and move — the server derives which. It names a session so that a number from last night can never match tonight. No campaign id: the session names the campaign and ownership is the route's (SEC-3) |
-| `RevealStopRequest` | Stop showing, by `scope`: a `document`, or `all` (REVEAL-6, REVEAL-7). **There is no slot scope** — see below. **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and never refused for state, so there is no number to be stale against, and sending one is an error. There is no Retract in v1 (ED-16) |
+| Shape | Says | Answered with |
+| --- | --- | --- |
+| `RevealAudience` | `table`, or **one or more participants by id** — an identity, never a credential and never an alias (AUD-2, AUD-11, ED-10). A reveal to one player is a list of one; there is no singular shape. Nothing ties an audience to a document type: under owner decision O-2 a participant audience is legal for **any** type, and the registry's `audience` flag now says only whose default reveal a type seeds | — (it is a member, not a request) |
+| `RevealRequest` | Confirm: the document, the **sealed** version the sheet displayed, the mask, the audience, and **both** the session it was composed for and that session's reveal epoch (REVEAL-5, ED-9). One shape covers reveal, update, replace and move — the server derives which. It names a session so that a number from last night can never match tonight. No campaign id: the session names the campaign and ownership is the route's (SEC-3) | **`RevealState`** — the GM's whole reveal picture, the new epoch included |
+| `RevealStopRequest` | Stop showing, by `scope`: a `document`, or `all` (REVEAL-6, REVEAL-7). **There is no slot scope** — see below. **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and never refused for state, so there is no number to be stale against, and sending one is an error. There is no Retract in v1 (ED-16) | **`RevealState`**, the same |
+
+**Why both are answered with the picture.** REVEAL-22 advances the reveal epoch
+on *every* narrowing, "on an empty slot too" — a Stop with nothing live, a
+Rotate with nothing live, a participant removed. No slot changed, so there is no
+`slot` frame to carry the new number, and one re-sent with an unchanged `seq`
+would be dropped by RT-4's per-slot mark. Answering the mutation with the
+picture means **the acting tab can never trip over its own narrowing**: it has
+the new epoch before it composes its next Confirm, so an ordinary
+stop-then-reveal is not a 409.
+
+Other tabs converge three ways, and all three are needed: the server re-sends
+the GM `snapshot` frame after an **epoch-only** advance; a GM client takes
+`reveal_epoch` from **every** `slot` and `snapshot` frame regardless of its
+per-slot marks, because the epoch is a property of the session and not of the
+slot; and `TableSession` carries `reveal_epoch` beside `audio_epoch`, so a tab
+that reloads the session resource has it too (AUDIO-24's twin).
 
 **Group displays, and what a disclosure is** (owner decision O-3, amending §7.1,
 REVEAL-7 and NG-20). Showing one document to several players is
@@ -936,7 +954,10 @@ this bead only lists them.
 1. **REVEAL-5** says a Confirm carries "the document, the sealed version, the
    explicit mask, the audience and the reveal epoch". It must also say **the
    session** — ED-9 added it so that an epoch from an earlier session can never
-   match, and the wire now requires it.
+   match, and the wire now requires it. The record should also say what a
+   Confirm and a Stop are **answered with**: the GM's reveal picture, the new
+   epoch included, so the acting tab cannot trip over its own narrowing when
+   REVEAL-22 advances the epoch without changing a slot.
 2. **REVEAL-6** describes Stop as stopping "that document" or "every reveal".
    The wire has **two** scopes and no slot scope, and the record should say why:
    REVEAL-22 makes a Stop clear a slot only if it holds what the Stop names, and

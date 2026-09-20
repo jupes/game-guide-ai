@@ -1679,6 +1679,9 @@ class AudioSlot(str, Enum):
 StartOffsetMs = Annotated[Literal[0], BeforeValidator(_an_integer)]
 #: The audio epoch (AUDIO-28): every Stop and every committed push advances it.
 AudioEpoch = Annotated[WireInt, Field(ge=0, le=WRITE_REVISION_MAX)]
+#: Decision REVEAL-22, ED-9: the reveal epoch — every narrowing advances it, on
+#: an empty slot too. ``AudioEpoch``'s twin, and a session row carries both.
+RevealEpoch = Annotated[WireInt, Field(ge=0, le=WRITE_REVISION_MAX)]
 #: A slot's sequence (AUDIO-15): per slot, monotonic, assigned by the database.
 SlotSequence = Annotated[WireInt, Field(ge=0, le=WRITE_REVISION_MAX)]
 #: A link generation (SEC-9): counts rotations, and every frame names the one it was produced under.
@@ -1782,6 +1785,15 @@ class TableSession(_Contract):
     gen: LinkGeneration
     #: Decision AUDIO-24: two GM tabs converge on the epoch the resource carries.
     audio_epoch: AudioEpoch
+    #: Decisions REVEAL-22, ED-9: its twin, for the same reason. REVEAL-22
+    #: advances the reveal epoch on **every** narrowing, "on an empty slot too"
+    #: — a Stop with nothing live, a Rotate with nothing live, a participant
+    #: removed. No slot changed, so there is no ``slot`` frame to carry the new
+    #: number, and a GM tab whose own narrowing advanced it would otherwise send
+    #: a stale epoch on its next Confirm and get a 409 for an ordinary
+    #: stop-then-reveal. Carrying it on the session resource is what lets two GM
+    #: tabs converge, exactly as they do on the audio epoch (AUDIO-24).
+    reveal_epoch: RevealEpoch
     started_at: Timestamp
     ends_at: Timestamp
     ended_at: Timestamp | None
@@ -1855,9 +1867,6 @@ class Capabilities(_Contract):
 # ``shared-eligibility-display-disclosure.md`` (ED-8 to ED-16, ED-25).
 
 
-#: Decision REVEAL-22, ED-9: every narrowing advances it, on an empty slot too.
-#: ``AudioEpoch``'s twin, and a session row carries both.
-RevealEpoch = Annotated[WireInt, Field(ge=0, le=WRITE_REVISION_MAX)]
 #: A mask never lists more keys than a document has fields to change.
 MASK_MAX_KEYS = MAX_CHANGED_FIELDS
 #: One table slot, plus one per participant (AUD-8, ``PRESENCE_MAX_PARTICIPANTS``).

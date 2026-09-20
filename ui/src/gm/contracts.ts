@@ -1255,6 +1255,9 @@ export type CuePage = z.infer<typeof CuePageSchema>
 const StartOffsetSchema = z.literal(0)
 /** The audio epoch (AUDIO-28): every Stop and every committed push advances it. */
 const AudioEpochSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
+/** REVEAL-22, ED-9: the reveal epoch — every narrowing advances it, on an empty
+ * slot too. AudioEpoch's twin, and a session row carries both. */
+const RevealEpochSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
 /** A slot's sequence (AUDIO-15): per slot, monotonic, assigned by the database. */
 const SlotSequenceSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
 /** A link generation (SEC-9): every frame names the one it was produced under. */
@@ -1327,6 +1330,13 @@ export const TableSessionSchema = z
     gen: LinkGenerationSchema,
     /** AUDIO-24: two GM tabs converge on the epoch the resource carries. */
     audio_epoch: AudioEpochSchema,
+    /** REVEAL-22, ED-9: its twin, for the same reason. REVEAL-22 advances the
+     * reveal epoch on EVERY narrowing, "on an empty slot too" — a Stop with
+     * nothing live, a Rotate with nothing live, a participant removed. No slot
+     * changed, so there is no `slot` frame to carry the new number, and a GM tab
+     * whose own narrowing advanced it would otherwise send a stale epoch on its
+     * next Confirm and get a 409 for an ordinary stop-then-reveal. */
+    reveal_epoch: RevealEpochSchema,
     started_at: TimestampSchema,
     ends_at: TimestampSchema,
     ended_at: TimestampSchema.nullable(),
@@ -1478,9 +1488,6 @@ export const RevealSlotRefSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('participant'), participant_id: OpaqueIdSchema }),
 ])
 export type RevealSlotRef = z.infer<typeof RevealSlotRefSchema>
-
-/** REVEAL-22, ED-9: every narrowing advances it, on an empty slot too. AudioEpoch's twin. */
-const RevealEpochSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
 
 /** The keys one Confirm shows, explicit and non-empty (REVEAL-9, ED-8). A mask is
  * a set: a repeat would make the ledger's one row per field ambiguous (ED-17). */

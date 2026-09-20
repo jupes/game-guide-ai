@@ -106,6 +106,17 @@
           ]
         }
       }
+    },
+    {
+      "name": "a Confirm that names a stale reveal epoch",
+      "value": {
+        "detail": {
+          "code": "conflict",
+          "message": "The table changed since you opened this. Check what it shows, then confirm again.",
+          "retryable": false,
+          "field": "reveal_epoch"
+        }
+      }
     }
   ],
   "invalid": [
