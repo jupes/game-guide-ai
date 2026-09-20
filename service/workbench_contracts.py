@@ -2546,9 +2546,29 @@ class GmSnapshot(_Contract):
     @model_validator(mode="after")
     def _complete(self) -> Self:
         _ends_with_ready(self.frames)
-        live = any(frame.event == "session" and frame.session.state is SessionState.LIVE for frame in self.frames)
+        sessions = [frame for frame in self.frames if frame.event == "session"]
+        if len(sessions) > 1:
+            raise ValueError("a snapshot describes one session")
+        live = any(frame.session.state is SessionState.LIVE for frame in sessions)
         _one_reveal_picture_while_live(self.frames, live=live)
+        if sessions and live:
+            self._the_picture_is_of_the_session_beside_it(sessions[0].session)
         return self
+
+    def _the_picture_is_of_the_session_beside_it(self, session: TableSession) -> None:
+        """Decision ED-9: the reveal epoch is **per session**, so a picture from
+        another session — or from a generation before a Rotate — is exactly the
+        "number from last night" a Confirm must never be able to match. A GM tab
+        that took its epoch from such a frame would compose a Confirm that is
+        either a 409 forever or, worse, valid against the wrong session.
+        """
+        for frame in self.frames:
+            if frame.event != "snapshot":
+                continue
+            if frame.state.session_id != session.session_id:
+                raise ValueError("a reveal picture describes the session beside it")
+            if frame.state.gen != session.gen:
+                raise ValueError("a reveal picture is of the link generation beside it")
 
 
 class TableSessionEvent(_EventBase):

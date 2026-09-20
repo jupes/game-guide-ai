@@ -442,6 +442,357 @@
           }
         ]
       }
+    },
+    {
+      "name": "a reveal picture naming another session",
+      "why": "ED-9: the reveal epoch is per session, so a picture from another session is exactly the `number from last night` a Confirm must never be able to match",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "session": {
+              "schema_version": 1,
+              "session_id": "ses_0c1d2e3f",
+              "campaign_id": "cmp_4b1d9e7a",
+              "state": "live",
+              "gen": 1,
+              "audio_epoch": 3,
+              "reveal_epoch": 4,
+              "started_at": "2026-09-16T19:31:02Z",
+              "ends_at": "2026-09-17T07:31:02Z",
+              "ended_at": null,
+              "audio": true,
+              "devices": 5
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "session_id": "ses_0c1d2e3f",
+            "gen": 1,
+            "audio_epoch": 3,
+            "slot": "ambience",
+            "seq": 7,
+            "playing": {
+              "cue_id": "cue_3f9a1b2c",
+              "title": "Harbour at night",
+              "started_at": "2026-09-16T19:31:24Z",
+              "start_offset_ms": 0,
+              "loop": true,
+              "duration_ms": 300000
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "session_id": "ses_0c1d2e3f",
+            "gen": 1,
+            "audio_epoch": 3,
+            "slot": "one_shot",
+            "seq": 3,
+            "playing": null
+          },
+          {
+            "schema_version": 1,
+            "event": "presence",
+            "session_id": "ses_0c1d2e3f",
+            "gen": 1,
+            "participants": [
+              {
+                "participant_id": "prt_11aa22bb",
+                "alias": "Mara",
+                "audio": "listening"
+              },
+              {
+                "participant_id": "prt_33cc44dd",
+                "alias": "Tobin",
+                "audio": "pending"
+              }
+            ],
+            "guests": {
+              "connected": 3,
+              "listening": 1,
+              "muted": 1,
+              "pending": 1
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "state": {
+              "session_id": "ses_DIFFERENT",
+              "gen": 1,
+              "reveal_epoch": 4,
+              "slots": [
+                {
+                  "slot": {
+                    "kind": "table"
+                  },
+                  "seq": 12,
+                  "live": {
+                    "disclosure_id": "dsc_0001b7e2c1a9",
+                    "document_id": "doc_9k2f7a1c",
+                    "type": "npc",
+                    "version": 3,
+                    "mask": [
+                      "name",
+                      "portrait"
+                    ],
+                    "stale_text": false,
+                    "pending_delivery": false
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a reveal picture from a generation before the rotate",
+      "why": "SEC-9, ED-9: a Rotate ends every credential of the old generation, so a picture produced under it describes a table nobody is looking at any more",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "session": {
+              "schema_version": 1,
+              "session_id": "ses_0c1d2e3f",
+              "campaign_id": "cmp_4b1d9e7a",
+              "state": "live",
+              "gen": 1,
+              "audio_epoch": 3,
+              "reveal_epoch": 4,
+              "started_at": "2026-09-16T19:31:02Z",
+              "ends_at": "2026-09-17T07:31:02Z",
+              "ended_at": null,
+              "audio": true,
+              "devices": 5
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "session_id": "ses_0c1d2e3f",
+            "gen": 1,
+            "audio_epoch": 3,
+            "slot": "ambience",
+            "seq": 7,
+            "playing": {
+              "cue_id": "cue_3f9a1b2c",
+              "title": "Harbour at night",
+              "started_at": "2026-09-16T19:31:24Z",
+              "start_offset_ms": 0,
+              "loop": true,
+              "duration_ms": 300000
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "session_id": "ses_0c1d2e3f",
+            "gen": 1,
+            "audio_epoch": 3,
+            "slot": "one_shot",
+            "seq": 3,
+            "playing": null
+          },
+          {
+            "schema_version": 1,
+            "event": "presence",
+            "session_id": "ses_0c1d2e3f",
+            "gen": 1,
+            "participants": [
+              {
+                "participant_id": "prt_11aa22bb",
+                "alias": "Mara",
+                "audio": "listening"
+              },
+              {
+                "participant_id": "prt_33cc44dd",
+                "alias": "Tobin",
+                "audio": "pending"
+              }
+            ],
+            "guests": {
+              "connected": 3,
+              "listening": 1,
+              "muted": 1,
+              "pending": 1
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "state": {
+              "session_id": "ses_0c1d2e3f",
+              "gen": 9,
+              "reveal_epoch": 4,
+              "slots": [
+                {
+                  "slot": {
+                    "kind": "table"
+                  },
+                  "seq": 12,
+                  "live": {
+                    "disclosure_id": "dsc_0001b7e2c1a9",
+                    "document_id": "doc_9k2f7a1c",
+                    "type": "npc",
+                    "version": 3,
+                    "mask": [
+                      "name",
+                      "portrait"
+                    ],
+                    "stale_text": false,
+                    "pending_delivery": false
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "two session frames",
+      "why": "a snapshot describes one session: two frames could disagree about the generation or the epoch, and a reader that took the first would read a different resource from one that took the last",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "session": {
+              "schema_version": 1,
+              "session_id": "ses_0c1d2e3f",
+              "campaign_id": "cmp_4b1d9e7a",
+              "state": "live",
+              "gen": 1,
+              "audio_epoch": 3,
+              "reveal_epoch": 4,
+              "started_at": "2026-09-16T19:31:02Z",
+              "ends_at": "2026-09-17T07:31:02Z",
+              "ended_at": null,
+              "audio": true,
+              "devices": 5
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "session",
+            "session": {
+              "schema_version": 1,
+              "session_id": "ses_0c1d2e3f",
+              "campaign_id": "cmp_4b1d9e7a",
+              "state": "live",
+              "gen": 2,
+              "audio_epoch": 3,
+              "reveal_epoch": 4,
+              "started_at": "2026-09-16T19:31:02Z",
+              "ends_at": "2026-09-17T07:31:02Z",
+              "ended_at": null,
+              "audio": true,
+              "devices": 5
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "session_id": "ses_0c1d2e3f",
+            "gen": 1,
+            "audio_epoch": 3,
+            "slot": "ambience",
+            "seq": 7,
+            "playing": {
+              "cue_id": "cue_3f9a1b2c",
+              "title": "Harbour at night",
+              "started_at": "2026-09-16T19:31:24Z",
+              "start_offset_ms": 0,
+              "loop": true,
+              "duration_ms": 300000
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "session_id": "ses_0c1d2e3f",
+            "gen": 1,
+            "audio_epoch": 3,
+            "slot": "one_shot",
+            "seq": 3,
+            "playing": null
+          },
+          {
+            "schema_version": 1,
+            "event": "presence",
+            "session_id": "ses_0c1d2e3f",
+            "gen": 1,
+            "participants": [
+              {
+                "participant_id": "prt_11aa22bb",
+                "alias": "Mara",
+                "audio": "listening"
+              },
+              {
+                "participant_id": "prt_33cc44dd",
+                "alias": "Tobin",
+                "audio": "pending"
+              }
+            ],
+            "guests": {
+              "connected": 3,
+              "listening": 1,
+              "muted": 1,
+              "pending": 1
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "state": {
+              "session_id": "ses_0c1d2e3f",
+              "gen": 1,
+              "reveal_epoch": 4,
+              "slots": [
+                {
+                  "slot": {
+                    "kind": "table"
+                  },
+                  "seq": 12,
+                  "live": {
+                    "disclosure_id": "dsc_0001b7e2c1a9",
+                    "document_id": "doc_9k2f7a1c",
+                    "type": "npc",
+                    "version": 3,
+                    "mask": [
+                      "name",
+                      "portrait"
+                    ],
+                    "stale_text": false,
+                    "pending_delivery": false
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
     }
   ]
 }

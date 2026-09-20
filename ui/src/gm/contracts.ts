@@ -1895,6 +1895,10 @@ const PICTURE_ISSUE = {
 export const GmSnapshotSchema = z
   .object({ schema_version: z.literal(CONTRACT_VERSION), frames: z.array(GmEventSchema).min(1).max(200) })
   .refine((snapshot) => endsWithReady(snapshot.frames), SNAPSHOT_ISSUE)
+  .refine((snapshot) => snapshot.frames.filter((frame) => frame.event === 'session').length <= 1, {
+    path: ['frames'],
+    message: 'a snapshot describes one session',
+  })
   .refine(
     (snapshot) =>
       oneRevealPictureWhileLive(
@@ -1903,6 +1907,16 @@ export const GmSnapshotSchema = z
       ),
     PICTURE_ISSUE,
   )
+  // ED-9: the reveal epoch is PER SESSION, so a picture from another session —
+  // or from a generation before a Rotate — is exactly the "number from last
+  // night" a Confirm must never be able to match.
+  .refine((snapshot) => {
+    const session = snapshot.frames.find((frame) => frame.event === 'session')
+    if (session === undefined || session.session.state !== 'live') return true
+    return snapshot.frames
+      .filter((frame) => frame.event === 'snapshot')
+      .every((frame) => frame.state.session_id === session.session.session_id && frame.state.gen === session.session.gen)
+  }, { path: ['frames'], message: 'a reveal picture describes the session and generation beside it' })
 export type GmSnapshot = z.infer<typeof GmSnapshotSchema>
 
 /** A live session as a table client may know it (AUDIO-19), and this device's own role. */

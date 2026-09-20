@@ -918,6 +918,13 @@ snapshot is complete before `ready`, so a client that has seen `ready` knows
 every slot it is entitled to, and a GM client never reads missing state as
 "nothing revealed" (ADR RT-4, REVEAL-13).
 
+A `GmSnapshot` carries **one** `session` frame, and its reveal picture describes
+**that** session: `GmSnapshot` refuses a picture whose `session_id` or `gen`
+differs from the session frame beside it. The reveal epoch is per session
+(ED-9), so a picture from another session — or from a generation before a
+Rotate — is exactly the "number from last night" a Confirm must never be able to
+match.
+
 The **readers apply that rule too**, not only the emitter: `parseGmSnapshot` and
 `parseTableSnapshot` answer `{ kind: 'unknown', reason: 'invalid' }` for a live
 resource with no picture, for a resource with no live session that carries one,
