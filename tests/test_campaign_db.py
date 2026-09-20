@@ -169,7 +169,13 @@ def test_every_transaction_is_read_committed_whatever_the_server_defaults_to(dsn
     start failing with serialization errors instead of waiting."""
     with connect(dsn) as conn:
         database = conn.execute("SELECT current_database()").fetchone()[0]
-        conn.execute(f'ALTER DATABASE "{database}" SET default_transaction_isolation = %s', ("serializable",))
+        # ALTER DATABASE is a utility statement: it takes no bound parameter, so
+        # the level is a literal. The database name comes from
+        # `current_database()` and the level is this file's own constant, so
+        # nothing a caller supplies is interpolated here.
+        conn.execute(
+            f'ALTER DATABASE "{database}" SET default_transaction_isolation = \'serializable\''
+        )
 
     with connect(dsn) as fresh:
         assert fresh.execute("SHOW transaction_isolation").fetchone()[0] == "serializable", (
@@ -345,7 +351,11 @@ def test_a_transaction_that_outlives_its_bound_is_ended_rather_than_left_holding
 # ── Behaviour 32 — why every store row lock is FOR NO KEY UPDATE (RQ-3) ──────
 
 
-def _a_participant(dsn: str) -> None:
+def _a_participant_row(dsn: str) -> None:
+    """By raw SQL, with a known id — this test locks the row directly rather
+    than through a store. Named apart from the suite's `_a_participant` below:
+    two helpers of the same name in one module means the later one wins, and
+    nothing but a real run says so."""
     with connect(dsn) as conn:
         conn.execute(
             "INSERT INTO campaign.participants (id, campaign_id, alias) VALUES (%s, %s, 'Rook')",
@@ -398,7 +408,7 @@ def test_a_participant_locked_for_no_key_update_does_not_block_a_row_that_refere
     waiting behind a join, and how two of them deadlock. `FOR NO KEY UPDATE`
     does not conflict with the `FOR KEY SHARE` a foreign-key check takes, so
     every explicit row lock a store takes is that one."""
-    _a_participant(dsn)
+    _a_participant_row(dsn)
     with _holding_the_participant_row(dsn, "FOR NO KEY UPDATE"):
         _insert_a_code_referencing_the_participant(dsn)
 

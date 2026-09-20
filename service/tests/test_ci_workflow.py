@@ -87,3 +87,33 @@ def test_the_integration_step_does_not_swallow_its_own_failure():
         "the integration step must be able to fail the job — allowing it to "
         "continue would make the job green whatever the database did"
     )
+
+
+# ── A test that cannot run is as bad as one that is never invoked ────────────
+
+
+def test_no_database_backed_module_defines_a_name_twice():
+    """A second `def` of the same name silently replaces the first, and every
+    caller written against the first signature then fails — but only when the
+    test actually RUNS. For the files in `DB_BACKED_TESTS` that is CI, on a
+    branch, after a push.
+
+    ruff's F811 does not catch it when the first binding is used before the
+    redefinition, which is exactly the shape that got here: one
+    `_a_participant(dsn)` helper and one `_a_participant(world, ...)`, in one
+    module, with the CI-only test calling what it thought was the first.
+    """
+    import ast
+
+    for path in (Path(name) for name in DB_BACKED_TESTS):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        seen: dict[str, int] = {}
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                continue
+            if node.name in seen:
+                raise AssertionError(
+                    f"{path}: '{node.name}' is defined at line {seen[node.name]} and again at "
+                    f"line {node.lineno}; the second wins and the first is unreachable"
+                )
+            seen[node.name] = node.lineno
