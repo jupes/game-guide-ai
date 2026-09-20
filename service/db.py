@@ -164,7 +164,9 @@ class _CampaignLockOrder:
         self.campaign_locks: list[tuple[str, str]] = []
         self._locked_anything_else = False
 
-    def _note_other_lock(self) -> None:
+    def note_row_lock(self) -> None:
+        """A store that takes an explicit row lock says so here, so that taking
+        one before the campaign lock is refused rather than merely discouraged."""
         self._locked_anything_else = True
 
     def _check_campaign_lock(self, campaign_id: str, *, shared: bool) -> str:
@@ -387,7 +389,7 @@ class PgTransaction(_CampaignLockOrder):
         self.conn.execute("SELECT pg_notify(%s, %s)", (channel, payload))
 
     def lock(self, lock_class: AdvisoryLock, key: str) -> None:
-        self._note_other_lock()
+        self.note_row_lock()
         self.conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (int(lock_class), advisory_key(key)))
 
     def lock_campaign(
@@ -575,7 +577,7 @@ class InMemoryTransaction(_CampaignLockOrder):
     def lock(self, lock_class: AdvisoryLock, key: str) -> None:
         # Recorded for assertions. The database-wide lock below already makes
         # every in-memory transaction serial, which is the strongest reading.
-        self._note_other_lock()
+        self.note_row_lock()
         self.locks.append((lock_class, key))
 
     def lock_campaign(

@@ -261,6 +261,74 @@ def test_the_database_refuses_a_campaign_row_the_application_would_never_mint(ds
             )
 
 
+#: Every table 0004 hangs off a campaign, with the column that reaches a user.
+CAMPAIGN_TABLES = (
+    "campaign.campaigns",
+    "campaign.authz_state",
+    "campaign.participants",
+    "campaign.enrolment_codes",
+    "campaign.device_credentials",
+    "campaign.table_sessions",
+    "campaign.table_credentials",
+    "campaign.session_join_counters",
+)
+
+
+def _a_whole_campaign(conn, owner: int) -> None:
+    """One row in every table of 0004, so the cascade has something to lose."""
+    conn.execute(
+        "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
+        (CAMPAIGN_ID, owner),
+    )
+    conn.execute(
+        "INSERT INTO campaign.participants (id, campaign_id, alias) VALUES (%s, %s, 'Rook')",
+        ("prt_" + "a" * 22, CAMPAIGN_ID),
+    )
+    conn.execute(
+        "INSERT INTO campaign.enrolment_codes (id, participant_id, code_digest, expires_at) "
+        "VALUES (%s, %s, %s, now() + interval '7 days')",
+        ("enc_" + "a" * 22, "prt_" + "a" * 22, "0" * 64),
+    )
+    conn.execute(
+        "INSERT INTO campaign.device_credentials (id, participant_id, credential_digest) "
+        "VALUES (%s, %s, %s)",
+        ("dev_" + "a" * 22, "prt_" + "a" * 22, "1" * 64),
+    )
+    conn.execute(
+        "INSERT INTO campaign.table_sessions (id, campaign_id, gm_user_id, state, expires_at) "
+        "VALUES (%s, %s, %s, 'live', now() + interval '12 hours')",
+        ("ses_" + "a" * 22, CAMPAIGN_ID, owner),
+    )
+    conn.execute(
+        "INSERT INTO campaign.table_credentials "
+        "(id, session_id, link_generation, credential_digest) VALUES (%s, %s, 1, %s)",
+        ("tcr_" + "a" * 22, "ses_" + "a" * 22, "2" * 64),
+    )
+    conn.execute(
+        "INSERT INTO campaign.session_join_counters (session_id, link_generation, joins) "
+        "VALUES (%s, 1, 3)",
+        ("ses_" + "a" * 22,),
+    )
+
+
+def test_deleting_a_user_cascades_through_every_table_of_the_campaign_schema(dsn):
+    """SEC-36: deleting the account takes the campaigns with it, and everything
+    that hangs off them — including the authorisation row, which is what an
+    orphan would keep a deleted campaign authorisable by."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        _a_whole_campaign(conn, owner)
+        for table in CAMPAIGN_TABLES:
+            assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 1, table
+
+        conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+        for table in CAMPAIGN_TABLES:
+            assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0, (
+                f"{table} still holds a row of a deleted account"
+            )
+
+
 # ── Drift fails loudly ───────────────────────────────────────────────────────
 
 
