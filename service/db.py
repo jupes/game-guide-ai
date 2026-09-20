@@ -187,6 +187,19 @@ class _CampaignLockOrder:
         through the very parameter that exists to raise it. The ceiling is the
         other half: nothing legitimate holds a campaign's authorisation row for
         ten minutes, and a bound nobody can reach is not a bound.
+
+        **The first bound a transaction sets is the one that fires.** PostgreSQL
+        17 arms the transaction timer only when one is not already running, so a
+        second primitive setting a longer bound changes what `SHOW
+        transaction_timeout` reports and not when the transaction is cut short:
+        `hold(...)` and then `end(..., transaction_timeout_s=30)` still ends at
+        five seconds. A caller that needs longer therefore passes its bound to
+        the **first** primitive it calls — for every fact-changing path that is
+        `lock_campaign`, which is the first lock a transaction takes anyway
+        (RQ-2). `tests/test_campaign_db.py` pins this against the server rather
+        than against a reading of its source, because the behaviour is the
+        server's; the list above records every bound asked for, in order, so a
+        test can tell the two apart.
         """
         if transaction_timeout_s is None:
             bound = self.campaign_lock.transaction_timeout

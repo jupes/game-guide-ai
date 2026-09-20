@@ -358,6 +358,47 @@ def test_a_caller_may_raise_the_transaction_bound_for_its_own_longer_work(dsn: s
 
 
 @needs_db
+def test_the_first_transaction_bound_a_transaction_sets_is_the_one_that_fires(
+    dsn: str, owner: int
+) -> None:
+    """G-10, characterised against the server rather than read off its source.
+
+    Two primitives in one transaction each set `transaction_timeout`, and the
+    question is which one the timer obeys. PostgreSQL 17's assign hook arms it
+    only when one is not already running, so the expectation is that the FIRST
+    value wins and a later one changes only what `SHOW` reports — which is why
+    `transaction_bound`'s docstring tells a caller that needs longer to pass its
+    bound to the first primitive it calls.
+
+    The transaction here is cut short at one second while `SHOW` says thirty. It
+    owns a connection it can lose: what PostgreSQL 17 does at
+    `transaction_timeout` is end the session.
+    """
+    db = _database(dsn)
+    participants, sessions = PostgresParticipantStore(), PostgresTableSessionStore(slot_clear=no_slots)
+    with db.transaction() as unit:
+        seat = participants.add(unit, CAMPAIGN, alias="Rook")
+        session, _ = sessions.start(
+            unit, CAMPAIGN, owner_id=owner, expires_at=datetime.now(UTC) + timedelta(hours=12)
+        )
+
+    with pytest.raises(psycopg.Error):
+        with db.transaction() as unit:
+            participants.hold(unit, seat.id, campaign_id=CAMPAIGN, transaction_timeout_s=1)
+            sessions.narrow(unit, CAMPAIGN, session.id, transaction_timeout_s=30)
+            assert unit.conn.execute("SHOW transaction_timeout").fetchone()[0] == "30s", (
+                "the later value is what the server REPORTS"
+            )
+            assert unit.transaction_bounds == ["1s", "30s"]
+            unit.conn.execute("SELECT pg_sleep(2)")
+
+    with connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT reveal_epoch FROM campaign.table_sessions WHERE id = %s", (session.id,)
+        ).fetchone()[0] == 0, "the transaction was cut short at one second, and kept nothing"
+
+
+@needs_db
 def test_a_participant_only_transaction_is_bounded_like_every_other_holder(dsn: str, owner: int) -> None:
     """RQ-6 rests on "every holder is bounded by `transaction_timeout`", and an
     enrolment — the unauthenticated route — holds a participant row without ever
