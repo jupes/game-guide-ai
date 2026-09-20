@@ -42,11 +42,13 @@ service. A lookup of an unknown id answers nothing — never the NPC config the
 handoff fell back to (X-8). The wire contract's own validators pin the subset
 of the registry they need as constants.
 
-What the registry does not carry yet, on purpose: which fields a table may see,
-reveal groups and warnings, audiences and per-audience default masks. Those are
-`agent-forge-harness-1ir.1.2`'s decision and arrive with the reveal family
-(`1kg.1.6`). The seven document types whose fields `1kg.5.3` has yet to declare
-carry no field labels until it does.
+Since `1kg.5.3` the registry also carries, per field, the rule that says how it
+is presented and who may ever see it — label, `editable`, `revealable` (the
+allowlist of REVEAL-10, and by ED-5 the list that can ever be classified) and
+the reveal sheet's warning copy — and, per type, its audience (AUD-9), accent,
+reveal groups, per-audience default reveal (REVEAL-4) and retired keys (ED-24).
+What it does **not** carry is a reveal mask, a projection or an eligibility row:
+those are state, and belong to `1kg.1.6` and `agent-forge-harness-1ir.2.1`.
 
 ## Conventions
 
@@ -204,7 +206,7 @@ on both sides.
 | Legacy guards | **done** | today's `/chat` and message-history responses, validated by the existing models |
 | Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The attached-cue entry arrives with the cue family; until v1 is declared complete, adding it is not a version bump |
 | Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, and `conflict` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
-| Per-type document fields | the **frame is done**; `npc` is the worked example | `1kg.5.3` owns all eight types. Until it declares a type's fields that type has the common ones only and everything else fails closed — the same posture as card kinds |
+| Per-type document fields | **done** | All eight types declare their fields, rules, reveal groups and default reveals (`1kg.5.3`). A key a type does not name fails closed — the same posture as card kinds |
 | Reveal | to do, and **waiting** | the mutation with its epoch, Stop, GM-side state, the allowlisted projection, the table snapshot. Audience and slot shapes must not freeze before `agent-forge-harness-1ir.1.2` (field eligibility, shared with the Live Session Assistant) is decided; it blocks `1kg.7.1`. The projection needs an asset shape of its own — a per-slot opaque handle, never the GM-side `asset_id` — and its join and enrol answers are generic ([threat model](adr/gm-workbench-threat-model.md), §12.2) |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
 | Table sessions | **done** | `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest`, `EnrolResponse`, `TableSession`, `TableSessionRequest`, `TableSessionAnswer` |
@@ -271,8 +273,10 @@ sending it would give the two a chance to disagree.
 
 A document's `data` is flat: one value per field key, as bare JSON. What each key
 must hold is the type's definition, which is a registry fact
-(`registry.json`: `field_kinds`, `common_fields`, and `fields` per document type)
-kept as constants in both languages and pinned by both suites.
+(`registry.json`: `field_kinds`, `field_bounds`, `common_fields`, and `fields`
+per document type) kept as constants in both languages and pinned by both suites.
+The numbers in the table below are `field_bounds`, so each one is agreed in one
+place rather than kept twice.
 
 | Kind | On the wire | Cleared as |
 | --- | --- | --- |
@@ -280,12 +284,14 @@ kept as constants in both languages and pinned by both suites.
 | `prose` | plain text, at most 20,000 characters | `""` |
 | `text_list` | at most 100 items of 1 to 2,000 characters | `[]` |
 | `asset` | an `AssetRef` (an id, never a URL) | `null` |
+| `integer` | a JSON integer, -1,000,000 to 1,000,000 | `null` |
+| `abilities` | the six 5e scores as one object (`str`, `dex`, `con`, `int`, `wis`, `cha`), each 0–99; any subset | `null` |
+| `entry_list` | at most 100 `{name, text}` entries; the name one line of 1 to 200 characters, the text at most 2,000 | `[]` |
 
 Every type has `name`, `qualifier` and `tags`. `name` is the title everywhere and
-the one field that cannot be blank (LIB-12). `npc` adds `portrait`, `voice`,
-`tell`, `attitude`, `wants`, `leverage`, `if_attacked` and `notes` — the handoff's
-keys in snake_case. **A kind never appears on the wire**, so `1kg.5.3` can add
-kinds (integers, ability scores, entry lists) and fields without a version bump:
+the one field that cannot be blank (LIB-12); `tags` is **never revealable**, on
+any type (REVEAL-10, ED-5). **A kind never appears on the wire**, so a later bead
+can add kinds and fields without a version bump:
 
 - the **server** rejects a key the type does not declare, in what it stores and
   in what it emits;
@@ -302,7 +308,182 @@ must read as *not declared*, not find something on a prototype.
 Nothing in this family says who may *see* a field. `reveal_mask`, audiences and
 eligibility are not on a document at all: reveal is server state with its own
 resource (CANVAS-33), and what may be shown to whom is
-`agent-forge-harness-1ir.1.2`'s decision.
+`agent-forge-harness-1ir.1.2`'s decision. What the **registry** says is the
+per-field rule below — the allowlist a mask may ever name.
+
+### Per-type fields
+
+Every row of every table below is `registry.json`, which both suites pin against
+their language's copy. **Revealable** is the type's allowlist (REVEAL-10): a key
+marked *never* can appear in no mask, no reveal group and no default, and by
+ED-5 it is `gm_only` by construction and cannot be widened by any action.
+**Group** is the labelled row that toggles a fixed set of keys together
+(REVEAL-11); the stored mask still lists the individual keys. **Seeded** is the
+type's default reveal for its **own** audience, and only ever that one
+(REVEAL-4) — so an owner-audience type seeds nothing for the table (AUD-12). A
+warning after a label is the sub-line the reveal sheet shows, in the type's own
+words.
+
+`reserved_keys` is empty for all eight: nothing has been retired yet. A key that
+is retired goes on that list and never returns with another meaning (ED-24).
+
+#### `npc` — NPC Dossier
+
+renderer `game_document` · audience `table`
+
+| Key | Kind | Label | Editable | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | *Name & voice* | yes |
+| `qualifier` | common | Qualifier | yes | yes | — | — |
+| `tags` | common | Tags | yes | **never** | — | — |
+| `portrait` | `asset` | Portrait | yes | yes | — | yes |
+| `voice` | `text` | Voice | yes | yes | *Name & voice* | yes |
+| `tell` | `text` | Tell | yes | yes | — | — |
+| `attitude` | `text` | Attitude | yes | yes | — | — |
+| `wants` | `prose` | Wants ⚠ Would spoil the lie | yes | yes | *Wants & leverage* | — |
+| `leverage` | `prose` | Leverage ⚠ Would spoil the lie | yes | yes | *Wants & leverage* | — |
+| `if_attacked` | `prose` | If the party attacks | yes | yes | — | — |
+| `notes` | `prose` | Notes | yes | yes | — | — |
+| `true_identity` | `prose` | True identity | yes | **never** | — | — |
+
+#### `statblock` — Stat Block
+
+renderer `stat_block_card` · audience `table` · ability row from `abilities`
+
+| Key | Kind | Label | Editable | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | — | — |
+| `qualifier` | common | Qualifier | yes | yes | — | — |
+| `tags` | common | Tags | yes | **never** | — | — |
+| `ac` | `integer` | Armor Class | yes | yes | — | — |
+| `ac_note` | `text` | Armor Class note | yes | yes | — | — |
+| `hp` | `integer` | Hit Points | yes | yes | — | — |
+| `hit_dice` | `text` | Hit dice | yes | yes | — | — |
+| `speed` | `text` | Speed | yes | yes | — | — |
+| `size` | `text` | Size | yes | yes | — | — |
+| `creature_type` | `text` | Creature type | yes | yes | — | — |
+| `alignment` | `text` | Alignment | yes | yes | — | — |
+| `abilities` | `abilities` | Ability scores | yes | yes | — | — |
+| `saving_throws` | `text` | Saving throws | yes | yes | — | — |
+| `skills` | `text` | Skills | yes | yes | — | — |
+| `damage_immunities` | `text` | Damage immunities | yes | yes | — | — |
+| `condition_immunities` | `text` | Condition immunities | yes | yes | — | — |
+| `senses` | `text` | Senses | yes | yes | — | — |
+| `languages` | `text` | Languages | yes | yes | — | — |
+| `challenge_rating` | `text` | Challenge rating | yes | yes | — | — |
+| `xp` | `integer` | XP | yes | yes | — | — |
+| `traits` | `entry_list` | Traits | yes | yes | — | — |
+| `actions` | `entry_list` | Actions | yes | yes | — | — |
+| `bonus_actions` | `entry_list` | Bonus actions | yes | yes | — | — |
+| `reactions` | `entry_list` | Reactions | yes | yes | — | — |
+| `legendary_actions` | `entry_list` | Legendary actions | yes | yes | — | — |
+
+#### `handout` — Player Handout
+
+renderer `game_document` · audience `table` · **printable**
+
+| Key | Kind | Label | Editable | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | — | yes |
+| `qualifier` | common | Qualifier | yes | yes | — | — |
+| `tags` | common | Tags | yes | **never** | — | — |
+| `portrait` | `asset` | Illustration | yes | yes | — | yes |
+| `body` | `prose` | Text | yes | yes | — | yes |
+
+#### `session-notes` — Session Notes
+
+renderer `game_document` · audience `table`
+
+| Key | Kind | Label | Editable | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | — | — |
+| `qualifier` | common | Qualifier | yes | yes | — | — |
+| `tags` | common | Tags | yes | **never** | — | — |
+| `session` | `integer` | Session number | yes | yes | — | — |
+| `date` | `text` | Date | yes | yes | — | — |
+| `present` | `text_list` | Present | yes | yes | — | — |
+| `recap` | `prose` | Recap ⚠ Summarises your private GM thread | yes | yes | — | — |
+| `beats` | `text_list` | Beats | yes | yes | — | — |
+| `loose_threads` | `text_list` | Loose threads | yes | yes | — | — |
+
+#### `quest-log` — Quest Log
+
+renderer `game_document` · audience `table`
+
+| Key | Kind | Label | Editable | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | — | yes |
+| `qualifier` | common | Qualifier | yes | yes | — | — |
+| `tags` | common | Tags | yes | **never** | — | — |
+| `open_threads` | `entry_list` | Open threads | yes | yes | — | yes |
+| `cold_threads` | `entry_list` | Cold threads | yes | yes | — | — |
+| `resolved_threads` | `entry_list` | Resolved threads | yes | yes | — | yes |
+
+#### `character-sheet` — Character Sheet
+
+renderer `game_document` · audience `owner` · ability row from `abilities`
+
+| Key | Kind | Label | Editable | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | — | yes |
+| `qualifier` | common | Qualifier | yes | yes | — | yes |
+| `tags` | common | Tags | yes | **never** | — | — |
+| `portrait` | `asset` | Portrait | yes | yes | — | yes |
+| `ac` | `integer` | Armor Class | yes | yes | — | yes |
+| `hp` | `integer` | Hit Points | yes | yes | — | yes |
+| `speed` | `text` | Speed | yes | yes | — | yes |
+| `abilities` | `abilities` | Ability scores | yes | yes | — | yes |
+| `features` | `entry_list` | Features | yes | yes | — | yes |
+| `equipment` | `text_list` | Equipment | yes | yes | — | yes |
+| `notes` | `prose` | Notes | yes | yes | — | yes |
+
+#### `lore` — Lore Entry
+
+renderer `game_document` · audience `table` · **cites the corpus** · accent `arcane`
+
+| Key | Kind | Label | Editable | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | — | yes |
+| `qualifier` | common | Qualifier | yes | yes | — | — |
+| `tags` | common | Tags | yes | **never** | — | — |
+| `region` | `text` | Region | yes | yes | — | — |
+| `era` | `text` | Era | yes | yes | — | — |
+| `status` | `text` | Status | yes | yes | — | — |
+| `summary` | `prose` | Summary | yes | yes | — | yes |
+| `history` | `prose` | History | yes | yes | — | — |
+| `rumours` | `text_list` | Rumours | yes | yes | — | — |
+
+#### `encounter` — Encounter
+
+renderer `game_document` · audience `table`
+
+| Key | Kind | Label | Editable | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | — | — |
+| `qualifier` | common | Qualifier | yes | yes | — | — |
+| `tags` | common | Tags | yes | **never** | — | — |
+| `difficulty` | `text` | Difficulty | yes | yes | — | — |
+| `xp_budget` | `integer` | XP budget | yes | yes | — | — |
+| `party_level` | `integer` | Party level | yes | yes | — | — |
+| `setup` | `prose` | Setup | yes | yes | — | — |
+| `combatants` | `entry_list` | Combatants | yes | yes | — | — |
+| `terrain` | `prose` | Terrain & hazards | yes | yes | — | — |
+| `outcome` | `prose` | If it goes wrong ⚠ Would spoil the surprise | yes | yes | — | — |
+
+#### Schema revisions
+
+`DOC_TYPE_VERSION` is `1` for all eight, and nothing is released, so no document
+needs carrying forward. The frame for when one does is
+`service/workbench_adapters.py` and `ui/src/gm/schemaAdapters.ts`: a registry of
+`(type, from_version) -> adapter`, walked one step at a time. It checks that
+every step exists **before** running any, so a document half-migrated by a
+skipped step is never returned; it refuses to downgrade a document newer than
+the target; and its error names the step, never the document's content (X-7).
+Adding a field or a kind is **not** a bump — only an incompatible change is, and
+it ships with its adapter. An adapter that moves text from one key to another
+**resets the destination to `unclassified`** (ED-24): a class was granted for the
+text as it sat under the old key, and carrying it across would cover text the
+classifier never saw.
 
 ### Versions and the write revision
 

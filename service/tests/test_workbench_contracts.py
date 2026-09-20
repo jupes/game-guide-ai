@@ -133,6 +133,27 @@ def test_registry_constants_match_the_shared_registry() -> None:
         assert all(re.fullmatch(r"[a-z][a-z0-9_]{0,39}", key) for key in doc_type["fields"])
 
 
+def test_every_field_kinds_bounds_are_the_shared_registrys() -> None:
+    """Each kind's ceiling is one number, not two.
+
+    A bound kept as two independent constants can drift: each suite goes on
+    testing against its own, and the differential fuzz never reaches the values
+    in between. ``registry.json`` holds the number, and the boundary examples in
+    ``Document.json`` exercise it on both sides.
+    """
+    registry = json.loads((FIXTURES / "registry.json").read_text(encoding="utf-8"))
+    assert registry["field_bounds"] == {
+        "text_field_max_chars": wc.TEXT_FIELD_MAX_CHARS,
+        "prose_field_max_chars": wc.PROSE_FIELD_MAX_CHARS,
+        "list_field_max_items": wc.LIST_FIELD_MAX_ITEMS,
+        "list_item_max_chars": wc.LIST_ITEM_MAX_CHARS,
+        "integer_field_min": wc.INTEGER_FIELD_MIN,
+        "integer_field_max": wc.INTEGER_FIELD_MAX,
+        "ability_score_min": wc.ABILITY_SCORE_MIN,
+        "ability_score_max": wc.ABILITY_SCORE_MAX,
+    }
+
+
 def test_error_codes_are_safe_metric_labels() -> None:
     """Plan invariant 10: a code may become a metric label, so it is bounded and
     can never carry user text."""
@@ -349,13 +370,163 @@ def test_check_fields_is_usable_on_its_own() -> None:
         wc.check_fields(wc.DocumentTypeId.NPC, 2, {"name": "A guard"}, whole=True)
 
 
-def test_every_type_validates_with_the_common_fields_alone() -> None:
-    """Until ``1kg.5.3`` declares a type's own fields, the common ones are all it has."""
-    for doc_type in wc.DocumentTypeId:
-        wc.check_fields(doc_type, 1, {"name": "x", "qualifier": "", "tags": []}, whole=True)
-        if not wc.DOC_TYPE_FIELDS[doc_type]:
-            with pytest.raises(ValueError, match="do not declare"):
-                wc.check_fields(doc_type, 1, {"name": "x", "body": "text"}, whole=True)
+@pytest.mark.parametrize("doc_type", list(wc.DocumentTypeId), ids=lambda t: t.value)
+def test_every_type_takes_the_common_fields(doc_type: wc.DocumentTypeId) -> None:
+    """``name``, ``qualifier`` and ``tags`` belong to every type."""
+    assert wc.check_fields(doc_type, 1, {"name": "x", "qualifier": "", "tags": []}, whole=True) == {
+        "name": "x",
+        "qualifier": "",
+        "tags": [],
+    }
+
+
+@pytest.mark.parametrize("doc_type", list(wc.DocumentTypeId), ids=lambda t: t.value)
+def test_every_type_fails_closed_on_a_key_it_does_not_declare(doc_type: wc.DocumentTypeId) -> None:
+    """The posture, proved per type rather than for the types that happened to
+    have no fields. ``smuggled_key`` is declared by none of the eight."""
+    with pytest.raises(ValueError, match="do not declare"):
+        wc.check_fields(doc_type, 1, {"name": "x", "smuggled_key": "text"}, whole=True)
+
+
+@pytest.mark.parametrize("doc_type", list(wc.DocumentTypeId), ids=lambda t: t.value)
+def test_the_answer_to_an_undeclared_key_carries_no_trace_of_it(doc_type: wc.DocumentTypeId) -> None:
+    """X-7: the body a route returns names the key's *type*, never the key or
+    the text under it — a GM's private note must not come back in a 422.
+
+    Asserted on ``validation_error_body``, which is what a route answers with,
+    and not on ``redacted_errors``: that is for a log line, its redaction branch
+    only fires for ``extra_forbidden``, and an undeclared document field is a
+    ``value_error`` with an empty location, so a test written against it would
+    pass while proving nothing.
+    """
+    secret = "Drown the harbourmaster."
+    document = {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": doc_type.value,
+        "type_version": 1,
+        "data": {"name": "A document", "secret_plan": secret},
+        "write_revision": 1,
+        "version": {
+            "number": 1,
+            "author": "gm",
+            "summary": "",
+            "created_at": "2026-09-16T20:00:00Z",
+            "sealed": False,
+            "changed_fields": ["name"],
+            "restored_from": None,
+        },
+        "archived": False,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z",
+    }
+    with pytest.raises(ValidationError) as caught:
+        wc.Document.model_validate(document)
+    errors = caught.value.errors()
+
+    answered = wc.validation_error_body(errors).model_dump_json()
+    assert secret not in answered and "secret_plan" not in answered
+
+    logged = json.dumps(wc.redacted_errors(errors))
+    assert secret not in logged and "secret_plan" not in logged
+
+    # And the reason both helpers exist: the raw list still carries the request.
+    # This is the assertion that would catch someone logging ``exc.errors()``.
+    assert secret in json.dumps(errors, default=str)
+
+
+_STATBLOCK = wc.DocumentTypeId.STATBLOCK
+
+
+def _statblock(**fields: Any) -> dict[str, Any]:
+    return wc.check_fields(_STATBLOCK, 1, {"name": "Ondrey", **fields}, whole=True)
+
+
+@pytest.mark.parametrize(
+    ("value", "stored"),
+    [(7, 7), (7.0, 7), (0, 0), (-1, -1), (wc.INTEGER_FIELD_MAX, wc.INTEGER_FIELD_MAX), (None, None)],
+)
+def test_an_integer_field_takes_a_json_integer(value: Any, stored: Any) -> None:
+    """``1.0`` is ``1`` because JavaScript cannot tell the two apart; ``null`` clears."""
+    assert _statblock(ac=value)["ac"] == stored
+
+
+@pytest.mark.parametrize(
+    "value", [True, False, "7", "", 1.5, [], {}, wc.INTEGER_FIELD_MAX + 1, wc.INTEGER_FIELD_MIN - 1]
+)
+def test_an_integer_field_refuses_anything_else(value: Any) -> None:
+    with pytest.raises(ValueError, match="not a valid integer field"):
+        _statblock(ac=value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [{}, {"str": 10}, {"str": 10, "dex": 12, "con": 14, "int": 8, "wis": 13, "cha": 16}, {"str": None}, None],
+)
+def test_an_abilities_field_takes_any_subset_of_the_six_scores(value: Any) -> None:
+    """CANVAS-19: the ability-score block is **one** field. ``null`` clears it."""
+    assert _statblock(abilities=value)["abilities"] == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"strength": 10},
+        {"str": 10, "luck": 3},
+        {"str": "10"},
+        {"str": True},
+        {"str": wc.ABILITY_SCORE_MAX + 1},
+        {"str": wc.ABILITY_SCORE_MIN - 1},
+        [],
+        "10",
+    ],
+)
+def test_an_abilities_field_refuses_an_unknown_key_or_an_impossible_score(value: Any) -> None:
+    with pytest.raises(ValueError, match="not a valid abilities field"):
+        _statblock(abilities=value)
+
+
+def _entries(checked: dict[str, Any]) -> list[dict[str, str]]:
+    """``check_fields`` returns a model for a structured kind, as it already does
+    for ``asset``; what matters on the wire is what it serialises to."""
+    return [entry.model_dump() for entry in checked["traits"]]
+
+
+def test_an_entry_list_field_takes_named_entries() -> None:
+    entries = [{"name": "Amphibious", "text": "She breathes water."}, {"name": "Silent", "text": ""}]
+    assert _entries(_statblock(traits=entries)) == entries
+    assert _statblock(traits=[])["traits"] == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [{"name": "Amphibious"}],
+        [{"text": "no name"}],
+        [{"name": "Amphibious", "text": "x", "damage": "1d6"}],
+        [{"name": "", "text": "x"}],
+        [{"name": "two\nlines", "text": "x"}],
+        [{"name": "x", "text": "y"}] * (wc.LIST_FIELD_MAX_ITEMS + 1),
+        ["Amphibious"],
+        {},
+        None,
+    ],
+)
+def test_an_entry_list_field_refuses_a_malformed_entry(value: Any) -> None:
+    with pytest.raises(ValueError, match="not a valid entry_list field"):
+        _statblock(traits=value)
+
+
+def test_the_new_kinds_are_bounded_at_their_edges() -> None:
+    """The caps are the contract's, and both languages read them from it."""
+    assert _statblock(traits=[{"name": "n", "text": "t"}] * wc.LIST_FIELD_MAX_ITEMS)["traits"]
+    long_name = "a" * wc.TEXT_FIELD_MAX_CHARS
+    assert _entries(_statblock(traits=[{"name": long_name, "text": "t"}]))[0]["name"] == long_name
+    with pytest.raises(ValueError, match="not a valid entry_list field"):
+        _statblock(traits=[{"name": "a" * (wc.TEXT_FIELD_MAX_CHARS + 1), "text": "t"}])
+    with pytest.raises(ValueError, match="not a valid entry_list field"):
+        _statblock(traits=[{"name": "n", "text": "t" * (wc.LIST_ITEM_MAX_CHARS + 1)}])
 
 
 def test_an_instruction_and_a_search_are_stored_trimmed() -> None:
