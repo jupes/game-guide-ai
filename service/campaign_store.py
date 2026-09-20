@@ -6,30 +6,37 @@ twin and a PostgreSQL implementation, the shape `service/auth_store.py`
 established — and the few pieces the participant and table-session stores need
 too, kept here rather than spelled three times.
 
-**Ownership is in the query.** Every read and write names the owner in the same
-statement as the row, so a campaign that is not the caller's is indistinguishable
-from one that does not exist (`docs/migrations.md` section 4). There is no
-"fetch, then check": a check that happens after the fetch is a check something
-can skip.
+**Ownership is in the query** (`docs/migrations.md` section 4). A campaign read
+or write names the **owner** in the same statement as the row; a participant or
+session write names the **campaign**. A row that is not the caller's is
+therefore indistinguishable from one that does not exist, and there is no
+"fetch, then check" — a check that happens after the fetch is a check something
+can skip. The one deliberate exception is the player's unauthenticated path,
+which holds no campaign: it locks the participant row and is authorised by the
+code it presents, never by an id it was handed (RQ-5, RC-12).
 
 **Mutations take the unit of work first**, like `JobQueue.enqueue`, so that
 `1kg.2.2` and `1kg.2.3` can compose all three stores — and the audit writer —
 in one transaction that commits or rolls back together.
 
-**The twin owes two things to `InMemoryDatabase`** (`service/db.py`): every
-write registers `on_rollback`, so a failed block leaves nothing behind, and a
-row another reader must not see yet is staged and released with `on_publish`.
-Both are what let a test exercise composition without a database at all.
+**The twins owe three things to `InMemoryDatabase`** (`service/db.py`). Every
+write — an insert *and* a change to an already-committed row — is staged in the
+writing unit alone and published with `on_publish`, so a second reader sees what
+READ COMMITTED would show it and a rollback needs no undo. Uniqueness is decided
+over the committed rows plus the writing unit's own, so a rolled-back change
+cannot leave the twin in a state a partial unique index forbids. And the three
+twins share **one** set of tables (`shared_rows`), so a child whose parent does
+not exist is refused here as a foreign key refuses it there.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Protocol
 
 from . import campaign_identity as ident
-from .db import InMemoryTransaction, PgTransaction, UnitOfWork
+from .db import InMemoryDatabase, InMemoryTransaction, PgTransaction, UnitOfWork
 
 
 class CampaignStoreError(Exception):
@@ -54,13 +61,49 @@ class LiveSessionExists(CampaignStoreError):
     refuses it here, so the two cannot disagree."""
 
 
+class MissingParent(CampaignStoreError, LookupError):
+    """The row this write would hang off is not there: a campaign that never
+    existed, one that is not this owner's, one that is archived, or a
+    participant or session that was never created.
+
+    **One answer for all four.** A caller must not be able to tell them apart —
+    that is SEC-2's "one query, one 404" — and the path that legitimately needs
+    to tell them apart holds the row itself (`ParticipantStore.hold`) and reads
+    it. In PostgreSQL a foreign key is still the guarantee; this refusal is what
+    the statement's own `WHERE EXISTS` reports first, so an ordinary programming
+    error does not arrive as an aborted transaction carrying the driver's text.
+
+    It is a `LookupError` as well, because "there is no such row" is what the
+    standard exception means and some callers already catch that.
+    """
+
+
+class ParticipantRemoved(CampaignStoreError):
+    """That seat has been removed, so nothing may be minted against it (RQ-5,
+    RC-13, AUD-16). A removal revokes the codes and the device credential; this
+    is the other half — nothing issues a new one afterwards."""
+
+
 # ── Plumbing the three stores share ──────────────────────────────────────────
+
+
+def aware(moment: datetime, what: str) -> datetime:
+    """`moment` if it carries a time zone, else a refusal.
+
+    A naive value disagrees between the worlds and is silently wrong in both:
+    PostgreSQL reinterprets it in the session's time zone against a
+    `TIMESTAMPTZ` column, while the twin keeps it and raises `TypeError` the
+    first time something compares it. Refused here, once, for every store.
+    """
+    if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
+        raise ValueError(f"{what} passed to a campaign store is timezone-aware")
+    return moment
 
 
 def now_or(now: datetime | None) -> datetime:
     """A caller's clock, or this one. Every store method takes `now` so that a
     test can place a row in the past without sleeping."""
-    return now if now is not None else datetime.now(UTC)
+    return datetime.now(UTC) if now is None else aware(now, "a clock")
 
 
 def pg(unit: UnitOfWork) -> PgTransaction:
@@ -77,21 +120,33 @@ def fake(unit: UnitOfWork) -> InMemoryTransaction:
     return unit
 
 
-class Staging:
-    """The twin's commit-time visibility, written once instead of in three stores.
+class Staging[T]:
+    """One twin table, with the commit-time visibility PostgreSQL gives a reader.
 
-    A fake write goes into the unit's own staging area, invisible to every other
-    reader, and is published into the shared rows on commit or dropped on
-    rollback — the contract `InMemoryTransaction` states and `InMemoryJobQueue`
-    already follows. A store reads its own transaction's staged rows plus the
-    committed ones; everyone else reads only the committed ones.
+    Every write — a new row and a change to an already-committed one alike —
+    goes into the **writing unit's** staging area, invisible to every other
+    reader, and is published into the committed rows on commit or dropped on
+    rollback. A store reads its own transaction's staged rows plus the committed
+    ones; everyone else reads only the committed ones.
+
+    **Why a change is staged and not made in place.** The first version changed
+    a committed row where it stood and registered an undo, on the grounds that
+    the twin's transactions are serial. They are not serial in the way that
+    needs: `InMemoryDatabase` takes a re-entrant lock, so a test may open a
+    second transaction inside the first — which is exactly how a visibility test
+    is written — and that reader would see an uncommitted change. Worse, a
+    rolled-back change was undone one row at a time, so a unit that ended a
+    session and started another could leave two live sessions behind, a state
+    `table_sessions_one_live_per_gm_uidx` forbids. Staging removes both: nobody
+    but the writer sees the change, and a rollback drops the whole staging area
+    without touching a committed row at all.
     """
 
     def __init__(self) -> None:
-        self._rows: dict[str, Any] = {}
-        self._staged: dict[int, dict[str, Any]] = {}
+        self._rows: dict[str, T] = {}
+        self._staged: dict[int, dict[str, T]] = {}
 
-    def _mine(self, unit: InMemoryTransaction) -> dict[str, Any]:
+    def _mine(self, unit: InMemoryTransaction) -> dict[str, T]:
         key = id(unit)
         if key not in self._staged:
             self._staged[key] = {}
@@ -106,30 +161,38 @@ class Staging:
             unit.on_rollback(discard)
         return self._staged[key]
 
-    def add(self, unit: InMemoryTransaction, key: str, row: Any) -> None:
+    def add(self, unit: InMemoryTransaction, key: str, row: T) -> None:
         """A new row, invisible to every other reader until this unit commits."""
         self._mine(unit)[key] = row
 
-    def visible(self, unit: InMemoryTransaction) -> dict[str, Any]:
-        """Committed rows, plus this transaction's own uncommitted ones."""
+    def visible(self, unit: InMemoryTransaction) -> dict[str, T]:
+        """Committed rows, plus this transaction's own uncommitted ones — what
+        a uniqueness check must look at, and nothing more."""
         return {**self._rows, **self._staged.get(id(unit), {})}
 
-    def committed(self) -> dict[str, Any]:
-        """What a reader outside this transaction can see."""
-        return dict(self._rows)
+    def replace(self, unit: InMemoryTransaction, key: str, row: T) -> None:
+        """Change a row that is already visible. Deliberately the same mechanism
+        as `add`: copy-on-write into this unit's staging area, published on
+        commit. The two names stay apart because they say different things about
+        the caller's intent, not because they do different things."""
+        self._mine(unit)[key] = row
 
-    def replace(self, unit: InMemoryTransaction, key: str, row: Any) -> None:
-        """Change a row that is already visible, registering how to take the
-        change back. A committed row is changed in place — the twin's
-        transactions are serial, so nobody is mid-read — and restored on
-        rollback; one this unit staged is simply rewritten."""
-        staged = self._staged.get(id(unit), {})
-        if key in staged:
-            staged[key] = row
-            return
-        before = self._rows[key]
-        self._rows[key] = row
-        unit.on_rollback(lambda: self._rows.__setitem__(key, before))
+
+def shared_rows[T](db: InMemoryDatabase, name: str) -> Staging[T]:
+    """The twin table called `name` on this in-memory database.
+
+    The three fakes share one set of tables rather than each keeping its own,
+    because a fake that cannot see the campaigns table cannot refuse a
+    participant whose campaign does not exist — and then every unit test written
+    on the fakes passes for a reason PostgreSQL would not share, until the first
+    real request answers with a foreign-key violation.
+    """
+    existing: Staging[T] | None = db.tables.get(name)
+    if existing is not None:
+        return existing
+    fresh: Staging[T] = Staging()
+    db.tables[name] = fresh
+    return fresh
 
 
 # ── The record and its store ─────────────────────────────────────────────────
@@ -237,8 +300,12 @@ class PostgresCampaignStore:
         return None if row is None else _campaign(row)
 
     def list_for_owner(self, unit: UnitOfWork, owner_id: int) -> list[Campaign]:
+        # COLLATE "C" so the tie-break is by code point, which is how the twin
+        # sorts; without it the database's collation decides, and two rows
+        # written with one `now` tie on `created_at` more often than one expects.
         rows = pg(unit).conn.execute(
-            f"SELECT {_COLUMNS} FROM campaign.campaigns WHERE owner_id = %s ORDER BY created_at, id",
+            f'SELECT {_COLUMNS} FROM campaign.campaigns WHERE owner_id = %s '
+            f'ORDER BY created_at, id COLLATE "C"',
             (owner_id,),
         ).fetchall()
         return [_campaign(row) for row in rows]
@@ -276,9 +343,8 @@ class InMemoryCampaignStore:
     transaction commits. The case the fake cannot have — a campaign inserted by
     raw SQL — is proved against the database in `tests/test_migrations_db.py`."""
 
-    def __init__(self, db: Any) -> None:
-        self._db = db
-        self._rows = Staging()
+    def __init__(self, db: InMemoryDatabase) -> None:
+        self._rows: Staging[Campaign] = shared_rows(db, "campaigns")
 
     def create(
         self, unit: UnitOfWork, *, owner_id: int, name: str, now: datetime | None = None

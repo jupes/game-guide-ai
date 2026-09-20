@@ -44,7 +44,7 @@ def dsn():
 
 @pytest.fixture
 def db(dsn):
-    database = Database(dsn, PoolSettings(sync_max=2, async_max=2, acquire_timeout_s=1))
+    database = Database(dsn, PoolSettings(sync_max=2, async_max=2, acquire_timeout_s=2))
     yield database
     database.close()
 

@@ -27,6 +27,8 @@ from service.db import (
     CampaignLockSettings,
     Database,
     InMemoryDatabase,
+    InMemoryTransaction,
+    PgTransaction,
     PoolSettings,
     advisory_key,
 )
@@ -142,6 +144,54 @@ def test_the_caller_may_pass_its_own_pool_settings():
         CampaignLockSettings.from_env(
             {"CAMPAIGN_LOCK_TIMEOUT_S": "3"}, pool=PoolSettings(acquire_timeout_s=3)
         )
+
+
+def test_a_database_built_in_code_checks_the_two_timeouts_against_each_other():
+    """The invariant must not depend on somebody calling `from_env`. Nothing
+    does today — `service/app.py` builds its own `PoolSettings` and takes the
+    campaign lock's defaults — so a `Database` given a short gate would
+    otherwise silently keep the default two-second lock timeout, and a request
+    waiting for the campaign lock would outlive the gate slot it is holding."""
+    with pytest.raises(ValueError, match="below the gate's acquire timeout"):
+        Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
+
+    allowed = Database(
+        "postgresql://test/db",
+        PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2),
+        CampaignLockSettings(lock_timeout_s=1),
+    )
+    assert allowed.campaign_lock.lock_timeout_s == 1
+
+
+@pytest.mark.parametrize(
+    "bound", [0, -1, 601, float("nan"), 1e-05], ids=["zero", "negative", "too-long", "nan", "tiny"]
+)
+def test_a_caller_cannot_switch_the_transaction_bound_off_through_the_parameter(bound):
+    """`0` is how PostgreSQL spells "no timeout"; its unit here is the
+    millisecond, so `1e-05s` rounds to the same thing; and a negative or a NaN
+    would be the server's error, whose text is not this module's. The parameter
+    exists so that a long caller can RAISE the bound RQ-8 requires, never remove
+    it — and the check is in both units of work, because a test that can only
+    run against the twin must still catch it."""
+    for unit in (PgTransaction(conn=None), InMemoryTransaction()):
+        with pytest.raises(ValueError, match="a transaction bound is from"):
+            unit.transaction_bound(bound)
+
+
+def test_the_bound_a_caller_does_pass_is_the_one_used_and_none_means_the_default():
+    unit = PgTransaction(conn=None, campaign_lock=CampaignLockSettings(transaction_timeout_s=7))
+    assert unit.transaction_bound(None) == "7s"
+    assert unit.transaction_bound(30) == "30s"
+    assert unit.transaction_bound(0.001) == "0.001s", "one millisecond is the floor, not zero"
+
+
+def test_the_twin_refuses_an_unbounded_campaign_lock_the_way_the_postgres_unit_does():
+    db = InMemoryDatabase()
+    with db.transaction() as unit:
+        unit.create_authz_state("cmp_one")
+        with pytest.raises(ValueError, match="a transaction bound is from"):
+            unit.lock_campaign("cmp_one", shared=True, transaction_timeout_s=0)
+        assert unit.campaign_locks == [], "a lock that was refused is not recorded as held"
 
 
 def test_an_advisory_key_is_a_stable_signed_32_bit_number():
@@ -432,6 +482,13 @@ def scripted(monkeypatch):
     return log, seen
 
 
+def _gated(settings: PoolSettings) -> Database:
+    """A `Database` with a deliberately short gate. The campaign lock timeout
+    has to come down with it — `Database.__init__` refuses the pair otherwise,
+    which is the point of that check — and these tests are about the gate."""
+    return Database("postgresql://test/db", settings, CampaignLockSettings(lock_timeout_s=1))
+
+
 def test_every_operation_opens_and_closes_a_connection_of_its_own(scripted):
     """Nothing is kept between operations, so an idle or frozen instance holds
     nothing and no connection is ever stale."""
@@ -445,9 +502,9 @@ def test_every_operation_opens_and_closes_a_connection_of_its_own(scripted):
 
 
 def test_the_gate_admits_only_its_number_and_frees_a_place_on_the_way_out(scripted):
-    db = Database("postgresql://test/db", PoolSettings(sync_max=2, async_max=0, acquire_timeout_s=1))
+    db = _gated(PoolSettings(sync_max=2, async_max=0, acquire_timeout_s=2))
     with db.connection(), db.connection():
-        with pytest.raises(PoolTimeout, match="no database connection came free in 1 s"):
+        with pytest.raises(PoolTimeout, match="no database connection came free in 2 s"):
             with db.connection():
                 pass  # pragma: no cover
     with db.connection():
@@ -455,7 +512,7 @@ def test_the_gate_admits_only_its_number_and_frees_a_place_on_the_way_out(script
 
 
 def test_a_failed_operation_gives_its_place_back(scripted):
-    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=1))
+    db = _gated(PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
     for _ in range(3):
         with pytest.raises(RuntimeError):
             with db.connection():
@@ -469,7 +526,7 @@ def test_a_connection_that_cannot_be_made_gives_its_place_back(monkeypatch):
         raise psycopg.OperationalError("connection refused")
 
     monkeypatch.setattr(psycopg, "connect", refuse)
-    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=1))
+    db = _gated(PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
     for _ in range(3):
         with pytest.raises(psycopg.OperationalError, match="connection refused"):
             with db.connection():
@@ -499,7 +556,7 @@ def test_a_closed_database_refuses_and_closing_twice_is_fine(scripted):
 
 def test_the_unit_of_work_commits_then_releases_then_calls_back(scripted):
     log, _ = scripted
-    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=1))
+    db = _gated(PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
 
     def after_commit() -> None:
         log.append("after-commit")
