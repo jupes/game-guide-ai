@@ -744,9 +744,26 @@ the rule it copies.
 
 | Shape | Says |
 | --- | --- |
-| `RevealAudience` | `table`, or one participant by **id** — an identity, never a credential and never an alias (AUD-2, AUD-11, ED-10). Nothing ties an audience to a document type: AUD-9 is a service rule, so lifting ED-14 later changes no slot, mask or eligibility row |
+| `RevealAudience` | `table`, or **one or more participants by id** — an identity, never a credential and never an alias (AUD-2, AUD-11, ED-10). A reveal to one player is a list of one; there is no singular shape. Nothing ties an audience to a document type: under owner decision O-2 a participant audience is legal for **any** type, and the registry's `audience` flag now says only whose default reveal a type seeds |
 | `RevealRequest` | Confirm: the document, the **sealed** version the sheet displayed, the mask, the audience, and **both** the session it was composed for and that session's reveal epoch (REVEAL-5, ED-9). One shape covers reveal, update, replace and move — the server derives which. It names a session so that a number from last night can never match tonight. No campaign id: the session names the campaign and ownership is the route's (SEC-3) |
 | `RevealStopRequest` | Stop showing, by `scope`: a `document`, or `all` (REVEAL-6, REVEAL-7). **There is no slot scope** — see below. **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and never refused for state, so there is no number to be stale against, and sending one is an error. There is no Retract in v1 (ED-16) |
+
+**Group displays, and what a disclosure is** (owner decision O-3, amending §7.1,
+REVEAL-7 and NG-20). Showing one document to several players is
+**per-recipient copies of one disclosure**: one Confirm names the recipients,
+the server fills one slot per recipient, and every copy carries the same
+`disclosure_id`. A **document has at most one live disclosure**, and a
+disclosure is *either* the table slot alone *or* one or more participant slots —
+never both, which would make *stop all copies* ambiguous and let a private copy
+be mistaken for the one everybody can see. A Stop on the document therefore
+clears every copy by construction.
+
+A **named group is expanded by the client into its member ids** at the moment
+the GM confirms, exactly as `all` is expanded into field keys (ED-8). No group
+id and no wildcard ever travels or is stored, so a group whose membership
+changes tomorrow cannot silently widen a reveal that is live tonight. An
+audience may name many participants; a **slot** names one, which is why
+`RevealSlotRef` is its own shape.
 
 **Why a Stop names a document and not a slot.** REVEAL-22 is *a Stop clears a
 slot only if it holds what the Stop names*; a slot-scoped Stop names an audience
@@ -773,6 +790,19 @@ falls back to the table.
 slot — and rides the GM channel's `snapshot` frame and nothing else. The threat
 model's §8.3 row is the rule: *reveal state, with the epoch, every slot, version
 numbers and mask keys* is GM **yes**, participant **never**, guest **never**.
+
+The **table slot is always listed**: "nothing revealed" is the table slot,
+present and empty, never an absent entry, because a GM client must not read
+missing state as *nothing revealed* (REVEAL-13). Each entry names **one** slot,
+a slot is listed once, and the disclosure rules above are enforced here: every
+entry of one document carries the same `disclosure_id`, one `disclosure_id`
+belongs to one document, and no disclosure is on the table and in a private slot
+at once. `pending_delivery` stays **per entry**, because one recipient may be
+waiting for a device while the others holding copies are not (AUD-10).
+
+Nothing of this reaches a table client. A player's frames name `table` or
+`mine`, carry no `disclosure_id`, no recipient count and no other participant's
+id, so a private display never says that it is one copy of several (REVEAL-24).
 
 ### What a player sees
 
@@ -899,17 +929,20 @@ participant.
 ### Amendments the interaction record needs
 
 These shapes are consistent with `docs/adr/gm-workbench-interactions.md`, but
-four of its rows are now less precise than the contract they govern. The lead
-applies these to the record; this bead only lists them.
+several of its rows are now less precise than the contract they govern, and two
+were amended by the owner on 2026-09-20. The lead applies these to the record;
+this bead only lists them.
 
 1. **REVEAL-5** says a Confirm carries "the document, the sealed version, the
    explicit mask, the audience and the reveal epoch". It must also say **the
    session** — ED-9 added it so that an epoch from an earlier session can never
    match, and the wire now requires it.
-2. **REVEAL-6** describes Stop as stopping "that document" or "every reveal". The
-   wire has three scopes, and the middle one is worth naming: a `document` Stop
-   clears every slot the document is live in, which is what REVEAL-7's *move*
-   and *replace* leave behind.
+2. **REVEAL-6** describes Stop as stopping "that document" or "every reveal".
+   The wire has **two** scopes and no slot scope, and the record should say why:
+   REVEAL-22 makes a Stop clear a slot only if it holds what the Stop names, and
+   a scope that named an audience alone could not honour that under REVEAL-16's
+   retries. The `document` scope exists so that the canvas header can stop *that
+   document* without knowing which slot holds it.
 3. **REVEAL-8** is the source of the rule that the comparison is of text, not of
    version numbers. The GM-side field is named `stale_text` for that reason,
    while the `1kg.1.6` alignment calls it "whether a newer version exists". The
@@ -917,14 +950,28 @@ applies these to the record; this bead only lists them.
    **This is the one place where the alignment's wording and the ADR differ, and
    the ADR was followed.**
 4. **AUD-8** says "one table slot, plus one private slot per participant". The
-   table channel names them `table` and `mine`, because an audience is an id and
-   a table client is told no ids (SEC-15); the record should say so, or a reader
-   will expect `participant:<id>` on both channels.
+   table channel names them `table` and `mine`, because a slot reference is an
+   id and a table client is told no ids (SEC-15); the record should say so, or a
+   reader will expect `participant:<id>` on both channels.
+5. **TABLE-3** says a table client renders the labels it is given. It is the
+   other way round: a projection carries `key` and `value` only, and the client
+   renders **the registry's label** for `(type, key)`. The record should say so,
+   because the reason is a security one — a free-text member is a channel
+   through which a title, an alias or a filename would pass every gate.
+6. **§7.1, REVEAL-7 and NG-20** are amended by **owner decision O-3**: group
+   displays ship, as per-recipient copies of one disclosure. A document has at
+   most one live disclosure; a disclosure is either the table slot or
+   one-or-more participant copies, never both; a Stop on the document clears
+   every copy. §7.1's "a document is live in at most one slot" no longer holds
+   as written.
+7. **AUD-9 and NG-22** are amended by **owner decision O-2**: a participant
+   audience is legal for **any** document type, and the registry's `audience`
+   flag now says only whose default reveal a type seeds.
 
-A fifth, smaller one: **REVEAL-10**'s never-list mixes document fields with
-things that are not fields at all. Only `tags` is a field, which is why
-`never_revealable` has one entry; the record could say which of its items are
-fields and which are simply never on the wire.
+A smaller one: **REVEAL-10**'s never-list mixes document fields with things that
+are not fields at all. The contract expresses it as an **allowlist** — a field
+is revealable only where `1kg.5.3`'s per-field rule says so — and the record
+could say which of its items are fields and which are simply never on the wire.
 
 ## Legacy compatibility
 

@@ -1443,14 +1443,41 @@ export function revealableFields(type: DocumentTypeId): Record<string, FieldKind
   return Object.fromEntries(Object.entries(declared).filter(([key]) => allowed.has(key)))
 }
 
-/** Who a reveal is for (AUD-2, ED-10): the whole table, or one participant by
- * **id** — an identity, never a credential and never an alias (AUD-11). Nothing
- * ties an audience to a document type: AUD-9 is a service rule (ED-14). */
-export const RevealAudienceSchema = z.discriminatedUnion('audience', [
-  z.strictObject({ audience: z.literal('table') }),
-  z.strictObject({ audience: z.literal('participant'), participant_id: OpaqueIdSchema }),
+/**
+ * Who a reveal is for (AUD-2, ED-10, owner decision O-3): the whole table, or
+ * **one or more participants by id**. A reveal to one player is a list of one;
+ * there is no separate singular shape, because a group display is per-recipient
+ * copies of one disclosure.
+ *
+ * A named group is expanded by the client into its member ids at the moment the
+ * GM confirms, exactly as `all` is expanded into field keys (ED-8) — so no group
+ * id and no wildcard ever travels or is stored, and a group whose membership
+ * changes later cannot silently widen a live reveal. An audience is an identity,
+ * never a credential and never an alias (AUD-11), so an alias is refused even
+ * beside an id. Nothing ties an audience to a document type: owner decision O-2
+ * makes a participant audience legal for any type.
+ */
+export const RevealAudienceSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('table') }),
+  z.strictObject({
+    kind: z.literal('participants'),
+    participant_ids: z
+      .array(OpaqueIdSchema)
+      .min(1)
+      .max(PRESENCE_MAX_PARTICIPANTS)
+      .refine((ids) => new Set(ids).size === ids.length, { message: 'a recipient list names each participant once' }),
+  }),
 ])
 export type RevealAudience = z.infer<typeof RevealAudienceSchema>
+
+/** A **slot** is one region, so it names one participant, while an audience may
+ * name many: one Confirm to three players fills three slots with three copies of
+ * one disclosure (O-3). */
+export const RevealSlotRefSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('table') }),
+  z.strictObject({ kind: z.literal('participant'), participant_id: OpaqueIdSchema }),
+])
+export type RevealSlotRef = z.infer<typeof RevealSlotRefSchema>
 
 /** REVEAL-22, ED-9: every narrowing advances it, on an empty slot too. AudioEpoch's twin. */
 const RevealEpochSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
@@ -1636,10 +1663,18 @@ export type TableProjection = z.infer<typeof TableProjectionSchema>
  * the predicate REVEAL-8 fixes: the comparison is of **text**, not of version
  * numbers, so ten autosaves raise one notice and reverting the text clears it.
  * `pending_delivery` is AUD-10 — a reveal to a participant with no device waits,
- * and never falls back to the table.
+ * and never falls back to the table. It is **per entry**, because one
+ * participant may be waiting while the others holding copies of the same
+ * disclosure are not.
+ *
+ * `disclosure_id` is owner decision O-3: a group display is per-recipient copies
+ * of ONE disclosure, and every copy carries its id. It is what makes "stop all
+ * copies" expressible, and what tells the GM's indicator that three slots are
+ * one act rather than three.
  */
 export const RevealLiveSchema = z
   .object({
+    disclosure_id: OpaqueIdSchema,
     document_id: OpaqueIdSchema,
     type: z.enum(DOCUMENT_TYPE_IDS),
     version: VersionNumberSchema,
@@ -1657,31 +1692,63 @@ export type RevealLive = z.infer<typeof RevealLiveSchema>
  * see and which is empty; a slot a client is **not** entitled to is absent
  * rather than marked, because a marker would confirm it exists (WT-7). */
 const RevealSlotSchema = z
-  .object({ slot: RevealAudienceSchema, seq: SlotSequenceSchema, live: RevealLiveSchema.nullable() })
-  .refine((entry) => !(entry.live?.pending_delivery && entry.slot.audience === 'table'), {
+  .object({ slot: RevealSlotRefSchema, seq: SlotSequenceSchema, live: RevealLiveSchema.nullable() })
+  .refine((entry) => !(entry.live?.pending_delivery && entry.slot.kind === 'table'), {
     path: ['live', 'pending_delivery'],
     message: 'only a participant slot can be waiting for a device',
   })
 
-/** The GM's whole reveal picture, carried by the GM channel's `snapshot` frame
- * and nothing else: the session, its generation, its epoch, one entry per slot. */
+/** A slot's identity as a string. Namespaced, because `table` is a legal
+ * participant id and would otherwise collide with the table slot. */
+const namedSlot = (slot: RevealSlotRef): string => (slot.kind === 'participant' ? `p:${slot.participant_id}` : 'table')
+
+/**
+ * The GM's whole reveal picture, carried by the GM channel's `snapshot` frame and
+ * nothing else: the session, its generation, its epoch, one entry per slot.
+ *
+ * The table slot is ALWAYS listed — "nothing revealed" is the table slot present
+ * and empty, never an absent entry, because a GM client must not read missing
+ * state as "nothing revealed" (REVEAL-13).
+ *
+ * Owner decision O-3, amending section 7.1, REVEAL-7 and NG-20: a DOCUMENT has
+ * at most one live disclosure, and a disclosure is EITHER the table slot alone
+ * OR one or more participant slots. Mixing them would make "stop all copies"
+ * ambiguous and let a player's private copy be mistaken for the shared one.
+ */
 export const RevealStateSchema = z
   .object({
     session_id: OpaqueIdSchema,
     gen: LinkGenerationSchema,
     reveal_epoch: RevealEpochSchema,
-    slots: z.array(RevealSlotSchema).max(REVEAL_MAX_SLOTS),
+    slots: z.array(RevealSlotSchema).min(1).max(REVEAL_MAX_SLOTS),
+  })
+  .refine((state) => new Set(state.slots.map((entry) => namedSlot(entry.slot))).size === state.slots.length, {
+    path: ['slots'],
+    message: 'a slot is listed once',
+  })
+  .refine((state) => state.slots.some((entry) => entry.slot.kind === 'table'), {
+    path: ['slots'],
+    message: 'the reveal picture always lists the table slot',
   })
   .refine(
     (state) => {
-      // ED-15: a slot holds one live projection, so an audience names one slot.
-      // Namespaced, because `table` is a legal participant id and would otherwise
-      // collide with the table slot — a divergence from the server, which keys
-      // table slots on a value no id can take.
-      const named = state.slots.map((entry) => (entry.slot.audience === 'participant' ? `p:${entry.slot.participant_id}` : 'table'))
-      return new Set(named).size === named.length
+      const live = state.slots.flatMap((entry) => (entry.live ? [{ slot: entry.slot, held: entry.live }] : []))
+      const byDocument = new Map<string, Set<string>>()
+      const byDisclosure = new Map<string, Set<string>>()
+      const onTheTable = new Set<string>()
+      const privately = new Set<string>()
+      for (const { slot, held } of live) {
+        if (!byDocument.has(held.document_id)) byDocument.set(held.document_id, new Set())
+        byDocument.get(held.document_id)?.add(held.disclosure_id)
+        if (!byDisclosure.has(held.disclosure_id)) byDisclosure.set(held.disclosure_id, new Set())
+        byDisclosure.get(held.disclosure_id)?.add(held.document_id)
+        ;(slot.kind === 'table' ? onTheTable : privately).add(held.disclosure_id)
+      }
+      if ([...byDocument.values()].some((ids) => ids.size > 1)) return false
+      if ([...byDisclosure.values()].some((documents) => documents.size > 1)) return false
+      return ![...onTheTable].some((id) => privately.has(id))
     },
-    { path: ['slots'], message: 'an audience names one slot' },
+    { path: ['slots'], message: 'a document has at most one live disclosure, and a disclosure is the table or its participant copies' },
   )
 export type RevealState = z.infer<typeof RevealStateSchema>
 
@@ -1767,11 +1834,11 @@ const GmSlotEventSchema = z
     session_id: OpaqueIdSchema,
     gen: LinkGenerationSchema,
     reveal_epoch: RevealEpochSchema,
-    slot: RevealAudienceSchema,
+    slot: RevealSlotRefSchema,
     seq: SlotSequenceSchema,
     live: RevealLiveSchema.nullable(),
   })
-  .refine((frame) => !(frame.live?.pending_delivery && frame.slot.audience === 'table'), {
+  .refine((frame) => !(frame.live?.pending_delivery && frame.slot.kind === 'table'), {
     path: ['live', 'pending_delivery'],
     message: 'only a participant slot can be waiting for a device',
   })

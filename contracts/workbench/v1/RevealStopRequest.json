@@ -50,7 +50,7 @@
         "schema_version": 1,
         "command_id": "cmd_5c6d7e8f90a1b2c3",
         "scope": "slot",
-        "audience": { "audience": "table" }
+        "audience": { "kind": "table" }
       }
     },
     {
@@ -60,7 +60,7 @@
         "schema_version": 1,
         "command_id": "cmd_5c6d7e8f90a1b2c6",
         "scope": "all",
-        "audience": { "audience": "table" }
+        "audience": { "kind": "table" }
       }
     },
     {
@@ -71,7 +71,7 @@
         "command_id": "cmd_5c6d7e8f90a1b2c5",
         "scope": "document",
         "document_id": "doc_9k2f7a1c",
-        "audience": { "audience": "table" }
+        "audience": { "kind": "table" }
       }
     },
     {

@@ -1,7 +1,7 @@
 {
   "schema": "RevealRequest",
   "direction": "request",
-  "note": "Confirm (REVEAL-5, ED-9): one atomic mutation covering reveal, update, replace and move — the server derives which, the request never says. It names the sealed version the sheet displayed (CANVAS-34), an explicit non-empty list of field keys, the audience, and BOTH the session it was composed for and that session's reveal epoch, so a number from last night can never match tonight (ED-9). No campaign id: the session names the campaign, and ownership is the route's (SEC-3), as with CuePlayRequest.",
+  "note": "Confirm (REVEAL-5, ED-9): one atomic mutation covering reveal, update, replace and move — the server derives which, the request never says. It names the sealed version the sheet displayed (CANVAS-34), an explicit non-empty list of field keys, the audience — the table, or a list of participant ids (owner decision O-3: a group display is per-recipient copies of ONE disclosure, and a named group is expanded into its member ids by the client, so no group id and no wildcard is ever sent or stored) — and BOTH the session it was composed for and that session's reveal epoch, so a number from last night can never match tonight (ED-9). No campaign id: the session names the campaign, and ownership is the route's (SEC-3), as with CuePlayRequest.",
   "valid": [
     {
       "name": "reveal two fields to the table",
@@ -17,7 +17,7 @@
           "portrait"
         ],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         }
       }
     },
@@ -34,8 +34,32 @@
           "notes"
         ],
         "audience": {
-          "audience": "participant",
-          "participant_id": "pt_4c1b9e7a"
+          "kind": "participants",
+          "participant_ids": [
+            "pt_4c1b9e7a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "reveal one field to three players at once",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_7b8c9d0e1f2a3b4c",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 0,
+        "version": 1,
+        "mask": [
+          "notes"
+        ],
+        "audience": {
+          "kind": "participants",
+          "participant_ids": [
+            "pt_4c1b9e7a",
+            "pt_11aa22bb",
+            "pt_33cc44dd"
+          ]
         }
       }
     },
@@ -115,7 +139,7 @@
           "l3"
         ],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         }
       }
     }
@@ -135,7 +159,7 @@
           "all"
         ],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         }
       }
     },
@@ -153,7 +177,7 @@
           "*"
         ],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         }
       }
     },
@@ -169,7 +193,7 @@
         "version": 3,
         "mask": [],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         }
       }
     },
@@ -188,7 +212,7 @@
           "name"
         ],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         }
       }
     },
@@ -205,7 +229,7 @@
           "name"
         ],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         }
       }
     },
@@ -222,7 +246,7 @@
           "name"
         ],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         }
       }
     },
@@ -240,7 +264,7 @@
           "name"
         ],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         }
       }
     },
@@ -274,7 +298,7 @@
           "name"
         ],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         },
         "eligibility": "public"
       }
@@ -293,7 +317,7 @@
           "name"
         ],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         },
         "values": {
           "name": "Sister Ondrey Vashe"
@@ -378,7 +402,7 @@
           "l4"
         ],
         "audience": {
-          "audience": "table"
+          "kind": "table"
         }
       }
     }

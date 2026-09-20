@@ -1949,30 +1949,72 @@ def revealable_fields(doc_type: DocumentTypeId) -> dict[str, FieldKind]:
     return {key: kind for key, kind in declared.items() if key in allowed}
 
 
-class AudienceKind(str, Enum):
-    TABLE = "table"
-    PARTICIPANT = "participant"
+def _distinct_ids(ids: list[str]) -> list[str]:
+    """A recipient list is a set: a repeat would mean two copies of one
+    disclosure for one participant, and it is always a client bug."""
+    if len(set(ids)) != len(ids):
+        raise ValueError("a recipient list names each participant once")
+    return ids
+
+
+#: Owner decision O-3: a group display is **per-recipient copies of one
+#: disclosure**, so a Confirm names one or more participants. Bounded by the
+#: participants a session can hold (``PRESENCE_MAX_PARTICIPANTS``), because
+#: revealing to everyone is the largest list that can exist.
+ParticipantIds = Annotated[
+    list[OpaqueId],
+    Field(min_length=1, max_length=PRESENCE_MAX_PARTICIPANTS),
+    AfterValidator(_distinct_ids),
+]
 
 
 class TableAudience(_Contract):
     """The whole table: everyone holding a live table credential, guests included."""
 
-    audience: Literal[AudienceKind.TABLE]
+    kind: Literal["table"]
 
 
-class ParticipantAudience(_Contract):
-    """One participant, by **id** (AUD-2, ED-10). An audience is an identity, not
-    a credential; an alias is a display name and never leaves the GM's channel
-    (AUD-11)."""
+class ParticipantsAudience(_Contract):
+    """One or more participants, by **id** (AUD-2, ED-10, owner decision O-3).
 
-    audience: Literal[AudienceKind.PARTICIPANT]
+    A reveal to one player is a list of one; there is no separate singular
+    shape. A named group is expanded by the client into its member ids at the
+    moment the GM confirms, exactly as ``all`` is expanded into field keys
+    (ED-8) — so **no group id and no wildcard ever travels or is stored**, and a
+    group whose membership changes later cannot silently widen a live reveal.
+
+    An audience is an identity, not a credential; an alias is a display name and
+    never leaves the GM's channel (AUD-11), so it is refused here even beside an
+    id.
+    """
+
+    kind: Literal["participants"]
+    participant_ids: ParticipantIds
+
+
+#: Decision ED-14, owner decision O-2: nothing here ties an audience to a
+#: document type — a participant audience is legal for **any** type, and the
+#: registry's ``audience`` flag now says only whose default reveal a type seeds.
+RevealAudience = Annotated[TableAudience | ParticipantsAudience, Field(discriminator="kind")]
+
+
+class TableSlotRef(_Contract):
+    """The table slot."""
+
+    kind: Literal["table"]
+
+
+class ParticipantSlotRef(_Contract):
+    """One participant's slot, by id."""
+
+    kind: Literal["participant"]
     participant_id: OpaqueId
 
 
-#: Decision ED-14: nothing here ties an audience to a document type. AUD-9 —
-#: a participant audience only for an owner-audience type — is a service rule,
-#: so lifting it later changes no slot, mask or eligibility row.
-RevealAudience = Annotated[TableAudience | ParticipantAudience, Field(discriminator="audience")]
+#: A **slot** is one region, so it names one participant, while an audience may
+#: name many: one Confirm to three players fills three slots with three copies
+#: of one disclosure (O-3).
+RevealSlotRef = Annotated[TableSlotRef | ParticipantSlotRef, Field(discriminator="kind")]
 
 
 def _distinct_keys(keys: list[str]) -> list[str]:
@@ -2184,9 +2226,16 @@ class RevealLive(_Contract):
     clears it. It is what raises ``Table is seeing an earlier version`` and its
     *Use latest version*. ``pending_delivery`` is AUD-10 — a reveal to a
     participant with no device confirms normally and waits, and never falls back
-    to the table.
+    to the table. It is **per entry**, because one participant may be waiting
+    for a device while the others holding copies of the same disclosure are not.
+
+    ``disclosure_id`` is owner decision O-3: a group display is per-recipient
+    copies of **one** disclosure, and every copy carries its id. It is what makes
+    *stop all copies* expressible, and what tells the GM's indicator that three
+    slots are one act rather than three.
     """
 
+    disclosure_id: OpaqueId
     document_id: OpaqueId
     type: DocumentTypeId
     #: The **sealed** version the table is pinned to (REVEAL-8, CANVAS-34).
@@ -2209,38 +2258,74 @@ class RevealSlot(_Contract):
     absent rather than marked: a marker would confirm that it exists (WT-7,
     threat model §8.2)."""
 
-    slot: RevealAudience
+    slot: RevealSlotRef
     seq: SlotSequence
     live: RevealLive | None
 
     @model_validator(mode="after")
     def _only_a_participant_waits_for_a_device(self) -> Self:
         """Decision AUD-10: the table has no one to wait for."""
-        if self.live is not None and self.live.pending_delivery and self.slot.audience is AudienceKind.TABLE:
+        if self.live is not None and self.live.pending_delivery and isinstance(self.slot, TableSlotRef):
             raise ValueError("only a participant slot can be waiting for a device")
         return self
+
+
+def _named(slot: RevealSlotRef) -> str:
+    """A slot's identity as a string. Namespaced, because ``table`` is a legal
+    participant id and would otherwise collide with the table slot."""
+    return "table" if isinstance(slot, TableSlotRef) else f"p:{slot.participant_id}"
 
 
 class RevealState(_Contract):
     """The GM's whole reveal picture, carried by the GM channel's ``snapshot``
     frame and nothing else: the session, its link generation, its reveal epoch,
-    and one entry per slot (AUD-8)."""
+    and one entry per slot (AUD-8).
+
+    **The table slot is always listed.** "Nothing revealed" is the table slot,
+    present and empty — never an absent entry, because a GM client must not read
+    missing state as *nothing revealed* (REVEAL-13).
+    """
 
     session_id: OpaqueId
     gen: LinkGeneration
     reveal_epoch: RevealEpoch
-    slots: Annotated[list[RevealSlot], Field(max_length=REVEAL_MAX_SLOTS)]
+    slots: Annotated[list[RevealSlot], Field(min_length=1, max_length=REVEAL_MAX_SLOTS)]
 
     @model_validator(mode="after")
-    def _one_entry_per_audience(self) -> Self:
-        """Decision ED-15: a slot holds one live projection, so an audience names
-        one slot."""
-        named = [
-            slot.slot.participant_id if isinstance(slot.slot, ParticipantAudience) else None  #
-            for slot in self.slots
-        ]
-        if len(set(named)) != len(named):
-            raise ValueError("an audience names one slot")
+    def _one_live_disclosure_per_document(self) -> Self:
+        """Owner decision O-3, amending §7.1, REVEAL-7 and NG-20.
+
+        A **document has at most one live disclosure**, and a disclosure is
+        *either* the table slot alone *or* one or more participant slots. So:
+        every entry of one document carries the same ``disclosure_id``; one
+        ``disclosure_id`` belongs to one document; and a disclosure is never
+        mixed — the table and a private copy of the same document at once would
+        make *stop all copies* ambiguous and let a player's private copy be
+        mistaken for the shared one.
+        """
+        names = [_named(slot.slot) for slot in self.slots]
+        if len(set(names)) != len(names):
+            raise ValueError("a slot is listed once")
+        if "table" not in names:
+            raise ValueError("the reveal picture always lists the table slot")
+
+        live = [(slot.slot, slot.live) for slot in self.slots if slot.live is not None]
+        by_document: dict[str, set[str]] = {}
+        by_disclosure: dict[str, set[str]] = {}
+        on_the_table: set[str] = set()
+        privately: set[str] = set()
+        for named_slot, held in live:
+            by_document.setdefault(held.document_id, set()).add(held.disclosure_id)
+            by_disclosure.setdefault(held.disclosure_id, set()).add(held.document_id)
+            (on_the_table if isinstance(named_slot, TableSlotRef) else privately).add(held.disclosure_id)
+
+        if any(len(ids) > 1 for ids in by_document.values()):
+            raise ValueError("a document has at most one live disclosure")
+        if any(documents for documents in by_disclosure.values() if len(documents) > 1):
+            raise ValueError("a disclosure shows one document")
+        if on_the_table & privately:
+            raise ValueError("a disclosure is the table slot, or participant slots, never both")
+        return self
         return self
 
 
@@ -2362,13 +2447,13 @@ class GmSlotEvent(_EventBase):
     session_id: OpaqueId
     gen: LinkGeneration
     reveal_epoch: RevealEpoch
-    slot: RevealAudience
+    slot: RevealSlotRef
     seq: SlotSequence
     live: RevealLive | None
 
     @model_validator(mode="after")
     def _only_a_participant_waits_for_a_device(self) -> Self:
-        if self.live is not None and self.live.pending_delivery and isinstance(self.slot, TableAudience):
+        if self.live is not None and self.live.pending_delivery and isinstance(self.slot, TableSlotRef):
             raise ValueError("only a participant slot can be waiting for a device")
         return self
 
@@ -2506,12 +2591,16 @@ class TableAudioEvent(_EventBase):
 class TableSlotName(str, Enum):
     """How a **table** client is told which region a projection belongs in.
 
-    Deliberately *not* a ``RevealAudience``: an audience carries a participant
-    id, and every table-side shape in this contract is id-free — ``TableRole`` is
-    an enum, ``TableJoinResponse`` answers with a role and no id, ``EnrolResponse``
-    with a status alone. Which participant ``mine`` is, the server resolves from
-    the credential pair, "never from request fields" (eligibility ADR §4), so the
-    id never has to be on the wire at all (SEC-15).
+    Deliberately *not* a ``RevealSlotRef``: a slot reference carries a
+    participant id, and every table-side shape in this contract is id-free —
+    ``TableRole`` is an enum, ``TableJoinResponse`` answers with a role and no
+    id, ``EnrolResponse`` with a status alone. Which participant ``mine`` is,
+    the server resolves from the credential pair, "never from request fields"
+    (eligibility ADR §4), so the id never has to be on the wire at all (SEC-15).
+
+    It also carries no ``disclosure_id`` and no count: under owner decision O-3
+    a private reveal may be one copy of several, and nothing a player's client
+    receives may say so (REVEAL-24).
     """
 
     TABLE = "table"

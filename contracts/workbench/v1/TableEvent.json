@@ -387,7 +387,7 @@
         "schema_version": 1,
         "event": "slot",
         "slot": {
-          "audience": "participant",
+          "kind": "participant",
           "participant_id": "pt_4c1b9e7a"
         },
         "seq": 4,
@@ -427,6 +427,41 @@
           ]
         },
         "reveal_epoch": 4
+      }
+    },
+    {
+      "name": "a slot frame carrying the disclosure id",
+      "why": "REVEAL-24, owner decision O-3: a private reveal may be one copy of several, and nothing a player's client receives may say so — a disclosure id is shared by every copy, so it is a handle on the other recipients — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "slot": "table",
+        "seq": 12,
+        "content": {
+          "content_kind": "document",
+          "type": "npc",
+          "fields": [
+            {
+              "key": "name",
+              "value": "Sister Ondrey Vashe"
+            },
+            {
+              "key": "portrait",
+              "value": {
+                "handle": "hdl_5e6f7a8b9c0d1e2f",
+                "kind": "image",
+                "media_type": "image/webp",
+                "width": 1024,
+                "height": 1280,
+                "duration_ms": null
+              }
+            }
+          ]
+        },
+        "disclosure_id": "dsc_9a8b7c6d5e4f"
       }
     },
     {
@@ -532,6 +567,7 @@
           ]
         },
         "live": {
+          "disclosure_id": "dsc_0001b7e2c1a9",
           "document_id": "doc_9k2f7a1c",
           "type": "npc",
           "version": 3,

@@ -232,7 +232,8 @@ def test_no_request_a_table_client_sends_names_a_participant() -> None:
         fixtures are what pin each frame's actual content.
         """
         text = json.dumps(schema)
-        return "participant_id" in text or "ParticipantAudience" in text
+        named = ("participant_id", "participant_ids", "ParticipantSlotRef", "ParticipantsAudience")
+        return any(word in text for word in named)
 
     for name in ("TableJoinRequest", "EnrolRequest"):
         assert not names_a_participant(wc.CONTRACT_SCHEMAS[name].json_schema(ref_template="{model}")), name
