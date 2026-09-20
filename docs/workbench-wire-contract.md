@@ -688,8 +688,8 @@ threat model §8.3):
 
 | Channel | Kinds | Carries |
 | --- | --- | --- |
-| GM, `GmEvent` | `tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect` | lane status with the embedded invocation; the `TableSession` with the audio epoch; audio slots by cue id and title, with the audio epoch two GM tabs converge on (AUDIO-24); presence with participants' aliases and guest counts (AUDIO-21); an asset's state change (MS-3) |
-| Table, `TableEvent` | `session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect` | whether table audio is on and this device's own role; the one generic inactive event, after which the connection closes (TABLE-9); audio slots by handle, never a title (AUDIO-29). No generation, no epoch, no id a table client has no use for (SEC-15) |
+| GM, `GmEvent` | `tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect` | lane status with the embedded invocation; the `TableSession` with **both** epochs; audio slots by cue id and title, with the audio epoch two GM tabs converge on (AUDIO-24); presence with participants' aliases and guest counts (AUDIO-21); an asset's state change (MS-3); **one reveal slot with its `RevealLive`, the reveal epoch and the generation, and the whole reveal picture as `RevealState`** |
+| Table, `TableEvent` | `session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect` | whether table audio is on and this device's own role; the one generic inactive event, after which the connection closes (TABLE-9); audio slots by handle, never a title (AUDIO-29); **one reveal slot as `table` or `mine` with its projection, and the opening picture of the slots this device is entitled to**. No generation, no epoch, no disclosure id, no id a table client has no use for (SEC-15) |
 
 Every audio frame names its slot and the slot's sequence (AUDIO-15: per slot,
 monotonic, assigned by the database): a client applies a frame only above its
@@ -798,11 +798,16 @@ indicator's panic button.
 ### What the GM sees
 
 `RevealLive` is what one slot holds: the document, the pinned version, the mask,
-`stale_text` and `pending_delivery`. `stale_text` is REVEAL-8's notice, and the
-comparison behind it is **of text, not of version numbers** — ten autosaves raise
-one notice and reverting the text clears it. `pending_delivery` is AUD-10: a
-reveal to a participant with no device confirms normally and waits, and never
-falls back to the table.
+`stale_text`, `pending_delivery` and its `disclosure_id`. `stale_text` is
+REVEAL-8's notice, and the comparison behind it is **of text, not of version
+numbers** — ten autosaves raise one notice and reverting the text clears it.
+
+`pending_delivery` is AUD-10: a reveal to a participant who is **not enrolled,
+or enrolled and not currently connected** confirms normally and waits, and never
+falls back to the table. Both cases are the same flag, because they are the same
+fact for the GM — *nobody is reading this yet* — and telling them apart on the
+wire would let a sheet report who is online from a reveal (AUD-11); the GM reads
+who is connected from the presence frame, which is where that belongs.
 
 `RevealState` is the whole picture — session, generation, epoch, one entry per
 slot — and rides the GM channel's `snapshot` frame and nothing else. The threat
@@ -889,7 +894,14 @@ while the GM's indicator says B.
 | GM | `slot` | the session, the link generation, the reveal epoch, the slot as a `RevealAudience`, its sequence and `RevealLive` or `null` — the twin of `GmAudioEvent` |
 | GM | `snapshot` | `RevealState`: the whole picture in one frame |
 | Table | `slot` | the slot as **`table` or `mine`**, its sequence, and a `TableProjection` or `null` — the twin of `TableAudioEvent`, and nothing else |
-| Table | `snapshot` | one or two slots: the table slot, always, and with the enrolled device credential this device's own |
+| Table | `snapshot` | one or two slots: the table slot, always, and with the enrolled device credential this device's own. It is the **opening** frame only |
+
+A table `snapshot` frame is sent when a stream opens and when a snapshot
+resource is read, and at no other time: **every later change is a `slot` frame,
+to the clients entitled to that slot**. A service that re-broadcast the whole
+picture on each change would hand a guest a no-op frame every time a private
+reveal happened, and a frame that arrives whenever something invisible changes
+is exactly the inference channel WT-7 and T-8 rule out.
 
 A table client is never told a participant id. Every table-side shape in this
 contract is already id-free — `TableRole` is an enum, `TableJoinResponse` answers

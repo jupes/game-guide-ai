@@ -235,13 +235,34 @@ def test_no_request_a_table_client_sends_names_a_participant() -> None:
         named = ("participant_id", "participant_ids", "ParticipantSlotRef", "ParticipantsAudience")
         return any(word in text for word in named)
 
-    for name in ("TableJoinRequest", "EnrolRequest"):
+    # The list is read from the fixtures, not written here: a fixture file marks
+    # itself ``"channel": "table"`` and ``"direction": "request"``, so a table-side
+    # request someone adds later joins this test by existing. A hard-coded pair
+    # would go on passing while the new shape carried an id.
+    table_requests = sorted(
+        doc["schema"]
+        for doc in (json.loads(path.read_text(encoding="utf-8")) for path in FIXTURES.glob("*.json"))
+        if doc.get("channel") == "table" and doc.get("direction") == "request"
+    )
+    assert table_requests, "no fixture file declares itself a table-side request"
+    for name in table_requests:
         assert not names_a_participant(wc.CONTRACT_SCHEMAS[name].json_schema(ref_template="{model}")), name
 
     # The frames a table client receives name their slot ``table`` or ``mine``,
-    # never an audience, so no id travels that way either (SEC-15).
+    # never a slot reference, so no id travels that way either (SEC-15).
     for member in get_args(get_args(wc.TableEvent)[0]):
         assert not names_a_participant(TypeAdapter(member).json_schema(ref_template="{model}")), member.__name__
+
+
+def test_content_kind_has_exactly_one_member_in_v1() -> None:
+    """Decision ADR §7.4, and the alignment's sixth acceptance row. What reserving
+    the discriminator buys is that a v1 table client meets a future member as its
+    neutral placeholder; adding one **is** a version bump. The cardinality is the
+    claim, so it is the assertion — read from the schema itself, not from a list
+    beside it, so the enum and the literal cannot drift apart."""
+    assert [kind.value for kind in wc.ContentKind] == ["document"]
+    projection = wc.TableProjection.model_json_schema()
+    assert projection["properties"]["content_kind"]["const"] == "document"
 
 
 def test_no_shape_in_v1_declares_an_eligibility_field() -> None:

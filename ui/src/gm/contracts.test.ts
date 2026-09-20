@@ -35,6 +35,7 @@ import {
   DocumentSchema,
   EditRequestSchema,
   FIELD_KINDS,
+  CONTENT_KINDS,
   FieldPatchRequestSchema,
   GM_EVENT_KINDS,
   GmEventSchema,
@@ -99,6 +100,10 @@ interface Example {
 }
 interface Fixture {
   schema: string
+  /** `request`, `response` or `both`; it documents, it does not change a check. */
+  direction?: string
+  /** `table` marks a shape a table device sends or receives (threat model 8.2). */
+  channel?: string
   valid: Example[]
   invalid: Example[]
 }
@@ -196,16 +201,37 @@ describe('what v1 deliberately has no shape for', () => {
     // actual content of each frame.
     const namesAParticipant = (schema: ZodType) => {
       const json = JSON.stringify(z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }))
-      return json.includes('participant_id')
+      return json.includes('participant_id') || json.includes('participant_ids')
     }
-    for (const name of ['TableJoinRequest', 'EnrolRequest']) {
+    // The list is read from the fixtures, not written here: a fixture file marks
+    // itself `"channel": "table"` and `"direction": "request"`, so a table-side
+    // request someone adds later joins this test by existing. A hard-coded pair
+    // would go on passing while the new shape carried an id.
+    const tableRequests = fixtureFiles()
+      .map((file) => readJson<Fixture>(file))
+      .filter((doc) => doc.channel === 'table' && doc.direction === 'request')
+      .map((doc) => doc.schema)
+    expect(tableRequests.length).toBeGreaterThan(0)
+    for (const name of tableRequests) {
       expect([name, namesAParticipant(CONTRACT_SCHEMAS[name])]).toEqual([name, false])
     }
     // The frames a table client receives name their slot `table` or `mine`,
-    // never an audience, so no id travels that way either.
+    // never a slot reference, so no id travels that way either.
     for (const option of TableEventSchema.options) {
       expect([option.shape.event.value, namesAParticipant(option)]).toEqual([option.shape.event.value, false])
     }
+  })
+
+  it('keeps content_kind at exactly one member in v1 (ADR 7.4)', () => {
+    // What reserving the discriminator buys is that a v1 table client meets a
+    // future member as its neutral placeholder; adding one IS a version bump.
+    // The cardinality is the claim, so it is the assertion — and the literal is
+    // read from the schema, so the constant beside it cannot drift.
+    expect([...CONTENT_KINDS]).toEqual(['document'])
+    const projection = z.toJSONSchema(TableProjectionSchema, { io: 'input', unrepresentable: 'any' }) as unknown as {
+      properties: Record<string, { const?: unknown }>
+    }
+    expect(projection.properties.content_kind.const).toBe('document')
   })
 
   it('declares no eligibility field anywhere (ED-11, ED-25)', () => {

@@ -1840,7 +1840,6 @@ const PresenceEventSchema = z.object({
   participants: z.array(ParticipantPresenceSchema).max(PRESENCE_MAX_PARTICIPANTS),
   guests: GuestPresenceSchema,
 })
-/** An asset changed state (ADR MS-3): the GM's `Still processing…` ends here. */
 /** One reveal slot changed (REVEAL-22, ADR RT-4) — the GM's twin of GmAudioEvent:
  * it names the session, the generation it was produced under (SEC-9) and the
  * reveal epoch, because the GM's next Confirm must carry that number. */
@@ -1863,6 +1862,7 @@ const GmSlotEventSchema = z
  * `ready` knows every slot and the epoch — and never reads missing state as
  * "nothing revealed" (REVEAL-13). */
 const GmRevealSnapshotEventSchema = z.object({ ...eventBase, event: z.literal('snapshot'), state: RevealStateSchema })
+/** An asset changed state (ADR MS-3): the GM's `Still processing…` ends here. */
 const GmAssetEventSchema = z.object({ ...eventBase, event: z.literal('asset'), asset: AssetSchema })
 /** The snapshot is complete; what follows is live (ADR RT-4) — the boundary TABLE-7 needs. */
 const GmReadyEventSchema = z.object({ ...eventBase, event: z.literal('ready') })
