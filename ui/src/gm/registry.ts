@@ -169,7 +169,10 @@ export const REGISTRY: Registry = {
         notes: 'Notes',
       },
     }),
-    documentType('statblock', 'Stat Block', 'shield', { renderer: 'stat_block_card' }),
+    documentType('statblock', 'Stat Block', 'shield', {
+      renderer: 'stat_block_card',
+      field_labels: { ac: 'Armor Class', abilities: 'Ability scores', traits: 'Traits' },
+    }),
     documentType('handout', 'Player Handout', 'mail', { printable: true }),
     documentType('session-notes', 'Session Notes', 'history_edu'),
     documentType('quest-log', 'Quest Log', 'flag'),

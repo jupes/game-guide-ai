@@ -358,6 +358,99 @@ def test_every_type_validates_with_the_common_fields_alone() -> None:
                 wc.check_fields(doc_type, 1, {"name": "x", "body": "text"}, whole=True)
 
 
+_STATBLOCK = wc.DocumentTypeId.STATBLOCK
+
+
+def _statblock(**fields: Any) -> dict[str, Any]:
+    return wc.check_fields(_STATBLOCK, 1, {"name": "Ondrey", **fields}, whole=True)
+
+
+@pytest.mark.parametrize(
+    ("value", "stored"),
+    [(7, 7), (7.0, 7), (0, 0), (-1, -1), (wc.INTEGER_FIELD_MAX, wc.INTEGER_FIELD_MAX), (None, None)],
+)
+def test_an_integer_field_takes_a_json_integer(value: Any, stored: Any) -> None:
+    """``1.0`` is ``1`` because JavaScript cannot tell the two apart; ``null`` clears."""
+    assert _statblock(ac=value)["ac"] == stored
+
+
+@pytest.mark.parametrize(
+    "value", [True, False, "7", "", 1.5, [], {}, wc.INTEGER_FIELD_MAX + 1, wc.INTEGER_FIELD_MIN - 1]
+)
+def test_an_integer_field_refuses_anything_else(value: Any) -> None:
+    with pytest.raises(ValueError, match="not a valid integer field"):
+        _statblock(ac=value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [{}, {"str": 10}, {"str": 10, "dex": 12, "con": 14, "int": 8, "wis": 13, "cha": 16}, {"str": None}, None],
+)
+def test_an_abilities_field_takes_any_subset_of_the_six_scores(value: Any) -> None:
+    """CANVAS-19: the ability-score block is **one** field. ``null`` clears it."""
+    assert _statblock(abilities=value)["abilities"] == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"strength": 10},
+        {"str": 10, "luck": 3},
+        {"str": "10"},
+        {"str": True},
+        {"str": wc.ABILITY_SCORE_MAX + 1},
+        {"str": wc.ABILITY_SCORE_MIN - 1},
+        [],
+        "10",
+    ],
+)
+def test_an_abilities_field_refuses_an_unknown_key_or_an_impossible_score(value: Any) -> None:
+    with pytest.raises(ValueError, match="not a valid abilities field"):
+        _statblock(abilities=value)
+
+
+def _entries(checked: dict[str, Any]) -> list[dict[str, str]]:
+    """``check_fields`` returns a model for a structured kind, as it already does
+    for ``asset``; what matters on the wire is what it serialises to."""
+    return [entry.model_dump() for entry in checked["traits"]]
+
+
+def test_an_entry_list_field_takes_named_entries() -> None:
+    entries = [{"name": "Amphibious", "text": "She breathes water."}, {"name": "Silent", "text": ""}]
+    assert _entries(_statblock(traits=entries)) == entries
+    assert _statblock(traits=[])["traits"] == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [{"name": "Amphibious"}],
+        [{"text": "no name"}],
+        [{"name": "Amphibious", "text": "x", "damage": "1d6"}],
+        [{"name": "", "text": "x"}],
+        [{"name": "two\nlines", "text": "x"}],
+        [{"name": "x", "text": "y"}] * (wc.LIST_FIELD_MAX_ITEMS + 1),
+        ["Amphibious"],
+        {},
+        None,
+    ],
+)
+def test_an_entry_list_field_refuses_a_malformed_entry(value: Any) -> None:
+    with pytest.raises(ValueError, match="not a valid entry_list field"):
+        _statblock(traits=value)
+
+
+def test_the_new_kinds_are_bounded_at_their_edges() -> None:
+    """The caps are the contract's, and both languages read them from it."""
+    assert _statblock(traits=[{"name": "n", "text": "t"}] * wc.LIST_FIELD_MAX_ITEMS)["traits"]
+    long_name = "a" * wc.TEXT_FIELD_MAX_CHARS
+    assert _entries(_statblock(traits=[{"name": long_name, "text": "t"}]))[0]["name"] == long_name
+    with pytest.raises(ValueError, match="not a valid entry_list field"):
+        _statblock(traits=[{"name": "a" * (wc.TEXT_FIELD_MAX_CHARS + 1), "text": "t"}])
+    with pytest.raises(ValueError, match="not a valid entry_list field"):
+        _statblock(traits=[{"name": "n", "text": "t" * (wc.LIST_ITEM_MAX_CHARS + 1)}])
+
+
 def test_an_instruction_and_a_search_are_stored_trimmed() -> None:
     instruction = wc.TextInstruction.model_validate({"kind": "text", "text": "  sharper, and shorter \n"})
     assert instruction.text == "sharper, and shorter"

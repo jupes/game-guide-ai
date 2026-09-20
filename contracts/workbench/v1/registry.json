@@ -22,12 +22,12 @@
     {"id": "recap", "result_kind": "document", "creates_doc_type": "session-notes", "card_kind": null, "brief": "optional", "command": "/recap", "aliases": [], "label": "Recap", "icon": "history_edu", "blurb": "Recap the session so far", "working_label": "Recapping the session…", "capability": null},
     {"id": "map", "result_kind": "media", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/map", "aliases": [], "label": "Map", "icon": "map", "blurb": "Sketch a battlemap", "working_label": "Sketching the map…", "capability": "image_generation"}
   ],
-  "field_kinds": ["text", "prose", "text_list", "asset"],
+  "field_kinds": ["text", "prose", "text_list", "asset", "integer", "abilities", "entry_list"],
   "common_fields": {"name": "text", "qualifier": "text", "tags": "text_list"},
   "common_field_labels": {"name": "Name", "qualifier": "Qualifier", "tags": "Tags"},
   "document_types": [
     {"id": "npc", "library_category": "npcs", "type_version": 1, "fields": {"portrait": "asset", "voice": "text", "tell": "text", "attitude": "text", "wants": "prose", "leverage": "prose", "if_attacked": "prose", "notes": "prose"}, "label": "NPC Dossier", "icon": "person", "renderer": "game_document", "printable": false, "cites_corpus": false, "field_labels": {"portrait": "Portrait", "voice": "Voice", "tell": "Tell", "attitude": "Attitude", "wants": "Wants", "leverage": "Leverage", "if_attacked": "If the party attacks", "notes": "Notes"}},
-    {"id": "statblock", "library_category": "bestiary", "type_version": 1, "fields": {}, "label": "Stat Block", "icon": "shield", "renderer": "stat_block_card", "printable": false, "cites_corpus": false, "field_labels": {}},
+    {"id": "statblock", "library_category": "bestiary", "type_version": 1, "fields": {"ac": "integer", "abilities": "abilities", "traits": "entry_list"}, "label": "Stat Block", "icon": "shield", "renderer": "stat_block_card", "printable": false, "cites_corpus": false, "field_labels": {"ac": "Armor Class", "abilities": "Ability scores", "traits": "Traits"}},
     {"id": "handout", "library_category": "documents", "type_version": 1, "fields": {}, "label": "Player Handout", "icon": "mail", "renderer": "game_document", "printable": true, "cites_corpus": false, "field_labels": {}},
     {"id": "session-notes", "library_category": "session-log", "type_version": 1, "fields": {}, "label": "Session Notes", "icon": "history_edu", "renderer": "game_document", "printable": false, "cites_corpus": false, "field_labels": {}},
     {"id": "quest-log", "library_category": "documents", "type_version": 1, "fields": {}, "label": "Quest Log", "icon": "flag", "renderer": "game_document", "printable": false, "cites_corpus": false, "field_labels": {}},

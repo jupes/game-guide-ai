@@ -238,7 +238,10 @@ REGISTRY = Registry(
                 "leverage": "Leverage", "if_attacked": "If the party attacks", "notes": "Notes",
             },
         ),
-        _document_type(DocumentTypeId.STATBLOCK, "Stat Block", "shield", renderer="stat_block_card"),
+        _document_type(
+            DocumentTypeId.STATBLOCK, "Stat Block", "shield", renderer="stat_block_card",
+            field_labels={"ac": "Armor Class", "abilities": "Ability scores", "traits": "Traits"},
+        ),
         _document_type(DocumentTypeId.HANDOUT, "Player Handout", "mail", printable=True),
         _document_type(DocumentTypeId.SESSION_NOTES, "Session Notes", "history_edu"),
         _document_type(DocumentTypeId.QUEST_LOG, "Quest Log", "flag"),

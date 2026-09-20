@@ -83,6 +83,14 @@ TEXT_FIELD_MAX_CHARS = 200
 PROSE_FIELD_MAX_CHARS = 20_000
 LIST_FIELD_MAX_ITEMS = 100
 LIST_ITEM_MAX_CHARS = 2000
+#: An ``integer`` field holds a count, a score or a budget, never an id and never
+#: a revision: a range a person could type, wide enough for an XP budget.
+INTEGER_FIELD_MIN = -1_000_000
+INTEGER_FIELD_MAX = 1_000_000
+#: A 5e ability score. ``0`` is allowed because a creature can lack an ability
+#: outright; the ceiling is well past anything the rules produce.
+ABILITY_SCORE_MIN = 0
+ABILITY_SCORE_MAX = 99
 MAX_CHANGED_FIELDS = 64
 #: Decision CANVAS-27 pages history by 20 and LIB-23 the library by 25; a page
 #: may hold up to 50 so a server can choose a larger page without a new contract.
@@ -270,6 +278,9 @@ class FieldKind(str, Enum):
     PROSE = "prose"
     TEXT_LIST = "text_list"
     ASSET = "asset"
+    INTEGER = "integer"
+    ABILITIES = "abilities"
+    ENTRY_LIST = "entry_list"
 
 
 class Author(str, Enum):
@@ -396,6 +407,11 @@ COMMON_FIELDS: dict[str, FieldKind] = {
 #: is ``agent-forge-harness-1ir.1.2``'s decision.
 DOC_TYPE_FIELDS: dict[DocumentTypeId, dict[str, FieldKind]] = {
     **{doc_type: {} for doc_type in DocumentTypeId},
+    DocumentTypeId.STATBLOCK: {
+        "ac": FieldKind.INTEGER,
+        "abilities": FieldKind.ABILITIES,
+        "traits": FieldKind.ENTRY_LIST,
+    },
     DocumentTypeId.NPC: {
         "portrait": FieldKind.ASSET,
         "voice": FieldKind.TEXT,
@@ -748,13 +764,44 @@ _TextValue = Annotated[str, StringConstraints(strict=True, max_length=TEXT_FIELD
 _ProseValue = Annotated[str, StringConstraints(strict=True, max_length=PROSE_FIELD_MAX_CHARS)]
 _ListItem = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=LIST_ITEM_MAX_CHARS)]
 _TextListValue = Annotated[list[_ListItem], Field(max_length=LIST_FIELD_MAX_ITEMS)]
+_IntegerValue = Annotated[WireInt, Field(ge=INTEGER_FIELD_MIN, le=INTEGER_FIELD_MAX)]
 
-#: Text and prose clear to ``""``, a list to ``[]``, and only an asset to ``None``.
+#: The six 5e ability scores, as a **mapping with a closed key set** rather than a
+#: model: ``Abilities`` in ``models.py`` must spell ``int`` as ``int_`` with an
+#: alias, and an alias is the kind of asymmetry the differential fuzz exists to
+#: find. Any subset may be given; an unknown key is refused on both sides.
+AbilityKey = Literal["str", "dex", "con", "int", "wis", "cha"]
+#: Registry order, for a client that lays the block out.
+ABILITY_KEYS: tuple[str, ...] = ("str", "dex", "con", "int", "wis", "cha")
+_AbilityScore = Annotated[WireInt, Field(ge=ABILITY_SCORE_MIN, le=ABILITY_SCORE_MAX)]
+_AbilitiesValue = dict[AbilityKey, _AbilityScore | None] | None
+
+
+class _Entry(_Contract):
+    """One named block of a stat block or a quest log — the name is rendered as a
+    heading, the text is its body. Plain text on both (X-10)."""
+
+    name: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=TEXT_FIELD_MAX_CHARS)]
+    text: Annotated[str, StringConstraints(strict=True, max_length=LIST_ITEM_MAX_CHARS)]
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_one_line(cls, value: str) -> str:
+        return _one_line(value)
+
+
+_EntryListValue = Annotated[list[_Entry], Field(max_length=LIST_FIELD_MAX_ITEMS)]
+
+#: Text and prose clear to ``""``, a list to ``[]``, and an asset, an integer and
+#: an ability block to ``None``.
 _FIELD_VALUE: dict[FieldKind, TypeAdapter[Any]] = {
     FieldKind.TEXT: TypeAdapter(_TextValue, config=_HIDE_INPUT),
     FieldKind.PROSE: TypeAdapter(_ProseValue, config=_HIDE_INPUT),
     FieldKind.TEXT_LIST: TypeAdapter(_TextListValue, config=_HIDE_INPUT),
     FieldKind.ASSET: TypeAdapter(AssetRef | None, config=_HIDE_INPUT),
+    FieldKind.INTEGER: TypeAdapter(_IntegerValue | None, config=_HIDE_INPUT),
+    FieldKind.ABILITIES: TypeAdapter(_AbilitiesValue, config=_HIDE_INPUT),
+    FieldKind.ENTRY_LIST: TypeAdapter(_EntryListValue, config=_HIDE_INPUT),
 }
 
 

@@ -45,6 +45,13 @@ export const TEXT_FIELD_MAX_CHARS = 200
 export const PROSE_FIELD_MAX_CHARS = 20_000
 export const LIST_FIELD_MAX_ITEMS = 100
 export const LIST_ITEM_MAX_CHARS = 2000
+/** An `integer` field holds a count, a score or a budget — never an id and never
+ * a revision: a range a person could type, wide enough for an XP budget. */
+export const INTEGER_FIELD_MIN = -1_000_000
+export const INTEGER_FIELD_MAX = 1_000_000
+/** A 5e ability score. `0` because a creature can lack an ability outright. */
+export const ABILITY_SCORE_MIN = 0
+export const ABILITY_SCORE_MAX = 99
 export const MAX_CHANGED_FIELDS = 64
 /** CANVAS-27 pages history by 20 and LIB-23 the library by 25; a page may hold up to 50. */
 export const HISTORY_PAGE_MAX_ITEMS = 50
@@ -88,7 +95,7 @@ export type EntryKind = (typeof ENTRY_KINDS)[number]
 
 /** What a document field holds. A kind is a registry fact and never appears on
  * the wire; 1kg.5.3 adds kinds as it defines the types that need them. */
-export const FIELD_KINDS = ['text', 'prose', 'text_list', 'asset'] as const
+export const FIELD_KINDS = ['text', 'prose', 'text_list', 'asset', 'integer', 'abilities', 'entry_list'] as const
 export type FieldKind = (typeof FIELD_KINDS)[number]
 
 /** Decision AUD-1: one GM per campaign, and players cannot write. */
@@ -191,7 +198,7 @@ export const DOC_TYPE_FIELDS: Record<DocumentTypeId, Record<string, FieldKind>> 
     if_attacked: 'prose',
     notes: 'prose',
   },
-  statblock: {},
+  statblock: { ac: 'integer', abilities: 'abilities', traits: 'entry_list' },
   handout: {},
   'session-notes': {},
   'quest-log': {},
@@ -485,10 +492,30 @@ export type ToolInvocation = z.infer<typeof ToolInvocationSchema>
 // is what lets a type gain fields without a version bump — except in a request,
 // which the client builds itself, so there a stray key is a bug.
 
-export type FieldValue = string | string[] | AssetRef | null
+/** The six 5e ability scores. Decision CANVAS-19: the block is ONE field, so
+ * the structure lives inside one flat key and nothing addresses into it. */
+export const ABILITY_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'] as const
+const abilityScore = z.number().int().min(ABILITY_SCORE_MIN).max(ABILITY_SCORE_MAX).nullable()
+const abilitiesShape = Object.fromEntries(ABILITY_KEYS.map((key) => [key, abilityScore.optional()]))
+const AbilitiesSchema = z.object(abilitiesShape)
+const StrictAbilitiesSchema = z.strictObject(abilitiesShape)
+export type Abilities = z.infer<typeof AbilitiesSchema>
+
+/** One named block of a stat block or a quest log. Plain text on both (X-10). */
+const entryShape = { name: oneLine(1, TEXT_FIELD_MAX_CHARS), text: text(0, LIST_ITEM_MAX_CHARS) }
+const EntrySchema = z.object(entryShape)
+const StrictEntrySchema = z.strictObject(entryShape)
+export type Entry = z.infer<typeof EntrySchema>
+
+export type FieldValue = string | string[] | AssetRef | number | Abilities | Entry[] | null
 export type DocumentFields = Record<string, FieldValue>
 
-/** Text and prose clear to `''`, a list to `[]`, and only an asset to `null`. */
+/** Text and prose clear to `''`, the lists to `[]`, and an asset, an integer and
+ * an ability block to `null`.
+ *
+ * `strict` is the same split `asset` already makes: a request the client builds
+ * refuses an unknown sub-key, a response it reads strips one, so a type can gain
+ * structure without a version bump. The server rejects it either way. */
 function fieldValueSchema(kind: FieldKind, strict: boolean): ZodType<FieldValue> {
   switch (kind) {
     case 'text':
@@ -499,6 +526,12 @@ function fieldValueSchema(kind: FieldKind, strict: boolean): ZodType<FieldValue>
       return z.array(text(1, LIST_ITEM_MAX_CHARS)).max(LIST_FIELD_MAX_ITEMS)
     case 'asset':
       return (strict ? StrictAssetRefSchema : AssetRefSchema).nullable()
+    case 'integer':
+      return z.number().int().min(INTEGER_FIELD_MIN).max(INTEGER_FIELD_MAX).nullable()
+    case 'abilities':
+      return (strict ? StrictAbilitiesSchema : AbilitiesSchema).nullable()
+    case 'entry_list':
+      return z.array(strict ? StrictEntrySchema : EntrySchema).max(LIST_FIELD_MAX_ITEMS)
   }
 }
 

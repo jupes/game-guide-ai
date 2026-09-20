@@ -17,6 +17,8 @@ import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
 import type { ZodType } from 'zod'
 import {
+  ABILITY_SCORE_MAX,
+  ABILITY_SCORE_MIN,
   ASSET_KINDS,
   AUDIO_SLOTS,
   BRIEF_POLICY,
@@ -36,10 +38,15 @@ import {
   FieldPatchRequestSchema,
   GM_EVENT_KINDS,
   GmEventSchema,
+  INTEGER_FIELD_MAX,
+  INTEGER_FIELD_MIN,
   LIBRARY_CATEGORIES,
+  LIST_FIELD_MAX_ITEMS,
+  LIST_ITEM_MAX_CHARS,
   LibraryQuerySchema,
   MEDIA_TYPES,
   RESULT_KINDS,
+  TEXT_FIELD_MAX_CHARS,
   TABLE_EVENT_KINDS,
   TOOL_CARD_KIND,
   TOOL_CREATES_DOC_TYPE,
@@ -555,6 +562,128 @@ describe('reading a document (X-8, CANVAS-19)', () => {
     for (const junk of [null, undefined, 42, 'x', [], {}, { type: 'npc' }, { ...dossier, data: null }, { ...dossier, data: [] }]) {
       expect(parseDocument(junk).kind).toBe('unknown')
     }
+  })
+})
+
+describe('the structured field kinds (1kg.5.3)', () => {
+  const block = (data: Record<string, unknown>) => ({
+    schema_version: 1,
+    document_id: 'doc_5b1a2c3d',
+    campaign_id: 'cmp_4b1d9e7a',
+    type: 'statblock',
+    type_version: 1,
+    data: { name: 'Ondrey', ...data },
+    write_revision: 1,
+    version: {
+      number: 1,
+      author: 'gm',
+      summary: '',
+      created_at: '2026-09-16T20:00:00Z',
+      sealed: false,
+      changed_fields: ['name'],
+      restored_from: null,
+    },
+    archived: false,
+    created_at: '2026-09-16T20:00:00Z',
+    updated_at: '2026-09-16T20:00:00Z',
+  })
+  const read = (data: Record<string, unknown>) => DocumentSchema.safeParse(block(data))
+  const patch = (fields: Record<string, unknown>) =>
+    FieldPatchRequestSchema.safeParse({ schema_version: 1, type: 'statblock', type_version: 1, base_write_revision: 1, fields })
+
+  it.each([
+    ['a whole number', 7, 7],
+    ['a whole number written as a float, because JavaScript cannot tell them apart', 7.0, 7],
+    ['zero', 0, 0],
+    ['a negative', -1, -1],
+    ['the ceiling', INTEGER_FIELD_MAX, INTEGER_FIELD_MAX],
+    ['null, which clears it', null, null],
+  ])('an integer field takes %s', (_name, given, stored) => {
+    const parsed = read({ ac: given })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.ac).toEqual(stored)
+  })
+
+  it.each([[true], ['7'], [1.5], [[]], [{}], [INTEGER_FIELD_MAX + 1], [INTEGER_FIELD_MIN - 1]])(
+    'an integer field refuses %o in a request',
+    (given) => {
+      expect(patch({ ac: given }).success).toBe(false)
+    },
+  )
+
+  it.each([
+    [{}],
+    [{ str: 10 }],
+    [{ str: 10, dex: 12, con: 14, int: 8, wis: 13, cha: 16 }],
+    [{ str: null }],
+    [null],
+  ])('an abilities field takes %o — CANVAS-19, one field', (given) => {
+    const parsed = read({ abilities: given })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.abilities).toEqual(given)
+  })
+
+  it.each([
+    [{ strength: 10 }],
+    [{ str: '10' }],
+    [{ str: true }],
+    [{ str: ABILITY_SCORE_MAX + 1 }],
+    [{ str: ABILITY_SCORE_MIN - 1 }],
+    [[]],
+    ['10'],
+  ])('an abilities field refuses %o in a request', (given) => {
+    expect(patch({ abilities: given }).success).toBe(false)
+  })
+
+  it('an entry list takes named entries and clears to []', () => {
+    const entries = [
+      { name: 'Amphibious', text: 'She breathes water.' },
+      { name: 'Silent', text: '' },
+    ]
+    const parsed = read({ traits: entries })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.traits).toEqual(entries)
+    const cleared = read({ traits: [] })
+    expect(cleared.success).toBe(true)
+    if (cleared.success) expect(cleared.data.data.traits).toEqual([])
+  })
+
+  it.each([
+    [[{ name: 'Amphibious' }]],
+    [[{ text: 'no name' }]],
+    [[{ name: '', text: 'x' }]],
+    [[{ name: 'two\nlines', text: 'x' }]],
+    [['Amphibious']],
+    [{}],
+    [null],
+  ])('an entry list refuses %o in a request', (given) => {
+    expect(patch({ traits: given }).success).toBe(false)
+  })
+
+  it('a request rejects an unknown sub-key; a response strips it (the AssetRef precedent)', () => {
+    expect(patch({ traits: [{ name: 'Amphibious', text: 'x', damage: '1d6' }] }).success).toBe(false)
+    expect(patch({ abilities: { str: 10, luck: 3 } }).success).toBe(false)
+    const parsed = read({ traits: [{ name: 'Amphibious', text: 'x', damage: '1d6' }], abilities: { str: 10, luck: 3 } })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) {
+      expect(parsed.data.data.traits).toEqual([{ name: 'Amphibious', text: 'x' }])
+      expect(parsed.data.data.abilities).toEqual({ str: 10 })
+    }
+  })
+
+  it('refuses a prototype key smuggled into an ability block in a request', () => {
+    const fields = JSON.parse('{"abilities": {"str": 10, "__proto__": {"polluted": true}}}') as Record<string, unknown>
+    const result = patch(fields)
+    expect(result.success).toBe(false)
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
+  it('bounds an entry list at its edges', () => {
+    const one = { name: 'n', text: 't' }
+    expect(read({ traits: Array.from({ length: LIST_FIELD_MAX_ITEMS }, () => one) }).success).toBe(true)
+    expect(patch({ traits: Array.from({ length: LIST_FIELD_MAX_ITEMS + 1 }, () => one) }).success).toBe(false)
+    expect(patch({ traits: [{ name: 'a'.repeat(TEXT_FIELD_MAX_CHARS + 1), text: 't' }] }).success).toBe(false)
+    expect(patch({ traits: [{ name: 'n', text: 't'.repeat(LIST_ITEM_MAX_CHARS + 1) }] }).success).toBe(false)
   })
 })
 

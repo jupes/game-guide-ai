@@ -112,6 +112,55 @@
       "name": "no type",
       "why": "values are checked against the type's field kinds on both sides, before the write",
       "value": { "schema_version": 1, "type_version": 1, "base_write_revision": 14, "fields": { "wants": "The signet." } }
+    },
+    {
+      "name": "an armour class written as text",
+      "why": "1kg.5.3: an integer field takes a JSON integer. \"12\" is not one, and neither is true — Pydantic would otherwise read true as 1",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "ac": "12" } }
+    },
+    {
+      "name": "an ability the rules do not have",
+      "why": "1kg.5.3: the ability block has a closed key set (str, dex, con, int, wis, cha). In a request the client builds, a stray key is a bug on both sides",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": { "abilities": { "str": 10, "luck": 3 } }
+      }
+    },
+    {
+      "name": "a prototype key smuggled into an ability block",
+      "why": "The known pitfall: JSON allows an own __proto__ key and a plain-object lookup would find a function. refusingProtoKeys recurses so a nested one is refused before any field schema sees it",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": { "abilities": { "str": 10, "__proto__": { "polluted": true } } }
+      }
+    },
+    {
+      "name": "a trait with no name",
+      "why": "1kg.5.3: an entry_list entry is {name, text}, and the name is what a renderer shows as its heading, so it cannot be blank",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": { "traits": [{ "name": "", "text": "She breathes water." }] }
+      }
+    },
+    {
+      "name": "a trait carrying a key the entry does not declare",
+      "why": "1kg.5.3, ED-2: an entry_list is ONE field and nothing addresses inside it, so its entries are closed too. In a request both sides refuse the key",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": { "traits": [{ "name": "Amphibious", "text": "She breathes water.", "damage": "1d6" }] }
+      }
     }
   ]
 }

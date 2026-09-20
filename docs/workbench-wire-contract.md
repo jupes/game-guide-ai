@@ -280,6 +280,9 @@ kept as constants in both languages and pinned by both suites.
 | `prose` | plain text, at most 20,000 characters | `""` |
 | `text_list` | at most 100 items of 1 to 2,000 characters | `[]` |
 | `asset` | an `AssetRef` (an id, never a URL) | `null` |
+| `integer` | a JSON integer, -1,000,000 to 1,000,000 | `null` |
+| `abilities` | the six 5e scores as one object (`str`, `dex`, `con`, `int`, `wis`, `cha`), each 0–99; any subset | `null` |
+| `entry_list` | at most 100 `{name, text}` entries; the name one line of 1 to 200 characters, the text at most 2,000 | `[]` |
 
 Every type has `name`, `qualifier` and `tags`. `name` is the title everywhere and
 the one field that cannot be blank (LIB-12). `npc` adds `portrait`, `voice`,

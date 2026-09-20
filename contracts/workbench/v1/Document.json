@@ -112,6 +112,65 @@
       }
     },
     {
+      "name": "a stat block, carrying one field of each structured kind (1kg.5.3)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c3d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": {
+          "name": "Tidewarden Drowned",
+          "qualifier": "Medium undead, neutral evil",
+          "tags": ["tidewardens"],
+          "ac": 12,
+          "abilities": { "str": 14, "dex": 10, "con": 16, "int": 6, "wis": 8, "cha": 5 },
+          "traits": [
+            { "name": "Amphibious", "text": "It breathes air and water." },
+            { "name": "Salt-bound", "text": "" }
+          ]
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": ["name"],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a stat block with every structured field cleared",
+      "why": "an integer and an ability block clear to null, an entry list to [] — the kinds table of the wire contract",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c3e",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "Untitled Stat Block", "ac": null, "abilities": null, "traits": [] },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": ["name"],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
       "name": "an archived document of a type whose own fields 1kg.5.3 has yet to define",
       "value": {
         "schema_version": 1,
@@ -182,6 +241,24 @@
         "type_version": 1,
         "data": { "name": "Sister Ondrey Vashe", "constructor": "x", "toString": "y" },
         "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an ability block with an ability the rules do not have, which a client strips",
+      "why": "1kg.5.3: the ability block has a closed key set, and a response is read the tolerant way — the client drops what it does not know so a type can gain structure without a version bump. The server still refuses to emit it",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c3d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "Ondrey", "abilities": { "str": 10, "luck": 3 } },
+        "write_revision": 1,
         "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
         "archived": false,
         "created_at": "2026-09-16T20:00:00Z",
@@ -435,7 +512,7 @@
     },
     {
       "name": "a cleared text field written as null",
-      "why": "one way to say empty per kind: text and prose clear to the empty string, a list to [], only an asset to null",
+      "why": "one way to say empty per kind: text and prose clear to the empty string, both lists to [], and an asset, an integer and an ability block to null",
       "value": {
         "schema_version": 1,
         "document_id": "doc_9k2f7a1c",
