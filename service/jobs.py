@@ -32,6 +32,14 @@ request for the same work gets a row of its own and runs afterwards. Two jobs
 for one key are harmless — handlers are idempotent; a request swallowed by a
 job that then finishes without it is not.
 
+The `attempts = 0` guard alone did not achieve that. It is read at the moment of
+the absorb and locked nothing, so between the absorb and the enqueuer's commit
+another instance could claim that job, run it and delete it — and the change the
+enqueuer made in the same transaction was then never processed by anything
+(W-1). An absorbing enqueue therefore holds the row it absorbed into
+`FOR SHARE`, and `claim`'s `FOR UPDATE SKIP LOCKED` skips it until every
+absorber has committed. `InMemoryJobQueue` holds the same rule directly.
+
 **Rows are content-free** (SEC-20): a payload is a flat object of identifiers,
 which `check_payload` enforces by shape, and a failure records the exception's
 class name — never its message.
@@ -203,6 +211,15 @@ class PostgresJobQueue:
         )
         # Twice at most: the job that absorbed the insert can be claimed (and so
         # leave the index) before the SELECT sees it, in which case the insert wins.
+        #
+        # The SELECT holds what it finds FOR SHARE until this transaction commits,
+        # which is what stops a concurrent claim from running and deleting the
+        # absorbing job — and this transaction's work with it — before the work is
+        # visible (W-1). `claim`'s FOR UPDATE SKIP LOCKED skips a share-locked row;
+        # share mode lets concurrent absorbers through without waiting for each
+        # other. The one thing this statement can wait for is a claim's own short
+        # transaction, and if that claim wins the row, `attempts = 0` no longer
+        # matches, so the next turn of this loop inserts a row of its own.
         for _ in range(3):
             row = unit.conn.execute(
                 "INSERT INTO app.jobs (kind, payload, dedupe_key, run_after, created_at) "
@@ -215,7 +232,8 @@ class PostgresJobQueue:
             if row is None:
                 row = unit.conn.execute(
                     "SELECT id FROM app.jobs "
-                    "WHERE kind = %s AND dedupe_key = %s AND dead_at IS NULL AND attempts = 0",
+                    "WHERE kind = %s AND dedupe_key = %s AND dead_at IS NULL AND attempts = 0 "
+                    "FOR SHARE",
                     (kind, dedupe_key),
                 ).fetchone()
             if row is not None:
@@ -285,6 +303,10 @@ class InMemoryJobQueue:
     _rows: dict[int, _Row] = field(default_factory=dict)
     #: Enqueued but not committed, per open unit of work.
     _staged: dict[int, dict[int, _Row]] = field(default_factory=dict)
+    #: Committed rows an open unit absorbed into, and so holds until it commits.
+    #: The twin of `SELECT ... FOR SHARE`: `claim` skips these, as its
+    #: `FOR UPDATE SKIP LOCKED` skips a share-locked row.
+    _held: dict[int, set[int]] = field(default_factory=dict)
     _next_id: int = 1
 
     def enqueue(
@@ -307,6 +329,11 @@ class InMemoryJobQueue:
             for row in (*self._rows.values(), *mine.values()):
                 unstarted = row.dead_at is None and row.job.attempts == 0
                 if row.job.kind == kind and row.dedupe_key == dedupe_key and unstarted:
+                    if row.job.id in self._rows:
+                        # A committed row: hold it, so no claim can take the job —
+                        # and delete this transaction's work with it — before we
+                        # commit. Our own staged rows are invisible anyway.
+                        self._held.setdefault(id(unit), set()).add(row.job.id)
                     return row.job.id
         moment = _now(now)
         job_id = self._next_id
@@ -323,9 +350,11 @@ class InMemoryJobQueue:
 
             def publish() -> None:
                 self._rows.update(self._staged.pop(key, {}))
+                self._held.pop(key, None)
 
             def discard() -> None:
                 self._staged.pop(key, None)
+                self._held.pop(key, None)
 
             unit.on_publish(publish)
             unit.on_rollback(discard)
@@ -350,6 +379,7 @@ class InMemoryJobQueue:
                 and (row.locked_until is None or row.locked_until < moment)
                 and row.job.kind in kinds
                 and (job_id is None or row.job.id == job_id)
+                and not self._is_held(row.job.id)
             ),
             key=lambda row: (row.run_after, row.job.id),
         )[: max(0, limit)]
@@ -357,6 +387,10 @@ class InMemoryJobQueue:
             row.locked_until = moment + timedelta(seconds=lease_seconds)
             row.job = replace(row.job, attempts=row.job.attempts + 1)
         return [row.job for row in due]
+
+    def _is_held(self, job_id: int) -> bool:
+        """True while some open transaction has absorbed into this row."""
+        return any(job_id in held for held in self._held.values())
 
     def complete(self, job: Job) -> None:
         self._rows.pop(job.id, None)

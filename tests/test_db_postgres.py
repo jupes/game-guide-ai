@@ -289,11 +289,6 @@ def test_a_job_somebody_has_started_absorbs_nothing(db, dsn):
         assert conn.execute("SELECT id, attempts FROM app.jobs").fetchall() == [(second, 0)]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="W-1: an absorbed enqueue locks nothing, so a concurrent claim can swallow it (1kg.2.7)",
-)
 def test_an_absorbed_enqueue_is_not_swallowed_by_a_concurrent_claim(db, dsn):
     """W-1, from the independent verification of the eligibility ADR.
 
@@ -325,7 +320,31 @@ def test_an_absorbed_enqueue_is_not_swallowed_by_a_concurrent_claim(db, dsn):
         stolen = [job.id for job in queue.claim(["upload.sweep"], now=T0)]
 
     assert stolen == [], "the absorbing row was claimable before the enqueuer committed"
+
+    # Committed now: the job survived, and it can see the work it exists to do.
     assert _count(dsn, "SELECT count(*) FROM app.jobs WHERE id = %s", (first,)) == 1
+    assert [job.id for job in queue.claim(["upload.sweep"], now=T0)] == [first]
+    assert _count(dsn, "SELECT count(*) FROM app.things WHERE id = 'late'") == 1
+
+
+def test_two_absorbing_enqueuers_never_wait_for_each_other(db, dsn):
+    """Why FOR SHARE and not FOR UPDATE: share locks are compatible, so two
+    transactions absorbing into the same job both go through. Only a claim's
+    FOR UPDATE conflicts — and it uses SKIP LOCKED, so it never waits either.
+
+    `lock_timeout` is set on this test's own transaction so that a regression to
+    FOR UPDATE fails in two seconds instead of hanging CI. Nothing here passes
+    because of a clock."""
+    queue = PostgresJobQueue(db)
+    first = _enqueue(db, queue, kind="upload.sweep", dedupe_key="session:S")
+
+    with db.transaction() as one:
+        if queue.enqueue(one, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0) != first:
+            raise RuntimeError("precondition failed: the first enqueue did not absorb")
+        with db.transaction() as two:
+            two.conn.execute("SET LOCAL lock_timeout = '2s'")
+            absorbed = queue.enqueue(two, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0)
+    assert absorbed == first, "a second absorber went through while the first still held the row"
 
 
 def test_due_order_kinds_and_claim_by_id(db):

@@ -151,6 +151,27 @@ def test_a_live_job_absorbs_the_same_work_enqueued_again():
     assert len(queue.snapshot()) == 4
 
 
+def test_an_absorbed_enqueue_is_not_claimable_until_the_absorber_commits():
+    """The in-memory twin of the two-connection race in
+    `tests/test_db_postgres.py` (W-1).
+
+    An absorbed enqueue holds the row it absorbed into, so a claim from
+    elsewhere cannot take that job — and delete this transaction's work along
+    with it — before the absorbing transaction has committed. In PostgreSQL the
+    hold is `SELECT ... FOR SHARE`, which `claim()`'s `FOR UPDATE SKIP LOCKED`
+    skips; here it is the same rule, stated directly."""
+    queue = _queue()
+    first = _enqueue(queue, kind="upload.sweep", dedupe_key="session:S")
+
+    with queue.db.transaction() as unit:
+        absorbed = queue.enqueue(unit, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0)
+        assert absorbed == first, "precondition: the enqueue absorbs into the unstarted job"
+        assert queue.claim(["upload.sweep"], now=T0) == [], "claimable before the absorber committed"
+
+    (claimed,) = queue.claim(["upload.sweep"], now=T0)
+    assert claimed.id == first, "and claimable once it has"
+
+
 def test_a_job_somebody_has_started_absorbs_nothing():
     """Its handler may already have read the state it acts on. Work requested
     after that must get a row of its own — absorbed into the running job, it
