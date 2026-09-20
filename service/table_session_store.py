@@ -28,10 +28,15 @@ generation is the session's current one, and only while the session is live.**
 `revoked_at IS NULL` is not the test: `issue_credential` reads the generation
 without a lock, deliberately, so that a join never makes a Stop wait — which
 means a join that commits just after a Rotate leaves an unrevoked credential of
-the generation the Rotate retired. Every reader must check the session's state,
-the generation and the revocation together (ED-25, SEC-9); `end` then revokes
-every unrevoked credential of the session, whatever its generation, so nothing
-is left behind once the table is over.
+the generation the Rotate retired. **An ending is no different.** `end` revokes
+every unrevoked credential of the session, whatever its generation, but a join
+whose statement took its snapshot before the End committed is not blocked by it
+— the foreign-key check takes `FOR KEY SHARE`, which does not conflict with the
+End's `FOR NO KEY UPDATE`, and that is the very property RQ-3 wants — so it can
+still commit an unrevoked credential of a session that has ended. So the rule is
+one rule, and it is the reader's: **a credential is valid only while its session
+is live, its generation is the session's current one, and it is unrevoked**
+(ED-25, SEC-9). Nothing here makes a reader that checks only `revoked_at` safe.
 
 **`narrow` is the primitive** (RQ-7). Anything that makes what the table can see
 smaller — End, expiry, Rotate, Remove participant, Reset personal link, unlink —
@@ -408,7 +413,14 @@ class PostgresTableSessionStore:
         """What an ending revokes: not one generation but all of them. A join
         that committed just after a Rotate holds an unrevoked credential of the
         generation the Rotate retired (see the module docstring), and the table
-        is over — nothing may be left with `revoked_at IS NULL` behind it."""
+        is over, so this statement leaves nothing of the session unrevoked
+        **behind it**. It cannot promise more than that: a join whose statement
+        took its snapshot before this transaction committed is not blocked by
+        the End — its foreign-key check takes `FOR KEY SHARE` and the End holds
+        `FOR NO KEY UPDATE`, which is exactly what RQ-3 asks for — so it may
+        still commit an unrevoked credential of an ended session afterwards.
+        That is why validity is the reader's three-part test, not this one
+        column."""
         pg(unit).conn.execute(
             "UPDATE campaign.table_credentials SET revoked_at = %s "
             "WHERE session_id = %s AND revoked_at IS NULL",

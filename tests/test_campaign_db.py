@@ -1297,8 +1297,11 @@ def test_ending_a_session_revokes_every_generation_it_ever_had(world: World) -> 
     """A join that commits just after a Rotate holds an unrevoked credential of
     the generation the Rotate retired — `issue_credential` reads the generation
     without a lock, deliberately, so that a join never makes a Stop wait. The
-    table is over, so an ending leaves nothing with `revoked_at IS NULL` behind
-    it, whatever generation it belongs to."""
+    table is over, so the ending's own statement leaves nothing of the session
+    unrevoked behind it, whatever generation it belongs to. It cannot promise
+    more: a join that took its snapshot before the End committed is not blocked
+    by it and may commit one afterwards, which is why a reader checks the state,
+    the generation and the revocation together (ED-25, SEC-9)."""
     campaign = _a_campaign(world)
     session, _ = _a_session(world, campaign)
     with world.db.transaction() as unit:

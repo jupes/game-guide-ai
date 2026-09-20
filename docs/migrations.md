@@ -97,14 +97,21 @@ Rules the runner or CI enforce:
   line has to be done by hand, in a diff a reviewer sees. The only legitimate case is
   a file that *could not* apply anywhere — say so in the pull request.
 - **An *unreleased* one may still be edited in place**, and only while it is
-  unreleased: the file has been applied nowhere but CI's throwaway databases, so
-  there is no ledger row anywhere that its checksum would contradict, and a
+  unreleased. **Unreleased means the file exists on no branch but its own pull
+  request's.** From the moment it is merged into `master` or into an
+  `integration/**` branch it is *released* — whether or not anything has been
+  deployed — and it is never edited in place again. Deployment is not the line,
+  because a shared branch is: other worktrees, other pull requests stacking
+  migrations on top, and any developer's Compose stack (which keeps a persistent
+  volume and applies migrations at start) can all have applied it by then, and
+  each of those databases would meet the changed checksum as drift. While it is
+  still only on its own pull request the file has been applied nowhere but CI's
+  throwaway databases, so no ledger row anywhere contradicts its checksum, and a
   seventh file to correct a sixth that nothing has ever run would be history
-  nobody needs. It is the same mechanical act as the rule above — re-pin the
-  line by hand, in the diff — so the pull request must **say which lines it
-  re-pinned and why**, and a reviewer must confirm the file is really
-  unreleased. Once a build carrying it has been deployed, it is released and
-  the first rule applies.
+  nobody needs. Editing one is the same mechanical act as the rule above —
+  re-pin the line by hand, in the diff — so the pull request must **say which
+  lines it re-pinned and why**, and a reviewer must confirm the file is really
+  unreleased.
 - **One number, one file.** Two branches that each add a migration both append to
   `manifest.txt`, so git reports a conflict instead of merging two `0007`s. Renumber
   the later one before merging.

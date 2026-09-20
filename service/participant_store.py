@@ -327,8 +327,15 @@ class ParticipantStore(Protocol):
         A removed seat reports **False**, not an exception: this is the
         unauthenticated route, RQ-5 asks it to fail generically when no row
         changed, and a caller must not be able to tell a removed seat from a
-        spent code. The check is in the statement, so there is no window between
-        it and the write.
+        spent code.
+
+        The seat's status is in the statement rather than read before it, which
+        is worth having — but it is **the row lock that closes the window**, not
+        the `EXISTS`. Under READ COMMITTED an `EXISTS` subquery keeps the
+        statement's snapshot even where the target row is re-read after a lock
+        wait, so a Remove committing between this statement's snapshot and its
+        write is caught by the participant row this method holds first, and by
+        the fact that the same Remove revokes the code row.
         """
         ...  # pragma: no cover - structural type
 
