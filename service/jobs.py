@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -446,8 +447,58 @@ class InMemoryJobQueue:
 
 
 @dataclass(frozen=True)
+class JobContext:
+    """What a handler is told about its time.
+
+    **Advisory.** Nothing interrupts a handler: the runner stops *starting*
+    work when the budget is spent and lets what is running finish. A handler
+    that blocks past its deadline breaks this contract, and the only bound left
+    is the platform's — Cloud Run's request timeout, Cloud Scheduler's attempt
+    deadline. So a handler must cap its own I/O by `remaining_seconds()`.
+    """
+
+    #: None: no budget — run to completion.
+    deadline_monotonic: float | None = None
+    monotonic: Callable[[], float] = time.monotonic
+
+    def remaining_seconds(self) -> float | None:
+        if self.deadline_monotonic is None:
+            return None
+        return self.deadline_monotonic - self.monotonic()
+
+    def expired(self) -> bool:
+        remaining = self.remaining_seconds()
+        return remaining is not None and remaining <= 0
+
+
+@dataclass(frozen=True)
+class JobRunResult:
+    """What an attempt says about itself — counts only, never content (SEC-20).
+
+    `ran` counts jobs attempted, whatever the outcome; `failed` counts how many
+    of those raised. `remaining` is conservative: it is True whenever the runner
+    stopped before the queue was empty, and only False when a claim came back
+    empty and so proved there was nothing due.
+    """
+
+    ran: int = 0
+    failed: int = 0
+    remaining: bool = False
+
+
+class UnknownJobKind(Exception):
+    """A claimed job whose kind has no handler at dispatch.
+
+    `claim` filters by the registry, so this is the narrow window in which the
+    registry changed in between. The job is failed content-free and retried —
+    never dead-lettered, because the instance that does have the handler should
+    still get it.
+    """
+
+
+@dataclass(frozen=True)
 class JobHandler:
-    run: Callable[[Job], None]
+    run: Callable[[Job, JobContext], None]
     #: None: retried until it succeeds, with capped backoff — a deletion is
     #: never abandoned. A number: marked dead after that many attempts.
     max_attempts: int | None = None
@@ -461,48 +512,85 @@ class JobRunner:
     def __init__(
         self,
         queue: JobQueue,
-        handlers: Mapping[str, JobHandler],
+        handlers: Mapping[str, JobHandler] | None = None,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._queue = queue
-        self._handlers = dict(handlers)
+        self._handlers = dict(handlers or {})
         self._clock = clock
+        self._monotonic = monotonic
 
-    def run_due(self, limit: int = 1) -> int:
-        """Run up to `limit` due jobs; returns how many ran, whatever their outcome.
+    def register(self, kind: str, handler: JobHandler) -> None:
+        """Wire a kind at startup. Claims take a snapshot of what is registered,
+        so an older build never claims a newer build's kinds."""
+        self._handlers[check_kind(kind)] = handler
 
-        One claim per job: a lease starts when its handler does, not while the
-        jobs ahead of it in a batch are still running."""
-        ran = 0
-        while ran < limit and self._run(self._queue.claim(self._handlers.keys(), now=self._clock())):
-            ran += 1
-        return ran
+    def run_due(self, limit: int = 1, deadline_monotonic: float | None = None) -> JobRunResult:
+        """Run up to `limit` due jobs within a **cooperative** budget.
+
+        The budget stops the runner *starting* another job; it never interrupts
+        one that is running. One claim per job, so a lease starts when its
+        handler does, not while the jobs ahead of it are still running."""
+        context = JobContext(deadline_monotonic, self._monotonic)
+        ran = failed = 0
+        while ran < max(0, limit):
+            if context.expired():
+                return JobRunResult(ran, failed, remaining=True)
+            claimed = self._queue.claim(self._handlers.keys(), now=self._clock())
+            if not claimed:
+                # The only probe there is: nothing was due.
+                return JobRunResult(ran, failed, remaining=False)
+            attempted, lost = self._run(claimed, context)
+            ran += attempted
+            failed += lost
+        # Stopped on the count, so there may well be more.
+        return JobRunResult(ran, failed, remaining=ran > 0)
+
+    def run_job(self, job_id: int, deadline_monotonic: float | None = None) -> JobRunResult:
+        """One named job, now — what both post-response drivers call. Its row
+        stays the retry record, so nothing is lost if this attempt does not run."""
+        context = JobContext(deadline_monotonic, self._monotonic)
+        if context.expired():
+            return JobRunResult(remaining=True)
+        claimed = self._queue.claim(self._handlers.keys(), job_id=job_id, now=self._clock())
+        ran, failed = self._run(claimed, context)
+        return JobRunResult(ran, failed, remaining=False)
 
     def run_after_commit(self, unit: UnitOfWork, job_id: int) -> None:
         """Try the job as soon as `unit` commits; its row stays as the retry record."""
 
         def run() -> None:
-            self._run(self._queue.claim(self._handlers.keys(), job_id=job_id, now=self._clock()))
+            self.run_job(job_id)
 
         unit.on_commit(run)
 
-    def _run(self, jobs: list[Job]) -> int:
+    def _run(self, jobs: list[Job], context: JobContext) -> tuple[int, int]:
+        """Returns (attempted, failed). Never raises: a job's failure is the
+        job's, and a driver must be able to swallow it whole."""
+        failed = 0
         for job in jobs:
-            handler = self._handlers[job.kind]
+            handler = self._handlers.get(job.kind)
             error: str | None = None
-            try:
-                handler.run(job)
-            except Exception as exc:
-                error = type(exc).__name__
+            if handler is None:
+                error = UnknownJobKind.__name__
+            else:
+                try:
+                    handler.run(job, context)
+                except Exception as exc:
+                    error = type(exc).__name__
             if error is None:
                 self._queue.complete(job)
                 continue
+            failed += 1
             now = self._clock()
-            exhausted = handler.max_attempts is not None and job.attempts >= handler.max_attempts
+            exhausted = (
+                handler is not None and handler.max_attempts is not None and job.attempts >= handler.max_attempts
+            )
             self._queue.fail(job, error=error, retry_at=None if exhausted else now + retry_delay(job.attempts), now=now)
             log.warning(
                 "jobs: %s #%d failed on attempt %d (%s)%s",
                 job.kind, job.id, job.attempts, error, "; giving up" if exhausted else "",
             )
-        return len(jobs)
+        return len(jobs), failed

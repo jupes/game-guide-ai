@@ -28,7 +28,7 @@ from psycopg_pool import PoolClosed, PoolTimeout
 
 from service import migrations as mig
 from service.db import AdvisoryLock, Database, PoolSettings
-from service.jobs import LEASE_SECONDS, Job, JobHandler, JobRunner, PostgresJobQueue
+from service.jobs import LEASE_SECONDS, Job, JobContext, JobHandler, JobRunner, PostgresJobQueue
 
 pytestmark = needs_db
 
@@ -177,7 +177,7 @@ def test_after_commit_callbacks_run_once_the_connection_is_back(dsn):
     database = Database(dsn, PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
     queue = PostgresJobQueue(database)
     ran: list[str] = []
-    handler = JobHandler(lambda job: ran.append(str(job.payload["asset_id"])))
+    handler = JobHandler(lambda job, context: ran.append(str(job.payload["asset_id"])))
     runner = JobRunner(queue, {"asset.delete": handler})
     with database.transaction() as unit:
         runner.run_after_commit(unit, queue.enqueue(unit, "asset.delete", {"asset_id": "asset-1"}))
@@ -427,18 +427,18 @@ def test_the_runner_retries_with_backoff_on_the_real_queue(db, dsn):
     clock = [T0]
     attempts: list[int] = []
 
-    def handler(job: Job) -> None:
+    def handler(job: Job, context: JobContext) -> None:
         attempts.append(job.attempts)
         if job.attempts < 3:
             raise TimeoutError("gs://bucket/secret-name")
 
     runner = JobRunner(queue, {"asset.delete": JobHandler(handler)}, clock=lambda: clock[0])
-    assert runner.run_due() == 1 and runner.run_due() == 0, "backed off"
+    assert runner.run_due().ran == 1 and runner.run_due().ran == 0, "backed off"
     clock[0] += timedelta(seconds=5)
-    assert runner.run_due() == 1
+    assert runner.run_due().ran == 1
     assert _count(dsn, "SELECT count(*) FROM app.jobs WHERE last_error = 'TimeoutError'") == 1
     clock[0] += timedelta(seconds=10)
-    assert runner.run_due() == 1
+    assert runner.run_due().ran == 1
     assert attempts == [1, 2, 3] and _count(dsn, "SELECT count(*) FROM app.jobs") == 0
 
 
