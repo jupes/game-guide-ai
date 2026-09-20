@@ -690,7 +690,7 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     }
   })
 
-  it('strips every key the server is forbidden to emit, at the top of a projection too (SEC-15)', () => {
+  it('strips every key the server is forbidden to emit, at every depth of a projection (SEC-15)', () => {
     // The eleven `applies_to: ["server"]` examples in TableProjection.json are
     // skipped by this suite by design — the server refuses them, a client
     // tolerates and strips. "Tolerates" was never pinned: with a loose object
@@ -700,16 +700,28 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     const serverOnly = projection.invalid.filter((example) => example.applies_to?.length === 1 && example.applies_to[0] === 'server')
     expect(serverOnly.length).toBeGreaterThanOrEqual(11)
 
-    const declared = new Set(['content_kind', 'type', 'fields'])
+    // The whole vocabulary a projection may use, at every level. Two of the
+    // eleven examples smuggle their key *inside* a field object rather than at
+    // the top, so a top-level check alone would assert nothing about them.
+    const declared = new Set(['content_kind', 'type', 'fields', 'key', 'label', 'value', 'handle', 'kind', 'media_type', 'width', 'height', 'duration_ms'])
+    const keysAtEveryDepth = (node: unknown): string[] =>
+      Array.isArray(node)
+        ? node.flatMap(keysAtEveryDepth)
+        : node !== null && typeof node === 'object'
+          ? Object.entries(node).flatMap(([key, child]) => [key, ...keysAtEveryDepth(child)])
+          : []
+
     for (const example of serverOnly) {
       const parsed = TableProjectionSchema.safeParse(expand(example.value))
       expect([example.name, parsed.success]).toEqual([example.name, true])
       if (!parsed.success) continue
-      // Nothing beyond the three declared keys survives, at any depth.
-      expect([example.name, Object.keys(parsed.data).filter((key) => !declared.has(key))]).toEqual([example.name, []])
-      const smuggled = Object.keys(example.value as Record<string, unknown>).filter((key) => !declared.has(key))
-      const rendered = JSON.stringify(parsed.data)
-      for (const key of smuggled) expect([example.name, key, rendered.includes(key)]).toEqual([example.name, key, false])
+      const survived = [...new Set(keysAtEveryDepth(parsed.data))].filter((key) => !declared.has(key))
+      expect([example.name, survived]).toEqual([example.name, []])
+      // And the example really did carry something to strip, wherever it sat —
+      // otherwise this would pass by asserting nothing.
+      const sent = [...new Set(keysAtEveryDepth(expand(example.value)))].filter((key) => !declared.has(key))
+      expect([example.name, sent.length]).toEqual([example.name, sent.length])
+      expect(sent.length).toBeGreaterThan(0)
     }
   })
 
