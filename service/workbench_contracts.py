@@ -2346,7 +2346,7 @@ class RevealState(_Contract):
 
         if any(len(ids) > 1 for ids in by_document.values()):
             raise ValueError("a document has at most one live disclosure")
-        if any(documents for documents in by_disclosure.values() if len(documents) > 1):
+        if any(len(documents) > 1 for documents in by_disclosure.values()):
             raise ValueError("a disclosure shows one document")
         if on_the_table & privately:
             raise ValueError("a disclosure is the table slot, or participant slots, never both")
