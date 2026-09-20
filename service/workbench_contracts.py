@@ -2587,6 +2587,33 @@ TableEvent = Annotated[
 ]
 
 
+def _the_role_decides_the_slots(frames: Sequence[Any], *, role: TableRole) -> None:
+    """Decision threat model §8.2, ED-10: a private slot exists for this device
+    only with the **enrolled device credential**, which is exactly what
+    ``role == participant`` means on the wire.
+
+    So a guest's resource holds no ``mine`` anywhere — not in the reveal
+    picture and not as a later ``slot`` frame — and a participant's picture is
+    exactly ``table`` and ``mine``: for an entitled device, *absent* and
+    *present and empty* are different facts, and only the second is legal. This
+    is the entitlement rule the family is built on, expressed where an emitter
+    is checked against it (``1kg.7.2``), so a snapshot route that resolved a
+    revoked device as a guest and still attached its slot cannot be emitted.
+    """
+    mine = [
+        frame
+        for frame in frames
+        if (frame.event == "slot" and frame.slot is TableSlotName.MINE)
+        or (frame.event == "snapshot" and any(slot.slot is TableSlotName.MINE for slot in frame.slots))
+    ]
+    if role is TableRole.GUEST and mine:
+        raise ValueError("a guest is entitled to the table slot and nothing else")
+    if role is TableRole.PARTICIPANT:
+        pictures = [frame for frame in frames if frame.event == "snapshot"]
+        if any(not any(slot.slot is TableSlotName.MINE for slot in picture.slots) for picture in pictures):
+            raise ValueError("an enrolled device's picture holds its own slot, present and possibly empty")
+
+
 class TableSnapshot(_Contract):
     """The table channel read as a resource: the session, one audio frame per
     slot, later the reveal slots, then ``ready`` (ADR RT-4, RT-9)."""
@@ -2599,8 +2626,15 @@ class TableSnapshot(_Contract):
         _ends_with_ready(self.frames)
         # ``TableSessionEvent`` exists only while live: TABLE-9 makes ``inactive``
         # its own kind, so holding a session frame *is* the liveness test here.
-        live = any(frame.event == "session" for frame in self.frames)
-        _one_reveal_picture_while_live(self.frames, live=live)
+        sessions = [frame for frame in self.frames if frame.event == "session"]
+        if len(sessions) > 1:
+            # Two session frames could disagree about the role, and a reader that
+            # took the first would read a different resource from one that took
+            # the last. One frame, one answer.
+            raise ValueError("a snapshot describes one session")
+        _one_reveal_picture_while_live(self.frames, live=bool(sessions))
+        if sessions:
+            _the_role_decides_the_slots(self.frames, role=sessions[0].role)
         return self
 
 

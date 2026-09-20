@@ -809,6 +809,18 @@ request fields*. A slot a device is not entitled to is **absent**, never marked:
 a marker would confirm both that the slot exists and that a private reveal is
 happening (WT-7, T-8, threat model §8.2).
 
+**The role decides the slots.** A `TableSnapshot` carries exactly one `session`
+frame while live — two could disagree about the role — and that frame's `role`
+is what says whether a `mine` slot may appear at all. A **guest** holds the table
+slot and nothing else: no `mine` in the picture, and no later `mine` `slot`
+frame either. An enrolled **participant**'s picture is exactly `table` and
+`mine`, because for an entitled device *absent* and *present and empty* are
+different facts and only the second is legal — otherwise a page cannot tell
+"nothing is revealed to me" from "I was not told". This is the entitlement rule
+the family is built on, and it is checked where `1kg.7.2` validates what it is
+about to emit, so a snapshot route that resolved a revoked device as a guest
+(TABLE-13) and still attached its slot cannot send it.
+
 Both snapshot resources carry **one** reveal picture while their session is live
 and **none** when there is none — `GmSnapshot`'s *no session running* and
 `TableSnapshot`'s *inactive table* (TABLE-9) are unchanged by this family. A

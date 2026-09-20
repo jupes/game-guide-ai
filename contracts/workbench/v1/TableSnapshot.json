@@ -69,6 +69,40 @@
       }
     },
     {
+      "name": "an enrolled device sees its own slot, present and empty",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
       "name": "an inactive table: the generic frame, then ready",
       "value": {
         "schema_version": 1,
@@ -260,6 +294,158 @@
                     }
                   ]
                 }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a guest given a private slot",
+      "why": "threat model 8.2, ED-10: a private slot exists only with the enrolled device credential, which is what `role: participant` means on the wire — a snapshot route that resolved a revoked device as a guest and still attached its slot is refused here rather than emitted",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": {
+                  "content_kind": "document",
+                  "type": "handout",
+                  "fields": [
+                    {
+                      "key": "body",
+                      "value": "Bearer passes freely through the water gate."
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a guest's resource with a mine slot frame",
+      "why": "threat model 8.2: the entitlement rule holds for every frame of the resource, not just the picture — a later `slot` frame naming `mine` reaches the same device",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "mine",
+            "seq": 4,
+            "content": null
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a participant's picture without its own slot",
+      "why": "ADR RT-4: a snapshot is complete before ready, so for an entitled device `absent` and `present and empty` are different facts and only the second is legal — otherwise a page cannot tell `nothing revealed to me` from `I was not told`",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "two session frames with different roles",
+      "why": "a snapshot describes one session: two frames could disagree about the role, and a reader that took the first would read a different resource from one that took the last",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": null
               }
             ]
           },

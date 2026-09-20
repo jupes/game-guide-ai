@@ -1909,16 +1909,45 @@ export const TableEventSchema = z.discriminatedUnion('event', [
 ])
 export type TableEvent = z.infer<typeof TableEventSchema>
 
+/** Threat model 8.2, ED-10: a private slot exists for this device only with the
+ * **enrolled device credential**, which is exactly what `role === 'participant'`
+ * means on the wire. So a guest's resource holds no `mine` anywhere — not in the
+ * picture and not as a later `slot` frame — and an enrolled device's picture is
+ * exactly `table` and `mine`: for an entitled device, *absent* and *present and
+ * empty* are different facts, and only the second is legal. */
+function theRoleDecidesTheSlots(frames: readonly TableEvent[], role: string): boolean {
+  const holdsMine = frames.some(
+    (frame) =>
+      (frame.event === 'slot' && frame.slot === 'mine') ||
+      (frame.event === 'snapshot' && frame.slots.some((slot) => slot.slot === 'mine')),
+  )
+  if (role === 'guest') return !holdsMine
+  return frames
+    .filter((frame) => frame.event === 'snapshot')
+    .every((picture) => picture.slots.some((slot) => slot.slot === 'mine'))
+}
+const ROLE_ISSUE = { path: ['frames'], message: "a guest sees the table slot alone; an enrolled device also sees its own" }
+
 /** The table channel read as a resource: session, one audio frame per slot, later the reveal slots, then ready. */
 export const TableSnapshotSchema = z
   .object({ schema_version: z.literal(CONTRACT_VERSION), frames: z.array(TableEventSchema).min(1).max(50) })
   .refine((snapshot) => endsWithReady(snapshot.frames), SNAPSHOT_ISSUE)
+  // Two session frames could disagree about the role, and a reader that took the
+  // first would read a different resource from one that took the last.
+  .refine((snapshot) => snapshot.frames.filter((frame) => frame.event === 'session').length <= 1, {
+    path: ['frames'],
+    message: 'a snapshot describes one session',
+  })
   // TableSessionEvent exists only while live — TABLE-9 makes `inactive` its own
   // kind — so holding a session frame *is* the liveness test here.
   .refine(
     (snapshot) => oneRevealPictureWhileLive(snapshot.frames, snapshot.frames.some((frame) => frame.event === 'session')),
     PICTURE_ISSUE,
   )
+  .refine((snapshot) => {
+    const session = snapshot.frames.find((frame) => frame.event === 'session')
+    return session === undefined || theRoleDecidesTheSlots(snapshot.frames, session.role)
+  }, ROLE_ISSUE)
 export type TableSnapshot = z.infer<typeof TableSnapshotSchema>
 
 /** Name → schema, in the order `contracts/workbench/v1/schemas.json` lists them. */
