@@ -69,6 +69,14 @@ PAYLOAD_VALUE_MAX_CHARS = 200
 #: No longer than the platform lets a request live (Cloud Run: 300 s), since a
 #: handler always runs inside one.
 LEASE_SECONDS = 300
+
+#: Server-side bounds on the transactions this queue opens. Defence in depth for
+#: the database — **not** a client wall clock: they do not cover COMMIT, and they
+#: do nothing about a black-holed network. A hard client-side deadline is
+#: `1kg.2.8`'s question. `docs/migrations.md` section 4 says so in full.
+LOCK_TIMEOUT = "2s"
+STATEMENT_TIMEOUT = "2s"
+TRANSACTION_TIMEOUT = "5s"
 RETRY_BASE_SECONDS = 5
 RETRY_CAP_SECONDS = 3600
 
@@ -164,6 +172,23 @@ class JobQueue(Protocol):
 #: planner may run that subquery once per outer row, and each rerun skips the rows
 #: this statement has already locked, so the LIMIT window slides and one claim
 #: leases the whole backlog.
+def _bound(conn: object) -> None:
+    """The first statement of every transaction this queue opens.
+
+    `set_config(..., true)` is transaction-scoped, which holds only because
+    `Database.connection()` hands out a connection that is *not* in autocommit
+    and commits when its block exits. `enqueue()` is deliberately not bounded
+    this way: it runs inside the caller's transaction, and re-timing the rest of
+    the caller's work is not this module's business.
+    """
+    conn.execute(  # type: ignore[attr-defined]  # justification: the psycopg connection Database yields is untyped
+        "SELECT set_config('lock_timeout', %s, true), "
+        "set_config('statement_timeout', %s, true), "
+        "set_config('transaction_timeout', %s, true)",
+        (LOCK_TIMEOUT, STATEMENT_TIMEOUT, TRANSACTION_TIMEOUT),
+    )
+
+
 _CLAIM = """
 WITH due AS MATERIALIZED (
   SELECT id FROM app.jobs
@@ -253,6 +278,7 @@ class PostgresJobQueue:
             return []
         moment = _now(now)
         with self._db.connection() as conn:
+            _bound(conn)
             rows = conn.execute(
                 _CLAIM,
                 {
@@ -268,10 +294,12 @@ class PostgresJobQueue:
 
     def complete(self, job: Job) -> None:
         with self._db.connection() as conn:
+            _bound(conn)
             conn.execute("DELETE FROM app.jobs WHERE id = %s", (job.id,))
 
     def fail(self, job: Job, *, error: str, retry_at: datetime | None, now: datetime | None = None) -> None:
         with self._db.connection() as conn:
+            _bound(conn)
             conn.execute(
                 "UPDATE app.jobs SET locked_until = NULL, last_error = %s, "
                 "run_after = COALESCE(%s, run_after), "

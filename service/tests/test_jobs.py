@@ -8,13 +8,17 @@ committed; a claim is a lease with a fencing token; rows never hold content.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from service.db import Database, InMemoryDatabase, PoolSettings
+from service.db import Database, InMemoryDatabase, PgTransaction, PoolSettings
 from service.jobs import (
     LEASE_SECONDS,
+    LOCK_TIMEOUT,
+    STATEMENT_TIMEOUT,
+    TRANSACTION_TIMEOUT,
     InMemoryJobQueue,
     Job,
     JobHandler,
@@ -137,6 +141,86 @@ def test_a_failure_records_the_exception_class_never_its_message(caplog):
     assert queue.snapshot() == [(1, "asset.delete", 1, "PermissionError", False)]
     assert "asset.delete #1 failed on attempt 1 (PermissionError)" in caplog.text
     assert "secret" not in caplog.text
+
+
+# ── The transactions the queue opens are bounded ─────────────────────────────
+
+
+class _Result:
+    def __init__(self, rows: list[tuple]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[tuple]:
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class _RecordingConnection:
+    """Enough of a psycopg connection to see what a transaction does first."""
+
+    def __init__(self, calls: list[tuple[str, tuple | None]], rows: list[tuple] | None = None) -> None:
+        self.calls = calls
+        self._rows = rows if rows is not None else []
+
+    def execute(self, sql, params=None) -> _Result:
+        self.calls.append((" ".join(str(sql).split()), params))
+        if "set_config" in str(sql):
+            return _Result([])
+        return _Result(self._rows)
+
+
+class _RecordingDatabase:
+    """Enough of `Database` for the queue's own transactions."""
+
+    def __init__(self, calls: list[tuple[str, tuple | None]], rows: list[tuple] | None = None) -> None:
+        self.calls = calls
+        self._rows = rows
+
+    @contextmanager
+    def connection(self):
+        yield _RecordingConnection(self.calls, self._rows)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        pytest.param(lambda q: q.claim(["asset.delete"], now=T0), id="claim"),
+        pytest.param(lambda q: q.complete(Job(1, "asset.delete", {}, 1, T0)), id="complete"),
+        pytest.param(
+            lambda q: q.fail(Job(1, "asset.delete", {}, 1, T0), error="ValueError", retry_at=T0, now=T0),
+            id="fail",
+        ),
+    ],
+)
+def test_every_transaction_the_queue_opens_is_bounded_first(operation):
+    """`lock_timeout`, `statement_timeout` and `transaction_timeout`, set
+    transaction-locally, before the queue does anything else. They bound the
+    database's side of the work — not the client's wall clock (see 1kg.2.8)."""
+    calls: list[tuple[str, tuple | None]] = []
+    operation(PostgresJobQueue(_RecordingDatabase(calls)))
+
+    assert calls, "the operation opened no transaction"
+    sql, params = calls[0]
+    assert "set_config('lock_timeout', %s, true)" in sql
+    assert "set_config('statement_timeout', %s, true)" in sql
+    assert "set_config('transaction_timeout', %s, true)" in sql
+    assert params == (LOCK_TIMEOUT, STATEMENT_TIMEOUT, TRANSACTION_TIMEOUT) == ("2s", "2s", "5s")
+
+
+def test_an_enqueue_never_retimes_the_callers_transaction():
+    """`enqueue()` runs inside the caller's transaction. Setting timeouts there
+    would silently re-time the rest of the caller's work, which is not this
+    module's business — so it sets none."""
+    calls: list[tuple[str, tuple | None]] = []
+    queue = PostgresJobQueue(_RecordingDatabase(calls))
+    unit = PgTransaction(_RecordingConnection(calls, rows=[(1,)]))
+
+    queue.enqueue(unit, "asset.delete", {"asset_id": "a-1"}, dedupe_key="asset:a-1", now=T0)
+
+    assert calls, "the enqueue issued no statement"
+    assert not any("set_config" in sql for sql, _ in calls)
 
 
 # ── Deduplication ────────────────────────────────────────────────────────────

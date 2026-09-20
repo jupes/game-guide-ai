@@ -327,6 +327,33 @@ def test_an_absorbed_enqueue_is_not_swallowed_by_a_concurrent_claim(db, dsn):
     assert _count(dsn, "SELECT count(*) FROM app.things WHERE id = 'late'") == 1
 
 
+def test_the_queues_bound_is_transaction_local_and_does_not_leak(db, dsn):
+    """`set_config(..., true)` is transaction-scoped — but only because
+    `Database.connection()` hands out a connection that is **not** in autocommit
+    and commits when its block exits. If that ever changed, the bound would
+    quietly become session-wide and outlive the queue's own work, so this pins
+    both halves against the real server.
+
+    These are the database's bounds, not a client wall clock: they do not cover
+    COMMIT and do nothing about a black-holed network (`1kg.2.8`).
+    """
+    from service.jobs import _bound
+
+    with db.connection() as conn:
+        assert conn.autocommit is False, "set_config(..., true) needs a real transaction"
+        _bound(conn)
+        settings = conn.execute(
+            "SELECT current_setting('lock_timeout'), "
+            "current_setting('statement_timeout'), "
+            "current_setting('transaction_timeout')"
+        ).fetchone()
+        assert settings == ("2s", "2s", "5s")
+
+    with db.connection() as conn:
+        after = conn.execute("SELECT current_setting('statement_timeout')").fetchone()[0]
+    assert after != "2s", "the bound outlived its transaction"
+
+
 def test_two_absorbing_enqueuers_never_wait_for_each_other(db, dsn):
     """Why FOR SHARE and not FOR UPDATE: share locks are compatible, so two
     transactions absorbing into the same job both go through. Only a claim's
