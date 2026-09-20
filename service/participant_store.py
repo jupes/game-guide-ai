@@ -1,20 +1,27 @@
 """Participants, their enrolment codes and their device credentials (1kg.2.1).
 
 A participant is a seat at a campaign's table: an alias the GM chose, and — once
-they have followed their personal link — one device bound to that seat. Three
+they have followed their personal link — one device bound to that seat. Four
 rules from the records shape everything here.
 
 **A participant is marked removed, never deleted** (RQ-3, W-3). A row another
 transaction may be referencing must not vanish under it, and a removal must stay
 legible to an audit row that names it. `removed_at` is the whole story:
-everything that reads "the people at this table" filters on it, and the alias
-becomes free again the moment it is set.
+everything that reads "the people at this table" filters on it, the alias
+becomes free again the moment it is set, and nothing may be minted against the
+seat afterwards.
 
 **An alias is private text** (SEC-20, AUD-13). It is 1 to 40 characters, unique
 within its campaign compared case-insensitively among participants that are not
 removed, and it is stored here and nowhere else — never a log line, never an
 exception message, never an audit row. `Participant.__repr__` hides it for the
-same reason the digests are hidden: a traceback is a log line.
+same reason the digests are hidden: a traceback is a log line. `check_alias`
+normalises before it stores (NFC, trimmed, inner whitespace collapsed), and the
+comparison is made over an `alias_key` **the application computes**, so that
+`'Ana'` and `'Ana '`, NFD `'é'` and NFC `'é'` cannot sit side by side — and so
+that the two worlds cannot disagree about folding, which they would the moment
+PostgreSQL's `lower()` and Python's `str.lower()` were asked about a final sigma
+or a dotted capital I.
 
 **Only digests are stored** (SEC-5). An enrolment code and a device credential
 are minted once, handed to the caller once, and kept only as a SHA-256 digest
@@ -23,10 +30,26 @@ after it is issued (AUD-4); a participant has at most one live code and at most
 one unrevoked device credential (AUD-5).
 
 **Why `consume_code` is a conditional write** (RQ-5, RC-13, W-4). Redeeming a
-code is one guarded `UPDATE ... RETURNING` under the participant's row lock, so
-two browsers racing the same link cannot both win: exactly one statement changes
-a row, and the other reports false. Finding which participant a code belongs to
-is a separate read that takes no lock, so a wrong code costs nothing.
+code is one guarded `UPDATE ... RETURNING`, so two browsers racing the same link
+cannot both win: exactly one statement changes a row, and the other reports
+false. It does **not** take the participant's lock itself — `hold` is a
+first-class primitive and the caller takes it, because the caller is also the
+one that must read `is_active` under it and then mint the device credential in
+the same transaction. Finding which participant a code belongs to is a separate
+read that takes no lock, so a wrong code costs nothing.
+
+**The two compositions, spelled out**, because the order is the whole point of
+RQ-3 and the reason RC-13 holds:
+
+    enrolment  find_code (no lock) -> hold -> consume_code -> issue_device_credential
+    Reset      hold -> revoke_device_credentials -> issue_code
+    Remove     remove  (which revokes both by itself)
+
+Both take the **participant row first**. `issue_code` — what a Reset calls —
+takes the participant row and then the code rows; an enrolment that consumed
+first would take the code row and then the participant row, the inverted order
+that lets the two deadlock on a `40P01` and lose the Reset, which is the remedy
+for an intercepted personal link and is never allowed to fail.
 
 Every explicit row lock this module takes is `FOR NO KEY UPDATE`, never
 `FOR UPDATE` (RQ-3): a foreign-key check on the participant takes `FOR KEY
@@ -36,23 +59,62 @@ a join wait behind a Stop and let two of them deadlock.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import NoReturn, Protocol
 
 from . import campaign_identity as ident
-from .campaign_store import AliasTaken, Staging, fake, now_or, pg
-from .db import UnitOfWork
+from .campaign_store import (
+    AliasTaken,
+    Campaign,
+    MissingParent,
+    ParticipantRemoved,
+    Staging,
+    fake,
+    now_or,
+    pg,
+    shared_rows,
+)
+from .db import InMemoryDatabase, InMemoryTransaction, UnitOfWork
 
 ALIAS_MAX_CHARS = 40
 
 
 def check_alias(alias: str) -> str:
-    """The bound `0004_campaign_schema.sql` carries. The refusal names the rule,
-    never the alias."""
-    if not 1 <= len(alias) <= ALIAS_MAX_CHARS:
+    """The bound `0004_campaign_schema.sql` carries, and the normalisation the
+    column is stored in. The refusal names the rule, never the alias.
+
+    NFC first, then trimmed and with inner whitespace collapsed to one space:
+    `'Ana'`, `'Ana '` and an `'Ana'` written with a no-break space must not be
+    three different seats at one table, and a single space must not be an alias
+    at all — `str.split()` is what collapses them, so every space Unicode knows
+    about counts and not only the ASCII one. A character from
+    Unicode's C categories — a control, a format character, a lone surrogate —
+    is refused outright: it is invisible, it survives no round trip intact, and
+    it is how two aliases are made to look identical to a GM.
+    """
+    normalised = " ".join(unicodedata.normalize("NFC", alias).split())
+    if any(unicodedata.category(character)[0] == "C" for character in normalised):
+        raise ValueError("an alias carries no control or formatting characters")
+    if not 1 <= len(normalised) <= ALIAS_MAX_CHARS:
         raise ValueError(f"an alias is 1 to {ALIAS_MAX_CHARS} characters")
-    return alias
+    return normalised
+
+
+def alias_key(alias: str) -> str:
+    """What `participants_alias_uidx` compares, computed here rather than by the
+    database.
+
+    `lower(alias)` in the index would make the answer depend on the database's
+    collation provider — libc or ICU, and which locale — while the twin would
+    answer with Python's `str.lower()`. The two disagree about a final sigma and
+    a dotted capital I, and they would disagree silently. Computing the key in
+    the application makes the two worlds agree **by construction**: NFKC so that
+    compatibility forms fold together, then `casefold`, which is the full
+    case-insensitive comparison Unicode defines and `lower()` is not.
+    """
+    return unicodedata.normalize("NFKC", alias).casefold()
 
 
 @dataclass(frozen=True)
@@ -105,13 +167,31 @@ class DeviceCredential:
 
 
 class ParticipantStore(Protocol):
-    """The people at a campaign's table, and what binds them to a device."""
+    """The people at a campaign's table, and what binds them to a device.
+
+    **Every mutator names the campaign** in the same statement as the row
+    (`docs/migrations.md` section 4), so a participant of another GM's campaign
+    is indistinguishable from one that does not exist. `hold` is the exception
+    and is deliberate: the player's unauthenticated enrolment route knows a code
+    and nothing else, so it locks the row first and learns the campaign — and
+    whether the seat is still active — from the row it is handed back.
+
+    **The compositions this store is shaped for** (the module docstring says
+    why the order matters):
+
+    * enrolment — `find_code` (no lock) then `hold` then `consume_code` then
+      `issue_device_credential`;
+    * Reset personal link — `hold` then `revoke_device_credentials` then
+      `issue_code`;
+    * Remove — `remove`, which revokes the codes and the device itself.
+    """
 
     def add(
         self, unit: UnitOfWork, campaign_id: str, *, alias: str, now: datetime | None = None
     ) -> Participant:
         """Seat someone. Raises `AliasTaken` if an active participant of that
-        campaign already answers to the alias, compared case-insensitively."""
+        campaign already answers to the alias, compared over `alias_key`, and
+        `MissingParent` if there is no such campaign."""
         ...  # pragma: no cover - structural type
 
     def get(self, unit: UnitOfWork, participant_id: str) -> Participant | None:
@@ -123,18 +203,65 @@ class ParticipantStore(Protocol):
         """Oldest first."""
         ...  # pragma: no cover - structural type
 
-    def remove(self, unit: UnitOfWork, participant_id: str, *, now: datetime | None = None) -> bool:
-        """Mark the seat removed — never delete it. Reports whether an active
+    def hold(
+        self,
+        unit: UnitOfWork,
+        participant_id: str,
+        *,
+        transaction_timeout_s: float | None = None,
+    ) -> Participant | None:
+        """Hold the participant's row for the rest of this transaction and hand
+        it back, or None if there is no such row.
+
+        The row comes back so that the caller tests `is_active` **under the
+        lock** — every enrolment, Remove and Reset meets here, which is what
+        RC-13 rests on — and so that it learns the campaign without a second
+        read. The lock is `FOR NO KEY UPDATE` (RQ-3), and the transaction is
+        bounded first (RQ-8), because a participant-only transaction is
+        otherwise the one holder in this schema with no bound at all.
+
+        **One row at a time.** No method in this bead locks two participants, so
+        the rest of RQ-3 — that a method locking several of them takes them in
+        ascending id — has nothing to apply to yet. The first method that needs
+        two (`1kg.2.3`'s "Also reset personal links") adds one that sorts,
+        rather than calling this twice in whatever order a set iterated.
+        """
+        ...  # pragma: no cover - structural type
+
+    def remove(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> bool:
+        """Mark the seat removed — never delete it — and revoke its codes and
+        its device credential in the same call (RQ-5, AUD-16): nobody ever wants
+        a removed participant with a live credential. Reports whether an active
         participant changed, so removing twice is not an error."""
         ...  # pragma: no cover - structural type
 
+    def revoke_codes(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> int:
+        """Revoke every live code of that seat and report how many, minting
+        nothing. A Remove needs this; so does anything that must make a code
+        useless without handing out another."""
+        ...  # pragma: no cover - structural type
+
+    def revoke_device_credentials(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> int:
+        """Revoke every unrevoked device credential of that seat and report how
+        many, minting nothing. A Reset revokes the device and issues a *code*
+        (AUD-5), so it cannot go through `issue_device_credential`."""
+        ...  # pragma: no cover - structural type
+
     def issue_code(
-        self, unit: UnitOfWork, participant_id: str, *, now: datetime | None = None
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
     ) -> tuple[EnrolmentCode, str]:
         """Mint this participant's personal code, revoking whatever live row they
         had first — including an expired one, which the live-code index cannot
         see past because an index cannot read the clock. Returns the record and
-        the code itself, which is the only time the code exists."""
+        the code itself, which is the only time the code exists. Refuses a
+        removed seat with `ParticipantRemoved` and an unknown one with
+        `MissingParent`."""
         ...  # pragma: no cover - structural type
 
     def find_code(self, unit: UnitOfWork, digest: str) -> EnrolmentCode | None:
@@ -143,10 +270,24 @@ class ParticipantStore(Protocol):
         ...  # pragma: no cover - structural type
 
     def consume_code(
-        self, unit: UnitOfWork, participant_id: str, digest: str, *, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        participant_id: str,
+        digest: str,
+        *,
+        now: datetime | None = None,
     ) -> bool:
-        """Spend the code, if it is that participant's and is unconsumed,
-        unrevoked and unexpired. Exactly one of two racing callers gets True."""
+        """Spend the code, if it is that participant's, the participant is still
+        active, and the code is unconsumed, unrevoked and unexpired. Exactly one
+        of two racing callers gets True.
+
+        A removed seat reports **False**, not an exception: this is the
+        unauthenticated route, RQ-5 asks it to fail generically when no row
+        changed, and a caller must not be able to tell a removed seat from a
+        spent code. The check is in the statement, so there is no window between
+        it and the write.
+        """
         ...  # pragma: no cover - structural type
 
     def codes(self, unit: UnitOfWork, participant_id: str) -> list[EnrolmentCode]:
@@ -154,9 +295,10 @@ class ParticipantStore(Protocol):
         ...  # pragma: no cover - structural type
 
     def issue_device_credential(
-        self, unit: UnitOfWork, participant_id: str, *, now: datetime | None = None
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
     ) -> tuple[DeviceCredential, str]:
-        """Bind a device, revoking the participant's previous one (AUD-5)."""
+        """Bind a device, revoking the participant's previous one (AUD-5).
+        Refuses a removed seat with `ParticipantRemoved`."""
         ...  # pragma: no cover - structural type
 
     def find_device_credential(self, unit: UnitOfWork, digest: str) -> DeviceCredential | None:
@@ -170,6 +312,15 @@ class ParticipantStore(Protocol):
 _P_COLUMNS = "id, campaign_id, alias, created_at, removed_at"
 _C_COLUMNS = "id, participant_id, code_digest, expires_at, created_at, consumed_at, revoked_at"
 _D_COLUMNS = "id, participant_id, credential_digest, created_at, revoked_at, last_seen_at"
+
+#: The seat a mint hangs off, as a condition inside the minting statement itself
+#: rather than as a read before it: it names the campaign (ownership belongs in
+#: the query) and it refuses a removed seat (RQ-5, RC-13), with no window in
+#: between. Its parameters are `(participant_id, campaign_id)`.
+_ACTIVE_SEAT = (
+    "SELECT 1 FROM campaign.participants p "
+    "WHERE p.id = %s AND p.campaign_id = %s AND p.removed_at IS NULL"
+)
 
 
 def _participant(row: tuple) -> Participant:
@@ -191,18 +342,43 @@ class PostgresParticipantStore:
     def add(
         self, unit: UnitOfWork, campaign_id: str, *, alias: str, now: datetime | None = None
     ) -> Participant:
+        named = check_alias(alias)
+        # INSERT ... SELECT ... WHERE EXISTS rather than letting the foreign key
+        # raise: a ForeignKeyViolation aborts the whole transaction and arrives
+        # carrying the driver's text, so an ordinary wrong id would cost the
+        # caller every other write it had composed. The foreign key is still the
+        # guarantee against a campaign deleted mid-flight; this is the answer to
+        # the mistake that actually happens.
         row = pg(unit).conn.execute(
-            f"INSERT INTO campaign.participants (id, campaign_id, alias, created_at) "
-            f"VALUES (%s, %s, %s, %s) "
-            f"ON CONFLICT (campaign_id, lower(alias)) WHERE removed_at IS NULL "
+            f"INSERT INTO campaign.participants (id, campaign_id, alias, alias_key, created_at) "
+            f"SELECT %s, %s, %s, %s, %s "
+            f"WHERE EXISTS (SELECT 1 FROM campaign.campaigns WHERE id = %s) "
+            f"ON CONFLICT (campaign_id, alias_key) WHERE removed_at IS NULL "
             f"DO NOTHING RETURNING {_P_COLUMNS}",
-            (ident.new_id(ident.PARTICIPANT), campaign_id, check_alias(alias), now_or(now)),
+            (
+                ident.new_id(ident.PARTICIPANT),
+                campaign_id,
+                named,
+                alias_key(named),
+                now_or(now),
+                campaign_id,
+            ),
         ).fetchone()
         if row is None:
-            # The index refused it, which is the whole check: no read-then-write
-            # window for a second caller to slip through.
-            raise AliasTaken("that campaign already has an active participant with this alias")
+            self._refuse_add(unit, campaign_id)
         return _participant(row)
+
+    def _refuse_add(self, unit: UnitOfWork, campaign_id: str) -> NoReturn:
+        """Which of the two conditions refused it — asked only on the way to an
+        exception, so the happy path stays one statement."""
+        there = pg(unit).conn.execute(
+            "SELECT 1 FROM campaign.campaigns WHERE id = %s", (campaign_id,)
+        ).fetchone()
+        if there is None:
+            raise MissingParent("no such campaign")
+        # The index refused it, which is the whole check: no read-then-write
+        # window for a second caller to slip through.
+        raise AliasTaken("that campaign already has an active participant with this alias")
 
     def get(self, unit: UnitOfWork, participant_id: str) -> Participant | None:
         row = pg(unit).conn.execute(
@@ -214,61 +390,103 @@ class PostgresParticipantStore:
         self, unit: UnitOfWork, campaign_id: str, *, include_removed: bool = False
     ) -> list[Participant]:
         rows = pg(unit).conn.execute(
-            f"SELECT {_P_COLUMNS} FROM campaign.participants "
-            f"WHERE campaign_id = %s AND (%s OR removed_at IS NULL) ORDER BY created_at, id",
+            f'SELECT {_P_COLUMNS} FROM campaign.participants '
+            f'WHERE campaign_id = %s AND (%s OR removed_at IS NULL) '
+            f'ORDER BY created_at, id COLLATE "C"',
             (campaign_id, include_removed),
         ).fetchall()
         return [_participant(row) for row in rows]
 
-    def remove(self, unit: UnitOfWork, participant_id: str, *, now: datetime | None = None) -> bool:
-        changed = pg(unit).conn.execute(
-            "UPDATE campaign.participants SET removed_at = %s "
-            "WHERE id = %s AND removed_at IS NULL RETURNING id",
-            (now_or(now), participant_id),
-        ).fetchone()
-        return changed is not None
-
-    def _hold(self, unit: UnitOfWork, participant_id: str) -> None:
-        """Hold the participant's row for the rest of this transaction, weakly
-        enough that a row referencing it can still be inserted (RQ-3).
-
-        **One row at a time.** No method in this bead locks two participants, so
-        the rest of RQ-3 — that a method locking several of them takes them in
-        ascending id — has nothing to apply to yet and is not implemented. The
-        first method that needs two (Remove-and-relink, or a reconciliation
-        sweep) adds a `_hold_all` that sorts, rather than calling this one twice
-        in whatever order a set iterated.
-        """
+    def hold(
+        self,
+        unit: UnitOfWork,
+        participant_id: str,
+        *,
+        transaction_timeout_s: float | None = None,
+    ) -> Participant | None:
         transaction = pg(unit)
         transaction.note_row_lock()
         transaction.conn.execute(
-            "SELECT id FROM campaign.participants WHERE id = %s FOR NO KEY UPDATE",
-            (participant_id,),
+            "SELECT set_config('transaction_timeout', %s, true)",
+            (transaction.transaction_bound(transaction_timeout_s),),
         )
+        row = transaction.conn.execute(
+            f"SELECT {_P_COLUMNS} FROM campaign.participants WHERE id = %s FOR NO KEY UPDATE",
+            (participant_id,),
+        ).fetchone()
+        return None if row is None else _participant(row)
+
+    def remove(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> bool:
+        moment = now_or(now)
+        changed = pg(unit).conn.execute(
+            "UPDATE campaign.participants SET removed_at = %s "
+            "WHERE id = %s AND campaign_id = %s AND removed_at IS NULL RETURNING id",
+            (moment, participant_id, campaign_id),
+        ).fetchone()
+        if changed is None:
+            return False
+        self.revoke_codes(unit, campaign_id, participant_id, now=moment)
+        self.revoke_device_credentials(unit, campaign_id, participant_id, now=moment)
+        return True
+
+    def revoke_codes(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> int:
+        revoked = pg(unit).conn.execute(
+            "UPDATE campaign.enrolment_codes c SET revoked_at = %s "
+            "WHERE c.participant_id = %s AND c.consumed_at IS NULL AND c.revoked_at IS NULL "
+            "AND EXISTS (SELECT 1 FROM campaign.participants p "
+            "WHERE p.id = c.participant_id AND p.campaign_id = %s) RETURNING c.id",
+            (now_or(now), participant_id, campaign_id),
+        ).fetchall()
+        return len(revoked)
+
+    def revoke_device_credentials(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> int:
+        revoked = pg(unit).conn.execute(
+            "UPDATE campaign.device_credentials d SET revoked_at = %s "
+            "WHERE d.participant_id = %s AND d.revoked_at IS NULL "
+            "AND EXISTS (SELECT 1 FROM campaign.participants p "
+            "WHERE p.id = d.participant_id AND p.campaign_id = %s) RETURNING d.id",
+            (now_or(now), participant_id, campaign_id),
+        ).fetchall()
+        return len(revoked)
+
+    def _refuse_seat(self, unit: UnitOfWork, campaign_id: str, participant_id: str) -> NoReturn:
+        seat = pg(unit).conn.execute(
+            "SELECT removed_at FROM campaign.participants WHERE id = %s AND campaign_id = %s",
+            (participant_id, campaign_id),
+        ).fetchone()
+        if seat is None:
+            raise MissingParent("no such participant in that campaign")
+        raise ParticipantRemoved("that seat has been removed")
 
     def issue_code(
-        self, unit: UnitOfWork, participant_id: str, *, now: datetime | None = None
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
     ) -> tuple[EnrolmentCode, str]:
         moment = now_or(now)
-        self._hold(unit, participant_id)
-        pg(unit).conn.execute(
-            "UPDATE campaign.enrolment_codes SET revoked_at = %s WHERE participant_id = %s "
-            "AND consumed_at IS NULL AND revoked_at IS NULL",
-            (moment, participant_id),
-        )
+        self.hold(unit, participant_id)
+        self.revoke_codes(unit, campaign_id, participant_id, now=moment)
         minted = ident.new_secret()
         row = pg(unit).conn.execute(
             f"INSERT INTO campaign.enrolment_codes "
             f"(id, participant_id, code_digest, expires_at, created_at) "
-            f"VALUES (%s, %s, %s, %s, %s) RETURNING {_C_COLUMNS}",
+            f"SELECT %s, %s, %s, %s, %s WHERE EXISTS ({_ACTIVE_SEAT}) RETURNING {_C_COLUMNS}",
             (
                 ident.new_id(ident.ENROLMENT_CODE),
                 participant_id,
                 minted.digest,
                 ident.code_expiry(moment),
                 moment,
+                participant_id,
+                campaign_id,
             ),
         ).fetchone()
+        if row is None:
+            self._refuse_seat(unit, campaign_id, participant_id)
         return _code(row), minted.secret
 
     def find_code(self, unit: UnitOfWork, digest: str) -> EnrolmentCode | None:
@@ -278,42 +496,54 @@ class PostgresParticipantStore:
         return None if row is None else _code(row)
 
     def consume_code(
-        self, unit: UnitOfWork, participant_id: str, digest: str, *, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        participant_id: str,
+        digest: str,
+        *,
+        now: datetime | None = None,
     ) -> bool:
         moment = now_or(now)
         spent = pg(unit).conn.execute(
-            "UPDATE campaign.enrolment_codes SET consumed_at = %s "
-            "WHERE participant_id = %s AND code_digest = %s "
-            "AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > %s RETURNING id",
-            (moment, participant_id, digest, moment),
+            f"UPDATE campaign.enrolment_codes SET consumed_at = %s "
+            f"WHERE participant_id = %s AND code_digest = %s "
+            f"AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > %s "
+            f"AND EXISTS ({_ACTIVE_SEAT}) RETURNING id",
+            (moment, participant_id, digest, moment, participant_id, campaign_id),
         ).fetchone()
         return spent is not None
 
     def codes(self, unit: UnitOfWork, participant_id: str) -> list[EnrolmentCode]:
         rows = pg(unit).conn.execute(
-            f"SELECT {_C_COLUMNS} FROM campaign.enrolment_codes "
-            f"WHERE participant_id = %s ORDER BY created_at, id",
+            f'SELECT {_C_COLUMNS} FROM campaign.enrolment_codes '
+            f'WHERE participant_id = %s ORDER BY created_at, id COLLATE "C"',
             (participant_id,),
         ).fetchall()
         return [_code(row) for row in rows]
 
     def issue_device_credential(
-        self, unit: UnitOfWork, participant_id: str, *, now: datetime | None = None
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
     ) -> tuple[DeviceCredential, str]:
         moment = now_or(now)
-        self._hold(unit, participant_id)
-        pg(unit).conn.execute(
-            "UPDATE campaign.device_credentials SET revoked_at = %s "
-            "WHERE participant_id = %s AND revoked_at IS NULL",
-            (moment, participant_id),
-        )
+        self.hold(unit, participant_id)
+        self.revoke_device_credentials(unit, campaign_id, participant_id, now=moment)
         minted = ident.new_secret()
         row = pg(unit).conn.execute(
             f"INSERT INTO campaign.device_credentials "
             f"(id, participant_id, credential_digest, created_at) "
-            f"VALUES (%s, %s, %s, %s) RETURNING {_D_COLUMNS}",
-            (ident.new_id(ident.DEVICE_CREDENTIAL), participant_id, minted.digest, moment),
+            f"SELECT %s, %s, %s, %s WHERE EXISTS ({_ACTIVE_SEAT}) RETURNING {_D_COLUMNS}",
+            (
+                ident.new_id(ident.DEVICE_CREDENTIAL),
+                participant_id,
+                minted.digest,
+                moment,
+                participant_id,
+                campaign_id,
+            ),
         ).fetchone()
+        if row is None:
+            self._refuse_seat(unit, campaign_id, participant_id)
         return _credential(row), minted.secret
 
     def find_device_credential(self, unit: UnitOfWork, digest: str) -> DeviceCredential | None:
@@ -325,8 +555,8 @@ class PostgresParticipantStore:
 
     def device_credentials(self, unit: UnitOfWork, participant_id: str) -> list[DeviceCredential]:
         rows = pg(unit).conn.execute(
-            f"SELECT {_D_COLUMNS} FROM campaign.device_credentials "
-            f"WHERE participant_id = %s ORDER BY created_at, id",
+            f'SELECT {_D_COLUMNS} FROM campaign.device_credentials '
+            f'WHERE participant_id = %s ORDER BY created_at, id COLLATE "C"',
             (participant_id,),
         ).fetchall()
         return [_credential(row) for row in rows]
@@ -334,33 +564,38 @@ class PostgresParticipantStore:
 
 class InMemoryParticipantStore:
     """The twin. It enforces every rule the parametrised suite asserts — the
-    alias index, single-use codes, one live code and one active device — because
-    a rule the fake is not obliged to keep is a rule it will drift on. What it
-    does not model is conflict: its transactions are serial, so the racing
-    consumption of one code is proved against PostgreSQL instead."""
+    alias index, single-use codes, one live code and one active device, the seat
+    a mint hangs off and the campaign that owns it — because a rule the fake is
+    not obliged to keep is a rule it will drift on. Its tables are the
+    database's, shared with the other two twins (`shared_rows`), so a child of a
+    parent that does not exist is refused here as a foreign key refuses it
+    there. What it does not model is conflict: its transactions are serial, so
+    the racing consumption of one code is proved against PostgreSQL instead."""
 
-    def __init__(self, db: Any) -> None:
-        self._db = db
-        self._participants = Staging()
-        self._codes = Staging()
-        self._credentials = Staging()
+    def __init__(self, db: InMemoryDatabase) -> None:
+        self._campaigns: Staging[Campaign] = shared_rows(db, "campaigns")
+        self._participants: Staging[Participant] = shared_rows(db, "participants")
+        self._codes: Staging[EnrolmentCode] = shared_rows(db, "enrolment_codes")
+        self._credentials: Staging[DeviceCredential] = shared_rows(db, "device_credentials")
 
     def add(
         self, unit: UnitOfWork, campaign_id: str, *, alias: str, now: datetime | None = None
     ) -> Participant:
         twin = fake(unit)
-        check_alias(alias)
+        named = check_alias(alias)
+        if campaign_id not in self._campaigns.visible(twin):
+            raise MissingParent("no such campaign")
         taken = {
-            p.alias.lower()
+            alias_key(p.alias)
             for p in self._participants.visible(twin).values()
             if p.campaign_id == campaign_id and p.is_active
         }
-        if alias.lower() in taken:
+        if alias_key(named) in taken:
             raise AliasTaken("that campaign already has an active participant with this alias")
         participant = Participant(
             id=ident.new_id(ident.PARTICIPANT),
             campaign_id=campaign_id,
-            alias=alias,
+            alias=named,
             created_at=now_or(now),
         )
         self._participants.add(twin, participant.id, participant)
@@ -379,11 +614,41 @@ class InMemoryParticipantStore:
         ]
         return sorted(seats, key=lambda p: (p.created_at, p.id))
 
-    def remove(self, unit: UnitOfWork, participant_id: str, *, now: datetime | None = None) -> bool:
+    def hold(
+        self,
+        unit: UnitOfWork,
+        participant_id: str,
+        *,
+        transaction_timeout_s: float | None = None,
+    ) -> Participant | None:
+        twin = fake(unit)
+        twin.note_row_lock()
+        twin.transaction_bound(transaction_timeout_s)
+        return self._participants.visible(twin).get(participant_id)
+
+    def _seat(self, twin: InMemoryTransaction, campaign_id: str, participant_id: str) -> Participant:
+        """The active seat a mint hangs off, or the refusal PostgreSQL's
+        `WHERE EXISTS` produces for the same row."""
+        found = self._participants.visible(twin).get(participant_id)
+        if found is None or found.campaign_id != campaign_id:
+            raise MissingParent("no such participant in that campaign")
+        if not found.is_active:
+            raise ParticipantRemoved("that seat has been removed")
+        return found
+
+    def remove(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> bool:
         twin = fake(unit)
         found = self._participants.visible(twin).get(participant_id)
-        if found is None or not found.is_active:
+        if found is None or found.campaign_id != campaign_id or not found.is_active:
             return False
+        moment = now_or(now)
+        # The codes and the device first, while the seat is still active: the
+        # two revocations name the campaign through the seat, exactly as the
+        # statements do.
+        self.revoke_codes(unit, campaign_id, participant_id, now=moment)
+        self.revoke_device_credentials(unit, campaign_id, participant_id, now=moment)
         self._participants.replace(
             twin,
             participant_id,
@@ -392,12 +657,20 @@ class InMemoryParticipantStore:
                 campaign_id=found.campaign_id,
                 alias=found.alias,
                 created_at=found.created_at,
-                removed_at=now_or(now),
+                removed_at=moment,
             ),
         )
         return True
 
-    def _revoke_live_codes(self, twin: Any, participant_id: str, moment: datetime) -> None:
+    def revoke_codes(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> int:
+        twin = fake(unit)
+        seat = self._participants.visible(twin).get(participant_id)
+        if seat is None or seat.campaign_id != campaign_id:
+            return 0
+        moment = now_or(now)
+        revoked = 0
         for code in list(self._codes.visible(twin).values()):
             if code.participant_id != participant_id:
                 continue
@@ -408,14 +681,37 @@ class InMemoryParticipantStore:
                         code.created_at, code.consumed_at, moment,
                     )
                 )
+                revoked += 1
+        return revoked
+
+    def revoke_device_credentials(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> int:
+        twin = fake(unit)
+        seat = self._participants.visible(twin).get(participant_id)
+        if seat is None or seat.campaign_id != campaign_id:
+            return 0
+        moment = now_or(now)
+        revoked = 0
+        for held in list(self._credentials.visible(twin).values()):
+            if held.participant_id == participant_id and held.is_active:
+                self._credentials.replace(
+                    twin, held.id, DeviceCredential(
+                        held.id, held.participant_id, held.credential_digest,
+                        held.created_at, moment, held.last_seen_at,
+                    )
+                )
+                revoked += 1
+        return revoked
 
     def issue_code(
-        self, unit: UnitOfWork, participant_id: str, *, now: datetime | None = None
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
     ) -> tuple[EnrolmentCode, str]:
         twin = fake(unit)
-        twin.note_row_lock()
+        self.hold(unit, participant_id)
+        self._seat(twin, campaign_id, participant_id)
         moment = now_or(now)
-        self._revoke_live_codes(twin, participant_id, moment)
+        self.revoke_codes(unit, campaign_id, participant_id, now=moment)
         minted = ident.new_secret()
         code = EnrolmentCode(
             id=ident.new_id(ident.ENROLMENT_CODE),
@@ -432,10 +728,19 @@ class InMemoryParticipantStore:
         return found[0] if found else None
 
     def consume_code(
-        self, unit: UnitOfWork, participant_id: str, digest: str, *, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        participant_id: str,
+        digest: str,
+        *,
+        now: datetime | None = None,
     ) -> bool:
         twin = fake(unit)
         moment = now_or(now)
+        seat = self._participants.visible(twin).get(participant_id)
+        if seat is None or seat.campaign_id != campaign_id or not seat.is_active:
+            return False
         for code in self._codes.visible(twin).values():
             if code.participant_id != participant_id or code.code_digest != digest:
                 continue
@@ -457,19 +762,13 @@ class InMemoryParticipantStore:
         return sorted(mine, key=lambda c: (c.created_at, c.id))
 
     def issue_device_credential(
-        self, unit: UnitOfWork, participant_id: str, *, now: datetime | None = None
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
     ) -> tuple[DeviceCredential, str]:
         twin = fake(unit)
-        twin.note_row_lock()
+        self.hold(unit, participant_id)
+        self._seat(twin, campaign_id, participant_id)
         moment = now_or(now)
-        for held in list(self._credentials.visible(twin).values()):
-            if held.participant_id == participant_id and held.is_active:
-                self._credentials.replace(
-                    twin, held.id, DeviceCredential(
-                        held.id, held.participant_id, held.credential_digest,
-                        held.created_at, moment, held.last_seen_at,
-                    )
-                )
+        self.revoke_device_credentials(unit, campaign_id, participant_id, now=moment)
         minted = ident.new_secret()
         credential = DeviceCredential(
             id=ident.new_id(ident.DEVICE_CREDENTIAL),
