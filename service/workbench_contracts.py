@@ -1862,9 +1862,6 @@ RevealEpoch = Annotated[WireInt, Field(ge=0, le=WRITE_REVISION_MAX)]
 MASK_MAX_KEYS = MAX_CHANGED_FIELDS
 #: One table slot, plus one per participant (AUD-8, ``PRESENCE_MAX_PARTICIPANTS``).
 REVEAL_MAX_SLOTS = PRESENCE_MAX_PARTICIPANTS + 1
-#: A projection carries its own labels, so a table client renders without the
-#: registry (TABLE-3). Bounded like an alias, and one line for the same reason.
-FIELD_LABEL_MAX_CHARS = 60
 
 #: Decisions REVEAL-9, ED-8: ``all`` is never stored and never sent — the client
 #: expands it into the keys that exist at the moment the GM decides, so a field
@@ -2111,18 +2108,17 @@ _PROJECTION_VALUE: dict[FieldKind, TypeAdapter[Any]] = {
 
 
 class ProjectedField(_Contract):
-    """One masked field as a player sees it: the key, the heading to render it
-    under, and the text. The label travels with the payload so a table client
-    renders without the registry, and so the page title is built from the
-    projection — the document's name appears only when ``name`` is masked
-    (TABLE-3)."""
+    """One masked field as a player sees it: the key, and the text.
+
+    The heading is **not** on the wire. A table client renders the registry's
+    label for ``(type, key)``, which its bundle already holds, so the projection
+    has no free-text member at all — and a title, an alias, a filename, a
+    version or an id has nowhere to ride (TABLE-3, SEC-15). The page title is
+    still built from the projection: the document's name appears only when
+    ``name`` is masked.
+    """
 
     key: MaskKey
-    label: Annotated[
-        str,
-        StringConstraints(strict=True, min_length=1, max_length=FIELD_LABEL_MAX_CHARS),
-        AfterValidator(_one_line),
-    ]
     #: The shapes a field kind can take on a table; which one this key must be,
     #: and its bounds, are checked against the type in ``TableProjection``.
     value: StrictStr | list[StrictStr] | TableAssetRef | WireInt | dict[AbilityKey, WireInt] | list[_PresentEntry]
@@ -2134,10 +2130,16 @@ class TableProjection(_Contract):
     It is **built** from a sealed version, a mask and an audience by one
     server-side builder, never derived by deleting keys from a GM payload, and
     the same builder answers the player-safe export and print (EXPORT-3,
-    EXPORT-7). This schema is the second half of that guarantee: it forbids
-    everything outside the type's revealable set, so an asset id, a version
-    number, either epoch, another slot's sequence, a title outside the mask, an
-    alias or any eligibility class is a validation failure rather than a leak.
+    EXPORT-7). This schema is the second half of that guarantee: every member is
+    closed — a literal, an enum, a key on the type's allowlist, a value checked
+    against that key's kind — so an asset id, a version number, either epoch,
+    another slot's sequence, a title outside the mask, an alias or any
+    eligibility class is refused here rather than emitted.
+
+    The *server* is the confidentiality boundary: by the time a client parses,
+    the bytes are on the device. An undeclared key is refused here and stripped
+    by the client, and both halves are pinned (``applies_to: ["server"]``
+    fixtures, and the client's strip test).
     """
 
     content_kind: Literal[ContentKind.DOCUMENT]

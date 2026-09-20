@@ -54,7 +54,6 @@
                   "fields": [
                     {
                       "key": "name",
-                      "label": "Name",
                       "value": "Sister Ondrey Vashe"
                     }
                   ]
@@ -237,7 +236,6 @@
                   "fields": [
                     {
                       "key": "name",
-                      "label": "Name",
                       "value": "Sister Ondrey Vashe"
                     }
                   ]
@@ -258,7 +256,6 @@
                   "fields": [
                     {
                       "key": "name",
-                      "label": "Name",
                       "value": "Sister Ondrey Vashe"
                     }
                   ]
@@ -296,7 +293,6 @@
                   "fields": [
                     {
                       "key": "name",
-                      "label": "Name",
                       "value": "Sister Ondrey Vashe"
                     }
                   ]

@@ -720,19 +720,25 @@ a type later is never revealed by an old wildcard (REVEAL-9, ED-8). Because `all
 matches the field-key shape, it is refused by name wherever a mask key is
 expected; `*` and `%` never matched it.
 
-The revealable set is a registry fact, derived rather than enumerated:
+The revealable set is a registry fact, and it is an **allowlist** with exactly
+one source — `1kg.5.3`'s per-field rule:
 
 ```
-revealable(type) = (common_fields ∪ type.fields) − reveal.never_revealable − reveal.never_revealable_by_type[type]
+revealable(type) = { key ∈ common_fields ∪ type.fields | rule(type, key).revealable }
 ```
 
-`never_revealable` is `["tags"]` — of REVEAL-10's never-list (tags, sources and
-citation text, version history, authorship, changed-field lists, asset metadata,
-any id the projection does not need), `tags` is the only entry that is a document
-*field*; the rest are not fields at all. `never_revealable_by_type` is empty in
-v1 and is where `1kg.5.3` marks ED-20's identity links. A type grows its
-revealable set by declaring a field, and a type whose fields `1kg.5.3` has not
-declared has the common ones only — the same fail-closed posture documents take.
+A key whose rule does not say `revealable` is not revealable. That is the whole
+answer to *may this field reach a player*: there is no second list, no opt-out
+and no default, so a field a type gains later is withheld until the registry
+says otherwise, and `tags` — the only entry of REVEAL-10's never-list that is a
+document *field* at all — is off it on every type. `npc.true_identity` is ED-20's
+worked case: a field the type declares, that the GM edits, and that no mask and
+no projection can name.
+
+Both contract modules hold the allowlist as a constant, because the registry
+module imports them and cannot be imported back; **both suites pin the constant
+to `registry.json` for every type**, so the copy cannot answer differently from
+the rule it copies.
 
 ### The mutations
 
@@ -759,14 +765,24 @@ numbers and mask keys* is GM **yes**, participant **never**, guest **never**.
 ### What a player sees
 
 `TableProjection` carries `content_kind`, the type, and one entry per masked key
-with its key, its **label** and its value. Labels travel with the payload so a
-table client renders without the registry, and so the page title is built from
-the projection: a document's name reaches a player only when `name` is masked
-(TABLE-3). A masked key is present and non-empty in the pinned version (REVEAL-5,
-ED-9), so nothing arrives as a blank heading. An `asset` value is a
-**`TableAssetRef`** — a per-slot opaque handle that dies with its slot — never
-the GM-side `AssetRef`, which carries an `asset_id` that would let two slots
-showing one portrait be correlated (SEC-15, REVEAL-21).
+holding that key and its value — **and nothing else**. The heading is not on the
+wire: the table client renders the registry's label for `(type, key)`, which its
+bundle already holds. That is deliberate. Every other member of a projection is
+closed — a literal, an enum, a key on the type's allowlist, a value checked
+against that key's kind — and a free-text member, however tightly bounded, would
+be the one place a document's title, a participant's alias, an asset's filename,
+a version or an id could ride to a table with every gate green. The page title is
+still built from the projection, so a document's name reaches a player only when
+`name` is masked (TABLE-3).
+
+A masked key is present and non-empty in the pinned version (REVEAL-5, ED-9), so
+nothing arrives as a blank heading: text and prose are non-blank after trimming,
+a list has at least one item, an `integer` is a number rather than `null`, an
+ability block holds at least one score and no `null`s, and an entry carries both
+its name and its text. An `asset` value is a **`TableAssetRef`** — a per-slot
+opaque handle that dies with its slot — never the GM-side `AssetRef`, which
+carries an `asset_id` that would let two slots showing one portrait be correlated
+(SEC-15, REVEAL-21).
 
 `content_kind` has exactly **one** member in v1, `document`. Adding a member
 later **is** a version bump; what reserving the discriminator buys is that a v1

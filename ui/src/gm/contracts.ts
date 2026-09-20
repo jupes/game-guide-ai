@@ -1393,8 +1393,6 @@ export type Capabilities = z.infer<typeof CapabilitiesSchema>
 export const MASK_MAX_KEYS = MAX_CHANGED_FIELDS
 /** One table slot, plus one per participant (AUD-8). */
 export const REVEAL_MAX_SLOTS = PRESENCE_MAX_PARTICIPANTS + 1
-/** A projection carries its own labels, so a table client renders without the registry (TABLE-3). */
-export const FIELD_LABEL_MAX_CHARS = 60
 
 /**
  * REVEAL-9, ED-8: `all` is never stored and never sent — the client expands it
@@ -1567,12 +1565,15 @@ function projectionValueSchema(kind: FieldKind): ZodType<unknown> {
   }
 }
 
-/** One masked field as a player sees it. The label travels with the payload, so
- * a table client renders without the registry and the page title is built from
- * the projection — the name appears only when `name` is masked (TABLE-3). */
+/** One masked field as a player sees it: the key, and the text. The heading is
+ * NOT on the wire — a table client renders the registry's label for
+ * `(type, key)`, which its bundle already holds (`labelFor` in `registry.ts`) —
+ * so the projection has no free-text member at all and a title, an alias, a
+ * filename, a version or an id has nowhere to ride (TABLE-3, SEC-15). The page
+ * title is still built from the projection: the name appears only when `name` is
+ * masked. */
 const ProjectedFieldSchema = z.object({
   key: MaskKeySchema,
-  label: oneLine(1, FIELD_LABEL_MAX_CHARS),
   /** The shapes a field kind can take on a table, mirroring the server's union.
    * It is NOT `z.unknown()`: the refinement below only *tests* the value against
    * the type's declared kind, so an unknown would survive verbatim and carry

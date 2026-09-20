@@ -205,7 +205,7 @@ def test_a_field_kind_with_no_table_shape_refuses_rather_than_raising() -> None:
                 {
                     "content_kind": "document",
                     "type": "npc",
-                    "fields": [{"key": "name", "label": "Name", "value": "Sister Ondrey Vashe"}],
+                    "fields": [{"key": "name", "value": "Sister Ondrey Vashe"}],
                 }
             )
         assert "no shape a table can be shown" in str(caught.value)

@@ -90,12 +90,10 @@
           "fields": [
             {
               "key": "name",
-              "label": "Name",
               "value": "Sister Ondrey Vashe"
             },
             {
               "key": "portrait",
-              "label": "Portrait",
               "value": {
                 "handle": "hdl_5e6f7a8b9c0d1e2f",
                 "kind": "image",
@@ -134,12 +132,10 @@
               "fields": [
                 {
                   "key": "name",
-                  "label": "Name",
                   "value": "Sister Ondrey Vashe"
                 },
                 {
                   "key": "portrait",
-                  "label": "Portrait",
                   "value": {
                     "handle": "hdl_5e6f7a8b9c0d1e2f",
                     "kind": "image",
@@ -170,12 +166,10 @@
               "fields": [
                 {
                   "key": "name",
-                  "label": "Name",
                   "value": "Sister Ondrey Vashe"
                 },
                 {
                   "key": "portrait",
-                  "label": "Portrait",
                   "value": {
                     "handle": "hdl_5e6f7a8b9c0d1e2f",
                     "kind": "image",
@@ -197,7 +191,6 @@
               "fields": [
                 {
                   "key": "name",
-                  "label": "Name",
                   "value": "The Writ of Passage"
                 }
               ]
@@ -418,12 +411,10 @@
           "fields": [
             {
               "key": "name",
-              "label": "Name",
               "value": "Sister Ondrey Vashe"
             },
             {
               "key": "portrait",
-              "label": "Portrait",
               "value": {
                 "handle": "hdl_5e6f7a8b9c0d1e2f",
                 "kind": "image",
@@ -455,12 +446,10 @@
           "fields": [
             {
               "key": "name",
-              "label": "Name",
               "value": "Sister Ondrey Vashe"
             },
             {
               "key": "portrait",
-              "label": "Portrait",
               "value": {
                 "handle": "hdl_5e6f7a8b9c0d1e2f",
                 "kind": "image",
@@ -492,12 +481,10 @@
           "fields": [
             {
               "key": "name",
-              "label": "Name",
               "value": "Sister Ondrey Vashe"
             },
             {
               "key": "portrait",
-              "label": "Portrait",
               "value": {
                 "handle": "hdl_5e6f7a8b9c0d1e2f",
                 "kind": "image",
@@ -529,12 +516,10 @@
           "fields": [
             {
               "key": "name",
-              "label": "Name",
               "value": "Sister Ondrey Vashe"
             },
             {
               "key": "portrait",
-              "label": "Portrait",
               "value": {
                 "handle": "hdl_5e6f7a8b9c0d1e2f",
                 "kind": "image",
@@ -574,7 +559,6 @@
               "fields": [
                 {
                   "key": "name",
-                  "label": "Name",
                   "value": "The Writ of Passage"
                 }
               ]
@@ -599,7 +583,6 @@
               "fields": [
                 {
                   "key": "name",
-                  "label": "Name",
                   "value": "The Writ of Passage"
                 }
               ]
@@ -629,12 +612,10 @@
               "fields": [
                 {
                   "key": "name",
-                  "label": "Name",
                   "value": "Sister Ondrey Vashe"
                 },
                 {
                   "key": "portrait",
-                  "label": "Portrait",
                   "value": {
                     "handle": "hdl_5e6f7a8b9c0d1e2f",
                     "kind": "image",
@@ -656,7 +637,6 @@
               "fields": [
                 {
                   "key": "name",
-                  "label": "Name",
                   "value": "The Writ of Passage"
                 }
               ]
@@ -698,12 +678,10 @@
               "fields": [
                 {
                   "key": "name",
-                  "label": "Name",
                   "value": "Sister Ondrey Vashe"
                 },
                 {
                   "key": "portrait",
-                  "label": "Portrait",
                   "value": {
                     "handle": "hdl_5e6f7a8b9c0d1e2f",
                     "kind": "image",
@@ -741,12 +719,10 @@
               "fields": [
                 {
                   "key": "name",
-                  "label": "Name",
                   "value": "Sister Ondrey Vashe"
                 },
                 {
                   "key": "portrait",
-                  "label": "Portrait",
                   "value": {
                     "handle": "hdl_5e6f7a8b9c0d1e2f",
                     "kind": "image",
