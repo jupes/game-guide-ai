@@ -230,7 +230,15 @@ class PostgresParticipantStore:
 
     def _hold(self, unit: UnitOfWork, participant_id: str) -> None:
         """Hold the participant's row for the rest of this transaction, weakly
-        enough that a row referencing it can still be inserted (RQ-3)."""
+        enough that a row referencing it can still be inserted (RQ-3).
+
+        **One row at a time.** No method in this bead locks two participants, so
+        the rest of RQ-3 — that a method locking several of them takes them in
+        ascending id — has nothing to apply to yet and is not implemented. The
+        first method that needs two (Remove-and-relink, or a reconciliation
+        sweep) adds a `_hold_all` that sorts, rather than calling this one twice
+        in whatever order a set iterated.
+        """
         transaction = pg(unit)
         transaction.note_row_lock()
         transaction.conn.execute(

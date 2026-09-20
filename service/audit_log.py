@@ -19,9 +19,17 @@ writer in this bead for the sixteen that are here — their callers are
 campaign name, no conversation title, no field text, no filename — and no hash
 of any of them: ED-26 is explicit that no value derived from field text may
 outlive the text, and a digest of a brief outlives it while still answering
-"was it this one?" to anyone holding a guess. `check_detail` enforces the shape,
-the way `service/jobs.check_payload` does for a job: a flat object of short
-scalars has no room for a sentence.
+"was it this one?" to anyone holding a guess.
+
+That is enforced **here, by the writer**, not by `0005_audit_events.sql`, whose
+CHECK constraints only bound lengths and closed vocabularies. `check_detail` and
+`check_ref` require every string a caller supplies to be an **identifier**:
+letters, digits, and `_ . : -`, at most 64 characters, which is `OpaqueId`'s
+ceiling. An alias contains a space and is refused; a sentence is refused; a
+brief is refused. This is deliberately stricter than
+`service/jobs.check_payload`, which admits any short string: a job payload is
+read by this service and deleted, while an audit row is retained past the
+deletion of everything it describes.
 
 **Rows outlive their campaign.** `campaign_id_tombstone` has no foreign key, so
 deleting a campaign — which SEC-36 makes take everything else with it — leaves
@@ -31,6 +39,7 @@ the ledger legible and attributable (ED-26, ED-18(a)).
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -42,12 +51,18 @@ from .db import InMemoryTransaction, UnitOfWork
 
 DetailValue = str | int | bool | None
 
-#: The same shape rule as a job payload: identifiers, keys, numbers, booleans.
+#: Identifiers, field keys, numbers and booleans — requirement 6's list, and
+#: nothing that could be a sentence. 64 characters is `OpaqueId`'s ceiling in
+#: `docs/workbench-wire-contract.md`, so a minted id fits and free text does not.
 DETAIL_MAX_KEYS = 20
 DETAIL_KEY_MAX_CHARS = 40
-DETAIL_VALUE_MAX_CHARS = 200
+DETAIL_VALUE_MAX_CHARS = 64
 
 REASON_CODE_MAX_CHARS = 60
+
+#: What a string in an audit row may look like. No space, so no prose; no
+#: punctuation beyond what an identifier, a dotted action or a field key needs.
+IDENTIFIER = re.compile(rf"^[A-Za-z0-9_.:-]{{1,{DETAIL_VALUE_MAX_CHARS}}}$")
 
 
 class AuditAction(str, Enum):
@@ -90,13 +105,27 @@ class Decision(str, Enum):
     REFUSED = "refused"
 
 
+def check_ref(name: str, value: str | None) -> str | None:
+    """A reference in an audit row is an identifier, or nothing.
+
+    The refusal names the FIELD and never the value: the value is exactly the
+    thing that must not reach a log line, and a validator that quoted it back
+    would be the leak it exists to prevent.
+    """
+    if value is None:
+        return None
+    if IDENTIFIER.fullmatch(value) is None:
+        raise ValueError(f"an audit row's {name} is an identifier, never text")
+    return value
+
+
 def check_detail(detail: Mapping[str, DetailValue] | None) -> dict[str, DetailValue]:
     """Identifiers, field keys, numbers and booleans — nothing else.
 
-    The shape is what keeps content out: a flat object of short scalars has no
-    room for a brief, a field value, an alias or a filename. A refusal names the
-    offending KEY and never its value, because the value is exactly the thing
-    that must not reach a log line.
+    A string value must look like an identifier, not merely be short: an alias
+    has a space in it, and so does every sentence, so neither can be smuggled in
+    as a 60-character "code". A refusal names the offending KEY and never its
+    value.
     """
     checked = dict(detail or {})
     if len(checked) > DETAIL_MAX_KEYS:
@@ -106,8 +135,8 @@ def check_detail(detail: Mapping[str, DetailValue] | None) -> dict[str, DetailVa
             raise ValueError("an audit detail key is a short string")
         if not isinstance(value, str | int | bool | type(None)):
             raise ValueError(f"audit detail '{key}' must be a string, a whole number, a boolean or null")
-        if isinstance(value, str) and len(value) > DETAIL_VALUE_MAX_CHARS:
-            raise ValueError(f"audit detail '{key}' is too long to be an identifier")
+        if isinstance(value, str) and IDENTIFIER.fullmatch(value) is None:
+            raise ValueError(f"audit detail '{key}' is an identifier, never text")
     return checked
 
 
@@ -217,13 +246,13 @@ class PostgresAuditLog:
             f"decision, actor_ref, object_ref, reason_code, authz_revision, detail, created_at) "
             f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING {_COLUMNS}",
             (
-                campaign_id,
+                check_ref("campaign id", campaign_id),
                 ActorKind(actor_kind).value,
                 AuditAction(action).value,
                 _check_object_kind(object_kind),
                 Decision(decision).value,
-                actor_ref,
-                object_ref,
+                check_ref("actor reference", actor_ref),
+                check_ref("object reference", object_ref),
                 check_reason_code(reason_code),
                 authz_revision,
                 json.dumps(check_detail(detail)),
@@ -285,14 +314,14 @@ class InMemoryAuditLog:
         twin = fake(unit)
         event = AuditEvent(
             id=self._next_id,
-            campaign_id_tombstone=campaign_id,
+            campaign_id_tombstone=check_ref("campaign id", campaign_id) or "",
             actor_kind=ActorKind(actor_kind).value,
             action=AuditAction(action).value,
             object_kind=_check_object_kind(object_kind),
             decision=Decision(decision).value,
             created_at=now_or(now),
-            actor_ref=actor_ref,
-            object_ref=object_ref,
+            actor_ref=check_ref("actor reference", actor_ref),
+            object_ref=check_ref("object reference", object_ref),
             reason_code=check_reason_code(reason_code),
             authz_revision=authz_revision,
             detail=check_detail(detail),

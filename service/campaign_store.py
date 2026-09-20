@@ -292,9 +292,10 @@ class InMemoryCampaignStore:
         )
         twin = fake(unit)
         self._rows.add(twin, campaign.id, campaign)
-        authz = self._db.authz_state
-        authz[campaign.id] = 0
-        twin.on_rollback(lambda: authz.pop(campaign.id, None))
+        # Staged, not written: in PostgreSQL the trigger's row is invisible to
+        # every other reader until the insert commits, so a second reader must
+        # not be able to take this campaign's lock before then either.
+        twin.create_authz_state(campaign.id)
         return campaign
 
     def get(self, unit: UnitOfWork, campaign_id: str, *, owner_id: int) -> Campaign | None:
@@ -334,5 +335,4 @@ class InMemoryCampaignStore:
         return True
 
     def authz_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
-        fake(unit)
-        return self._db.authz_state.get(campaign_id)
+        return fake(unit).authz_revision(campaign_id)

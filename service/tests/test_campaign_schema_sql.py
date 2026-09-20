@@ -86,10 +86,10 @@ def _columns(sql: str) -> list[tuple[str, str]]:
         if stripped.startswith("CREATE TABLE"):
             table = stripped.split()[2]
             continue
-        if not table or stripped.startswith(("--", "PRIMARY KEY", ")")):
-            continue
-        if stripped.startswith((");", ")")):
+        if stripped.startswith(")"):
             table = ""
+            continue
+        if not table or stripped.startswith(("--", "PRIMARY KEY")):
             continue
         match = re.match(r"^([a-z_]+)\s+[A-Z]", stripped)
         if match:
@@ -104,7 +104,14 @@ MIGRATION_FILES = [
 
 
 @pytest.mark.parametrize(("name", "sql"), MIGRATION_FILES)
-def test_no_column_of_the_campaign_schema_could_hold_a_raw_secret(name: str, sql: str):
+def test_no_column_of_the_campaign_schema_is_named_as_though_it_held_a_raw_secret(
+    name: str, sql: str
+):
+    """A name-based check, and it claims no more than that. It catches the
+    mistake that actually happens — a column called `link_token` beside the
+    digest — and cannot catch a raw secret hidden behind an innocuous name.
+    What rules that out is `test_a_minted_secret_is_returned_and_never_written_anywhere`
+    below, which reads the statements rather than the column names."""
     for table, line in _columns(sql):
         column = line.split()[0]
         if column in ALLOWED:

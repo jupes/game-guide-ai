@@ -104,7 +104,15 @@ def test_the_sixteen_actions_sec38_names_are_the_ones_that_ship():
 @pytest.mark.parametrize(
     ("detail", "refusal"),
     [
-        pytest.param({"brief": "x" * 201}, "too long to be an identifier", id="a-sentence"),
+        pytest.param({"alias": "Wren the Unseen"}, "identifier, never text", id="an-alias"),
+        pytest.param({"title": "The Nocturne of Vex"}, "identifier, never text", id="a-title"),
+        pytest.param(
+            {"why": "the GM stopped the reveal because Rook saw the wrong card"},
+            "identifier, never text",
+            id="a-sentence",
+        ),
+        pytest.param({"file": "session notes.pdf"}, "identifier, never text", id="a-filename"),
+        pytest.param({"brief": "x" * 65}, "identifier, never text", id="too-long"),
         pytest.param({"slots": {"one": 1}}, "must be a string", id="nested"),
         pytest.param({"seats": [1, 2]}, "must be a string", id="a-list"),
         pytest.param({"at": datetime.now(UTC)}, "must be a string", id="not-a-scalar"),
@@ -114,16 +122,44 @@ def test_the_sixteen_actions_sec38_names_are_the_ones_that_ship():
     ],
 )
 def test_a_detail_that_could_carry_content_is_refused(detail, refusal):
-    """The shape is what keeps content out: a flat object of short scalars has
-    no room for a brief, a field value, an alias or a filename."""
+    """Not merely short — an identifier. An alias has a space in it, and so does
+    every sentence, so neither can be smuggled in as a sixty-character "code"."""
     with pytest.raises(ValueError, match=refusal):
         check_detail(detail)
 
 
+def test_a_refusal_never_repeats_the_value_it_refused():
+    """A validator that quoted the offending value back would be the leak it
+    exists to prevent."""
+    with pytest.raises(ValueError) as refused:
+        check_detail({"alias": "Wren the Unseen"})
+    assert "Wren" not in str(refused.value)
+    assert "alias" in str(refused.value), "it still says which key was wrong"
+
+
 def test_a_detail_of_identifiers_keys_numbers_and_booleans_is_accepted():
-    accepted = {"code_id": "enc_x", "generation": 2, "was_expired": True, "reason": None}
+    accepted = {
+        "code_id": "enc_dEfG-hIjK_lMnOpQrStU",
+        "field": "passive_perception",
+        "action": "session.rotated",
+        "generation": 2,
+        "was_expired": True,
+        "reason": None,
+    }
     assert check_detail(accepted) == accepted
     assert check_detail(None) == {}
+
+
+@pytest.mark.parametrize("field", ["actor_ref", "object_ref", "campaign_id"])
+def test_a_reference_in_a_row_is_an_identifier_too(field):
+    """`0005_audit_events.sql` types actor_ref, object_ref and
+    campaign_id_tombstone as free TEXT, so the writer is the only thing
+    stopping a caller passing an alias where an id belongs."""
+    log, db = InMemoryAuditLog(), InMemoryDatabase()
+    with db.transaction() as unit:
+        with pytest.raises(ValueError, match="identifier, never text"):
+            _record(log, unit, **{field: "Wren the Unseen"})
+        assert log.for_campaign(unit, CAMPAIGN) == [], "nothing was recorded"
 
 
 @pytest.mark.parametrize("reason", ["", "r" * 61])

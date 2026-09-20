@@ -830,6 +830,49 @@ def test_a_row_a_unit_has_not_committed_is_invisible_to_a_second_reader(world: W
         assert [p.id for p in world.participants.list_for_campaign(reader, campaign)] == [seat.id]
 
 
+def test_an_uncommitted_campaign_cannot_be_read_or_locked_by_a_second_reader(
+    world: World,
+) -> None:
+    """The authorisation row is written by a trigger rather than by the store,
+    so it is the one row that could plausibly escape its transaction — and a
+    campaign another reader can already LOCK is a campaign it can already
+    authorise against. The writer sees its own; nobody else sees anything."""
+    with world.db.transaction() as writer:
+        campaign = world.campaigns.create(writer, owner_id=world.owner, name="Unfinished")
+        assert world.campaigns.authz_revision(writer, campaign.id) == 0, "its own, yes"
+
+        with world.db.transaction() as reader:
+            assert world.campaigns.get(reader, campaign.id, owner_id=world.owner) is None
+            assert world.campaigns.authz_revision(reader, campaign.id) is None
+            with pytest.raises(CampaignAuthzMissing):
+                reader.lock_campaign(campaign.id, shared=True)
+
+        writer.lock_campaign(campaign.id, shared=False)
+        assert writer.advance_authz_revision(campaign.id) == 1
+
+    with world.db.transaction() as reader:
+        assert world.campaigns.get(reader, campaign.id, owner_id=world.owner) is not None
+        assert world.campaigns.authz_revision(reader, campaign.id) == 1, (
+            "the revision the writer reached is the one that commits"
+        )
+        reader.lock_campaign(campaign.id, shared=True)
+
+
+def test_a_campaign_a_rolled_back_unit_created_leaves_no_authorisation_row(world: World) -> None:
+    world_campaign: list[str] = []
+    with pytest.raises(RuntimeError, match="boom"):
+        with world.db.transaction() as unit:
+            world_campaign.append(world.campaigns.create(unit, owner_id=world.owner, name="Doomed").id)
+            unit.lock_campaign(world_campaign[0], shared=False)
+            unit.advance_authz_revision(world_campaign[0])
+            raise RuntimeError("boom")
+
+    with world.db.transaction() as unit:
+        assert world.campaigns.authz_revision(unit, world_campaign[0]) is None
+        with pytest.raises(CampaignAuthzMissing):
+            unit.lock_campaign(world_campaign[0], shared=True)
+
+
 def test_a_campaign_that_is_archived_and_restored_ends_up_where_it_started(world: World) -> None:
     campaign = _a_campaign(world)
     with world.db.transaction() as unit:

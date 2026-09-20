@@ -329,6 +329,17 @@ class UnitOfWork(Protocol):
         until this one ends."""
         ...  # pragma: no cover - structural type
 
+    def note_row_lock(self) -> None:
+        """A store about to take an explicit row lock says so first.
+
+        On the Protocol, not merely on the implementations, because it is how
+        `lock_campaign` can be "the first lock a transaction takes" (RQ-2): a
+        store that takes a row lock without saying so leaves that rule
+        unenforceable, and a third unit of work that did not implement this
+        would silently opt out of it.
+        """
+        ...  # pragma: no cover - structural type
+
     def lock_campaign(
         self,
         campaign_id: str,
@@ -549,10 +560,13 @@ class InMemoryTransaction(_CampaignLockOrder):
 
     def __init__(self, authz_state: dict[str, int] | None = None) -> None:
         super().__init__()
-        # The `campaign.authz_state` table, as the twin holds it: campaign id to
-        # authorisation revision. A transaction made without one locks no
-        # campaign, which fails closed rather than silently succeeding.
+        # The COMMITTED `campaign.authz_state` table, as the twin holds it:
+        # campaign id to authorisation revision. A transaction made without one
+        # locks no campaign, which fails closed rather than silently succeeding.
         self._authz_state = {} if authz_state is None else authz_state
+        # Rows this transaction has created and nobody else may see yet — the
+        # AFTER INSERT trigger's output before the insert that caused it commits.
+        self._authz_staged: dict[str, int] = {}
         self._after_commit: list[Callable[[], None]] = []
         self._publish: list[Callable[[], None]] = []
         self._undo: list[Callable[[], None]] = []
@@ -580,6 +594,26 @@ class InMemoryTransaction(_CampaignLockOrder):
         self.note_row_lock()
         self.locks.append((lock_class, key))
 
+    def create_authz_state(self, campaign_id: str) -> None:
+        """What PostgreSQL's AFTER INSERT trigger does, for the twin (RQ-1).
+
+        The row exists for **this** transaction at once — the trigger fires
+        inside the insert's own transaction — and for every other reader only
+        when this one commits. A fake campaign store calls it from `create`; it
+        is the twin's only way to make one, which is why the case a raw SQL
+        insert covers is proved against the database instead.
+        """
+        self._authz_staged[campaign_id] = 0
+        self.on_publish(
+            lambda: self._authz_state.__setitem__(campaign_id, self._authz_staged[campaign_id])
+        )
+
+    def authz_revision(self, campaign_id: str) -> int | None:
+        """The revision this transaction can see: committed, plus its own."""
+        if campaign_id in self._authz_staged:
+            return self._authz_staged[campaign_id]
+        return self._authz_state.get(campaign_id)
+
     def lock_campaign(
         self,
         campaign_id: str,
@@ -592,12 +626,18 @@ class InMemoryTransaction(_CampaignLockOrder):
         model and makes no claim about one (RQ-2(a)). The timeouts are
         PostgreSQL's and are accepted here only so the two signatures match."""
         mode = self._check_campaign_lock(campaign_id, shared=shared)
-        if campaign_id not in self._authz_state:
+        if self.authz_revision(campaign_id) is None:
             raise CampaignAuthzMissing("that campaign has no authorisation row")
         self._note_campaign_lock(campaign_id, mode)
 
     def advance_authz_revision(self, campaign_id: str) -> int:
         self._require_exclusive(campaign_id)
+        if campaign_id in self._authz_staged:
+            # Still this transaction's own row: it is published, at whatever
+            # value it then holds, by the same commit that publishes the campaign.
+            advanced = self._authz_staged[campaign_id] + 1
+            self._authz_staged[campaign_id] = advanced
+            return advanced
         if campaign_id not in self._authz_state:
             raise CampaignAuthzMissing("that campaign has no authorisation row")
         state, before = self._authz_state, self._authz_state[campaign_id]

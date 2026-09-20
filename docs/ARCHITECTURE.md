@@ -240,8 +240,16 @@ not used for these: they are 256-bit random values with nothing to brute-force,
 and a slow hash on a route anyone can call is a denial-of-service lever.
 
 An alias, a conversation title and a campaign name are never in a log line, an
-exception, a URL or an audit row (SEC-20), and the records hide them from
-`repr()` because a traceback is a log line.
+exception, a URL or an audit row (SEC-20). Two different things enforce that.
+In the stores, the records hide those fields from `repr()` — a traceback is a
+log line — and every refusal names the rule or the key, never the value. In the
+ledger, the **writer** does it: `0005_audit_events.sql` types `actor_ref`,
+`object_ref` and `campaign_id_tombstone` as free `TEXT` and only bounds lengths,
+so `service/audit_log.check_detail` and `check_ref` require every string in a
+row to be an identifier — letters, digits and `_ . : -`, at most 64 characters.
+An alias has a space in it and is refused; so is a sentence. That is stricter
+than `jobs.check_payload`, which admits any short string, because a job is read
+and deleted while an audit row outlives everything it describes.
 
 ### The campaign lock
 
