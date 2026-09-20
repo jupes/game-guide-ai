@@ -582,6 +582,15 @@ def _document_type_problems(registry: Registry, doc: DocumentType) -> list[str]:
             problems += _label_problems(rule.warning, what="warning", limit=80)
             if not rule.revealable:
                 problems.append(f"{key!r} carries a reveal warning but can never be revealed")
+        # The same rule as for a common field, and it has to be here too: a type
+        # that declared its own ``tags`` rule would otherwise put it on the
+        # allowlist, and a group or a default reveal could then name it.
+        if key in NEVER_REVEALABLE and rule.revealable:
+            problems.append(f"{key!r} is never revealable, on any type (REVEAL-10, ED-5)")
+        # A type's own key may not shadow a common one: two rules for one key
+        # would make "which rule applies" a lookup-order accident.
+        if key in COMMON_FIELDS:
+            problems.append(f"{key!r} is a common field, and a type cannot redeclare it")
     if set(doc.field_rules) != set(doc.fields):
         problems.append("every declared field has a rule, and nothing else does")
 

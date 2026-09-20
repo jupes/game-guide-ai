@@ -226,6 +226,218 @@
         "created_at": "2026-09-16T20:00:00Z",
         "updated_at": "2026-09-16T20:00:00Z"
       }
+    },
+    {
+      "name": "a player handout, the one type that assumes it will be shown",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c01",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "handout",
+        "type_version": 1,
+        "data": {
+          "name": "The Harbourmaster's Ledger",
+          "qualifier": "A water-stained folio",
+          "tags": [
+            "the marrow"
+          ],
+          "portrait": {
+            "asset_id": "ast_5d4c3b2a",
+            "media_type": "image",
+            "alt": "A ledger page in a cramped hand"
+          },
+          "body": "Three names are struck through.\nThe fourth is yours."
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a quest log, whose three thread lists reveal separately (ED-3, ED-23)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c02",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "quest-log",
+        "type_version": 1,
+        "data": {
+          "name": "The Tidewarden Threads",
+          "open_threads": [
+            {
+              "name": "Who scuttled the Marrow?",
+              "text": "Ondrey knows."
+            }
+          ],
+          "cold_threads": [
+            {
+              "name": "The reliquary",
+              "text": ""
+            }
+          ],
+          "resolved_threads": [
+            {
+              "name": "The missing chaplain",
+              "text": "Found, drowned."
+            }
+          ]
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a character sheet: an owner-audience type with an ability row (AUD-9)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c03",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "character-sheet",
+        "type_version": 1,
+        "data": {
+          "name": "Bryn Alder",
+          "qualifier": "Level 3 half-elf bard",
+          "ac": 14,
+          "hp": 22,
+          "speed": "30 ft.",
+          "abilities": {
+            "str": 8,
+            "dex": 16,
+            "con": 12,
+            "int": 13,
+            "wis": 10,
+            "cha": 17
+          },
+          "features": [
+            {
+              "name": "Bardic Inspiration",
+              "text": "Three uses per rest."
+            }
+          ],
+          "equipment": [
+            "A lute",
+            "A signet nobody has explained"
+          ],
+          "notes": ""
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a lore entry, the one type that cites the corpus",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c04",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "lore",
+        "type_version": 1,
+        "data": {
+          "name": "The Drowned Saint",
+          "region": "The Marrow Coast",
+          "era": "Third Tide",
+          "status": "Venerated",
+          "summary": "A chaplain who walked into the water and did not stop.",
+          "history": "The Tidewardens keep her reliquary empty, and say it is on purpose.",
+          "rumours": [
+            "She answers, if you drown politely.",
+            "The signet was never hers."
+          ]
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an encounter, whose outcome carries its own warning copy (REVEAL-11)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c05",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "encounter",
+        "type_version": 1,
+        "data": {
+          "name": "Ambush at the Sunken Tavern",
+          "difficulty": "Hard",
+          "xp_budget": 2400,
+          "party_level": 3,
+          "setup": "The tide is coming in and the door opens inward.",
+          "combatants": [
+            {
+              "name": "Tidewarden Drowned",
+              "text": "Four, in the rafters."
+            }
+          ],
+          "terrain": "Waist-deep water after round three. Difficult terrain, and the lanterns go out.",
+          "outcome": "They are taken alive, and wake on the Marrow."
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
     }
   ],
   "invalid": [
@@ -644,6 +856,177 @@
         "data": { "name": "Sister Ondrey Vashe" },
         "write_revision": 3,
         "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a handout whose illustration is an audio asset",
+      "why": "an asset field on a document is an image; audio is a cue and never a document field",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c01",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "handout",
+        "type_version": 1,
+        "data": {
+          "name": "The Ledger",
+          "portrait": {
+            "asset_id": "ast_5d4c3b2a",
+            "media_type": "audio",
+            "alt": "A reading"
+          }
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a quest log whose threads are bare strings",
+      "why": "1kg.5.3: an entry_list holds {name, text} entries, not a text_list - the renderer shows the name as a heading",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c02",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "quest-log",
+        "type_version": 1,
+        "data": {
+          "name": "Threads",
+          "open_threads": [
+            "Who scuttled the Marrow?"
+          ]
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a character sheet whose armour class is text",
+      "why": "1kg.5.3: ac is an integer field, so no renderer ever has to parse it",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c03",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "character-sheet",
+        "type_version": 1,
+        "data": {
+          "name": "Bryn Alder",
+          "ac": "14"
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a lore entry carrying an npc's field",
+      "why": "X-8 and the type's definition: a key another type declares is still undeclared here, and fails closed",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c04",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "lore",
+        "type_version": 1,
+        "data": {
+          "name": "The Drowned Saint",
+          "voice": "Low, unhurried"
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an encounter whose party level is a decimal",
+      "why": "an integer field takes a whole number, and 3.5 is not one on either side",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c05",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "encounter",
+        "type_version": 1,
+        "data": {
+          "name": "Ambush",
+          "party_level": 3.5
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
         "archived": false,
         "created_at": "2026-09-16T20:00:00Z",
         "updated_at": "2026-09-16T20:00:00Z"

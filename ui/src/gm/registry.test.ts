@@ -322,11 +322,61 @@ describe('per-type flags and their selectors (1kg.5.3)', () => {
     expect(Object.fromEntries(REGISTRY.document_types.map((d) => [d.id, revealableKeys(d)]))).toEqual(REVEALABLE)
   })
 
+  // What each type seeds, for its own audience alone. Pinned rather than
+  // derived because these are the facts most likely to drift back to the
+  // handoff's: REVEAL-23 made session-notes seed EMPTY where the handoff seeded
+  // `recap`; AUD-12 makes the character sheet seed its OWNER and never the
+  // table; and an encounter that seeded `outcome` would spoil the surprise it
+  // carries a warning about.
+  const DEFAULT_REVEAL: Record<string, Record<string, string[]>> = {
+    npc: { table: ['portrait', 'name', 'voice'] },
+    statblock: { table: [] },
+    handout: { table: ['portrait', 'name', 'body'] },
+    'session-notes': { table: [] },
+    'quest-log': { table: ['name', 'open_threads', 'resolved_threads'] },
+    'character-sheet': {
+      owner: ['name', 'qualifier', 'portrait', 'ac', 'hp', 'speed', 'abilities', 'features', 'equipment', 'notes'],
+    },
+    lore: { table: ['name', 'summary'] },
+    encounter: { table: [] },
+  }
+
+  it("pins every type's default reveal (REVEAL-4, REVEAL-23, AUD-12)", () => {
+    expect(Object.fromEntries(REGISTRY.document_types.map((d) => [d.id, d.default_reveal]))).toEqual(DEFAULT_REVEAL)
+  })
+
+  it('lets only an owner-audience type seed anything but the table', () => {
+    for (const d of REGISTRY.document_types) {
+      expect(Object.keys(d.default_reveal).filter((a) => a !== d.audience)).toEqual([])
+      if (d.audience !== 'table') expect(defaultRevealFor(d, 'table')).toEqual([])
+    }
+  })
+
   it('keeps tags, sources, ids and identity links off every allowlist (REVEAL-10, ED-5, ED-20)', () => {
     const never = ['tags', 'true_identity', 'sources', 'asset_id', 'document_id', 'campaign_id', 'author', 'changed_fields']
     for (const d of REGISTRY.document_types) {
       expect(revealableKeys(d).filter((key) => never.includes(key))).toEqual([])
     }
+  })
+
+  it('reads the registry it is given, not the shipped one', () => {
+    // The two validators disagreed once because these helpers reached for the
+    // module-level COMMON_FIELD_RULES while Python read the registry under
+    // validation. Reverting either helper turns this red.
+    const npc = doc('npc')
+    const candidate: Registry = {
+      ...REGISTRY,
+      common_field_rules: {
+        ...REGISTRY.common_field_rules,
+        qualifier: { label: 'Qualifier', editable: false, revealable: false, warning: 'Candidate only' },
+      },
+    }
+    expect(ruleFor(npc, 'qualifier', candidate)?.warning).toBe('Candidate only')
+    expect(ruleFor(npc, 'qualifier')?.warning).toBeNull()
+    expect(revealableKeys(npc, candidate)).not.toContain('qualifier')
+    expect(revealableKeys(npc)).toContain('qualifier')
+    expect(isEditable(npc, 'qualifier', candidate)).toBe(false)
+    expect(isEditable(npc, 'qualifier')).toBe(true)
   })
 
   it('gives the identity link a home, and never reveals it (ED-20)', () => {
@@ -447,6 +497,15 @@ describe('a registry that breaks a rule cannot be built', () => {
       { ...REGISTRY, common_field_rules: { ...REGISTRY.common_field_rules, tags: rule('tagList') } },
       'camelCase',
     ],
+    // REVEAL-10 / ED-5, on both routes into the allowlist: the common rule and
+    // a type's own. The second was the hole the first review's fix left.
+    [
+      'a revealable tags common rule',
+      { ...REGISTRY, common_field_rules: { ...REGISTRY.common_field_rules, tags: rule('Tags') } },
+      'never revealable',
+    ],
+    ['a type declaring its own revealable tags rule', withNpcRules({ tags: rule('Tags') }), 'never revealable'],
+    ['a type redeclaring a common field', withNpcRules({ name: rule('Name') }), 'cannot redeclare it'],
   ]
 
   it.each(cases)('rejects %s', (_name, registry, problem) => {

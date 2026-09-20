@@ -354,7 +354,7 @@ renderer `stat_block_card` · audience `table` · ability row from `abilities`
 | `qualifier` | common | Qualifier | yes | yes | — | — |
 | `tags` | common | Tags | yes | **never** | — | — |
 | `ac` | `integer` | Armor Class | yes | yes | — | — |
-| `ac_note` | `text` | Armor class note | yes | yes | — | — |
+| `ac_note` | `text` | Armor Class note | yes | yes | — | — |
 | `hp` | `integer` | Hit Points | yes | yes | — | — |
 | `hit_dice` | `text` | Hit dice | yes | yes | — | — |
 | `speed` | `text` | Speed | yes | yes | — | — |

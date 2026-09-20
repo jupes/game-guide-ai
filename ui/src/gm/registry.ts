@@ -430,6 +430,17 @@ function documentTypeProblems(registry: Registry, d: DocumentType): string[] {
       problems.push(...labelProblems(r.warning, 'warning', 80))
       if (!r.revealable) problems.push(`${key} carries a reveal warning but can never be revealed`)
     }
+    // The same rule as for a common field, and it has to be here too: a type
+    // that declared its own `tags` rule would otherwise put it on the
+    // allowlist, and a group or a default reveal could then name it.
+    if (NEVER_REVEALABLE.includes(key) && r.revealable) {
+      problems.push(`${key} is never revealable, on any type (REVEAL-10, ED-5)`)
+    }
+    // A type's own key may not shadow a common one: two rules for one key
+    // would make "which rule applies" a lookup-order accident.
+    if (Object.hasOwn(COMMON_FIELDS, key)) {
+      problems.push(`${key} is a common field, and a type cannot redeclare it`)
+    }
   }
   if (Object.keys(d.field_rules).sort().join(',') !== Object.keys(d.fields).sort().join(',')) {
     problems.push('every declared field has a rule, and nothing else does')

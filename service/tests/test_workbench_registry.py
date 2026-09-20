@@ -266,6 +266,14 @@ def _character_sheet(**changes: object) -> tuple[reg.DocumentType, ...]:
         (_broken(common_field_rules={**_COMMON_RULES, "nonesuch": reg.FieldRule("Nonesuch")}), "not a common field"),
         (_broken(common_field_rules={"name": reg.FieldRule("Name")}), "every common field has a rule"),
         (_broken(common_field_rules={**_COMMON_RULES, "tags": reg.FieldRule("tagList")}), "camelCase"),
+        # REVEAL-10 / ED-5, on both routes into the allowlist: the common rule
+        # and a type's own. The second was the hole the first review's fix left.
+        (
+            _broken(common_field_rules={**_COMMON_RULES, "tags": reg.FieldRule("Tags", revealable=True)}),
+            "never revealable",
+        ),
+        (_broken(document_types=_with_npc_rules(tags=reg.FieldRule("Tags"))), "never revealable"),
+        (_broken(document_types=_with_npc_rules(name=reg.FieldRule("Name"))), "cannot redeclare it"),
     ],
 )
 def test_a_registry_that_breaks_a_rule_cannot_be_built(registry: reg.Registry, problem: str) -> None:
@@ -461,6 +469,80 @@ _REVEALABLE = {
 
 def test_every_types_revealable_allowlist_is_pinned() -> None:
     assert {doc.id.value: list(reg.REGISTRY.revealable_keys(doc)) for doc in reg.REGISTRY.document_types} == _REVEALABLE
+
+
+#: What each type seeds, for its own audience alone. Pinned rather than derived
+#: because these are the facts most likely to drift back to the handoff's:
+#: REVEAL-23 made ``session-notes`` seed **empty** where the handoff seeded
+#: ``recap``; AUD-12 makes the character sheet seed its **owner** and never the
+#: table; and an encounter that seeded ``outcome`` would spoil the surprise it
+#: carries a warning about.
+_DEFAULT_REVEAL = {
+    "npc": {"table": ["portrait", "name", "voice"]},
+    "statblock": {"table": []},
+    "handout": {"table": ["portrait", "name", "body"]},
+    "session-notes": {"table": []},
+    "quest-log": {"table": ["name", "open_threads", "resolved_threads"]},
+    "character-sheet": {
+        "owner": ["name", "qualifier", "portrait", "ac", "hp", "speed", "abilities", "features", "equipment", "notes"]
+    },
+    "lore": {"table": ["name", "summary"]},
+    "encounter": {"table": []},
+}
+
+
+def test_every_types_default_reveal_is_pinned() -> None:
+    assert {
+        doc.id.value: {audience: list(keys) for audience, keys in doc.default_reveal.items()}
+        for doc in reg.REGISTRY.document_types
+    } == _DEFAULT_REVEAL
+
+
+def test_only_the_owner_audience_type_seeds_anything_but_the_table() -> None:
+    """REVEAL-4 and AUD-12, as a property over the whole registry rather than
+    one type: a table can never be seeded from an owner-audience type, and an
+    owner audience is never seeded by a table type."""
+    for doc in reg.REGISTRY.document_types:
+        assert set(doc.default_reveal) <= {doc.audience}
+        assert reg.REGISTRY.default_reveal_for(doc, "table") == () or doc.audience == "table"
+
+
+def test_the_wire_contracts_tables_are_the_registry() -> None:
+    """``docs/workbench-wire-contract.md`` opens its per-type section by saying
+    every row **is** ``registry.json``. Nothing checked that, and a label
+    drifted within a day of the tables being written. This is the check.
+    """
+    doc_text = (FIXTURES.parents[2] / "docs" / "workbench-wire-contract.md").read_text(encoding="utf-8")
+    common = REGISTRY_JSON["common_field_rules"]
+    for doc in reg.REGISTRY.document_types:
+        heading = f"#### `{doc.id.value}` —"
+        assert heading in doc_text, f"{doc.id.value} has no table in the wire contract"
+        section = doc_text[doc_text.index(heading) :]
+        section = section[: section.index("\n#### ")] if "\n#### " in section else section
+        rows = {
+            row.split("|")[1].strip().strip("`"): [cell.strip() for cell in row.split("|")[2:-1]]
+            for row in section.splitlines()
+            if row.startswith("| `")
+        }
+        groups = {key: group.label for group in doc.reveal_groups for key in group.keys}
+        seeded = set(doc.default_reveal.get(doc.audience, ()))
+        expected = [(key, "common", rule["label"], rule["revealable"]) for key, rule in common.items()]
+        expected += [
+            (key, f"`{doc.fields[key].value}`", rule.label, rule.revealable)
+            for key, rule in doc.field_rules.items()
+        ]
+        assert list(rows) == [key for key, *_ in expected], f"{doc.id.value}: the table's keys are not the registry's"
+        for key, kind, label, revealable in expected:
+            cells = rows[key]
+            rule = reg.REGISTRY.rule_for(doc, key)
+            assert rule is not None
+            assert cells[0] == kind, f"{doc.id.value}.{key}: kind"
+            warned = f"{label} ⚠ {rule.warning}" if rule.warning else label
+            assert cells[1] == warned, f"{doc.id.value}.{key}: label"
+            assert cells[2] == ("yes" if rule.editable else "no"), f"{doc.id.value}.{key}: editable"
+            assert cells[3] == ("yes" if revealable else "**never**"), f"{doc.id.value}.{key}: revealable"
+            assert cells[4] == (f"*{groups[key]}*" if key in groups else "—"), f"{doc.id.value}.{key}: group"
+            assert cells[5] == ("yes" if key in seeded else "—"), f"{doc.id.value}.{key}: seeded"
 
 
 def test_nothing_off_the_allowlist_is_a_tag_a_source_an_id_or_an_identity_link() -> None:
