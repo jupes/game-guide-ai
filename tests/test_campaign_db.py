@@ -858,6 +858,37 @@ def test_an_uncommitted_campaign_cannot_be_read_or_locked_by_a_second_reader(
         reader.lock_campaign(campaign.id, shared=True)
 
 
+def test_an_advance_a_unit_has_not_committed_is_invisible_to_a_second_reader(world: World) -> None:
+    """The other half of the same rule, on an already-committed campaign. A
+    reader that is not holding the lock does an unlocked SELECT, which under
+    READ COMMITTED gives it the committed revision — so a second reader must
+    never see a number the writer has not committed, and must see it the moment
+    the writer does."""
+    campaign = _a_campaign(world)
+    with world.db.transaction() as writer:
+        writer.lock_campaign(campaign, shared=False)
+        assert writer.advance_authz_revision(campaign) == 1
+        assert world.campaigns.authz_revision(writer, campaign) == 1, "its own, yes"
+
+        with world.db.transaction() as reader:
+            assert world.campaigns.authz_revision(reader, campaign) == 0
+
+    with world.db.transaction() as reader:
+        assert world.campaigns.authz_revision(reader, campaign) == 1
+
+
+def test_a_rolled_back_advance_leaves_the_revision_where_it_was(world: World) -> None:
+    campaign = _a_campaign(world)
+    with pytest.raises(RuntimeError, match="boom"):
+        with world.db.transaction() as unit:
+            unit.lock_campaign(campaign, shared=False)
+            assert unit.advance_authz_revision(campaign) == 1
+            assert unit.advance_authz_revision(campaign) == 2
+            raise RuntimeError("boom")
+    with world.db.transaction() as reader:
+        assert world.campaigns.authz_revision(reader, campaign) == 0
+
+
 def test_a_campaign_a_rolled_back_unit_created_leaves_no_authorisation_row(world: World) -> None:
     world_campaign: list[str] = []
     with pytest.raises(RuntimeError, match="boom"):

@@ -269,11 +269,12 @@ class PostgresCampaignStore:
 
 
 class InMemoryCampaignStore:
-    """The twin. Its `create` writes the `authz_state` entry itself, standing in
-    for the AFTER INSERT trigger: the fake's only path to a campaign is this
-    method, so what a test observes matches PostgreSQL. The case the fake cannot
-    have — a campaign inserted by raw SQL — is proved against the database in
-    `tests/test_migrations_db.py`."""
+    """The twin. Its `create` **stages** the `authz_state` entry, standing in for
+    the AFTER INSERT trigger: the fake's only path to a campaign is this method,
+    so what a test observes matches PostgreSQL — including that neither the
+    campaign nor its authorisation row is visible to anyone else until the
+    transaction commits. The case the fake cannot have — a campaign inserted by
+    raw SQL — is proved against the database in `tests/test_migrations_db.py`."""
 
     def __init__(self, db: Any) -> None:
         self._db = db

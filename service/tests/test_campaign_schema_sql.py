@@ -78,7 +78,12 @@ DIGEST_CHECK = r"~ '\^\[0-9a-f\]\{64\}\$'"
 
 
 def _columns(sql: str) -> list[tuple[str, str]]:
-    """Every `(table, column)` a CREATE TABLE in `sql` declares, with the line."""
+    """Every `(table, column)` a CREATE TABLE in `sql` declares, with the line.
+
+    CREATE TABLE only, which is why `MIGRATION_FILES` below holds 0004 and 0005
+    and not 0006: 0006 is an ALTER, and its four columns are pinned by name in
+    `test_the_conversation_columns_are_the_four_agreed_and_carry_no_cascade`.
+    """
     found: list[tuple[str, str]] = []
     table = ""
     for line in sql.splitlines():

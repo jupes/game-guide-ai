@@ -104,20 +104,23 @@ def test_the_sixteen_actions_sec38_names_are_the_ones_that_ship():
 @pytest.mark.parametrize(
     ("detail", "refusal"),
     [
-        pytest.param({"alias": "Wren the Unseen"}, "identifier, never text", id="an-alias"),
-        pytest.param({"title": "The Nocturne of Vex"}, "identifier, never text", id="a-title"),
+        pytest.param({"alias": "Wren the Unseen"}, "never text", id="an-alias"),
+        pytest.param({"title": "The Nocturne of Vex"}, "never text", id="a-title"),
         pytest.param(
             {"why": "the GM stopped the reveal because Rook saw the wrong card"},
-            "identifier, never text",
+            "never text",
             id="a-sentence",
         ),
-        pytest.param({"file": "session notes.pdf"}, "identifier, never text", id="a-filename"),
-        pytest.param({"brief": "x" * 65}, "identifier, never text", id="too-long"),
+        pytest.param({"file": "session notes.pdf"}, "never text", id="a-filename"),
+        pytest.param({"brief": "x" * 65}, "never text", id="too-long"),
         pytest.param({"slots": {"one": 1}}, "must be a string", id="nested"),
         pytest.param({"seats": [1, 2]}, "must be a string", id="a-list"),
         pytest.param({"at": datetime.now(UTC)}, "must be a string", id="not-a-scalar"),
-        pytest.param({"": "x"}, "a short string", id="no-key"),
-        pytest.param({"k" * 41: "x"}, "a short string", id="a-key-that-is-a-sentence"),
+        pytest.param({"": "x"}, "never text", id="no-key"),
+        pytest.param({"k" * 41: "x"}, "never text", id="a-key-that-is-too-long"),
+        # The KEY carries content just as well as the value does.
+        pytest.param({"Rook saw the wrong card": True}, "never text", id="a-key-that-is-a-sentence"),
+        pytest.param({"session notes.pdf": 1}, "never text", id="a-key-that-is-a-filename"),
         pytest.param(dict.fromkeys((f"k{n}" for n in range(21)), 1), "at most 20 keys", id="too-many"),
     ],
 )
@@ -137,6 +140,12 @@ def test_a_refusal_never_repeats_the_value_it_refused():
     assert "alias" in str(refused.value), "it still says which key was wrong"
 
 
+def test_the_object_kind_is_a_kind_and_not_a_name():
+    assert audit_log._check_object_kind("table_session") == "table_session"
+    with pytest.raises(ValueError, match="at most 40 characters"):
+        audit_log._check_object_kind("the session Rook joined")
+
+
 def test_a_detail_of_identifiers_keys_numbers_and_booleans_is_accepted():
     accepted = {
         "code_id": "enc_dEfG-hIjK_lMnOpQrStU",
@@ -150,22 +159,33 @@ def test_a_detail_of_identifiers_keys_numbers_and_booleans_is_accepted():
     assert check_detail(None) == {}
 
 
-@pytest.mark.parametrize("field", ["actor_ref", "object_ref", "campaign_id"])
-def test_a_reference_in_a_row_is_an_identifier_too(field):
-    """`0005_audit_events.sql` types actor_ref, object_ref and
-    campaign_id_tombstone as free TEXT, so the writer is the only thing
-    stopping a caller passing an alias where an id belongs."""
+@pytest.mark.parametrize(
+    "field", ["actor_ref", "object_ref", "campaign_id", "object_kind", "reason_code"]
+)
+@pytest.mark.parametrize(
+    "content",
+    ["Wren the Unseen", "The Nocturne of Vex", "session notes.pdf", "Rook saw the wrong card"],
+)
+def test_no_string_field_of_a_row_accepts_content(field, content):
+    """Every string a caller can put in a row, against every kind of content the
+    acceptance criteria name. `0005_audit_events.sql` bounds lengths and nothing
+    else — it types actor_ref, object_ref and campaign_id_tombstone as free TEXT
+    with no CHECK at all — so the writer is the only thing between an alias and
+    the ledger, and it has to cover the least-checked field, not the obvious one."""
     log, db = InMemoryAuditLog(), InMemoryDatabase()
     with db.transaction() as unit:
-        with pytest.raises(ValueError, match="identifier, never text"):
-            _record(log, unit, **{field: "Wren the Unseen"})
+        with pytest.raises(ValueError, match="never text") as refused:
+            _record(log, unit, **{field: content})
+        assert content not in str(refused.value)
         assert log.for_campaign(unit, CAMPAIGN) == [], "nothing was recorded"
 
 
-@pytest.mark.parametrize("reason", ["", "r" * 61])
+@pytest.mark.parametrize("reason", ["", "r" * 61, "not eligible", "Rook may not see that"])
 def test_a_reason_is_a_code_not_a_sentence(reason):
-    with pytest.raises(ValueError, match="1 to 60 characters"):
+    with pytest.raises(ValueError, match="at most 60 characters"):
         check_reason_code(reason)
+    assert check_reason_code("not_eligible") == "not_eligible"
+    assert check_reason_code(None) is None
 
 
 # ── Behaviour 23 — there is no way to change or remove a recorded decision ───

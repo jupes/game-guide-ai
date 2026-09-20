@@ -24,9 +24,13 @@ outlive the text, and a digest of a brief outlives it while still answering
 That is enforced **here, by the writer**, not by `0005_audit_events.sql`, whose
 CHECK constraints only bound lengths and closed vocabularies. `check_detail` and
 `check_ref` require every string a caller supplies to be an **identifier**:
-letters, digits, and `_ . : -`, at most 64 characters, which is `OpaqueId`'s
-ceiling. An alias contains a space and is refused; a sentence is refused; a
-brief is refused. This is deliberately stricter than
+letters, digits, and `_ . : -`. That is every string in a row — each `detail`
+value **and each `detail` key**, `actor_ref`, `object_ref`,
+`campaign_id_tombstone`, `object_kind` and `reason_code` — because a row is only
+as content-free as its least-checked field. The length bound is each column's
+own; 64 characters, `OpaqueId`'s ceiling, for the references and the values. An
+alias contains a space and is refused; a sentence is refused; a brief is
+refused. This is deliberately stricter than
 `service/jobs.check_payload`, which admits any short string: a job payload is
 read by this service and deleted, while an audit row is retained past the
 deletion of everything it describes.
@@ -62,7 +66,18 @@ REASON_CODE_MAX_CHARS = 60
 
 #: What a string in an audit row may look like. No space, so no prose; no
 #: punctuation beyond what an identifier, a dotted action or a field key needs.
-IDENTIFIER = re.compile(rf"^[A-Za-z0-9_.:-]{{1,{DETAIL_VALUE_MAX_CHARS}}}$")
+#: Applied to EVERY string a caller supplies — values, keys, references, the
+#: object kind and the reason code — because a row is only as content-free as
+#: its least-checked field.
+IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]+$")
+
+
+def as_identifier(what: str, value: str, limit: int) -> str:
+    """`value` if it is an identifier of at most `limit` characters, else a
+    refusal that names the FIELD and never the value."""
+    if not value or len(value) > limit or IDENTIFIER.fullmatch(value) is None:
+        raise ValueError(f"{what} is an identifier of at most {limit} characters, never text")
+    return value
 
 
 class AuditAction(str, Enum):
@@ -114,9 +129,7 @@ def check_ref(name: str, value: str | None) -> str | None:
     """
     if value is None:
         return None
-    if IDENTIFIER.fullmatch(value) is None:
-        raise ValueError(f"an audit row's {name} is an identifier, never text")
-    return value
+    return as_identifier(f"an audit row's {name}", value, DETAIL_VALUE_MAX_CHARS)
 
 
 def check_detail(detail: Mapping[str, DetailValue] | None) -> dict[str, DetailValue]:
@@ -131,21 +144,24 @@ def check_detail(detail: Mapping[str, DetailValue] | None) -> dict[str, DetailVa
     if len(checked) > DETAIL_MAX_KEYS:
         raise ValueError(f"an audit detail has at most {DETAIL_MAX_KEYS} keys")
     for key, value in checked.items():
-        if not isinstance(key, str) or not key or len(key) > DETAIL_KEY_MAX_CHARS:
-            raise ValueError("an audit detail key is a short string")
+        if not isinstance(key, str):
+            raise ValueError("an audit detail key is a string")
+        # The KEY too: a field key is an identifier, and a caller that put a
+        # sentence there would have written content into the row just the same.
+        as_identifier("an audit detail key", key, DETAIL_KEY_MAX_CHARS)
         if not isinstance(value, str | int | bool | type(None)):
             raise ValueError(f"audit detail '{key}' must be a string, a whole number, a boolean or null")
-        if isinstance(value, str) and IDENTIFIER.fullmatch(value) is None:
-            raise ValueError(f"audit detail '{key}' is an identifier, never text")
+        if isinstance(value, str):
+            as_identifier(f"audit detail '{key}'", value, DETAIL_VALUE_MAX_CHARS)
     return checked
 
 
 def check_reason_code(reason_code: str | None) -> str | None:
     """A code, not a sentence: `not_eligible`, never "Rook may not see Wren's
-    passive perception"."""
-    if reason_code is not None and (not reason_code or len(reason_code) > REASON_CODE_MAX_CHARS):
-        raise ValueError(f"a reason code is 1 to {REASON_CODE_MAX_CHARS} characters")
-    return reason_code
+    passive perception" — which is why the length bound is not enough on its own."""
+    if reason_code is None:
+        return None
+    return as_identifier("a reason code", reason_code, REASON_CODE_MAX_CHARS)
 
 
 @dataclass(frozen=True)
@@ -202,9 +218,8 @@ OBJECT_KIND_MAX_CHARS = 40
 
 
 def _check_object_kind(object_kind: str) -> str:
-    if not object_kind or len(object_kind) > OBJECT_KIND_MAX_CHARS:
-        raise ValueError(f"an object kind is 1 to {OBJECT_KIND_MAX_CHARS} characters")
-    return object_kind
+    """`participant`, `table_session`, `enrolment_code` — a kind, not a name."""
+    return as_identifier("an object kind", object_kind, OBJECT_KIND_MAX_CHARS)
 
 
 _COLUMNS = (

@@ -594,6 +594,23 @@ class InMemoryTransaction(_CampaignLockOrder):
         self.note_row_lock()
         self.locks.append((lock_class, key))
 
+    def _stage_authz(self, campaign_id: str, revision: int) -> None:
+        """Hold a campaign's revision for this transaction alone, and publish it
+        on commit at whatever value it has reached by then.
+
+        Every change to `authz_state` goes through here — the row's creation and
+        every advance of it — because a second reader's unlocked `SELECT` in
+        PostgreSQL reads the committed value under READ COMMITTED, so the twin
+        must not show it a number no other transaction could see. A rollback
+        needs no undo: the staged dictionary dies with the transaction, and the
+        committed one was never touched.
+        """
+        if campaign_id not in self._authz_staged:
+            self.on_publish(
+                lambda: self._authz_state.__setitem__(campaign_id, self._authz_staged[campaign_id])
+            )
+        self._authz_staged[campaign_id] = revision
+
     def create_authz_state(self, campaign_id: str) -> None:
         """What PostgreSQL's AFTER INSERT trigger does, for the twin (RQ-1).
 
@@ -603,10 +620,7 @@ class InMemoryTransaction(_CampaignLockOrder):
         is the twin's only way to make one, which is why the case a raw SQL
         insert covers is proved against the database instead.
         """
-        self._authz_staged[campaign_id] = 0
-        self.on_publish(
-            lambda: self._authz_state.__setitem__(campaign_id, self._authz_staged[campaign_id])
-        )
+        self._stage_authz(campaign_id, 0)
 
     def authz_revision(self, campaign_id: str) -> int | None:
         """The revision this transaction can see: committed, plus its own."""
@@ -632,18 +646,11 @@ class InMemoryTransaction(_CampaignLockOrder):
 
     def advance_authz_revision(self, campaign_id: str) -> int:
         self._require_exclusive(campaign_id)
-        if campaign_id in self._authz_staged:
-            # Still this transaction's own row: it is published, at whatever
-            # value it then holds, by the same commit that publishes the campaign.
-            advanced = self._authz_staged[campaign_id] + 1
-            self._authz_staged[campaign_id] = advanced
-            return advanced
-        if campaign_id not in self._authz_state:
+        current = self.authz_revision(campaign_id)
+        if current is None:
             raise CampaignAuthzMissing("that campaign has no authorisation row")
-        state, before = self._authz_state, self._authz_state[campaign_id]
-        state[campaign_id] = before + 1
-        self.on_rollback(lambda: state.__setitem__(campaign_id, before))
-        return before + 1
+        self._stage_authz(campaign_id, current + 1)
+        return current + 1
 
 
 class InMemoryDatabase:
@@ -655,9 +662,10 @@ class InMemoryDatabase:
         self._lock = threading.RLock()
         #: Every notification of every committed transaction, in order.
         self.notifications: list[tuple[str, str]] = []
-        #: `campaign.authz_state`, as the twin holds it. A fake campaign store's
-        #: `create` puts a campaign here at revision 0, standing in for the
-        #: AFTER INSERT trigger that does it in PostgreSQL.
+        #: `campaign.authz_state` as committed, which is what a transaction
+        #: other than the writer's can see. A fake campaign store's `create`
+        #: stages a campaign at revision 0 — standing in for the AFTER INSERT
+        #: trigger PostgreSQL has — and the commit publishes it here.
         self.authz_state: dict[str, int] = {}
 
     @contextmanager
