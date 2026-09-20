@@ -792,6 +792,20 @@ paths it can arrive on — a `slot` frame's `content`, and a `snapshot` frame's
 `slots[].content` — and why the path walker gained an array segment to reach the
 second.
 
+**A table client that cannot read a `slot` or `snapshot` frame blanks the
+revealed content it holds for that slot and shows the placeholder; it never
+keeps showing what it had** (X-4). So the placeholder carries what is still
+readable: `parseTableEvent` answers `{ kind: 'unknown', reason, slot, seq }`
+whenever the slot name and the sequence parse, and per-entry results for a
+`snapshot` frame, so one unreadable entry does not discard the readable table
+slot beside it. This is not a future-version concern only: a table client checks
+a projection's keys against its **own** copy of the field definitions, so a
+server one deploy ahead of a table bundle — a type gained a revealable field,
+which this document's own table calls *no bump* — makes a frame unreadable
+today. Without the slot name the page has nothing to blank, the natural
+implementation skips the frame, and document A stays on the player's screen
+while the GM's indicator says B.
+
 ### The frames
 
 | Channel | Kind | Carries |

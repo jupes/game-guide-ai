@@ -882,9 +882,15 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     // `snapshot` and `slot` were the stand-ins here until the reveal family landed;
     // both are known kinds now, so the probe moves to one this contract does not define.
     expect(parseGmEvent({ schema_version: 1, event: 'excerpt', span: {} })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
-    expect(parseTableEvent({ schema_version: 1, event: 'excerpt', span: {} })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(parseTableEvent({ schema_version: 1, event: 'excerpt', span: {} })).toEqual({
+      kind: 'unknown',
+      reason: 'unknown_kind',
+      slot: null,
+      seq: null,
+      slots: null,
+    })
     // Presence never travels on the table channel; to a table client the kind is simply unknown.
-    expect(parseTableEvent(first(gm, 'who is listening'))).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(parseTableEvent(first(gm, 'who is listening'))).toMatchObject({ kind: 'unknown', reason: 'unknown_kind' })
   })
 
   it('strips what a table client may never see, however deep it rides (SEC-15)', () => {
@@ -966,15 +972,29 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     // frame matters most: every stream opens with one and every reconnect takes a
     // fresh one, so `slots[].content.content_kind` is the path a future kind
     // actually arrives on (RT-4).
-    const slot = first(table, 'the table slot is now showing') as { content: Record<string, unknown> }
+    const slot = first(table, 'the table slot is now showing') as { slot: string; seq: number; content: Record<string, unknown> }
     const future = { ...slot.content, content_kind: 'excerpt' }
-    expect(parseTableEvent({ ...slot, content: future })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    // X-4: the placeholder still says which region to blank and which mark to advance.
+    expect(parseTableEvent({ ...slot, content: future })).toEqual({
+      kind: 'unknown',
+      reason: 'unknown_kind',
+      slot: slot.slot,
+      seq: slot.seq,
+      slots: null,
+    })
 
     const snapshot = first(table, "a participant's opening picture") as { slots: Array<Record<string, unknown>> }
     const [tableSlot, mine] = snapshot.slots
+    // …and one unreadable entry does not discard the readable table slot beside it.
     expect(parseTableEvent({ ...snapshot, slots: [tableSlot, { ...mine, content: future }] })).toEqual({
       kind: 'unknown',
       reason: 'unknown_kind',
+      slot: null,
+      seq: null,
+      slots: [
+        { kind: 'ok', value: tableSlot },
+        { kind: 'unknown', reason: 'unknown_kind', slot: mine.slot, seq: mine.seq },
+      ],
     })
     // …and the object-only paths are untouched: a known kind still reads as itself,
     // which holds by construction because none of them names the array segment.
@@ -1007,7 +1027,7 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     expect(read.kind).toBe('ok')
     if (read.kind !== 'ok') return
     expect(read.value.frames.map((frame) => frame.kind)).toEqual([...known.map(() => 'ok'), 'unknown', 'ok'])
-    expect(read.value.frames[known.length]).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(read.value.frames[known.length]).toEqual({ kind: 'unknown', reason: 'unknown_kind', slot: null, seq: null, slots: null })
     // Without its ready boundary a snapshot is not one (TABLE-7).
     expect(parseTableSnapshot({ schema_version: 1, frames: snapshot.frames.slice(0, -1) })).toEqual({ kind: 'unknown', reason: 'invalid' })
     expect(parseGmSnapshot({ schema_version: 2, frames: [] })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
@@ -1049,11 +1069,51 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
   })
 
   it('reports a broken frame as invalid and never throws', () => {
-    expect(parseTableEvent({ ...first(table, 'ambience is playing'), slot: 'one_shot' })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    // An audio slot name is not a reveal slot name, so only the sequence reads.
+    const audio = first(table, 'ambience is playing')
+    expect(parseTableEvent({ ...audio, slot: 'one_shot' })).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+      slot: null,
+      seq: audio.seq,
+      slots: null,
+    })
     for (const junk of [null, undefined, 42, 'x', [], {}, { event: 7 }]) {
       expect(parseGmEvent(junk).kind).toBe('unknown')
       expect(parseTableEvent(junk).kind).toBe('unknown')
     }
+  })
+
+  it('keeps the slot and the sequence when a stale bundle cannot read the frame (X-4)', () => {
+    // Not a future-version problem: the client checks a projection key against
+    // its OWN copy of the field definitions, so a server one deploy ahead of a
+    // table bundle — a type gained a revealable field, "no bump" by the
+    // versioning table — makes the frame unreadable today. If the placeholder
+    // lost the slot, the page would have nothing to blank, the natural
+    // implementation would skip the frame, and document A would stay on the
+    // player's screen while the GM's indicator says B.
+    const ahead = { content_kind: 'document', type: 'lore', fields: [{ key: 'a_field_this_bundle_has_never_heard_of', value: 'x' }] }
+    expect(parseTableEvent({ schema_version: 1, event: 'slot', slot: 'table', seq: 31, content: ahead })).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+      slot: 'table',
+      seq: 31,
+      slots: null,
+    })
+    // …and in a picture, the readable table slot survives its unreadable neighbour.
+    const readable = { slot: 'table', seq: 12, content: null }
+    expect(
+      parseTableEvent({ schema_version: 1, event: 'snapshot', slots: [readable, { slot: 'mine', seq: 3, content: ahead }] }),
+    ).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+      slot: null,
+      seq: null,
+      slots: [
+        { kind: 'ok', value: readable },
+        { kind: 'unknown', reason: 'invalid', slot: 'mine', seq: 3 },
+      ],
+    })
   })
 })
 

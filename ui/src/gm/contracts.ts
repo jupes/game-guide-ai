@@ -1865,12 +1865,14 @@ const TableAudioEventSchema = z
  * EnrolResponse). Which participant `mine` is, the server resolves from the
  * credential pair, never from a field (eligibility ADR section 4, SEC-15). */
 export const TABLE_SLOT_NAMES = ['table', 'mine'] as const
+export type TableSlotName = (typeof TABLE_SLOT_NAMES)[number]
 
 const TableSlotSchema = z.object({
   slot: z.enum(TABLE_SLOT_NAMES),
   seq: SlotSequenceSchema,
   content: TableProjectionSchema.nullable(),
 })
+export type TableSlot = z.infer<typeof TableSlotSchema>
 
 /** Threat model 8.2: a table client is entitled to the table slot and, with the
  * enrolled device credential, its own — and to nothing else. A slot it is NOT
@@ -2141,17 +2143,71 @@ export function parseGmEvent(raw: unknown): Parsed<GmEvent> {
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
 }
 
-/** The same for a table channel. */
-export function parseTableEvent(raw: unknown): Parsed<TableEvent> {
-  if (namesNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema' }
-  if (hasAnyUnknownKind(raw, TABLE_EVENT_DISCRIMINATORS)) return { kind: 'unknown', reason: 'unknown_kind' }
-  const result = TableEventSchema.safeParse(raw)
-  return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
+/** One entry of a `snapshot` frame, read on its own. An entry this client cannot
+ * use keeps its slot name and its sequence when those parse, so one unreadable
+ * entry does not discard the readable table slot beside it. */
+export type TableSlotRead =
+  | { kind: 'ok'; value: TableSlot }
+  | { kind: 'unknown'; reason: UnknownReason; slot: TableSlotName | null; seq: number | null }
+
+/**
+ * One table frame, read. Decision X-4: what a table client cannot read, it
+ * **blanks** — so the placeholder has to say *which* region to blank and which
+ * mark to advance, or the natural implementation skips the frame and the page
+ * keeps showing what the GM believes is gone.
+ *
+ * This is not a future-version problem only. The client checks a projection key
+ * against its OWN copy of the field definitions, so a server one deploy ahead of
+ * a table bundle — a type gained a revealable field, "no bump" by the versioning
+ * table — makes the frame unreadable today.
+ */
+export type TableFrame =
+  | { kind: 'ok'; value: TableEvent }
+  | {
+      kind: 'unknown'
+      reason: UnknownReason
+      /** The region a `slot` frame names, when it parses; `null` otherwise. */
+      slot: TableSlotName | null
+      /** That frame's sequence, when it parses; `null` otherwise. */
+      seq: number | null
+      /** Per-entry results for a `snapshot` frame; `null` for any other kind. */
+      slots: TableSlotRead[] | null
+    }
+
+const TableSlotNameSchema = z.enum(TABLE_SLOT_NAMES)
+
+/** What is still readable about a frame or an entry this client cannot use. */
+function readableMarks(raw: unknown): { slot: TableSlotName | null; seq: number | null } {
+  if (!isRecord(raw)) return { slot: null, seq: null }
+  const slot = TableSlotNameSchema.safeParse(raw.slot)
+  const seq = SlotSequenceSchema.safeParse(raw.seq)
+  return { slot: slot.success ? slot.data : null, seq: seq.success ? seq.data : null }
 }
 
-export interface ReadSnapshot<T> {
+function parseTableSlot(raw: unknown): TableSlotRead {
+  const result = TableSlotSchema.safeParse(raw)
+  if (result.success) return { kind: 'ok', value: result.data }
+  const reason: UnknownReason = hasUnknownKind(raw, ['content', 'content_kind'], CONTENT_KINDS) ? 'unknown_kind' : 'invalid'
+  return { kind: 'unknown', reason, ...readableMarks(raw) }
+}
+
+/** The same for a table channel, keeping whatever is readable (X-4). */
+export function parseTableEvent(raw: unknown): TableFrame {
+  const unreadable = (reason: UnknownReason): TableFrame => ({
+    kind: 'unknown',
+    reason,
+    ...readableMarks(raw),
+    slots: isRecord(raw) && raw.event === 'snapshot' && Array.isArray(raw.slots) ? raw.slots.map(parseTableSlot) : null,
+  })
+  if (namesNewerVersion(raw)) return unreadable('newer_schema')
+  if (hasAnyUnknownKind(raw, TABLE_EVENT_DISCRIMINATORS)) return unreadable('unknown_kind')
+  const result = TableEventSchema.safeParse(raw)
+  return result.success ? { kind: 'ok', value: result.data } : unreadable('invalid')
+}
+
+export interface ReadSnapshot<F> {
   /** One item per frame the server sent, none dropped; the last is `ready`. */
-  frames: Array<Parsed<T>>
+  frames: F[]
 }
 
 const SnapshotEnvelopeSchema = z.object({
@@ -2171,11 +2227,11 @@ function oneRevealPictureRead(frames: readonly unknown[], live: boolean): boolea
   return pictures === (live ? 1 : 0)
 }
 
-function parseSnapshot<T>(
+function parseSnapshot<F>(
   raw: unknown,
-  frame: (item: unknown) => Parsed<T>,
+  frame: (item: unknown) => F,
   live: (frames: readonly unknown[]) => boolean,
-): Parsed<ReadSnapshot<T>> {
+): Parsed<ReadSnapshot<F>> {
   if (isRecord(raw)) {
     const version = versionNamed(raw.schema_version)
     if (version !== null && version > CONTRACT_VERSION) return { kind: 'unknown', reason: 'newer_schema' }
@@ -2190,13 +2246,13 @@ function parseSnapshot<T>(
 
 /** How a channel reads its snapshot: the envelope strictly, each frame on its own,
  * so one frame from a newer server becomes one placeholder (ADR RT-4). */
-export function parseGmSnapshot(raw: unknown): Parsed<ReadSnapshot<GmEvent>> {
+export function parseGmSnapshot(raw: unknown): Parsed<ReadSnapshot<Parsed<GmEvent>>> {
   return parseSnapshot(raw, parseGmEvent, (frames) =>
     frames.some((item) => isRecord(item) && item.event === 'session' && isRecord(item.session) && item.session.state === 'live'),
   )
 }
 
-export function parseTableSnapshot(raw: unknown): Parsed<ReadSnapshot<TableEvent>> {
+export function parseTableSnapshot(raw: unknown): Parsed<ReadSnapshot<TableFrame>> {
   // TableSessionEvent exists only while live — TABLE-9 makes `inactive` its own
   // kind — so holding a session frame *is* the liveness test here.
   return parseSnapshot(raw, parseTableEvent, (frames) => frames.some((item) => isRecord(item) && item.event === 'session'))
