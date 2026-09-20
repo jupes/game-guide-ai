@@ -2092,6 +2092,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   TableSessionAnswer: TableSessionAnswerSchema,
   Capabilities: CapabilitiesSchema,
   RevealAudience: RevealAudienceSchema,
+  RevealSlotRef: RevealSlotRefSchema,
   RevealRequest: RevealRequestSchema,
   RevealStopRequest: RevealStopRequestSchema,
   RevealLive: RevealLiveSchema,

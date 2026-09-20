@@ -40,6 +40,7 @@
     "TableSessionRequest",
     "TableSessionAnswer",
     "RevealAudience",
+    "RevealSlotRef",
     "RevealRequest",
     "RevealStopRequest",
     "RevealLive",

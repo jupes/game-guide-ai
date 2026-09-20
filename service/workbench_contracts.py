@@ -2814,6 +2814,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "TableSessionAnswer": TypeAdapter(TableSessionAnswer),
     "Capabilities": TypeAdapter(Capabilities),
     "RevealAudience": TypeAdapter(RevealAudience, config=_HIDE_INPUT),
+    "RevealSlotRef": TypeAdapter(RevealSlotRef, config=_HIDE_INPUT),
     "RevealRequest": TypeAdapter(RevealRequest),
     "RevealStopRequest": TypeAdapter(RevealStopRequest, config=_HIDE_INPUT),
     "RevealLive": TypeAdapter(RevealLive),
