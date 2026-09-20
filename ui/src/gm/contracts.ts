@@ -2159,7 +2159,23 @@ const SnapshotEnvelopeSchema = z.object({
   frames: z.array(z.unknown()).min(1).max(200),
 })
 
-function parseSnapshot<T>(raw: unknown, frame: (item: unknown) => Parsed<T>): Parsed<ReadSnapshot<T>> {
+/** ADR RT-4, REVEAL-13: a snapshot is COMPLETE before `ready`, so a live channel
+ * carries exactly one reveal picture and a channel with no live session carries
+ * none. The reader applies it too, not only the emitter: a GM tab whose picture
+ * failed to build would otherwise read `ok`, find no `snapshot` frame and render
+ * "nothing revealed" while the table shows a dossier — the one state REVEAL-13
+ * forbids. Counted on the RAW `event` values, so a picture this client cannot
+ * parse, or one from a newer server, still counts as a picture. */
+function oneRevealPictureRead(frames: readonly unknown[], live: boolean): boolean {
+  const pictures = frames.filter((item) => isRecord(item) && item.event === 'snapshot').length
+  return pictures === (live ? 1 : 0)
+}
+
+function parseSnapshot<T>(
+  raw: unknown,
+  frame: (item: unknown) => Parsed<T>,
+  live: (frames: readonly unknown[]) => boolean,
+): Parsed<ReadSnapshot<T>> {
   if (isRecord(raw)) {
     const version = versionNamed(raw.schema_version)
     if (version !== null && version > CONTRACT_VERSION) return { kind: 'unknown', reason: 'newer_schema' }
@@ -2168,17 +2184,22 @@ function parseSnapshot<T>(raw: unknown, frame: (item: unknown) => Parsed<T>): Pa
   if (!envelope.success) return { kind: 'unknown', reason: 'invalid' }
   const last = envelope.data.frames[envelope.data.frames.length - 1]
   if (!isRecord(last) || last.event !== 'ready') return { kind: 'unknown', reason: 'invalid' }
+  if (!oneRevealPictureRead(envelope.data.frames, live(envelope.data.frames))) return { kind: 'unknown', reason: 'invalid' }
   return { kind: 'ok', value: { frames: envelope.data.frames.map(frame) } }
 }
 
 /** How a channel reads its snapshot: the envelope strictly, each frame on its own,
  * so one frame from a newer server becomes one placeholder (ADR RT-4). */
 export function parseGmSnapshot(raw: unknown): Parsed<ReadSnapshot<GmEvent>> {
-  return parseSnapshot(raw, parseGmEvent)
+  return parseSnapshot(raw, parseGmEvent, (frames) =>
+    frames.some((item) => isRecord(item) && item.event === 'session' && isRecord(item.session) && item.session.state === 'live'),
+  )
 }
 
 export function parseTableSnapshot(raw: unknown): Parsed<ReadSnapshot<TableEvent>> {
-  return parseSnapshot(raw, parseTableEvent)
+  // TableSessionEvent exists only while live — TABLE-9 makes `inactive` its own
+  // kind — so holding a session frame *is* the liveness test here.
+  return parseSnapshot(raw, parseTableEvent, (frames) => frames.some((item) => isRecord(item) && item.event === 'session'))
 }
 
 /**

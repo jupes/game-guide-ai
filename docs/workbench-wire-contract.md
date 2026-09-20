@@ -828,6 +828,15 @@ snapshot is complete before `ready`, so a client that has seen `ready` knows
 every slot it is entitled to, and a GM client never reads missing state as
 "nothing revealed" (ADR RT-4, REVEAL-13).
 
+The **readers apply that rule too**, not only the emitter: `parseGmSnapshot` and
+`parseTableSnapshot` answer `{ kind: 'unknown', reason: 'invalid' }` for a live
+resource with no picture, for a resource with no live session that carries one,
+and for two pictures. They count on the raw `event` values, so a picture this
+bundle cannot parse still counts as a picture and becomes one placeholder inside
+an otherwise readable snapshot. Without this a GM tab in RT-9's polling mode
+would read a snapshot whose picture failed to build as `ok`, find no `snapshot`
+frame, and render *nothing revealed* while the table shows a dossier.
+
 ### Refusals
 
 A mask the server will not accept is a **422** whose error names the keys at

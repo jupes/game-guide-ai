@@ -1014,6 +1014,40 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     for (const junk of [null, 42, {}, { schema_version: 1, frames: [] }]) expect(parseGmSnapshot(junk).kind).toBe('unknown')
   })
 
+  it('applies the one-reveal-picture rule where the readers are, not only where the emitter is (REVEAL-13)', () => {
+    // A GM tab in RT-9's polling mode gets a GmSnapshot whose picture failed to
+    // build; if parseGmSnapshot answered `ok`, the indicator would find no
+    // `snapshot` frame and render "nothing revealed" while the table shows a
+    // dossier — the one state REVEAL-13 forbids. Every invalid example that
+    // breaks the rule is refused by the reader as well as by the schema.
+    const byName = (doc: Fixture, name: string): unknown => {
+      const found = doc.invalid.find((example) => example.name === name)
+      if (!found) throw new Error(`no invalid example named ${name}`)
+      return expand(found.value)
+    }
+    const gmSnapshots = readJson<Fixture>(join(FIXTURES, 'GmSnapshot.json'))
+    const tableSnapshots = readJson<Fixture>(join(FIXTURES, 'TableSnapshot.json'))
+
+    for (const name of ['a live session whose snapshot carries no reveal picture', 'two snapshot frames', 'a reveal picture with no session running']) {
+      expect([name, parseGmSnapshot(byName(gmSnapshots, name))]).toEqual([name, { kind: 'unknown', reason: 'invalid' }])
+    }
+    for (const name of ['a live table whose snapshot carries no reveal picture', 'two snapshot frames', 'an inactive table carrying a reveal picture']) {
+      expect([name, parseTableSnapshot(byName(tableSnapshots, name))]).toEqual([name, { kind: 'unknown', reason: 'invalid' }])
+    }
+    // Counted on the RAW event values: a picture this bundle cannot parse is
+    // still a picture, so a live snapshot whose one picture is unreadable stays
+    // `ok` with one placeholder in it, rather than reading as "no picture".
+    const live = tableSnapshots.valid[0].value as { frames: Array<Record<string, unknown>> }
+    const unreadable = live.frames.map((frame) => (frame.event === 'snapshot' ? { ...frame, slots: 'not a list' } : frame))
+    const read = parseTableSnapshot({ schema_version: 1, frames: unreadable })
+    expect(read.kind).toBe('ok')
+    if (read.kind !== 'ok') return
+    expect(read.value.frames.some((frame) => frame.kind === 'unknown')).toBe(true)
+    // And every valid example still reads.
+    for (const example of gmSnapshots.valid) expect([example.name, parseGmSnapshot(expand(example.value)).kind]).toEqual([example.name, 'ok'])
+    for (const example of tableSnapshots.valid) expect([example.name, parseTableSnapshot(expand(example.value)).kind]).toEqual([example.name, 'ok'])
+  })
+
   it('reports a broken frame as invalid and never throws', () => {
     expect(parseTableEvent({ ...first(table, 'ambience is playing'), slot: 'one_shot' })).toEqual({ kind: 'unknown', reason: 'invalid' })
     for (const junk of [null, undefined, 42, 'x', [], {}, { event: 7 }]) {
