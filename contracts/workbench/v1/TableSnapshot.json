@@ -122,7 +122,7 @@
   "invalid": [
     {
       "name": "a snapshot that does not end with ready",
-      "why": "RT-4",
+      "why": "ADR RT-4, TABLE-7: `ready` is the boundary before which a client trusts nothing, so a snapshot that never reaches it is not one",
       "value": {
         "schema_version": 1,
         "frames": [
@@ -131,6 +131,53 @@
             "event": "session",
             "audio": true,
             "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "ambience",
+            "seq": 7,
+            "playing": {
+              "asset": {
+                "handle": "hdl_1a2b3c4d5e6f7a8b",
+                "kind": "audio",
+                "media_type": "audio/mpeg",
+                "width": null,
+                "height": null,
+                "duration_ms": 300000
+              },
+              "started_at": "2026-09-16T19:31:24Z",
+              "start_offset_ms": 0,
+              "loop": true,
+              "duration_ms": 300000
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "one_shot",
+            "seq": 4,
+            "playing": null
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": "Sister Ondrey Vashe"
+                    }
+                  ]
+                }
+              }
+            ]
           }
         ]
       }

@@ -1558,6 +1558,13 @@ export type RevealStopRequest = z.infer<typeof RevealStopRequestSchema>
 export const CONTENT_KINDS = ['document'] as const
 export type ContentKind = (typeof CONTENT_KINDS)[number]
 
+/** REVEAL-5, ED-9: "present and non-empty" has to mean a player sees something.
+ * A value that trimming empties renders as a blank heading on a table, so a
+ * projection refuses it where a document would keep it. The trim is the
+ * contract's own (`trimWire`), so both sides agree on what "blank" is. */
+const notBlank = <T extends ZodType<string>>(schema: T) =>
+  schema.refine((value) => trimWire(value) !== '', { message: 'a revealed value is blank if trimming empties it' })
+
 /** ED-9: a block a player is shown carries scores, not gaps. A document may hold
  * `{ str: null }` for a creature that lacks an ability; a projection of it leaves
  * the key out, so no cell is drawn empty under a masked heading. */
@@ -1571,7 +1578,10 @@ const PresentAbilitiesSchema = z
 /** One named block as a player sees it: a heading **and** its body, both present.
  * A document may hold a trait whose text is still empty; projecting it would put a
  * lone heading on a table, which REVEAL-5's *present and non-empty* rules out. */
-const PresentEntrySchema = z.object({ name: oneLine(1, TEXT_FIELD_MAX_CHARS), text: text(1, LIST_ITEM_MAX_CHARS) })
+const PresentEntrySchema = z.object({
+  name: notBlank(oneLine(1, TEXT_FIELD_MAX_CHARS)),
+  text: notBlank(text(1, LIST_ITEM_MAX_CHARS)),
+})
 
 /** The same kinds a document declares, but a masked key is **present and
  * non-empty** in the pinned version (REVEAL-5, ED-9), so nothing clears to a
@@ -1583,11 +1593,11 @@ const PresentEntrySchema = z.object({ name: oneLine(1, TEXT_FIELD_MAX_CHARS), te
 function projectionValueSchema(kind: FieldKind): ZodType<unknown> {
   switch (kind) {
     case 'text':
-      return oneLine(1, TEXT_FIELD_MAX_CHARS)
+      return notBlank(oneLine(1, TEXT_FIELD_MAX_CHARS))
     case 'prose':
-      return text(1, PROSE_FIELD_MAX_CHARS)
+      return notBlank(text(1, PROSE_FIELD_MAX_CHARS))
     case 'text_list':
-      return z.array(text(1, LIST_ITEM_MAX_CHARS)).min(1).max(LIST_FIELD_MAX_ITEMS)
+      return z.array(notBlank(text(1, LIST_ITEM_MAX_CHARS))).min(1).max(LIST_FIELD_MAX_ITEMS)
     case 'asset':
       return TableAssetRefSchema
     case 'integer':

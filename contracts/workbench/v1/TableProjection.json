@@ -586,6 +586,37 @@
       }
     },
     {
+      "name": "a value that is only whitespace",
+      "why": "REVEAL-5, ED-9: a value that trimming empties is a blank heading on a table, and `present and non-empty` has to mean a player sees something — the contract's own trim decides, so both sides agree on what blank is",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "voice",
+            "value": "   "
+          }
+        ]
+      }
+    },
+    {
+      "name": "a list item that is only whitespace",
+      "why": "REVEAL-5: the same inside a list — one blank bullet under a masked heading is what `present and non-empty` rules out",
+      "value": {
+        "content_kind": "document",
+        "type": "lore",
+        "fields": [
+          {
+            "key": "rumours",
+            "value": [
+              "The bell still rings under the water.",
+              " "
+            ]
+          }
+        ]
+      }
+    },
+    {
       "name": "the same key twice",
       "why": "a projection is built from a mask, which names each field once (ED-17)",
       "value": {

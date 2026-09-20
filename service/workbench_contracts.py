@@ -2112,13 +2112,33 @@ class ContentKind(str, Enum):
     DOCUMENT = "document"
 
 
+def _not_blank(value: str) -> str:
+    """Decisions REVEAL-5, ED-9: *present and non-empty* has to mean a player
+    sees something. A value that trimming empties renders as a blank heading on
+    a table, so a projection refuses it where a document would keep it — and the
+    trim is the contract's own, so both sides agree on what "blank" is."""
+    if not trim(value):
+        raise ValueError("a revealed value is blank if trimming empties it")
+    return value
+
+
 _PresentText = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=TEXT_FIELD_MAX_CHARS),
     AfterValidator(_one_line),
+    AfterValidator(_not_blank),
 ]
-_PresentProse = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=PROSE_FIELD_MAX_CHARS)]
-_PresentList = Annotated[list[_ListItem], Field(min_length=1, max_length=LIST_FIELD_MAX_ITEMS)]
+_PresentProse = Annotated[
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=PROSE_FIELD_MAX_CHARS),
+    AfterValidator(_not_blank),
+]
+_PresentListItem = Annotated[
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=LIST_ITEM_MAX_CHARS),
+    AfterValidator(_not_blank),
+]
+_PresentList = Annotated[list[_PresentListItem], Field(min_length=1, max_length=LIST_FIELD_MAX_ITEMS)]
 #: Decision ED-9: a block a player is shown carries scores, not gaps. A document
 #: may hold ``{"str": null}`` for a creature that lacks an ability; a projection
 #: of it leaves the key out, so no cell is drawn empty under a masked heading.
@@ -2131,12 +2151,8 @@ class _PresentEntry(_Contract):
     would put a lone heading on a table, which REVEAL-5's *present and non-empty*
     rules out — so the Confirm is refused rather than half-shown."""
 
-    name: Annotated[
-        str,
-        StringConstraints(strict=True, min_length=1, max_length=TEXT_FIELD_MAX_CHARS),
-        AfterValidator(_one_line),
-    ]
-    text: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=LIST_ITEM_MAX_CHARS)]
+    name: _PresentText
+    text: _PresentListItem
 
 
 _PresentEntryList = Annotated[list[_PresentEntry], Field(min_length=1, max_length=LIST_FIELD_MAX_ITEMS)]
