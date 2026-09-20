@@ -267,18 +267,28 @@ the enforcement — and what it enforces is ED-18(a)'s "closed, per-action
 which keys a row of that action may carry and what each one is: a minted id of a
 named prefix, one of a closed set of codes, a Workbench field key (ED-2), a
 bounded list of them (which is how `1kg.7.1` will record a reveal's mask), a
-whole number or a boolean. **No kind admits a free string.** A key the registry
-does not list is refused, and the refusal names neither the key nor the value.
+whole number or a boolean. A key the registry does not list is refused, and the
+refusal names neither the key nor the value.
 
-The columns beside it are closed the same way: `campaign_id_tombstone` is a
-minted `cmp_` id, the two references are minted ids or the GM's numeric user id,
-`object_kind` and `reason_code` are field keys, and `authz_revision` carries the
-same `>= 0` the migration does. The rule this replaced was one shape test over
-every action at once, and it could not tell a one-word alias from an identifier
-— `{"alias": "Rook"}` passed it. It is refused now because `alias` is a key of
-no action and `Rook` is a value of no kind. All of this is stricter than
-`jobs.check_payload`, which admits any short string, because a job is read and
-deleted while an audit row outlives everything it describes.
+**Two kinds are open by construction, and a caller has to know which.** A
+`MintedId` accepts any well-formed body behind its prefix — the tombstone has no
+foreign key (ED-26), so nothing can ask whether that row exists — and what it
+closes is the prefix and the length. `FIELD_KEY(S)` is a shape: which keys a
+document may have belongs to its type, and the ledger does not know the types,
+so the caller recording a reveal's mask is the one that must check its keys
+against the type's declared keys. Everything else is a closed set.
+
+The columns beside `detail` are closed the same way: `campaign_id_tombstone` is
+a minted `cmp_` id, the two references are minted ids or the GM's numeric user
+id, `object_kind` is one of five `ObjectKind` members, `reason_code` is one of
+the codes its own action declares, and `authz_revision` carries the same `>= 0`
+the migration does. The rule this replaced was one shape test over every action
+at once, and it could not tell a one-word alias from an identifier —
+`{"alias": "Rook"}` passed it, and so did `object_kind="rook"`. Both are refused
+now. No kind holds the client-minted command id a reveal row needs; `1kg.7.1`
+decides how that is recorded. All of this is stricter than `jobs.check_payload`,
+which admits any short string, because a job is read and deleted while an audit
+row outlives everything it describes.
 
 ### The campaign lock
 

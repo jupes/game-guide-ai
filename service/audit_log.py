@@ -25,22 +25,39 @@ per-action `detail` of ids, codes and keys". `ACTION_DETAIL` says, for each
 action, exactly which keys a row of that action may carry and what each one is —
 a minted id of a named prefix, one of a closed set of codes, a Workbench field
 key (ED-2), a bounded list of them (which is how `1kg.7.1` records a reveal's
-mask), a whole number or a boolean. A key the registry does not list is refused;
-**there is no kind that admits a free string**, so an alias, a title, a filename
-or a sentence cannot be recorded whatever it is called. The earlier rule here
-was a single shape test over every action at once, and it could not tell a
-one-word alias from an identifier; this one does not have to, because `alias` is
-not a key of any action and `"Rook"` is not a value of any kind.
+mask), a whole number or a boolean. A key the registry does not list is refused,
+so an alias, a title, a filename or a sentence cannot be recorded whatever it is
+called: `alias` is a key of no action and `"Rook"` is a value of no kind.
 
-The same closure applies to the columns beside it: `campaign_id_tombstone` is a
-minted `cmp_` identifier, `actor_ref` and `object_ref` are minted identifiers or
-the GM's numeric user id, `object_kind` and `reason_code` are field keys, and
-`authz_revision` is a whole number that is never negative — the bound
-`0005_audit_events.sql` also carries, so the twin and the database agree. Every
-refusal names the **field** and never the value: a validator that quoted the
-offending value back would be the leak it exists to prevent, which is also why
-the enum conversions are wrapped rather than left to raise Python's own
-`ValueError` with the value in it.
+**What is closed, and what is only bounded.** Two kinds are open by
+construction, and a caller has to know which:
+
+* a `MintedId` accepts **any well-formed body** behind its prefix, because the
+  tombstone has no foreign key (ED-26) and nothing here can ask whether that row
+  exists. `prt_The-Hooded-Stranger-is-Ondrey` is a well-formed body. What the
+  kind does close is the *prefix* and the *length*, so the id of another kind of
+  thing, or a name that is not id-shaped at all, is still refused.
+* `Shape.FIELD_KEY(S)` is a **shape**, not a vocabulary: the keys a document may
+  have belong to its type, and this module does not know the types. A caller
+  that records a reveal's mask must check the keys against the document type's
+  declared keys before it gets here — the bound on the list is a bound, not a
+  closure.
+
+Everything else is a closed set: the action, the actor kind, the object kind,
+the decision, a `OneOf`'s codes, and the reason codes each action declares. No
+kind holds the client-minted command id ED-18(a) wants on a reveal row, and none
+is added here: how that row records it is `1kg.7.1`'s decision.
+
+The same closure applies to the columns beside `detail`: `campaign_id_tombstone`
+is a minted `cmp_` identifier, `actor_ref` and `object_ref` are minted
+identifiers or the GM's numeric user id, `object_kind` is one of `ObjectKind`,
+`reason_code` is one of the codes its own action declares, and `authz_revision`
+is a whole number that is never negative — the bound `0005_audit_events.sql`
+also carries, so the twin and the database agree. Every refusal names the
+**field** and never the value: a validator that quoted the offending value back
+would be the leak it exists to prevent, which is also why the enum conversions
+are wrapped rather than left to raise Python's own `ValueError` with the value
+in it.
 
 **Rows outlive their campaign.** `campaign_id_tombstone` has no foreign key, so
 deleting a campaign — which SEC-36 makes take everything else with it — leaves
@@ -74,6 +91,9 @@ USER_ID = re.compile(r"^[1-9][0-9]{0,18}$")
 #: A mask is at most the document type's fields; forty is far past any of them
 #: and still a bound, which an unbounded list in a retained row would not be.
 DETAIL_MAX_FIELD_KEYS = 40
+#: What a whole number in a row may be: a count, a generation or a revision —
+#: never negative, and never wider than the bigint a column would hold it in.
+WHOLE_NUMBER_MAX = 2**63 - 1
 #: No action's registry entry may grow past this without a second look.
 DETAIL_MAX_KEYS = 20
 
@@ -112,6 +132,24 @@ class ActorKind(str, Enum):
     PARTICIPANT = "participant"
     GUEST = "guest"
     SYSTEM = "system"
+
+
+class ObjectKind(str, Enum):
+    """What the decision was **about** — one of the five things the sixteen
+    actions act on, and nothing else.
+
+    Closed for the same reason `AuditAction` is, and for one more: a lower-case
+    key is a *shape*, so `rook` and `the_hooded_stranger_is_ondrey` both passed
+    the rule this replaced, in a row that outlives its campaign by design
+    (ED-26). The column stays TEXT — a later bead adds a member here in the same
+    change that adds its action, without a migration.
+    """
+
+    CAMPAIGN = "campaign"
+    TABLE_SESSION = "table_session"
+    PARTICIPANT = "participant"
+    ENROLMENT_CODE = "enrolment_code"
+    DEVICE_CREDENTIAL = "device_credential"
 
 
 class Decision(str, Enum):
@@ -154,8 +192,14 @@ Kind = MintedId | OneOf | Shape
 def accepts(kind: Kind, value: DetailValue) -> bool:
     """Whether `value` is of `kind`. Pure, and public because a later bead adds
     its own `ACTION_DETAIL` entry and has to be able to test it — `1kg.7.1`'s
-    reveal rows carry `Shape.FIELD_KEYS`, the mask ED-18(a) asks for, and
-    nothing here has to change for that.
+    reveal rows carry `Shape.FIELD_KEYS`, the mask ED-18(a) asks for, and this
+    function already answers for it. What that bead still has to decide is what
+    the rest of a reveal row holds: **no kind here fits the command id** ED-18(a)
+    puts on one, because the wire contract has the client mint it and no prefix
+    of this schema's registry is its. And `Shape.FIELD_KEYS` checks the shape of
+    a mask's keys, never that they are keys of the document type in question —
+    that comparison is the recording caller's, and there is nowhere in an audit
+    row to do it.
 
     `None` is accepted for every kind: it is how a declared key says "this row
     has no such value", and a JSON null carries nothing.
@@ -175,8 +219,12 @@ def accepts(kind: Kind, value: DetailValue) -> bool:
             and all(isinstance(key, str) and FIELD_KEY.fullmatch(key) for key in value)
         )
     if kind is Shape.WHOLE_NUMBER:
-        # bool is an int in Python and is not a number in an audit row.
-        return isinstance(value, int) and not isinstance(value, bool)
+        # bool is an int in Python and is not a number in an audit row; a count,
+        # a generation and a revision are never negative; and the widest column
+        # that could hold one is a bigint, so an integer of any size is not one.
+        return (
+            isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= WHOLE_NUMBER_MAX
+        )
     return isinstance(value, bool)
 
 
@@ -246,6 +294,23 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     },
 }
 
+#: The closed set of reason codes **per action**, beside `ACTION_DETAIL` and
+#: keyed by the same closed set. `reason_code` used to be shape-checked like a
+#: field key, which made every lower-case word a reason — `rook` among them.
+#: An action with no reason to record has the empty set, which is an answer
+#: rather than an omission, and `None` is legal for every action: most rows are
+#: an allowed decision that needs no explaining. A bead that adds a refusal adds
+#: its code here in the change a reviewer reads, as it does for the detail.
+ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
+    AuditAction.PARTICIPANT_REMOVED: frozenset({"gm_removed"}),
+    AuditAction.JOIN_BURST_REFUSED: frozenset(JOIN_BOUND.codes),
+    **{
+        action: frozenset()
+        for action in AuditAction
+        if action not in (AuditAction.PARTICIPANT_REMOVED, AuditAction.JOIN_BURST_REFUSED)
+    },
+}
+
 
 # ── The checks every row goes through ────────────────────────────────────────
 
@@ -301,20 +366,45 @@ def check_ref(name: str, value: str | None) -> str | None:
 
 
 def check_field_key(what: str, value: str) -> str:
-    """ED-2's flat key, which is also the shape of an object kind and of a
-    reason code: `participant`, `table_session`, `not_eligible` — a kind or a
-    code, never a name and never a sentence."""
+    """ED-2's flat key: `passive_perception`, `motives` — a key of a Workbench
+    field, never a name and never a sentence.
+
+    A **shape**, which is all a field key can be: the set of keys belongs to a
+    document type, and this module does not know the types. That is why neither
+    the object kind nor the reason code goes through it any more — for those two
+    a closed vocabulary exists, and a shape would admit `rook`.
+    """
     if not isinstance(value, str) or FIELD_KEY.fullmatch(value) is None:
         raise ValueError(f"{what} is a lowercase key of at most 40 characters, never text")
     return value
 
 
-def check_reason_code(reason_code: str | None) -> str | None:
-    """A code, not a sentence: `not_eligible`, never "Rook may not see Wren's
-    passive perception"."""
+def check_object_kind(object_kind: ObjectKind | str) -> str:
+    """What the row is about, as a member. Wrapped like `check_action` so that
+    the refusal does not repeat the value — `ObjectKind('the_hooded_stranger')`
+    raises Python's own message, which quotes it."""
+    try:
+        return ObjectKind(object_kind).value
+    except ValueError:
+        raise ValueError("an audit row's object kind is one the ledger knows, never text") from None
+
+
+def check_reason_code(action: AuditAction, reason_code: str | None) -> str | None:
+    """One of the codes **this action** declares, or nothing.
+
+    Per action rather than one list, for the reason ED-18(a) gives for `detail`:
+    the vocabulary that makes sense of a refused join is not the one that makes
+    sense of a removed seat, and a single list would grow until it was a shape
+    again. The refusal may name the set — it is this file's own — but never the
+    value it was given.
+    """
     if reason_code is None:
         return None
-    return check_field_key("a reason code", reason_code)
+    declared = ACTION_REASONS[action]
+    if not isinstance(reason_code, str) or reason_code not in declared:
+        carries = ", ".join(sorted(declared)) or "no reason code at all"
+        raise ValueError(f"an audit row for {action.value} carries {carries}, never text")
+    return reason_code
 
 
 def check_authz_revision(authz_revision: int | None) -> int | None:
@@ -385,7 +475,7 @@ class AuditLog(Protocol):
         campaign_id: str,
         actor_kind: ActorKind,
         action: AuditAction,
-        object_kind: str,
+        object_kind: ObjectKind | str,
         decision: Decision,
         actor_ref: str | None = None,
         object_ref: str | None = None,
@@ -427,7 +517,7 @@ def _checked(
     campaign_id: str,
     actor_kind: ActorKind | str,
     action: AuditAction | str,
-    object_kind: str,
+    object_kind: ObjectKind | str,
     decision: Decision | str,
     actor_ref: str | None,
     object_ref: str | None,
@@ -441,11 +531,11 @@ def _checked(
         campaign_id=check_campaign_id(campaign_id),
         actor_kind=check_actor_kind(actor_kind),
         action=chosen.value,
-        object_kind=check_field_key("an object kind", object_kind),
+        object_kind=check_object_kind(object_kind),
         decision=check_decision(decision),
         actor_ref=check_ref("actor reference", actor_ref),
         object_ref=check_ref("object reference", object_ref),
-        reason_code=check_reason_code(reason_code),
+        reason_code=check_reason_code(chosen, reason_code),
         authz_revision=check_authz_revision(authz_revision),
         detail=check_detail(chosen, detail),
         created_at=now_or(now),
@@ -477,7 +567,7 @@ class PostgresAuditLog:
         campaign_id: str,
         actor_kind: ActorKind,
         action: AuditAction,
-        object_kind: str,
+        object_kind: ObjectKind | str,
         decision: Decision,
         actor_ref: str | None = None,
         object_ref: str | None = None,
@@ -560,7 +650,7 @@ class InMemoryAuditLog:
         campaign_id: str,
         actor_kind: ActorKind,
         action: AuditAction,
-        object_kind: str,
+        object_kind: ObjectKind | str,
         decision: Decision,
         actor_ref: str | None = None,
         object_ref: str | None = None,

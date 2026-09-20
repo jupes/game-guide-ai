@@ -22,8 +22,10 @@ from pathlib import Path
 import pytest
 
 from service import audit_log
+from service import campaign_identity as ident
 from service.audit_log import (
     ACTION_DETAIL,
+    ACTION_REASONS,
     DETAIL_MAX_FIELD_KEYS,
     DETAIL_MAX_KEYS,
     FIELD_KEY,
@@ -33,6 +35,7 @@ from service.audit_log import (
     Decision,
     InMemoryAuditLog,
     MintedId,
+    ObjectKind,
     OneOf,
     Shape,
     accepts,
@@ -223,7 +226,14 @@ def test_a_closed_code_is_one_of_the_agreed_set_and_nothing_else():
         (Shape.FIELD_KEY, "passive_perception", True),
         (Shape.FIELD_KEY, "The Hooded Stranger", False),
         (Shape.WHOLE_NUMBER, 2, True),
+        (Shape.WHOLE_NUMBER, 0, True),
         (Shape.WHOLE_NUMBER, True, False),
+        # G-3: a count, a generation and a revision are all non-negative, and
+        # the column that would hold one is a bigint.
+        (Shape.WHOLE_NUMBER, -1, False),
+        (Shape.WHOLE_NUMBER, 2**63 - 1, True),
+        (Shape.WHOLE_NUMBER, 2**63, False),
+        (Shape.WHOLE_NUMBER, 10**40, False),
         (Shape.FLAG, True, True),
         (Shape.FLAG, 1, False),
         (MintedId("prt_"), PARTICIPANT, True),
@@ -249,7 +259,19 @@ def test_the_kinds_a_later_bead_will_need_are_here_and_bounded(kind, value, ok):
 )
 @pytest.mark.parametrize(
     "content",
-    ["Wren the Unseen", "The Nocturne of Vex", "session notes.pdf", "Rook saw the wrong card", "Rook"],
+    [
+        "Wren the Unseen",
+        "The Nocturne of Vex",
+        "session notes.pdf",
+        "Rook saw the wrong card",
+        "Rook",
+        # G-3: the same two in the shape `object_kind` and `reason_code` used to
+        # admit. A lower-case key is a key, so the shape rule could not tell
+        # ED-20's canonical secret from a vocabulary word — and an audit row
+        # outlives the campaign it describes by design (ED-26).
+        "the_hooded_stranger_is_ondrey",
+        "rook",
+    ],
 )
 def test_no_string_field_of_a_row_accepts_content(field, content):
     """Every string a caller can put in a row, against every kind of content the
@@ -285,20 +307,58 @@ def test_the_campaign_a_row_names_is_a_minted_campaign_id():
                 _record(log, unit, campaign_id=refused)
 
 
-def test_the_object_kind_is_a_kind_and_not_a_name():
+def test_the_object_kind_is_one_of_the_ledgers_own_kinds():
+    """G-3. A lower-case key was a shape, not a vocabulary: `rook` passed it, and
+    so did ED-20's secret spelled with underscores. The kinds are a closed enum
+    now — exactly the things the registered actions are about — and the member
+    is what is written, so the column stays TEXT and a later bead adds a kind
+    the way it adds an action."""
     log, db = InMemoryAuditLog(), InMemoryDatabase()
     with db.transaction() as unit:
+        assert _record(log, unit, object_kind=ObjectKind.TABLE_SESSION).object_kind == "table_session"
         assert _record(log, unit, object_kind="table_session").object_kind == "table_session"
-        with pytest.raises(ValueError, match="never text"):
-            _record(log, unit, object_kind="the session Rook joined")
+        for refused in ("the session Rook joined", "rook", "session", ""):
+            with pytest.raises(ValueError, match="never text"):
+                _record(log, unit, object_kind=refused)
 
 
-@pytest.mark.parametrize("reason", ["", "r" * 41, "not eligible", "Rook may not see that"])
-def test_a_reason_is_a_code_not_a_sentence(reason):
+def test_every_kind_the_ledger_knows_is_a_thing_the_schema_mints_an_id_for():
+    """The other direction, so the enum cannot quietly become somewhere to put a
+    word: every member names one of the things `campaign_identity` mints an
+    identifier for. `table_credential` is not one of them because no registered
+    action is about a join credential — the bead that records one adds the
+    member together with its action, as `AuditAction`'s docstring says."""
+    minted = {audit_log.ObjectKind(kind) for kind in ("campaign", "participant", "table_session")}
+    assert minted <= set(ObjectKind)
+    assert {kind.value for kind in ObjectKind} == {
+        "campaign", "table_session", "participant", "enrolment_code", "device_credential",
+    }
+    assert len(ObjectKind) < len(ident.PREFIXES), "table_credential has no action yet"
+
+
+@pytest.mark.parametrize("reason", ["", "r" * 41, "not eligible", "Rook may not see that", "rook"])
+def test_a_reason_is_one_of_the_codes_its_own_action_declares(reason):
+    """G-3. `check_field_key` made a reason code a shape too, so any lower-case
+    word was a reason. The set is per action, beside `ACTION_DETAIL`: a bead that
+    needs a new reason declares it in the same change a reviewer reads."""
     with pytest.raises(ValueError, match="never text"):
-        check_reason_code(reason)
-    assert check_reason_code("not_eligible") == "not_eligible"
-    assert check_reason_code(None) is None
+        check_reason_code(AuditAction.PARTICIPANT_REMOVED, reason)
+    assert check_reason_code(AuditAction.PARTICIPANT_REMOVED, "gm_removed") == "gm_removed"
+    assert check_reason_code(AuditAction.PARTICIPANT_REMOVED, None) is None
+    assert check_reason_code(AuditAction.PARTICIPANT_ADDED, None) is None, "and None stays legal"
+    with pytest.raises(ValueError, match="never text"):
+        # A code of another action is not a code of this one.
+        check_reason_code(AuditAction.PARTICIPANT_ADDED, "gm_removed")
+
+
+def test_every_action_says_what_its_rows_may_carry_in_both_registries():
+    """An action with no entry can record nothing at all, and one with no reason
+    entry would fall over on the first refusal a route recorded. Both registries
+    are keyed by the same closed set, so this is the test that keeps them in step
+    with it."""
+    assert set(ACTION_DETAIL) == set(AuditAction)
+    assert set(ACTION_REASONS) == set(AuditAction)
+    assert ACTION_REASONS[AuditAction.PARTICIPANT_ADDED] == frozenset(), "an empty set is an answer"
 
 
 @pytest.mark.parametrize("revision", [-1, -5, 1.5, True])
