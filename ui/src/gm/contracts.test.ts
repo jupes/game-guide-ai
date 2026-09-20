@@ -53,6 +53,7 @@ import {
   TOOL_IDS,
   TOOL_RESULT_KIND,
   TableEventSchema,
+  TableProjectionSchema,
   ToolInvocationRequestSchema,
   codePointLength,
   isKnownErrorCode,
@@ -686,6 +687,29 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     const rendered = JSON.stringify(read)
     for (const secret of ['ast_77c1d0e2', 'ondrey-true-face.webp', 'she is the lich', 'asset_id', 'filename', 'gm_note']) {
       expect([secret, rendered.includes(secret)]).toEqual([secret, false])
+    }
+  })
+
+  it('strips every key the server is forbidden to emit, at the top of a projection too (SEC-15)', () => {
+    // The eleven `applies_to: ["server"]` examples in TableProjection.json are
+    // skipped by this suite by design — the server refuses them, a client
+    // tolerates and strips. "Tolerates" was never pinned: with a loose object
+    // they would have travelled to a player's device intact. This is that pin,
+    // read from the same fixtures so it cannot fall behind them.
+    const projection = readJson<Fixture>(join(FIXTURES, 'TableProjection.json'))
+    const serverOnly = projection.invalid.filter((example) => example.applies_to?.length === 1 && example.applies_to[0] === 'server')
+    expect(serverOnly.length).toBeGreaterThanOrEqual(11)
+
+    const declared = new Set(['content_kind', 'type', 'fields'])
+    for (const example of serverOnly) {
+      const parsed = TableProjectionSchema.safeParse(expand(example.value))
+      expect([example.name, parsed.success]).toEqual([example.name, true])
+      if (!parsed.success) continue
+      // Nothing beyond the three declared keys survives, at any depth.
+      expect([example.name, Object.keys(parsed.data).filter((key) => !declared.has(key))]).toEqual([example.name, []])
+      const smuggled = Object.keys(example.value as Record<string, unknown>).filter((key) => !declared.has(key))
+      const rendered = JSON.stringify(parsed.data)
+      for (const key of smuggled) expect([example.name, key, rendered.includes(key)]).toEqual([example.name, key, false])
     }
   })
 

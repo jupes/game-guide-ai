@@ -175,6 +175,28 @@ def test_a_mask_key_is_never_a_wildcard() -> None:
     assert all("all" not in wc.revealable_fields(doc_type) for doc_type in wc.DocumentTypeId)
 
 
+def test_a_field_kind_with_no_table_shape_refuses_rather_than_raising() -> None:
+    """When ``1kg.5.3`` adds a field kind, a projection of it must be **refused**
+    until this family gives it a shape — not raise a ``KeyError`` out of
+    validation and answer 500. TypeScript gets this from an exhaustive switch;
+    Python needs the lookup to miss safely.
+    """
+    kinds = {kind: wc._PROJECTION_VALUE[kind] for kind in wc._PROJECTION_VALUE}
+    try:
+        del wc._PROJECTION_VALUE[wc.FieldKind.TEXT]
+        with pytest.raises(ValidationError) as caught:
+            wc.TableProjection.model_validate(
+                {
+                    "content_kind": "document",
+                    "type": "npc",
+                    "fields": [{"key": "name", "label": "Name", "value": "Sister Ondrey Vashe"}],
+                }
+            )
+        assert "no shape a table can be shown" in str(caught.value)
+    finally:
+        wc._PROJECTION_VALUE.update(kinds)
+
+
 def test_no_request_a_table_client_sends_names_a_participant() -> None:
     """Decision threat model §8.2: the table client is not a restricted view of
     the GM API, it is a separate, smaller API with its own principal. A guest
