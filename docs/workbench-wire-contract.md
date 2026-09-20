@@ -273,8 +273,10 @@ sending it would give the two a chance to disagree.
 
 A document's `data` is flat: one value per field key, as bare JSON. What each key
 must hold is the type's definition, which is a registry fact
-(`registry.json`: `field_kinds`, `common_fields`, and `fields` per document type)
-kept as constants in both languages and pinned by both suites.
+(`registry.json`: `field_kinds`, `field_bounds`, `common_fields`, and `fields`
+per document type) kept as constants in both languages and pinned by both suites.
+The numbers in the table below are `field_bounds`, so each one is agreed in one
+place rather than kept twice.
 
 | Kind | On the wire | Cleared as |
 | --- | --- | --- |

@@ -133,6 +133,27 @@ def test_registry_constants_match_the_shared_registry() -> None:
         assert all(re.fullmatch(r"[a-z][a-z0-9_]{0,39}", key) for key in doc_type["fields"])
 
 
+def test_every_field_kinds_bounds_are_the_shared_registrys() -> None:
+    """Each kind's ceiling is one number, not two.
+
+    A bound kept as two independent constants can drift: each suite goes on
+    testing against its own, and the differential fuzz never reaches the values
+    in between. ``registry.json`` holds the number, and the boundary examples in
+    ``Document.json`` exercise it on both sides.
+    """
+    registry = json.loads((FIXTURES / "registry.json").read_text(encoding="utf-8"))
+    assert registry["field_bounds"] == {
+        "text_field_max_chars": wc.TEXT_FIELD_MAX_CHARS,
+        "prose_field_max_chars": wc.PROSE_FIELD_MAX_CHARS,
+        "list_field_max_items": wc.LIST_FIELD_MAX_ITEMS,
+        "list_item_max_chars": wc.LIST_ITEM_MAX_CHARS,
+        "integer_field_min": wc.INTEGER_FIELD_MIN,
+        "integer_field_max": wc.INTEGER_FIELD_MAX,
+        "ability_score_min": wc.ABILITY_SCORE_MIN,
+        "ability_score_max": wc.ABILITY_SCORE_MAX,
+    }
+
+
 def test_error_codes_are_safe_metric_labels() -> None:
     """Plan invariant 10: a code may become a metric label, so it is bounded and
     can never carry user text."""

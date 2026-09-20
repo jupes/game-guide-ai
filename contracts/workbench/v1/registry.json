@@ -25,6 +25,7 @@
   "accents": ["arcane"],
   "audiences": ["table", "owner"],
   "field_kinds": ["text", "prose", "text_list", "asset", "integer", "abilities", "entry_list"],
+  "field_bounds": {"text_field_max_chars": 200, "prose_field_max_chars": 20000, "list_field_max_items": 100, "list_item_max_chars": 2000, "integer_field_min": -1000000, "integer_field_max": 1000000, "ability_score_min": 0, "ability_score_max": 99},
   "common_fields": {"name": "text", "qualifier": "text", "tags": "text_list"},
   "common_field_rules": {"name": {"label": "Name", "editable": true, "revealable": true, "warning": null}, "qualifier": {"label": "Qualifier", "editable": true, "revealable": true, "warning": null}, "tags": {"label": "Tags", "editable": true, "revealable": false, "warning": null}},
   "document_types": [

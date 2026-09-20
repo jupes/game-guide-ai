@@ -45,6 +45,7 @@ import {
   LIST_ITEM_MAX_CHARS,
   LibraryQuerySchema,
   MEDIA_TYPES,
+  PROSE_FIELD_MAX_CHARS,
   RESULT_KINDS,
   TEXT_FIELD_MAX_CHARS,
   TABLE_EVENT_KINDS,
@@ -180,6 +181,7 @@ describe('registry facts', () => {
     library_categories: string[]
     tools: Array<{ id: string; result_kind: string; creates_doc_type: string | null; card_kind: string | null; brief: string }>
     field_kinds: string[]
+    field_bounds: Record<string, number>
     common_fields: Record<string, string>
     document_types: Array<{ id: string; library_category: string; type_version: number; fields: Record<string, string> }>
     asset_kinds: string[]
@@ -225,6 +227,23 @@ describe('registry facts', () => {
       expect(DOC_TYPE_FIELDS[type]).toEqual(row?.fields)
       expect(DOC_TYPE_VERSION[type]).toBe(row?.type_version)
     }
+  })
+
+  it("take every field kind's bounds from the shared registry, not from a second copy", () => {
+    // A bound kept as two independent constants can drift: each suite goes on
+    // testing against its own, and the differential fuzz never reaches the
+    // values in between. registry.json holds the number, and the boundary
+    // examples in Document.json exercise it on both sides.
+    expect(registry.field_bounds).toEqual({
+      text_field_max_chars: TEXT_FIELD_MAX_CHARS,
+      prose_field_max_chars: PROSE_FIELD_MAX_CHARS,
+      list_field_max_items: LIST_FIELD_MAX_ITEMS,
+      list_item_max_chars: LIST_ITEM_MAX_CHARS,
+      integer_field_min: INTEGER_FIELD_MIN,
+      integer_field_max: INTEGER_FIELD_MAX,
+      ability_score_min: ABILITY_SCORE_MIN,
+      ability_score_max: ABILITY_SCORE_MAX,
+    })
   })
 })
 
