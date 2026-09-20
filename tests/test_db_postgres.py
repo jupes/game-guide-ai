@@ -27,8 +27,13 @@ from _pg import connect, needs_db, throwaway_database
 from psycopg_pool import PoolClosed, PoolTimeout
 
 from service import migrations as mig
-from service.db import AdvisoryLock, Database, PoolSettings
+from service.db import AdvisoryLock, CampaignLockSettings, Database, PoolSettings
 from service.jobs import LEASE_SECONDS, Job, JobHandler, JobRunner, PostgresJobQueue
+
+#: These tests want a deliberately short gate, and `Database.__init__`
+#: refuses a campaign lock timeout that is not below it (RQ-8) — so the lock
+#: timeout has to come down with it. Nothing here takes a campaign lock.
+_QUICK_LOCK = CampaignLockSettings(lock_timeout_s=1)
 
 pytestmark = needs_db
 
@@ -44,7 +49,7 @@ def dsn():
 
 @pytest.fixture
 def db(dsn):
-    database = Database(dsn, PoolSettings(sync_max=2, async_max=2, acquire_timeout_s=2))
+    database = Database(dsn, PoolSettings(sync_max=2, async_max=2, acquire_timeout_s=2), _QUICK_LOCK)
     yield database
     database.close()
 
@@ -174,7 +179,7 @@ def test_an_aggregate_and_its_job_roll_back_together(db, dsn):
 def test_after_commit_callbacks_run_once_the_connection_is_back(dsn):
     """With a gate of one, a callback that needs the database would deadlock if
     it ran while the transaction still held the only place."""
-    database = Database(dsn, PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
+    database = Database(dsn, PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2), _QUICK_LOCK)
     queue = PostgresJobQueue(database)
     ran: list[str] = []
     handler = JobHandler(lambda job: ran.append(str(job.payload["asset_id"])))
