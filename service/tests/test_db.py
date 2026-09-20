@@ -21,6 +21,9 @@ from psycopg_pool import PoolClosed, PoolTimeout
 from service import db as dbmod
 from service.db import (
     AdvisoryLock,
+    CampaignAuthzMissing,
+    CampaignLockNotHeld,
+    CampaignLockOrder,
     CampaignLockSettings,
     Database,
     InMemoryDatabase,
@@ -248,12 +251,144 @@ def test_in_memory_transactions_are_serial():
     assert order == ["first-in", "first-out", "second-in"]
 
 
+# ── The campaign lock and the authorisation revision (1kg.2.1, RQ-2) ─────────
+#
+# What the twin can and cannot show. It records which campaign a transaction
+# locked and in which mode, refuses a second campaign, refuses a revision written
+# without the exclusive lock, and takes an increment back on rollback. It makes
+# no claim about who blocks whom: conflict is the database's, and
+# `tests/test_campaign_db.py` proves it there (RQ-2(a)).
+
+
+def _campaign(db: InMemoryDatabase, campaign_id: str = "cmp_one", revision: int = 0) -> str:
+    """The `authz_state` row PostgreSQL's AFTER INSERT trigger writes; here, by hand."""
+    db.authz_state[campaign_id] = revision
+    return campaign_id
+
+
+def test_the_twin_records_which_campaign_a_transaction_locked_and_in_which_mode():
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with db.transaction() as unit:
+        unit.lock_campaign(campaign, shared=True)
+        assert unit.campaign_locks == [(campaign, "share")]
+    with db.transaction() as unit:
+        unit.lock_campaign(campaign, shared=False)
+        assert unit.campaign_locks == [(campaign, "exclusive")]
+
+
+def test_locking_a_campaign_that_has_no_authorisation_row_fails_closed():
+    """RQ-2(c). A caller maps this to the generic 404; a job makes it a no-op."""
+    with pytest.raises(CampaignAuthzMissing, match="authorisation"):
+        with InMemoryDatabase().transaction() as unit:
+            unit.lock_campaign("cmp_gone", shared=True)
+
+
+def test_one_transaction_may_not_lock_two_different_campaigns():
+    db = InMemoryDatabase()
+    first, second = _campaign(db, "cmp_one"), _campaign(db, "cmp_two")
+    with pytest.raises(CampaignLockOrder, match="one campaign"):
+        with db.transaction() as unit:
+            unit.lock_campaign(first, shared=False)
+            unit.lock_campaign(second, shared=False)
+
+
+def test_the_campaign_lock_comes_before_any_other_lock_the_transaction_takes():
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with pytest.raises(CampaignLockOrder, match="first lock"):
+        with db.transaction() as unit:
+            unit.lock(AdvisoryLock.TABLE_SESSION, "ses_one")
+            unit.lock_campaign(campaign, shared=True)
+
+
+def test_a_shared_campaign_lock_is_never_upgraded_in_place():
+    """Two holders of FOR SHARE both asking for FOR UPDATE deadlock. A caller
+    that will write takes the exclusive lock at the start."""
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with pytest.raises(CampaignLockOrder, match="upgrade"):
+        with db.transaction() as unit:
+            unit.lock_campaign(campaign, shared=True)
+            unit.lock_campaign(campaign, shared=False)
+
+
+def test_re_locking_the_same_campaign_in_the_same_mode_is_allowed():
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with db.transaction() as unit:
+        unit.lock_campaign(campaign, shared=False)
+        unit.lock_campaign(campaign, shared=False)
+        assert unit.campaign_locks == [(campaign, "exclusive"), (campaign, "exclusive")]
+
+
+@pytest.mark.parametrize(
+    "take",
+    [
+        pytest.param(lambda unit, campaign: None, id="no-lock"),
+        pytest.param(lambda unit, campaign: unit.lock_campaign(campaign, shared=True), id="shared"),
+    ],
+)
+def test_advancing_the_revision_without_the_exclusive_lock_is_refused(take):
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with pytest.raises(CampaignLockNotHeld, match="exclusively"):
+        with db.transaction() as unit:
+            take(unit, campaign)
+            unit.advance_authz_revision(campaign)
+    assert db.authz_state[campaign] == 0
+
+
+def test_advancing_another_campaigns_revision_under_this_ones_lock_is_refused():
+    db = InMemoryDatabase()
+    held, other = _campaign(db, "cmp_one"), _campaign(db, "cmp_two")
+    with pytest.raises(CampaignLockNotHeld, match="exclusively"):
+        with db.transaction() as unit:
+            unit.lock_campaign(held, shared=False)
+            unit.advance_authz_revision(other)
+    assert db.authz_state[other] == 0
+
+
+def test_the_revision_advances_under_the_exclusive_lock_and_a_rollback_takes_it_back():
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with db.transaction() as unit:
+        assert unit.lock_campaign(campaign, shared=False) is None
+        assert unit.advance_authz_revision(campaign) == 1
+        assert unit.advance_authz_revision(campaign) == 2
+    assert db.authz_state[campaign] == 2
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with db.transaction() as unit:
+            unit.lock_campaign(campaign, shared=False)
+            assert unit.advance_authz_revision(campaign) == 3
+            raise RuntimeError("boom")
+    assert db.authz_state[campaign] == 2, "a rolled-back increment is taken back"
+
+
 # ── The Postgres unit of work, against a scripted connection ─────────────────
 
 
+class _Result:
+    """What psycopg's `execute` hands back: one row, or none."""
+
+    def __init__(self, row: tuple | None) -> None:
+        self._row = row
+
+    def fetchone(self) -> tuple | None:
+        return self._row
+
+
 class _Connection:
-    def __init__(self, log: list[str]) -> None:
+    def __init__(self, log: list[str], rows: list[tuple[str, tuple]] | None = None) -> None:
         self.log = log
+        #: `(fragment of the statement, the row it returns)`, primed by a test.
+        self.rows = [] if rows is None else rows
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name == "isolation_level":
+            self.log.append(f"isolation_level={value.name}")  # type: ignore[attr-defined]
+        object.__setattr__(self, name, value)
 
     def __enter__(self):
         self.log.append("connect")
@@ -275,17 +410,23 @@ class _Connection:
 
     def execute(self, sql: str, params=None):
         self.log.append(f"{sql} {params}")
+        for fragment, row in self.rows:
+            if fragment in sql:
+                return _Result(row)
+        return _Result(None)
 
 
 @pytest.fixture
 def scripted(monkeypatch):
     """psycopg.connect replaced by a recorder: what the gate does around it."""
     log: list[str] = []
-    seen: dict[str, object] = {}
+    rows: list[tuple[str, tuple]] = []
+    seen: dict[str, object] = {"rows": rows}
 
     def connect(dsn, **kwargs):
         seen["dsn"], seen["kwargs"] = dsn, kwargs
-        return _Connection(log)
+        seen["conn"] = connection = _Connection(log, rows)
+        return connection
 
     monkeypatch.setattr(psycopg, "connect", connect)
     return log, seen
@@ -371,6 +512,7 @@ def test_the_unit_of_work_commits_then_releases_then_calls_back(scripted):
         unit.on_commit(after_commit)
     assert log == [
         "connect",
+        "isolation_level=READ_COMMITTED",
         "begin",
         f"SELECT pg_advisory_xact_lock(%s, %s) (2, {advisory_key('s-1')})",
         "SELECT pg_notify(%s, %s) ('table_session', 's-1')",
@@ -389,7 +531,7 @@ def test_a_failed_unit_of_work_rolls_back_and_never_calls_back(scripted):
         with db.transaction() as unit:
             unit.on_commit(lambda: log.append("after-commit"))
             raise RuntimeError("boom")
-    assert log == ["connect", "begin", "rollback", "rollback+close"]
+    assert log == ["connect", "isolation_level=READ_COMMITTED", "begin", "rollback", "rollback+close"]
 
 
 def test_the_postgres_unit_of_work_checks_notifications_too(scripted):
@@ -399,6 +541,94 @@ def test_the_postgres_unit_of_work_checks_notifications_too(scripted):
         with db.transaction() as unit:
             unit.notify("Table Session")
     assert not any("pg_notify" in line for line in log)
+
+
+# ── The campaign lock, as PostgreSQL is asked for it ─────────────────────────
+#
+# The statements and their order, against the scripted connection. Whether the
+# lock then *conflicts* — who waits for whom, which timeout fires, what the
+# server reports its isolation level to be — is `tests/test_campaign_db.py`'s,
+# and runs only in CI against a real server.
+
+_SET_BOUNDS = "SELECT set_config('lock_timeout', %s, true), set_config('transaction_timeout', %s, true)"
+_AUTHZ_ROW = ("FROM campaign.authz_state", ("cmp_one",))
+
+
+def _scripted_database() -> Database:
+    return Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0))
+
+
+def test_a_transaction_sets_read_committed_on_its_connection_before_any_statement(scripted):
+    """The mechanism, not the server's answer: RQ-2 reasons about what a lock
+    holds still under READ COMMITTED, so the level is stated rather than
+    inherited from a server, database or role default."""
+    log, _ = scripted
+    with _scripted_database().transaction():
+        pass
+    assert log == ["connect", "isolation_level=READ_COMMITTED", "begin", "commit", "commit+close"]
+
+
+@pytest.mark.parametrize(
+    ("shared", "strength"), [(True, "FOR SHARE"), (False, "FOR UPDATE")]
+)
+def test_the_campaign_lock_bounds_the_wait_and_the_transaction_before_it_locks(scripted, shared, strength):
+    log, seen = scripted
+    seen["rows"].append(_AUTHZ_ROW)
+    with _scripted_database().transaction() as unit:
+        unit.lock_campaign("cmp_one", shared=shared)
+        assert log[-2:] == [
+            f"{_SET_BOUNDS} ('2s', '5s')",
+            f"SELECT campaign_id FROM campaign.authz_state WHERE campaign_id = %s {strength} ('cmp_one',)",
+        ]
+        assert unit.campaign_locks == [("cmp_one", "share" if shared else "exclusive")]
+
+
+def test_a_caller_may_raise_the_transaction_bound_for_its_own_longer_work(scripted):
+    """A campaign deletion or an enforcement scan needs more than RQ-8's five
+    seconds; raising it for everyone instead would be the wrong trade."""
+    log, seen = scripted
+    seen["rows"].append(_AUTHZ_ROW)
+    with _scripted_database().transaction() as unit:
+        unit.lock_campaign("cmp_one", shared=False, transaction_timeout_s=30)
+    assert f"{_SET_BOUNDS} ('2s', '30s')" in log
+
+
+def test_locking_a_campaign_postgres_has_no_authorisation_row_for_fails_closed(scripted):
+    """Nothing is primed, so the SELECT finds no row (RQ-2(c))."""
+    _, seen = scripted
+    held: list[list[tuple[str, str]]] = []
+    with pytest.raises(CampaignAuthzMissing, match="authorisation"):
+        with _scripted_database().transaction() as unit:
+            held.append(unit.campaign_locks)
+            unit.lock_campaign("cmp_gone", shared=True)
+    assert held == [[]], "a lock that was refused is not recorded as held"
+
+
+def test_the_revision_advance_is_one_guarded_statement_under_the_exclusive_lock(scripted):
+    log, seen = scripted
+    seen["rows"].extend([_AUTHZ_ROW, ("UPDATE campaign.authz_state", (7,))])
+    with _scripted_database().transaction() as unit:
+        with pytest.raises(CampaignLockNotHeld, match="exclusively"):
+            unit.advance_authz_revision("cmp_one")
+        assert not any("UPDATE campaign.authz_state" in line for line in log)
+
+        unit.lock_campaign("cmp_one", shared=False)
+        assert unit.advance_authz_revision("cmp_one") == 7
+    assert log[-3] == (
+        "UPDATE campaign.authz_state SET authz_revision = authz_revision + 1 "
+        "WHERE campaign_id = %s RETURNING authz_revision ('cmp_one',)"
+    )
+
+
+def test_a_revision_advance_that_changes_no_row_fails_closed(scripted):
+    """The lock succeeded and the UPDATE then matched nothing: the row went away
+    under a transaction that believed it held it. Never a silent zero."""
+    _, seen = scripted
+    seen["rows"].append(_AUTHZ_ROW)
+    with pytest.raises(CampaignAuthzMissing, match="authorisation"):
+        with _scripted_database().transaction() as unit:
+            unit.lock_campaign("cmp_one", shared=False)
+            unit.advance_authz_revision("cmp_one")
 
 
 # ── A connection string that does not parse is refused without being repeated ─

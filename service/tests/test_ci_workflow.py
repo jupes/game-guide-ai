@@ -12,6 +12,7 @@ DB_BACKED_TESTS = [
     "tests/test_schema.py",
     "tests/test_migrations_db.py",
     "tests/test_db_postgres.py",
+    "tests/test_campaign_db.py",
 ]
 
 

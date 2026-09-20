@@ -94,20 +94,37 @@ INSERT INTO chat.messages (conversation_id, mode, role, content) VALUES
   ('never-owned', 'sage', 'user', 'a row older than the ownership table');
 """
 
-COLUMNS = """
+#: Every schema the migrations own. `campaign` and `audit` arrive with 0004 and
+#: 0005; naming them here before they exist costs nothing and means a later file
+#: cannot quietly leave one out of the convergence comparison.
+SCHEMAS = "('chat', 'auth', 'app', 'campaign', 'audit')"
+
+COLUMNS = f"""
 SELECT table_schema, table_name, column_name, data_type, is_nullable, column_default
-  FROM information_schema.columns WHERE table_schema IN ('chat', 'auth', 'app')
+  FROM information_schema.columns WHERE table_schema IN {SCHEMAS}
 """
 #: By definition, not by name: 0001 deliberately leaves a fresh database with two
 #: identically-defined CHECKs on chat.conversations (one inline, one named).
-CONSTRAINTS = """
+CONSTRAINTS = f"""
 SELECT n.nspname, rel.relname, c.contype, pg_get_constraintdef(c.oid), c.convalidated
   FROM pg_constraint c
   JOIN pg_class rel ON rel.oid = c.conrelid
   JOIN pg_namespace n ON n.oid = rel.relnamespace
- WHERE n.nspname IN ('chat', 'auth', 'app')
+ WHERE n.nspname IN {SCHEMAS}
 """
-INDEXES = "SELECT schemaname, tablename, indexdef FROM pg_indexes WHERE schemaname IN ('chat', 'auth', 'app')"
+INDEXES = f"SELECT schemaname, tablename, indexdef FROM pg_indexes WHERE schemaname IN {SCHEMAS}"
+#: A trigger is schema the catalog queries above cannot see, and 0004's
+#: AFTER INSERT on campaigns is load-bearing (RQ-1). `tgisinternal` excludes the
+#: referential-integrity triggers PostgreSQL makes for foreign keys: their names
+#: embed an OID, so they differ between any two databases and would make every
+#: comparison fail for a reason that is not drift.
+TRIGGERS = f"""
+SELECT n.nspname, rel.relname, t.tgname, pg_get_triggerdef(t.oid)
+  FROM pg_trigger t
+  JOIN pg_class rel ON rel.oid = t.tgrelid
+  JOIN pg_namespace n ON n.oid = rel.relnamespace
+ WHERE n.nspname IN {SCHEMAS} AND NOT t.tgisinternal
+"""
 
 
 def _shape(dsn: str) -> dict[str, set[tuple]]:
@@ -116,6 +133,7 @@ def _shape(dsn: str) -> dict[str, set[tuple]]:
             "columns": set(conn.execute(COLUMNS).fetchall()),
             "constraints": set(conn.execute(CONSTRAINTS).fetchall()),
             "indexes": set(conn.execute(INDEXES).fetchall()),
+            "triggers": set(conn.execute(TRIGGERS).fetchall()),
         }
 
 
@@ -124,7 +142,21 @@ def test_a_fresh_database_gets_every_migration_once(dsn):
     assert report.applied == tuple(m.filename for m in PACKAGED)
     assert (report.current, report.state) == (len(PACKAGED), "current")
     assert _ledger(dsn) == [(m.version, m.name, m.checksum) for m in PACKAGED]
-    for relation in ("chat.messages", "chat.conversations", "auth.users", "auth.invites", "app.jobs"):
+    for relation in (
+        "chat.messages",
+        "chat.conversations",
+        "auth.users",
+        "auth.invites",
+        "app.jobs",
+        "campaign.campaigns",
+        "campaign.authz_state",
+        "campaign.participants",
+        "campaign.enrolment_codes",
+        "campaign.device_credentials",
+        "campaign.table_sessions",
+        "campaign.table_credentials",
+        "campaign.session_join_counters",
+    ):
         assert _exists(dsn, relation), f"{relation} was not created"
 
     again = mig.migrate(dsn)
@@ -154,7 +186,7 @@ def test_a_pre_expansion_database_is_adopted_and_ends_up_identical_to_a_fresh_on
     with throwaway_database("mig_fresh") as fresh:
         mig.migrate(fresh)
         adopted_shape, fresh_shape = _shape(dsn), _shape(fresh)
-        for part in ("columns", "constraints", "indexes"):
+        for part in ("columns", "constraints", "indexes", "triggers"):
             assert adopted_shape[part] == fresh_shape[part], f"{part} differ between an adopted and a fresh database"
         assert _ledger(dsn) == _ledger(fresh)
 
@@ -171,6 +203,62 @@ def test_the_stores_and_the_admin_cli_check_the_schema_and_never_change_it(dsn):
 
     mig.migrate(dsn)
     PostgresAuthStore(dsn).ensure_schema()
+
+
+# ── The campaign schema's own guarantees (1kg.2.1) ───────────────────────────
+
+#: A well-formed minted id, written out so the test does not depend on the minter.
+CAMPAIGN_ID = "cmp_" + "a" * 22
+
+
+def _one_user(conn, email: str = "gm@example.com") -> int:
+    return conn.execute(
+        "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id", (email,)
+    ).fetchone()[0]
+
+
+def test_a_campaign_inserted_by_raw_sql_still_gets_its_authorisation_row(dsn):
+    """RQ-1, proved where no store can stand in for it: the AFTER INSERT trigger
+    makes the `authz_state` row, so no route, script, fixture or later epic can
+    leave a campaign without one. This is the case the in-memory twin cannot
+    have — its only path to a campaign is the fake store's `create`, which
+    inserts the row itself — so it is proved here against the database."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, %s)",
+            (CAMPAIGN_ID, owner, "Nocturne"),
+        )
+        assert conn.execute(
+            "SELECT authz_revision, lock_token FROM campaign.authz_state WHERE campaign_id = %s",
+            (CAMPAIGN_ID,),
+        ).fetchone() == (0, 0), "a raw insert must still leave a campaign authorisable"
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        pytest.param("id", "campaign_1", id="no-prefix"),
+        pytest.param("id", "cmp_short", id="too-few-bits"),
+        pytest.param("name", "", id="empty-name"),
+    ],
+)
+def test_the_database_refuses_a_campaign_row_the_application_would_never_mint(dsn, column, value):
+    """The CHECK constraints of 0004 are generated from
+    `service.campaign_identity.id_check_regex`; this is the database half of that
+    agreement, and `service/tests/test_campaign_schema_sql.py` is the text half."""
+    import psycopg
+
+    mig.migrate(dsn)
+    row = {"id": CAMPAIGN_ID, "name": "Nocturne"} | {column: value}
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, %s)",
+                (row["id"], owner, row["name"]),
+            )
 
 
 # ── Drift fails loudly ───────────────────────────────────────────────────────
