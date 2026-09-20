@@ -400,18 +400,12 @@ COMMON_FIELDS: dict[str, FieldKind] = {
     "tags": FieldKind.TEXT_LIST,
 }
 
-#: A type's own fields. ``npc`` is the worked example, taken from the handoff in
-#: snake_case. ``1kg.5.3`` owns all eight: until it declares a type's fields, that
-#: type validates with the common fields only, and everything else fails closed —
-#: the same posture as card kinds. Nothing here says who may *see* a field; that
-#: is ``agent-forge-harness-1ir.1.2``'s decision.
+#: A type's own fields, all eight declared (``1kg.5.3``), in the handoff's keys
+#: transliterated to snake_case. A key this does not name fails closed, the same
+#: posture as card kinds. Nothing *here* says who may see a field: the per-field
+#: rule in ``workbench_registry.py`` does, following ED-5, and the mask that acts
+#: on it is ``agent-forge-harness-1kg.1.6``'s.
 DOC_TYPE_FIELDS: dict[DocumentTypeId, dict[str, FieldKind]] = {
-    **{doc_type: {} for doc_type in DocumentTypeId},
-    DocumentTypeId.STATBLOCK: {
-        "ac": FieldKind.INTEGER,
-        "abilities": FieldKind.ABILITIES,
-        "traits": FieldKind.ENTRY_LIST,
-    },
     DocumentTypeId.NPC: {
         "portrait": FieldKind.ASSET,
         "voice": FieldKind.TEXT,
@@ -421,6 +415,75 @@ DOC_TYPE_FIELDS: dict[DocumentTypeId, dict[str, FieldKind]] = {
         "leverage": FieldKind.PROSE,
         "if_attacked": FieldKind.PROSE,
         "notes": FieldKind.PROSE,
+        "true_identity": FieldKind.PROSE,
+    },
+    DocumentTypeId.STATBLOCK: {
+        "ac": FieldKind.INTEGER,
+        "ac_note": FieldKind.TEXT,
+        "hp": FieldKind.INTEGER,
+        "hit_dice": FieldKind.TEXT,
+        "speed": FieldKind.TEXT,
+        "size": FieldKind.TEXT,
+        "creature_type": FieldKind.TEXT,
+        "alignment": FieldKind.TEXT,
+        "abilities": FieldKind.ABILITIES,
+        "saving_throws": FieldKind.TEXT,
+        "skills": FieldKind.TEXT,
+        "damage_immunities": FieldKind.TEXT,
+        "condition_immunities": FieldKind.TEXT,
+        "senses": FieldKind.TEXT,
+        "languages": FieldKind.TEXT,
+        "challenge_rating": FieldKind.TEXT,
+        "xp": FieldKind.INTEGER,
+        "traits": FieldKind.ENTRY_LIST,
+        "actions": FieldKind.ENTRY_LIST,
+        "bonus_actions": FieldKind.ENTRY_LIST,
+        "reactions": FieldKind.ENTRY_LIST,
+        "legendary_actions": FieldKind.ENTRY_LIST,
+    },
+    DocumentTypeId.HANDOUT: {
+        "portrait": FieldKind.ASSET,
+        "body": FieldKind.PROSE,
+    },
+    DocumentTypeId.SESSION_NOTES: {
+        "session": FieldKind.INTEGER,
+        "date": FieldKind.TEXT,
+        "present": FieldKind.TEXT_LIST,
+        "recap": FieldKind.PROSE,
+        "beats": FieldKind.TEXT_LIST,
+        "loose_threads": FieldKind.TEXT_LIST,
+    },
+    DocumentTypeId.QUEST_LOG: {
+        "open_threads": FieldKind.ENTRY_LIST,
+        "cold_threads": FieldKind.ENTRY_LIST,
+        "resolved_threads": FieldKind.ENTRY_LIST,
+    },
+    DocumentTypeId.CHARACTER_SHEET: {
+        "portrait": FieldKind.ASSET,
+        "ac": FieldKind.INTEGER,
+        "hp": FieldKind.INTEGER,
+        "speed": FieldKind.TEXT,
+        "abilities": FieldKind.ABILITIES,
+        "features": FieldKind.ENTRY_LIST,
+        "equipment": FieldKind.TEXT_LIST,
+        "notes": FieldKind.PROSE,
+    },
+    DocumentTypeId.LORE: {
+        "region": FieldKind.TEXT,
+        "era": FieldKind.TEXT,
+        "status": FieldKind.TEXT,
+        "summary": FieldKind.PROSE,
+        "history": FieldKind.PROSE,
+        "rumours": FieldKind.TEXT_LIST,
+    },
+    DocumentTypeId.ENCOUNTER: {
+        "difficulty": FieldKind.TEXT,
+        "xp_budget": FieldKind.INTEGER,
+        "party_level": FieldKind.INTEGER,
+        "setup": FieldKind.PROSE,
+        "combatants": FieldKind.ENTRY_LIST,
+        "terrain": FieldKind.PROSE,
+        "outcome": FieldKind.PROSE,
     },
 }
 

@@ -69,6 +69,7 @@ import {
   readErrorBody,
   trimWire,
 } from './contracts'
+import type { DocumentTypeId } from './contracts'
 import { ChatResponseSchema, MessagesResponseSchema } from '../schemas'
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'contracts', 'workbench', 'v1')
@@ -562,6 +563,57 @@ describe('reading a document (X-8, CANVAS-19)', () => {
     for (const junk of [null, undefined, 42, 'x', [], {}, { type: 'npc' }, { ...dossier, data: null }, { ...dossier, data: [] }]) {
       expect(parseDocument(junk).kind).toBe('unknown')
     }
+  })
+})
+
+describe('the extra-field policy, per type (1kg.5.3)', () => {
+  const document = (type: DocumentTypeId, data: Record<string, unknown>) => ({
+    schema_version: 1,
+    document_id: 'doc_9k2f7a1c',
+    campaign_id: 'cmp_4b1d9e7a',
+    type,
+    type_version: 1,
+    data,
+    write_revision: 1,
+    version: {
+      number: 1,
+      author: 'gm',
+      summary: '',
+      created_at: '2026-09-16T20:00:00Z',
+      sealed: false,
+      changed_fields: ['name'],
+      restored_from: null,
+    },
+    archived: false,
+    created_at: '2026-09-16T20:00:00Z',
+    updated_at: '2026-09-16T20:00:00Z',
+  })
+
+  it.each(DOCUMENT_TYPE_IDS.map((id) => [id] as const))(
+    '%s: strips a key the type does not declare, and still yields the document',
+    (type) => {
+      // The other half of the asymmetry the server enforces: a newer server may
+      // add a field, and a client that has not learned it drops the key rather
+      // than refusing the whole document (wire contract, "Versioning").
+      const parsed = parseDocument(document(type, { name: 'A document', smuggled_key: 'Drown the harbourmaster.' }))
+      expect(parsed.kind).toBe('ok')
+      if (parsed.kind === 'ok') {
+        expect(Object.keys(parsed.value.data)).toEqual(['name'])
+        expect(JSON.stringify(parsed.value)).not.toContain('harbourmaster')
+      }
+    },
+  )
+
+  it.each(DOCUMENT_TYPE_IDS.map((id) => [id] as const))('%s: refuses the same key in a request', (type) => {
+    const patch = { schema_version: 1, type, type_version: 1, base_write_revision: 1, fields: { smuggled_key: 'x' } }
+    const result = FieldPatchRequestSchema.safeParse(patch)
+    expect(result.success).toBe(false)
+    if (!result.success) expect(result.error.issues[0].path).toEqual(['fields', 'smuggled_key'])
+  })
+
+  it.each(DOCUMENT_TYPE_IDS.map((id) => [id] as const))('%s: takes the common fields', (type) => {
+    const parsed = parseDocument(document(type, { name: 'A document', qualifier: '', tags: [] }))
+    expect(parsed.kind).toBe('ok')
   })
 })
 

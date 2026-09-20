@@ -13,11 +13,15 @@
  * (X-8), which is what the handoff's `documentType(id) || DOCUMENT_TYPES.npc`
  * got wrong.
  *
- * Not here yet, on purpose: which fields a table may see, reveal groups and
- * warnings, audiences and per-audience default masks — those are
- * agent-forge-harness-1ir.1.2's decision and arrive with the reveal family
- * (1kg.1.6). Field labels exist only for declared fields; the other seven types'
- * labels land with their declarations (1kg.5.3).
+ * Since 1kg.5.3 it also carries, per field, the RULE that says how the field is
+ * presented and who may ever see it — its label, whether it is editable, whether
+ * it is on the type's revealable allowlist (REVEAL-10, and by ED-5 the same list
+ * that can ever be classified), and the warning a reveal sheet shows above it
+ * (REVEAL-11) — and, per type, the audience whose picker it offers (AUD-9), its
+ * accent, its reveal groups, its per-audience default reveal (REVEAL-4) and the
+ * keys it has retired (ED-24). Not here: a reveal mask, a projection or an
+ * eligibility row. Those are state, not registry, and belong to 1kg.1.6 and
+ * agent-forge-harness-1ir.2.1.
  */
 
 import {
@@ -257,6 +261,7 @@ export const REGISTRY: Registry = {
         leverage: rule('Leverage', { warning: 'Would spoil the lie' }),
         if_attacked: rule('If the party attacks'),
         notes: rule('Notes'),
+        true_identity: rule('True identity', { revealable: false }),
       },
       reveal_groups: [
         { id: 'name_and_voice', label: 'Name & voice', keys: ['name', 'voice'] },
@@ -266,14 +271,98 @@ export const REGISTRY: Registry = {
     }),
     documentType('statblock', 'Stat Block', 'shield', {
       renderer: 'stat_block_card',
-      rules: { ac: rule('Armor Class'), abilities: rule('Ability scores'), traits: rule('Traits') },
+      rules: {
+        ac: rule('Armor Class'),
+        ac_note: rule('Armor class note'),
+        hp: rule('Hit Points'),
+        hit_dice: rule('Hit dice'),
+        speed: rule('Speed'),
+        size: rule('Size'),
+        creature_type: rule('Creature type'),
+        alignment: rule('Alignment'),
+        abilities: rule('Ability scores'),
+        saving_throws: rule('Saving throws'),
+        skills: rule('Skills'),
+        damage_immunities: rule('Damage immunities'),
+        condition_immunities: rule('Condition immunities'),
+        senses: rule('Senses'),
+        languages: rule('Languages'),
+        challenge_rating: rule('Challenge rating'),
+        xp: rule('XP'),
+        traits: rule('Traits'),
+        actions: rule('Actions'),
+        bonus_actions: rule('Bonus actions'),
+        reactions: rule('Reactions'),
+        legendary_actions: rule('Legendary actions'),
+      },
+      default_reveal: { table: [] },
     }),
-    documentType('handout', 'Player Handout', 'mail', { printable: true }),
-    documentType('session-notes', 'Session Notes', 'history_edu'),
-    documentType('quest-log', 'Quest Log', 'flag'),
-    documentType('character-sheet', 'Character Sheet', 'contact_page', { audience: 'owner' }),
-    documentType('lore', 'Lore Entry', 'local_library', { cites_corpus: true, accent: 'arcane' }),
-    documentType('encounter', 'Encounter', 'swords'),
+    documentType('handout', 'Player Handout', 'mail', {
+      printable: true,
+      rules: {
+        portrait: rule('Illustration'),
+        body: rule('Text'),
+      },
+      default_reveal: { table: ['portrait', 'name', 'body'] },
+    }),
+    documentType('session-notes', 'Session Notes', 'history_edu', {
+      rules: {
+        session: rule('Session number'),
+        date: rule('Date'),
+        present: rule('Present'),
+        recap: rule('Recap', { warning: 'Summarises your private GM thread' }),
+        beats: rule('Beats'),
+        loose_threads: rule('Loose threads'),
+      },
+      default_reveal: { table: [] },
+    }),
+    documentType('quest-log', 'Quest Log', 'flag', {
+      rules: {
+        open_threads: rule('Open threads'),
+        cold_threads: rule('Cold threads'),
+        resolved_threads: rule('Resolved threads'),
+      },
+      default_reveal: { table: ['name', 'open_threads', 'resolved_threads'] },
+    }),
+    documentType('character-sheet', 'Character Sheet', 'contact_page', {
+      audience: 'owner',
+      rules: {
+        portrait: rule('Portrait'),
+        ac: rule('Armor Class'),
+        hp: rule('Hit Points'),
+        speed: rule('Speed'),
+        abilities: rule('Ability scores'),
+        features: rule('Features'),
+        equipment: rule('Equipment'),
+        notes: rule('Notes'),
+      },
+      default_reveal: { owner: ['name', 'qualifier', 'portrait', 'ac', 'hp', 'speed', 'abilities', 'features', 'equipment', 'notes'] },
+    }),
+    documentType('lore', 'Lore Entry', 'local_library', {
+      cites_corpus: true,
+      accent: 'arcane',
+      rules: {
+        region: rule('Region'),
+        era: rule('Era'),
+        status: rule('Status'),
+        summary: rule('Summary'),
+        history: rule('History'),
+        rumours: rule('Rumours'),
+      },
+      default_reveal: { table: ['name', 'summary'] },
+    }),
+    documentType('encounter', 'Encounter', 'swords', {
+      rules: {
+        difficulty: rule('Difficulty'),
+        xp_budget: rule('XP budget'),
+        party_level: rule('Party level'),
+        setup: rule('Setup'),
+        combatants: rule('Combatants'),
+        terrain: rule('Terrain & hazards'),
+        outcome: rule('If it goes wrong', { warning: 'Would spoil the surprise' }),
+      },
+      default_reveal: { table: [] },
+    }),
   ],
   capabilities: [
     { id: 'image_generation', label: 'Image generation', disabled_reason: "Image generation isn't set up yet.", off_by_default: true },

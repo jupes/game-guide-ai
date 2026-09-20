@@ -42,11 +42,13 @@ service. A lookup of an unknown id answers nothing — never the NPC config the
 handoff fell back to (X-8). The wire contract's own validators pin the subset
 of the registry they need as constants.
 
-What the registry does not carry yet, on purpose: which fields a table may see,
-reveal groups and warnings, audiences and per-audience default masks. Those are
-`agent-forge-harness-1ir.1.2`'s decision and arrive with the reveal family
-(`1kg.1.6`). The seven document types whose fields `1kg.5.3` has yet to declare
-carry no field labels until it does.
+Since `1kg.5.3` the registry also carries, per field, the rule that says how it
+is presented and who may ever see it — label, `editable`, `revealable` (the
+allowlist of REVEAL-10, and by ED-5 the list that can ever be classified) and
+the reveal sheet's warning copy — and, per type, its audience (AUD-9), accent,
+reveal groups, per-audience default reveal (REVEAL-4) and retired keys (ED-24).
+What it does **not** carry is a reveal mask, a projection or an eligibility row:
+those are state, and belong to `1kg.1.6` and `agent-forge-harness-1ir.2.1`.
 
 ## Conventions
 
@@ -204,7 +206,7 @@ on both sides.
 | Legacy guards | **done** | today's `/chat` and message-history responses, validated by the existing models |
 | Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The attached-cue entry arrives with the cue family; until v1 is declared complete, adding it is not a version bump |
 | Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, and `conflict` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
-| Per-type document fields | the **frame is done**; `npc` is the worked example | `1kg.5.3` owns all eight types. Until it declares a type's fields that type has the common ones only and everything else fails closed — the same posture as card kinds |
+| Per-type document fields | **done** | All eight types declare their fields, rules, reveal groups and default reveals (`1kg.5.3`). A key a type does not name fails closed — the same posture as card kinds |
 | Reveal | to do, and **waiting** | the mutation with its epoch, Stop, GM-side state, the allowlisted projection, the table snapshot. Audience and slot shapes must not freeze before `agent-forge-harness-1ir.1.2` (field eligibility, shared with the Live Session Assistant) is decided; it blocks `1kg.7.1`. The projection needs an asset shape of its own — a per-slot opaque handle, never the GM-side `asset_id` — and its join and enrol answers are generic ([threat model](adr/gm-workbench-threat-model.md), §12.2) |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
 | Table sessions | **done** | `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest`, `EnrolResponse`, `TableSession`, `TableSessionRequest`, `TableSessionAnswer` |

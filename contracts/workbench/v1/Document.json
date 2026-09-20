@@ -1,7 +1,7 @@
 {
   "schema": "Document",
   "direction": "response",
-  "note": "The GM-side read of a document, and what every document write answers with. A FIELD is a top-level key of data - one flat, snake_case namespace per type (CANVAS-19). Which keys a type has, and what kind of value each holds, is a registry fact (registry.json): common fields for every type, plus the type's own. npc is the worked example; 1kg.5.3 defines the other seven, and until it does they have common fields only. Nothing here says who may see a field: that is agent-forge-harness-1ir.1.2's decision.",
+  "note": "The GM-side read of a document, and what every document write answers with. A FIELD is a top-level key of data - one flat, snake_case namespace per type (CANVAS-19). Which keys a type has, and what kind of value each holds, is a registry fact (registry.json): common fields for every type, plus the type's own. All eight types declare their fields (1kg.5.3); a key a type does not name fails closed. Nothing here says who may see a field: the per-field rule in registry.json does, following ED-5, and the mask that acts on it is agent-forge-harness-1kg.1.6's.",
   "valid": [
     {
       "name": "an NPC dossier after an assistant edit",
@@ -171,7 +171,7 @@
       }
     },
     {
-      "name": "an archived document of a type whose own fields 1kg.5.3 has yet to define",
+      "name": "an archived session-notes document, with the common fields alone",
       "value": {
         "schema_version": 1,
         "document_id": "doc_5e55109a",

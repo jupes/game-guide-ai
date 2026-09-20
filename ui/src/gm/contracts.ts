@@ -184,27 +184,18 @@ export const COMMON_FIELDS: Record<string, FieldKind> = {
   tags: 'text_list',
 }
 
-/** A type's own fields. `npc` is the worked example; 1kg.5.3 owns all eight, and
- * until it declares a type's fields that type has the common ones only. Nothing
- * here says who may SEE a field: that is agent-forge-harness-1ir.1.2's decision. */
+/** A type's own fields, all eight declared (1kg.5.3). Nothing here says who may
+ * SEE a field: the per-field rule in `registry.ts` does, following ED-5, and the
+ * mask that acts on it is agent-forge-harness-1kg.1.6's. */
 export const DOC_TYPE_FIELDS: Record<DocumentTypeId, Record<string, FieldKind>> = {
-  npc: {
-    portrait: 'asset',
-    voice: 'text',
-    tell: 'text',
-    attitude: 'text',
-    wants: 'prose',
-    leverage: 'prose',
-    if_attacked: 'prose',
-    notes: 'prose',
-  },
-  statblock: { ac: 'integer', abilities: 'abilities', traits: 'entry_list' },
-  handout: {},
-  'session-notes': {},
-  'quest-log': {},
-  'character-sheet': {},
-  lore: {},
-  encounter: {},
+  npc: { portrait: 'asset', voice: 'text', tell: 'text', attitude: 'text', wants: 'prose', leverage: 'prose', if_attacked: 'prose', notes: 'prose', true_identity: 'prose' },
+  statblock: { ac: 'integer', ac_note: 'text', hp: 'integer', hit_dice: 'text', speed: 'text', size: 'text', creature_type: 'text', alignment: 'text', abilities: 'abilities', saving_throws: 'text', skills: 'text', damage_immunities: 'text', condition_immunities: 'text', senses: 'text', languages: 'text', challenge_rating: 'text', xp: 'integer', traits: 'entry_list', actions: 'entry_list', bonus_actions: 'entry_list', reactions: 'entry_list', legendary_actions: 'entry_list' },
+  handout: { portrait: 'asset', body: 'prose' },
+  'session-notes': { session: 'integer', date: 'text', present: 'text_list', recap: 'prose', beats: 'text_list', loose_threads: 'text_list' },
+  'quest-log': { open_threads: 'entry_list', cold_threads: 'entry_list', resolved_threads: 'entry_list' },
+  'character-sheet': { portrait: 'asset', ac: 'integer', hp: 'integer', speed: 'text', abilities: 'abilities', features: 'entry_list', equipment: 'text_list', notes: 'prose' },
+  lore: { region: 'text', era: 'text', status: 'text', summary: 'prose', history: 'prose', rumours: 'text_list' },
+  encounter: { difficulty: 'text', xp_budget: 'integer', party_level: 'integer', setup: 'prose', combatants: 'entry_list', terrain: 'prose', outcome: 'prose' },
 }
 
 /** The revision of each type's field definitions that this client understands. */

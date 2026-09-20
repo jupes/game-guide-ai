@@ -349,13 +349,70 @@ def test_check_fields_is_usable_on_its_own() -> None:
         wc.check_fields(wc.DocumentTypeId.NPC, 2, {"name": "A guard"}, whole=True)
 
 
-def test_every_type_validates_with_the_common_fields_alone() -> None:
-    """Until ``1kg.5.3`` declares a type's own fields, the common ones are all it has."""
-    for doc_type in wc.DocumentTypeId:
-        wc.check_fields(doc_type, 1, {"name": "x", "qualifier": "", "tags": []}, whole=True)
-        if not wc.DOC_TYPE_FIELDS[doc_type]:
-            with pytest.raises(ValueError, match="do not declare"):
-                wc.check_fields(doc_type, 1, {"name": "x", "body": "text"}, whole=True)
+@pytest.mark.parametrize("doc_type", list(wc.DocumentTypeId), ids=lambda t: t.value)
+def test_every_type_takes_the_common_fields(doc_type: wc.DocumentTypeId) -> None:
+    """``name``, ``qualifier`` and ``tags`` belong to every type."""
+    assert wc.check_fields(doc_type, 1, {"name": "x", "qualifier": "", "tags": []}, whole=True) == {
+        "name": "x",
+        "qualifier": "",
+        "tags": [],
+    }
+
+
+@pytest.mark.parametrize("doc_type", list(wc.DocumentTypeId), ids=lambda t: t.value)
+def test_every_type_fails_closed_on_a_key_it_does_not_declare(doc_type: wc.DocumentTypeId) -> None:
+    """The posture, proved per type rather than for the types that happened to
+    have no fields. ``smuggled_key`` is declared by none of the eight."""
+    with pytest.raises(ValueError, match="do not declare"):
+        wc.check_fields(doc_type, 1, {"name": "x", "smuggled_key": "text"}, whole=True)
+
+
+@pytest.mark.parametrize("doc_type", list(wc.DocumentTypeId), ids=lambda t: t.value)
+def test_the_answer_to_an_undeclared_key_carries_no_trace_of_it(doc_type: wc.DocumentTypeId) -> None:
+    """X-7: the body a route returns names the key's *type*, never the key or
+    the text under it — a GM's private note must not come back in a 422.
+
+    Asserted on ``validation_error_body``, which is what a route answers with,
+    and not on ``redacted_errors``: that is for a log line, its redaction branch
+    only fires for ``extra_forbidden``, and an undeclared document field is a
+    ``value_error`` with an empty location, so a test written against it would
+    pass while proving nothing.
+    """
+    secret = "Drown the harbourmaster."
+    document = {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": doc_type.value,
+        "type_version": 1,
+        "data": {"name": "A document", "secret_plan": secret},
+        "write_revision": 1,
+        "version": {
+            "number": 1,
+            "author": "gm",
+            "summary": "",
+            "created_at": "2026-09-16T20:00:00Z",
+            "sealed": False,
+            "changed_fields": ["name"],
+            "restored_from": None,
+        },
+        "archived": False,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z",
+    }
+    with pytest.raises(ValidationError) as caught:
+        wc.Document.model_validate(document)
+    errors = caught.value.errors()
+
+    answered = wc.validation_error_body(errors).model_dump_json()
+    assert secret not in answered and "secret_plan" not in answered
+
+    logged = json.dumps(wc.redacted_errors(errors))
+    assert secret not in logged and "secret_plan" not in logged
+
+    # And the reason both helpers exist: the raw list still carries the request.
+    # This is the assertion that would catch someone logging ``exc.errors()``.
+    assert secret in json.dumps(errors, default=str)
 
 
 _STATBLOCK = wc.DocumentTypeId.STATBLOCK
