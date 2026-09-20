@@ -17,6 +17,8 @@ import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
 import { z, type ZodType } from 'zod'
 import {
+  ABILITY_SCORE_MAX,
+  ABILITY_SCORE_MIN,
   ASSET_KINDS,
   AUDIO_SLOTS,
   BRIEF_POLICY,
@@ -36,7 +38,11 @@ import {
   FieldPatchRequestSchema,
   GM_EVENT_KINDS,
   GmEventSchema,
+  INTEGER_FIELD_MAX,
+  INTEGER_FIELD_MIN,
   LIBRARY_CATEGORIES,
+  LIST_FIELD_MAX_ITEMS,
+  LIST_ITEM_MAX_CHARS,
   LibraryQuerySchema,
   MaskKeySchema,
   MEDIA_TYPES,
@@ -44,9 +50,11 @@ import {
   NEVER_REVEALABLE_BY_TYPE,
   ENTRY_DISCRIMINATORS,
   GM_EVENT_DISCRIMINATORS,
+  PROSE_FIELD_MAX_CHARS,
   RESERVED_MASK_KEYS,
   RESULT_DISCRIMINATORS,
   RESULT_KINDS,
+  TEXT_FIELD_MAX_CHARS,
   TABLE_EVENT_KINDS,
   TOOL_CARD_KIND,
   TOOL_CREATES_DOC_TYPE,
@@ -71,6 +79,7 @@ import {
   revealableFields,
   trimWire,
 } from './contracts'
+import type { DocumentTypeId } from './contracts'
 import { ChatResponseSchema, MessagesResponseSchema } from '../schemas'
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'contracts', 'workbench', 'v1')
@@ -220,6 +229,7 @@ describe('registry facts', () => {
     library_categories: string[]
     tools: Array<{ id: string; result_kind: string; creates_doc_type: string | null; card_kind: string | null; brief: string }>
     field_kinds: string[]
+    field_bounds: Record<string, number>
     common_fields: Record<string, string>
     document_types: Array<{ id: string; library_category: string; type_version: number; fields: Record<string, string> }>
     asset_kinds: string[]
@@ -293,6 +303,23 @@ describe('registry facts', () => {
       expect(DOC_TYPE_FIELDS[type]).toEqual(row?.fields)
       expect(DOC_TYPE_VERSION[type]).toBe(row?.type_version)
     }
+  })
+
+  it("take every field kind's bounds from the shared registry, not from a second copy", () => {
+    // A bound kept as two independent constants can drift: each suite goes on
+    // testing against its own, and the differential fuzz never reaches the
+    // values in between. registry.json holds the number, and the boundary
+    // examples in Document.json exercise it on both sides.
+    expect(registry.field_bounds).toEqual({
+      text_field_max_chars: TEXT_FIELD_MAX_CHARS,
+      prose_field_max_chars: PROSE_FIELD_MAX_CHARS,
+      list_field_max_items: LIST_FIELD_MAX_ITEMS,
+      list_item_max_chars: LIST_ITEM_MAX_CHARS,
+      integer_field_min: INTEGER_FIELD_MIN,
+      integer_field_max: INTEGER_FIELD_MAX,
+      ability_score_min: ABILITY_SCORE_MIN,
+      ability_score_max: ABILITY_SCORE_MAX,
+    })
   })
 })
 
@@ -631,6 +658,179 @@ describe('reading a document (X-8, CANVAS-19)', () => {
     for (const junk of [null, undefined, 42, 'x', [], {}, { type: 'npc' }, { ...dossier, data: null }, { ...dossier, data: [] }]) {
       expect(parseDocument(junk).kind).toBe('unknown')
     }
+  })
+})
+
+describe('the extra-field policy, per type (1kg.5.3)', () => {
+  const document = (type: DocumentTypeId, data: Record<string, unknown>) => ({
+    schema_version: 1,
+    document_id: 'doc_9k2f7a1c',
+    campaign_id: 'cmp_4b1d9e7a',
+    type,
+    type_version: 1,
+    data,
+    write_revision: 1,
+    version: {
+      number: 1,
+      author: 'gm',
+      summary: '',
+      created_at: '2026-09-16T20:00:00Z',
+      sealed: false,
+      changed_fields: ['name'],
+      restored_from: null,
+    },
+    archived: false,
+    created_at: '2026-09-16T20:00:00Z',
+    updated_at: '2026-09-16T20:00:00Z',
+  })
+
+  it.each(DOCUMENT_TYPE_IDS.map((id) => [id] as const))(
+    '%s: strips a key the type does not declare, and still yields the document',
+    (type) => {
+      // The other half of the asymmetry the server enforces: a newer server may
+      // add a field, and a client that has not learned it drops the key rather
+      // than refusing the whole document (wire contract, "Versioning").
+      const parsed = parseDocument(document(type, { name: 'A document', smuggled_key: 'Drown the harbourmaster.' }))
+      expect(parsed.kind).toBe('ok')
+      if (parsed.kind === 'ok') {
+        expect(Object.keys(parsed.value.data)).toEqual(['name'])
+        expect(JSON.stringify(parsed.value)).not.toContain('harbourmaster')
+      }
+    },
+  )
+
+  it.each(DOCUMENT_TYPE_IDS.map((id) => [id] as const))('%s: refuses the same key in a request', (type) => {
+    const patch = { schema_version: 1, type, type_version: 1, base_write_revision: 1, fields: { smuggled_key: 'x' } }
+    const result = FieldPatchRequestSchema.safeParse(patch)
+    expect(result.success).toBe(false)
+    if (!result.success) expect(result.error.issues[0].path).toEqual(['fields', 'smuggled_key'])
+  })
+
+  it.each(DOCUMENT_TYPE_IDS.map((id) => [id] as const))('%s: takes the common fields', (type) => {
+    const parsed = parseDocument(document(type, { name: 'A document', qualifier: '', tags: [] }))
+    expect(parsed.kind).toBe('ok')
+  })
+})
+
+describe('the structured field kinds (1kg.5.3)', () => {
+  const block = (data: Record<string, unknown>) => ({
+    schema_version: 1,
+    document_id: 'doc_5b1a2c3d',
+    campaign_id: 'cmp_4b1d9e7a',
+    type: 'statblock',
+    type_version: 1,
+    data: { name: 'Ondrey', ...data },
+    write_revision: 1,
+    version: {
+      number: 1,
+      author: 'gm',
+      summary: '',
+      created_at: '2026-09-16T20:00:00Z',
+      sealed: false,
+      changed_fields: ['name'],
+      restored_from: null,
+    },
+    archived: false,
+    created_at: '2026-09-16T20:00:00Z',
+    updated_at: '2026-09-16T20:00:00Z',
+  })
+  const read = (data: Record<string, unknown>) => DocumentSchema.safeParse(block(data))
+  const patch = (fields: Record<string, unknown>) =>
+    FieldPatchRequestSchema.safeParse({ schema_version: 1, type: 'statblock', type_version: 1, base_write_revision: 1, fields })
+
+  it.each([
+    ['a whole number', 7, 7],
+    ['a whole number written as a float, because JavaScript cannot tell them apart', 7.0, 7],
+    ['zero', 0, 0],
+    ['a negative', -1, -1],
+    ['the ceiling', INTEGER_FIELD_MAX, INTEGER_FIELD_MAX],
+    ['null, which clears it', null, null],
+  ])('an integer field takes %s', (_name, given, stored) => {
+    const parsed = read({ ac: given })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.ac).toEqual(stored)
+  })
+
+  it.each([[true], ['7'], [1.5], [[]], [{}], [INTEGER_FIELD_MAX + 1], [INTEGER_FIELD_MIN - 1]])(
+    'an integer field refuses %o in a request',
+    (given) => {
+      expect(patch({ ac: given }).success).toBe(false)
+    },
+  )
+
+  it.each([
+    [{}],
+    [{ str: 10 }],
+    [{ str: 10, dex: 12, con: 14, int: 8, wis: 13, cha: 16 }],
+    [{ str: null }],
+    [null],
+  ])('an abilities field takes %o — CANVAS-19, one field', (given) => {
+    const parsed = read({ abilities: given })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.abilities).toEqual(given)
+  })
+
+  it.each([
+    [{ strength: 10 }],
+    [{ str: '10' }],
+    [{ str: true }],
+    [{ str: ABILITY_SCORE_MAX + 1 }],
+    [{ str: ABILITY_SCORE_MIN - 1 }],
+    [[]],
+    ['10'],
+  ])('an abilities field refuses %o in a request', (given) => {
+    expect(patch({ abilities: given }).success).toBe(false)
+  })
+
+  it('an entry list takes named entries and clears to []', () => {
+    const entries = [
+      { name: 'Amphibious', text: 'She breathes water.' },
+      { name: 'Silent', text: '' },
+    ]
+    const parsed = read({ traits: entries })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.traits).toEqual(entries)
+    const cleared = read({ traits: [] })
+    expect(cleared.success).toBe(true)
+    if (cleared.success) expect(cleared.data.data.traits).toEqual([])
+  })
+
+  it.each([
+    [[{ name: 'Amphibious' }]],
+    [[{ text: 'no name' }]],
+    [[{ name: '', text: 'x' }]],
+    [[{ name: 'two\nlines', text: 'x' }]],
+    [['Amphibious']],
+    [{}],
+    [null],
+  ])('an entry list refuses %o in a request', (given) => {
+    expect(patch({ traits: given }).success).toBe(false)
+  })
+
+  it('a request rejects an unknown sub-key; a response strips it (the AssetRef precedent)', () => {
+    expect(patch({ traits: [{ name: 'Amphibious', text: 'x', damage: '1d6' }] }).success).toBe(false)
+    expect(patch({ abilities: { str: 10, luck: 3 } }).success).toBe(false)
+    const parsed = read({ traits: [{ name: 'Amphibious', text: 'x', damage: '1d6' }], abilities: { str: 10, luck: 3 } })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) {
+      expect(parsed.data.data.traits).toEqual([{ name: 'Amphibious', text: 'x' }])
+      expect(parsed.data.data.abilities).toEqual({ str: 10 })
+    }
+  })
+
+  it('refuses a prototype key smuggled into an ability block in a request', () => {
+    const fields = JSON.parse('{"abilities": {"str": 10, "__proto__": {"polluted": true}}}') as Record<string, unknown>
+    const result = patch(fields)
+    expect(result.success).toBe(false)
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
+  it('bounds an entry list at its edges', () => {
+    const one = { name: 'n', text: 't' }
+    expect(read({ traits: Array.from({ length: LIST_FIELD_MAX_ITEMS }, () => one) }).success).toBe(true)
+    expect(patch({ traits: Array.from({ length: LIST_FIELD_MAX_ITEMS + 1 }, () => one) }).success).toBe(false)
+    expect(patch({ traits: [{ name: 'a'.repeat(TEXT_FIELD_MAX_CHARS + 1), text: 't' }] }).success).toBe(false)
+    expect(patch({ traits: [{ name: 'n', text: 't'.repeat(LIST_ITEM_MAX_CHARS + 1) }] }).success).toBe(false)
   })
 })
 

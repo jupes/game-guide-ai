@@ -175,10 +175,11 @@ export function formatTimestamp(iso: string, locale?: string | string[]): string
 }
 
 /**
- * A human label for a changed field. The registry is the authority; for a type
- * whose field labels have not landed yet (1kg.5.3) the key is humanised rather
- * than shown raw, which is the defect §16 records against the handoff's
- * `xpBudget` cells. Nothing here guesses at a *different* field.
+ * A human label for a changed field. The registry is the authority; a key it
+ * does not declare — one from a newer server, which the client strips from the
+ * data but may still meet in `changed_fields` — is humanised rather than shown
+ * raw, which is the defect §16 records against the handoff's `xpBudget` cells.
+ * Nothing here guesses at a *different* field.
  */
 export function fieldLabel(key: string, documentType?: string): string {
   const type = documentType === undefined ? undefined : documentTypeById(documentType)
