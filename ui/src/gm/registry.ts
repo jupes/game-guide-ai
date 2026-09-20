@@ -491,8 +491,6 @@ export const TYPE_FLAG_SELECTORS: Readonly<Record<string, readonly string[]>> = 
   accent: ['accentToken'],
 }
 
-/** The keys that ARE the type rather than a flag about it. Pinned by a test, so
- * moving a flag in here is as deliberate as retiring a field key. */
 /** The same rule one level down: every key of a FIELD RULE is read by a
  * selector too. Without this table `editable` was declared on every field and
  * read by nothing — exactly the defect TYPE_FLAG_SELECTORS exists to catch, one
@@ -504,6 +502,8 @@ export const FIELD_FLAG_SELECTORS: Readonly<Record<string, readonly string[]>> =
   warning: ['warningFor'],
 }
 
+/** The keys that ARE the type rather than a flag about it. Pinned by a test, so
+ * moving a flag in here is as deliberate as retiring a field key. */
 export const TYPE_STRUCTURE_KEYS: readonly string[] = [
   'id',
   'label',
