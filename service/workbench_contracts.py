@@ -1812,6 +1812,83 @@ class ParticipantAudience(_Contract):
 RevealAudience = Annotated[TableAudience | ParticipantAudience, Field(discriminator="audience")]
 
 
+def _distinct_keys(keys: list[str]) -> list[str]:
+    """A mask is a set: a repeat would make the ledger's one row per field
+    ambiguous (ED-17), and it is always a client bug."""
+    if len(set(keys)) != len(keys):
+        raise ValueError("a mask names each field once")
+    return keys
+
+
+#: The keys one Confirm shows, explicit and non-empty (REVEAL-9, ED-8).
+Mask = Annotated[
+    list[MaskKey],
+    Field(min_length=1, max_length=MASK_MAX_KEYS),
+    AfterValidator(_distinct_keys),
+]
+
+
+class RevealRequest(_Contract):
+    """Confirm (REVEAL-5, ED-9): one atomic mutation covering reveal, update,
+    replace and move — the server derives which, and the request never says.
+
+    It names the **sealed** version the sheet displayed (CANVAS-34), so what the
+    GM reviewed is what the table gets; the mask as explicit keys; the audience;
+    and **both** the session it was composed for and that session's reveal epoch,
+    so that a number from last night's session can never match tonight's (ED-9).
+
+    No ``campaign_id``: the session names the campaign, and ownership is the
+    route's (SEC-3) — the same shape as ``CuePlayRequest``.
+    """
+
+    schema_version: SchemaVersion
+    command_id: CommandId
+    document_id: OpaqueId
+    session_id: OpaqueId
+    reveal_epoch: RevealEpoch
+    version: VersionNumber
+    mask: Mask
+    audience: RevealAudience
+
+
+class StopScope(str, Enum):
+    """What a Stop clears. ``document`` covers every slot the document is live in
+    (REVEAL-7); ``all`` is the workspace indicator's panic button (REVEAL-6)."""
+
+    SLOT = "slot"
+    DOCUMENT = "document"
+    ALL = "all"
+
+
+class _StopBase(_Contract):
+    """Decision X-3: **no epoch on any Stop.** A narrowing is never stale, never
+    queued and never refused for state, so there is no number to be stale
+    against; ``extra="forbid"`` is what makes sending one an error."""
+
+    schema_version: SchemaVersion
+    command_id: CommandId
+
+
+class StopSlot(_StopBase):
+    scope: Literal["slot"]
+    audience: RevealAudience
+
+
+class StopDocument(_StopBase):
+    scope: Literal["document"]
+    document_id: OpaqueId
+
+
+class StopAll(_StopBase):
+    """Every slot of the session, whatever is in them (REVEAL-6)."""
+
+    scope: Literal["all"]
+
+
+#: Stop showing (REVEAL-6, REVEAL-22, ED-16 — there is no Retract in v1).
+RevealStopRequest = Annotated[StopSlot | StopDocument | StopAll, Field(discriminator="scope")]
+
+
 # ── Realtime events ──────────────────────────────────────────────────────────
 #
 # Two channels, two unions (ADR RT-1, threat model 8.3): the GM channel carries
@@ -2091,6 +2168,8 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "TableSessionAnswer": TypeAdapter(TableSessionAnswer),
     "Capabilities": TypeAdapter(Capabilities),
     "RevealAudience": TypeAdapter(RevealAudience, config=_HIDE_INPUT),
+    "RevealRequest": TypeAdapter(RevealRequest),
+    "RevealStopRequest": TypeAdapter(RevealStopRequest, config=_HIDE_INPUT),
     "GmEvent": TypeAdapter(GmEvent, config=_HIDE_INPUT),
     "TableEvent": TypeAdapter(TableEvent, config=_HIDE_INPUT),
     "GmSnapshot": TypeAdapter(GmSnapshot),

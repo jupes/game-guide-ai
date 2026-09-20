@@ -1,0 +1,113 @@
+{
+  "schema": "RevealStopRequest",
+  "direction": "request",
+  "note": "Stop showing (REVEAL-6, REVEAL-22, X-3). Three scopes: one slot, every slot holding one document, or every slot of the session. A Stop carries NO epoch — it is never stale, never queued, never refused for state, and succeeds on an empty slot — so a stale number can never turn a narrowing into a refusal. There is no Retract in v1 (ED-16).",
+  "valid": [
+    {
+      "name": "stop the table slot",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5c6d7e8f90a1b2c3",
+        "scope": "slot",
+        "audience": { "audience": "table" }
+      }
+    },
+    {
+      "name": "stop one participant's slot",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5c6d7e8f90a1b2c4",
+        "scope": "slot",
+        "audience": { "audience": "participant", "participant_id": "pt_4c1b9e7a" }
+      }
+    },
+    {
+      "name": "stop showing this document, wherever it is live",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5c6d7e8f90a1b2c5",
+        "scope": "document",
+        "document_id": "doc_9k2f7a1c"
+      }
+    },
+    {
+      "name": "stop all",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5c6d7e8f90a1b2c6",
+        "scope": "all"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a Stop carrying the reveal epoch",
+      "why": "X-3, REVEAL-22: a narrowing is never stale and is never refused for state, so it carries no epoch to be stale against",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5c6d7e8f90a1b2c3",
+        "scope": "slot",
+        "audience": { "audience": "table" },
+        "reveal_epoch": 4
+      }
+    },
+    {
+      "name": "Stop all carrying the reveal epoch",
+      "why": "X-3: the same for the workspace indicator's Stop all, which is the panic button",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5c6d7e8f90a1b2c6",
+        "scope": "all",
+        "reveal_epoch": 4
+      }
+    },
+    {
+      "name": "a slot scope with no audience",
+      "why": "a slot is named by its audience (AUD-8); without one there is nothing to clear",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5c6d7e8f90a1b2c3",
+        "scope": "slot"
+      }
+    },
+    {
+      "name": "Stop all naming an audience",
+      "why": "Stop all clears every slot of the session; an audience would make it a slot Stop wearing the wrong name",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5c6d7e8f90a1b2c6",
+        "scope": "all",
+        "audience": { "audience": "table" }
+      }
+    },
+    {
+      "name": "a document scope naming an audience as well",
+      "why": "one scope per Stop: a document Stop clears every slot the document is live in (REVEAL-7), and mixing the two hides which rule applied",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5c6d7e8f90a1b2c5",
+        "scope": "document",
+        "document_id": "doc_9k2f7a1c",
+        "audience": { "audience": "table" }
+      }
+    },
+    {
+      "name": "a scope this contract does not define",
+      "why": "closed vocabulary: a Retract is the assistant's Phase 4, not a v1 scope (ED-16)",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_5c6d7e8f90a1b2c3",
+        "scope": "retract",
+        "audience": { "audience": "table" }
+      }
+    },
+    {
+      "name": "a Stop with no command id",
+      "why": "a Stop is retried until acknowledged (REVEAL-16), so it must be recognisable as the same command",
+      "value": {
+        "schema_version": 1,
+        "scope": "all"
+      }
+    }
+  ]
+}

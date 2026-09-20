@@ -1411,6 +1411,70 @@ export const RevealAudienceSchema = z.discriminatedUnion('audience', [
 ])
 export type RevealAudience = z.infer<typeof RevealAudienceSchema>
 
+/** REVEAL-22, ED-9: every narrowing advances it, on an empty slot too. AudioEpoch's twin. */
+const RevealEpochSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
+
+/** The keys one Confirm shows, explicit and non-empty (REVEAL-9, ED-8). A mask is
+ * a set: a repeat would make the ledger's one row per field ambiguous (ED-17). */
+const MaskSchema = z
+  .array(MaskKeySchema)
+  .min(1)
+  .max(MASK_MAX_KEYS)
+  .refine((keys) => new Set(keys).size === keys.length, { message: 'a mask names each field once' })
+
+/**
+ * Confirm (REVEAL-5, ED-9): one atomic mutation covering reveal, update, replace
+ * and move — the server derives which, and the request never says. It names the
+ * **sealed** version the sheet displayed (CANVAS-34), the mask as explicit keys,
+ * the audience, and **both** the session it was composed for and that session's
+ * reveal epoch, so a number from last night can never match tonight. No campaign
+ * id: the session names the campaign, and ownership is the route's (SEC-3).
+ */
+export const RevealRequestSchema = refusingProtoKeys(
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    command_id: CommandIdSchema,
+    document_id: OpaqueIdSchema,
+    session_id: OpaqueIdSchema,
+    reveal_epoch: RevealEpochSchema,
+    version: VersionNumberSchema,
+    mask: MaskSchema,
+    audience: RevealAudienceSchema,
+  }),
+)
+export type RevealRequest = z.infer<typeof RevealRequestSchema>
+
+export const STOP_SCOPES = ['slot', 'document', 'all'] as const
+
+/**
+ * Stop showing (REVEAL-6, REVEAL-22). **No epoch on any Stop** (X-3): a narrowing
+ * is never stale, never queued and never refused for state, so there is no number
+ * to be stale against — `strictObject` is what makes sending one an error. There
+ * is no Retract in v1 (ED-16).
+ */
+export const RevealStopRequestSchema = refusingProtoKeys(
+  z.discriminatedUnion('scope', [
+    z.strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      command_id: CommandIdSchema,
+      scope: z.literal('slot'),
+      audience: RevealAudienceSchema,
+    }),
+    z.strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      command_id: CommandIdSchema,
+      scope: z.literal('document'),
+      document_id: OpaqueIdSchema,
+    }),
+    z.strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      command_id: CommandIdSchema,
+      scope: z.literal('all'),
+    }),
+  ]),
+)
+export type RevealStopRequest = z.infer<typeof RevealStopRequestSchema>
+
 // ── Realtime events ──────────────────────────────────────────────────────────
 // Two channels, two unions (ADR RT-1, threat model 8.3). Every frame carries its
 // own schema_version; the heartbeat is an SSE comment, not an event. `snapshot`
@@ -1601,6 +1665,8 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   TableSessionAnswer: TableSessionAnswerSchema,
   Capabilities: CapabilitiesSchema,
   RevealAudience: RevealAudienceSchema,
+  RevealRequest: RevealRequestSchema,
+  RevealStopRequest: RevealStopRequestSchema,
   GmEvent: GmEventSchema,
   TableEvent: TableEventSchema,
   GmSnapshot: GmSnapshotSchema,
