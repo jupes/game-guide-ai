@@ -12,6 +12,7 @@ import {
   RAIL_LIMIT,
   REGISTRY,
   RegistryError,
+  FIELD_FLAG_SELECTORS,
   TYPE_FLAG_SELECTORS,
   TYPE_STRUCTURE_KEYS,
   abilityRowKey,
@@ -20,7 +21,10 @@ import {
   citesCorpus,
   defaultRevealFor,
   documentTypeById,
+  isEditable,
   isPrintable,
+  isRevealable,
+  labelFor,
   matchCommand,
   menuOptions,
   normalisePins,
@@ -247,6 +251,48 @@ describe('per-type flags and their selectors (1kg.5.3)', () => {
     expect(ruleFor(doc('npc'), 'tags')).toBeDefined()
   })
 
+  it('reads every key of a field rule through a selector too', () => {
+    // The same rule as TYPE_FLAG_SELECTORS, one level down. Without it,
+    // `editable` was declared on every field and read by nothing.
+    const types = file.document_types as Array<{ field_rules: Record<string, Record<string, unknown>> }>
+    const keys = new Set([
+      ...types.flatMap((d) => Object.values(d.field_rules).flatMap((r) => Object.keys(r))),
+      ...Object.values(file.common_field_rules as Record<string, Record<string, unknown>>).flatMap((r) =>
+        Object.keys(r),
+      ),
+    ])
+    const fieldSelectors: Record<string, unknown> = { labelFor, isEditable, isRevealable, revealableKeys, warningFor }
+    expect([...keys].sort()).toEqual(Object.keys(FIELD_FLAG_SELECTORS).sort())
+    for (const names of Object.values(FIELD_FLAG_SELECTORS)) {
+      for (const name of names) expect(typeof fieldSelectors[name]).toBe('function')
+    }
+  })
+
+  it('each field selector answers the flag it names', () => {
+    const npc = doc('npc')
+    expect(labelFor(npc, 'if_attacked')).toBe('If the party attacks')
+    expect(isEditable(npc, 'wants')).toBe(true)
+    expect(isRevealable(npc, 'wants')).toBe(true)
+    expect(isRevealable(npc, 'tags')).toBe(false)
+    expect(warningFor(npc, 'wants')).toBe('Would spoil the lie')
+    // X-8 again: an undeclared key is not editable, not revealable, has no label.
+    expect(isEditable(npc, 'nonesuch')).toBe(false)
+    expect(isRevealable(npc, 'nonesuch')).toBe(false)
+    expect(labelFor(npc, 'nonesuch')).toBeUndefined()
+  })
+
+  it('reads a field flagged not editable as not editable', () => {
+    // Every shipped field is editable, so the selector is exercised against a
+    // rule that is not — otherwise it could return true always.
+    const npc = doc('npc')
+    const frozen: DocumentType = {
+      ...npc,
+      field_rules: { ...npc.field_rules, notes: { label: 'Notes', editable: false, revealable: true, warning: null } },
+    }
+    expect(isEditable(frozen, 'notes')).toBe(false)
+    expect(isEditable(frozen, 'wants')).toBe(true)
+  })
+
   it('pins the reserved-key lists, so retiring a key is deliberate (ED-24)', () => {
     expect(Object.fromEntries(REGISTRY.document_types.map((d) => [d.id, [...d.reserved_keys]]))).toEqual(
       Object.fromEntries(REGISTRY.document_types.map((d) => [d.id, []])),
@@ -281,6 +327,15 @@ describe('per-type flags and their selectors (1kg.5.3)', () => {
     for (const d of REGISTRY.document_types) {
       expect(revealableKeys(d).filter((key) => never.includes(key))).toEqual([])
     }
+  })
+
+  it('gives the identity link a home, and never reveals it (ED-20)', () => {
+    // Unguarded on purpose: the key must EXIST for this to prove anything, and
+    // a version that skipped when it did not would pass with the field deleted.
+    const npc = doc('npc')
+    expect(Object.hasOwn(npc.fields, 'true_identity')).toBe(true)
+    expect(isRevealable(npc, 'true_identity')).toBe(false)
+    expect(revealableKeys(npc)).not.toContain('true_identity')
   })
 })
 
@@ -358,6 +413,40 @@ describe('a registry that breaks a rule cannot be built', () => {
     ['a default reveal naming nothing real', withFirstType({ default_reveal: { table: ['nonesuch'] } }), 'undeclared field'],
     ['an unknown audience', withFirstType({ audience: 'everyone' }), 'unknown audience'],
     ['an unknown accent', withFirstType({ accent: 'neon' }), 'unknown accent'],
+    // The branches the first round of review found untested.
+    ['a reserved key listed twice', withFirstType({ reserved_keys: ['gone', 'gone'] }), 'listed twice'],
+    [
+      'a group id that is not a flat key',
+      withFirstType({ reveal_groups: [{ id: 'Name Voice', label: 'Name & voice', keys: ['name', 'voice'] }] }),
+      'is not a flat key',
+    ],
+    [
+      'a group naming a field that does not exist',
+      withFirstType({ reveal_groups: [{ id: 'ghosts', label: 'Ghosts', keys: ['name', 'nonesuch'] }] }),
+      'undeclared field',
+    ],
+    [
+      'two groups sharing an id',
+      withFirstType({
+        reveal_groups: [
+          { id: 'same', label: 'One', keys: ['name', 'voice'] },
+          { id: 'same', label: 'Two', keys: ['tell', 'attitude'] },
+        ],
+      }),
+      'share an id',
+    ],
+    ['a default reveal naming a key twice', withFirstType({ default_reveal: { table: ['name', 'name'] } }), 'names a key twice'],
+    [
+      'a rule for something that is not a common field',
+      { ...REGISTRY, common_field_rules: { ...REGISTRY.common_field_rules, nonesuch: rule('Nonesuch') } },
+      'not a common field',
+    ],
+    ['a missing common field rule', { ...REGISTRY, common_field_rules: { name: rule('Name') } }, 'every common field has a rule'],
+    [
+      'a camelCase common field label',
+      { ...REGISTRY, common_field_rules: { ...REGISTRY.common_field_rules, tags: rule('tagList') } },
+      'camelCase',
+    ],
   ]
 
   it.each(cases)('rejects %s', (_name, registry, problem) => {

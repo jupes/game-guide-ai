@@ -8,10 +8,18 @@
  */
 
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { AdapterError, AdapterRegistry, DOC_TYPE_ADAPTERS } from './schemaAdapters'
 import type { Adapter } from './schemaAdapters'
 import { DOCUMENT_TYPE_IDS, DOC_TYPE_VERSION } from './contracts'
 
+// Requirement 7 asks for a fixture type. DocumentTypeId is a closed
+// vocabulary, so a synthetic id cannot be minted without changing the
+// contract; a real id stands in on a registry these tests own, and the
+// target version is passed explicitly. The shipped registry is untouched,
+// which the first test asserts.
 const FIXTURE_TYPE = 'npc'
 
 /** A step that moves text from one key to another — the case ED-24 is about. */
@@ -88,6 +96,21 @@ describe('the schema-adapter frame', () => {
     registry.register(FIXTURE_TYPE, 1, rename('a', 'b'))
     expect(() => registry.register(FIXTURE_TYPE, 1, rename('a', 'c'))).toThrow('already registered')
     expect(() => registry.register(FIXTURE_TYPE, 0, rename('a', 'b'))).toThrow('a version starts at 1')
+  })
+
+  it("carries ED-24's reset-to-unclassified rule where an adapter author will read it", () => {
+    // The rule has no code to enforce here — eligibility storage is
+    // agent-forge-harness-1ir.2.1's — so the contract lives in the JSDoc on
+    // `register`, and this test is what keeps it there. Mirrors
+    // test_the_register_docstring_carries_ED24s_rule on the Python side.
+    const here = dirname(fileURLToPath(import.meta.url))
+    const source = readFileSync(join(here, 'schemaAdapters.ts'), 'utf-8')
+    const body = source.slice(source.indexOf('class AdapterRegistry'))
+    const declaration = body.indexOf('\n  register(')
+    expect(declaration).toBeGreaterThan(-1)
+    const jsdoc = body.slice(body.lastIndexOf('/**', declaration), declaration)
+    expect(jsdoc).toContain('unclassified')
+    expect(jsdoc).toContain('ED-24')
   })
 
   it('keeps one type’s steps out of another’s', () => {

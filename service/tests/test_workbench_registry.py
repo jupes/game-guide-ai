@@ -149,6 +149,7 @@ def _with_first_type(**changes: object) -> tuple[reg.DocumentType, ...]:
 
 
 _NPC_RULES = dict(reg.REGISTRY.document_types[0].field_rules)
+_COMMON_RULES = dict(reg.REGISTRY.common_field_rules)
 
 
 def _with_npc_rules(**changes: reg.FieldRule) -> tuple[reg.DocumentType, ...]:
@@ -229,6 +230,42 @@ def _character_sheet(**changes: object) -> tuple[reg.DocumentType, ...]:
         (_broken(document_types=_with_first_type(default_reveal={"table": ("nonesuch",)})), "undeclared field"),
         (_broken(document_types=_with_first_type(audience="everyone")), "unknown audience"),
         (_broken(document_types=_with_first_type(accent="neon")), "unknown accent"),
+        # The branches the first round of review found untested.
+        (_broken(document_types=_with_first_type(reserved_keys=("gone", "gone"))), "listed twice"),
+        (
+            _broken(
+                document_types=_with_first_type(
+                    reveal_groups=(reg.RevealGroup("Name Voice", "Name & voice", ("name", "voice")),)
+                )
+            ),
+            "is not a flat key",
+        ),
+        (
+            _broken(
+                document_types=_with_first_type(
+                    reveal_groups=(reg.RevealGroup("ghosts", "Ghosts", ("name", "nonesuch")),)
+                )
+            ),
+            "undeclared field",
+        ),
+        (
+            _broken(
+                document_types=_with_first_type(
+                    reveal_groups=(
+                        reg.RevealGroup("same", "One", ("name", "voice")),
+                        reg.RevealGroup("same", "Two", ("tell", "attitude")),
+                    )
+                )
+            ),
+            "share an id",
+        ),
+        (
+            _broken(document_types=_with_first_type(default_reveal={"table": ("name", "name")})),
+            "names a key twice",
+        ),
+        (_broken(common_field_rules={**_COMMON_RULES, "nonesuch": reg.FieldRule("Nonesuch")}), "not a common field"),
+        (_broken(common_field_rules={"name": reg.FieldRule("Name")}), "every common field has a rule"),
+        (_broken(common_field_rules={**_COMMON_RULES, "tags": reg.FieldRule("tagList")}), "camelCase"),
     ],
 )
 def test_a_registry_that_breaks_a_rule_cannot_be_built(registry: reg.Registry, problem: str) -> None:
@@ -311,12 +348,48 @@ def test_tags_are_never_revealable_and_the_allowlist_is_the_classifiable_list() 
 
 def test_an_identity_link_is_never_revealable() -> None:
     """Decision ED-20: "X *is* Y" is a GM-only relation, so it is a field off
-    the allowlist and cannot be widened by any action."""
+    the allowlist and cannot be widened by any action.
+
+    Unguarded on purpose: the key must **exist** for this to prove anything, and
+    a version of this test that skipped when it did not would pass with the
+    field deleted.
+    """
     npc = _doc("npc")
-    for key in ("true_identity",):
-        rule = reg.REGISTRY.rule_for(npc, key)
-        if rule is not None:  # declared by the checkpoint that adds it
-            assert not rule.revealable, f"{key} must never be revealable"
+    assert "true_identity" in npc.fields, "ED-20 needs a home for the link, and this is it"
+    assert not reg.REGISTRY.is_revealable(npc, "true_identity")
+    assert "true_identity" not in reg.REGISTRY.revealable_keys(npc)
+
+
+def test_every_key_of_a_field_rule_is_read_by_a_selector() -> None:
+    """The same rule as ``TYPE_FLAG_SELECTORS``, one level down. Without this,
+    ``editable`` was declared on every field and read by nothing."""
+    keys = {key for doc in REGISTRY_JSON["document_types"] for rule in doc["field_rules"].values() for key in rule}
+    keys |= {key for rule in REGISTRY_JSON["common_field_rules"].values() for key in rule}
+    assert keys == set(reg.FIELD_FLAG_SELECTORS)
+    for flag, selectors in reg.FIELD_FLAG_SELECTORS.items():
+        for name in selectors:
+            assert callable(getattr(reg.REGISTRY, name)), f"{flag}: {name} is not a selector"
+
+
+def test_each_field_selector_answers_the_flag_it_names() -> None:
+    npc = _doc("npc")
+    assert reg.REGISTRY.label_for(npc, "if_attacked") == "If the party attacks"
+    assert reg.REGISTRY.is_editable(npc, "wants")
+    assert reg.REGISTRY.is_revealable(npc, "wants")
+    assert not reg.REGISTRY.is_revealable(npc, "tags")
+    assert reg.REGISTRY.warning_for(npc, "wants") == "Would spoil the lie"
+    # X-8 again: an undeclared key is not editable, not revealable, has no label.
+    assert not reg.REGISTRY.is_editable(npc, "nonesuch")
+    assert not reg.REGISTRY.is_revealable(npc, "nonesuch")
+    assert reg.REGISTRY.label_for(npc, "nonesuch") is None
+
+
+def test_a_field_flagged_not_editable_reads_as_not_editable() -> None:
+    """Every shipped field is editable today, so the selector is exercised
+    against a rule that is not — otherwise it could return ``True`` always."""
+    frozen = replace(_doc("npc"), field_rules={**_NPC_RULES, "notes": reg.FieldRule("Notes", editable=False)})
+    assert not reg.REGISTRY.is_editable(frozen, "notes")
+    assert reg.REGISTRY.is_editable(frozen, "wants")
 
 
 def test_a_reveal_group_is_found_by_any_of_its_keys() -> None:

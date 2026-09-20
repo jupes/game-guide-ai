@@ -57,6 +57,12 @@ RAIL_LIMIT = 5
 _COMMAND = re.compile(r"^/[a-z][a-z0-9-]{0,23}$")
 #: A Material Symbols Rounded ligature name, as the contract's ``ToolSuggestion.icon``.
 _ICON = re.compile(r"^[a-z0-9_]{1,40}$")
+#: Decision REVEAL-10: keys that are never revealable, whatever a registry
+#: says. Only ``tags`` is a *declared* field today; the rest of REVEAL-10's
+#: list — sources, version history, authorship, changed-field lists, asset
+#: metadata, ids — never becomes one, and a type that needs an identity link
+#: gives it its own key off the allowlist (ED-20).
+NEVER_REVEALABLE: frozenset[str] = frozenset({"tags"})
 
 
 class RegistryError(ValueError):
@@ -244,6 +250,22 @@ class Registry:
         """
         return next((key for key, kind in doc.fields.items() if kind is FieldKind.ABILITIES), None)
 
+    def is_editable(self, doc: DocumentType, key: str) -> bool:
+        """Whether the GM may type into this field. ``False`` for a key the type
+        does not declare — unknown is never editable (X-8)."""
+        rule = self.rule_for(doc, key)
+        return rule.editable if rule else False
+
+    def label_for(self, doc: DocumentType, key: str) -> str | None:
+        rule = self.rule_for(doc, key)
+        return rule.label if rule else None
+
+    def is_revealable(self, doc: DocumentType, key: str) -> bool:
+        """The allowlist, per key (REVEAL-10). ``False`` for an undeclared key:
+        by ED-5 anything off the list is ``gm_only`` by construction."""
+        rule = self.rule_for(doc, key)
+        return rule.revealable if rule else False
+
     def rule_for(self, doc: DocumentType, key: str) -> FieldRule | None:
         """A field's rule, common or the type's own. ``None`` for a key the type
         does not declare — never a default, because a default would be a
@@ -399,7 +421,7 @@ REGISTRY = Registry(
             DocumentTypeId.STATBLOCK, "Stat Block", "shield", renderer="stat_block_card",
             rules={
                 "ac": FieldRule("Armor Class"),
-                "ac_note": FieldRule("Armor class note"),
+                "ac_note": FieldRule("Armor Class note"),
                 "hp": FieldRule("Hit Points"),
                 "hit_dice": FieldRule("Hit dice"),
                 "speed": FieldRule("Speed"),
@@ -609,6 +631,16 @@ TYPE_FLAG_SELECTORS: dict[str, tuple[str, ...]] = {
     "audience": ("audience_of", "shows_audience_picker"),
     "accent": ("accent_token",),
 }
+#: The same rule one level down: every key of a **field rule** is read by a
+#: selector too. Without this table ``editable`` was declared on every field and
+#: read by nothing — exactly the defect ``TYPE_FLAG_SELECTORS`` exists to catch,
+#: one level below where it was looking.
+FIELD_FLAG_SELECTORS: dict[str, tuple[str, ...]] = {
+    "label": ("label_for",),
+    "editable": ("is_editable",),
+    "revealable": ("is_revealable", "revealable_keys"),
+    "warning": ("warning_for",),
+}
 #: The keys that *are* the type rather than a flag about it. Pinned by a test,
 #: so moving a flag in here is as deliberate as retiring a field key.
 TYPE_STRUCTURE_KEYS: frozenset[str] = frozenset(
@@ -663,6 +695,12 @@ def validate(registry: Registry) -> None:
         problems += [f"a common field: {problem}" for problem in _label_problems(rule.label)]
         if key not in COMMON_FIELDS:
             problems.append(f"a rule for {key!r}, which is not a common field")
+        # REVEAL-10 names `tags` among the keys that are never revealable, and
+        # ED-5 makes everything off an allowlist gm_only by construction. It is
+        # a rule rather than only a pinned list, because a registry that made it
+        # revealable would otherwise be internally consistent and would seed it.
+        if key in NEVER_REVEALABLE and rule.revealable:
+            problems.append(f"{key!r} is never revealable, on any type (REVEAL-10, ED-5)")
     if set(registry.common_field_rules) != set(COMMON_FIELDS):
         problems.append("every common field has a rule, and nothing else does")
     for doc in registry.document_types:

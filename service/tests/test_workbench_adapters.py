@@ -15,6 +15,11 @@ import pytest
 from service import workbench_adapters as wa
 from service.workbench_contracts import DOC_TYPE_VERSION, DocumentTypeId
 
+#: Requirement 7 asks for a fixture type. ``DocumentTypeId`` is a closed
+#: vocabulary, so a *synthetic* id cannot be minted without changing the
+#: contract; instead a real id stands in on a registry these tests own, and
+#: the target version is passed explicitly. Nothing here touches the shipped
+#: registry, which a test below asserts is still empty.
 FIXTURE_TYPE = DocumentTypeId.NPC
 
 

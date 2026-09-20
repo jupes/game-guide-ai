@@ -65,7 +65,7 @@
       "fields": {"ac": "integer", "ac_note": "text", "hp": "integer", "hit_dice": "text", "speed": "text", "size": "text", "creature_type": "text", "alignment": "text", "abilities": "abilities", "saving_throws": "text", "skills": "text", "damage_immunities": "text", "condition_immunities": "text", "senses": "text", "languages": "text", "challenge_rating": "text", "xp": "integer", "traits": "entry_list", "actions": "entry_list", "bonus_actions": "entry_list", "reactions": "entry_list", "legendary_actions": "entry_list"},
       "field_rules": {
         "ac": {"label": "Armor Class", "editable": true, "revealable": true, "warning": null},
-        "ac_note": {"label": "Armor class note", "editable": true, "revealable": true, "warning": null},
+        "ac_note": {"label": "Armor Class note", "editable": true, "revealable": true, "warning": null},
         "hp": {"label": "Hit Points", "editable": true, "revealable": true, "warning": null},
         "hit_dice": {"label": "Hit dice", "editable": true, "revealable": true, "warning": null},
         "speed": {"label": "Speed", "editable": true, "revealable": true, "warning": null},
@@ -240,7 +240,10 @@
     }
   ],
   "asset_kinds": ["image", "audio"],
-  "media_types": {"image": ["image/png", "image/jpeg", "image/webp"], "audio": ["audio/mpeg", "audio/mp4", "audio/ogg", "audio/wav"]},
+  "media_types": {
+    "image": ["image/png", "image/jpeg", "image/webp"],
+    "audio": ["audio/mpeg", "audio/mp4", "audio/ogg", "audio/wav"]
+  },
   "cue_kinds": ["ambience", "one_shot"],
   "audio_slots": ["ambience", "one_shot"]
 }

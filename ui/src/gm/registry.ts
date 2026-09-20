@@ -273,7 +273,7 @@ export const REGISTRY: Registry = {
       renderer: 'stat_block_card',
       rules: {
         ac: rule('Armor Class'),
-        ac_note: rule('Armor class note'),
+        ac_note: rule('Armor Class note'),
         hp: rule('Hit Points'),
         hit_dice: rule('Hit dice'),
         speed: rule('Speed'),
@@ -388,6 +388,12 @@ const hasEntity = (text: string) => text.includes('&') && text.includes(';')
 const FIELD_KEY = /^[a-z][a-z0-9_]{0,39}$/
 /** A label is for a person: never a key that escaped (`xp_budget`, `ifAttacked`). */
 const CAMEL_CASE = /[a-z][A-Z]/
+/** REVEAL-10: keys that are never revealable, whatever a registry says. Only
+ * `tags` is a DECLARED field today; the rest of REVEAL-10's list — sources,
+ * version history, authorship, changed-field lists, asset metadata, ids — never
+ * becomes one, and a type that needs an identity link gives it its own key off
+ * the allowlist (ED-20). */
+export const NEVER_REVEALABLE: readonly string[] = ['tags']
 
 function labelProblems(label: string, what = 'label', limit = 60): string[] {
   const problems: string[] = []
@@ -429,7 +435,7 @@ function documentTypeProblems(registry: Registry, d: DocumentType): string[] {
     problems.push('every declared field has a rule, and nothing else does')
   }
 
-  const allowlist = new Set(revealableKeys(d))
+  const allowlist = new Set(revealableKeys(d, registry))
   const declared = new Set([...Object.keys(COMMON_FIELDS), ...Object.keys(d.fields)])
   const grouped = new Set<string>()
   for (const group of d.reveal_groups) {
@@ -476,6 +482,17 @@ export const TYPE_FLAG_SELECTORS: Readonly<Record<string, readonly string[]>> = 
 
 /** The keys that ARE the type rather than a flag about it. Pinned by a test, so
  * moving a flag in here is as deliberate as retiring a field key. */
+/** The same rule one level down: every key of a FIELD RULE is read by a
+ * selector too. Without this table `editable` was declared on every field and
+ * read by nothing — exactly the defect TYPE_FLAG_SELECTORS exists to catch, one
+ * level below where it was looking. */
+export const FIELD_FLAG_SELECTORS: Readonly<Record<string, readonly string[]>> = {
+  label: ['labelFor'],
+  editable: ['isEditable'],
+  revealable: ['isRevealable', 'revealableKeys'],
+  warning: ['warningFor'],
+}
+
 export const TYPE_STRUCTURE_KEYS: readonly string[] = [
   'id',
   'label',
@@ -529,24 +546,47 @@ export function abilityRowKey(d: DocumentType): string | undefined {
   return Object.entries(d.fields).find(([, kind]) => kind === 'abilities')?.[0]
 }
 
-/** A field's rule, common or the type's own. `undefined` for a key the type does
+/**
+ * A field's rule, common or the type's own. `undefined` for a key the type does
  * not declare — never a default, because a default visibility is a decision
- * made by accident. `Object.hasOwn`, so `constructor` reads as "not declared". */
-export function ruleFor(d: DocumentType, key: string): FieldRule | undefined {
+ * made by accident. `Object.hasOwn`, so `constructor` reads as "not declared".
+ *
+ * `registry` defaults to the shipped one, but `validateRegistry` passes the
+ * candidate it is checking: reading the module constant instead would let a
+ * registry under validation be judged against the shipped common rules, and
+ * the two languages' validators would then disagree.
+ */
+export function ruleFor(d: DocumentType, key: string, registry: Registry = REGISTRY): FieldRule | undefined {
   if (Object.hasOwn(d.field_rules, key)) return d.field_rules[key]
-  if (Object.hasOwn(REGISTRY.common_field_rules, key)) return REGISTRY.common_field_rules[key]
+  if (Object.hasOwn(registry.common_field_rules, key)) return registry.common_field_rules[key]
   return undefined
 }
 
 /** The type's allowlist (REVEAL-10), commons first, in registry order. */
-export function revealableKeys(d: DocumentType): string[] {
-  const common = Object.entries(COMMON_FIELD_RULES).filter(([, r]) => r.revealable).map(([key]) => key)
+export function revealableKeys(d: DocumentType, registry: Registry = REGISTRY): string[] {
+  const common = Object.entries(registry.common_field_rules).filter(([, r]) => r.revealable).map(([key]) => key)
   const own = Object.entries(d.field_rules).filter(([, r]) => r.revealable).map(([key]) => key)
   return [...common, ...own]
 }
 
-export function warningFor(d: DocumentType, key: string): string | null {
-  return ruleFor(d, key)?.warning ?? null
+/** Whether the GM may type into this field. `false` for a key the type does not
+ * declare — unknown is never editable (X-8). */
+export function isEditable(d: DocumentType, key: string, registry: Registry = REGISTRY): boolean {
+  return ruleFor(d, key, registry)?.editable ?? false
+}
+
+export function labelFor(d: DocumentType, key: string, registry: Registry = REGISTRY): string | undefined {
+  return ruleFor(d, key, registry)?.label
+}
+
+/** The allowlist, per key (REVEAL-10). `false` for an undeclared key: by ED-5
+ * anything off the list is `gm_only` by construction. */
+export function isRevealable(d: DocumentType, key: string, registry: Registry = REGISTRY): boolean {
+  return ruleFor(d, key, registry)?.revealable ?? false
+}
+
+export function warningFor(d: DocumentType, key: string, registry: Registry = REGISTRY): string | null {
+  return ruleFor(d, key, registry)?.warning ?? null
 }
 
 /** The group a key is toggled by, or `undefined` if it has a row of its own. */
@@ -599,6 +639,13 @@ export function validateRegistry(registry: Registry): void {
   for (const [key, r] of Object.entries(registry.common_field_rules)) {
     problems.push(...labelProblems(r.label).map((p) => `a common field: ${p}`))
     if (!Object.hasOwn(COMMON_FIELDS, key)) problems.push(`a rule for ${key}, which is not a common field`)
+    // REVEAL-10 names `tags` among the keys that are never revealable, and ED-5
+    // makes everything off an allowlist gm_only by construction. A rule rather
+    // than only a pinned list, because a registry that made it revealable would
+    // otherwise be internally consistent and would happily seed it.
+    if (NEVER_REVEALABLE.includes(key) && r.revealable) {
+      problems.push(`${key} is never revealable, on any type (REVEAL-10, ED-5)`)
+    }
   }
   if (Object.keys(registry.common_field_rules).sort().join(',') !== Object.keys(COMMON_FIELDS).sort().join(',')) {
     problems.push('every common field has a rule, and nothing else does')
