@@ -2303,6 +2303,70 @@ class TableAudioEvent(_EventBase):
         return self
 
 
+class TableSlotName(str, Enum):
+    """How a **table** client is told which region a projection belongs in.
+
+    Deliberately *not* a ``RevealAudience``: an audience carries a participant
+    id, and every table-side shape in this contract is id-free — ``TableRole`` is
+    an enum, ``TableJoinResponse`` answers with a role and no id, ``EnrolResponse``
+    with a status alone. Which participant ``mine`` is, the server resolves from
+    the credential pair, "never from request fields" (eligibility ADR §4), so the
+    id never has to be on the wire at all (SEC-15).
+    """
+
+    TABLE = "table"
+    MINE = "mine"
+
+
+class TableSlot(_Contract):
+    """One slot as a table client sees it: where it goes, its sequence, and what
+    it holds (ADR RT-4). ``content`` is ``None`` for a slot this device is
+    entitled to and which is empty."""
+
+    slot: TableSlotName
+    seq: SlotSequence
+    content: TableProjection | None
+
+
+def _entitled_slots(slots: Sequence[TableSlot]) -> None:
+    """Decision threat model §8.2: a table client is entitled to the table slot
+    and, with the enrolled device credential, its own — and to nothing else.
+
+    A slot it is *not* entitled to is **absent**, never marked: a marker would
+    confirm the slot exists and that a private reveal is happening (WT-7, T-8).
+    So the whole picture is one or two entries, the table one always present.
+    """
+    names = [slot.slot for slot in slots]
+    if TableSlotName.TABLE not in names:
+        raise ValueError("every table client is entitled to the table slot")
+    if len(set(names)) != len(names):
+        raise ValueError("a device holds one credential, so it has one of each slot")
+
+
+class TableSlotEvent(_EventBase):
+    """One reveal slot changed, as a table client is told it. The twin of
+    ``TableAudioEvent``: no session id, no link generation, no epoch — nothing a
+    table client has no use for (SEC-15, REVEAL-24)."""
+
+    event: Literal["slot"]
+    slot: TableSlotName
+    seq: SlotSequence
+    content: TableProjection | None
+
+
+class TableRevealSnapshotEvent(_EventBase):
+    """The whole picture this device is entitled to, in one frame (ADR RT-4): the
+    table slot, and with the enrolled device credential its own."""
+
+    event: Literal["snapshot"]
+    slots: Annotated[list[TableSlot], Field(min_length=1, max_length=2)]
+
+    @model_validator(mode="after")
+    def _only_what_this_device_is_entitled_to(self) -> Self:
+        _entitled_slots(self.slots)
+        return self
+
+
 class TableReadyEvent(_EventBase):
     event: Literal["ready"]
 
@@ -2312,7 +2376,13 @@ class TableReconnectEvent(_EventBase):
 
 
 TableEvent = Annotated[
-    TableSessionEvent | TableInactiveEvent | TableAudioEvent | TableReadyEvent | TableReconnectEvent,
+    TableSessionEvent
+    | TableInactiveEvent
+    | TableAudioEvent
+    | TableSlotEvent
+    | TableRevealSnapshotEvent
+    | TableReadyEvent
+    | TableReconnectEvent,
     Field(discriminator="event"),
 ]
 
@@ -2327,6 +2397,10 @@ class TableSnapshot(_Contract):
     @model_validator(mode="after")
     def _complete(self) -> Self:
         _ends_with_ready(self.frames)
+        # ``TableSessionEvent`` exists only while live: TABLE-9 makes ``inactive``
+        # its own kind, so holding a session frame *is* the liveness test here.
+        live = any(frame.event == "session" for frame in self.frames)
+        _one_reveal_picture_while_live(self.frames, live=live)
         return self
 
 

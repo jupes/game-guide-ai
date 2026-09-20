@@ -614,9 +614,30 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     // `snapshot` and `slot` were the stand-ins here until the reveal family landed;
     // both are known kinds now, so the probe moves to one this contract does not define.
     expect(parseGmEvent({ schema_version: 1, event: 'excerpt', span: {} })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
-    expect(parseTableEvent({ schema_version: 1, event: 'slot', slot: 'table', seq: 1 })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(parseTableEvent({ schema_version: 1, event: 'excerpt', span: {} })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
     // Presence never travels on the table channel; to a table client the kind is simply unknown.
     expect(parseTableEvent(first(gm, 'who is listening'))).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+  })
+
+  it('reads a content kind it does not know as a placeholder, in both frames that carry one (ADR 7.4)', () => {
+    // Reserving `content_kind` is only worth something if a v1 client meets a
+    // future member as a placeholder rather than as a parse failure. The snapshot
+    // frame matters most: every stream opens with one and every reconnect takes a
+    // fresh one, so `slots[].content.content_kind` is the path a future kind
+    // actually arrives on (RT-4).
+    const slot = first(table, 'the table slot is now showing') as { content: Record<string, unknown> }
+    const future = { ...slot.content, content_kind: 'excerpt' }
+    expect(parseTableEvent({ ...slot, content: future })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+
+    const snapshot = first(table, "a participant's opening picture") as { slots: Array<Record<string, unknown>> }
+    const [tableSlot, mine] = snapshot.slots
+    expect(parseTableEvent({ ...snapshot, slots: [tableSlot, { ...mine, content: future }] })).toEqual({
+      kind: 'unknown',
+      reason: 'unknown_kind',
+    })
+    // …and the object-only paths are untouched: a known kind still reads as itself.
+    expect(parseTableEvent(snapshot).kind).toBe('ok')
+    for (const example of gm.valid) expect(parseGmEvent(expand(example.value)).kind).toBe('ok')
   })
 
   it('reads a newer version, or a newer result kind inside a lane frame, as the future', () => {
@@ -632,12 +653,16 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
 
   it('reads a snapshot frame by frame, so one unknown kind is one placeholder (ADR RT-4)', () => {
     const snapshot = readJson<Fixture>(join(FIXTURES, 'TableSnapshot.json')).valid[0].value as { frames: unknown[] }
-    const withUnknown = { schema_version: 1, frames: [...snapshot.frames.slice(0, -1), { schema_version: 1, event: 'slot', slot: 'table', seq: 1 }, { schema_version: 1, event: 'ready' }] }
+    // `slot` was the unknown kind here until the reveal family landed; the probe
+    // moves to one this contract does not define. The expectation is computed
+    // from the fixture, so growing it cannot make this assertion quietly wrong.
+    const known = snapshot.frames.slice(0, -1)
+    const withUnknown = { schema_version: 1, frames: [...known, { schema_version: 1, event: 'excerpt', span: {} }, { schema_version: 1, event: 'ready' }] }
     const read = parseTableSnapshot(withUnknown)
     expect(read.kind).toBe('ok')
     if (read.kind !== 'ok') return
-    expect(read.value.frames.map((frame) => frame.kind)).toEqual(['ok', 'ok', 'ok', 'unknown', 'ok'])
-    expect(read.value.frames[3]).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(read.value.frames.map((frame) => frame.kind)).toEqual([...known.map(() => 'ok'), 'unknown', 'ok'])
+    expect(read.value.frames[known.length]).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
     // Without its ready boundary a snapshot is not one (TABLE-7).
     expect(parseTableSnapshot({ schema_version: 1, frames: snapshot.frames.slice(0, -1) })).toEqual({ kind: 'unknown', reason: 'invalid' })
     expect(parseGmSnapshot({ schema_version: 2, frames: [] })).toEqual({ kind: 'unknown', reason: 'newer_schema' })

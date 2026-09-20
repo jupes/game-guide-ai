@@ -1056,7 +1056,7 @@ export const SESSION_ACTIONS = ['start', 'end', 'rotate'] as const
 /** AUDIO-21, AUDIO-22: listening means playing and unmuted. */
 export const PRESENCE_AUDIO = ['listening', 'muted', 'pending', 'absent'] as const
 export const GM_EVENT_KINDS = ['tool_lane', 'edit_lane', 'session', 'audio', 'slot', 'snapshot', 'presence', 'asset', 'ready', 'reconnect'] as const
-export const TABLE_EVENT_KINDS = ['session', 'inactive', 'audio', 'ready', 'reconnect'] as const
+export const TABLE_EVENT_KINDS = ['session', 'inactive', 'audio', 'slot', 'snapshot', 'ready', 'reconnect'] as const
 
 const MediaTypeSchema = z.string().regex(/^(image|audio)\/[a-z0-9.+-]{1,32}$/)
 const AltTextSchema = oneLine(1, ALT_MAX_CHARS)
@@ -1772,6 +1772,42 @@ const TableAudioEventSchema = z
     playing: TablePlayingSchema.nullable(),
   })
   .refine((frame) => playingFitsSlot(frame.slot, frame.playing), SLOT_ISSUE)
+/** How a **table** client is told which region a projection belongs in.
+ * Deliberately *not* a RevealAudience: an audience carries a participant id, and
+ * every table-side shape here is id-free (TableRole, TableJoinResponse,
+ * EnrolResponse). Which participant `mine` is, the server resolves from the
+ * credential pair, never from a field (eligibility ADR section 4, SEC-15). */
+export const TABLE_SLOT_NAMES = ['table', 'mine'] as const
+
+const TableSlotSchema = z.object({
+  slot: z.enum(TABLE_SLOT_NAMES),
+  seq: SlotSequenceSchema,
+  content: TableProjectionSchema.nullable(),
+})
+
+/** Threat model 8.2: a table client is entitled to the table slot and, with the
+ * enrolled device credential, its own — and to nothing else. A slot it is NOT
+ * entitled to is absent, never marked: a marker would confirm the slot exists
+ * and that a private reveal is happening (WT-7, T-8). */
+const entitledSlots = (slots: ReadonlyArray<{ slot: string }>) => {
+  const names = slots.map((entry) => entry.slot)
+  return names.includes('table') && new Set(names).size === names.length
+}
+const SLOTS_ISSUE = { path: ['slots'], message: 'a device sees the table slot and, at most, its own' }
+
+/** One reveal slot changed, as a table client is told it — the twin of
+ * TableAudioEvent: no session id, no generation, no epoch (SEC-15, REVEAL-24). */
+const TableSlotEventSchema = z.object({
+  ...eventBase,
+  event: z.literal('slot'),
+  slot: z.enum(TABLE_SLOT_NAMES),
+  seq: SlotSequenceSchema,
+  content: TableProjectionSchema.nullable(),
+})
+/** The whole picture this device is entitled to, in one frame (ADR RT-4). */
+const TableRevealSnapshotEventSchema = z
+  .object({ ...eventBase, event: z.literal('snapshot'), slots: z.array(TableSlotSchema).min(1).max(2) })
+  .refine((frame) => entitledSlots(frame.slots), SLOTS_ISSUE)
 const TableReadyEventSchema = z.object({ ...eventBase, event: z.literal('ready') })
 const TableReconnectEventSchema = z.object({ ...eventBase, event: z.literal('reconnect') })
 
@@ -1779,6 +1815,8 @@ export const TableEventSchema = z.discriminatedUnion('event', [
   TableSessionEventSchema,
   TableInactiveEventSchema,
   TableAudioEventSchema,
+  TableSlotEventSchema,
+  TableRevealSnapshotEventSchema,
   TableReadyEventSchema,
   TableReconnectEventSchema,
 ])
@@ -1788,6 +1826,12 @@ export type TableEvent = z.infer<typeof TableEventSchema>
 export const TableSnapshotSchema = z
   .object({ schema_version: z.literal(CONTRACT_VERSION), frames: z.array(TableEventSchema).min(1).max(50) })
   .refine((snapshot) => endsWithReady(snapshot.frames), SNAPSHOT_ISSUE)
+  // TableSessionEvent exists only while live — TABLE-9 makes `inactive` its own
+  // kind — so holding a session frame *is* the liveness test here.
+  .refine(
+    (snapshot) => oneRevealPictureWhileLive(snapshot.frames, snapshot.frames.some((frame) => frame.event === 'session')),
+    PICTURE_ISSUE,
+  )
 export type TableSnapshot = z.infer<typeof TableSnapshotSchema>
 
 /** Name → schema, in the order `contracts/workbench/v1/schemas.json` lists them. */
@@ -1886,7 +1930,20 @@ function at(raw: unknown, path: readonly string[]): unknown {
   return node
 }
 
+/** A path segment meaning "fan out over this array". `at` walks records only —
+ * `isRecord` excludes arrays by construction — so a discriminator nested inside a
+ * list, as `content_kind` is inside a snapshot frame's `slots`, is unreachable
+ * without it. A kind unknown in ANY element makes the frame unknown, which is the
+ * fail-safe direction and matches how an unknown card kind already makes a whole
+ * ToolResult unknown. No object-only path contains it, so none changes behaviour. */
+const ARRAY_SEGMENT = '[]'
+
 function hasUnknownKind(raw: unknown, path: readonly string[], known: readonly string[]): boolean {
+  const fanOut = path.indexOf(ARRAY_SEGMENT)
+  if (fanOut >= 0) {
+    const node = at(raw, path.slice(0, fanOut))
+    return Array.isArray(node) && node.some((item) => hasUnknownKind(item, path.slice(fanOut + 1), known))
+  }
   const value = at(raw, path)
   return typeof value === 'string' && !known.includes(value)
 }
@@ -1943,7 +2000,20 @@ const GM_EVENT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string
   ...RESULT_DISCRIMINATORS.map(([path, known]): [readonly string[], readonly string[]] => [['invocation', 'result', ...path], known]),
   [['invocation', 'result', 'outcome'], EDIT_OUTCOMES],
 ]
-const TABLE_EVENT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [[['event'], TABLE_EVENT_KINDS]]
+/** ADR 7.4: reserving `content_kind` buys a v1 table client a neutral placeholder
+ * for a future kind instead of a parse failure — but only where the client can
+ * see it. Both frames that carry a projection need an entry: the incremental
+ * `slot` frame, and the `snapshot` frame, whose content sits behind an array and
+ * is the path a future kind actually arrives on, since every stream opens with a
+ * snapshot and every reconnect takes a fresh one (RT-4).
+ * `RevealState.slots[].slot.audience` needs none: only `content_kind` reserves
+ * future members, AUD-2/ED-10 fix the audience vocabulary, and lifting ED-14 is
+ * already a wire amendment. */
+const TABLE_EVENT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
+  [['event'], TABLE_EVENT_KINDS],
+  [['content', 'content_kind'], CONTENT_KINDS],
+  [['slots', ARRAY_SEGMENT, 'content', 'content_kind'], CONTENT_KINDS],
+]
 
 /** How a GM channel reads a frame: a kind this client does not know — `snapshot`
  * and `slot` until the reveal family lands, anything newer after — is a

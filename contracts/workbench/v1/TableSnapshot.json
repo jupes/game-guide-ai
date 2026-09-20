@@ -43,6 +43,27 @@
           },
           {
             "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "label": "Name",
+                      "value": "Sister Ondrey Vashe"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
             "event": "ready"
           }
         ]
@@ -110,6 +131,178 @@
               "muted": 1,
               "pending": 1
             }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a live table whose snapshot carries no reveal picture",
+      "why": "ADR RT-4: a snapshot is complete before ready, so a device that has seen ready knows every slot it is entitled to",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": true,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "ambience",
+            "seq": 7,
+            "playing": {
+              "asset": {
+                "handle": "hdl_1a2b3c4d5e6f7a8b",
+                "kind": "audio",
+                "media_type": "audio/mpeg",
+                "width": null,
+                "height": null,
+                "duration_ms": 300000
+              },
+              "started_at": "2026-09-16T19:31:24Z",
+              "start_offset_ms": 0,
+              "loop": true,
+              "duration_ms": 300000
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "one_shot",
+            "seq": 4,
+            "playing": null
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "two snapshot frames",
+      "why": "the snapshot frame is the whole picture, so a second one would be a second truth",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": true,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "ambience",
+            "seq": 7,
+            "playing": {
+              "asset": {
+                "handle": "hdl_1a2b3c4d5e6f7a8b",
+                "kind": "audio",
+                "media_type": "audio/mpeg",
+                "width": null,
+                "height": null,
+                "duration_ms": 300000
+              },
+              "started_at": "2026-09-16T19:31:24Z",
+              "start_offset_ms": 0,
+              "loop": true,
+              "duration_ms": 300000
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "one_shot",
+            "seq": 4,
+            "playing": null
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "label": "Name",
+                      "value": "Sister Ondrey Vashe"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "label": "Name",
+                      "value": "Sister Ondrey Vashe"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive table carrying a reveal picture",
+      "why": "TABLE-9, SEC-9: an inactive table gets one generic frame and then the connection closes — it never says which, and it shows nothing",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "label": "Name",
+                      "value": "Sister Ondrey Vashe"
+                    }
+                  ]
+                }
+              }
+            ]
           },
           {
             "schema_version": 1,

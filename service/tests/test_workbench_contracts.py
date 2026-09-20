@@ -677,7 +677,8 @@ def test_a_write_revision_survives_javascript() -> None:
 def test_the_event_kind_vocabularies_are_the_unions() -> None:
     """What ``1kg.7.5`` and ``1kg.8.6`` emit is pinned to the models, per channel."""
     gm = {"tool_lane", "edit_lane", "session", "audio", "slot", "snapshot", "presence", "asset", "ready", "reconnect"}
-    for union, kinds in ((wc.GmEvent, gm), (wc.TableEvent, {"session", "inactive", "audio", "ready", "reconnect"})):
+    table = {"session", "inactive", "audio", "slot", "snapshot", "ready", "reconnect"}
+    for union, kinds in ((wc.GmEvent, gm), (wc.TableEvent, table)):
         tags = {get_args(member.model_fields["event"].annotation)[0] for member in get_args(get_args(union)[0])}
         assert tags == kinds
 
