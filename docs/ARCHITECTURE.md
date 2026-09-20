@@ -297,18 +297,20 @@ no server, database or role default can change what the lock is reasoning about.
 
 ### One setting interaction to know about
 
-`CAMPAIGN_LOCK_TIMEOUT_S` is bounded 1–4 and must be **below** `DB_POOL_TIMEOUT_S`,
-which is bounded 1–60: a request waiting for the campaign lock is holding one of
-the gate's connections, so a lock wait that outlasts the gate turns one contended
-campaign into a 503 for unrelated traffic. The consequence is that
-**`DB_POOL_TIMEOUT_S=1` refuses every valid lock timeout**: the lower bound of
-the one is the value of the other, so `CampaignLockSettings.from_env` raises
-whatever `CAMPAIGN_LOCK_TIMEOUT_S` is set to. That is RQ-8's own arithmetic and
-it fails closed, but an operator should not have to discover it from a
-traceback.
+`CAMPAIGN_LOCK_TIMEOUT_S` is bounded 0.05–4 and must be **below**
+`DB_POOL_TIMEOUT_S`, which is bounded 1–60: a request waiting for the campaign
+lock is holding one of the gate's connections, so a lock wait that outlasts the
+gate turns one contended campaign into a 503 for unrelated traffic. The
+invariant holds two ways, so that no documented gate can stop the service from
+starting. **Unset**, the lock timeout is *derived* from the gate — half of it,
+capped at RQ-8's two seconds — and is below it by construction for every value
+in 1–60. **Set**, it is checked against whatever the gate is, and one that is
+not below it is refused by name at startup rather than in a traceback. The wait
+reaches the server in whole milliseconds, which is that GUC's own unit; the
+default on the default gate is still exactly 2 s.
 
 Neither setting is read from the environment yet: nothing takes a campaign lock
-in this bead, so `Database` uses `CampaignLockSettings()`'s defaults. The bead
+in this bead, so `Database` derives the lock timeout from its own gate. The bead
 that first takes one on a route passes `CampaignLockSettings.from_env(pool=...)`,
 the way `service/app.py` already passes `PoolSettings.from_env()`. The
 comparison is made in `Database.__init__` as well as in `from_env`, so it does

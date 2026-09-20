@@ -85,32 +85,37 @@ def test_the_campaign_lock_settings_come_from_the_environment():
         {"CAMPAIGN_LOCK_TIMEOUT_S": "3", "CAMPAIGN_TRANSACTION_TIMEOUT_S": "30"}
     )
     assert (settings.lock_timeout_s, settings.transaction_timeout_s) == (3, 30)
+    assert CampaignLockSettings.from_env({"CAMPAIGN_LOCK_TIMEOUT_S": "0.5"}).lock_timeout_s == 0.5, (
+        "a fraction of a second is a legal wait, and the only one a gate of 1 s leaves"
+    )
 
 
 @pytest.mark.parametrize(
-    ("name", "value"),
+    ("name", "value", "refusal"),
     [
-        ("CAMPAIGN_LOCK_TIMEOUT_S", "0"),
-        ("CAMPAIGN_LOCK_TIMEOUT_S", "5"),
-        ("CAMPAIGN_LOCK_TIMEOUT_S", "two"),
-        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "0"),
-        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "61"),
-        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "2.5"),
+        ("CAMPAIGN_LOCK_TIMEOUT_S", "0", "must be a number from"),
+        ("CAMPAIGN_LOCK_TIMEOUT_S", "5", "must be a number from"),
+        ("CAMPAIGN_LOCK_TIMEOUT_S", "two", "must be a number from"),
+        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "0", "must be a whole number from"),
+        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "61", "must be a whole number from"),
+        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "2.5", "must be a whole number from"),
     ],
 )
-def test_a_campaign_lock_setting_out_of_bounds_is_refused_by_name(name, value):
-    with pytest.raises(ValueError, match=f"{name} must be a whole number from"):
+def test_a_campaign_lock_setting_out_of_bounds_is_refused_by_name(name, value, refusal):
+    with pytest.raises(ValueError, match=f"{name} {refusal}"):
         CampaignLockSettings.from_env({name: value})
 
 
-def test_the_lock_timeout_must_be_below_the_gates_acquire_timeout():
+def test_an_explicit_lock_timeout_must_be_below_the_gates_acquire_timeout():
     """RQ-8: "the lock timeout always below the gate's acquire timeout". A request
     waiting for the campaign lock is holding one of the gate's four connections,
     so a lock wait that outlasts the gate's own timeout turns one slow campaign
     into a 503 for unrelated traffic.
 
     Checked against whatever `DB_POOL_TIMEOUT_S` is set to — not against its
-    default of five — because the gate's bound moves anywhere in 1..60.
+    default of five — because the gate's bound moves anywhere in 1..60. What is
+    refused is a value an operator **set**: one nobody set is derived from the
+    gate instead, and is below it by construction (G-4).
     """
     # Default gate (5 s): 4 is allowed, and nothing above it can be reached
     # anyway because CAMPAIGN_LOCK_TIMEOUT_S is itself bounded at 4.
@@ -120,15 +125,26 @@ def test_the_lock_timeout_must_be_below_the_gates_acquire_timeout():
     with pytest.raises(ValueError, match="CAMPAIGN_LOCK_TIMEOUT_S must be below DB_POOL_TIMEOUT_S"):
         CampaignLockSettings.from_env({"CAMPAIGN_LOCK_TIMEOUT_S": "4", "DB_POOL_TIMEOUT_S": "4"})
     with pytest.raises(ValueError, match="CAMPAIGN_LOCK_TIMEOUT_S must be below DB_POOL_TIMEOUT_S"):
-        CampaignLockSettings.from_env({"DB_POOL_TIMEOUT_S": "2"})
-
-
-def test_a_gate_of_one_second_refuses_every_valid_lock_timeout():
-    """The bounds' own consequence, asserted so it is a documented refusal rather
-    than a surprise: CAMPAIGN_LOCK_TIMEOUT_S is bounded at 1..4, so a gate of one
-    second leaves no legal value. It fails closed, at startup, by name."""
-    with pytest.raises(ValueError, match="CAMPAIGN_LOCK_TIMEOUT_S must be below DB_POOL_TIMEOUT_S"):
         CampaignLockSettings.from_env({"CAMPAIGN_LOCK_TIMEOUT_S": "1", "DB_POOL_TIMEOUT_S": "1"})
+
+
+@pytest.mark.parametrize("gate", range(1, 61))
+def test_every_documented_gate_still_builds_a_database_and_a_lock_below_it(gate):
+    """G-4. `DB_POOL_TIMEOUT_S` is documented as 1–60 and is read by `app.py`,
+    while the campaign lock's timeout is read from the environment by nobody —
+    so a fixed default of two seconds made a documented gate of 1 or 2 refuse to
+    start the service, with no setting an operator could use to fix it. The
+    default is derived from the gate instead, and the invariant holds either
+    way: for a value nobody set, by construction; for one somebody set, by the
+    refusal above.
+    """
+    settings = PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=gate)
+    for lock in (
+        CampaignLockSettings.from_env({"DB_POOL_TIMEOUT_S": str(gate)}),
+        Database("postgresql://test/db", settings).campaign_lock,
+    ):
+        assert 0 < lock.lock_timeout_s < gate, f"a gate of {gate} s"
+        assert lock.lock_timeout.endswith("ms"), "whole milliseconds, which is the server's unit"
 
 
 def test_the_caller_may_pass_its_own_pool_settings():
@@ -149,11 +165,15 @@ def test_the_caller_may_pass_its_own_pool_settings():
 def test_a_database_built_in_code_checks_the_two_timeouts_against_each_other():
     """The invariant must not depend on somebody calling `from_env`. Nothing
     does today — `service/app.py` builds its own `PoolSettings` and takes the
-    campaign lock's defaults — so a `Database` given a short gate would
-    otherwise silently keep the default two-second lock timeout, and a request
-    waiting for the campaign lock would outlive the gate slot it is holding."""
+    campaign lock's defaults — so a `Database` handed both a short gate and a
+    lock timeout that is not under it must refuse, rather than let a request
+    waiting for the campaign lock outlive the gate slot it is holding."""
     with pytest.raises(ValueError, match="below the gate's acquire timeout"):
-        Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
+        Database(
+            "postgresql://test/db",
+            PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2),
+            CampaignLockSettings(lock_timeout_s=2),
+        )
 
     allowed = Database(
         "postgresql://test/db",
@@ -161,6 +181,34 @@ def test_a_database_built_in_code_checks_the_two_timeouts_against_each_other():
         CampaignLockSettings(lock_timeout_s=1),
     )
     assert allowed.campaign_lock.lock_timeout_s == 1
+
+    derived = Database(
+        "postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2)
+    )
+    assert derived.campaign_lock.lock_timeout_s == 1, "half the gate, below two seconds"
+
+
+@pytest.mark.parametrize(
+    "lock_timeout_s", [0, 0.049, 4.1, True, float("nan")], ids=["zero", "tiny", "long", "bool", "nan"]
+)
+def test_a_campaign_lock_timeout_that_is_not_a_duration_is_refused_where_it_is_built(
+    lock_timeout_s,
+):
+    """The other half of deriving it: the value is a float now, so the bound
+    lives on the settings object rather than on the one `from_env` parser. Zero
+    is how PostgreSQL spells "wait for ever", a bool is not a duration, and
+    below 50 ms nothing could ever be acquired."""
+    with pytest.raises(ValueError, match="campaign lock timeout"):
+        CampaignLockSettings(lock_timeout_s=lock_timeout_s)
+
+
+def test_the_lock_timeout_reaches_the_server_in_whole_milliseconds():
+    """`set_config('lock_timeout', ...)` takes the server's own spelling, whose
+    unit here is the millisecond: `'0.5s'` is a syntax error to it, and a
+    fraction that rounded to zero would be "wait for ever"."""
+    assert CampaignLockSettings(lock_timeout_s=2).lock_timeout == "2000ms"
+    assert CampaignLockSettings(lock_timeout_s=0.5).lock_timeout == "500ms"
+    assert CampaignLockSettings(lock_timeout_s=0.0501).lock_timeout == "50ms"
 
 
 @pytest.mark.parametrize(
@@ -482,13 +530,6 @@ def scripted(monkeypatch):
     return log, seen
 
 
-def _gated(settings: PoolSettings) -> Database:
-    """A `Database` with a deliberately short gate. The campaign lock timeout
-    has to come down with it — `Database.__init__` refuses the pair otherwise,
-    which is the point of that check — and these tests are about the gate."""
-    return Database("postgresql://test/db", settings, CampaignLockSettings(lock_timeout_s=1))
-
-
 def test_every_operation_opens_and_closes_a_connection_of_its_own(scripted):
     """Nothing is kept between operations, so an idle or frozen instance holds
     nothing and no connection is ever stale."""
@@ -502,9 +543,9 @@ def test_every_operation_opens_and_closes_a_connection_of_its_own(scripted):
 
 
 def test_the_gate_admits_only_its_number_and_frees_a_place_on_the_way_out(scripted):
-    db = _gated(PoolSettings(sync_max=2, async_max=0, acquire_timeout_s=2))
+    db = Database("postgresql://test/db", PoolSettings(sync_max=2, async_max=0, acquire_timeout_s=1))
     with db.connection(), db.connection():
-        with pytest.raises(PoolTimeout, match="no database connection came free in 2 s"):
+        with pytest.raises(PoolTimeout, match="no database connection came free in 1 s"):
             with db.connection():
                 pass  # pragma: no cover
     with db.connection():
@@ -512,7 +553,7 @@ def test_the_gate_admits_only_its_number_and_frees_a_place_on_the_way_out(script
 
 
 def test_a_failed_operation_gives_its_place_back(scripted):
-    db = _gated(PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
+    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=1))
     for _ in range(3):
         with pytest.raises(RuntimeError):
             with db.connection():
@@ -526,7 +567,7 @@ def test_a_connection_that_cannot_be_made_gives_its_place_back(monkeypatch):
         raise psycopg.OperationalError("connection refused")
 
     monkeypatch.setattr(psycopg, "connect", refuse)
-    db = _gated(PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
+    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=1))
     for _ in range(3):
         with pytest.raises(psycopg.OperationalError, match="connection refused"):
             with db.connection():
@@ -556,7 +597,7 @@ def test_a_closed_database_refuses_and_closing_twice_is_fine(scripted):
 
 def test_the_unit_of_work_commits_then_releases_then_calls_back(scripted):
     log, _ = scripted
-    db = _gated(PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
+    db = Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=1))
 
     def after_commit() -> None:
         log.append("after-commit")
@@ -634,7 +675,7 @@ def test_the_campaign_lock_bounds_the_wait_and_the_transaction_before_it_locks(s
     with _scripted_database().transaction() as unit:
         unit.lock_campaign("cmp_one", shared=shared)
         assert log[-2:] == [
-            f"{_SET_BOUNDS} ('2s', '5s')",
+            f"{_SET_BOUNDS} ('2000ms', '5s')",
             f"SELECT campaign_id FROM campaign.authz_state WHERE campaign_id = %s {strength} ('cmp_one',)",
         ]
         assert unit.campaign_locks == [("cmp_one", "share" if shared else "exclusive")]
@@ -647,7 +688,7 @@ def test_a_caller_may_raise_the_transaction_bound_for_its_own_longer_work(script
     seen["rows"].append(_AUTHZ_ROW)
     with _scripted_database().transaction() as unit:
         unit.lock_campaign("cmp_one", shared=False, transaction_timeout_s=30)
-    assert f"{_SET_BOUNDS} ('2s', '30s')" in log
+    assert f"{_SET_BOUNDS} ('2000ms', '30s')" in log, "the wait is in the GUC's own unit"
 
 
 def test_locking_a_campaign_postgres_has_no_authorisation_row_for_fails_closed(scripted):

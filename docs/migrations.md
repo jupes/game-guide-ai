@@ -232,6 +232,8 @@ only while a request is in flight. The second fact decides the design:
 | `DB_POOL_MAX` | 4 | 0–10 | The gate: connections routes may have open at once. `0` removes it (unbounded, as before) |
 | `DB_ASYNC_POOL_MAX` | 3 | 0–5 | The realtime pool |
 | `DB_POOL_TIMEOUT_S` | 5 | 1–60 | How long a request waits for its turn before it fails as 503 |
+| `CAMPAIGN_LOCK_TIMEOUT_S` | half the gate, at most 2 | 0.05–4 | How long a request waits for a campaign's authorisation row. **Must be below `DB_POOL_TIMEOUT_S`**: a request waiting for the lock is holding one of the gate's connections. Unset, it is derived from the gate, so every documented gate starts; set, a value that is not below the gate is refused by name at startup |
+| `CAMPAIGN_TRANSACTION_TIMEOUT_S` | 5 | 1–60 | How long a transaction holding that row may live (RQ-8). A single long caller passes its own bound instead of raising this for everyone |
 | `MIGRATIONS_DATABASE_URL` | — | | The schema owner's DSN, when it differs from the runtime's |
 | `MIGRATIONS_MODE` | `apply` | `apply`, `verify` | `verify` never applies; pending migrations then stop startup |
 

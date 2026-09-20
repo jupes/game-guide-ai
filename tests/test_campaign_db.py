@@ -337,6 +337,20 @@ def test_the_transaction_bound_arms_inside_the_transaction_and_is_local_to_it(ds
 
 
 @needs_db
+def test_the_default_lock_timeout_is_two_seconds_on_the_gate_operators_run(dsn: str, owner: int) -> None:
+    """G-4. The lock timeout is derived from the gate now — half of it, capped at
+    RQ-8's suggested two seconds — so what an operator running the documented
+    default gate of 5 s gets must still be exactly those two seconds. It reaches
+    the server in milliseconds, which is that GUC's unit; the server is what
+    says whether `2000ms` is the same duration as before."""
+    db = Database(dsn, PoolSettings(sync_max=2, async_max=0))
+    assert db.campaign_lock.lock_timeout == "2000ms"
+    with db.transaction() as unit:
+        unit.lock_campaign(CAMPAIGN, shared=True)
+        assert unit.conn.execute("SHOW lock_timeout").fetchone()[0] == "2s"
+
+
+@needs_db
 def test_a_caller_may_raise_the_transaction_bound_for_its_own_longer_work(dsn: str, owner: int) -> None:
     with _database(dsn).transaction() as unit:
         unit.lock_campaign(CAMPAIGN, shared=False, transaction_timeout_s=42)

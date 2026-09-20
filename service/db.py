@@ -246,6 +246,23 @@ def _int_setting(env: Mapping[str, str], name: str, default: int, low: int, high
     return value
 
 
+def _float_setting(
+    env: Mapping[str, str], name: str, default: float, low: float, high: float
+) -> float:
+    """The same, for a duration that may be a fraction of a second. A NaN parses
+    and then fails the comparison, which is the answer it deserves."""
+    raw = env.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = low - 1
+    if not low <= value <= high:
+        raise ValueError(f"{name} must be a number from {low} to {high}")
+    return value
+
+
 @dataclass(frozen=True)
 class PoolSettings:
     """Bounded on purpose: a typo must not become six hundred connections."""
@@ -289,6 +306,29 @@ class PoolSettings:
 TRANSACTION_BOUND_MIN_S = 0.001
 TRANSACTION_BOUND_MAX_S = 600
 
+#: The floor and the ceiling on how long a caller may wait for a campaign lock.
+#: Below 50 ms nothing contended could ever be acquired; above 4 s the wait
+#: outlasts the documented gate's own default.
+LOCK_TIMEOUT_MIN_S = 0.05
+LOCK_TIMEOUT_MAX_S = 4
+#: RQ-8's suggested wait, and the most the derived default will ever be.
+LOCK_TIMEOUT_SUGGESTED_S = 2.0
+
+
+def default_lock_timeout_s(acquire_timeout_s: int) -> float:
+    """The campaign lock timeout for a caller that named none: RQ-8's two
+    seconds, or half the gate when the gate is short.
+
+    Derived rather than fixed because the two bounds are not independent — a
+    request waiting for the campaign lock is holding one of the gate's
+    connections — and because `DB_POOL_TIMEOUT_S` is documented as 1 to 60 and
+    is the one of the two an operator actually sets. A fixed two seconds made
+    `DB_POOL_TIMEOUT_S=1` and `=2` refuse to start the service, with no
+    environment variable that could have fixed it (G-4). Half, so that the wait
+    is strictly below the gate for every value in that range.
+    """
+    return min(LOCK_TIMEOUT_SUGGESTED_S, acquire_timeout_s / 2)
+
 
 @dataclass(frozen=True)
 class CampaignLockSettings:
@@ -302,8 +342,11 @@ class CampaignLockSettings:
     **Why the lock timeout must be under the gate's.** A request blocked on the
     lock is holding one of its instance's `DB_POOL_MAX` connections, so a lock wait
     that outlasts `DB_POOL_TIMEOUT_S` turns one contended campaign into a 503 for
-    unrelated traffic. The check is against whatever the gate is *set* to, not
-    against its default.
+    unrelated traffic. It is held **both ways**: a timeout nobody set is derived
+    from the gate (`default_lock_timeout_s`) and is below it by construction; one
+    somebody set is checked against whatever the gate is *set* to, and refused by
+    name at construction. That is why `DB_POOL_TIMEOUT_S=1`, documented as valid,
+    still starts the service.
 
     **Why `transaction_timeout` and not `statement_timeout`.** RQ-8 wants a bound
     on the transaction; `statement_timeout` bounds one statement, so a transaction
@@ -311,13 +354,27 @@ class CampaignLockSettings:
     17, which is what CI runs and what the deployment targets.
     """
 
-    #: `CAMPAIGN_LOCK_TIMEOUT_S`, RQ-8's *suggested* 2 s. Bounded at 4 so that it
-    #: stays under the gate's default of 5 without further configuration.
-    lock_timeout_s: int = 2
+    #: `CAMPAIGN_LOCK_TIMEOUT_S`, RQ-8's *suggested* 2 s — and a fraction of a
+    #: second is legal, because it is the only thing a gate of 1 s leaves room
+    #: for. A caller that names none gets `default_lock_timeout_s` of its gate.
+    lock_timeout_s: float = LOCK_TIMEOUT_SUGGESTED_S
     #: `CAMPAIGN_TRANSACTION_TIMEOUT_S`, RQ-8's *suggested* 5 s. A long caller — a
     #: campaign deletion, an enforcement scan, a type migration — passes its own
     #: bound to `lock_campaign` instead of raising this for everyone.
     transaction_timeout_s: int = 5
+
+    def __post_init__(self) -> None:
+        """The wait is a duration, wherever the object was built — from the
+        environment, by a route, or by a test. A bool is not one (it is an `int`
+        to Python and would render as 1000 ms), zero is how PostgreSQL spells
+        "wait for ever", and a NaN fails the comparison."""
+        if isinstance(self.lock_timeout_s, bool) or not (
+            LOCK_TIMEOUT_MIN_S <= self.lock_timeout_s <= LOCK_TIMEOUT_MAX_S
+        ):
+            raise ValueError(
+                f"a campaign lock timeout is from {LOCK_TIMEOUT_MIN_S} to "
+                f"{LOCK_TIMEOUT_MAX_S} seconds"
+            )
 
     @classmethod
     def from_env(
@@ -327,14 +384,24 @@ class CampaignLockSettings:
         pool: PoolSettings | None = None,
     ) -> CampaignLockSettings:
         source = os.environ if env is None else env
+        gate = pool if pool is not None else PoolSettings.from_env(source)
+        chosen = source.get("CAMPAIGN_LOCK_TIMEOUT_S")
         settings = cls(
-            lock_timeout_s=_int_setting(source, "CAMPAIGN_LOCK_TIMEOUT_S", cls.lock_timeout_s, 1, 4),
+            lock_timeout_s=_float_setting(
+                source,
+                "CAMPAIGN_LOCK_TIMEOUT_S",
+                default_lock_timeout_s(gate.acquire_timeout_s),
+                LOCK_TIMEOUT_MIN_S,
+                LOCK_TIMEOUT_MAX_S,
+            ),
             transaction_timeout_s=_int_setting(
                 source, "CAMPAIGN_TRANSACTION_TIMEOUT_S", cls.transaction_timeout_s, 1, 60
             ),
         )
-        gate = pool if pool is not None else PoolSettings.from_env(source)
-        if settings.lock_timeout_s >= gate.acquire_timeout_s:
+        # Only a value somebody chose can be refused: the derived one is below
+        # the gate by construction, and refusing it would refuse a gate the
+        # operator's documentation calls valid (G-4).
+        if chosen and settings.lock_timeout_s >= gate.acquire_timeout_s:
             raise ValueError(
                 "CAMPAIGN_LOCK_TIMEOUT_S must be below DB_POOL_TIMEOUT_S "
                 f"(currently {gate.acquire_timeout_s}): a request waiting for the campaign "
@@ -344,8 +411,11 @@ class CampaignLockSettings:
 
     @property
     def lock_timeout(self) -> str:
-        """As PostgreSQL spells a duration in `set_config`."""
-        return f"{self.lock_timeout_s}s"
+        """As PostgreSQL spells a duration in `set_config`: whole milliseconds,
+        because that is this GUC's own unit and `'0.5s'` is not a duration the
+        server will parse. `__post_init__`'s floor keeps the rounding away from
+        zero, which the server reads as "wait for ever"."""
+        return f"{round(self.lock_timeout_s * 1000)}ms"
 
     @property
     def transaction_timeout(self) -> str:
@@ -506,12 +576,20 @@ class Database:
         # lock on a route passes `CampaignLockSettings.from_env(pool=...)` here,
         # the way `service/app.py` already passes `PoolSettings.from_env()`.
         # Nothing in this bead takes one — the routes are 1kg.2.2's and 1kg.2.3's.
-        self.campaign_lock = campaign_lock if campaign_lock is not None else CampaignLockSettings()
+        self.campaign_lock = (
+            campaign_lock
+            if campaign_lock is not None
+            else CampaignLockSettings(
+                lock_timeout_s=default_lock_timeout_s(self.settings.acquire_timeout_s)
+            )
+        )
         # ... which is exactly why the check lives here and not only in
         # `from_env`: this object has both settings, and a `Database` built in
         # code — a test, a script, a route that passes its own `PoolSettings` —
-        # would otherwise take the default 2 s lock timeout against whatever gate
-        # it was given, and the invariant would depend on the call site.
+        # would otherwise take a lock timeout unrelated to the gate it was given,
+        # and the invariant would depend on the call site. For a lock timeout
+        # this constructor derived the check can never fire; for one the caller
+        # passed it is the whole guarantee.
         if self.campaign_lock.lock_timeout_s >= self.settings.acquire_timeout_s:
             raise ValueError(
                 "the campaign lock timeout must be below the gate's acquire timeout "
