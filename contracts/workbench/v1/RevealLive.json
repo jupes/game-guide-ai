@@ -60,6 +60,20 @@
       }
     },
     {
+      "name": "a mask that names an identity link",
+      "why": "ED-20, ED-5: `true_identity` is a field npc declares and the registry does not mark revealable, so it is gm_only by construction and no slot can be holding it",
+      "value": {
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "version": 3,
+        "mask": [
+          "true_identity"
+        ],
+        "stale_text": false,
+        "pending_delivery": false
+      }
+    },
+    {
       "name": "a mask key of another type",
       "why": "a slot's mask is checked against the type it holds, so a key npc declares cannot appear on a handout",
       "value": {

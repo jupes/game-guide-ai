@@ -1883,28 +1883,73 @@ def _not_a_wildcard(value: str) -> str:
 #: A field key as a mask, a GM-side slot and a projection name it.
 MaskKey = Annotated[FieldKey, AfterValidator(_not_a_wildcard)]
 
-#: Decision REVEAL-10: **never revealable** — tags, sources and citation text,
-#: version history, authorship, changed-field lists, asset metadata, and any id
-#: the projection does not need. Of those, ``tags`` is the only one that is a
-#: document *field*; the rest are not on the wire as fields at all. Pinned by
-#: the ``reveal`` key of ``registry.json``.
-NEVER_REVEALABLE: frozenset[str] = frozenset({"tags"})
-#: Decision ED-20, ED-5: a type marks a field of its own not revealable — an
-#: identity link is the worked case. ``1kg.5.3`` fills this as it declares each
-#: type's fields; empty in v1, because only ``npc`` declares any.
-NEVER_REVEALABLE_BY_TYPE: dict[DocumentTypeId, frozenset[str]] = {}
+#: Decisions REVEAL-10, ED-5: the **allowlist** of the fields every type shares
+#: — one answer, in one place, to *may this field reach a player*. It is
+#: ``1kg.5.3``'s per-field ``revealable`` rule (``registry.json`` →
+#: ``common_field_rules``), held here as a constant because
+#: ``workbench_registry`` imports this module and so cannot be imported back;
+#: both suites pin it to that file, for every type, so the two cannot drift.
+#: ``tags`` is off it, on every type.
+REVEALABLE_COMMON_FIELDS: frozenset[str] = frozenset({"name", "qualifier"})
+
+#: The same allowlist for each type's **own** fields (``registry.json`` →
+#: ``document_types[].field_rules``). It is an allowlist and not an opt-out
+#: list: a key whose rule does not say ``revealable`` is not revealable, so a
+#: field a type gains later is withheld until the registry says otherwise —
+#: ``npc.true_identity`` is ED-20's worked case and is absent below.
+REVEALABLE_FIELDS: dict[DocumentTypeId, frozenset[str]] = {
+    DocumentTypeId.NPC: frozenset(
+        {"portrait", "voice", "tell", "attitude", "wants", "leverage", "if_attacked", "notes"}
+    ),
+    DocumentTypeId.STATBLOCK: frozenset(
+        {
+            "ac",
+            "ac_note",
+            "hp",
+            "hit_dice",
+            "speed",
+            "size",
+            "creature_type",
+            "alignment",
+            "abilities",
+            "saving_throws",
+            "skills",
+            "damage_immunities",
+            "condition_immunities",
+            "senses",
+            "languages",
+            "challenge_rating",
+            "xp",
+            "traits",
+            "actions",
+            "bonus_actions",
+            "reactions",
+            "legendary_actions",
+        }
+    ),
+    DocumentTypeId.HANDOUT: frozenset({"portrait", "body"}),
+    DocumentTypeId.SESSION_NOTES: frozenset({"session", "date", "present", "recap", "beats", "loose_threads"}),
+    DocumentTypeId.QUEST_LOG: frozenset({"open_threads", "cold_threads", "resolved_threads"}),
+    DocumentTypeId.CHARACTER_SHEET: frozenset(
+        {"portrait", "ac", "hp", "speed", "abilities", "features", "equipment", "notes"}
+    ),
+    DocumentTypeId.LORE: frozenset({"region", "era", "status", "summary", "history", "rumours"}),
+    DocumentTypeId.ENCOUNTER: frozenset(
+        {"difficulty", "xp_budget", "party_level", "setup", "combatants", "terrain", "outcome"}
+    ),
+}
 
 
 def revealable_fields(doc_type: DocumentTypeId) -> dict[str, FieldKind]:
     """The keys of ``doc_type`` a mask may name, and the kind each holds.
 
-    Decisions REVEAL-10 and ED-5. A type whose fields ``1kg.5.3`` has not yet
-    declared has the common ones only, which is the same fail-closed posture
-    documents already take.
+    Decisions REVEAL-10 and ED-5. The allowlist is intersected with what the
+    type declares, so a key on the list that the type does not declare has no
+    kind and cannot be projected: unknown is never revealable (X-8).
     """
     declared = {**COMMON_FIELDS, **DOC_TYPE_FIELDS[doc_type]}
-    withheld = NEVER_REVEALABLE | NEVER_REVEALABLE_BY_TYPE.get(doc_type, frozenset())
-    return {key: kind for key, kind in declared.items() if key not in withheld}
+    allowed = REVEALABLE_COMMON_FIELDS | REVEALABLE_FIELDS[doc_type]
+    return {key: kind for key, kind in declared.items() if key in allowed}
 
 
 class AudienceKind(str, Enum):
@@ -2026,16 +2071,42 @@ _PresentText = Annotated[
 ]
 _PresentProse = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=PROSE_FIELD_MAX_CHARS)]
 _PresentList = Annotated[list[_ListItem], Field(min_length=1, max_length=LIST_FIELD_MAX_ITEMS)]
+#: Decision ED-9: a block a player is shown carries scores, not gaps. A document
+#: may hold ``{"str": null}`` for a creature that lacks an ability; a projection
+#: of it leaves the key out, so no cell is drawn empty under a masked heading.
+_PresentAbilities = Annotated[dict[AbilityKey, _AbilityScore], Field(min_length=1)]
+
+
+class _PresentEntry(_Contract):
+    """One named block as a player sees it: a heading **and** its body, both
+    present. A document may hold a trait whose text is still empty; projecting it
+    would put a lone heading on a table, which REVEAL-5's *present and non-empty*
+    rules out — so the Confirm is refused rather than half-shown."""
+
+    name: Annotated[
+        str,
+        StringConstraints(strict=True, min_length=1, max_length=TEXT_FIELD_MAX_CHARS),
+        AfterValidator(_one_line),
+    ]
+    text: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=LIST_ITEM_MAX_CHARS)]
+
+
+_PresentEntryList = Annotated[list[_PresentEntry], Field(min_length=1, max_length=LIST_FIELD_MAX_ITEMS)]
 
 #: The same kinds a document declares, but a masked key is **present and
 #: non-empty** in the pinned version (REVEAL-5, ED-9), so nothing clears to a
 #: blank heading on a table; and an asset is the per-slot handle, never the
-#: GM-side ``AssetRef`` (SEC-15).
+#: GM-side ``AssetRef`` (SEC-15). Every kind ``1kg.5.3`` declares has a shape
+#: here: an ``integer`` is a count a player may read, never an id and never a
+#: revision, and it is present rather than ``None``.
 _PROJECTION_VALUE: dict[FieldKind, TypeAdapter[Any]] = {
     FieldKind.TEXT: TypeAdapter(_PresentText, config=_HIDE_INPUT),
     FieldKind.PROSE: TypeAdapter(_PresentProse, config=_HIDE_INPUT),
     FieldKind.TEXT_LIST: TypeAdapter(_PresentList, config=_HIDE_INPUT),
     FieldKind.ASSET: TypeAdapter(TableAssetRef),
+    FieldKind.INTEGER: TypeAdapter(_IntegerValue, config=_HIDE_INPUT),
+    FieldKind.ABILITIES: TypeAdapter(_PresentAbilities, config=_HIDE_INPUT),
+    FieldKind.ENTRY_LIST: TypeAdapter(_PresentEntryList, config=_HIDE_INPUT),
 }
 
 
@@ -2054,7 +2125,7 @@ class ProjectedField(_Contract):
     ]
     #: The shapes a field kind can take on a table; which one this key must be,
     #: and its bounds, are checked against the type in ``TableProjection``.
-    value: StrictStr | list[StrictStr] | TableAssetRef
+    value: StrictStr | list[StrictStr] | TableAssetRef | WireInt | dict[AbilityKey, WireInt] | list[_PresentEntry]
 
 
 class TableProjection(_Contract):

@@ -46,13 +46,13 @@ import {
   LibraryQuerySchema,
   MaskKeySchema,
   MEDIA_TYPES,
-  NEVER_REVEALABLE,
-  NEVER_REVEALABLE_BY_TYPE,
   ENTRY_DISCRIMINATORS,
   GM_EVENT_DISCRIMINATORS,
   PROSE_FIELD_MAX_CHARS,
   RESERVED_MASK_KEYS,
   RESULT_DISCRIMINATORS,
+  REVEALABLE_COMMON_FIELDS,
+  REVEALABLE_FIELDS,
   RESULT_KINDS,
   TEXT_FIELD_MAX_CHARS,
   TABLE_EVENT_KINDS,
@@ -231,12 +231,18 @@ describe('registry facts', () => {
     field_kinds: string[]
     field_bounds: Record<string, number>
     common_fields: Record<string, string>
-    document_types: Array<{ id: string; library_category: string; type_version: number; fields: Record<string, string> }>
+    common_field_rules: Record<string, { revealable: boolean }>
+    document_types: Array<{
+      id: string
+      library_category: string
+      type_version: number
+      fields: Record<string, string>
+      field_rules: Record<string, { revealable: boolean }>
+    }>
     asset_kinds: string[]
     media_types: Record<string, string[]>
     cue_kinds: string[]
     audio_slots: string[]
-    reveal: { never_revealable: string[]; never_revealable_by_type: Record<string, string[]> }
   }
   const registry = readJson<Registry>(join(FIXTURES, 'registry.json'))
 
@@ -268,21 +274,40 @@ describe('registry facts', () => {
     }
   })
 
-  it('pin the revealable set, which excludes what never reaches a table', () => {
-    // REVEAL-10, ED-5, ED-20: derived from the declared fields minus what the
-    // registry withholds, so a type that grows a field grows its set.
-    expect([...NEVER_REVEALABLE].sort()).toEqual([...registry.reveal.never_revealable].sort())
-    expect(NEVER_REVEALABLE_BY_TYPE).toEqual(registry.reveal.never_revealable_by_type)
+  it('pin the revealable allowlist to the registry, for every type', () => {
+    // REVEAL-10, ED-5, ED-20: ONE answer to "may this field reach a player", and
+    // it is an allowlist. `1kg.5.3`'s per-field rule is the source; this module
+    // holds a copy only because registry.ts imports it. Pinning the copy for
+    // EVERY type is what stops a field marked `revealable: false` on a type
+    // nobody wrote an assertion for from reaching a table.
+    const allowed = (rules: Record<string, { revealable: boolean }>): string[] =>
+      Object.entries(rules)
+        .filter(([, rule]) => rule.revealable)
+        .map(([key]) => key)
+        .sort()
 
-    expect(Object.keys(revealableFields('npc')).sort()).toEqual(
-      ['attitude', 'if_attacked', 'leverage', 'name', 'notes', 'portrait', 'qualifier', 'tell', 'voice', 'wants'].sort(),
-    )
+    expect([...REVEALABLE_COMMON_FIELDS].sort()).toEqual(allowed(registry.common_field_rules))
+    expect(Object.keys(REVEALABLE_FIELDS).sort()).toEqual(registry.document_types.map((d) => d.id).sort())
+    for (const row of registry.document_types) {
+      const type = row.id as DocumentTypeId
+      expect([type, [...REVEALABLE_FIELDS[type]].sort()]).toEqual([type, allowed(row.field_rules)])
+      // And the derived set — what a mask and a projection are checked against —
+      // never names a key the registry withholds, on any type.
+      const withheld = Object.keys(row.field_rules)
+        .concat(Object.keys(registry.common_field_rules))
+        .filter((key) => !allowed(row.field_rules).includes(key) && !allowed(registry.common_field_rules).includes(key))
+      for (const key of withheld) {
+        expect([type, key, Object.hasOwn(revealableFields(type), key)]).toEqual([type, key, false])
+      }
+    }
+
+    // ED-20's worked case, spelled out: the link between a face and what wears it.
+    expect(Object.hasOwn(DOC_TYPE_FIELDS.npc, 'true_identity')).toBe(true)
+    expect(Object.hasOwn(revealableFields('npc'), 'true_identity')).toBe(false)
     for (const type of DOCUMENT_TYPE_IDS) {
       expect(Object.hasOwn(revealableFields(type), 'tags')).toBe(false)
       expect(Object.hasOwn(revealableFields(type), 'all')).toBe(false)
     }
-    // A type whose fields 1kg.5.3 has not declared has the common ones only.
-    expect(Object.keys(revealableFields('handout')).sort()).toEqual(['name', 'qualifier'])
   })
 
   it('refuse a wildcard where a mask key is expected', () => {

@@ -133,34 +133,50 @@ def test_registry_constants_match_the_shared_registry() -> None:
         assert all(re.fullmatch(r"[a-z][a-z0-9_]{0,39}", key) for key in doc_type["fields"])
 
 
-def test_the_revealable_set_is_the_registry_s_and_excludes_what_never_reaches_a_table() -> None:
-    """Decisions REVEAL-10, ED-5, ED-20: the allowlist is derived from the type's
-    declared fields minus what the registry withholds, so a type that grows a
-    field grows its set, and ``1kg.5.3`` marks an identity link without touching
-    this family."""
-    registry = json.loads((FIXTURES / "registry.json").read_text(encoding="utf-8"))["reveal"]
-    assert sorted(wc.NEVER_REVEALABLE) == sorted(registry["never_revealable"])
-    assert {t.value: sorted(keys) for t, keys in wc.NEVER_REVEALABLE_BY_TYPE.items()} == {
-        key: sorted(value) for key, value in registry["never_revealable_by_type"].items()
-    }
+def test_the_revealable_set_is_the_registry_s_allowlist_for_every_type() -> None:
+    """Decisions REVEAL-10, ED-5, ED-20: **one** answer to *may this field reach a
+    player*, and it is an allowlist.
 
-    # REVEAL-10: portrait, name, qualifier and every section are revealable…
-    assert set(wc.revealable_fields(wc.DocumentTypeId.NPC)) == {
-        "name",
-        "qualifier",
-        "portrait",
-        "voice",
-        "tell",
-        "attitude",
-        "wants",
-        "leverage",
-        "if_attacked",
-        "notes",
-    }
+    ``1kg.5.3``'s per-field ``revealable`` rule is the source; this module holds a
+    copy only because the registry imports it and cannot be imported back. Pinning
+    the copy to ``registry.json`` for **every** type is what stops the two from
+    ever giving different answers — the failure that would otherwise be silent is
+    a field marked ``revealable: false`` on a type nobody wrote an assertion for.
+    """
+    registry = json.loads((FIXTURES / "registry.json").read_text(encoding="utf-8"))
+
+    def allowed(rules: dict[str, Any]) -> set[str]:
+        return {key for key, rule in rules.items() if rule["revealable"]}
+
+    assert set(wc.REVEALABLE_COMMON_FIELDS) == allowed(registry["common_field_rules"])
+    assert {t.value for t in wc.REVEALABLE_FIELDS} == {doc["id"] for doc in registry["document_types"]}
+    for doc_type in registry["document_types"]:
+        type_id = wc.DocumentTypeId(doc_type["id"])
+        assert set(wc.REVEALABLE_FIELDS[type_id]) == allowed(doc_type["field_rules"]), doc_type["id"]
+        # And the derived set — what a mask and a projection are actually checked
+        # against — never names a key the registry withholds, on any type.
+        withheld = set(doc_type["field_rules"]) - allowed(doc_type["field_rules"])
+        withheld |= set(registry["common_field_rules"]) - allowed(registry["common_field_rules"])
+        assert not withheld & set(wc.revealable_fields(type_id)), doc_type["id"]
+
+    # ED-20's worked case, spelled out: the link between a face and what wears it.
+    assert "true_identity" in wc.DOC_TYPE_FIELDS[wc.DocumentTypeId.NPC]
+    assert "true_identity" not in wc.revealable_fields(wc.DocumentTypeId.NPC)
     # …and tags never are, on any type (SEC-15).
     assert all("tags" not in wc.revealable_fields(doc_type) for doc_type in wc.DocumentTypeId)
-    # A type whose fields 1kg.5.3 has not declared has the common ones only.
-    assert set(wc.revealable_fields(wc.DocumentTypeId.HANDOUT)) == {"name", "qualifier"}
+
+
+def test_every_revealable_kind_has_a_shape_a_table_can_be_shown() -> None:
+    """A field kind a type declares and the registry marks revealable must have a
+    projection shape, or REVEAL-10's *each stat cell* has nowhere to land. The
+    TypeScript twin gets this from an exhaustive ``switch``; Python needs the
+    assertion, because a missing entry only shows up as a refused reveal."""
+    reachable = {
+        kind for doc_type in wc.DocumentTypeId for kind in wc.revealable_fields(doc_type).values()
+    }
+    assert reachable <= set(wc._PROJECTION_VALUE)
+    # Every kind the registry declares is reachable today, so the two sets agree.
+    assert reachable == set(wc.FieldKind)
 
 
 def test_a_mask_key_is_never_a_wildcard() -> None:

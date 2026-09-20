@@ -1410,22 +1410,39 @@ export const MaskKeySchema = FieldKeySchema.refine((key) => !RESERVED_MASK_KEYS.
 })
 
 /**
- * REVEAL-10: **never revealable** — tags, sources and citation text, version
- * history, authorship, changed-field lists, asset metadata, and any id the
- * projection does not need. Of those, `tags` is the only one that is a document
- * *field*. Pinned by `registry.json` → `reveal.never_revealable`.
+ * REVEAL-10, ED-5: the **allowlist** of the fields every type shares — one
+ * answer, in one place, to *may this field reach a player*. It is `1kg.5.3`'s
+ * per-field `revealable` rule (`registry.json` → `common_field_rules`), held
+ * here as a constant because `registry.ts` imports this module and so cannot be
+ * imported back; both suites pin it to that file, for every type, so the two
+ * cannot drift. `tags` is off it, on every type.
  */
-export const NEVER_REVEALABLE: readonly string[] = ['tags']
-/** ED-20, ED-5: a type marks a field of its own not revealable — an identity link
- * is the worked case. `1kg.5.3` fills this; empty in v1. */
-export const NEVER_REVEALABLE_BY_TYPE: Partial<Record<DocumentTypeId, readonly string[]>> = {}
+export const REVEALABLE_COMMON_FIELDS: readonly string[] = ['name', 'qualifier']
+
+/** The same allowlist for each type's **own** fields (`registry.json` →
+ * `document_types[].field_rules`). It is an allowlist and not an opt-out list: a
+ * key whose rule does not say `revealable` is not revealable, so a field a type
+ * gains later is withheld until the registry says otherwise — `npc.true_identity`
+ * is ED-20's worked case and is absent below. */
+export const REVEALABLE_FIELDS: Readonly<Record<DocumentTypeId, readonly string[]>> = {
+  npc: ['portrait', 'voice', 'tell', 'attitude', 'wants', 'leverage', 'if_attacked', 'notes'],
+  statblock: ['ac', 'ac_note', 'hp', 'hit_dice', 'speed', 'size', 'creature_type', 'alignment', 'abilities', 'saving_throws', 'skills', 'damage_immunities', 'condition_immunities', 'senses', 'languages', 'challenge_rating', 'xp', 'traits', 'actions', 'bonus_actions', 'reactions', 'legendary_actions'],
+  handout: ['portrait', 'body'],
+  'session-notes': ['session', 'date', 'present', 'recap', 'beats', 'loose_threads'],
+  'quest-log': ['open_threads', 'cold_threads', 'resolved_threads'],
+  'character-sheet': ['portrait', 'ac', 'hp', 'speed', 'abilities', 'features', 'equipment', 'notes'],
+  lore: ['region', 'era', 'status', 'summary', 'history', 'rumours'],
+  encounter: ['difficulty', 'xp_budget', 'party_level', 'setup', 'combatants', 'terrain', 'outcome'],
+}
 
 /** The keys of `type` a mask may name, and the kind each holds (REVEAL-10, ED-5).
- * A type whose fields `1kg.5.3` has not declared has the common ones only. */
+ * The allowlist is intersected with what the type declares, so a key on the list
+ * that the type does not declare has no kind and cannot be projected — unknown is
+ * never revealable (X-8). */
 export function revealableFields(type: DocumentTypeId): Record<string, FieldKind> {
-  const withheld = new Set([...NEVER_REVEALABLE, ...(NEVER_REVEALABLE_BY_TYPE[type] ?? [])])
+  const allowed = new Set([...REVEALABLE_COMMON_FIELDS, ...REVEALABLE_FIELDS[type]])
   const declared = { ...COMMON_FIELDS, ...DOC_TYPE_FIELDS[type] }
-  return Object.fromEntries(Object.entries(declared).filter(([key]) => !withheld.has(key)))
+  return Object.fromEntries(Object.entries(declared).filter(([key]) => allowed.has(key)))
 }
 
 export const AUDIENCE_KINDS = ['table', 'participant'] as const
@@ -1509,10 +1526,28 @@ export type RevealStopRequest = z.infer<typeof RevealStopRequestSchema>
 export const CONTENT_KINDS = ['document'] as const
 export type ContentKind = (typeof CONTENT_KINDS)[number]
 
+/** ED-9: a block a player is shown carries scores, not gaps. A document may hold
+ * `{ str: null }` for a creature that lacks an ability; a projection of it leaves
+ * the key out, so no cell is drawn empty under a masked heading. */
+const presentAbilitiesShape = Object.fromEntries(
+  ABILITY_KEYS.map((key) => [key, z.number().int().min(ABILITY_SCORE_MIN).max(ABILITY_SCORE_MAX).optional()]),
+)
+const PresentAbilitiesSchema = z
+  .object(presentAbilitiesShape)
+  .refine((block) => ABILITY_KEYS.some((key) => block[key] !== undefined), { message: 'a block a table is shown holds at least one score' })
+
+/** One named block as a player sees it: a heading **and** its body, both present.
+ * A document may hold a trait whose text is still empty; projecting it would put a
+ * lone heading on a table, which REVEAL-5's *present and non-empty* rules out. */
+const PresentEntrySchema = z.object({ name: oneLine(1, TEXT_FIELD_MAX_CHARS), text: text(1, LIST_ITEM_MAX_CHARS) })
+
 /** The same kinds a document declares, but a masked key is **present and
  * non-empty** in the pinned version (REVEAL-5, ED-9), so nothing clears to a
  * blank heading on a table; and an asset is the per-slot handle, never the
- * GM-side AssetRef (SEC-15). */
+ * GM-side AssetRef (SEC-15). Every kind `1kg.5.3` declares has a shape here: an
+ * `integer` is a count a player may read, never an id and never a revision, and it
+ * is present rather than null. The switch is exhaustive on purpose — a kind added
+ * without a table shape must stop this file compiling, not reach a table. */
 function projectionValueSchema(kind: FieldKind): ZodType<unknown> {
   switch (kind) {
     case 'text':
@@ -1523,6 +1558,12 @@ function projectionValueSchema(kind: FieldKind): ZodType<unknown> {
       return z.array(text(1, LIST_ITEM_MAX_CHARS)).min(1).max(LIST_FIELD_MAX_ITEMS)
     case 'asset':
       return TableAssetRefSchema
+    case 'integer':
+      return z.number().int().min(INTEGER_FIELD_MIN).max(INTEGER_FIELD_MAX)
+    case 'abilities':
+      return PresentAbilitiesSchema
+    case 'entry_list':
+      return z.array(PresentEntrySchema).min(1).max(LIST_FIELD_MAX_ITEMS)
   }
 }
 
@@ -1532,14 +1573,21 @@ function projectionValueSchema(kind: FieldKind): ZodType<unknown> {
 const ProjectedFieldSchema = z.object({
   key: MaskKeySchema,
   label: oneLine(1, FIELD_LABEL_MAX_CHARS),
-  /** The shapes a field kind can take on a table, mirroring the server's
-   * `StrictStr | list[StrictStr] | TableAssetRef`. It is NOT `z.unknown()`: the
-   * refinement below only *tests* the value against the type's declared kind, so
-   * an unknown would survive verbatim and carry whatever rode inside it — an
-   * `asset_id`, a filename, a GM note — straight through a client that is
-   * supposed to strip them (SEC-15, REVEAL-21). Declaring the union is what makes
-   * the strip happen. */
-  value: z.union([z.string(), z.array(z.string()), TableAssetRefSchema]),
+  /** The shapes a field kind can take on a table, mirroring the server's union.
+   * It is NOT `z.unknown()`: the refinement below only *tests* the value against
+   * the type's declared kind, so an unknown would survive verbatim and carry
+   * whatever rode inside it — an `asset_id`, a filename, a GM note — straight
+   * through a client that is supposed to strip them (SEC-15, REVEAL-21).
+   * Declaring the union is what makes the strip happen, and that is why the two
+   * structured kinds are spelled out here as well as in the per-kind check. */
+  value: z.union([
+    z.string(),
+    z.array(z.string()),
+    TableAssetRefSchema,
+    z.number(),
+    PresentAbilitiesSchema,
+    z.array(z.object({ name: z.string(), text: z.string() })),
+  ]),
 })
 
 /**

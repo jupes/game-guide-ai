@@ -44,7 +44,7 @@
       }
     },
     {
-      "name": "a type whose fields 1kg.5.3 has not declared shows the common ones",
+      "name": "the common fields alone, on a type that declares more",
       "value": {
         "content_kind": "document",
         "type": "handout",
@@ -58,6 +58,96 @@
             "key": "qualifier",
             "label": "Qualifier",
             "value": "sealed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "the stat cells a party may read",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "ac",
+            "label": "Armour Class",
+            "value": 15
+          },
+          {
+            "key": "hp",
+            "label": "Hit Points",
+            "value": 82
+          },
+          {
+            "key": "abilities",
+            "label": "Abilities",
+            "value": {
+              "str": 11,
+              "dex": 16,
+              "con": 14,
+              "int": 18,
+              "wis": 15,
+              "cha": 13
+            }
+          },
+          {
+            "key": "actions",
+            "label": "Actions",
+            "value": [
+              {
+                "name": "Chill Touch",
+                "text": "Melee spell attack, reach 5 ft., one target. Hit: 10 necrotic damage."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "an ability block with a score the creature lacks left out",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "abilities",
+            "label": "Abilities",
+            "value": {
+              "str": 20,
+              "dex": 8,
+              "con": 20
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a list of rumours, the text_list branch",
+      "value": {
+        "content_kind": "document",
+        "type": "lore",
+        "fields": [
+          {
+            "key": "rumours",
+            "label": "Rumours",
+            "value": [
+              "The bell still rings under the water.",
+              "No one born in the village will swim."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a count that is legitimately zero",
+      "value": {
+        "content_kind": "document",
+        "type": "encounter",
+        "fields": [
+          {
+            "key": "xp_budget",
+            "label": "XP budget",
+            "value": 0
           }
         ]
       }
@@ -243,6 +333,148 @@
               "undead",
               "twist"
             ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "an identity link in a projection",
+      "why": "ED-20, ED-5: `true_identity` is a field npc declares and the registry does not mark revealable, so it is gm_only by construction — the allowlist is the one thing that can say a field may reach a player",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "true_identity",
+            "label": "True identity",
+            "value": "She is the lich Vashe the Drowned."
+          }
+        ]
+      }
+    },
+    {
+      "name": "an ability block with no scores in it",
+      "why": "ED-9: a masked key is present and non-empty in the pinned version, so an ability heading a table is shown always has a cell under it",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "abilities",
+            "label": "Abilities",
+            "value": {}
+          }
+        ]
+      }
+    },
+    {
+      "name": "an ability score the rules cannot produce",
+      "why": "a projection carries document values and is bounded exactly as the document is (0 to 99 for an ability score)",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "abilities",
+            "label": "Abilities",
+            "value": {
+              "str": 100
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an ability key this contract does not define",
+      "why": "CANVAS-19: the block is one field with a closed key set, so a seventh score is a shape the builder never produces — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "abilities",
+            "label": "Abilities",
+            "value": {
+              "str": 11,
+              "luck": 13
+            }
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "a stat cell cleared to null",
+      "why": "ED-9: a document may hold null for a stat the GM has not filled in; a projection of it would draw an empty cell under a masked heading, so the reveal is refused instead",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "ac",
+            "label": "Armour Class",
+            "value": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "an entry with a heading and no body",
+      "why": "REVEAL-5: every masked key is present and non-empty, so a named block reaches a table with its text or not at all",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "traits",
+            "label": "Traits",
+            "value": [
+              {
+                "name": "Amphibious",
+                "text": ""
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "an entry carrying more than a heading and its text",
+      "why": "X-10: an entry is plain text on both members; a note, a source or a marker beside them is a channel the builder never opens — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "quest-log",
+        "fields": [
+          {
+            "key": "open_threads",
+            "label": "Open threads",
+            "value": [
+              {
+                "name": "The drowned bell",
+                "text": "Someone is ringing it.",
+                "gm_note": "Vashe rings it herself."
+              }
+            ]
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "an empty list where a list of rumours belongs",
+      "why": "ED-9: a masked key is present and non-empty in the pinned version, so a list that has been cleared is not a live slot",
+      "value": {
+        "content_kind": "document",
+        "type": "lore",
+        "fields": [
+          {
+            "key": "rumours",
+            "label": "Rumours",
+            "value": []
           }
         ]
       }
