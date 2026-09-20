@@ -252,6 +252,36 @@ describe('per-type flags and their selectors (1kg.5.3)', () => {
       Object.fromEntries(REGISTRY.document_types.map((d) => [d.id, []])),
     )
   })
+
+  // ED-24, and the reason this is written out rather than derived: taking a key
+  // OFF a type's allowlist is a narrowing that no transaction carries — it ships
+  // with a stop-scan that stops every live display holding that key — and this
+  // test is what prompts it. Deriving the list would prove nothing.
+  const REVEALABLE: Record<string, string[]> = {
+    npc: ['name', 'qualifier', 'portrait', 'voice', 'tell', 'attitude', 'wants', 'leverage', 'if_attacked', 'notes'],
+    statblock: [
+      'name', 'qualifier', 'ac', 'ac_note', 'hp', 'hit_dice', 'speed', 'size', 'creature_type', 'alignment',
+      'abilities', 'saving_throws', 'skills', 'damage_immunities', 'condition_immunities', 'senses', 'languages',
+      'challenge_rating', 'xp', 'traits', 'actions', 'bonus_actions', 'reactions', 'legendary_actions',
+    ],
+    handout: ['name', 'qualifier', 'portrait', 'body'],
+    'session-notes': ['name', 'qualifier', 'session', 'date', 'present', 'recap', 'beats', 'loose_threads'],
+    'quest-log': ['name', 'qualifier', 'open_threads', 'cold_threads', 'resolved_threads'],
+    'character-sheet': ['name', 'qualifier', 'portrait', 'ac', 'hp', 'speed', 'abilities', 'features', 'equipment', 'notes'],
+    lore: ['name', 'qualifier', 'region', 'era', 'status', 'summary', 'history', 'rumours'],
+    encounter: ['name', 'qualifier', 'difficulty', 'xp_budget', 'party_level', 'setup', 'combatants', 'terrain', 'outcome'],
+  }
+
+  it("pins every type's revealable allowlist (ED-24)", () => {
+    expect(Object.fromEntries(REGISTRY.document_types.map((d) => [d.id, revealableKeys(d)]))).toEqual(REVEALABLE)
+  })
+
+  it('keeps tags, sources, ids and identity links off every allowlist (REVEAL-10, ED-5, ED-20)', () => {
+    const never = ['tags', 'true_identity', 'sources', 'asset_id', 'document_id', 'campaign_id', 'author', 'changed_fields']
+    for (const d of REGISTRY.document_types) {
+      expect(revealableKeys(d).filter((key) => never.includes(key))).toEqual([])
+    }
+  })
 })
 
 describe('a registry that breaks a rule cannot be built', () => {

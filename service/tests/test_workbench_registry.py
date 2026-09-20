@@ -360,6 +360,44 @@ def test_the_reserved_key_lists_are_pinned() -> None:
     }
 
 
+#: Decision ED-24, the reason this list is written out rather than derived:
+#: taking a key **off** a type's allowlist is a narrowing that no transaction
+#: carries — it ships with a stop-scan that stops every live display holding
+#: that key — and this test is what prompts it. Adding a key is a widening and
+#: only needs the line changed. Deriving the list from the registry would prove
+#: nothing, so it is spelled out.
+_REVEALABLE = {
+    "npc": ["name", "qualifier", "portrait", "voice", "tell", "attitude", "wants", "leverage", "if_attacked", "notes"],
+    "statblock": [
+        "name", "qualifier", "ac", "ac_note", "hp", "hit_dice", "speed", "size", "creature_type", "alignment",
+        "abilities", "saving_throws", "skills", "damage_immunities", "condition_immunities", "senses", "languages",
+        "challenge_rating", "xp", "traits", "actions", "bonus_actions", "reactions", "legendary_actions",
+    ],
+    "handout": ["name", "qualifier", "portrait", "body"],
+    "session-notes": ["name", "qualifier", "session", "date", "present", "recap", "beats", "loose_threads"],
+    "quest-log": ["name", "qualifier", "open_threads", "cold_threads", "resolved_threads"],
+    "character-sheet": [
+        "name", "qualifier", "portrait", "ac", "hp", "speed", "abilities", "features", "equipment", "notes",
+    ],
+    "lore": ["name", "qualifier", "region", "era", "status", "summary", "history", "rumours"],
+    "encounter": [
+        "name", "qualifier", "difficulty", "xp_budget", "party_level", "setup", "combatants", "terrain", "outcome",
+    ],
+}
+
+
+def test_every_types_revealable_allowlist_is_pinned() -> None:
+    assert {doc.id.value: list(reg.REGISTRY.revealable_keys(doc)) for doc in reg.REGISTRY.document_types} == _REVEALABLE
+
+
+def test_nothing_off_the_allowlist_is_a_tag_a_source_an_id_or_an_identity_link() -> None:
+    """REVEAL-10 and ED-5, stated as what the allowlists must *not* contain.
+    Everything here is ``gm_only`` by construction and no action can widen it."""
+    never = {"tags", "true_identity", "sources", "asset_id", "document_id", "campaign_id", "author", "changed_fields"}
+    for doc in reg.REGISTRY.document_types:
+        assert not set(reg.REGISTRY.revealable_keys(doc)) & never, doc.id.value
+
+
 def test_every_problem_is_reported_at_once() -> None:
     loot = replace(_tool("loot"), aliases=("/NPC",), icon="!")
     broken = _broken(tools=_with_tool(loot), default_pinned=tuple(ToolId)[:6])
