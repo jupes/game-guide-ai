@@ -289,6 +289,45 @@ def test_a_job_somebody_has_started_absorbs_nothing(db, dsn):
         assert conn.execute("SELECT id, attempts FROM app.jobs").fetchall() == [(second, 0)]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="W-1: an absorbed enqueue locks nothing, so a concurrent claim can swallow it (1kg.2.7)",
+)
+def test_an_absorbed_enqueue_is_not_swallowed_by_a_concurrent_claim(db, dsn):
+    """W-1, from the independent verification of the eligibility ADR.
+
+    `enqueue()` absorbs into an unstarted job with `ON CONFLICT DO NOTHING` and
+    then a plain `SELECT`, which takes no lock on the absorbing row. So between
+    the absorb and the enqueuer's commit another instance can claim that job,
+    run it and delete it — and the change the enqueuer made in the very same
+    transaction is then never processed by anything.
+
+    The fix is for the absorb to hold the row `FOR SHARE`, which `claim()`'s
+    `FOR UPDATE SKIP LOCKED` must skip until every absorber has committed.
+
+    The interleaving is driven explicitly by two connections. Nothing here waits
+    on a clock.
+    """
+    queue = PostgresJobQueue(db)
+    first = _enqueue(db, queue, kind="upload.sweep", dedupe_key="session:S")
+
+    with db.transaction() as unit:
+        # The change the job exists to process, and the absorb, in one transaction.
+        unit.conn.execute("INSERT INTO app.things (id) VALUES ('late')")
+        absorbed = queue.enqueue(unit, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0)
+        # A precondition, not the behaviour under test: it must not be the
+        # AssertionError this test is marked to expect.
+        if absorbed != first:
+            raise RuntimeError(f"precondition failed: the enqueue did not absorb ({absorbed} != {first})")
+
+        # A second instance, while the enqueuer's transaction is still open.
+        stolen = [job.id for job in queue.claim(["upload.sweep"], now=T0)]
+
+    assert stolen == [], "the absorbing row was claimable before the enqueuer committed"
+    assert _count(dsn, "SELECT count(*) FROM app.jobs WHERE id = %s", (first,)) == 1
+
+
 def test_due_order_kinds_and_claim_by_id(db):
     queue = PostgresJobQueue(db)
     later = _enqueue(db, queue, run_after=T0 + timedelta(minutes=5))
