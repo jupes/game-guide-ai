@@ -20,30 +20,27 @@ any content either: ED-26 is explicit that no value derived from field text may
 outlive the text, and a digest of a brief outlives it while still answering
 "was it this one?" to anyone holding a guess.
 
-**What actually enforces that, and what it cannot do.** `0005_audit_events.sql`
-bounds lengths and two closed vocabularies; it types `actor_ref`, `object_ref`
-and `campaign_id_tombstone` as free `TEXT` with no CHECK at all. So the writer
-is the enforcement, and it is a **shape** rule: every string a caller supplies
-must be an identifier — letters, digits and `_ . : -` — with no space and no
-other punctuation. `as_identifier` applies it to every one of them, each against
-its own column's bound: each `detail` value and each `detail` key,
-`actor_ref`, `object_ref`, `campaign_id_tombstone` (64, `OpaqueId`'s ceiling),
-`object_kind` (40) and `reason_code` (60). A row is only as content-free as its
-least-checked field, so no string field is exempt.
+**`detail` is closed and per action**, as ED-18(a) words it: "a closed,
+per-action `detail` of ids, codes and keys". `ACTION_DETAIL` says, for each
+action, exactly which keys a row of that action may carry and what each one is —
+a minted id of a named prefix, one of a closed set of codes, a Workbench field
+key (ED-2), a bounded list of them (which is how `1kg.7.1` records a reveal's
+mask), a whole number or a boolean. A key the registry does not list is refused;
+**there is no kind that admits a free string**, so an alias, a title, a filename
+or a sentence cannot be recorded whatever it is called. The earlier rule here
+was a single shape test over every action at once, and it could not tell a
+one-word alias from an identifier; this one does not have to, because `alias` is
+not a key of any action and `"Rook"` is not a value of any kind.
 
-A shape rule refuses a sentence, a brief, a filename and any multi-word name.
-It **cannot** tell a one-word alias from an identifier: `{"alias": "Rook"}` is a
-well-formed identifier and passes. What keeps an alias out of a row is that no
-caller puts one there — the callers are `1kg.2.2`'s and `1kg.2.3`'s routes, and
-they pass minted ids — and what this rule guarantees is that the failure cannot
-be a silent one of degree: nothing that reads as text gets in. A caller that
-must record which seat something happened to passes `object_ref`, the
-participant's minted id.
-
-This is deliberately stricter than
-`service/jobs.check_payload`, which admits any short string: a job payload is
-read by this service and deleted, while an audit row is retained past the
-deletion of everything it describes.
+The same closure applies to the columns beside it: `campaign_id_tombstone` is a
+minted `cmp_` identifier, `actor_ref` and `object_ref` are minted identifiers or
+the GM's numeric user id, `object_kind` and `reason_code` are field keys, and
+`authz_revision` is a whole number that is never negative — the bound
+`0005_audit_events.sql` also carries, so the twin and the database agree. Every
+refusal names the **field** and never the value: a validator that quoted the
+offending value back would be the leak it exists to prevent, which is also why
+the enum conversions are wrapped rather than left to raise Python's own
+`ValueError` with the value in it.
 
 **Rows outlive their campaign.** `campaign_id_tombstone` has no foreign key, so
 deleting a campaign — which SEC-36 makes take everything else with it — leaves
@@ -60,34 +57,25 @@ from datetime import datetime
 from enum import Enum
 from typing import Protocol
 
+from . import campaign_identity as ident
 from .campaign_store import fake, now_or, pg
 from .db import InMemoryTransaction, UnitOfWork
 
-DetailValue = str | int | bool | None
+DetailValue = str | int | bool | list[str] | None
 
-#: Identifiers, field keys, numbers and booleans — requirement 6's list, and
-#: nothing that could be a sentence. 64 characters is `OpaqueId`'s ceiling in
-#: `docs/workbench-wire-contract.md`, so a minted id fits and free text does not.
+#: ED-2's flat field key: the unit of eligibility, of a reveal mask, of
+#: field-level concurrency and of a changed-field list. There are no nested
+#: paths, so this is the whole vocabulary of keys the Workbench has.
+FIELD_KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+#: `auth.users.id`, as text. The GM is the one actor that is a row in another
+#: schema rather than a minted identifier (AUD-1).
+USER_ID = re.compile(r"^[1-9][0-9]{0,18}$")
+
+#: A mask is at most the document type's fields; forty is far past any of them
+#: and still a bound, which an unbounded list in a retained row would not be.
+DETAIL_MAX_FIELD_KEYS = 40
+#: No action's registry entry may grow past this without a second look.
 DETAIL_MAX_KEYS = 20
-DETAIL_KEY_MAX_CHARS = 40
-DETAIL_VALUE_MAX_CHARS = 64
-
-REASON_CODE_MAX_CHARS = 60
-
-#: What a string in an audit row may look like. No space, so no prose; no
-#: punctuation beyond what an identifier, a dotted action or a field key needs.
-#: Applied to EVERY string a caller supplies — values, keys, references, the
-#: object kind and the reason code — because a row is only as content-free as
-#: its least-checked field.
-IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]+$")
-
-
-def as_identifier(what: str, value: str, limit: int) -> str:
-    """`value` if it is an identifier of at most `limit` characters, else a
-    refusal that names the FIELD and never the value."""
-    if not value or len(value) > limit or IDENTIFIER.fullmatch(value) is None:
-        raise ValueError(f"{what} is an identifier of at most {limit} characters, never text")
-    return value
 
 
 class AuditAction(str, Enum):
@@ -95,7 +83,8 @@ class AuditAction(str, Enum):
 
     Closed on purpose: a caller cannot invent one, so the ledger's vocabulary is
     something a reviewer agreed to. A later bead adds its own members here — the
-    column is TEXT, so no migration is needed for that.
+    column is TEXT, so no migration is needed for that — together with the
+    `ACTION_DETAIL` entry that says what such a row may carry.
     """
 
     SESSION_STARTED = "session.started"
@@ -130,8 +119,174 @@ class Decision(str, Enum):
     REFUSED = "refused"
 
 
+# ── What a detail value may be ───────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class MintedId:
+    """A minted identifier of one prefix (SEC-4). Not "an identifier-shaped
+    string": the prefix and the body length are both checked, so the id of a
+    different kind of thing is refused too."""
+
+    prefix: str
+
+
+@dataclass(frozen=True)
+class OneOf:
+    """One of a closed set of codes agreed in this file. The set is the
+    vocabulary, so a refusal may name it: it contains nothing a caller wrote."""
+
+    codes: tuple[str, ...]
+
+
+class Shape(Enum):
+    """The kinds that need no parameter."""
+
+    FIELD_KEY = "a Workbench field key"
+    FIELD_KEYS = "a list of Workbench field keys"
+    WHOLE_NUMBER = "a whole number"
+    FLAG = "a boolean"
+
+
+Kind = MintedId | OneOf | Shape
+
+
+def accepts(kind: Kind, value: DetailValue) -> bool:
+    """Whether `value` is of `kind`. Pure, and public because a later bead adds
+    its own `ACTION_DETAIL` entry and has to be able to test it — `1kg.7.1`'s
+    reveal rows carry `Shape.FIELD_KEYS`, the mask ED-18(a) asks for, and
+    nothing here has to change for that.
+
+    `None` is accepted for every kind: it is how a declared key says "this row
+    has no such value", and a JSON null carries nothing.
+    """
+    if value is None:
+        return True
+    if isinstance(kind, MintedId):
+        return isinstance(value, str) and ident.is_id(kind.prefix, value)
+    if isinstance(kind, OneOf):
+        return isinstance(value, str) and value in kind.codes
+    if kind is Shape.FIELD_KEY:
+        return isinstance(value, str) and FIELD_KEY.fullmatch(value) is not None
+    if kind is Shape.FIELD_KEYS:
+        return (
+            isinstance(value, list)
+            and len(value) <= DETAIL_MAX_FIELD_KEYS
+            and all(isinstance(key, str) and FIELD_KEY.fullmatch(key) for key in value)
+        )
+    if kind is Shape.WHOLE_NUMBER:
+        # bool is an int in Python and is not a number in an audit row.
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, bool)
+
+
+def _describes(kind: Kind) -> str:
+    """How a refusal names the kind. Every branch is this file's own vocabulary,
+    so none of it can repeat what a caller supplied."""
+    if isinstance(kind, MintedId):
+        return f"a minted {kind.prefix} identifier"
+    if isinstance(kind, OneOf):
+        return f"one of {', '.join(kind.codes)}"
+    return kind.value
+
+
+# ── The registry: what a row of each action may carry ────────────────────────
+
+_CAMPAIGN = MintedId(ident.CAMPAIGN)
+_PARTICIPANT = MintedId(ident.PARTICIPANT)
+_SESSION = MintedId(ident.TABLE_SESSION)
+_CODE = MintedId(ident.ENROLMENT_CODE)
+_DEVICE = MintedId(ident.DEVICE_CREDENTIAL)
+
+#: SEC-10 bounds a generation two ways — 24 credentials, and 60 joins in ten
+#: minutes. Which one a refused join hit is a closed code, not a sentence.
+JOIN_BOUND = OneOf(("credentials_per_generation", "joins_per_window"))
+
+_SESSION_CLOSED: dict[str, Kind] = {
+    "session_id": _SESSION,
+    "generation": Shape.WHOLE_NUMBER,
+    "credentials_revoked": Shape.WHOLE_NUMBER,
+}
+
+#: The closed, per-action `detail` of ED-18(a). A bead that adds an action adds
+#: its entry here in the same change, and `test_audit_log.py` requires the two
+#: to stay in step — an action with no entry can record nothing at all.
+ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
+    AuditAction.SESSION_STARTED: {"session_id": _SESSION, "generation": Shape.WHOLE_NUMBER},
+    AuditAction.SESSION_ENDED: _SESSION_CLOSED,
+    AuditAction.SESSION_EXPIRED: _SESSION_CLOSED,
+    AuditAction.SESSION_ROTATED: {**_SESSION_CLOSED, "personal_links_reset": Shape.FLAG},
+    AuditAction.PARTICIPANT_ADDED: {"participant_id": _PARTICIPANT},
+    AuditAction.PARTICIPANT_REMOVED: {
+        "participant_id": _PARTICIPANT,
+        "codes_revoked": Shape.WHOLE_NUMBER,
+        "devices_revoked": Shape.WHOLE_NUMBER,
+    },
+    AuditAction.PARTICIPANT_LINKED: {"participant_id": _PARTICIPANT},
+    AuditAction.PARTICIPANT_UNLINKED: {"participant_id": _PARTICIPANT},
+    AuditAction.CODE_ISSUED: {"participant_id": _PARTICIPANT, "code_id": _CODE},
+    AuditAction.CODE_CONSUMED: {"participant_id": _PARTICIPANT, "code_id": _CODE},
+    AuditAction.DEVICE_REPLACED: {"participant_id": _PARTICIPANT, "credential_id": _DEVICE},
+    AuditAction.DEVICE_RESET: {
+        "participant_id": _PARTICIPANT,
+        "credential_id": _DEVICE,
+        "code_id": _CODE,
+    },
+    AuditAction.CAMPAIGN_ARCHIVED: {"campaign_id": _CAMPAIGN},
+    AuditAction.CAMPAIGN_RESTORED: {"campaign_id": _CAMPAIGN},
+    AuditAction.CAMPAIGN_DELETED: {
+        "campaign_id": _CAMPAIGN,
+        "participants": Shape.WHOLE_NUMBER,
+        "sessions": Shape.WHOLE_NUMBER,
+    },
+    AuditAction.JOIN_BURST_REFUSED: {
+        "session_id": _SESSION,
+        "generation": Shape.WHOLE_NUMBER,
+        "bound": JOIN_BOUND,
+    },
+}
+
+
+# ── The checks every row goes through ────────────────────────────────────────
+
+
+def check_action(action: AuditAction | str) -> AuditAction:
+    """The action, as a member. Wrapped so that the refusal does not repeat the
+    value: `AuditAction('the GM called Ana')` raises Python's own message, which
+    quotes it, and that message is the one thing in this module that must never
+    reach a log line."""
+    try:
+        return AuditAction(action)
+    except ValueError:
+        raise ValueError("an audit row's action is not one the ledger knows") from None
+
+
+def check_actor_kind(actor_kind: ActorKind | str) -> str:
+    try:
+        return ActorKind(actor_kind).value
+    except ValueError:
+        raise ValueError("an audit row's actor kind is not one the ledger knows") from None
+
+
+def check_decision(decision: Decision | str) -> str:
+    try:
+        return Decision(decision).value
+    except ValueError:
+        raise ValueError("an audit row's decision is not one the ledger knows") from None
+
+
+def check_campaign_id(campaign_id: str) -> str:
+    """The tombstone is a minted campaign identifier and nothing else. The
+    column has no foreign key (ED-26), so this is the only thing standing
+    between a row that names a campaign and a row that names `Rook`."""
+    if not isinstance(campaign_id, str) or not ident.is_id(ident.CAMPAIGN, campaign_id):
+        raise ValueError("an audit row's campaign id is a minted campaign identifier, never text")
+    return campaign_id
+
+
 def check_ref(name: str, value: str | None) -> str | None:
-    """A reference in an audit row is an identifier, or nothing.
+    """A reference in an audit row is a minted identifier or the GM's numeric
+    user id, or nothing.
 
     The refusal names the FIELD and never the value: the value is exactly the
     thing that must not reach a log line, and a validator that quoted it back
@@ -139,46 +294,71 @@ def check_ref(name: str, value: str | None) -> str | None:
     """
     if value is None:
         return None
-    return as_identifier(f"an audit row's {name}", value, DETAIL_VALUE_MAX_CHARS)
+    minted = isinstance(value, str) and any(ident.is_id(p, value) for p in ident.PREFIXES)
+    if minted or (isinstance(value, str) and USER_ID.fullmatch(value) is not None):
+        return value
+    raise ValueError(f"an audit row's {name} is a minted identifier or a user id, never text")
 
 
-def check_detail(detail: Mapping[str, DetailValue] | None) -> dict[str, DetailValue]:
-    """Identifiers, field keys, numbers and booleans — nothing else.
-
-    A string value must look like an identifier, not merely be short: an alias
-    has a space in it, and so does every sentence, so neither can be smuggled in
-    as a 60-character "code". A refusal names the offending KEY and never its
-    value.
-    """
-    checked = dict(detail or {})
-    if len(checked) > DETAIL_MAX_KEYS:
-        raise ValueError(f"an audit detail has at most {DETAIL_MAX_KEYS} keys")
-    for key, value in checked.items():
-        if not isinstance(key, str):
-            raise ValueError("an audit detail key is a string")
-        # The KEY too: a field key is an identifier, and a caller that put a
-        # sentence there would have written content into the row just the same.
-        as_identifier("an audit detail key", key, DETAIL_KEY_MAX_CHARS)
-        if not isinstance(value, str | int | bool | type(None)):
-            raise ValueError(f"audit detail '{key}' must be a string, a whole number, a boolean or null")
-        if isinstance(value, str):
-            as_identifier(f"audit detail '{key}'", value, DETAIL_VALUE_MAX_CHARS)
-    return checked
+def check_field_key(what: str, value: str) -> str:
+    """ED-2's flat key, which is also the shape of an object kind and of a
+    reason code: `participant`, `table_session`, `not_eligible` — a kind or a
+    code, never a name and never a sentence."""
+    if not isinstance(value, str) or FIELD_KEY.fullmatch(value) is None:
+        raise ValueError(f"{what} is a lowercase key of at most 40 characters, never text")
+    return value
 
 
 def check_reason_code(reason_code: str | None) -> str | None:
     """A code, not a sentence: `not_eligible`, never "Rook may not see Wren's
-    passive perception" — which is why the length bound is not enough on its own."""
+    passive perception"."""
     if reason_code is None:
         return None
-    return as_identifier("a reason code", reason_code, REASON_CODE_MAX_CHARS)
+    return check_field_key("a reason code", reason_code)
+
+
+def check_authz_revision(authz_revision: int | None) -> int | None:
+    """The bound `0005_audit_events.sql` carries, applied in both worlds so that
+    the twin cannot accept a row the database would refuse."""
+    if authz_revision is None:
+        return None
+    if isinstance(authz_revision, bool) or not isinstance(authz_revision, int):
+        raise ValueError("an audit row's authorisation revision is a whole number")
+    if authz_revision < 0:
+        raise ValueError("an audit row's authorisation revision is never negative")
+    return authz_revision
+
+
+def check_detail(
+    action: AuditAction, detail: Mapping[str, DetailValue] | None
+) -> dict[str, DetailValue]:
+    """The closed, per-action detail of ED-18(a).
+
+    A key the action's registry entry does not list is refused, and the refusal
+    does **not** repeat it: a key carries content just as well as a value does
+    (`{"Rook saw the wrong card": True}`), so it is named only by the vocabulary
+    it was measured against, which is this file's own.
+    """
+    schema = ACTION_DETAIL[action]
+    checked = dict(detail or {})
+    for key, value in checked.items():
+        kind = schema.get(key) if isinstance(key, str) else None
+        if kind is None:
+            allowed = ", ".join(sorted(schema)) or "nothing"
+            raise ValueError(
+                f"an audit row for {action.value} carries no such detail key; it carries {allowed}"
+            )
+        if not accepts(kind, value):
+            raise ValueError(f"audit detail '{key}' is {_describes(kind)}, never text")
+    return checked
 
 
 @dataclass(frozen=True)
 class AuditEvent:
     """One recorded decision. `detail` is hidden from `repr()` — it is validated
-    to hold identifiers only, but a record that prints a caller's dictionary is
-    one mistake away from printing whatever a caller put there."""
+    to hold identifiers, codes and keys only, but a record that prints a
+    caller's dictionary is one mistake away from printing whatever a caller put
+    there."""
 
     id: int
     campaign_id_tombstone: str
@@ -224,12 +404,52 @@ class AuditLog(Protocol):
         ...  # pragma: no cover - structural type
 
 
-OBJECT_KIND_MAX_CHARS = 40
+@dataclass(frozen=True)
+class _Row:
+    """Every column of a row, checked. Built once and used by both writers, so
+    the twin cannot validate less than the database does."""
+
+    campaign_id: str
+    actor_kind: str
+    action: str
+    object_kind: str
+    decision: str
+    actor_ref: str | None
+    object_ref: str | None
+    reason_code: str | None
+    authz_revision: int | None
+    detail: dict[str, DetailValue]
+    created_at: datetime
 
 
-def _check_object_kind(object_kind: str) -> str:
-    """`participant`, `table_session`, `enrolment_code` — a kind, not a name."""
-    return as_identifier("an object kind", object_kind, OBJECT_KIND_MAX_CHARS)
+def _checked(
+    *,
+    campaign_id: str,
+    actor_kind: ActorKind | str,
+    action: AuditAction | str,
+    object_kind: str,
+    decision: Decision | str,
+    actor_ref: str | None,
+    object_ref: str | None,
+    reason_code: str | None,
+    authz_revision: int | None,
+    detail: Mapping[str, DetailValue] | None,
+    now: datetime | None,
+) -> _Row:
+    chosen = check_action(action)
+    return _Row(
+        campaign_id=check_campaign_id(campaign_id),
+        actor_kind=check_actor_kind(actor_kind),
+        action=chosen.value,
+        object_kind=check_field_key("an object kind", object_kind),
+        decision=check_decision(decision),
+        actor_ref=check_ref("actor reference", actor_ref),
+        object_ref=check_ref("object reference", object_ref),
+        reason_code=check_reason_code(reason_code),
+        authz_revision=check_authz_revision(authz_revision),
+        detail=check_detail(chosen, detail),
+        created_at=now_or(now),
+    )
 
 
 _COLUMNS = (
@@ -266,22 +486,35 @@ class PostgresAuditLog:
         detail: Mapping[str, DetailValue] | None = None,
         now: datetime | None = None,
     ) -> AuditEvent:
+        checked = _checked(
+            campaign_id=campaign_id,
+            actor_kind=actor_kind,
+            action=action,
+            object_kind=object_kind,
+            decision=decision,
+            actor_ref=actor_ref,
+            object_ref=object_ref,
+            reason_code=reason_code,
+            authz_revision=authz_revision,
+            detail=detail,
+            now=now,
+        )
         row = pg(unit).conn.execute(
             f"INSERT INTO audit.events (campaign_id_tombstone, actor_kind, action, object_kind, "
             f"decision, actor_ref, object_ref, reason_code, authz_revision, detail, created_at) "
             f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING {_COLUMNS}",
             (
-                check_ref("campaign id", campaign_id),
-                ActorKind(actor_kind).value,
-                AuditAction(action).value,
-                _check_object_kind(object_kind),
-                Decision(decision).value,
-                check_ref("actor reference", actor_ref),
-                check_ref("object reference", object_ref),
-                check_reason_code(reason_code),
-                authz_revision,
-                json.dumps(check_detail(detail)),
-                now_or(now),
+                checked.campaign_id,
+                checked.actor_kind,
+                checked.action,
+                checked.object_kind,
+                checked.decision,
+                checked.actor_ref,
+                checked.object_ref,
+                checked.reason_code,
+                checked.authz_revision,
+                json.dumps(checked.detail),
+                checked.created_at,
             ),
         ).fetchone()
         return _event(row)
@@ -337,19 +570,32 @@ class InMemoryAuditLog:
         now: datetime | None = None,
     ) -> AuditEvent:
         twin = fake(unit)
+        checked = _checked(
+            campaign_id=campaign_id,
+            actor_kind=actor_kind,
+            action=action,
+            object_kind=object_kind,
+            decision=decision,
+            actor_ref=actor_ref,
+            object_ref=object_ref,
+            reason_code=reason_code,
+            authz_revision=authz_revision,
+            detail=detail,
+            now=now,
+        )
         event = AuditEvent(
             id=self._next_id,
-            campaign_id_tombstone=check_ref("campaign id", campaign_id) or "",
-            actor_kind=ActorKind(actor_kind).value,
-            action=AuditAction(action).value,
-            object_kind=_check_object_kind(object_kind),
-            decision=Decision(decision).value,
-            created_at=now_or(now),
-            actor_ref=check_ref("actor reference", actor_ref),
-            object_ref=check_ref("object reference", object_ref),
-            reason_code=check_reason_code(reason_code),
-            authz_revision=authz_revision,
-            detail=check_detail(detail),
+            campaign_id_tombstone=checked.campaign_id,
+            actor_kind=checked.actor_kind,
+            action=checked.action,
+            object_kind=checked.object_kind,
+            decision=checked.decision,
+            created_at=checked.created_at,
+            actor_ref=checked.actor_ref,
+            object_ref=checked.object_ref,
+            reason_code=checked.reason_code,
+            authz_revision=checked.authz_revision,
+            detail=checked.detail,
         )
         self._next_id += 1
         self._mine(twin).append(event)
