@@ -24,7 +24,7 @@ Both are what let a test exercise composition without a database at all.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -137,13 +137,19 @@ class Staging:
 
 @dataclass(frozen=True)
 class Campaign:
-    """A GM's table. `name` is the GM's own words, shown back to them; unlike an
-    alias or a conversation title it is not private text in SEC-20's sense, but
-    it is still never part of an audit row."""
+    """A GM's table.
+
+    `name` is hidden from `repr()`. SEC-20's list of private text — a brief, an
+    instruction, a field value, a search string, an alias, a cue title, a
+    filename — does not name a campaign name, but the same rule says positively
+    what a log line may carry: "opaque ids, codes, sizes and durations". A name
+    the GM wrote is none of those, and a traceback is a log line. It reaches the
+    GM through a route that answers them, not through a `repr()`.
+    """
 
     id: str
     owner_id: int
-    name: str
+    name: str = field(repr=False)
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None = None

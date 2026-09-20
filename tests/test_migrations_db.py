@@ -329,6 +329,48 @@ def test_deleting_a_user_cascades_through_every_table_of_the_campaign_schema(dsn
             )
 
 
+def test_audit_rows_outlive_the_campaign_they_name_and_its_owner(dsn):
+    """ED-26 ("ledger and audit rows, which are tombstoned past campaign
+    deletion") and ED-18(a)'s retention — NOT SEC-36, which says the opposite
+    about everything that hangs off a campaign and which behaviour 33 pins.
+    `campaign_id_tombstone` has no foreign key, so the row keeps the identifier
+    as plain text and stops being reachable from what it names."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        _a_whole_campaign(conn, owner)
+        conn.execute(
+            "INSERT INTO audit.events "
+            "(campaign_id_tombstone, actor_kind, action, object_kind, decision, detail) "
+            "VALUES (%s, 'gm', 'session.started', 'table_session', 'allowed', %s)",
+            (CAMPAIGN_ID, '{"generation": 1}'),
+        )
+
+        conn.execute("DELETE FROM campaign.campaigns WHERE id = %s", (CAMPAIGN_ID,))
+        assert conn.execute("SELECT count(*) FROM audit.events").fetchone()[0] == 1
+
+        conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+        kept = conn.execute(
+            "SELECT campaign_id_tombstone, action, detail FROM audit.events"
+        ).fetchall()
+        assert kept == [(CAMPAIGN_ID, "session.started", {"generation": 1})], (
+            "the ledger must survive the account it describes"
+        )
+
+
+def test_the_audit_table_is_reachable_from_no_foreign_key(dsn):
+    """The mechanism behind the test above, asserted directly: a foreign key
+    added later would silently reintroduce the cascade ED-26 forbids."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        edges = conn.execute(
+            "SELECT conname FROM pg_constraint c JOIN pg_class rel ON rel.oid = c.conrelid "
+            "JOIN pg_namespace n ON n.oid = rel.relnamespace "
+            "WHERE n.nspname = 'audit' AND c.contype = 'f'"
+        ).fetchall()
+        assert edges == []
+
+
 # ── Drift fails loudly ───────────────────────────────────────────────────────
 
 

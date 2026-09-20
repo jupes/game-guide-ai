@@ -861,6 +861,7 @@ def test_no_store_record_shows_a_digest_or_an_alias_when_it_is_printed() -> None
         printed = repr(record)
         assert digest not in printed, f"{type(record).__name__} shows a digest"
         assert "Rook" not in printed, f"{type(record).__name__} shows an alias"
+        assert "Nocturne" not in printed, f"{type(record).__name__} shows a campaign name"
         assert type(record).__name__ in printed, "a record still says what it is"
 
 
