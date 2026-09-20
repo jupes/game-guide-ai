@@ -28,7 +28,7 @@ from psycopg_pool import PoolClosed, PoolTimeout
 
 from service import migrations as mig
 from service.db import AdvisoryLock, Database, PoolSettings
-from service.jobs import LEASE_SECONDS, Job, JobHandler, JobRunner, PostgresJobQueue
+from service.jobs import LEASE_SECONDS, Job, JobContext, JobHandler, JobRunner, PostgresJobQueue
 
 pytestmark = needs_db
 
@@ -177,7 +177,7 @@ def test_after_commit_callbacks_run_once_the_connection_is_back(dsn):
     database = Database(dsn, PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2))
     queue = PostgresJobQueue(database)
     ran: list[str] = []
-    handler = JobHandler(lambda job: ran.append(str(job.payload["asset_id"])))
+    handler = JobHandler(lambda job, context: ran.append(str(job.payload["asset_id"])))
     runner = JobRunner(queue, {"asset.delete": handler})
     with database.transaction() as unit:
         runner.run_after_commit(unit, queue.enqueue(unit, "asset.delete", {"asset_id": "asset-1"}))
@@ -289,6 +289,91 @@ def test_a_job_somebody_has_started_absorbs_nothing(db, dsn):
         assert conn.execute("SELECT id, attempts FROM app.jobs").fetchall() == [(second, 0)]
 
 
+def test_an_absorbed_enqueue_is_not_swallowed_by_a_concurrent_claim(db, dsn):
+    """W-1, from the independent verification of the eligibility ADR.
+
+    `enqueue()` absorbs into an unstarted job with `ON CONFLICT DO NOTHING` and
+    then a plain `SELECT`, which takes no lock on the absorbing row. So between
+    the absorb and the enqueuer's commit another instance can claim that job,
+    run it and delete it — and the change the enqueuer made in the very same
+    transaction is then never processed by anything.
+
+    The fix is for the absorb to hold the row `FOR SHARE`, which `claim()`'s
+    `FOR UPDATE SKIP LOCKED` must skip until every absorber has committed.
+
+    The interleaving is driven explicitly by two connections. Nothing here waits
+    on a clock.
+    """
+    queue = PostgresJobQueue(db)
+    first = _enqueue(db, queue, kind="upload.sweep", dedupe_key="session:S")
+
+    with db.transaction() as unit:
+        # The change the job exists to process, and the absorb, in one transaction.
+        unit.conn.execute("INSERT INTO app.things (id) VALUES ('late')")
+        absorbed = queue.enqueue(unit, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0)
+        # A precondition, not the behaviour under test: it must not be the
+        # AssertionError this test is marked to expect.
+        if absorbed != first:
+            raise RuntimeError(f"precondition failed: the enqueue did not absorb ({absorbed} != {first})")
+
+        # A second instance, while the enqueuer's transaction is still open.
+        stolen = [job.id for job in queue.claim(["upload.sweep"], now=T0)]
+
+    assert stolen == [], "the absorbing row was claimable before the enqueuer committed"
+
+    # Committed now: the job survived, and it can see the work it exists to do.
+    assert _count(dsn, "SELECT count(*) FROM app.jobs WHERE id = %s", (first,)) == 1
+    assert [job.id for job in queue.claim(["upload.sweep"], now=T0)] == [first]
+    assert _count(dsn, "SELECT count(*) FROM app.things WHERE id = 'late'") == 1
+
+
+def test_the_queues_bound_is_transaction_local_and_does_not_leak(db, dsn):
+    """`set_config(..., true)` is transaction-scoped — but only because
+    `Database.connection()` hands out a connection that is **not** in autocommit
+    and commits when its block exits. If that ever changed, the bound would
+    quietly become session-wide and outlive the queue's own work, so this pins
+    both halves against the real server.
+
+    These are the database's bounds, not a client wall clock: they do not cover
+    COMMIT and do nothing about a black-holed network (`1kg.2.8`).
+    """
+    from service.jobs import _bound
+
+    with db.connection() as conn:
+        assert conn.autocommit is False, "set_config(..., true) needs a real transaction"
+        _bound(conn)
+        settings = conn.execute(
+            "SELECT current_setting('lock_timeout'), "
+            "current_setting('statement_timeout'), "
+            "current_setting('transaction_timeout')"
+        ).fetchone()
+        assert settings == ("2s", "2s", "5s")
+
+    with db.connection() as conn:
+        after = conn.execute("SELECT current_setting('statement_timeout')").fetchone()[0]
+    assert after != "2s", "the bound outlived its transaction"
+
+
+def test_two_absorbing_enqueuers_never_wait_for_each_other(db, dsn):
+    """Why FOR SHARE and not FOR UPDATE: share locks are compatible, so two
+    transactions absorbing into the same job both go through. Only a claim's
+    FOR UPDATE conflicts — and it uses SKIP LOCKED, so it never waits either.
+
+    `lock_timeout` is set on this test's own transaction so that a regression to
+    FOR UPDATE fails in two seconds instead of hanging CI. Nothing here passes
+    because of a clock."""
+    queue = PostgresJobQueue(db)
+    first = _enqueue(db, queue, kind="upload.sweep", dedupe_key="session:S")
+
+    with db.transaction() as one:
+        if queue.enqueue(one, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0) != first:
+            raise RuntimeError("precondition failed: the first enqueue did not absorb")
+        with db.transaction() as two:
+            two.conn.execute("SET LOCAL lock_timeout = '2s'")
+            absorbed = queue.enqueue(two, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0)
+    assert absorbed == first, "a second absorber went through while the first still held the row"
+
+
 def test_due_order_kinds_and_claim_by_id(db):
     queue = PostgresJobQueue(db)
     later = _enqueue(db, queue, run_after=T0 + timedelta(minutes=5))
@@ -342,18 +427,18 @@ def test_the_runner_retries_with_backoff_on_the_real_queue(db, dsn):
     clock = [T0]
     attempts: list[int] = []
 
-    def handler(job: Job) -> None:
+    def handler(job: Job, context: JobContext) -> None:
         attempts.append(job.attempts)
         if job.attempts < 3:
             raise TimeoutError("gs://bucket/secret-name")
 
     runner = JobRunner(queue, {"asset.delete": JobHandler(handler)}, clock=lambda: clock[0])
-    assert runner.run_due() == 1 and runner.run_due() == 0, "backed off"
+    assert runner.run_due().ran == 1 and runner.run_due().ran == 0, "backed off"
     clock[0] += timedelta(seconds=5)
-    assert runner.run_due() == 1
+    assert runner.run_due().ran == 1
     assert _count(dsn, "SELECT count(*) FROM app.jobs WHERE last_error = 'TimeoutError'") == 1
     clock[0] += timedelta(seconds=10)
-    assert runner.run_due() == 1
+    assert runner.run_due().ran == 1
     assert attempts == [1, 2, 3] and _count(dsn, "SELECT count(*) FROM app.jobs") == 0
 
 

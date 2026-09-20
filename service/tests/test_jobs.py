@@ -8,17 +8,23 @@ committed; a claim is a lease with a fencing token; rows never hold content.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from service.db import Database, InMemoryDatabase, PoolSettings
+from service.db import Database, InMemoryDatabase, PgTransaction, PoolSettings
 from service.jobs import (
     LEASE_SECONDS,
+    LOCK_TIMEOUT,
+    STATEMENT_TIMEOUT,
+    TRANSACTION_TIMEOUT,
     InMemoryJobQueue,
     Job,
+    JobContext,
     JobHandler,
     JobRunner,
+    JobRunResult,
     PostgresJobQueue,
     check_payload,
     retry_delay,
@@ -68,13 +74,13 @@ def test_a_job_does_not_exist_for_anyone_else_until_its_transaction_commits():
     rolled-back job, which by the outbox's own contract never existed, would run."""
     queue = _queue()
     ran: list[int] = []
-    runner = JobRunner(queue, {"asset.delete": JobHandler(lambda job: ran.append(job.id))}, clock=lambda: T0)
+    runner = JobRunner(queue, {"asset.delete": JobHandler(lambda job, context: ran.append(job.id))}, clock=lambda: T0)
     with pytest.raises(RuntimeError):
         with queue.db.transaction() as unit:
             queue.enqueue(unit, "asset.delete", now=T0)
-            assert queue.claim(["asset.delete"], now=T0) == [] and runner.run_due() == 0
+            assert queue.claim(["asset.delete"], now=T0) == [] and runner.run_due().ran == 0
             raise RuntimeError("the tombstone could not be written")
-    assert ran == [] and queue.snapshot() == [] and runner.run_due() == 0
+    assert ran == [] and queue.snapshot() == [] and runner.run_due().ran == 0
 
 
 def test_a_job_can_only_be_enqueued_inside_a_transaction_of_its_own_kind():
@@ -128,15 +134,95 @@ def test_a_failure_records_the_exception_class_never_its_message(caplog):
     queue = _queue()
     _enqueue(queue)
 
-    def handler(job: Job) -> None:
+    def handler(job: Job, context: JobContext) -> None:
         raise PermissionError("gs://bucket/campaign-7/The Duke's secret.png")
 
     runner = JobRunner(queue, {"asset.delete": JobHandler(handler)}, clock=lambda: T0)
     with caplog.at_level(logging.WARNING, logger="service.jobs"):
-        assert runner.run_due() == 1
+        assert runner.run_due().ran == 1
     assert queue.snapshot() == [(1, "asset.delete", 1, "PermissionError", False)]
     assert "asset.delete #1 failed on attempt 1 (PermissionError)" in caplog.text
     assert "secret" not in caplog.text
+
+
+# ── The transactions the queue opens are bounded ─────────────────────────────
+
+
+class _Result:
+    def __init__(self, rows: list[tuple]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[tuple]:
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class _RecordingConnection:
+    """Enough of a psycopg connection to see what a transaction does first."""
+
+    def __init__(self, calls: list[tuple[str, tuple | None]], rows: list[tuple] | None = None) -> None:
+        self.calls = calls
+        self._rows = rows if rows is not None else []
+
+    def execute(self, sql, params=None) -> _Result:
+        self.calls.append((" ".join(str(sql).split()), params))
+        if "set_config" in str(sql):
+            return _Result([])
+        return _Result(self._rows)
+
+
+class _RecordingDatabase:
+    """Enough of `Database` for the queue's own transactions."""
+
+    def __init__(self, calls: list[tuple[str, tuple | None]], rows: list[tuple] | None = None) -> None:
+        self.calls = calls
+        self._rows = rows
+
+    @contextmanager
+    def connection(self):
+        yield _RecordingConnection(self.calls, self._rows)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        pytest.param(lambda q: q.claim(["asset.delete"], now=T0), id="claim"),
+        pytest.param(lambda q: q.complete(Job(1, "asset.delete", {}, 1, T0)), id="complete"),
+        pytest.param(
+            lambda q: q.fail(Job(1, "asset.delete", {}, 1, T0), error="ValueError", retry_at=T0, now=T0),
+            id="fail",
+        ),
+    ],
+)
+def test_every_transaction_the_queue_opens_is_bounded_first(operation):
+    """`lock_timeout`, `statement_timeout` and `transaction_timeout`, set
+    transaction-locally, before the queue does anything else. They bound the
+    database's side of the work — not the client's wall clock (see 1kg.2.8)."""
+    calls: list[tuple[str, tuple | None]] = []
+    operation(PostgresJobQueue(_RecordingDatabase(calls)))
+
+    assert calls, "the operation opened no transaction"
+    sql, params = calls[0]
+    assert "set_config('lock_timeout', %s, true)" in sql
+    assert "set_config('statement_timeout', %s, true)" in sql
+    assert "set_config('transaction_timeout', %s, true)" in sql
+    assert params == (LOCK_TIMEOUT, STATEMENT_TIMEOUT, TRANSACTION_TIMEOUT) == ("2s", "2s", "5s")
+
+
+def test_an_enqueue_never_retimes_the_callers_transaction():
+    """`enqueue()` runs inside the caller's transaction. Setting timeouts there
+    would silently re-time the rest of the caller's work, which is not this
+    module's business — so it sets none."""
+    calls: list[tuple[str, tuple | None]] = []
+    queue = PostgresJobQueue(_RecordingDatabase(calls))
+    unit = PgTransaction(_RecordingConnection(calls, rows=[(1,)]))
+
+    queue.enqueue(unit, "asset.delete", {"asset_id": "a-1"}, dedupe_key="asset:a-1", now=T0)
+
+    assert calls, "the enqueue issued no statement"
+    assert not any("set_config" in sql for sql, _ in calls)
 
 
 # ── Deduplication ────────────────────────────────────────────────────────────
@@ -149,6 +235,27 @@ def test_a_live_job_absorbs_the_same_work_enqueued_again():
     assert _enqueue(queue, kind="asset.sweep", dedupe_key="asset:a-1") != first, "a key is scoped by kind"
     assert _enqueue(queue) != _enqueue(queue), "no key, no deduplication"
     assert len(queue.snapshot()) == 4
+
+
+def test_an_absorbed_enqueue_is_not_claimable_until_the_absorber_commits():
+    """The in-memory twin of the two-connection race in
+    `tests/test_db_postgres.py` (W-1).
+
+    An absorbed enqueue holds the row it absorbed into, so a claim from
+    elsewhere cannot take that job — and delete this transaction's work along
+    with it — before the absorbing transaction has committed. In PostgreSQL the
+    hold is `SELECT ... FOR SHARE`, which `claim()`'s `FOR UPDATE SKIP LOCKED`
+    skips; here it is the same rule, stated directly."""
+    queue = _queue()
+    first = _enqueue(queue, kind="upload.sweep", dedupe_key="session:S")
+
+    with queue.db.transaction() as unit:
+        absorbed = queue.enqueue(unit, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0)
+        assert absorbed == first, "precondition: the enqueue absorbs into the unstarted job"
+        assert queue.claim(["upload.sweep"], now=T0) == [], "claimable before the absorber committed"
+
+    (claimed,) = queue.claim(["upload.sweep"], now=T0)
+    assert claimed.id == first, "and claimable once it has"
 
 
 def test_a_job_somebody_has_started_absorbs_nothing():
@@ -238,16 +345,130 @@ def test_one_job_can_be_claimed_by_id():
 # ── The runner ───────────────────────────────────────────────────────────────
 
 
+def test_a_context_tells_a_handler_what_time_it_has_left():
+    now = [0.0]
+    context = JobContext(deadline_monotonic=5.0, monotonic=lambda: now[0])
+    assert context.remaining_seconds() == 5.0 and not context.expired()
+    now[0] = 4.5
+    assert context.remaining_seconds() == 0.5 and not context.expired()
+    now[0] = 5.0
+    assert context.expired(), "a spent budget is expired at the moment it runs out"
+    assert JobContext().remaining_seconds() is None and not JobContext().expired(), "no budget, no deadline"
+
+
+def test_handlers_register_by_kind_and_a_claim_only_sees_what_is_registered():
+    """The rollout rule: an older build leaves a newer build's kinds alone
+    because it never claims what it cannot run."""
+    queue = _queue()
+    _enqueue(queue, kind="asset.delete")
+    _enqueue(queue, kind="upload.sweep")
+    seen: list[str] = []
+    runner = JobRunner(queue, clock=lambda: T0)
+
+    assert runner.run_due(limit=5) == JobRunResult(), "nothing registered, so nothing is claimed"
+
+    runner.register("upload.sweep", JobHandler(lambda job, context: seen.append(job.kind)))
+    assert runner.run_due(limit=5) == JobRunResult(ran=1, failed=0, remaining=False)
+    assert seen == ["upload.sweep"]
+    assert [row[1] for row in queue.snapshot()] == ["asset.delete"], "the unregistered kind is untouched"
+
+
+def test_a_budget_stops_the_runner_starting_work_but_never_interrupts_it():
+    """Cooperative, not preemptive: the runner declines to start another job
+    once the budget is spent, and the one already running finishes."""
+    queue = _queue()
+    for _ in range(3):
+        _enqueue(queue)
+    now = [0.0]
+    started: list[int] = []
+    finished: list[int] = []
+
+    def handler(job: Job, context: JobContext) -> None:
+        started.append(job.id)
+        now[0] += 10.0  # this job alone overruns the whole budget
+        finished.append(job.id)
+
+    runner = JobRunner(queue, {"asset.delete": JobHandler(handler)}, clock=lambda: T0, monotonic=lambda: now[0])
+    result = runner.run_due(limit=3, deadline_monotonic=5.0)
+
+    assert started == finished == [started[0]], "the job that was running finished"
+    assert result == JobRunResult(ran=1, failed=0, remaining=True), "stopped early, so there may be more"
+    assert len([row for row in queue.snapshot() if row[2] == 0]) == 2, "two never started"
+
+
+def test_a_result_counts_attempts_and_failures_and_is_conservative_about_what_is_left():
+    queue = _queue()
+    _enqueue(queue)
+    _enqueue(queue)
+
+    def handler(job: Job, context: JobContext) -> None:
+        raise TimeoutError
+
+    runner = JobRunner(queue, {"asset.delete": JobHandler(handler)}, clock=lambda: T0)
+
+    assert runner.run_due(limit=1) == JobRunResult(ran=1, failed=1, remaining=True), "stopped on the count"
+    assert runner.run_due(limit=5) == JobRunResult(ran=1, failed=1, remaining=False), "a claim came back empty"
+
+
+def test_run_job_runs_the_one_it_was_asked_for():
+    queue = _queue()
+    first = _enqueue(queue)
+    second = _enqueue(queue)
+    seen: list[int] = []
+    runner = JobRunner(queue, {"asset.delete": JobHandler(lambda job, context: seen.append(job.id))}, clock=lambda: T0)
+
+    assert runner.run_job(second) == JobRunResult(ran=1, failed=0, remaining=False)
+    assert seen == [second], "the job asked for, not the one at the head of the queue"
+    assert [row[0] for row in queue.snapshot()] == [first]
+
+
+def test_a_spent_budget_starts_nothing_at_all():
+    queue = _queue()
+    _enqueue(queue)
+    runner = JobRunner(
+        queue,
+        {"asset.delete": JobHandler(lambda job, context: pytest.fail("started work with no budget left"))},
+        clock=lambda: T0,
+        monotonic=lambda: 10.0,
+    )
+    assert runner.run_due(limit=5, deadline_monotonic=1.0) == JobRunResult(remaining=True)
+    assert runner.run_job(1, deadline_monotonic=1.0) == JobRunResult(remaining=True)
+    assert [row[2] for row in queue.snapshot()] == [0], "never claimed"
+
+
+def test_a_claimed_job_whose_kind_lost_its_handler_fails_content_free():
+    """`claim` filters by the registry, so this is the narrow window in which the
+    registry changed between the claim and the dispatch. Today that raises
+    `KeyError` out of the runner. It must fail the job content-free instead, and
+    must not dead-letter it: the instance that does have the handler should
+    still get it.
+
+    Driven through `_run` because the public surface cannot reach this window."""
+    queue = _queue()
+    job_id = _enqueue(queue, kind="upload.sweep")
+    claimed = queue.claim(["upload.sweep"], now=T0)
+    runner = JobRunner(queue, {}, clock=lambda: T0)  # the registry moved on
+
+    assert runner._run(claimed, JobContext()) == (1, 1)
+
+    (row,) = queue.snapshot()
+    assert row[0] == job_id
+    assert row[3] == "UnknownJobKind", "the class name, never a message"
+    assert row[4] is False, "recorded and retried, not dead-lettered"
+
+
+
+
 def test_a_job_that_succeeds_is_forgotten():
     queue = _queue()
     _enqueue(queue, payload={"asset_id": "a-9"})
     seen: list[Job] = []
-    runner = JobRunner(queue, {"asset.delete": JobHandler(seen.append)}, clock=lambda: T0)
-    assert runner.run_due(limit=5) == 1
+    runner = JobRunner(queue, {"asset.delete": JobHandler(lambda job, context: seen.append(job))}, clock=lambda: T0)
+    assert runner.run_due(limit=5).ran == 1
     assert [(j.kind, dict(j.payload), j.attempts, j.created_at) for j in seen] == [
         ("asset.delete", {"asset_id": "a-9"}, 1, T0)
     ]
-    assert queue.snapshot() == [] and runner.run_due() == 0
+    assert queue.snapshot() == [] and runner.run_due().ran == 0
 
 
 def test_the_runner_claims_one_job_at_a_time():
@@ -258,14 +479,14 @@ def test_the_runner_claims_one_job_at_a_time():
     ids = [_enqueue(queue) for _ in range(3)]
     unclaimed_while_running: list[list[int]] = []
 
-    def handler(job: Job) -> None:
+    def handler(job: Job, context: JobContext) -> None:
         unclaimed_while_running.append([row[0] for row in queue.snapshot() if row[2] == 0])
 
     runner = JobRunner(queue, {"asset.delete": JobHandler(handler)}, clock=lambda: T0)
-    assert runner.run_due(limit=2) == 2
+    assert runner.run_due(limit=2).ran == 2
     assert unclaimed_while_running == [ids[1:], ids[2:]]
     assert queue.snapshot() == [(ids[2], "asset.delete", 0, None, False)]
-    assert runner.run_due(limit=5) == 1 and runner.run_due(limit=5) == 0
+    assert runner.run_due(limit=5).ran == 1 and runner.run_due(limit=5).ran == 0
 
 
 def test_a_failing_job_backs_off_and_a_deletion_is_never_abandoned():
@@ -273,16 +494,16 @@ def test_a_failing_job_backs_off_and_a_deletion_is_never_abandoned():
     _enqueue(queue)
     clock = [T0]
 
-    def handler(job: Job) -> None:
+    def handler(job: Job, context: JobContext) -> None:
         raise TimeoutError
 
     runner = JobRunner(queue, {"asset.delete": JobHandler(handler)}, clock=lambda: clock[0])
     delays = []
     for _ in range(12):
-        assert runner.run_due() == 1
+        assert runner.run_due().ran == 1
         (row,) = queue._rows.values()
         delays.append(int((row.run_after - clock[0]).total_seconds()))
-        assert runner.run_due() == 0, "not due again until the delay has passed"
+        assert runner.run_due().ran == 0, "not due again until the delay has passed"
         clock[0] = row.run_after
     assert delays == [5, 10, 20, 40, 80, 160, 320, 640, 1280, 2560, 3600, 3600]
     assert queue.snapshot() == [(1, "asset.delete", 12, "TimeoutError", False)]
@@ -294,18 +515,18 @@ def test_a_job_with_a_limit_dies_after_it_and_is_left_for_the_operator(caplog):
     _enqueue(queue, kind="upload.sweep")
     clock = [T0]
 
-    def handler(job: Job) -> None:
+    def handler(job: Job, context: JobContext) -> None:
         raise ValueError
 
     runner = JobRunner(queue, {"upload.sweep": JobHandler(handler, max_attempts=2)}, clock=lambda: clock[0])
-    assert runner.run_due() == 1
+    assert runner.run_due().ran == 1
     clock[0] += timedelta(hours=1)
     with caplog.at_level(logging.WARNING, logger="service.jobs"):
-        assert runner.run_due() == 1
+        assert runner.run_due().ran == 1
     assert "giving up" in caplog.text
     assert queue.snapshot() == [(1, "upload.sweep", 2, "ValueError", True)]
     clock[0] += timedelta(days=1)
-    assert runner.run_due() == 0, "a dead job is never claimed"
+    assert runner.run_due().ran == 0, "a dead job is never claimed"
 
 
 def test_an_older_build_leaves_a_newer_builds_jobs_alone():
@@ -313,15 +534,16 @@ def test_an_older_build_leaves_a_newer_builds_jobs_alone():
     claim the job and burn its attempts."""
     queue = _queue()
     _enqueue(queue, kind="cue.reindex")
-    assert JobRunner(queue, {"asset.delete": JobHandler(lambda job: None)}, clock=lambda: T0).run_due(limit=10) == 0
-    assert JobRunner(queue, {}, clock=lambda: T0).run_due(limit=10) == 0
+    other = JobRunner(queue, {"asset.delete": JobHandler(lambda job, context: None)}, clock=lambda: T0)
+    assert other.run_due(limit=10).ran == 0
+    assert JobRunner(queue, {}, clock=lambda: T0).run_due(limit=10).ran == 0
     assert queue.snapshot() == [(1, "cue.reindex", 0, None, False)]
 
 
 def test_a_job_runs_as_soon_as_its_transaction_commits_and_not_before():
     queue = _queue()
     ran: list[int] = []
-    runner = JobRunner(queue, {"asset.delete": JobHandler(lambda job: ran.append(job.id))}, clock=lambda: T0)
+    runner = JobRunner(queue, {"asset.delete": JobHandler(lambda job, context: ran.append(job.id))}, clock=lambda: T0)
     with queue.db.transaction() as unit:
         job_id = queue.enqueue(unit, "asset.delete", {"asset_id": "a-1"}, now=T0)
         runner.run_after_commit(unit, job_id)
@@ -332,7 +554,7 @@ def test_a_job_runs_as_soon_as_its_transaction_commits_and_not_before():
 def test_a_rolled_back_transaction_runs_nothing():
     queue = _queue()
     ran: list[int] = []
-    runner = JobRunner(queue, {"asset.delete": JobHandler(lambda job: ran.append(job.id))}, clock=lambda: T0)
+    runner = JobRunner(queue, {"asset.delete": JobHandler(lambda job, context: ran.append(job.id))}, clock=lambda: T0)
     with pytest.raises(RuntimeError):
         with queue.db.transaction() as unit:
             runner.run_after_commit(unit, queue.enqueue(unit, "asset.delete", now=T0))
@@ -343,7 +565,7 @@ def test_a_rolled_back_transaction_runs_nothing():
 def test_an_inline_failure_leaves_the_row_as_its_retry_record():
     queue = _queue()
 
-    def handler(job: Job) -> None:
+    def handler(job: Job, context: JobContext) -> None:
         raise ConnectionError
 
     runner = JobRunner(queue, {"asset.delete": JobHandler(handler)}, clock=lambda: T0)
