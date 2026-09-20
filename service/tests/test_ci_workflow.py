@@ -92,8 +92,11 @@ def test_the_integration_step_does_not_swallow_its_own_failure():
 # ── A test that cannot run is as bad as one that is never invoked ────────────
 
 
-def test_no_database_backed_module_defines_a_name_twice():
-    """A second `def` of the same name silently replaces the first, and every
+def test_no_database_backed_module_defines_a_top_level_name_twice():
+    """Top-level `def` and `class` only — a name bound twice inside a function
+    is a different question and not this one.
+
+    A second `def` of the same name silently replaces the first, and every
     caller written against the first signature then fails — but only when the
     test actually RUNS. For the files in `DB_BACKED_TESTS` that is CI, on a
     branch, after a push.
