@@ -174,6 +174,12 @@ def _a_participant(world: World, campaign_id: str, alias: str = "Rook") -> str:
 #: is where that rule lands.
 AN_NPC = {"name": "Vashti", "qualifier": "Harbourmistress", "tags": ["harbour"], "voice": "low"}
 A_STATBLOCK = {"name": "Dire Rat", "qualifier": "", "tags": [], "ac": 12, "hp": 7}
+#: A character sheet declares neither `voice` nor the stat block's keys, so it
+#: needs its own fixture rather than AN_NPC: the store's own
+#: `check_fields(..., whole=True)` call refuses a key the type does not declare,
+#: which is the check working. `ac` and `hp` stay OPTIONAL for this type (lead
+#: ruling 5.7#2) and are given here only because they are valid either way.
+A_CHARACTER_SHEET = {"name": "Rook", "qualifier": "Rogue", "tags": ["party"], "ac": 14, "hp": 22}
 
 
 def _a_document(
@@ -788,7 +794,7 @@ def test_the_database_refuses_a_second_sheet_for_one_participant(dsn: str) -> No
     the column and the index ship here with the rest of the DDL."""
     world = _a_seeded_world(dsn)
     seat = _a_participant(world, CAMPAIGN)
-    first = _a_document(world, CAMPAIGN, data=dict(AN_NPC),
+    first = _a_document(world, CAMPAIGN, data=dict(A_CHARACTER_SHEET),
                         doc_type=DocumentTypeId.CHARACTER_SHEET)
     second = _a_document(world, CAMPAIGN, data={"name": "Second", "qualifier": "", "tags": []},
                          doc_type=DocumentTypeId.CHARACTER_SHEET)
@@ -898,7 +904,8 @@ def test_a_participant_deleted_by_raw_sql_clears_the_link_and_keeps_the_document
     the campaign-deletion cascade cannot fail."""
     world = _a_seeded_world(dsn)
     seat = _a_participant(world, CAMPAIGN)
-    sheet = _a_document(world, CAMPAIGN, doc_type=DocumentTypeId.CHARACTER_SHEET)
+    sheet = _a_document(world, CAMPAIGN, data=dict(A_CHARACTER_SHEET),
+                        doc_type=DocumentTypeId.CHARACTER_SHEET)
     with connect(dsn) as conn:
         conn.execute(
             "UPDATE campaign.documents SET linked_participant_id = %s WHERE id = %s",
@@ -1097,7 +1104,8 @@ def test_only_the_stronger_participant_lock_blocks_a_document_that_references_it
     rather than reasoned about."""
     world = _a_seeded_world(dsn, PATIENT)
     seat = _a_participant(world, CAMPAIGN)
-    sheet = _a_document(world, CAMPAIGN, doc_type=DocumentTypeId.CHARACTER_SHEET)
+    sheet = _a_document(world, CAMPAIGN, data=dict(A_CHARACTER_SHEET),
+                        doc_type=DocumentTypeId.CHARACTER_SHEET)
     blocked: list[bool] = []
 
     def holder(unit: Any) -> None:
