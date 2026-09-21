@@ -21,8 +21,10 @@ import {
   citesCorpus,
   defaultRevealFor,
   documentTypeById,
+  boundsFor,
   isEditable,
   isPrintable,
+  isRequired,
   isRevealable,
   labelFor,
   matchCommand,
@@ -33,14 +35,14 @@ import {
   revealGroupFor,
   revealableKeys,
   ruleFor,
-  showsAudiencePicker,
+  seedsOwnerDefault,
   toolAvailability,
   toolById,
   validateRegistry,
   warningFor,
 } from './registry'
 import type { DocumentType, FieldRule, Registry, Tool } from './registry'
-import { CapabilitiesSchema } from './contracts'
+import { CapabilitiesSchema, COMMON_FIELDS } from './contracts'
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'contracts', 'workbench', 'v1')
 const file = JSON.parse(readFileSync(join(FIXTURES, 'registry.json'), 'utf-8')) as Record<string, unknown>
@@ -176,7 +178,7 @@ describe('per-type flags and their selectors (1kg.5.3)', () => {
     isPrintable,
     citesCorpus,
     audienceOf,
-    showsAudiencePicker,
+    seedsOwnerDefault,
     accentToken,
   }
 
@@ -204,9 +206,13 @@ describe('per-type flags and their selectors (1kg.5.3)', () => {
     expect(accentToken(doc('npc'))).toBeNull()
   })
 
-  it('offers the audience picker on the character sheet alone (AUD-9)', () => {
-    expect(REGISTRY.document_types.filter(showsAudiencePicker).map((d) => d.id)).toEqual(['character-sheet'])
+  it('seeds an owner default on the character sheet alone (ED-14, A-19)', () => {
+    // Owner decision O-2 amends AUD-9: the flag says whose default reveal a type
+    // SEEDS, and nothing about who may receive one — any type may be revealed to
+    // a participant, and every type but the sheet seeds that participant empty.
+    expect(REGISTRY.document_types.filter(seedsOwnerDefault).map((d) => d.id)).toEqual(['character-sheet'])
     expect(audienceOf(doc('character-sheet'))).toBe('owner')
+    expect(seedsOwnerDefault(doc('npc'))).toBe(false)
   })
 
   it('answers an empty default reveal for an audience its type does not name (REVEAL-4, AUD-12)', () => {
@@ -261,7 +267,15 @@ describe('per-type flags and their selectors (1kg.5.3)', () => {
         Object.keys(r),
       ),
     ])
-    const fieldSelectors: Record<string, unknown> = { labelFor, isEditable, isRevealable, revealableKeys, warningFor }
+    const fieldSelectors: Record<string, unknown> = {
+      labelFor,
+      isEditable,
+      isRequired,
+      isRevealable,
+      revealableKeys,
+      warningFor,
+      boundsFor,
+    }
     expect([...keys].sort()).toEqual(Object.keys(FIELD_FLAG_SELECTORS).sort())
     for (const names of Object.values(FIELD_FLAG_SELECTORS)) {
       for (const name of names) expect(typeof fieldSelectors[name]).toBe('function')
@@ -270,15 +284,75 @@ describe('per-type flags and their selectors (1kg.5.3)', () => {
 
   it('each field selector answers the flag it names', () => {
     const npc = doc('npc')
+    const statblock = doc('statblock')
     expect(labelFor(npc, 'if_attacked')).toBe('If the party attacks')
     expect(isEditable(npc, 'wants')).toBe(true)
     expect(isRevealable(npc, 'wants')).toBe(true)
     expect(isRevealable(npc, 'tags')).toBe(false)
     expect(warningFor(npc, 'wants')).toBe('Would spoil the lie')
-    // X-8 again: an undeclared key is not editable, not revealable, has no label.
+    // LIB-12, as the flag rather than as an invention of the New dialog.
+    expect(isRequired(statblock, 'ac')).toBe(true)
+    expect(isRequired(statblock, 'hp')).toBe(true)
+    expect(isRequired(statblock, 'name')).toBe(true) // the common rule answers through the type
+    expect(isRequired(npc, 'voice')).toBe(false)
+    // Per-use integer bounds, and the one integer field deliberately without them.
+    expect(boundsFor(statblock, 'ac')).toEqual([0, 1_000_000])
+    expect(boundsFor(doc('session-notes'), 'session')).toEqual([1, 1_000_000])
+    expect(boundsFor(statblock, 'xp')).toBeNull()
+    expect(boundsFor(npc, 'voice')).toBeNull()
+    // X-8 again: an undeclared key is not editable, not revealable, not required,
+    // has no bounds and has no label.
     expect(isEditable(npc, 'nonesuch')).toBe(false)
     expect(isRevealable(npc, 'nonesuch')).toBe(false)
+    expect(isRequired(npc, 'nonesuch')).toBe(false)
+    expect(boundsFor(npc, 'nonesuch')).toBeNull()
     expect(labelFor(npc, 'nonesuch')).toBeUndefined()
+  })
+
+  it('makes only three rules in the whole registry required (LIB-12, ruling 5.7#2)', () => {
+    // Pinned as a list rather than derived, so widening it is a deliberate act —
+    // a field that becomes required is a type_version bump for every stored
+    // document. The character sheet's own `ac` and `hp` stay optional: LIB-12
+    // speaks of stat blocks, and a character in progress is a legitimate state.
+    const required = Object.fromEntries(
+      REGISTRY.document_types.map((d) => [
+        d.id,
+        [...Object.keys(COMMON_FIELDS), ...Object.keys(d.fields)].filter((key) => isRequired(d, key)).sort(),
+      ]),
+    )
+    expect(required).toEqual({
+      npc: ['name'],
+      statblock: ['ac', 'hp', 'name'],
+      handout: ['name'],
+      'session-notes': ['name'],
+      'quest-log': ['name'],
+      'character-sheet': ['name'],
+      lore: ['name'],
+      encounter: ['name'],
+    })
+  })
+
+  it('lets only an integer field carry bounds, and only inside its kind range', () => {
+    // Three rules, each with its own negative case, because `bounds` is the first
+    // field-rule key whose value a validator has to make sense of rather than
+    // merely read.
+    const statblock = doc('statblock')
+    const broken = (changed: Record<string, FieldRule>): Registry => ({
+      ...REGISTRY,
+      document_types: REGISTRY.document_types.map((d) =>
+        d.id === 'statblock' ? { ...d, field_rules: { ...statblock.field_rules, ...changed } } : d,
+      ),
+    })
+    const withBounds = (label: string, bounds: readonly [number, number]): FieldRule =>
+      ({ label, editable: true, required: false, revealable: true, warning: null, bounds })
+
+    expect(() => validateRegistry(broken({ speed: withBounds('Speed', [0, 10]) }))).toThrow(/is not an integer field/)
+    expect(() => validateRegistry(broken({ ac: withBounds('Armor Class', [10, 0]) }))).toThrow(/lowest is above its highest/)
+    expect(() => validateRegistry(broken({ ac: withBounds('Armor Class', [0, 1_000_001]) }))).toThrow(
+      /outside the integer kind's own range/,
+    )
+    // …and the shipped data satisfies all three.
+    expect(() => validateRegistry(broken({}))).not.toThrow()
   })
 
   it('reads a field flagged not editable as not editable', () => {
@@ -287,7 +361,7 @@ describe('per-type flags and their selectors (1kg.5.3)', () => {
     const npc = doc('npc')
     const frozen: DocumentType = {
       ...npc,
-      field_rules: { ...npc.field_rules, notes: { label: 'Notes', editable: false, revealable: true, warning: null } },
+      field_rules: { ...npc.field_rules, notes: { label: 'Notes', editable: false, required: false, revealable: true, warning: null, bounds: null } },
     }
     expect(isEditable(frozen, 'notes')).toBe(false)
     expect(isEditable(frozen, 'wants')).toBe(true)
@@ -368,7 +442,7 @@ describe('per-type flags and their selectors (1kg.5.3)', () => {
       ...REGISTRY,
       common_field_rules: {
         ...REGISTRY.common_field_rules,
-        qualifier: { label: 'Qualifier', editable: false, revealable: false, warning: 'Candidate only' },
+        qualifier: { label: 'Qualifier', editable: false, required: false, revealable: false, warning: 'Candidate only', bounds: null },
       },
     }
     expect(ruleFor(npc, 'qualifier', candidate)?.warning).toBe('Candidate only')
@@ -398,7 +472,7 @@ describe('a registry that breaks a rule cannot be built', () => {
     ...REGISTRY,
     document_types: REGISTRY.document_types.map((d, i) => (i === 0 ? { ...d, ...patch } : d)),
   })
-  const rule = (label: string): FieldRule => ({ label, editable: true, revealable: true, warning: null })
+  const rule = (label: string): FieldRule => ({ label, editable: true, required: false, revealable: true, warning: null, bounds: null })
   const withNpcRules = (patch: Record<string, FieldRule>): Registry =>
     withFirstType({ field_rules: { ...REGISTRY.document_types[0].field_rules, ...patch } })
   const withCharacterSheet = (patch: Record<string, unknown>): Registry => ({
@@ -434,7 +508,7 @@ describe('a registry that breaks a rule cannot be built', () => {
     // REVEAL-11: a warning is about revealing, so an unrevealable key cannot carry one.
     [
       'a warning on a field that can never be revealed',
-      withNpcRules({ notes: { label: 'Notes', editable: true, revealable: false, warning: 'Careful' } }),
+      withNpcRules({ notes: { label: 'Notes', editable: true, required: false, revealable: false, warning: 'Careful', bounds: null } }),
       'can never be revealed',
     ],
     [

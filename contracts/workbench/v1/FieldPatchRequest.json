@@ -110,6 +110,14 @@
       }
     },
     {
+      "name": "a stat block's speed alone: a patch need not mention a required field",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "speed": "20 ft., swim 40 ft." } }
+    },
+    {
+      "name": "a stat block's armour class, set to a new number",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "ac": 0 } }
+    },
+    {
       "name": "an encounter's budget",
       "value": {
         "schema_version": 1,
@@ -128,6 +136,26 @@
       "name": "a patch that touches nothing",
       "why": "a no-op is decided by the server comparing values, not sent as an empty patch",
       "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "fields": {} }
+    },
+    {
+      "name": "clearing a stat block's armour class",
+      "why": "LIB-12: ac is required on a stat block, so an autosave of an emptied AC cell is refused rather than storing a document the record calls invalid",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "ac": null } }
+    },
+    {
+      "name": "clearing a stat block's hit points",
+      "why": "LIB-12 names all three, and the stat_block_card renderer is handed hp as a required integer",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "hp": null } }
+    },
+    {
+      "name": "a negative armour class in an autosave",
+      "why": "1kg.5.7, F-10: statblock.ac is floored at 0 by its own per-field bounds, inside the integer kind's own range",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "ac": -1 } }
+    },
+    {
+      "name": "a party level of zero",
+      "why": "1kg.5.7, F-10: there is no level 0, so encounter.party_level starts at 1",
+      "value": { "schema_version": 1, "type": "encounter", "type_version": 1, "base_write_revision": 1, "fields": { "party_level": 0 } }
     },
     {
       "name": "no base revision",
