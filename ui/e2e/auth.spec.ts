@@ -20,9 +20,22 @@ test('the root of a signed-out browser is the sign-in screen, and the workspace 
   await expect(page.getByRole('navigation', { name: 'Channels' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Enter the Tavern' })).toHaveCount(0)
 
-  // An empty submit is refused in the browser, without a round trip.
+  // An empty submit is refused in the browser, WITHOUT a round trip. The
+  // message alone does not show that: a server that answered 400 with the same
+  // words would satisfy it. So count the requests too — an empty submit that
+  // reached /auth/login would spend one of the caller's rate-limit attempts
+  // (service/ratelimit.py spends before it validates) and hand an unauthenticated
+  // caller a way to drain the budget with empty posts.
+  const loginRequests: string[] = []
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/auth/login') {
+      loginRequests.push(request.method())
+    }
+  })
+
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByRole('alert')).toHaveText('Enter your email and password.')
+  expect(loginRequests).toEqual([])
 })
 
 test('an invite deep-link offers account creation, spends the token from the address bar, and can hand back to sign-in', async ({
