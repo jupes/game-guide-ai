@@ -392,6 +392,28 @@ describe('abilities — six scores, derived modifiers, and an absent score is no
     })
   })
 
+  it('renders a REAL score of 0 as 0, with its modifier', async () => {
+    // The converse of the test above, and the one that was missing: 0 is a
+    // legal score (`ABILITY_SCORE_MIN`), so a falsy check would read a
+    // paralysed creature's Strength as "never entered".
+    const user = userEvent.setup()
+    show('abilities', {
+      typeId: 'statblock',
+      value: { str: 0, dex: 12, con: 17, int: null, wis: 13, cha: 16 },
+    })
+    const table = screen.getByRole('table', { name: 'Ability scores' })
+    const strength = within(table).getByRole('row', { name: /Strength/ })
+    expect(strength).toHaveTextContent('0')
+    expect(strength).toHaveTextContent('−5')
+    expect(strength).not.toHaveTextContent('Not set')
+
+    await openEditor(user, 'Ability scores')
+    const box = screen.getByRole('spinbutton', { name: 'Strength' })
+    expect(box).toHaveValue(0)
+    expect(box).toHaveAccessibleDescription(/−5/)
+    expect(box).not.toHaveAccessibleDescription(/Not set/)
+  })
+
   it('refuses a score outside the contract bound and keeps the typed text', async () => {
     const user = userEvent.setup()
     const onCommit = vi.fn()
@@ -717,15 +739,143 @@ describe('the description of an ability box describes the box', () => {
 
 // ── X-7 ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Every way this component could leave GM text somewhere the page does not
+ * own, watched at once.
+ *
+ * `Storage.prototype.setItem` is the obvious sink and the only one the first
+ * version of this test watched — but `localStorage.draft = value` is a direct
+ * property write that never touches it, so the contents of both storages are
+ * compared before and after as well. A cookie and a history entry carry text
+ * off a page just as effectively.
+ *
+ * (`indexedDB` is not implemented in jsdom, so there is nothing to spy on;
+ * that sink belongs to `1kg.9.1`'s adversarial suite, which runs elsewhere.)
+ */
+function watchEverySink() {
+  const setItem = vi.spyOn(Storage.prototype, 'setItem')
+  const cookie = vi.spyOn(Document.prototype, 'cookie', 'set')
+  const pushState = vi.spyOn(history, 'pushState')
+  const replaceState = vi.spyOn(history, 'replaceState')
+  // The spies answer "was this sink CALLED". The snapshots answer "did
+  // anything land", which is what catches a write that never goes through a
+  // method — and a write is a write even when it happens to store the same
+  // bytes twice, so both questions are asked.
+  const before = {
+    local: JSON.stringify({ ...localStorage }),
+    session: JSON.stringify({ ...sessionStorage }),
+    cookie: document.cookie,
+  }
+  return {
+    expectNothingLeft(): void {
+      expect(setItem).not.toHaveBeenCalled()
+      expect(cookie).not.toHaveBeenCalled()
+      expect(pushState).not.toHaveBeenCalled()
+      expect(replaceState).not.toHaveBeenCalled()
+      expect(JSON.stringify({ ...localStorage })).toBe(before.local)
+      expect(JSON.stringify({ ...sessionStorage })).toBe(before.session)
+      expect(document.cookie).toBe(before.cookie)
+    },
+    restore(): void {
+      setItem.mockRestore()
+      cookie.mockRestore()
+      pushState.mockRestore()
+      replaceState.mockRestore()
+    },
+  }
+}
+
+/** One edit per editable kind: kind, key, type, label, role, control, text. */
+const ONE_EDIT_PER_KIND: [string, string, DocumentTypeId, string, 'textbox' | 'spinbutton', string, string][] = [
+  ['text', 'voice', 'npc', 'Voice', 'textbox', 'Voice', 'Low, and never raised'],
+  ['prose', 'wants', 'npc', 'Wants', 'textbox', 'Wants', 'The signet, and the ledger under it'],
+  ['integer', 'hp', 'statblock', 'Hit Points', 'spinbutton', 'Hit Points', '120'],
+  ['abilities', 'abilities', 'statblock', 'Ability scores', 'spinbutton', 'Strength', '15'],
+  ['text_list', 'present', 'session-notes', 'Present', 'textbox', 'Present 1', 'Bess of the harbour'],
+  ['entry_list', 'reactions', 'statblock', 'Reactions', 'textbox', 'Reactions 1 name', 'Answering Tide'],
+]
+
 describe('GM-private text never leaves the page', () => {
-  it('writes nothing to web storage while the GM types', async () => {
+  it.each(ONE_EDIT_PER_KIND)(
+    '%s keeps the draft in React state and nowhere a page can keep it',
+    async (_kind, key, typeId, label, role, name, text) => {
+      const user = userEvent.setup()
+      const sinks = watchEverySink()
+      show(key, { typeId })
+      await openEditor(user, label)
+      const box = screen.getByRole(role, { name })
+      await user.clear(box)
+      await user.type(box, text)
+      await user.tab()
+      sinks.expectNothingLeft()
+      sinks.restore()
+    },
+  )
+})
+
+// ── Hostile content is content, not markup ───────────────────────────────────
+
+/**
+ * A model, a restored version or a compromised collaborator can put anything
+ * in a field. Every value here renders as TEXT or the field is a hole.
+ *
+ * The literal `&amp;` is the assertion that matters. React escapes, so it
+ * survives as five characters; `dangerouslySetInnerHTML` would decode it to a
+ * bare `&` — which means the entity guard elsewhere in this suite would
+ * CERTIFY the injection rather than catch it. Only asserting the entity
+ * survives can tell those two apart.
+ */
+const HOSTILE = '<script>alert(1)</script> <img src=x onerror=alert(1)> javascript:alert(1) &amp; <b>bold</b>'
+
+function assertRenderedAsText(container: HTMLElement, expectImage: boolean): void {
+  expect(container.querySelector('script')).toBeNull()
+  expect(container.querySelector('[onerror]')).toBeNull()
+  expect(container.querySelector('a')).toBeNull()
+  expect(container.querySelector('iframe')).toBeNull()
+  if (!expectImage) expect(container.querySelector('img')).toBeNull()
+  expect(container.textContent).toContain('&amp;')
+  expect(container.textContent).toContain('<script>')
+}
+
+describe('a hostile value is shown, never run', () => {
+  const values: [string, string, DocumentTypeId, FieldValue][] = [
+    ['text', 'voice', 'npc', HOSTILE],
+    ['prose', 'wants', 'npc', HOSTILE],
+    ['text_list', 'present', 'session-notes', [HOSTILE]],
+    ['entry_list', 'reactions', 'statblock', [{ name: HOSTILE, text: HOSTILE }]],
+  ]
+
+  it.each(values)('%s renders it as text', (_kind, key, typeId, value) => {
+    const { container } = show(key, { typeId, value })
+    assertRenderedAsText(container, false)
+  })
+
+  it('carries it into the editor as a value, not as markup', async () => {
     const user = userEvent.setup()
-    const local = vi.spyOn(Storage.prototype, 'setItem')
-    show('wants', { value: 'The signet' })
+    const { container } = show('wants', { value: HOSTILE })
     await openEditor(user, 'Wants')
-    await user.type(screen.getByRole('textbox', { name: 'Wants' }), ' and the ledger')
-    await user.tab()
-    expect(local).not.toHaveBeenCalled()
-    local.mockRestore()
+    expect(screen.getByRole('textbox', { name: 'Wants' })).toHaveValue(HOSTILE)
+    assertRenderedAsText(container, false)
+  })
+
+  it('puts an asset’s alt text in the alt attribute and nowhere else', () => {
+    const { container } = show('portrait', {
+      value: { asset_id: 'ast_x', media_type: 'image', alt: HOSTILE },
+    })
+    expect(container.querySelector('script')).toBeNull()
+    expect(container.querySelector('[onerror]')).toBeNull()
+    const image = container.querySelector('img')
+    expect(image).toHaveAttribute('alt', HOSTILE)
+    expect(image).toHaveAttribute('src', '/campaigns/camp_vault_harbour/assets/ast_x')
+  })
+
+  it('cannot be pushed out through the asset route either', () => {
+    const { container } = show('portrait', {
+      value: { asset_id: '../../evil?q=secret', media_type: 'image', alt: 'x' },
+    })
+    expect(container.querySelector('img')).toHaveAttribute(
+      'src',
+      '/campaigns/camp_vault_harbour/assets/..%2F..%2Fevil%3Fq%3Dsecret',
+    )
   })
 })
