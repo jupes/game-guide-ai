@@ -774,6 +774,19 @@ def test_the_two_row_counters_are_bounded_before_the_statement_too():
         docs.next_version_number(at_the_bound, True)
 
 
+def test_the_two_lifecycle_properties_read_their_own_timestamps():
+    """`is_sealed` and `is_archived` are the records' only derived state and are
+    what `1kg.5.2` branches a Restore banner and a read-only canvas on. Two
+    one-line properties, and until this test the only uncovered statements in
+    the module that were not the PostgreSQL body."""
+    made = _a_record()
+    moment = made.updated_at
+    assert made.is_archived is False
+    assert replace(made, archived_at=moment).is_archived is True
+    assert made.version.is_sealed is False, "a GM's version 1 is the open one"
+    assert replace(made.version, sealed_at=moment).is_sealed is True
+
+
 @pytest.mark.parametrize("record", ["document", "version", "snapshot"])
 def test_no_private_text_reaches_a_repr(record: str):
     """`field(repr=False)`, following `Participant.alias`'s precedent: a
