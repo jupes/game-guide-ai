@@ -5,8 +5,10 @@ the E2E exercises the actual signup → session → chat journey. Only external
 boundaries are replaced: the startup lifespan is empty, chat answers are
 deterministic, and history + auth use the in-memory store contracts.
 
-The auth store is seeded with a KNOWN invite token (`E2E_INVITE_TOKEN`) because
-a browser test cannot guess a randomly minted one. `SESSION_SECRET` and
+The auth store is seeded with KNOWN invite tokens (`E2E_INVITE_TOKENS` for the
+signup journey the browser walks, `E2E_ACCOUNT_INVITE_TOKENS` for the accounts
+the suite provisions over the API) because a browser test cannot guess a
+randomly minted one. `SESSION_SECRET` and
 `SESSION_COOKIE_SECURE=0` come from docker-compose.e2e.yml — the E2E stack is
 served over plain http, so a Secure cookie would never come back.
 """
