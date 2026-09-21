@@ -117,6 +117,35 @@ def test_every_record_of_a_turn_shares_one_operation_and_carries_the_account(rec
     assert {r["campaign_id"] for r in records} == {None}
 
 
+@pytest.mark.parametrize(
+    ("user_id", "mode"),
+    [(7, "rules"), (13, "sage")],
+)
+def test_the_account_and_the_mode_are_read_from_the_request_not_defaulted(
+    records, user_id, mode,
+):
+    """Rework 1 / review F1. `billed_account_id` is the attribution field and
+    `mode` is the grouping dimension of 'cost by mode per day' — the only
+    numbers this bead delivers — but every other test in this file runs at the
+    fixture defaults (conftest `user_id=1`, spell), so hard-coding either one
+    survived the whole suite. These two rows are deliberately off BOTH defaults
+    and disagree with each other, so no single constant can satisfy them:
+    `billed_account_id=1` dies on 7, `mode="spell"` dies on rules, and a mutant
+    pinned to either row's value dies on the other."""
+    app.dependency_overrides[require_session] = lambda: SessionData(
+        user_id=user_id, role="dm",
+    )
+    client = _client(_service(_SeqLLM(_MODE_SCRIPTS[mode])))
+
+    response = _post(client, mode=mode)
+
+    assert response.status_code == 200, response.text
+    assert records, "a turn that records nothing cannot pin these fields"
+    for record in records:
+        assert record["billed_account_id"] == user_id
+        assert record["mode"] == mode
+
+
 def test_two_turns_get_two_different_operation_ids(records):
     client = _client(_service(_SeqLLM(_MODE_SCRIPTS["rules"] * 2)))
 

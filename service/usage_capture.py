@@ -142,6 +142,16 @@ class Operation:
 _CURRENT: ContextVar[Operation | None] = ContextVar("usage_capture_operation", default=None)
 
 
+# Every isolation guard in this module is `except Exception`, never
+# `except BaseException` — reviewed and ruled deliberate (yje.5.1.1 rework 1,
+# review finding F2). The emitter is `print(json.dumps(...), flush=True)`, whose
+# real failures (TypeError, BrokenPipeError, MemoryError) are all Exception and
+# so ARE isolated; `/chat` is a sync threadpool endpoint, so CancelledError and
+# KeyboardInterrupt cannot arrive inside it. Widening to BaseException would
+# swallow KeyboardInterrupt, SystemExit and genuine cancellation — strictly
+# worse than the hypothetical it guards against — and would diverge from
+# `service/metrics.record_safely` and `app._persist_turn`, which catch
+# Exception on this same path. Keep them aligned: change all three or none.
 def _warn(stage: str, exc: BaseException) -> None:
     """One bounded warning. The exception CLASS only — never its message, which
     can contain the prompt, the answer or a key."""

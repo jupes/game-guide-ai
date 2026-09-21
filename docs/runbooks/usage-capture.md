@@ -218,6 +218,13 @@ rows forever while every check stays green.
 **Records start at deploy. There is no backfill.** The data was never recorded, and no
 amount of work makes it exist retroactively.
 
+**Emission is synchronous by design, so a slow log sink adds its own latency to the turn.**
+Each record is written inline on the request path (`print(json.dumps(...), flush=True)` to
+stdout) because this slice forbids batching, a queue or a background thread; a sink that
+blocks — a stalled stdout pipe on Cloud Run is the only realistic case — slows the turn by
+exactly that much. A sink that *fails* is harmless (it is caught and dropped); a sink that
+*hangs* is not. If that ever happens the fix is an asynchronous sink, not a wider guard.
+
 **Retention is whatever your project set, and this runbook does not know it.** The records
 land in the `_Default` Cloud Logging bucket. Google's default retention for `_Default` is
 30 days, but the project's actual value cannot be read from a checkout. Ask it:
