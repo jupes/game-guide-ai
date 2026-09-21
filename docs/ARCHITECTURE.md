@@ -240,6 +240,63 @@ Checked at commit, the owner's conversations have already gone with the user
 cascade and there is nothing left to check: **deleting an account takes its
 campaigns and its own conversations with it, everywhere**.
 
+### Conversations
+
+`service/conversation_store.py` (`1kg.2.4`) makes a conversation's **identity and
+metadata** server-authoritative. What that does and does not mean:
+
+**Server-authoritative:** the id, the title, the campaign link, the archive flag
+and the channel the conversation was started in. A conversation created through
+the store is minted server-side — `cnv_` plus 16 CSPRNG bytes, 26 characters,
+SEC-4's floor — and exists in `chat.conversations` with its owner from that
+moment, so it is in its owner's index immediately and survives a reload or a
+second device.
+
+**Not server-authoritative, and deliberately:** the id of every conversation that
+already exists. A client-minted `crypto.randomUUID()` is a valid conversation id,
+on every route, forever, with no deprecation and no warning. `conversation_id`
+carries **no prefix `CHECK` and must never gain one** — which is also why a
+conversation id is minted in `conversation_store.py` rather than joining
+`service/campaign_identity.py`'s registry, whose members `0004` constrains.
+
+**`POST /chat` is not modified by this work, at all.** A conversation the store
+created already has its ownership row, so `claim_conversation`'s
+`INSERT ... ON CONFLICT DO NOTHING` is a no-op and its `SELECT` returns that
+owner; `create` leaves `selection_strategy`, `manual_alias` and
+`catalog_revision` `NULL`, so the first turn still binds model affinity exactly
+as it does today (`b8o.2`). Nothing here adds a statement to a request that makes
+a model call.
+
+**`started_mode` is the channel, bound once.** It records the channel a
+conversation was *started* in — not the mode of a turn, which stays per turn on
+`chat.messages.mode` — and it is bound first-writer-wins, like
+`selection_strategy`. It is **`NULL` for every conversation that existed before
+`0007`**, and that is the honest value rather than a migration in progress: the
+channel was never recorded, so it is unknown. Nothing backfills it, nothing
+guesses it, and **a chat turn never sets it**.
+
+**`updated_at` moves on a metadata change, never on a chat turn.** The owner's
+index orders by `COALESCE(updated_at, created_at) DESC, conversation_id DESC` —
+the keys of `conversations_owner_recent_idx`, which is partial on
+`archived_at IS NULL` because that is the default query. The consequence is
+accepted and worth stating: the index is ordered by metadata changes, not by
+recent activity. Ordering by activity would mean a new statement on `/chat`'s
+request path.
+
+**Archive is not deletion.** `archived_at` is reversible and destroys nothing.
+There is no delete route and no delete store method here; conversation deletion
+follows `agent-forge-harness-1ka.5`.
+
+**Ownership is in the query**, every time: each method names the owner in the
+same statement as the row, so a conversation that is not the caller's is
+indistinguishable from one that does not exist. Where a request names a campaign
+— creating inside one, or linking to one — the campaign is resolved **inside the
+writing statement** (`... FROM campaign.campaigns WHERE id = %s AND owner_id = %s
+AND archived_at IS NULL`) and zero rows written is the refusal. The `campaign_id`
+edge is `DEFERRABLE INITIALLY DEFERRED`, so an integrity failure on it would
+arrive at `COMMIT` — outside every `try` and after a route had composed its
+answer — and no code here is allowed to catch one.
+
 ### Digests, and what is private
 
 A code, a device credential and a table link token are 32 random bytes; only the
@@ -336,7 +393,7 @@ off the very bound it exists to raise.
 
 ### Documents and their versions
 
-`0007_document_schema.sql` adds two tables and `service/document_store.py` the
+`0008_document_schema.sql` adds two tables and `service/document_store.py` the
 store over them (`1kg.5.1`). **No routes read either yet** — those are
 `1kg.5.2`'s.
 

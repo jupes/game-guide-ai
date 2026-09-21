@@ -137,7 +137,8 @@ Rules the runner or CI enforce:
 | `0004_campaign_schema.sql` | `campaign` | campaigns and their authorisation row, participants, enrolment codes, device credentials, table sessions, table credentials, the per-generation join counter (`1kg.2.1`) |
 | `0005_audit_events.sql` | `audit` | the append-only ledger (`service/audit_log.py`) |
 | `0006_conversation_metadata.sql` | `chat` | `campaign_id`, `title`, `updated_at`, `archived_at` on `chat.conversations` |
-| `0007_document_schema.sql` | `campaign` | documents and their versions: the live `data`, the `write_revision` and per-field revisions, the one open working version, the folded `name_key` / `search_key`, the character-sheet link, and the four library indexes (`1kg.5.1`) |
+| `0007_conversation_started_mode.sql` | `chat` | `started_mode` on `chat.conversations`, and `conversations_owner_recent_idx`, the owner's index page (`1kg.2.4`) |
+| `0008_document_schema.sql` | `campaign` | documents and their versions: the live `data`, the `write_revision` and per-field revisions, the one open working version, the folded `name_key` / `search_key`, the character-sheet link, and the four library indexes (`1kg.5.1`) |
 
 ## 3. Roll forward, never back
 

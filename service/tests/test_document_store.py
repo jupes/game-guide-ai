@@ -71,7 +71,7 @@ from service.workbench_contracts import (
 #: R-7). The lead renumbers at merge if a parallel bead takes 0007 first; this
 #: constant and the filename, the generated `manifest.txt` line and the
 #: `docs/migrations.md` row are the only three places it occurs.
-DOCUMENT_MIGRATION = "0007_document_schema.sql"
+DOCUMENT_MIGRATION = "0008_document_schema.sql"
 
 SQL = (
     Path(__file__).resolve().parents[1] / "sql" / "migrations" / DOCUMENT_MIGRATION

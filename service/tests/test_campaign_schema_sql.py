@@ -30,7 +30,7 @@ MIGRATIONS = Path(__file__).resolve().parents[1] / "sql" / "migrations"
 CAMPAIGN_SQL = (MIGRATIONS / "0004_campaign_schema.sql").read_text(encoding="utf-8")
 AUDIT_SQL = (MIGRATIONS / "0005_audit_events.sql").read_text(encoding="utf-8")
 CONVERSATION_SQL = (MIGRATIONS / "0006_conversation_metadata.sql").read_text(encoding="utf-8")
-DOCUMENT_SQL = (MIGRATIONS / "0007_document_schema.sql").read_text(encoding="utf-8")
+DOCUMENT_SQL = (MIGRATIONS / "0008_document_schema.sql").read_text(encoding="utf-8")
 
 #: Every migration, sorted and concatenated. The two identifier tests below read
 #: THIS rather than one file: the prefix registry is service-wide, so a prefix

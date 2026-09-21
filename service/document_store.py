@@ -87,7 +87,7 @@ from .workbench_contracts import (
 #: spelling of it is a second thing to keep in step.
 SEAL_IDLE_S = 600
 
-#: The bounds `0007_document_schema.sql` puts on the two folded keys, pinned to
+#: The bounds `0008_document_schema.sql` puts on the two folded keys, pinned to
 #: the migration's own text by `service/tests/test_document_store.py`. NFKC
 #: expands — one `U+FDFA` folds to eighteen characters — so a field's own bound
 #: does not bound its key, and each is checked here before the statement runs.
