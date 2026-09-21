@@ -126,7 +126,10 @@ def test_initdb_files_are_mounted_individually_not_nested_in_a_directory_mount()
 
 
 def test_the_stores_do_not_embed_their_own_ddl():
-    for module in ("service/history.py", "service/auth_store.py", "service/jobs.py", "service/db.py"):
+    for module in (
+        "service/history.py", "service/auth_store.py", "service/jobs.py", "service/db.py",
+        "service/document_store.py",
+    ):
         text = (REPO_ROOT / module).read_text(encoding="utf-8")
         assert "CREATE TABLE" not in text.upper(), (
             f"{module} embeds DDL again; the .sql file is the definition"
