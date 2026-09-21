@@ -76,6 +76,9 @@ from .db import InMemoryDatabase, InMemoryTransaction, UnitOfWork
 from .workbench_contracts import (
     DOC_TYPE_VERSION,
     HISTORY_PAGE_MAX_ITEMS,
+    TEXT_FIELD_MAX_CHARS,
+    VERSION_NUMBER_MAX,
+    WRITE_REVISION_MAX,
     Author,
     DocumentTypeId,
     check_fields,
@@ -97,7 +100,7 @@ SEAL_IDLE_S = 600
 NAME_KEY_MAX = 4000
 SEARCH_KEY_MAX = 8000
 
-#: The bound `0007`'s `type` column carries. The closed set is `DocumentTypeId`;
+#: The bound `0008`'s `type` column carries. The closed set is `DocumentTypeId`;
 #: this is only the width the column will hold.
 TYPE_MAX_CHARS = 64
 
@@ -157,6 +160,23 @@ class StaleTypeVersion(CampaignStoreError):
         super().__init__(
             f"{doc_type} documents are stored at type version {stored}; this build writes {current}"
         )
+
+
+class UnknownWriteRevision(CampaignStoreError):
+    """A write whose base revision is one this document has never reached.
+
+    A base from the future is not a harmless spelling of "no base": every key
+    would compare un-moved, so `stale_fields` could never answer anything and
+    conflict detection would be **silently off** for that write — the caller
+    would be told its edit rebased cleanly when nothing was compared. A
+    negative or stale base is the safe direction and stays allowed: it conflicts
+    on every key that has moved. It carries the two numbers and no field text.
+    """
+
+    def __init__(self, base_write_revision: int, write_revision: int) -> None:
+        self.base_write_revision = base_write_revision
+        self.write_revision = write_revision
+        super().__init__("that write's base revision is ahead of this document's")
 
 
 class UnknownCursor(CampaignStoreError, LookupError):
@@ -341,7 +361,7 @@ class DocumentRecord:
 
 
 def check_type(doc_type: DocumentTypeId | str) -> DocumentTypeId:
-    """The closed set of document types, which `0007` deliberately does not
+    """The closed set of document types, which `0008` deliberately does not
     enumerate: adding a ninth type must not need a migration (ED-24), so the
     column bounds its length only and this is what refuses anything else."""
     try:
@@ -356,6 +376,55 @@ def check_author(author: Author | str) -> Author:
         return Author(author)
     except ValueError:
         raise ValueError("a document version is written by the gm or the assistant") from None
+
+
+def check_summary(summary: str) -> str:
+    """The bound `document_versions.summary` carries, applied **before any
+    statement runs** and in both worlds.
+
+    `TEXT_FIELD_MAX_CHARS` rather than a second constant: the column's `CHECK`
+    is that number, and `test_every_bound_the_application_checks_is_the_number_
+    the_migration_checks` pins the two together the way `ALIAS_KEY_MAX` is
+    pinned. A summary is private text (SEC-20), so the refusal names the FIELD
+    and never the value — and it is raised before the first statement, so the
+    caller's transaction is still usable, where a `CheckViolation` would both
+    abort it and quote the failing row's `summary` and `data` in its `DETAIL`.
+
+    A summary may be empty: a burst of GM autosaves needs no summary. The
+    line-break rule the wire's `_TextValue` also applies is `1kg.5.2`'s, not
+    this column's — the `CHECK` bounds length and nothing else.
+    """
+    if len(summary) > TEXT_FIELD_MAX_CHARS:
+        raise ValueError(f"a version summary is at most {TEXT_FIELD_MAX_CHARS} characters")
+    return summary
+
+
+def next_write_revision(write_revision: int) -> int:
+    """The document's next write revision, bounded by the column's `CHECK`.
+
+    Unreachable by any caller — it advances by exactly one per committed write,
+    so `WRITE_REVISION_MAX` (2**53-1) is 9x10**15 writes away — but it is a
+    value this module computes and writes into a statement, and an unchecked
+    `CHECK` is the SEC-20 leak whatever makes it fire. Same reason `name_key`
+    keeps a refusal `check_fields` can never reach.
+    """
+    revision = write_revision + 1
+    if revision > WRITE_REVISION_MAX:
+        raise ValueError(f"a document takes at most {WRITE_REVISION_MAX} writes")
+    return revision
+
+
+def next_version_number(current: VersionRecord, opens_new: bool) -> int:
+    """The number the version about to be written carries: the open version's
+    own when the write joins it, one more when it starts a new one.
+
+    Bounded here for `next_write_revision`'s reason, and computed here rather
+    than in each world so that the two cannot drift.
+    """
+    number = current.number + 1 if opens_new else current.number
+    if number > VERSION_NUMBER_MAX:
+        raise ValueError(f"a document keeps at most {VERSION_NUMBER_MAX} versions")
+    return number
 
 
 def check_page(limit: int, cap: int) -> int:
@@ -605,7 +674,7 @@ def _document(row: tuple, current: VersionRecord) -> DocumentRecord:
 
 
 class PostgresDocumentStore:
-    """`campaign.documents` and `campaign.document_versions` (migration 0007).
+    """`campaign.documents` and `campaign.document_versions` (migration 0008).
 
     Every statement here names the campaign, and every statement that touches a
     version joins through `campaign.documents` to do so (SEC-2). The two
@@ -827,6 +896,7 @@ class PostgresDocumentStore:
         summary: str = "",
         now: datetime | None = None,
     ) -> DocumentRecord:
+        check_summary(summary)
         record = self.hold(unit, campaign_id, document_id)
         if record is None:
             raise MissingParent("no such document in that campaign")
@@ -853,7 +923,7 @@ class PostgresDocumentStore:
         if open_row is not None and _seals_first(_version(open_row), writer, moment):
             self._seal_open(unit, campaign_id, document_id, moment)
             open_row = None
-        number = record.version.number if open_row is not None else record.version.number + 1
+        number = next_version_number(record.version, open_row is None)
         changed = _changed(self._content_of(unit, campaign_id, document_id, number - 1), merged)
         if open_row is None:
             pg(unit).conn.execute(
@@ -969,13 +1039,15 @@ def _planned(
     kind = check_type(record.type)
     _require_current_type_version(kind, record.type_version)
     if base_write_revision is not None:
+        if base_write_revision > record.write_revision:
+            raise UnknownWriteRevision(base_write_revision, record.write_revision)
         moved = stale_fields(record, base_write_revision, fields)
         if moved:
             raise FieldConflict(moved, record.write_revision)
     merged = {**record.data, **fields}
     _validated(kind, record.type_version, merged)
     name_key(str(merged.get("name", "")))
-    return writer, merged, (now_or(now), record.write_revision + 1)
+    return writer, merged, (now_or(now), next_write_revision(record.write_revision))
 
 
 # ── The in-memory twin ───────────────────────────────────────────────────────
@@ -1217,6 +1289,7 @@ class InMemoryDocumentStore:
         summary: str = "",
         now: datetime | None = None,
     ) -> DocumentRecord:
+        check_summary(summary)
         twin = fake(unit)
         record = self.hold(unit, campaign_id, document_id)
         if record is None:
@@ -1250,7 +1323,7 @@ class InMemoryDocumentStore:
         if open_row is not None and _seals_first(open_row.version, writer, moment):
             self._seal_open(twin, document_id, moment)
             open_row = None
-        number = record.version.number if open_row is not None else record.version.number + 1
+        number = next_version_number(record.version, open_row is None)
         previous = self._versions.visible(twin).get(_version_key(document_id, number - 1))
         changed = _changed({} if previous is None else previous.data, merged)
         if open_row is None:

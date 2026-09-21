@@ -6,7 +6,7 @@ database, so they also count towards the coverage floor, which the integration
 step (`--no-cov`) does not:
 
 * **the migration and the module agree** — every bound the application checks
-  before a statement runs is the bound `0007` carries, because a `CHECK` the
+  before a statement runs is the bound `0008` carries, because a `CHECK` the
   application did not enforce first comes back as a driver error whose `DETAIL`
   quotes the failing row (SEC-20);
 * **the module's own statements**, read rather than trusted — no `UPDATE` can
@@ -26,6 +26,7 @@ import inspect
 import logging
 import re
 from dataclasses import fields as dataclass_fields
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -46,10 +47,12 @@ from service.document_store import (
     InMemoryDocumentStore,
     StaleTypeVersion,
     UnknownCursor,
+    UnknownWriteRevision,
     VersionRecord,
     VersionSnapshot,
     check_author,
     check_page,
+    check_summary,
     check_type,
     name_key,
     search_key,
@@ -68,7 +71,7 @@ from service.workbench_contracts import (
 )
 
 #: The ONE place this bead's migration number appears in Python (lead ruling
-#: R-7). The lead renumbers at merge if a parallel bead takes 0007 first; this
+#: R-7). The lead renumbers at merge if a parallel bead took 0007 first; this
 #: constant and the filename, the generated `manifest.txt` line and the
 #: `docs/migrations.md` row are the only three places it occurs.
 DOCUMENT_MIGRATION = "0008_document_schema.sql"
@@ -109,7 +112,7 @@ def test_every_bound_the_application_checks_is_the_number_the_migration_checks(
     ever disagreed, the twin would store a row PostgreSQL refuses with an error
     quoting it, which is the one thing SEC-20 forbids."""
     found = re.search(pattern, SQL)
-    assert found is not None, f"0007 no longer carries {pattern!r}"
+    assert found is not None, f"{DOCUMENT_MIGRATION} no longer carries {pattern!r}"
     assert int(found.group(1)) == expected
 
 
@@ -142,7 +145,7 @@ def test_every_unique_index_over_a_mutated_column_stays_partial(
     UPDATE and start deadlocking with the FOR KEY SHARE a foreign-key check
     takes. Proved on a server in `tests/test_document_db.py`."""
     found = re.search(rf"CREATE UNIQUE INDEX {index}\s+ON {re.escape(table)} \(([^)]*)\)(.*)", SQL)
-    assert found is not None, f"0007 no longer creates {index}"
+    assert found is not None, f"{DOCUMENT_MIGRATION} no longer creates {index}"
     assert where in found.group(2), f"{index} must stay partial"
 
 
@@ -162,7 +165,7 @@ def test_the_library_indexes_are_campaign_scoped_and_partial_on_the_archive_filt
     answers the page and stops at LIMIT. The partial predicate matches
     `LibraryQuery.archived`, which is required on every query."""
     found = re.search(rf"CREATE INDEX {index}\s+ON campaign\.documents \((.*)\) (WHERE .*);", SQL)
-    assert found is not None, f"0007 no longer creates {index}"
+    assert found is not None, f"{DOCUMENT_MIGRATION} no longer creates {index}"
     assert found.group(1).startswith("campaign_id, "), "the campaign is the leading column"
     assert "type" not in found.group(1), "type is a filter, never a key column"
     assert found.group(2) in ("WHERE archived_at IS NULL", "WHERE archived_at IS NOT NULL")
@@ -343,7 +346,6 @@ def test_this_module_takes_no_campaign_lock_and_advances_no_revision():
     — `table_session_store.narrow`, then the exclusive campaign lock, the
     re-scan and `advance_authz_revision` — is 1kg.5.2's (RQ-5, RQ-7), so a
     reviewer never has to ask why it is missing here."""
-    assert "lock_campaign" not in SOURCE.split('"""', 2)[-1] or True
     body = "\n".join(
         line for line in SOURCE.splitlines() if not line.lstrip().startswith(("#", "*"))
     )
@@ -460,7 +462,7 @@ def test_changed_fields_is_the_difference_and_not_the_patch():
 
 @pytest.mark.parametrize("bad", ["not-a-type", "", "NPC"])
 def test_a_type_the_build_does_not_declare_is_refused_without_being_quoted(bad: str):
-    """`0007` deliberately does not enumerate the type — adding a ninth must not
+    """`0008` deliberately does not enumerate the type — adding a ninth must not
     need a migration (ED-24) — so this is what refuses anything else."""
     with pytest.raises(ValueError, match="not a document type") as refusal:
         check_type(bad)
@@ -623,6 +625,15 @@ def test_no_private_text_reaches_an_exception():
         said.append(_refusal(store.history, unit, campaign, made.id,
                              before_number=99, limit=10))
         said.append(_refusal(name_key, "q" * (NAME_KEY_MAX + 1)))
+        # The summary is private text too, and the only bound reachable through
+        # `write_fields` that used to travel all the way to the column's CHECK.
+        said.append(_refusal(store.write_fields, unit, campaign, made.id,
+                             fields={"name": "x"}, author=Author.GM,
+                             base_write_revision=None,
+                             summary=PRIVATE["summary"] * 40))
+        said.append(_refusal(store.write_fields, unit, campaign, made.id,
+                             fields={"name": "x"}, author=Author.GM,
+                             base_write_revision=made.write_revision + 99))
         said.append(_refusal(docs._planned, _a_record(type_version=2), {"name": "x"},
                              Author.GM, None, None))
     assert moved.write_revision == 2
@@ -664,6 +675,50 @@ def test_an_unknown_cursor_is_a_lookup_error_and_names_only_its_kind():
     """Never a silent restart at page one, which would loop for ever."""
     assert issubclass(UnknownCursor, LookupError)
     assert "history" in str(UnknownCursor("history"))
+
+
+def test_a_base_revision_from_the_future_carries_two_numbers_and_no_text():
+    """Ahead of the document is not a spelling of "no base": `stale_fields`
+    would compare against a revision nothing has reached, so nothing could ever
+    be stale and conflict detection would be silently off."""
+    refused = UnknownWriteRevision(2**60, 3)
+    assert (refused.base_write_revision, refused.write_revision) == (2**60, 3)
+    assert issubclass(UnknownWriteRevision, docs.CampaignStoreError)
+    assert PRIVATE["name"] not in f"{refused!s}{refused!r}"
+
+
+def test_the_summary_is_bounded_in_python_and_the_refusal_never_quotes_it():
+    """The one column `CHECK` reachable through `write_fields` that the
+    application used to leave to PostgreSQL. A `CheckViolation`'s `DETAIL`
+    quotes the failing row — the summary and the document's `data` — and aborts
+    the transaction; this refusal does neither."""
+    private = PRIVATE["summary"] * 40
+    assert len(private) > TEXT_FIELD_MAX_CHARS
+    with pytest.raises(ValueError, match=f"at most {TEXT_FIELD_MAX_CHARS}") as refusal:
+        check_summary(private)
+    assert private not in f"{refusal.value!s}{refusal.value!r}"
+    assert check_summary("x" * TEXT_FIELD_MAX_CHARS), "the bound itself is accepted"
+    assert check_summary("") == "", "a burst of GM autosaves needs no summary"
+
+
+def test_the_two_row_counters_are_bounded_before_the_statement_too():
+    """`write_revision` and `number` are the remaining column `CHECK`s the
+    application computes rather than receives. Neither is reachable by a caller
+    — one advance per committed write puts `WRITE_REVISION_MAX` 9x10**15 writes
+    away — but an unchecked `CHECK` is the same SEC-20 leak whatever fires it,
+    so both are bounded where the value is made. `name_key` keeps a refusal
+    `check_fields` can never reach for exactly this reason."""
+    assert docs.next_write_revision(1) == 2
+    with pytest.raises(ValueError, match=str(WRITE_REVISION_MAX)):
+        docs.next_write_revision(WRITE_REVISION_MAX)
+
+    open_version = _a_record().version
+    assert docs.next_version_number(open_version, False) == open_version.number
+    assert docs.next_version_number(open_version, True) == open_version.number + 1
+    at_the_bound = replace(open_version, number=VERSION_NUMBER_MAX)
+    assert docs.next_version_number(at_the_bound, False) == VERSION_NUMBER_MAX
+    with pytest.raises(ValueError, match=str(VERSION_NUMBER_MAX)):
+        docs.next_version_number(at_the_bound, True)
 
 
 @pytest.mark.parametrize("record", ["document", "version", "snapshot"])

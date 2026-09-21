@@ -59,6 +59,7 @@ from service.document_store import (
     PostgresDocumentStore,
     StaleTypeVersion,
     UnknownCursor,
+    UnknownWriteRevision,
     name_key,
     search_key,
 )
@@ -430,15 +431,23 @@ def test_the_idle_window_seals_and_nothing_else_does(
 
 
 def test_sealing_is_idempotent_and_moves_nothing_else(world: World) -> None:
+    """**The two `now=` values must differ, and must be given.** Two bare `seal`
+    calls in one transaction land inside a single tick of `datetime.now` on most
+    machines, so `sealed_at == sealed_at` would hold even for a store that
+    re-stamped the already-sealed row — a sealed version mutating, the one thing
+    this slice promises cannot happen. With two explicit clocks the equality can
+    only hold because the second seal reached nothing."""
     campaign = _a_campaign(world)
     made = _a_document(world, campaign)
+    first = datetime.now(UTC)
+    second = first + timedelta(seconds=89)
 
     with world.db.transaction() as unit:
-        once = world.documents.seal(unit, campaign, made.id)
-        twice = world.documents.seal(unit, campaign, made.id)
+        once = world.documents.seal(unit, campaign, made.id, now=first)
+        twice = world.documents.seal(unit, campaign, made.id, now=second)
     assert once is not None and twice is not None
-    assert once.version.sealed_at is not None
-    assert twice.version.sealed_at == once.version.sealed_at, "the second seal changed nothing"
+    assert once.version.sealed_at == first
+    assert twice.version.sealed_at == first, "the second seal did not re-stamp the sealed row"
     assert twice.write_revision == made.write_revision, "sealing is not a content write"
     assert twice.updated_at == made.updated_at
 
@@ -580,6 +589,57 @@ def test_a_write_with_no_base_never_conflicts(world: World) -> None:
     later = _write(world, campaign, made.id, fields={"voice": "silk"},
                    author=Author.GM, base_write_revision=None)
     assert later.data["voice"] == "silk"
+
+
+def test_a_base_revision_from_the_future_is_refused_rather_than_ignored(
+    world: World,
+) -> None:
+    """A base ahead of the document is **not** a harmless spelling of `None`.
+    `stale_fields` asks which keys moved *after* that base, so from the future
+    the answer is always "none" and conflict detection is silently off: the
+    caller is told its edit rebased cleanly when nothing was ever compared.
+    Refused in both worlds, with the two numbers and no field text.
+
+    A *stale* base stays allowed and is the safe direction — it conflicts on
+    every key that has moved, which is the test above."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign)
+
+    with pytest.raises(UnknownWriteRevision) as refused:
+        _write(world, campaign, made.id, fields={"voice": "gravel"},
+               author=Author.GM, base_write_revision=made.write_revision + 1)
+
+    assert refused.value.write_revision == made.write_revision
+    assert refused.value.base_write_revision == made.write_revision + 1
+    assert _write(world, campaign, made.id, fields={"voice": "gravel"},
+                  author=Author.GM,
+                  base_write_revision=made.write_revision).write_revision == 2
+
+
+def test_an_over_long_summary_is_refused_by_the_application_in_both_worlds(
+    world: World,
+) -> None:
+    """`document_versions.summary` carries `CHECK (length(summary) <= 200)`, and
+    a CHECK the application does not enforce first comes back from PostgreSQL as
+    a `CheckViolation` whose `DETAIL` quotes the failing row — the summary AND
+    the document's `data` — which is exactly the leak SEC-20 forbids, while the
+    twin would store the row happily. Bounded in Python before the first
+    statement, so the refusal is identical in both worlds, names the field and
+    never the value, and leaves the transaction usable."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign)
+    private = "her wants, at length" * 20
+
+    with pytest.raises(ValueError, match="summary is at most") as refused:
+        _write(world, campaign, made.id, fields={"voice": "gravel"},
+               author=Author.GM, base_write_revision=None, summary=private)
+
+    assert private not in f"{refused.value!s}{refused.value!r}"
+    assert len(_versions(world, campaign, made.id)) == 1, "nothing was written"
+    at_the_bound = "x" * wire.TEXT_FIELD_MAX_CHARS
+    kept = _write(world, campaign, made.id, fields={"voice": "gravel"},
+                  author=Author.GM, base_write_revision=None, summary=at_the_bound)
+    assert kept.version.summary == at_the_bound, "the bound itself is accepted"
 
 
 def test_an_empty_patch_is_a_no_op(world: World) -> None:
@@ -877,7 +937,7 @@ def test_the_database_refuses_a_version_row_the_application_would_never_mint(
 def test_deleting_a_campaign_takes_its_documents_and_their_versions(dsn: str) -> None:
     """SEC-36, for this bead's two tables. The wider cascade of every campaign
     table is `tests/test_migrations_db.py`'s and belongs to slice B with the
-    rest of requirement 10; this proves the two edges 0007 itself adds."""
+    rest of requirement 10; this proves the two edges 0008 itself adds."""
     world = _a_seeded_world(dsn)
     made = _a_document(world, CAMPAIGN)
     with connect(dsn) as conn:
