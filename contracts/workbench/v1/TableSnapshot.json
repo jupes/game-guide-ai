@@ -539,6 +539,63 @@
           }
         ]
       }
+    },
+    {
+      "name": "an inactive table carrying a mine slot frame",
+      "why": "REVEAL-17, AE-51: rotating or ending a link clears every projection, and a resource with no session frame carries no role either — so a later `slot` frame naming `mine` is refused here, where the role rule cannot reach it",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "mine",
+            "seq": 4,
+            "content": null
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive table carrying a slot frame with content",
+      "why": "REVEAL-17, AE-51: the rule the reveal picture already obeys holds for the incremental frames too — an inactive table shows nothing, so a projection a snapshot route had buffered is refused rather than attached to a link the GM has just rotated",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "table",
+            "seq": 12,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
     }
   ]
 }

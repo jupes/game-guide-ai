@@ -2031,6 +2031,26 @@ function theRoleDecidesTheSlots(frames: readonly TableEvent[], role: string): bo
 }
 const ROLE_ISSUE = { path: ['frames'], message: "a guest sees the table slot alone; an enrolled device also sees its own" }
 
+/** TableSessionEvent exists only while live — TABLE-9 makes `inactive` its own
+ * kind — so holding a session frame *is* the liveness test here. One notion of
+ * liveness, read by every rule below that needs it. */
+const tableIsLive = (frames: readonly TableEvent[]) => frames.some((frame) => frame.event === 'session')
+
+/** REVEAL-17 and AE-51: ending, expiring or rotating a link CLEARS EVERY
+ * PROJECTION, so a resource with no session frame shows nothing at all.
+ * `oneRevealPictureWhileLive` says that of the picture; this says it of the
+ * incremental `slot` frames, the other half of the frames that can carry a
+ * projection. Without it `[inactive, slot(mine, …), ready]` would be emittable,
+ * handing private content to a device whose session is dead (SEC-9, TABLE-13).
+ * A dead resource carries no role either, so `theRoleDecidesTheSlots` never runs
+ * over it: `mine` is refused here rather than left unchecked. */
+const aDeadResourceShowsNothing = (frames: readonly TableEvent[], live: boolean) =>
+  live || !frames.some((frame) => frame.event === 'slot' && (frame.slot === 'mine' || frame.content !== null))
+const DEAD_ISSUE = {
+  path: ['frames'],
+  message: 'a resource with no session carries no private slot and shows nothing',
+}
+
 /** The table channel read as a resource: session, one audio frame per slot, later the reveal slots, then ready. */
 export const TableSnapshotSchema = z
   .object({ schema_version: z.literal(CONTRACT_VERSION), frames: z.array(TableEventSchema).min(1).max(50) })
@@ -2041,12 +2061,8 @@ export const TableSnapshotSchema = z
     path: ['frames'],
     message: 'a snapshot describes one session',
   })
-  // TableSessionEvent exists only while live — TABLE-9 makes `inactive` its own
-  // kind — so holding a session frame *is* the liveness test here.
-  .refine(
-    (snapshot) => oneRevealPictureWhileLive(snapshot.frames, snapshot.frames.some((frame) => frame.event === 'session')),
-    PICTURE_ISSUE,
-  )
+  .refine((snapshot) => oneRevealPictureWhileLive(snapshot.frames, tableIsLive(snapshot.frames)), PICTURE_ISSUE)
+  .refine((snapshot) => aDeadResourceShowsNothing(snapshot.frames, tableIsLive(snapshot.frames)), DEAD_ISSUE)
   .refine((snapshot) => {
     const session = snapshot.frames.find((frame) => frame.event === 'session')
     return session === undefined || theRoleDecidesTheSlots(snapshot.frames, session.role)

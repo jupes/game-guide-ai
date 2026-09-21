@@ -2750,6 +2750,32 @@ def _the_role_decides_the_slots(frames: Sequence[Any], *, role: TableRole) -> No
             raise ValueError("an enrolled device's picture holds its own slot, present and possibly empty")
 
 
+def _a_dead_resource_shows_nothing(frames: Sequence[Any], *, live: bool) -> None:
+    """Decisions REVEAL-17 and AE-51: ending, expiring or rotating a link
+    **clears every projection**, so a resource with no session frame shows
+    nothing at all.
+
+    ``_one_reveal_picture_while_live`` says that of the picture; this says it of
+    the incremental ``slot`` frames, which are the other half of the frames that
+    can carry a projection — from the *same* liveness, computed once in
+    ``_complete``. Without it ``[inactive, slot(mine, …), ready]`` would be
+    emittable, and a snapshot route answering a rotated link (SEC-9, TABLE-13)
+    could still attach the slots it had buffered to a device whose session is
+    dead. A dead resource carries no role either, so
+    ``_the_role_decides_the_slots`` never runs over it: ``mine`` is refused here
+    rather than left unchecked.
+    """
+    if live:
+        return
+    for frame in frames:
+        if frame.event != "slot":
+            continue
+        if frame.slot is TableSlotName.MINE:
+            raise ValueError("a resource with no session carries no private slot")
+        if frame.content is not None:
+            raise ValueError("a resource with no session shows nothing")
+
+
 class TableSnapshot(_Contract):
     """The table channel read as a resource: the session, one audio frame per
     slot, later the reveal slots, then ``ready`` (ADR RT-4, RT-9)."""
@@ -2768,8 +2794,10 @@ class TableSnapshot(_Contract):
             # took the first would read a different resource from one that took
             # the last. One frame, one answer.
             raise ValueError("a snapshot describes one session")
-        _one_reveal_picture_while_live(self.frames, live=bool(sessions))
-        if sessions:
+        live = bool(sessions)
+        _one_reveal_picture_while_live(self.frames, live=live)
+        _a_dead_resource_shows_nothing(self.frames, live=live)
+        if live:
             _the_role_decides_the_slots(self.frames, role=sessions[0].role)
         return self
 

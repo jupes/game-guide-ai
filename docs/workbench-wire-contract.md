@@ -931,6 +931,16 @@ snapshot is complete before `ready`, so a client that has seen `ready` knows
 every slot it is entitled to, and a GM client never reads missing state as
 "nothing revealed" (ADR RT-4, REVEAL-13).
 
+**A dead table shows nothing, in every frame that can show something.** Ending,
+expiring or rotating a link *clears every projection* (REVEAL-17, AE-51), so a
+`TableSnapshot` with no `session` frame carries no `slot` frame holding content
+and no `mine` `slot` frame at all — the same liveness the reveal picture obeys,
+applied to the incremental frames, which are the other half of the frames that
+can carry a projection. It is refused where `1kg.7.2` validates what it is about
+to emit, so a snapshot route answering a rotated link (SEC-9, TABLE-13) cannot
+attach the slots it had buffered. There is no role on such a resource, so the
+entitlement rule above never runs over it and this is the only rule that can.
+
 A `GmSnapshot` carries **one** `session` frame, and its reveal picture describes
 **that** session: `GmSnapshot` refuses a picture whose `session_id` or `gen`
 differs from the session frame beside it. The reveal epoch is per session
