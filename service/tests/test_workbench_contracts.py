@@ -98,6 +98,27 @@ def test_every_listed_schema_is_implemented_and_exercised() -> None:
     assert all(counts["valid"] >= 1 and counts["invalid"] >= 1 for counts in seen.values()), seen
 
 
+def test_a_request_shape_is_tagged_as_one() -> None:
+    """``direction`` decides how much the differential fuzz generates for a shape:
+    a ``request`` gets the stray-key and ``__proto__`` mutations a client→server
+    body must refuse, a ``response`` does not. The fuzz fails closed on a tag it
+    does not recognise, but a *recognised and wrong* tag — ``response`` by
+    copy-paste on a new ``*Request`` — silently drops that coverage while the
+    job still prints ``0 disagreements in the contract's own shapes``. So the tag
+    is pinned against the name rather than trusted.
+
+    One-way on purpose: ``RevealAudience`` is a request body that is not named
+    like one (it travels as ``RevealRequest.audience``), so a ``request`` tag on
+    a shape with another name is legal.
+    """
+    mistagged = {}
+    for path in _fixture_files():
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if doc["schema"].endswith(("Request", "Query")) and doc.get("direction") != "request":
+            mistagged[doc["schema"]] = doc.get("direction")
+    assert not mistagged, f"named like a request body, tagged otherwise: {mistagged}"
+
+
 def test_registry_constants_match_the_shared_registry() -> None:
     """The facts the validators lean on come from one file (1kg.3.1 extends it)."""
     registry = json.loads((FIXTURES / "registry.json").read_text(encoding="utf-8"))

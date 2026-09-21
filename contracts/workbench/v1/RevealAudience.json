@@ -66,6 +66,11 @@
       "name": "a participant id outside the id alphabet",
       "why": "identifiers are opaque: [A-Za-z0-9_-]{1,64}",
       "value": { "kind": "participants", "participant_ids": ["pt/4c1b"] }
+    },
+    {
+      "name": "a key named __proto__ beside the audience",
+      "why": "an audience travels only on a request and a request is strict; a key JavaScript treats specially is still a stray key. JSON.parse makes it an ordinary own key, so the client's `refusingProtoKeys` wrap must refuse it where the server's strict model refuses it — without the wrap the two sides disagree",
+      "value": { "kind": "table", "__proto__": { "participant_ids": ["pt_4c1b9e7a"] } }
     }
   ]
 }
