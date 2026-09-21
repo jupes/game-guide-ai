@@ -112,6 +112,145 @@ def advisory_key(key: str) -> int:
     return int.from_bytes(hashlib.sha256(key.encode("utf-8")).digest()[:4], "big", signed=True)
 
 
+class CampaignLockRefused(Exception):
+    """What `lock_campaign` and `advance_authz_revision` refuse to do (1kg.2.1,
+    RQ-2). Each subclass is a distinct refusal so that a route can map one to a
+    404 and let the others be the 500 they are."""
+
+
+class CampaignAuthzMissing(CampaignLockRefused):
+    """No `campaign.authz_state` row for that campaign, so its authorisation
+    cannot be held still — fail closed (RQ-2(c)). A route maps this to its
+    generic 404, which is also what a campaign that never existed gets; a
+    background job makes it a no-op."""
+
+
+class CampaignLockNotHeld(CampaignLockRefused):
+    """The authorisation revision was written by a transaction that does not hold
+    that campaign's lock exclusively — the one rule that keeps a revision from
+    advancing while another reader believes it is stable (RQ-2)."""
+
+
+class CampaignLockOrder(CampaignLockRefused):
+    """The campaign lock was not this transaction's first lock, a second campaign
+    was asked for, or a shared holder tried to upgrade in place. All three are
+    deadlock shapes rather than authorisation failures, and all three are a
+    programming error caught here instead of at three in the morning."""
+
+
+#: How the two modes are recorded and named. `share` is FOR SHARE, `exclusive`
+#: is FOR UPDATE on the `authz_state` row.
+SHARE = "share"
+EXCLUSIVE = "exclusive"
+
+
+class _CampaignLockOrder:
+    """RQ-2's lock order, obeyed by both units of work.
+
+    The campaign's authorisation row is the **first** lock a transaction takes,
+    it is the **only** campaign that transaction locks, and a shared holder never
+    upgrades to exclusive in place — two holders of `FOR SHARE` both asking for
+    `FOR UPDATE` deadlock, so a caller that will write takes the exclusive lock
+    at the start.
+
+    The rules live here, once, so that the twin and PostgreSQL cannot disagree
+    about which calls are **refused**. They still disagree about who **blocks**
+    whom: conflict is the database's, and `tests/test_campaign_db.py` proves it
+    there (RQ-2(a)).
+
+    It also holds `transaction_bound`, so that the one bound RQ-8 asks for is
+    checked in both units of work and against one source for its default —
+    whether the caller reached it through `lock_campaign` or through a store's
+    row hold.
+    """
+
+    def __init__(self, campaign_lock: CampaignLockSettings | None = None) -> None:
+        #: `(campaign_id, mode)` per call, in order — what a test asserts on.
+        self.campaign_locks: list[tuple[str, str]] = []
+        #: Every bound this transaction has asked for, in order, in the same
+        #: spirit: a store that holds a row bounds the transaction first, and
+        #: this is how a test says so in either world. Only the FIRST of them is
+        #: ever armed — see `transaction_bound`.
+        self.transaction_bounds: list[str] = []
+        self._locked_anything_else = False
+        #: One source for the two bounds. A store that holds a row reads it from
+        #: here rather than keeping a second settings object of its own.
+        self.campaign_lock = campaign_lock if campaign_lock is not None else CampaignLockSettings()
+
+    def transaction_bound(self, transaction_timeout_s: float | None) -> str:
+        """How long this transaction may live, as PostgreSQL spells a duration.
+
+        `None` is the configured default. A caller's own value is **checked**
+        rather than passed through, because PostgreSQL spells "no timeout" as
+        `0` and its unit here is the millisecond — so `0`, a negative, a NaN or
+        a value that rounds down to 0 ms would each switch RQ-8's bound *off*
+        through the very parameter that exists to raise it. The ceiling is the
+        other half: nothing legitimate holds a campaign's authorisation row for
+        ten minutes, and a bound nobody can reach is not a bound.
+
+        **The first bound a transaction sets is the one that fires.** PostgreSQL
+        17 arms the transaction timer only when one is not already running, so a
+        second primitive setting a longer bound changes what `SHOW
+        transaction_timeout` reports and not when the transaction is cut short:
+        `hold(...)` and then `end(..., transaction_timeout_s=30)` still ends at
+        five seconds. A caller that needs longer therefore passes its bound to
+        the **first** primitive it calls — for every fact-changing path that is
+        `lock_campaign`, which is the first lock a transaction takes anyway
+        (RQ-2). `tests/test_campaign_db.py` pins this against the server rather
+        than against a reading of its source, because the behaviour is the
+        server's; the list above records every bound asked for, in order, so a
+        test can tell the two apart.
+        """
+        if transaction_timeout_s is None:
+            bound = self.campaign_lock.transaction_timeout
+        else:
+            # A bool is an int to Python, so it passes a range check and renders
+            # as `'Trues'` — a duration the server refuses in the middle of the
+            # transaction the bound was meant to protect.
+            if isinstance(transaction_timeout_s, bool) or not (
+                TRANSACTION_BOUND_MIN_S <= transaction_timeout_s <= TRANSACTION_BOUND_MAX_S
+            ):
+                raise ValueError(
+                    f"a transaction bound is from {TRANSACTION_BOUND_MIN_S} to "
+                    f"{TRANSACTION_BOUND_MAX_S} seconds"
+                )
+            bound = f"{transaction_timeout_s}s"
+        self.transaction_bounds.append(bound)
+        return bound
+
+    def note_row_lock(self) -> None:
+        """A store that takes an explicit row lock says so here, so that taking
+        one before the campaign lock is refused rather than merely discouraged."""
+        self._locked_anything_else = True
+
+    def _check_campaign_lock(self, campaign_id: str, *, shared: bool) -> str:
+        """The mode to take, or a refusal. Nothing is recorded: the lock is not
+        held until the statement that takes it has succeeded."""
+        mode = SHARE if shared else EXCLUSIVE
+        if not self.campaign_locks:
+            if self._locked_anything_else:
+                raise CampaignLockOrder("the campaign lock is the first lock a transaction takes")
+            return mode
+        if any(held != campaign_id for held, _ in self.campaign_locks):
+            raise CampaignLockOrder("a transaction locks one campaign, never two")
+        if mode == EXCLUSIVE and not self._holds_exclusively(campaign_id):
+            raise CampaignLockOrder("a shared campaign lock is never upgraded in place")
+        return mode
+
+    def _note_campaign_lock(self, campaign_id: str, mode: str) -> None:
+        self.campaign_locks.append((campaign_id, mode))
+
+    def _holds_exclusively(self, campaign_id: str) -> bool:
+        return (campaign_id, EXCLUSIVE) in self.campaign_locks
+
+    def _require_exclusive(self, campaign_id: str) -> None:
+        if not self._holds_exclusively(campaign_id):
+            raise CampaignLockNotHeld(
+                "the authorisation revision advances only in a transaction that holds "
+                "that campaign's lock exclusively"
+            )
+
+
 def _int_setting(env: Mapping[str, str], name: str, default: int, low: int, high: int) -> int:
     raw = env.get(name)
     if raw is None or raw == "":
@@ -122,6 +261,23 @@ def _int_setting(env: Mapping[str, str], name: str, default: int, low: int, high
         value = low - 1
     if not low <= value <= high:
         raise ValueError(f"{name} must be a whole number from {low} to {high}")
+    return value
+
+
+def _float_setting(
+    env: Mapping[str, str], name: str, default: float, low: float, high: float
+) -> float:
+    """The same, for a duration that may be a fraction of a second. A NaN parses
+    and then fails the comparison, which is the answer it deserves."""
+    raw = env.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = low - 1
+    if not low <= value <= high:
+        raise ValueError(f"{name} must be a number from {low} to {high}")
     return value
 
 
@@ -162,6 +318,128 @@ class PoolSettings:
         return self.sync_max + self.async_max + self.LISTENERS
 
 
+#: The floor and the ceiling on a `transaction_timeout_s` a caller passes.
+#: PostgreSQL measures this GUC in milliseconds, so anything below one of them
+#: is rounded to zero, which is how the server spells "no timeout at all".
+TRANSACTION_BOUND_MIN_S = 0.001
+TRANSACTION_BOUND_MAX_S = 600
+
+#: The floor and the ceiling on how long a caller may wait for a campaign lock.
+#: Below 50 ms nothing contended could ever be acquired; above 4 s the wait
+#: outlasts the documented gate's own default.
+LOCK_TIMEOUT_MIN_S = 0.05
+LOCK_TIMEOUT_MAX_S = 4
+#: RQ-8's suggested wait, and the most the derived default will ever be.
+LOCK_TIMEOUT_SUGGESTED_S = 2.0
+
+
+def default_lock_timeout_s(acquire_timeout_s: int) -> float:
+    """The campaign lock timeout for a caller that named none: RQ-8's two
+    seconds, or half the gate when the gate is short.
+
+    Derived rather than fixed because the two bounds are not independent — a
+    request waiting for the campaign lock is holding one of the gate's
+    connections — and because `DB_POOL_TIMEOUT_S` is documented as 1 to 60 and
+    is the one of the two an operator actually sets. A fixed two seconds made
+    `DB_POOL_TIMEOUT_S=1` and `=2` refuse to start the service, with no
+    environment variable that could have fixed it (G-4). Half, so that the wait
+    is strictly below the gate for every value in that range.
+    """
+    return min(LOCK_TIMEOUT_SUGGESTED_S, acquire_timeout_s / 2)
+
+
+@dataclass(frozen=True)
+class CampaignLockSettings:
+    """How long a transaction may wait for the campaign lock, and how long it may
+    then live (1kg.2.1, RQ-8 of the shared eligibility decision).
+
+    **Why both are bounded.** No network or model call is made while the campaign's
+    authorisation row is held, so a holder that lives for minutes is a bug rather
+    than a slow caller — and every display of that campaign waits behind it.
+
+    **Why the lock timeout must be under the gate's.** A request blocked on the
+    lock is holding one of its instance's `DB_POOL_MAX` connections, so a lock wait
+    that outlasts `DB_POOL_TIMEOUT_S` turns one contended campaign into a 503 for
+    unrelated traffic. It is held **both ways**: a timeout nobody set is derived
+    from the gate (`default_lock_timeout_s`) and is below it by construction; one
+    somebody set is checked against whatever the gate is *set* to, and refused by
+    name at construction. That is why `DB_POOL_TIMEOUT_S=1`, documented as valid,
+    still starts the service.
+
+    **Why `transaction_timeout` and not `statement_timeout`.** RQ-8 wants a bound
+    on the transaction; `statement_timeout` bounds one statement, so a transaction
+    made of many short statements escapes it. `transaction_timeout` is PostgreSQL
+    17, which is what CI runs and what the deployment targets.
+    """
+
+    #: `CAMPAIGN_LOCK_TIMEOUT_S`, RQ-8's *suggested* 2 s — and a fraction of a
+    #: second is legal, because it is the only thing a gate of 1 s leaves room
+    #: for. A caller that names none gets `default_lock_timeout_s` of its gate.
+    lock_timeout_s: float = LOCK_TIMEOUT_SUGGESTED_S
+    #: `CAMPAIGN_TRANSACTION_TIMEOUT_S`, RQ-8's *suggested* 5 s. A long caller — a
+    #: campaign deletion, an enforcement scan, a type migration — passes its own
+    #: bound to `lock_campaign` instead of raising this for everyone.
+    transaction_timeout_s: int = 5
+
+    def __post_init__(self) -> None:
+        """The wait is a duration, wherever the object was built — from the
+        environment, by a route, or by a test. A bool is not one (it is an `int`
+        to Python and would render as 1000 ms), zero is how PostgreSQL spells
+        "wait for ever", and a NaN fails the comparison."""
+        if isinstance(self.lock_timeout_s, bool) or not (
+            LOCK_TIMEOUT_MIN_S <= self.lock_timeout_s <= LOCK_TIMEOUT_MAX_S
+        ):
+            raise ValueError(
+                f"a campaign lock timeout is from {LOCK_TIMEOUT_MIN_S} to "
+                f"{LOCK_TIMEOUT_MAX_S} seconds"
+            )
+
+    @classmethod
+    def from_env(
+        cls,
+        env: Mapping[str, str] | None = None,
+        *,
+        pool: PoolSettings | None = None,
+    ) -> CampaignLockSettings:
+        source = os.environ if env is None else env
+        gate = pool if pool is not None else PoolSettings.from_env(source)
+        chosen = source.get("CAMPAIGN_LOCK_TIMEOUT_S")
+        settings = cls(
+            lock_timeout_s=_float_setting(
+                source,
+                "CAMPAIGN_LOCK_TIMEOUT_S",
+                default_lock_timeout_s(gate.acquire_timeout_s),
+                LOCK_TIMEOUT_MIN_S,
+                LOCK_TIMEOUT_MAX_S,
+            ),
+            transaction_timeout_s=_int_setting(
+                source, "CAMPAIGN_TRANSACTION_TIMEOUT_S", cls.transaction_timeout_s, 1, 60
+            ),
+        )
+        # Only a value somebody chose can be refused: the derived one is below
+        # the gate by construction, and refusing it would refuse a gate the
+        # operator's documentation calls valid (G-4).
+        if chosen and settings.lock_timeout_s >= gate.acquire_timeout_s:
+            raise ValueError(
+                "CAMPAIGN_LOCK_TIMEOUT_S must be below DB_POOL_TIMEOUT_S "
+                f"(currently {gate.acquire_timeout_s}): a request waiting for the campaign "
+                "lock holds one of the gate's connections"
+            )
+        return settings
+
+    @property
+    def lock_timeout(self) -> str:
+        """As PostgreSQL spells a duration in `set_config`: whole milliseconds,
+        because that is this GUC's own unit and `'0.5s'` is not a duration the
+        server will parse. `__post_init__`'s floor keeps the rounding away from
+        zero, which the server reads as "wait for ever"."""
+        return f"{round(self.lock_timeout_s * 1000)}ms"
+
+    @property
+    def transaction_timeout(self) -> str:
+        return f"{self.transaction_timeout_s}s"
+
+
 # ── The unit of work ─────────────────────────────────────────────────────────
 
 
@@ -182,6 +460,40 @@ class UnitOfWork(Protocol):
         until this one ends."""
         ...  # pragma: no cover - structural type
 
+    def note_row_lock(self) -> None:
+        """A store about to take an explicit row lock says so first.
+
+        On the Protocol, not merely on the implementations, because it is how
+        `lock_campaign` can be "the first lock a transaction takes" (RQ-2): a
+        store that takes a row lock without saying so leaves that rule
+        unenforceable, and a third unit of work that did not implement this
+        would silently opt out of it.
+        """
+        ...  # pragma: no cover - structural type
+
+    def lock_campaign(
+        self,
+        campaign_id: str,
+        *,
+        shared: bool,
+        transaction_timeout_s: float | None = None,
+    ) -> None:
+        """Hold a campaign's authorisation still for the rest of this transaction
+        (RQ-2): `FOR SHARE` to read under it, `FOR UPDATE` to change it.
+
+        It is the first lock the transaction takes and the only campaign it takes
+        one on. It bounds both the wait and the transaction, raises
+        `CampaignAuthzMissing` if the campaign has no authorisation row, and
+        relies on READ COMMITTED, which `Database.transaction()` sets explicitly.
+        """
+        ...  # pragma: no cover - structural type
+
+    def advance_authz_revision(self, campaign_id: str) -> int:
+        """Increment and return the campaign's authorisation revision — the only
+        code that writes it. Refused unless this transaction holds that
+        campaign's lock exclusively."""
+        ...  # pragma: no cover - structural type
+
 
 def _check_notification(channel: str, payload: str) -> None:
     if _CHANNEL.fullmatch(channel) is None:
@@ -200,10 +512,13 @@ def _run_after_commit(callbacks: list[Callable[[], None]]) -> None:
             log.warning("db: an after-commit callback failed (%s)", type(exc).__name__)
 
 
-class PgTransaction:
+class PgTransaction(_CampaignLockOrder):
     """A unit of work on one connection, inside one transaction."""
 
-    def __init__(self, conn: Any) -> None:
+    def __init__(self, conn: Any, *, campaign_lock: CampaignLockSettings | None = None) -> None:
+        # justification: psycopg's Connection is generic over its row factory and
+        # ships partial stubs; the repository's existing pattern for it is `Any`.
+        super().__init__(campaign_lock)
         self.conn = conn
         self._after_commit: list[Callable[[], None]] = []
 
@@ -217,7 +532,46 @@ class PgTransaction:
         self.conn.execute("SELECT pg_notify(%s, %s)", (channel, payload))
 
     def lock(self, lock_class: AdvisoryLock, key: str) -> None:
+        self.note_row_lock()
         self.conn.execute("SELECT pg_advisory_xact_lock(%s, %s)", (int(lock_class), advisory_key(key)))
+
+    def lock_campaign(
+        self,
+        campaign_id: str,
+        *,
+        shared: bool,
+        transaction_timeout_s: float | None = None,
+    ) -> None:
+        mode = self._check_campaign_lock(campaign_id, shared=shared)
+        bound = self.transaction_bound(transaction_timeout_s)
+        # Both bounds are local to this transaction (set_config's third argument)
+        # and are set BEFORE the lock is taken, so a wait ends as a lock timeout
+        # rather than holding one of the gate's connections until the client
+        # gives up. transaction_timeout is PostgreSQL 17: RQ-8 bounds the
+        # transaction, and a statement bound does not (many short statements).
+        self.conn.execute(
+            "SELECT set_config('lock_timeout', %s, true), set_config('transaction_timeout', %s, true)",
+            (self.campaign_lock.lock_timeout, bound),
+        )
+        held = self.conn.execute(
+            "SELECT campaign_id FROM campaign.authz_state WHERE campaign_id = %s "
+            + ("FOR SHARE" if shared else "FOR UPDATE"),
+            (campaign_id,),
+        ).fetchone()
+        if held is None:
+            raise CampaignAuthzMissing("that campaign has no authorisation row")
+        self._note_campaign_lock(campaign_id, mode)
+
+    def advance_authz_revision(self, campaign_id: str) -> int:
+        self._require_exclusive(campaign_id)
+        advanced = self.conn.execute(
+            "UPDATE campaign.authz_state SET authz_revision = authz_revision + 1 "
+            "WHERE campaign_id = %s RETURNING authz_revision",
+            (campaign_id,),
+        ).fetchone()
+        if advanced is None:
+            raise CampaignAuthzMissing("that campaign has no authorisation row")
+        return int(advanced[0])
 
 
 class TransactionalDatabase(Protocol):
@@ -228,9 +582,38 @@ class Database:
     """The service's Postgres: a gate for routes, a pool for the realtime path,
     and the transaction boundary."""
 
-    def __init__(self, dsn: str | None = None, settings: PoolSettings | None = None) -> None:
+    def __init__(
+        self,
+        dsn: str | None = None,
+        settings: PoolSettings | None = None,
+        campaign_lock: CampaignLockSettings | None = None,
+    ) -> None:
         self._dsn = check_dsn("DATABASE_URL", dsn or default_dsn())
         self.settings = settings if settings is not None else PoolSettings()
+        # Defaults, like `settings` above: the caller that first takes a campaign
+        # lock on a route passes `CampaignLockSettings.from_env(pool=...)` here,
+        # the way `service/app.py` already passes `PoolSettings.from_env()`.
+        # Nothing in this bead takes one — the routes are 1kg.2.2's and 1kg.2.3's.
+        self.campaign_lock = (
+            campaign_lock
+            if campaign_lock is not None
+            else CampaignLockSettings(
+                lock_timeout_s=default_lock_timeout_s(self.settings.acquire_timeout_s)
+            )
+        )
+        # ... which is exactly why the check lives here and not only in
+        # `from_env`: this object has both settings, and a `Database` built in
+        # code — a test, a script, a route that passes its own `PoolSettings` —
+        # would otherwise take a lock timeout unrelated to the gate it was given,
+        # and the invariant would depend on the call site. For a lock timeout
+        # this constructor derived the check can never fire; for one the caller
+        # passed it is the whole guarantee.
+        if self.campaign_lock.lock_timeout_s >= self.settings.acquire_timeout_s:
+            raise ValueError(
+                "the campaign lock timeout must be below the gate's acquire timeout "
+                f"(currently {self.settings.acquire_timeout_s} s): a request waiting for "
+                "the campaign lock holds one of the gate's connections"
+            )
         self._closed = False
         self._gate = threading.BoundedSemaphore(self.settings.sync_max) if self.settings.sync_max > 0 else None
         self._async_pool: Any = None
@@ -291,7 +674,13 @@ class Database:
     @contextmanager
     def transaction(self) -> Iterator[PgTransaction]:
         with self.connection() as conn:
-            unit = PgTransaction(conn)
+            # RQ-2's reasoning about what a lock holds still is READ COMMITTED's,
+            # so the level is stated here rather than left to a server, database
+            # or role default that an operator could change without knowing. Set
+            # before the first statement: psycopg begins the transaction lazily,
+            # and the level may not be changed once one is open.
+            conn.isolation_level = psycopg.IsolationLevel.READ_COMMITTED
+            unit = PgTransaction(conn, campaign_lock=self.campaign_lock)
             with conn.transaction():
                 yield unit
         _run_after_commit(unit._after_commit)
@@ -310,13 +699,26 @@ class Database:
 # ── The in-memory twin ───────────────────────────────────────────────────────
 
 
-class InMemoryTransaction:
+class InMemoryTransaction(_CampaignLockOrder):
     """The unit of work of `InMemoryDatabase`. A fake store either changes its
     state at once and registers how to take the change back (`on_rollback`), or
     stages what other readers must not see yet and registers how to make it
     visible (`on_publish`)."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        authz_state: dict[str, int] | None = None,
+        *,
+        campaign_lock: CampaignLockSettings | None = None,
+    ) -> None:
+        super().__init__(campaign_lock)
+        # The COMMITTED `campaign.authz_state` table, as the twin holds it:
+        # campaign id to authorisation revision. A transaction made without one
+        # locks no campaign, which fails closed rather than silently succeeding.
+        self._authz_state = {} if authz_state is None else authz_state
+        # Rows this transaction has created and nobody else may see yet — the
+        # AFTER INSERT trigger's output before the insert that caused it commits.
+        self._authz_staged: dict[str, int] = {}
         self._after_commit: list[Callable[[], None]] = []
         self._publish: list[Callable[[], None]] = []
         self._undo: list[Callable[[], None]] = []
@@ -341,7 +743,69 @@ class InMemoryTransaction:
     def lock(self, lock_class: AdvisoryLock, key: str) -> None:
         # Recorded for assertions. The database-wide lock below already makes
         # every in-memory transaction serial, which is the strongest reading.
+        self.note_row_lock()
         self.locks.append((lock_class, key))
+
+    def _stage_authz(self, campaign_id: str, revision: int) -> None:
+        """Hold a campaign's revision for this transaction alone, and publish it
+        on commit at whatever value it has reached by then.
+
+        Every change to `authz_state` goes through here — the row's creation and
+        every advance of it — because a second reader's unlocked `SELECT` in
+        PostgreSQL reads the committed value under READ COMMITTED, so the twin
+        must not show it a number no other transaction could see. A rollback
+        needs no undo: the staged dictionary dies with the transaction, and the
+        committed one was never touched.
+        """
+        if campaign_id not in self._authz_staged:
+            self.on_publish(
+                lambda: self._authz_state.__setitem__(campaign_id, self._authz_staged[campaign_id])
+            )
+        self._authz_staged[campaign_id] = revision
+
+    def create_authz_state(self, campaign_id: str) -> None:
+        """What PostgreSQL's AFTER INSERT trigger does, for the twin (RQ-1).
+
+        The row exists for **this** transaction at once — the trigger fires
+        inside the insert's own transaction — and for every other reader only
+        when this one commits. A fake campaign store calls it from `create`; it
+        is the twin's only way to make one, which is why the case a raw SQL
+        insert covers is proved against the database instead.
+        """
+        self._stage_authz(campaign_id, 0)
+
+    def authz_revision(self, campaign_id: str) -> int | None:
+        """The revision this transaction can see: committed, plus its own."""
+        if campaign_id in self._authz_staged:
+            return self._authz_staged[campaign_id]
+        return self._authz_state.get(campaign_id)
+
+    def lock_campaign(
+        self,
+        campaign_id: str,
+        *,
+        shared: bool,
+        transaction_timeout_s: float | None = None,
+    ) -> None:
+        """The order rules, the fail-closed refusal and the bound's validity,
+        and nothing more: every in-memory transaction is already serial, so the
+        twin has no conflict to model and makes no claim about one (RQ-2(a)).
+        The bound itself is PostgreSQL's; what is checked here is that the value
+        the caller passed would be a bound at all, because a test that can only
+        run against the twin must still catch a caller that switches it off."""
+        mode = self._check_campaign_lock(campaign_id, shared=shared)
+        self.transaction_bound(transaction_timeout_s)
+        if self.authz_revision(campaign_id) is None:
+            raise CampaignAuthzMissing("that campaign has no authorisation row")
+        self._note_campaign_lock(campaign_id, mode)
+
+    def advance_authz_revision(self, campaign_id: str) -> int:
+        self._require_exclusive(campaign_id)
+        current = self.authz_revision(campaign_id)
+        if current is None:
+            raise CampaignAuthzMissing("that campaign has no authorisation row")
+        self._stage_authz(campaign_id, current + 1)
+        return current + 1
 
 
 class InMemoryDatabase:
@@ -349,14 +813,27 @@ class InMemoryDatabase:
     of published rows, notifications and callbacks — the observable contract of
     `Database`."""
 
-    def __init__(self) -> None:
+    def __init__(self, campaign_lock: CampaignLockSettings | None = None) -> None:
         self._lock = threading.RLock()
+        self.campaign_lock = campaign_lock
         #: Every notification of every committed transaction, in order.
         self.notifications: list[tuple[str, str]] = []
+        #: `campaign.authz_state` as committed, which is what a transaction
+        #: other than the writer's can see. A fake campaign store's `create`
+        #: stages a campaign at revision 0 — standing in for the AFTER INSERT
+        #: trigger PostgreSQL has — and the commit publishes it here.
+        self.authz_state: dict[str, int] = {}
+        #: The fakes' tables, by name, reached through
+        #: `service/campaign_store.shared_rows`. One state for every twin on this
+        #: database, so that a fake refuses a row whose parent is not there —
+        #: which is the thing a foreign key does and a per-store dictionary
+        #: cannot. justification: the value is a `Staging[T]` of a row type this
+        #: module must not import (the stores import `db`, never the reverse).
+        self.tables: dict[str, Any] = {}
 
     @contextmanager
     def transaction(self) -> Iterator[InMemoryTransaction]:
-        unit = InMemoryTransaction()
+        unit = InMemoryTransaction(self.authz_state, campaign_lock=self.campaign_lock)
         with self._lock:
             try:
                 yield unit
