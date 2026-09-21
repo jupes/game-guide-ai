@@ -491,6 +491,53 @@ DOC_TYPE_FIELDS: dict[DocumentTypeId, dict[str, FieldKind]] = {
 #: one its data conforms to; ``1kg.5.3`` bumps a type's and supplies the adapter.
 DOC_TYPE_VERSION: dict[DocumentTypeId, int] = {doc_type: 1 for doc_type in DocumentTypeId}
 
+#: Decision LIB-12: *"A stat block first asks for its name, AC and HP in a small
+#: dialog, because a stat block without them is not valid; nothing is stored
+#: until they are given."* The keys a **write** of each type must carry, present
+#: and not empty — the type's own and the common ones together, which is why
+#: ``name`` appears on all eight (it is a common field rule).
+#:
+#: The registry (``workbench_registry.py``) is where the flag is *declared*, per
+#: field. This module cannot import it — the import runs the other way — so the
+#: set the validator reads is here, and
+#: ``test_workbench_contracts.py::test_the_required_fields_are_the_registrys``
+#: pins it to ``registry.json`` for every type. Two independent definitions of
+#: one safety fact is the defect that pinning exists to prevent.
+#:
+#: The character sheet's own ``ac`` and ``hp`` are deliberately **not** here: the
+#: record speaks of stat blocks, and a player character in progress is a
+#: legitimate state — you name a character before you know its hit points.
+REQUIRED_FIELDS: dict[DocumentTypeId, frozenset[str]] = {
+    DocumentTypeId.NPC: frozenset({"name"}),
+    DocumentTypeId.STATBLOCK: frozenset({"name", "ac", "hp"}),
+    DocumentTypeId.HANDOUT: frozenset({"name"}),
+    DocumentTypeId.SESSION_NOTES: frozenset({"name"}),
+    DocumentTypeId.QUEST_LOG: frozenset({"name"}),
+    DocumentTypeId.CHARACTER_SHEET: frozenset({"name"}),
+    DocumentTypeId.LORE: frozenset({"name"}),
+    DocumentTypeId.ENCOUNTER: frozenset({"name"}),
+}
+
+#: What one **use** of an ``integer`` field narrows its kind to. An armour class
+#: is not negative, and there is no session 0 or party level 0; the kind's own
+#: range stays what it is, and a field may narrow it. Pinned to ``registry.json``
+#: the same way :data:`REQUIRED_FIELDS` is.
+#:
+#: ``statblock.xp`` is absent on purpose. It is the one declared ``integer``
+#: field left at the kind's full range, which is what keeps
+#: :data:`INTEGER_FIELD_MIN` reachable through a declared field at all — and so
+#: keeps the shared boundary fixtures that pin the floor honest.
+INTEGER_FIELD_BOUNDS: dict[DocumentTypeId, dict[str, tuple[int, int]]] = {
+    DocumentTypeId.NPC: {},
+    DocumentTypeId.STATBLOCK: {"ac": (0, INTEGER_FIELD_MAX), "hp": (0, INTEGER_FIELD_MAX)},
+    DocumentTypeId.HANDOUT: {},
+    DocumentTypeId.SESSION_NOTES: {"session": (1, INTEGER_FIELD_MAX)},
+    DocumentTypeId.QUEST_LOG: {},
+    DocumentTypeId.CHARACTER_SHEET: {"ac": (0, INTEGER_FIELD_MAX), "hp": (0, INTEGER_FIELD_MAX)},
+    DocumentTypeId.LORE: {},
+    DocumentTypeId.ENCOUNTER: {"xp_budget": (0, INTEGER_FIELD_MAX), "party_level": (1, INTEGER_FIELD_MAX)},
+}
+
 
 # ── Models ───────────────────────────────────────────────────────────────────
 
@@ -848,6 +895,10 @@ AbilityKey = Literal["str", "dex", "con", "int", "wis", "cha"]
 #: Registry order, for a client that lays the block out.
 ABILITY_KEYS: tuple[str, ...] = ("str", "dex", "con", "int", "wis", "cha")
 _AbilityScore = Annotated[WireInt, Field(ge=ABILITY_SCORE_MIN, le=ABILITY_SCORE_MAX)]
+#: DEFERRED, 1kg.5.7 Stage A: "one spelling of no score" (requirement 7e,
+#: AC 17) needs `ui/src/gm/DocumentField.tsx` and its tests, which belong to
+#: `1kg.6.2` and are being edited in parallel — its editor stores an empty
+#: ability cell as `null` and pins that. Reported to the lead.
 _AbilitiesValue = dict[AbilityKey, _AbilityScore | None] | None
 
 
@@ -879,14 +930,51 @@ _FIELD_VALUE: dict[FieldKind, TypeAdapter[Any]] = {
 }
 
 
+def _is_empty(kind: FieldKind, value: Any) -> bool:
+    # justification: a document field value is bare JSON of whatever shape its
+    # kind declares, which is how ``check_fields`` and ``_FIELD_VALUE`` already
+    # spell it; the kind is what narrows it, one line down.
+    """*Empty* per kind, defined once and the same on both sides — it is the
+    other half of what ``required`` means. The kinds table of the wire contract
+    is the same fact read the other way round: what a field clears **to**."""
+    if kind in (FieldKind.TEXT, FieldKind.PROSE):
+        return not trim(value)
+    if kind in (FieldKind.TEXT_LIST, FieldKind.ENTRY_LIST):
+        return not value
+    # ``asset``, ``integer`` and ``abilities`` all clear to ``null``.
+    return value is None
+
+
 def check_fields(
-    doc_type: DocumentTypeId, type_version: int, fields: dict[str, Any], *, whole: bool
+    doc_type: DocumentTypeId,
+    type_version: int,
+    fields: dict[str, Any],
+    *,
+    whole: bool,
+    enforce_required: bool = True,
 ) -> dict[str, Any]:
     """Validate field values against a type's definition, failing closed.
 
     ``whole`` is a complete document, which must have a name; otherwise ``fields``
     is a patch, which may touch any subset. Messages name keys and kinds, never
     values: they can reach a response body (X-7).
+
+    ``enforce_required`` is decision LIB-12 as a switch, and lead ruling 5.7#1
+    scopes it: *"nothing is **stored** until they are given"* is about storing, so
+    a **write** enforces :data:`REQUIRED_FIELDS` and a **read of something already
+    stored** does not. Left alone it enforces, because a write is the common case
+    and the document store (``1kg.5.1``) calls exactly ``whole=True``; the two
+    response models and :func:`read_stored_fields` opt out explicitly. Making a
+    response strict would instead show a GM the *"made by a newer version"*
+    placeholder for their own stat block after a data defect — the mirror of the
+    hazard :func:`read_stored_fields` exists to remove.
+
+    The dedicated name check is **not** part of that switch. Every document has a
+    name from the moment it exists, so it is checked on every path, read included.
+
+    On a ``whole`` document every required key must be present and non-empty; on a
+    patch, only a key the patch actually **sets** is checked, so a patch that does
+    not mention a required field touches nothing and raises nothing.
     """
     if type_version != DOC_TYPE_VERSION[doc_type]:
         # Typed, so that ``validation_error_body`` answers "reload" (the client
@@ -897,6 +985,7 @@ def check_fields(
             {"type": doc_type.value, "version": DOC_TYPE_VERSION[doc_type]},
         )
     declared = {**COMMON_FIELDS, **DOC_TYPE_FIELDS[doc_type]}
+    bounds_of = INTEGER_FIELD_BOUNDS[doc_type]
     checked: dict[str, Any] = {}
     for key, value in fields.items():
         kind = declared.get(key)
@@ -907,10 +996,101 @@ def check_fields(
         except ValidationError as err:
             # ``from None``: a chained cause would put the value in the traceback.
             raise ValueError(f"{key} is not a valid {kind.value} field: {err.errors()[0]['msg']}") from None
+        # After the kind's own range, never instead of it: the kind says what an
+        # integer is at all, the field says what this use of one may mean.
+        bounds = bounds_of.get(key)
+        if bounds is not None and checked[key] is not None and not bounds[0] <= checked[key] <= bounds[1]:
+            raise ValueError(
+                f"{key} is not a valid integer field: a {doc_type.value} takes {bounds[0]} to {bounds[1]} here"
+            )
     name = checked.get("name")
     if (whole and name is None) or (name is not None and not trim(name)):
         raise ValueError("a document has a name, and it cannot be blank")
+    if enforce_required:
+        for key in sorted(REQUIRED_FIELDS[doc_type]):
+            if key not in checked:
+                if whole:
+                    raise ValueError(f"{doc_type.value} documents require {key}, and it cannot be empty")
+                continue
+            if _is_empty(declared[key], checked[key]):
+                raise ValueError(f"{doc_type.value} documents require {key}, and it cannot be empty")
     return checked
+
+
+def read_stored_fields(doc_type: DocumentTypeId, type_version: int, data: Mapping[str, Any]) -> dict[str, Any]:
+    """Read a **stored** document the way a client reads a response: undeclared
+    keys ignored, everything else validated exactly as :func:`check_fields` does.
+
+    Called by ``1kg.5.1`` when it reads a stored row and by ``1kg.5.2`` when it
+    serves one. Nothing else calls it: what the server **stores and emits stays
+    strict**, so :class:`Document`, :class:`DocumentVersionSnapshot`,
+    :class:`FieldPatchRequest` and :class:`DocumentCreateRequest` all go on
+    calling :func:`check_fields`.
+
+    *Why it has to exist.* This contract's own rule is that **adding a field or a
+    kind is not a version bump**. A strict stored read plus that rule is a
+    rollback hazard: release N+1 adds ``npc.secret_ally``, a GM uses it, and a
+    rollback to N makes every such dossier unreadable — where a timeline entry in
+    the same situation renders, because the versioning table already prescribes
+    exactly this tolerance for a stored entry.
+
+    What it drops: a top-level key the type does not declare; a key of an
+    ``abilities`` value that is not one of the six ability keys; a sub-key of an
+    entry other than ``name`` and ``text``; a sub-key of an ``asset`` value that
+    :class:`AssetRef` does not declare. The client's ``readFields(…, {strict:
+    false})`` already drops the same four, so the two tolerant reads agree.
+
+    It does **not** apply the ``required`` rule (lead ruling 5.7#1): the record's
+    words are *"nothing is **stored** until they are given"*, so the rule binds a
+    write. The tolerance here is scoped to the changes that are **not** bumps —
+    a new field, a new kind. Making a declared field required, narrowing a field's
+    bounds or retiring a key **is** a bump, and the adapter walk handles a
+    document written before one.
+
+    An unrecognised ``type_version`` raises the same typed
+    ``unsupported_type_version`` error :func:`check_fields` raises: an opaque
+    document is ``1kg.5.1``/``1kg.5.2``'s to invent, not this function's.
+
+    Pure: it returns a new dict and never touches ``data``. *The stored row is
+    left untouched*, so it renders again after a roll-forward.
+    """
+    if type_version != DOC_TYPE_VERSION[doc_type]:
+        raise PydanticCustomError(
+            "unsupported_type_version",
+            "{type} field definitions are at version {version}",
+            {"type": doc_type.value, "version": DOC_TYPE_VERSION[doc_type]},
+        )
+    declared = {**COMMON_FIELDS, **DOC_TYPE_FIELDS[doc_type]}
+    kept: dict[str, Any] = {}
+    for key, value in data.items():
+        kind = declared.get(key)
+        if kind is None:
+            continue
+        kept[key] = _without_undeclared_sub_keys(kind, value)
+    return check_fields(doc_type, type_version, kept, whole=True, enforce_required=False)
+
+
+#: The sub-keys each structured kind declares. Everything else is dropped by a
+#: tolerant read, exactly as the client's non-strict schemas drop it.
+_ENTRY_KEYS: frozenset[str] = frozenset({"name", "text"})
+
+
+def _without_undeclared_sub_keys(kind: FieldKind, value: Any) -> Any:
+    # justification: same as ``_is_empty`` — a stored field value is bare JSON,
+    # and this runs before any schema has narrowed it.
+    """One level down from :func:`read_stored_fields`'s own drop, for the kinds
+    that have structure inside them. Anything that is not the shape this kind
+    expects is left exactly as it is, so :func:`check_fields` still refuses it."""
+    if kind is FieldKind.ABILITIES and isinstance(value, Mapping):
+        return {key: item for key, item in value.items() if key in ABILITY_KEYS}
+    if kind is FieldKind.ASSET and isinstance(value, Mapping):
+        return {key: item for key, item in value.items() if key in AssetRef.model_fields}
+    if kind is FieldKind.ENTRY_LIST and isinstance(value, list):
+        return [
+            {key: item for key, item in entry.items() if key in _ENTRY_KEYS} if isinstance(entry, Mapping) else entry
+            for entry in value
+        ]
+    return value
 
 
 class DocumentVersion(_Contract):
@@ -960,7 +1140,12 @@ class Document(_TypedFields):
 
     @model_validator(mode="after")
     def _data_fits_its_type(self) -> Self:
-        self.data = check_fields(self.type, self.type_version, self.data, whole=True)
+        # ``enforce_required=False`` is lead ruling 5.7#1: LIB-12's words are
+        # "nothing is STORED until they are given", so the rule binds a write.
+        # A response that refused a stat block whose ``hp`` a data defect lost
+        # would show the GM the "made by a newer version" placeholder for their
+        # own document. The name check still runs: every document has a name.
+        self.data = check_fields(self.type, self.type_version, self.data, whole=True, enforce_required=False)
         return self
 
 
@@ -976,7 +1161,12 @@ class DocumentVersionSnapshot(_TypedFields):
 
     @model_validator(mode="after")
     def _data_fits_its_type(self) -> Self:
-        self.data = check_fields(self.type, self.type_version, self.data, whole=True)
+        # ``enforce_required=False`` is lead ruling 5.7#1: LIB-12's words are
+        # "nothing is STORED until they are given", so the rule binds a write.
+        # A response that refused a stat block whose ``hp`` a data defect lost
+        # would show the GM the "made by a newer version" placeholder for their
+        # own document. The name check still runs: every document has a name.
+        self.data = check_fields(self.type, self.type_version, self.data, whole=True, enforce_required=False)
         return self
 
 
@@ -1007,7 +1197,11 @@ class FieldPatchRequest(_TypedFields):
 
 class DocumentCreateRequest(_TypedFields):
     """Decision LIB-12: New in a library category. ``command_id`` makes a retry
-    open the document already made instead of making a second one."""
+    open the document already made instead of making a second one.
+
+    It is a **write**, so it enforces :data:`REQUIRED_FIELDS`: a stat block with a
+    name alone is refused here, and the New dialog that gathers a name, an AC and
+    an HP (``1kg.6.4``) is the ergonomics rather than the guarantee."""
 
     schema_version: SchemaVersion
     command_id: CommandId

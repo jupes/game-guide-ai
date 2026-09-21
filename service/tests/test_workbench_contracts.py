@@ -12,6 +12,7 @@ additive fields from a newer server.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from typing import Any, get_args
 
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic_core import PydanticCustomError
 
 from service import workbench_contracts as wc
 from service.models import ChatResponse, MessagesResponse
@@ -537,12 +539,25 @@ def test_check_fields_is_usable_on_its_own() -> None:
 
 @pytest.mark.parametrize("doc_type", list(wc.DocumentTypeId), ids=lambda t: t.value)
 def test_every_type_takes_the_common_fields(doc_type: wc.DocumentTypeId) -> None:
-    """``name``, ``qualifier`` and ``tags`` belong to every type."""
-    assert wc.check_fields(doc_type, 1, {"name": "x", "qualifier": "", "tags": []}, whole=True) == {
-        "name": "x",
-        "qualifier": "",
-        "tags": [],
-    }
+    """``name``, ``qualifier`` and ``tags`` belong to every type — and on seven of
+    the eight they are enough for a whole document.
+
+    ``statblock`` is the exception and is asserted as one rather than skipped:
+    LIB-12 says a stat block without its AC and HP is not valid, so a write of the
+    common fields alone must be **refused** there. Skipping the type would make
+    this parametrised test quietly stop covering the type it matters most for.
+    """
+    common = {"name": "x", "qualifier": "", "tags": []}
+    if doc_type is wc.DocumentTypeId.STATBLOCK:
+        with pytest.raises(ValueError, match="require ac"):
+            wc.check_fields(doc_type, 1, dict(common), whole=True)
+        assert wc.check_fields(doc_type, 1, {**common, "ac": 12, "hp": 33}, whole=True) == {
+            **common,
+            "ac": 12,
+            "hp": 33,
+        }
+        return
+    assert wc.check_fields(doc_type, 1, dict(common), whole=True) == common
 
 
 @pytest.mark.parametrize("doc_type", list(wc.DocumentTypeId), ids=lambda t: t.value)
@@ -605,16 +620,26 @@ _STATBLOCK = wc.DocumentTypeId.STATBLOCK
 
 
 def _statblock(**fields: Any) -> dict[str, Any]:
-    return wc.check_fields(_STATBLOCK, 1, {"name": "Ondrey", **fields}, whole=True)
+    """A whole stat block, so it carries the three LIB-12 requires. A caller that
+    is exercising ``ac`` or ``hp`` overrides the value here."""
+    return wc.check_fields(_STATBLOCK, 1, {"name": "Ondrey", "ac": 16, "hp": 104, **fields}, whole=True)
 
 
 @pytest.mark.parametrize(
     ("value", "stored"),
-    [(7, 7), (7.0, 7), (0, 0), (-1, -1), (wc.INTEGER_FIELD_MAX, wc.INTEGER_FIELD_MAX), (None, None)],
+    [(7, 7), (7.0, 7), (0, 0), (wc.INTEGER_FIELD_MAX, wc.INTEGER_FIELD_MAX)],
 )
 def test_an_integer_field_takes_a_json_integer(value: Any, stored: Any) -> None:
-    """``1.0`` is ``1`` because JavaScript cannot tell the two apart; ``null`` clears."""
+    """``1.0`` is ``1`` because JavaScript cannot tell the two apart."""
     assert _statblock(ac=value)["ac"] == stored
+
+
+@pytest.mark.parametrize("value", [-1, wc.INTEGER_FIELD_MIN, None])
+def test_the_one_unbounded_integer_field_still_reaches_the_kinds_own_range(value: Any) -> None:
+    """``statblock.xp`` is the one declared ``integer`` field with no per-use
+    bounds, which is what keeps ``INTEGER_FIELD_MIN`` reachable through a declared
+    field — and so keeps the shared floor fixtures honest. ``null`` clears it."""
+    assert _statblock(xp=value)["xp"] == value
 
 
 @pytest.mark.parametrize(
@@ -692,6 +717,424 @@ def test_the_new_kinds_are_bounded_at_their_edges() -> None:
         _statblock(traits=[{"name": "a" * (wc.TEXT_FIELD_MAX_CHARS + 1), "text": "t"}])
     with pytest.raises(ValueError, match="not a valid entry_list field"):
         _statblock(traits=[{"name": "n", "text": "t" * (wc.LIST_ITEM_MAX_CHARS + 1)}])
+
+
+# ── Required fields (LIB-12) and per-use integer bounds ──────────────────────
+
+
+def _registry_rules() -> dict[str, dict[str, dict[str, Any]]]:
+    """Every field rule ``registry.json`` declares, per type, commons folded in —
+    which is how the contract module spells the two facts below."""
+    registry = json.loads((FIXTURES / "registry.json").read_text(encoding="utf-8"))
+    return {
+        doc_type["id"]: {**registry["common_field_rules"], **doc_type["field_rules"]}
+        for doc_type in registry["document_types"]
+    }
+
+
+def test_the_required_fields_are_the_registrys() -> None:
+    """The fact lives in three places — ``registry.json``, this module and
+    ``ui/src/gm/registry.ts`` — and is pinned across them, because two independent
+    definitions of one safety fact is exactly the defect that shipped once before.
+
+    Asserted for **every** type, not for the one that has required fields: a type
+    nobody wrote an assertion for is where a drift would sit unseen.
+    """
+    rules = _registry_rules()
+    assert {doc_type.value for doc_type in wc.REQUIRED_FIELDS} == set(rules)
+    for type_id, type_rules in rules.items():
+        expected = {key for key, rule in type_rules.items() if rule["required"]}
+        assert set(wc.REQUIRED_FIELDS[wc.DocumentTypeId(type_id)]) == expected, type_id
+    # …and what that comes to, spelled out, so the shape is legible here too.
+    assert wc.REQUIRED_FIELDS[_STATBLOCK] == frozenset({"name", "ac", "hp"})
+    assert all(
+        wc.REQUIRED_FIELDS[doc_type] == frozenset({"name"})
+        for doc_type in wc.DocumentTypeId
+        if doc_type is not _STATBLOCK
+    )
+
+
+def test_the_integer_field_bounds_are_the_registrys() -> None:
+    """The same pinning, for the second fact this bead moves into the validator."""
+    rules = _registry_rules()
+    assert {doc_type.value for doc_type in wc.INTEGER_FIELD_BOUNDS} == set(rules)
+    for type_id, type_rules in rules.items():
+        expected = {
+            key: tuple(rule["bounds"]) for key, rule in type_rules.items() if rule["bounds"] is not None
+        }
+        assert wc.INTEGER_FIELD_BOUNDS[wc.DocumentTypeId(type_id)] == expected, type_id
+    # Only an integer field may carry them, and the registry's validator is what
+    # enforces that — here it is checked against the kinds this module declares.
+    for doc_type, bounds in wc.INTEGER_FIELD_BOUNDS.items():
+        for key in bounds:
+            assert wc.DOC_TYPE_FIELDS[doc_type][key] is wc.FieldKind.INTEGER, f"{doc_type.value}.{key}"
+
+
+@pytest.mark.parametrize(
+    ("doc_type", "key", "lowest"),
+    [
+        (wc.DocumentTypeId.STATBLOCK, "ac", 0),
+        (wc.DocumentTypeId.STATBLOCK, "hp", 0),
+        (wc.DocumentTypeId.CHARACTER_SHEET, "ac", 0),
+        (wc.DocumentTypeId.CHARACTER_SHEET, "hp", 0),
+        (wc.DocumentTypeId.SESSION_NOTES, "session", 1),
+        (wc.DocumentTypeId.ENCOUNTER, "party_level", 1),
+        (wc.DocumentTypeId.ENCOUNTER, "xp_budget", 0),
+    ],
+)
+def test_a_bounded_integer_field_stops_at_its_own_floor(
+    doc_type: wc.DocumentTypeId, key: str, lowest: int
+) -> None:
+    """One case per bounded field, so no field is bounded in the data and
+    unchecked in the validator. The ceiling is the kind's, and the two floor
+    fixtures in ``Document.json`` pin the kind's own."""
+    base: dict[str, Any] = {"name": "A document"}
+    if doc_type is _STATBLOCK:
+        base |= {"ac": 16, "hp": 104}
+    assert wc.check_fields(doc_type, 1, {**base, key: lowest}, whole=True)[key] == lowest
+    assert wc.check_fields(doc_type, 1, {**base, key: wc.INTEGER_FIELD_MAX}, whole=True)[key] == wc.INTEGER_FIELD_MAX
+    # …and a cleared value is still a cleared value, unless the field is required.
+    if key not in wc.REQUIRED_FIELDS[doc_type]:
+        assert wc.check_fields(doc_type, 1, {**base, key: None}, whole=True)[key] is None
+    with pytest.raises(ValueError, match="not a valid integer field"):
+        wc.check_fields(doc_type, 1, {**base, key: lowest - 1}, whole=True)
+
+
+def test_a_bounds_refusal_names_the_field_and_the_type_and_quotes_no_value() -> None:
+    """X-7: a message can reach a response body, so it says which key, which type
+    and which range — never the number that was sent."""
+    with pytest.raises(ValueError) as caught:
+        wc.check_fields(_STATBLOCK, 1, {"name": "Ondrey", "ac": -424242, "hp": 104}, whole=True)
+    assert "424242" not in str(caught.value)
+    assert "ac" in str(caught.value) and "statblock" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("key", "empty"),
+    [("name", ""), ("name", "  \t "), ("ac", None), ("hp", None)],
+)
+def test_a_create_refuses_a_required_field_that_is_absent_or_empty(key: str, empty: Any) -> None:
+    """Decision LIB-12: *required* means **present and not empty**, so a cleared
+    cell is the same defect as an absent key. ``name`` keeps its own older
+    message, because its dedicated check runs first and is unchanged."""
+    whole = {"name": "Ondrey", "ac": 16, "hp": 104}
+    absent = {other: value for other, value in whole.items() if other != key}
+    with pytest.raises(ValueError):
+        wc.check_fields(_STATBLOCK, 1, absent, whole=True)
+    with pytest.raises(ValueError):
+        wc.check_fields(_STATBLOCK, 1, {**whole, key: empty}, whole=True)
+
+
+def test_every_empty_kind_counts_as_empty_for_a_required_field() -> None:
+    """*Empty* is defined per kind, once, and the same on both sides. The three
+    shapes are exercised through a type that could declare each: a required
+    ``text``/``prose`` is empty when the contract's own trim empties it, a
+    required list when it has no items, and a required asset, integer or ability
+    block when it is ``null``.
+    """
+    assert wc._is_empty(wc.FieldKind.TEXT, " \t ") and not wc._is_empty(wc.FieldKind.TEXT, "x")
+    assert wc._is_empty(wc.FieldKind.PROSE, " ") and not wc._is_empty(wc.FieldKind.PROSE, "x")
+    assert wc._is_empty(wc.FieldKind.TEXT_LIST, []) and not wc._is_empty(wc.FieldKind.TEXT_LIST, ["x"])
+    assert wc._is_empty(wc.FieldKind.ENTRY_LIST, []) and not wc._is_empty(wc.FieldKind.ENTRY_LIST, [object()])
+    for kind in (wc.FieldKind.ASSET, wc.FieldKind.INTEGER, wc.FieldKind.ABILITIES):
+        assert wc._is_empty(kind, None) and not wc._is_empty(kind, 0 if kind is wc.FieldKind.INTEGER else {})
+    # And the rule as a whole document sees it: 0 is a real armour class, and null
+    # is not — the one place where "empty" and "falsy" must not be confused.
+    assert wc.check_fields(_STATBLOCK, 1, {"name": "Ondrey", "ac": 0, "hp": 0}, whole=True)["ac"] == 0
+
+
+@pytest.mark.parametrize("key", ["ac", "hp"])
+def test_a_patch_that_clears_a_required_field_is_refused(key: str) -> None:
+    with pytest.raises(ValueError, match=f"require {key}"):
+        wc.check_fields(_STATBLOCK, 1, {key: None}, whole=False)
+
+
+def test_a_patch_that_does_not_mention_a_required_field_still_works() -> None:
+    """A patch touches any subset (CANVAS-10). Only a key it actually **sets** is
+    checked, so an autosave of one cell is never refused for a field it left alone."""
+    assert wc.check_fields(_STATBLOCK, 1, {"speed": "20 ft."}, whole=False) == {"speed": "20 ft."}
+    assert wc.check_fields(_STATBLOCK, 1, {"ac": 12}, whole=False) == {"ac": 12}
+
+
+def test_a_required_field_refusal_never_quotes_a_value() -> None:
+    """X-7, checked over every other field's text in the same payload: the message
+    a route answers with, the string form of the error, and the log line.
+
+    ``redacted_errors`` is belt and braces only, and is asserted as such: its
+    redaction branch fires for ``extra_forbidden`` alone, and a missing required
+    field is a ``value_error`` with an empty location — so a test written against
+    it would pass while proving nothing. The assertion that would really catch a
+    leak is the one on ``validation_error_body`` and on ``str(ValidationError)``.
+    """
+    payload = {
+        "schema_version": 1,
+        "command_id": "cmd_4d1c2b3a9f8e7d6c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": {
+            "name": "Ondrey",
+            "ac": 12,
+            "ac_note": _SECRET,
+            "languages": "Aquan, and the drowned saint's own",
+            "traits": [{"name": "Salt-bound", "text": _SECRET}],
+        },
+    }
+    with pytest.raises(ValidationError) as caught:
+        wc.DocumentCreateRequest.model_validate(payload)
+    errors = caught.value.errors()
+    messages = " ".join(error["msg"] for error in errors)
+    assert "require hp" in messages
+    for text in (messages, str(caught.value), wc.validation_error_body(errors).model_dump_json()):
+        assert "drowned saint" not in text
+        assert "Aquan" not in text
+    assert "drowned saint" not in json.dumps(wc.redacted_errors(errors))
+
+
+def test_a_response_and_a_history_snapshot_stay_tolerant_of_a_missing_required_field() -> None:
+    """Lead ruling 5.7#1. LIB-12's own words are *"is not valid; nothing is
+    **stored** until they are given"*, so the rule binds a **write**. A response
+    that refused a stat block whose ``hp`` a data defect or a manual database edit
+    lost would show the GM the *"made by a newer version of Aetheril"* placeholder
+    for their own document — the precise hazard ``read_stored_fields`` exists to
+    remove. Strict writes, strict emission of what the server composes, tolerant
+    reads of what is already stored.
+    """
+    fixture = json.loads((FIXTURES / "Document.json").read_text(encoding="utf-8"))
+    whole = next(
+        e["value"] for e in fixture["valid"] if e["name"] == "a stat block that uses every field the type declares"
+    )
+    without_hp = {**whole, "data": {key: v for key, v in whole["data"].items() if key != "hp"}}
+    assert "hp" not in wc.Document.model_validate(without_hp).data
+
+    snapshot = {
+        "schema_version": 1,
+        "document_id": without_hp["document_id"],
+        "type": "statblock",
+        "type_version": 1,
+        "version": without_hp["version"],
+        "data": without_hp["data"],
+    }
+    assert "hp" not in wc.DocumentVersionSnapshot.model_validate(snapshot).data
+
+    # …and the same document is refused the moment it is WRITTEN.
+    with pytest.raises(ValidationError, match="require hp"):
+        wc.DocumentCreateRequest.model_validate(
+            {
+                "schema_version": 1,
+                "command_id": "cmd_4d1c2b3a9f8e7d6c",
+                "campaign_id": without_hp["campaign_id"],
+                "type": "statblock",
+                "type_version": 1,
+                "data": without_hp["data"],
+            }
+        )
+
+
+def test_no_valid_fixture_clears_a_required_field_and_every_structured_kind_is_shown_cleared() -> None:
+    """Both halves of the sweep, over every fixture file rather than the three
+    this bead edited, so a fixture added later joins the check by existing.
+
+    The first half is what stops the required rule being undermined by an example
+    that says a cleared required field is fine. The second is what stops it being
+    *satisfied* by deleting the examples that show a kind cleared: every structured
+    kind must still appear cleared in some valid whole document.
+    """
+    whole_document_schemas = {"Document", "DocumentCreateRequest", "DocumentVersionSnapshot"}
+    structured = {
+        wc.FieldKind.ASSET,
+        wc.FieldKind.INTEGER,
+        wc.FieldKind.ABILITIES,
+        wc.FieldKind.TEXT_LIST,
+        wc.FieldKind.ENTRY_LIST,
+    }
+    seen_cleared: set[wc.FieldKind] = set()
+    checked = 0
+    for path in _fixture_files():
+        fixture = json.loads(path.read_text(encoding="utf-8"))
+        if fixture["schema"] not in whole_document_schemas:
+            continue
+        for example in fixture["valid"]:
+            raw = expand(example["value"])
+            doc_type = wc.DocumentTypeId(raw["type"])
+            declared = {**wc.COMMON_FIELDS, **wc.DOC_TYPE_FIELDS[doc_type]}
+            data = raw["data"]
+            checked += 1
+            for key in wc.REQUIRED_FIELDS[doc_type]:
+                assert key in data, f"{path.name}: {example['name']} omits the required {key}"
+                assert not wc._is_empty(declared[key], data[key]), (
+                    f"{path.name}: {example['name']} clears the required {key}"
+                )
+            for key, value in data.items():
+                # A client-only example may carry a key the type does not declare —
+                # that is the tolerance it exists to show, and it is not a kind.
+                kind = declared.get(key)
+                if kind in structured and wc._is_empty(kind, value):
+                    seen_cleared.add(kind)
+    assert checked >= 20, "the sweep found suspiciously few valid whole documents"
+    assert seen_cleared == structured, f"no valid example shows these cleared: {structured - seen_cleared}"
+
+
+def test_the_contract_document_states_the_rules_this_bead_adds() -> None:
+    """``docs/workbench-wire-contract.md`` is where a reader learns what the server
+    refuses to store, so a rule that lives only in a docstring is a rule the next
+    bead re-derives — or gets wrong. Asserted as literal strings rather than by
+    shape, in the same spirit as ``test_the_wire_contracts_tables_are_the_registry``:
+    a prose edit that drops one of these is telling you the document no longer says
+    what the code does.
+    """
+    text = (FIXTURES.parents[2] / "docs" / "workbench-wire-contract.md").read_text(encoding="utf-8")
+    # F-3: a tolerant stored read exists, and is named, and what the server puts
+    # on the wire is still strict.
+    assert "read_stored_fields" in text
+    assert "what the server stores and emits stays strict" in text
+    # Requirement 3: the rule that makes requirement 1 and the tolerant read safe.
+    assert "making a declared field required" in text
+    # F-10: the number ``1kg.5.5`` needs for its whole-document cap (RAIL-6).
+    assert "1,316,510" in text
+    # …and the per-field bounds have a home of their own.
+    assert "#### Per-field integer bounds" in text
+
+
+# ── A tolerant read of a stored document (F-3) ───────────────────────────────
+
+_WITH_ABILITIES = [wc.DocumentTypeId.STATBLOCK, wc.DocumentTypeId.CHARACTER_SHEET]
+_WITH_ENTRIES = [
+    wc.DocumentTypeId.STATBLOCK,
+    wc.DocumentTypeId.QUEST_LOG,
+    wc.DocumentTypeId.CHARACTER_SHEET,
+    wc.DocumentTypeId.ENCOUNTER,
+]
+
+
+def _first_key_of_kind(doc_type: wc.DocumentTypeId, kind: wc.FieldKind) -> str | None:
+    return next((key for key, k in wc.DOC_TYPE_FIELDS[doc_type].items() if k is kind), None)
+
+
+def test_the_types_that_can_prove_each_tolerant_read_clause_are_the_ones_listed() -> None:
+    """The three parametrised tests below are only honest if their type lists are
+    the types that actually declare the kind. Asserted against ``DOC_TYPE_FIELDS``
+    so a list cannot silently shrink — or grow stale when a type gains a kind."""
+    assert [d for d in wc.DocumentTypeId if _first_key_of_kind(d, wc.FieldKind.ABILITIES)] == _WITH_ABILITIES
+    assert [d for d in wc.DocumentTypeId if _first_key_of_kind(d, wc.FieldKind.ENTRY_LIST)] == _WITH_ENTRIES
+
+
+@pytest.mark.parametrize("doc_type", list(wc.DocumentTypeId), ids=lambda t: t.value)
+def test_a_stored_document_drops_an_undeclared_top_level_key_and_keeps_the_rest(
+    doc_type: wc.DocumentTypeId,
+) -> None:
+    """Release N+1 adds a field and a GM uses it; a rollback to N must leave the
+    dossier readable, because *adding a field is not a version bump*. Proved on
+    all eight, the way the strict posture already is."""
+    stored: dict[str, Any] = {"name": "A document", "tags": ["tide"], "secret_ally": "The harbourmaster"}
+    if doc_type is _STATBLOCK:
+        stored |= {"ac": 16, "hp": 104}
+    read = wc.read_stored_fields(doc_type, 1, stored)
+    assert "secret_ally" not in read
+    assert read["name"] == "A document" and read["tags"] == ["tide"]
+    # …and the very same key is still refused in what the server emits.
+    with pytest.raises(ValueError, match="do not declare"):
+        wc.check_fields(doc_type, 1, dict(stored), whole=True)
+
+
+@pytest.mark.parametrize("doc_type", _WITH_ABILITIES, ids=lambda t: t.value)
+def test_a_stored_document_drops_an_undeclared_ability_key(doc_type: wc.DocumentTypeId) -> None:
+    key = _first_key_of_kind(doc_type, wc.FieldKind.ABILITIES)
+    assert key is not None
+    stored: dict[str, Any] = {"name": "A document", key: {"str": 10, "luck": 3}}
+    if doc_type is _STATBLOCK:
+        stored |= {"ac": 16, "hp": 104}
+    assert wc.read_stored_fields(doc_type, 1, stored)[key] == {"str": 10}
+
+
+@pytest.mark.parametrize("doc_type", _WITH_ENTRIES, ids=lambda t: t.value)
+def test_a_stored_document_drops_an_undeclared_entry_sub_key(doc_type: wc.DocumentTypeId) -> None:
+    key = _first_key_of_kind(doc_type, wc.FieldKind.ENTRY_LIST)
+    assert key is not None
+    stored: dict[str, Any] = {
+        "name": "A document",
+        key: [{"name": "Amphibious", "text": "It breathes water.", "damage": "1d6"}],
+    }
+    if doc_type is _STATBLOCK:
+        stored |= {"ac": 16, "hp": 104}
+    entries = [entry.model_dump() for entry in wc.read_stored_fields(doc_type, 1, stored)[key]]
+    assert entries == [{"name": "Amphibious", "text": "It breathes water."}]
+
+
+def test_a_stored_document_drops_an_undeclared_asset_sub_key() -> None:
+    """The client's non-strict read already strips an unknown asset sub-key, so a
+    server read that kept one would make the two tolerant reads disagree — and the
+    fuzz would not see it, because neither side is wrong about a *declared* key."""
+    stored = {
+        "name": "Ondrey",
+        "portrait": {"asset_id": "ast_77c1d0e2", "media_type": "image", "alt": "A portrait", "blurhash": "LKO2"},
+    }
+    read = wc.read_stored_fields(wc.DocumentTypeId.NPC, 1, stored)
+    assert read["portrait"].model_dump() == {
+        "asset_id": "ast_77c1d0e2",
+        "media_type": "image",
+        "alt": "A portrait",
+        "width": None,
+        "height": None,
+    }
+
+
+def test_a_tolerant_read_leaves_the_stored_row_untouched() -> None:
+    """Pure: it returns a new dict, so nothing a caller holds is rewritten — the
+    row must render again after a roll-forward."""
+    stored = {
+        "name": "Ondrey",
+        "secret_ally": "The harbourmaster",
+        "portrait": {"asset_id": "ast_1", "media_type": "image", "alt": "A portrait", "blurhash": "LKO2"},
+    }
+    before = copy.deepcopy(stored)
+    wc.read_stored_fields(wc.DocumentTypeId.NPC, 1, stored)
+    assert stored == before
+
+
+def test_a_tolerant_read_still_refuses_an_invalid_declared_value() -> None:
+    """Tolerance is scoped to keys the type does not declare. A declared key whose
+    value is wrong is damage, and damage is not read."""
+    with pytest.raises(ValueError, match="not a valid text field"):
+        wc.read_stored_fields(wc.DocumentTypeId.NPC, 1, {"name": "Ondrey", "voice": 42})
+    with pytest.raises(ValueError, match="not a valid integer field"):
+        wc.read_stored_fields(_STATBLOCK, 1, {"name": "Ondrey", "ac": -1, "hp": 104})
+    with pytest.raises(ValueError, match="cannot be blank"):
+        wc.read_stored_fields(wc.DocumentTypeId.NPC, 1, {"name": "  "})
+    with pytest.raises(ValueError, match="cannot be blank"):
+        wc.read_stored_fields(wc.DocumentTypeId.NPC, 1, {})
+
+
+def test_a_tolerant_read_does_not_apply_the_required_rule() -> None:
+    """Lead ruling 5.7#1 again, at the function the rollback story is about: the
+    tolerance here is scoped to the changes that are **not** version bumps — a new
+    field, a new kind. Making a field required **is** a bump, so a document written
+    before the rule is at an older ``type_version`` and the adapter walk has it."""
+    read = wc.read_stored_fields(_STATBLOCK, 1, {"name": "Ondrey", "ac": 16})
+    assert read == {"name": "Ondrey", "ac": 16}
+
+
+def test_a_tolerant_read_refuses_a_type_version_it_does_not_know() -> None:
+    """The same typed error ``check_fields`` raises, so a route answers *reload*
+    rather than *malformed*. Inventing an opaque document is ``1kg.5.1``'s."""
+    with pytest.raises(PydanticCustomError) as caught:
+        wc.read_stored_fields(wc.DocumentTypeId.NPC, 2, {"name": "Ondrey"})
+    assert caught.value.type == "unsupported_type_version"
+
+
+def test_nothing_on_the_wire_calls_the_tolerant_read() -> None:
+    """*What the server stores and emits stays strict.* The four wire models go on
+    calling ``check_fields``; ``read_stored_fields`` is for ``1kg.5.1`` and
+    ``1kg.5.2`` to call when they read a stored row, and for nothing else.
+
+    Read from the module's source rather than asserted by behaviour, because the
+    claim is about which function is *called* — a behavioural test would pass the
+    day someone wired it in and widened a fixture to match.
+    """
+    source = Path(wc.__file__).read_text(encoding="utf-8")
+    body = source[source.index("class Document(") :]
+    assert "read_stored_fields" not in body, "a wire model now calls the tolerant read"
+    assert body.count("check_fields(self.type, self.type_version") == 4
 
 
 def test_an_instruction_and_a_search_are_stored_trimmed() -> None:
