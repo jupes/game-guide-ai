@@ -35,12 +35,26 @@ test('the model picker is bound to a conversation, and changing it after the fir
   // After the first prompt the conversation's routing is bound. Changing the
   // model must ASK and then start a fresh conversation — never silently
   // re-point a conversation the server has already committed to.
-  page.once('dialog', (dialog) => {
-    expect(dialog.type()).toBe('confirm')
+  //
+  // Dialogs are COLLECTED, not asserted on inside the listener. An
+  // `expect` in a `page.once('dialog', …)` handler runs only if a dialog is
+  // actually raised, so the one regression this exists to catch — the app
+  // dropping the prompt and forking (or re-pointing) in silence — is the one
+  // case it would stay quiet for. Asserting on the collected array afterwards
+  // makes the ABSENCE of the dialog the failure.
+  const dialogs: { type: string; message: string }[] = []
+  page.on('dialog', (dialog) => {
+    dialogs.push({ type: dialog.type(), message: dialog.message() })
     void dialog.accept()
   })
   await model.selectOption({ label: 'Automatic' })
   await expect(model).toHaveValue('auto')
+
+  // Exactly one prompt, it is a confirm (cancellable — an alert would tell
+  // rather than ask), and it names the model it is about to switch to, because
+  // "OK" to an unlabelled question is a guess.
+  expect(dialogs.map((dialog) => dialog.type)).toEqual(['confirm'])
+  expect(dialogs[0]?.message).toContain('Automatic')
 
   // A NEW conversation: empty thread, with the bound one still in the list.
   await expect(page.getByText('Ask the Sage…')).toBeVisible()
