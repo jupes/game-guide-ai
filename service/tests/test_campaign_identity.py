@@ -16,6 +16,7 @@ from service.campaign_identity import (
     CAMPAIGN,
     DEVICE_CREDENTIAL,
     DIGEST_CHARS,
+    DOCUMENT,
     ENROLMENT_CODE,
     ID_BODY_MAX,
     ID_BODY_MIN,
@@ -74,6 +75,7 @@ def test_every_prefix_is_distinct_and_the_registry_is_the_whole_set():
         DEVICE_CREDENTIAL,
         TABLE_SESSION,
         TABLE_CREDENTIAL,
+        DOCUMENT,
     }
 
 

@@ -30,6 +30,16 @@ MIGRATIONS = Path(__file__).resolve().parents[1] / "sql" / "migrations"
 CAMPAIGN_SQL = (MIGRATIONS / "0004_campaign_schema.sql").read_text(encoding="utf-8")
 AUDIT_SQL = (MIGRATIONS / "0005_audit_events.sql").read_text(encoding="utf-8")
 CONVERSATION_SQL = (MIGRATIONS / "0006_conversation_metadata.sql").read_text(encoding="utf-8")
+DOCUMENT_SQL = (MIGRATIONS / "0007_document_schema.sql").read_text(encoding="utf-8")
+
+#: Every migration, sorted and concatenated. The two identifier tests below read
+#: THIS rather than one file: the prefix registry is service-wide, so a prefix
+#: constrained in any migration satisfies it and a prefix nobody mints is a
+#: leftover wherever it sits. Reading one file made adding a table in a later
+#: migration break a test that had nothing to say about it.
+ALL_SQL = "\n".join(
+    path.read_text(encoding="utf-8") for path in sorted(MIGRATIONS.glob("*.sql"))
+)
 
 STORE_MODULES = (campaign_store, participant_store, table_session_store, audit_log)
 
@@ -40,8 +50,8 @@ STORE_MODULES = (campaign_store, participant_store, table_session_store, audit_l
 def test_every_minted_prefix_is_constrained_in_the_migration_by_the_registrys_own_regex():
     for prefix in ident.PREFIXES:
         expected = ident.id_check_regex(prefix)
-        assert f"CHECK (id ~ '{expected}')" in CAMPAIGN_SQL, (
-            f"0004 does not constrain {prefix!r} with {expected!r}"
+        assert f"CHECK (id ~ '{expected}')" in ALL_SQL, (
+            f"no migration constrains {prefix!r} with {expected!r}"
         )
 
 
@@ -49,7 +59,7 @@ def test_the_migration_constrains_no_identifier_the_registry_has_never_heard_of(
     """The other direction: a CHECK for a prefix nobody mints is a column the
     application can never fill, and a prefix retired from the registry would
     leave one behind."""
-    in_sql = set(re.findall(r"CHECK \(id ~ '\^([a-z]{3}_)", CAMPAIGN_SQL))
+    in_sql = set(re.findall(r"CHECK \(id ~ '\^([a-z]{3}_)", ALL_SQL))
     assert in_sql == set(ident.PREFIXES)
 
 
@@ -105,7 +115,17 @@ def _columns(sql: str) -> list[tuple[str, str]]:
 MIGRATION_FILES = [
     pytest.param("0004", CAMPAIGN_SQL, id="0004"),
     pytest.param("0005", AUDIT_SQL, id="0005"),
+    pytest.param("0007", DOCUMENT_SQL, id="0007"),
 ]
+
+#: Files that deliberately store no digest at all, each for its own reason, and
+#: for which the digest test below asserts the ABSENCE rather than dropping the
+#: guard: 0005 because an audit row carries ids and codes and no hash of
+#: anything (ED-26), 0007 because a document holds content and not secrets.
+NO_DIGEST_FILES = {
+    "0005": "the audit ledger stores no digest of anything (ED-26)",
+    "0007": "a document holds field content, never a secret (SEC-20)",
+}
 
 
 @pytest.mark.parametrize(("name", "sql"), MIGRATION_FILES)
@@ -128,8 +148,8 @@ def test_no_column_of_the_campaign_schema_is_named_as_though_it_held_a_raw_secre
 @pytest.mark.parametrize(("name", "sql"), MIGRATION_FILES)
 def test_every_digest_column_is_checked_to_be_a_sha256_hex_digest(name: str, sql: str):
     digests = [(table, line) for table, line in _columns(sql) if line.split()[0].endswith("_digest")]
-    if name == "0005":
-        assert digests == [], "the audit ledger stores no digest of anything (ED-26)"
+    if name in NO_DIGEST_FILES:
+        assert digests == [], NO_DIGEST_FILES[name]
         return
     assert digests, f"{name}: this test found no digest column, so it proves nothing"
     for table, line in digests:
