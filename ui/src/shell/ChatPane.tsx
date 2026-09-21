@@ -295,10 +295,26 @@ export function ChatPane({
           .aether-parchment and its own ChatView mock applies it to the feed);
           the inner __column is the centered reading measure, so prose does not
           run the full width of a wide viewport. */}
+      {/* agent-forge-harness-27h: the feed is the scroller, and until the
+          shell got stories nothing in it was focusable — so a keyboard-only
+          reader could not scroll back through their own conversation at all
+          (axe `scrollable-region-focusable`, WCAG 2.1.1). It only escaped
+          notice because an answer WITH citations happens to contain a
+          focusable <summary>; a recalled history has none.
+
+          `tabIndex={0}` puts the transcript in the tab order, where PageUp,
+          PageDown and the arrow keys scroll it. `role="log"` is the role this
+          content has always had — new entries appended in meaningful order —
+          and it carries the accessible name that a focusable region needs.
+          It also means the arrival of an answer is announced: the pending
+          state was already announced, its resolution was not. */}
       <div
         className="chat-pane__exchanges aether-parchment"
         ref={feedRef}
         onScroll={handleFeedScroll}
+        role="log"
+        aria-label="Conversation"
+        tabIndex={0}
       >
         <div className="chat-pane__column">
         {/* History recall failed — recoverable: the thread starts empty. */}
