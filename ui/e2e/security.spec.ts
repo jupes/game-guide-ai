@@ -16,11 +16,6 @@ import path from 'node:path'
 import { expect, test } from '@playwright/test'
 
 test('nginx serves the Content-Security-Policy it declares', async ({ page }) => {
-  // RED-FIRST (va8, lead sign-off 6): this marker is removed in the commit that
-  // lands the fix. While it is here CI records the test running and failing on
-  // the unfixed base, which is what proves the gate can go red.
-  test.fail()
-
   // Playwright's cwd is ui/ — app.spec.ts resolves e2e/performance-budget.json
   // the same way. Reading the declaration rather than hard-coding it is what
   // makes this test a two-host equality check instead of a third copy.
@@ -43,9 +38,6 @@ test('nginx serves the Content-Security-Policy it declares', async ({ page }) =>
 test('a model-authored remote image renders no <img> and starts no request to the third-party host', async ({
   page,
 }, testInfo) => {
-  // RED-FIRST (va8, lead sign-off 6) — removed in the commit that lands the fix.
-  test.fail()
-
   const requests: string[] = []
   page.on('request', (request) => {
     requests.push(request.url())
