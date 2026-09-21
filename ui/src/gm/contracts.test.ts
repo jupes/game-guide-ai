@@ -33,12 +33,14 @@ import {
   DOC_TYPE_VERSION,
   DocumentCreateRequestSchema,
   DocumentSchema,
+  DocumentVersionSnapshotSchema,
   EditRequestSchema,
   FIELD_KINDS,
   CONTENT_KINDS,
   FieldPatchRequestSchema,
   GM_EVENT_KINDS,
   GmEventSchema,
+  INTEGER_FIELD_BOUNDS,
   INTEGER_FIELD_MAX,
   INTEGER_FIELD_MIN,
   LIBRARY_CATEGORIES,
@@ -51,6 +53,7 @@ import {
   GM_EVENT_DISCRIMINATORS,
   PROSE_FIELD_MAX_CHARS,
   RESERVED_MASK_KEYS,
+  REQUIRED_FIELDS,
   RESULT_DISCRIMINATORS,
   REVEALABLE_COMMON_FIELDS,
   REVEALABLE_FIELDS,
@@ -80,7 +83,7 @@ import {
   revealableFields,
   trimWire,
 } from './contracts'
-import type { DocumentTypeId } from './contracts'
+import type { DocumentTypeId, FieldKind } from './contracts'
 import { ChatResponseSchema, MessagesResponseSchema } from '../schemas'
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'contracts', 'workbench', 'v1')
@@ -770,7 +773,9 @@ describe('the structured field kinds (1kg.5.3)', () => {
     campaign_id: 'cmp_4b1d9e7a',
     type: 'statblock',
     type_version: 1,
-    data: { name: 'Ondrey', ...data },
+    // A whole stat block, so it carries the three LIB-12 requires. A case that
+    // is exercising `ac` or `hp` overrides the value here.
+    data: { name: 'Ondrey', ac: 16, hp: 104, ...data },
     write_revision: 1,
     version: {
       number: 1,
@@ -793,13 +798,24 @@ describe('the structured field kinds (1kg.5.3)', () => {
     ['a whole number', 7, 7],
     ['a whole number written as a float, because JavaScript cannot tell them apart', 7.0, 7],
     ['zero', 0, 0],
-    ['a negative', -1, -1],
     ['the ceiling', INTEGER_FIELD_MAX, INTEGER_FIELD_MAX],
-    ['null, which clears it', null, null],
   ])('an integer field takes %s', (_name, given, stored) => {
     const parsed = read({ ac: given })
     expect(parsed.success).toBe(true)
     if (parsed.success) expect(parsed.data.data.ac).toEqual(stored)
+  })
+
+  it.each([
+    ['a negative', -1],
+    ['the floor of the kind itself', INTEGER_FIELD_MIN],
+    ['null, which clears it', null],
+  ])('the one unbounded integer field still takes %s', (_name, given) => {
+    // `statblock.xp` is the one declared integer field with no per-use bounds,
+    // which is what keeps INTEGER_FIELD_MIN reachable through a declared field —
+    // and so keeps the shared floor fixtures honest.
+    const parsed = read({ xp: given })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.xp).toEqual(given)
   })
 
   it.each([[true], ['7'], [1.5], [[]], [{}], [INTEGER_FIELD_MAX + 1], [INTEGER_FIELD_MIN - 1]])(
@@ -882,6 +898,244 @@ describe('the structured field kinds (1kg.5.3)', () => {
     expect(patch({ traits: Array.from({ length: LIST_FIELD_MAX_ITEMS + 1 }, () => one) }).success).toBe(false)
     expect(patch({ traits: [{ name: 'a'.repeat(TEXT_FIELD_MAX_CHARS + 1), text: 't' }] }).success).toBe(false)
     expect(patch({ traits: [{ name: 'n', text: 't'.repeat(LIST_ITEM_MAX_CHARS + 1) }] }).success).toBe(false)
+  })
+})
+
+describe('required fields and per-use integer bounds (LIB-12, 1kg.5.7)', () => {
+  interface RuleJson {
+    required: boolean
+    bounds: [number, number] | null
+  }
+  const registry = readJson<{
+    common_field_rules: Record<string, RuleJson>
+    document_types: Array<{ id: DocumentTypeId; field_rules: Record<string, RuleJson> }>
+  }>(join(FIXTURES, 'registry.json'))
+
+  /** EMPTY per kind, written out here rather than imported: the sweep below is
+   * about FIXTURE hygiene, and the validator's own rule is what the create and
+   * patch cases in this block prove. It is the kinds table of the wire contract
+   * read the other way round — what a field clears TO. */
+  const isEmpty = (kind: FieldKind, value: unknown): boolean => {
+    if (kind === 'text' || kind === 'prose') return trimWire(value as string) === ''
+    if (kind === 'text_list' || kind === 'entry_list') return (value as unknown[]).length === 0
+    return value === null
+  }
+
+  const responseBody = (type: DocumentTypeId, data: Record<string, unknown>) => ({
+    schema_version: 1,
+    document_id: 'doc_9k2f7a1c',
+    campaign_id: 'cmp_4b1d9e7a',
+    type,
+    type_version: 1,
+    data,
+    write_revision: 1,
+    version: {
+      number: 1,
+      author: 'gm',
+      summary: '',
+      created_at: '2026-09-16T20:00:00Z',
+      sealed: false,
+      changed_fields: ['name'],
+      restored_from: null,
+    },
+    archived: false,
+    created_at: '2026-09-16T20:00:00Z',
+    updated_at: '2026-09-16T20:00:00Z',
+  })
+  const response = (type: DocumentTypeId, data: Record<string, unknown>) => DocumentSchema.safeParse(responseBody(type, data))
+  const create = (type: DocumentTypeId, data: Record<string, unknown>) =>
+    DocumentCreateRequestSchema.safeParse({
+      schema_version: 1,
+      command_id: 'cmd_4d1c2b3a9f8e7d6c',
+      campaign_id: 'cmp_4b1d9e7a',
+      type,
+      type_version: 1,
+      data,
+    })
+  const patchOf = (type: DocumentTypeId, fields: Record<string, unknown>) =>
+    FieldPatchRequestSchema.safeParse({ schema_version: 1, type, type_version: 1, base_write_revision: 1, fields })
+
+  it('spells the required set exactly as the registry does, for every type', () => {
+    // The fact lives in three places — registry.json, contracts.ts and
+    // registry.ts — and is pinned across them, because two independent
+    // definitions of one safety fact is the defect that shipped once before.
+    // Asserted for EVERY type: a type nobody wrote an assertion for is where a
+    // drift would sit unseen.
+    expect(Object.keys(REQUIRED_FIELDS).sort()).toEqual(registry.document_types.map((d) => d.id).sort())
+    for (const d of registry.document_types) {
+      const expected = Object.entries({ ...registry.common_field_rules, ...d.field_rules })
+        .filter(([, rule]) => rule.required)
+        .map(([key]) => key)
+        .sort()
+      expect([...REQUIRED_FIELDS[d.id]].sort()).toEqual(expected)
+    }
+    expect([...REQUIRED_FIELDS.statblock].sort()).toEqual(['ac', 'hp', 'name'])
+  })
+
+  it('spells the integer bounds exactly as the registry does, for every type', () => {
+    expect(Object.keys(INTEGER_FIELD_BOUNDS).sort()).toEqual(registry.document_types.map((d) => d.id).sort())
+    for (const d of registry.document_types) {
+      const expected = Object.fromEntries(
+        Object.entries(d.field_rules)
+          .filter(([, rule]) => rule.bounds !== null)
+          .map(([key, rule]) => [key, rule.bounds]),
+      )
+      expect(INTEGER_FIELD_BOUNDS[d.id]).toEqual(expected)
+      // Only an integer field may carry them.
+      for (const key of Object.keys(INTEGER_FIELD_BOUNDS[d.id])) expect(DOC_TYPE_FIELDS[d.id][key]).toBe('integer')
+    }
+  })
+
+  it.each([
+    ['statblock', 'ac', 0],
+    ['statblock', 'hp', 0],
+    ['character-sheet', 'ac', 0],
+    ['character-sheet', 'hp', 0],
+    ['session-notes', 'session', 1],
+    ['encounter', 'party_level', 1],
+    ['encounter', 'xp_budget', 0],
+  ] as const)('%s.%s stops at its own floor', (type, key, lowest) => {
+    // One case per bounded field, so no field is bounded in the data and
+    // unchecked in the validator. The ceiling is the kind's, and the two floor
+    // fixtures in Document.json pin the kind's own.
+    const base: Record<string, unknown> =
+      type === 'statblock' ? { name: 'A document', ac: 16, hp: 104 } : { name: 'A document' }
+    expect(create(type, { ...base, [key]: lowest }).success).toBe(true)
+    expect(create(type, { ...base, [key]: INTEGER_FIELD_MAX }).success).toBe(true)
+    expect(create(type, { ...base, [key]: lowest - 1 }).success).toBe(false)
+    // …and a read of an already-stored document is bounded the same way: making
+    // a bound narrower is a type_version bump, so the adapter walk has the past.
+    expect(response(type, { ...base, [key]: lowest - 1 }).success).toBe(false)
+  })
+
+  it('names the field and the type in a bounds refusal, and quotes no value', () => {
+    const result = create('statblock', { name: 'Ondrey', ac: -424242, hp: 104 })
+    expect(result.success).toBe(false)
+    if (result.success) return
+    const issues = JSON.stringify(result.error.issues)
+    expect(issues).not.toContain('424242')
+    expect(issues).toContain('statblock')
+    expect(issues).toContain('ac')
+  })
+
+  it.each([
+    ['absent', {}],
+    ['cleared to null', { ac: null, hp: null }],
+  ])('refuses a create whose required integers are %s', (_name, over) => {
+    // LIB-12: required means PRESENT AND NOT EMPTY, so a cleared cell is the same
+    // defect as an absent key.
+    const result = create('statblock', { name: 'Ondrey', ...over })
+    expect(result.success).toBe(false)
+    if (!result.success) expect(JSON.stringify(result.error.issues)).toContain('requires ac')
+  })
+
+  it('takes 0 as a real armour class, which is the one place empty and falsy differ', () => {
+    expect(create('statblock', { name: 'Ondrey', ac: 0, hp: 0 }).success).toBe(true)
+    expect(create('statblock', { name: '  \t ', ac: 12, hp: 33 }).success).toBe(false)
+  })
+
+  it.each([['ac'], ['hp']])('refuses a patch that clears the required %s', (key) => {
+    const result = patchOf('statblock', { [key]: null })
+    expect(result.success).toBe(false)
+    if (!result.success) expect(JSON.stringify(result.error.issues)).toContain(`requires ${key}`)
+  })
+
+  it('takes a patch that does not mention a required field', () => {
+    // A patch touches any subset (CANVAS-10). Only a key it actually SETS is
+    // checked, so an autosave of one cell is never refused for a field it left alone.
+    expect(patchOf('statblock', { speed: '20 ft.' }).success).toBe(true)
+    expect(patchOf('statblock', { ac: 12 }).success).toBe(true)
+  })
+
+  it('never quotes a value in a required-field refusal', () => {
+    // X-7, over every other field's text in the same payload. There is no
+    // ValidationError object on this side, so the assertion is on the issues.
+    const secret = 'She is the drowned saint.'
+    const result = create('statblock', {
+      name: 'Ondrey',
+      ac: 12,
+      ac_note: secret,
+      languages: 'Aquan, and one older tongue',
+      traits: [{ name: 'Salt-bound', text: secret }],
+    })
+    expect(result.success).toBe(false)
+    if (result.success) return
+    const issues = JSON.stringify(result.error.issues)
+    expect(issues).toContain('requires hp')
+    expect(issues).not.toContain('drowned saint')
+    expect(issues).not.toContain('Aquan')
+  })
+
+  it('keeps a response and a history snapshot tolerant of a missing required field', () => {
+    // Lead ruling 5.7#1. LIB-12's own words are "is not valid; nothing is STORED
+    // until they are given", so the rule binds a WRITE. A response that refused a
+    // stat block whose `hp` a data defect lost would render the "made by a newer
+    // version of Aetheril" placeholder for the GM's own document — the precise
+    // hazard the tolerant-read work exists to remove.
+    const data = { name: 'Ondrey', ac: 16 }
+    const parsed = response('statblock', data)
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.hp).toBeUndefined()
+    expect(parseDocument(responseBody('statblock', data)).kind).toBe('ok')
+
+    const snapshot = DocumentVersionSnapshotSchema.safeParse({
+      schema_version: 1,
+      document_id: 'doc_9k2f7a1c',
+      type: 'statblock',
+      type_version: 1,
+      version: {
+        number: 1,
+        author: 'gm',
+        summary: '',
+        created_at: '2026-09-16T20:00:00Z',
+        sealed: true,
+        changed_fields: ['name'],
+        restored_from: null,
+      },
+      data,
+    })
+    expect(snapshot.success).toBe(true)
+
+    // …and the same document is refused the moment it is WRITTEN.
+    expect(create('statblock', data).success).toBe(false)
+  })
+
+  it('still refuses a nameless or blank-named document on every path, read included', () => {
+    // The dedicated name check is NOT part of the required switch: every document
+    // has a name from the moment it exists (LIB-12), so it is checked on a read too.
+    expect(response('npc', {}).success).toBe(false)
+    expect(response('npc', { name: '  ' }).success).toBe(false)
+    expect(create('npc', {}).success).toBe(false)
+  })
+
+  it('clears a required field nowhere in a valid fixture, and still shows every structured kind cleared', () => {
+    // Both halves of the sweep, over every fixture file rather than the three
+    // this bead edited, so a fixture added later joins the check by existing.
+    const wholeDocuments = ['Document', 'DocumentCreateRequest', 'DocumentVersionSnapshot']
+    const structured: FieldKind[] = ['asset', 'integer', 'abilities', 'text_list', 'entry_list']
+    const cleared = new Set<FieldKind>()
+    let checked = 0
+    for (const path of fixtureFiles()) {
+      const doc = readJson<Fixture>(path)
+      if (!wholeDocuments.includes(doc.schema)) continue
+      for (const example of doc.valid) {
+        const raw = expand(example.value) as { type: DocumentTypeId; data: Record<string, unknown> }
+        const declared: Record<string, FieldKind> = { ...COMMON_FIELDS, ...DOC_TYPE_FIELDS[raw.type] }
+        checked += 1
+        for (const key of REQUIRED_FIELDS[raw.type]) {
+          expect(Object.hasOwn(raw.data, key), `${doc.schema}: ${example.name} omits ${key}`).toBe(true)
+          expect(isEmpty(declared[key], raw.data[key]), `${doc.schema}: ${example.name} clears ${key}`).toBe(false)
+        }
+        for (const [key, value] of Object.entries(raw.data)) {
+          // A client-only example may carry a key the type does not declare —
+          // that is the tolerance it exists to show, and it is not a kind.
+          const kind = Object.hasOwn(declared, key) ? declared[key] : undefined
+          if (kind !== undefined && structured.includes(kind) && isEmpty(kind, value)) cleared.add(kind)
+        }
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(20)
+    expect([...cleared].sort()).toEqual([...structured].sort())
   })
 })
 

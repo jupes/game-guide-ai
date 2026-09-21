@@ -210,6 +210,56 @@ export const DOC_TYPE_VERSION: Record<DocumentTypeId, number> = {
   encounter: 1,
 }
 
+/**
+ * LIB-12: "A stat block first asks for its name, AC and HP in a small dialog,
+ * because a stat block without them is not valid; nothing is stored until they
+ * are given." The keys a WRITE of each type must carry, present and not empty —
+ * the type's own and the common ones together, which is why `name` appears on
+ * all eight (it is a common field rule).
+ *
+ * The registry (`registry.ts`) is where the flag is DECLARED, per field. This
+ * module cannot import it — the import runs the other way — so the set the
+ * validator reads is here, and `registry.test.ts` pins it to `registry.json` for
+ * every type. Two independent definitions of one safety fact is the defect that
+ * pinning exists to prevent.
+ *
+ * The character sheet's own `ac` and `hp` are deliberately NOT here: the record
+ * speaks of stat blocks, and a player character in progress is a legitimate
+ * state — you name a character before you know its hit points.
+ */
+export const REQUIRED_FIELDS: Readonly<Record<DocumentTypeId, readonly string[]>> = {
+  npc: ['name'],
+  statblock: ['ac', 'hp', 'name'],
+  handout: ['name'],
+  'session-notes': ['name'],
+  'quest-log': ['name'],
+  'character-sheet': ['name'],
+  lore: ['name'],
+  encounter: ['name'],
+}
+
+/**
+ * What one USE of an `integer` field narrows its kind to. An armour class is not
+ * negative, and there is no session 0 or party level 0; the kind's own range
+ * stays what it is, and a field may narrow it. Pinned to `registry.json` the
+ * same way `REQUIRED_FIELDS` is.
+ *
+ * `statblock.xp` is absent on purpose. It is the one declared `integer` field
+ * left at the kind's full range, which is what keeps `INTEGER_FIELD_MIN`
+ * reachable through a declared field at all — and so keeps the shared boundary
+ * fixtures that pin the floor honest.
+ */
+export const INTEGER_FIELD_BOUNDS: Readonly<Record<DocumentTypeId, Readonly<Record<string, readonly [number, number]>>>> = {
+  npc: {},
+  statblock: { ac: [0, INTEGER_FIELD_MAX], hp: [0, INTEGER_FIELD_MAX] },
+  handout: {},
+  'session-notes': { session: [1, INTEGER_FIELD_MAX] },
+  'quest-log': {},
+  'character-sheet': { ac: [0, INTEGER_FIELD_MAX], hp: [0, INTEGER_FIELD_MAX] },
+  lore: {},
+  encounter: { xp_budget: [0, INTEGER_FIELD_MAX], party_level: [1, INTEGER_FIELD_MAX] },
+}
+
 // ── Building blocks ──────────────────────────────────────────────────────────
 
 /** Characters as the server counts them. `'🎲'.length` is 2; this is 1. */
@@ -490,6 +540,10 @@ export type ToolInvocation = z.infer<typeof ToolInvocationSchema>
 /** The six 5e ability scores. Decision CANVAS-19: the block is ONE field, so
  * the structure lives inside one flat key and nothing addresses into it. */
 export const ABILITY_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'] as const
+/* DEFERRED, 1kg.5.7 Stage A: "one spelling of no score" (requirement 7e, AC 17)
+ * needs `DocumentField.tsx` and its tests, which belong to 1kg.6.2 and are being
+ * edited in parallel — its editor stores an empty ability cell as `null` and pins
+ * that. Reported to the lead. */
 const abilityScore = z.number().int().min(ABILITY_SCORE_MIN).max(ABILITY_SCORE_MAX).nullable()
 const abilitiesShape = Object.fromEntries(ABILITY_KEYS.map((key) => [key, abilityScore.optional()]))
 const AbilitiesSchema = z.object(abilitiesShape)
@@ -535,24 +589,45 @@ interface TypedFields {
   type_version: number
 }
 
+/** EMPTY per kind, defined once and the same on both sides — it is the other
+ * half of what `required` means. The kinds table of the wire contract is the
+ * same fact read the other way round: what a field clears TO. */
+function isEmptyValue(kind: FieldKind, value: FieldValue): boolean {
+  if (kind === 'text' || kind === 'prose') return trimWire(value as string) === ''
+  if (kind === 'text_list' || kind === 'entry_list') return (value as unknown[]).length === 0
+  // `asset`, `integer` and `abilities` all clear to null.
+  return value === null
+}
+
 /**
  * Check field values against a type's definition, failing closed, and return
  * only what this client understands. `whole` is a complete document, which must
  * have a name; otherwise the fields are a patch. Lookups use `Object.hasOwn`: a
  * key named `constructor` or `__proto__` must read as "not declared", not find
  * something on a prototype.
+ *
+ * `required` is decision LIB-12 as a switch, and lead ruling 5.7#1 scopes it:
+ * "nothing is STORED until they are given" is about storing, so the two REQUEST
+ * schemas enforce `REQUIRED_FIELDS` and the two RESPONSE schemas do not. A
+ * response that refused a stat block whose `hp` a data defect lost would show
+ * the GM the "made by a newer version of Aetheril" placeholder for their own
+ * document — the mirror of the hazard a tolerant read exists to remove.
+ *
+ * The name check is NOT part of that switch. Every document has a name from the
+ * moment it exists, so it is checked on every path, read included.
  */
 function readFields(
   typed: TypedFields,
   raw: Record<string, unknown>,
   at: string,
-  options: { whole: boolean; strict: boolean },
+  options: { whole: boolean; strict: boolean; required: boolean },
   ctx: z.RefinementCtx,
 ): DocumentFields {
   if (typed.type_version !== DOC_TYPE_VERSION[typed.type]) {
     ctx.addIssue({ code: 'custom', path: ['type_version'], message: 'unknown version of the field definitions for this type' })
   }
   const declared = { ...COMMON_FIELDS, ...DOC_TYPE_FIELDS[typed.type] }
+  const bounds = INTEGER_FIELD_BOUNDS[typed.type]
   const fields: DocumentFields = {}
   for (const [key, value] of Object.entries(raw)) {
     if (!Object.hasOwn(declared, key)) {
@@ -560,12 +635,34 @@ function readFields(
       continue
     }
     const parsed = fieldValueSchema(declared[key], options.strict).safeParse(value)
-    if (parsed.success) fields[key] = parsed.data
-    else for (const issue of parsed.error.issues) ctx.addIssue({ code: 'custom', path: [at, key, ...issue.path], message: issue.message })
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) ctx.addIssue({ code: 'custom', path: [at, key, ...issue.path], message: issue.message })
+      continue
+    }
+    fields[key] = parsed.data
+    // After the kind's own range, never instead of it: the kind says what an
+    // integer is at all, the field says what this use of one may mean.
+    const range = Object.hasOwn(bounds, key) ? bounds[key] : undefined
+    if (range !== undefined && typeof parsed.data === 'number' && (parsed.data < range[0] || parsed.data > range[1])) {
+      ctx.addIssue({ code: 'custom', path: [at, key], message: `a ${typed.type} takes ${range[0]} to ${range[1]} here` })
+    }
   }
   const name = Object.hasOwn(fields, 'name') ? fields.name : undefined
   if ((options.whole && name === undefined) || (typeof name === 'string' && trimWire(name) === '')) {
     ctx.addIssue({ code: 'custom', path: [at, 'name'], message: 'a document has a name, and it cannot be blank' })
+  }
+  if (options.required) {
+    for (const key of REQUIRED_FIELDS[typed.type]) {
+      if (!Object.hasOwn(fields, key)) {
+        if (options.whole) {
+          ctx.addIssue({ code: 'custom', path: [at, key], message: `a ${typed.type} requires ${key}, and it cannot be empty` })
+        }
+        continue
+      }
+      if (isEmptyValue(declared[key], fields[key])) {
+        ctx.addIssue({ code: 'custom', path: [at, key], message: `a ${typed.type} requires ${key}, and it cannot be empty` })
+      }
+    }
   }
   return fields
 }
@@ -644,7 +741,7 @@ export const DocumentSchema = z
     created_at: TimestampSchema,
     updated_at: TimestampSchema,
   })
-  .transform((doc, ctx) => ({ ...doc, data: readFields(doc, doc.data, 'data', { whole: true, strict: false }, ctx) }))
+  .transform((doc, ctx) => ({ ...doc, data: readFields(doc, doc.data, 'data', { whole: true, strict: false, required: false }, ctx) }))
 export type Document = z.infer<typeof DocumentSchema>
 
 /** The content of one version. A read of history, so it has no write revision. */
@@ -656,7 +753,7 @@ export const DocumentVersionSnapshotSchema = z
     version: DocumentVersionSchema,
     data: rawFields,
   })
-  .transform((doc, ctx) => ({ ...doc, data: readFields(doc, doc.data, 'data', { whole: true, strict: false }, ctx) }))
+  .transform((doc, ctx) => ({ ...doc, data: readFields(doc, doc.data, 'data', { whole: true, strict: false, required: false }, ctx) }))
 export type DocumentVersionSnapshot = z.infer<typeof DocumentVersionSnapshotSchema>
 
 /** Newest first (CANVAS-27). */
@@ -682,7 +779,7 @@ export const FieldPatchRequestSchema = refusingProtoKeys(
       path: ['fields'],
       message: 'a patch touches at least one field',
     })
-    .transform((patch, ctx) => ({ ...patch, fields: readFields(patch, patch.fields, 'fields', { whole: false, strict: true }, ctx) })),
+    .transform((patch, ctx) => ({ ...patch, fields: readFields(patch, patch.fields, 'fields', { whole: false, strict: true, required: true }, ctx) })),
 )
 export type FieldPatchRequest = z.infer<typeof FieldPatchRequestSchema>
 
@@ -697,7 +794,7 @@ export const DocumentCreateRequestSchema = refusingProtoKeys(
       ...typedShape,
       data: rawFields,
     })
-    .transform((request, ctx) => ({ ...request, data: readFields(request, request.data, 'data', { whole: true, strict: true }, ctx) })),
+    .transform((request, ctx) => ({ ...request, data: readFields(request, request.data, 'data', { whole: true, strict: true, required: true }, ctx) })),
 )
 export type DocumentCreateRequest = z.infer<typeof DocumentCreateRequestSchema>
 

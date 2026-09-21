@@ -491,3 +491,44 @@ browser tests (Playwright Chromium); `bun run typecheck` / `lint`.
 - **agent-forge-harness-1nh** — OCR Wayfinders + Blood Hunter (deferred; needs tesseract/ocrmypdf).
 - **agent-forge-harness-ask** — `detect_collapse` false-positives on multi-form monsters; deep
   two-column MM tail.
+
+## The conversation timeline (GM Workbench)
+
+A conversation is read as **exchanges**, newest first: a turn carries its own
+outcome, so a page boundary can never separate a prompt from its result. The
+wire shapes are `service/workbench_contracts.py`'s (`TimelinePage`, `ChatEntry`,
+`ChatAnswer`, `OpaqueEntry`); the read model is `service/timeline.py`, and every
+statement it rests on is in `service/timeline_store.py` — the read model holds
+no SQL at all, and a test walks its syntax tree to keep it that way.
+
+**The legacy messages endpoint is unchanged.** `GET …/messages` returns exactly
+what it returned before — same fields, same oldest-first order, same limit
+semantics, same 403, same 503 — and keeps its cold-start claim. The timeline is
+a second, additive read of the same rows: nothing is rewritten, backfilled or
+deleted, and the read model writes nothing at all. Ownership is resolved through
+`owner_of` in one read-only statement, in the same transaction as the read, and
+a conversation that is missing, that has no ownership row, or that belongs to
+another user is refused identically, from one code path (threat model §8.1,
+SEC-2, SEC-3) — and it is never claimed.
+
+**Two sources, one order.** Turns taken after the durable timeline ships carry a
+typed entry row; every older turn is **adapted** from its `chat.messages` rows,
+with no backfill and no migration of old data. The two are merged by one total
+key, descending `(created_at, source_rank, tiebreak)`, and a cursor carries each
+source's position independently, because an item read but not taken from one
+source must be re-read on the next page. The cursor is unpadded base64url and
+encodes ids and times only — never a prompt, an answer or any search text (X-7).
+
+**What an adapted row cannot know, it says with `null`.** `answerable` and
+`sources` are `null` — *not recorded* — and never `true` or `[]`, which is what
+the client used to invent for a row that never stored them. A legacy `entry_id`
+is the decimal `chat.messages.id` of the exchange's oldest row (SEC-4 permits
+it: it is only ever resolved inside a conversation the caller owns), so it can
+never collide with a minted `ent_` id.
+
+**Every row is read through `entry_or_opaque`.** A row this server cannot
+validate — written by a newer version before a rollback, damaged, or carrying a
+`mode` no contract knows (`chat.messages.mode` has no CHECK) — becomes an
+`opaque` entry in the same place, carrying nothing of the payload. The stored
+row is left untouched: never repaired, never rewritten, never dropped, so it
+renders again after a roll-forward, and one bad row never takes a page down.

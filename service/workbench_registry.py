@@ -17,13 +17,14 @@ NPC (X-8).
 
 Since `1kg.5.3` it also carries, per field, the **rule** that says how the field
 is presented and who may ever see it — its label, whether it is editable, whether
-it is on the type's **revealable allowlist** (REVEAL-10, and by ED-5 the same
-list that can ever be classified), and the warning a reveal sheet shows above it
-(REVEAL-11) — and, per type, the audience whose picker it offers (AUD-9), its
-accent, its reveal groups, its per-audience default reveal (REVEAL-4) and the
-keys it has retired (ED-24). What is **not** here: a reveal mask, a projection
-or an eligibility row. Those are state, not registry, and belong to `1kg.1.6`
-and `1ir.2.1`.
+a document of the type is **required** to carry it (LIB-12), the **bounds** an
+integer field narrows its kind to, whether it is on the type's **revealable
+allowlist** (REVEAL-10, and by ED-5 the same list that can ever be classified),
+and the warning a reveal sheet shows above it (REVEAL-11) — and, per type, the
+audience whose default reveal it seeds (REVEAL-4, ED-14), its accent, its reveal
+groups, its per-audience default reveal and the keys it has retired (ED-24).
+What is **not** here: a reveal mask, a projection or an eligibility row. Those
+are state, not registry, and belong to `1kg.1.6` and `1ir.2.1`.
 """
 
 from __future__ import annotations
@@ -38,6 +39,8 @@ from service.workbench_contracts import (
     DOC_TYPE_FIELDS,
     DOC_TYPE_LIBRARY_CATEGORY,
     DOC_TYPE_VERSION,
+    INTEGER_FIELD_MAX,
+    INTEGER_FIELD_MIN,
     TOOL_BRIEF_POLICY,
     TOOL_CARD_KIND,
     TOOL_CREATES_DOC_TYPE,
@@ -100,8 +103,12 @@ class Tool:
         return (self.command, *self.aliases)
 
 
-#: The audience a *type* has (AUD-9). Only an ``owner`` type offers the sheet's
-#: audience picker; every other type is table-only in v1.
+#: The audience a *type* has. After owner decision O-2 (records ED-14 and A-19,
+#: which amend AUD-9) the flag no longer says which types may use a participant
+#: slot — **any type may**. It says only **whose default reveal a type seeds**
+#: (REVEAL-4): an owner-audience type seeds its linked owner's mask, and any
+#: other audience — or any other type revealed to a participant — seeds empty.
+#: The audience *picker* itself belongs to ``1kg.7.3`` (shared ADR §7.1).
 AUDIENCES: tuple[str, ...] = ("table", "owner")
 #: A closed token the client maps to a custom property. The handoff stored raw
 #: CSS; a stylesheet is the client's business, not the contract's.
@@ -119,12 +126,25 @@ class FieldRule:
     action. ``warning`` is the sub-line a reveal sheet shows above the toggle,
     in the type's own words (REVEAL-11); a field that cannot be revealed cannot
     carry one.
+
+    ``required`` is decision LIB-12 as data: a document of this type is not
+    valid without the field, so a create and a patch that would clear it are
+    refused. The rule the *validator* enforces lives in
+    ``workbench_contracts.REQUIRED_FIELDS``, which this file cannot reach — the
+    import runs the other way — and a test pins the two to ``registry.json``.
+
+    ``bounds`` narrows an ``integer`` field's kind range for this one use: a
+    two-element ``(lowest, highest)``, or ``None`` for the kind's full range.
+    :func:`validate` allows it only on an ``integer`` field, only with
+    ``lowest <= highest``, and only inside the kind's own range.
     """
 
     label: str
     editable: bool = True
     revealable: bool = True
     warning: str | None = None
+    required: bool = False
+    bounds: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -187,7 +207,7 @@ class Registry:
     common_field_rules: Mapping[str, FieldRule] = field(
         default_factory=lambda: MappingProxyType(
             {
-                "name": FieldRule("Name"),
+                "name": FieldRule("Name", required=True),
                 "qualifier": FieldRule("Qualifier"),
                 "tags": FieldRule("Tags", revealable=False),
             }
@@ -234,8 +254,14 @@ class Registry:
     def audience_of(self, doc: DocumentType) -> str:
         return doc.audience
 
-    def shows_audience_picker(self, doc: DocumentType) -> bool:
-        """Decision AUD-9: only an owner-audience type offers the picker."""
+    def seeds_owner_default(self, doc: DocumentType) -> bool:
+        """Whether this type seeds its **linked owner's** mask rather than empty.
+
+        Records ED-14 and A-19 (owner decision O-2), which amend AUD-9: the flag
+        says nothing about who may *receive* a reveal — any type may go to a
+        participant — only whose default reveal the type seeds (REVEAL-4). An
+        owner-audience type still seeds nothing for the table (AUD-12).
+        """
         return doc.audience == "owner"
 
     def accent_token(self, doc: DocumentType) -> str | None:
@@ -259,6 +285,19 @@ class Registry:
     def label_for(self, doc: DocumentType, key: str) -> str | None:
         rule = self.rule_for(doc, key)
         return rule.label if rule else None
+
+    def is_required(self, doc: DocumentType, key: str) -> bool:
+        """Decision LIB-12: whether a document of this type must carry the field,
+        present and not empty. ``False`` for a key the type does not declare —
+        unknown is never required (X-8), the same posture as :meth:`is_editable`."""
+        rule = self.rule_for(doc, key)
+        return rule.required if rule else False
+
+    def bounds_for(self, doc: DocumentType, key: str) -> tuple[int, int] | None:
+        """The range this one use of an ``integer`` field narrows its kind to, or
+        ``None`` for the kind's own range — and ``None`` for an undeclared key."""
+        rule = self.rule_for(doc, key)
+        return rule.bounds if rule else None
 
     def is_revealable(self, doc: DocumentType, key: str) -> bool:
         """The allowlist, per key (REVEAL-10). ``False`` for an undeclared key:
@@ -420,9 +459,10 @@ REGISTRY = Registry(
         _document_type(
             DocumentTypeId.STATBLOCK, "Stat Block", "shield", renderer="stat_block_card",
             rules={
-                "ac": FieldRule("Armor Class"),
+                # LIB-12: a stat block without its AC and HP is not valid.
+                "ac": FieldRule("Armor Class", required=True, bounds=(0, INTEGER_FIELD_MAX)),
                 "ac_note": FieldRule("Armor Class note"),
-                "hp": FieldRule("Hit Points"),
+                "hp": FieldRule("Hit Points", required=True, bounds=(0, INTEGER_FIELD_MAX)),
                 "hit_dice": FieldRule("Hit dice"),
                 "speed": FieldRule("Speed"),
                 "size": FieldRule("Size"),
@@ -436,6 +476,9 @@ REGISTRY = Registry(
                 "senses": FieldRule("Senses"),
                 "languages": FieldRule("Languages"),
                 "challenge_rating": FieldRule("Challenge rating"),
+                # The one integer field with no per-use bounds, deliberately: it
+                # is what keeps the kind's own floor reachable through a declared
+                # field, and so keeps the shared boundary fixtures honest.
                 "xp": FieldRule("XP"),
                 "traits": FieldRule("Traits"),
                 "actions": FieldRule("Actions"),
@@ -456,7 +499,8 @@ REGISTRY = Registry(
         _document_type(
             DocumentTypeId.SESSION_NOTES, "Session Notes", "history_edu",
             rules={
-                "session": FieldRule("Session number"),
+                # There is no session 0.
+                "session": FieldRule("Session number", bounds=(1, INTEGER_FIELD_MAX)),
                 "date": FieldRule("Date"),
                 "present": FieldRule("Present"),
                 "recap": FieldRule("Recap", warning="Summarises your private GM thread"),
@@ -478,8 +522,11 @@ REGISTRY = Registry(
             DocumentTypeId.CHARACTER_SHEET, "Character Sheet", "contact_page", audience="owner",
             rules={
                 "portrait": FieldRule("Portrait"),
-                "ac": FieldRule("Armor Class"),
-                "hp": FieldRule("Hit Points"),
+                # The same field and the same meaning as a stat block's, so the
+                # same range — but **not** required (ruling 5.7#2): LIB-12 speaks
+                # of stat blocks, and you name a character before you know its HP.
+                "ac": FieldRule("Armor Class", bounds=(0, INTEGER_FIELD_MAX)),
+                "hp": FieldRule("Hit Points", bounds=(0, INTEGER_FIELD_MAX)),
                 "speed": FieldRule("Speed"),
                 "abilities": FieldRule("Ability scores"),
                 "features": FieldRule("Features"),
@@ -511,8 +558,9 @@ REGISTRY = Registry(
             DocumentTypeId.ENCOUNTER, "Encounter", "swords",
             rules={
                 "difficulty": FieldRule("Difficulty"),
-                "xp_budget": FieldRule("XP budget"),
-                "party_level": FieldRule("Party level"),
+                "xp_budget": FieldRule("XP budget", bounds=(0, INTEGER_FIELD_MAX)),
+                # There is no level 0.
+                "party_level": FieldRule("Party level", bounds=(1, INTEGER_FIELD_MAX)),
                 "setup": FieldRule("Setup"),
                 "combatants": FieldRule("Combatants"),
                 "terrain": FieldRule("Terrain & hazards"),
@@ -578,6 +626,16 @@ def _document_type_problems(registry: Registry, doc: DocumentType) -> list[str]:
 
     for key, rule in doc.field_rules.items():
         problems += _label_problems(rule.label)
+        if rule.bounds is not None:
+            lowest, highest = rule.bounds
+            # A range on anything else would be data no validator reads, which
+            # is the defect ``FIELD_FLAG_SELECTORS`` exists to catch one level up.
+            if doc.fields.get(key) is not FieldKind.INTEGER:
+                problems.append(f"{key!r} carries integer bounds but is not an integer field")
+            if lowest > highest:
+                problems.append(f"{key!r} has bounds whose lowest is above its highest")
+            if lowest < INTEGER_FIELD_MIN or highest > INTEGER_FIELD_MAX:
+                problems.append(f"{key!r} has bounds outside the integer kind's own range")
         if rule.warning is not None:
             problems += _label_problems(rule.warning, what="warning", limit=80)
             if not rule.revealable:
@@ -637,7 +695,7 @@ TYPE_FLAG_SELECTORS: dict[str, tuple[str, ...]] = {
     "renderer": ("renderer_for",),
     "printable": ("is_printable",),
     "cites_corpus": ("cites_corpus",),
-    "audience": ("audience_of", "shows_audience_picker"),
+    "audience": ("audience_of", "seeds_owner_default"),
     "accent": ("accent_token",),
 }
 #: The same rule one level down: every key of a **field rule** is read by a
@@ -647,8 +705,10 @@ TYPE_FLAG_SELECTORS: dict[str, tuple[str, ...]] = {
 FIELD_FLAG_SELECTORS: dict[str, tuple[str, ...]] = {
     "label": ("label_for",),
     "editable": ("is_editable",),
+    "required": ("is_required",),
     "revealable": ("is_revealable", "revealable_keys"),
     "warning": ("warning_for",),
+    "bounds": ("bounds_for",),
 }
 #: The keys that *are* the type rather than a flag about it. Pinned by a test,
 #: so moving a flag in here is as deliberate as retiring a field key.
