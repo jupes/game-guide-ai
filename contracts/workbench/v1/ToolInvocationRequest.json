@@ -1,0 +1,313 @@
+{
+  "schema": "ToolInvocationRequest",
+  "direction": "request",
+  "valid": [
+    {
+      "name": "npc with a brief",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "the hooded stranger at the bar",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "recap may run with an empty brief (RAIL-5)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_0a1b2c3d4e5f6a7b",
+        "tool_id": "recap",
+        "brief": "",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "recap treats a whitespace brief as empty",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_0a1b2c3d4e5f6a7c",
+        "tool_id": "recap",
+        "brief": "   \n ",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a suggestion carries a typed reference to its source entry (RAIL-8)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_5d6e7f8a9b0c1d2e",
+        "tool_id": "encounter",
+        "brief": "an encounter around the Tidewarden Drowned",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "source_entry_id": "ent_77aa12bc"
+      }
+    },
+    {
+      "name": "a brief of exactly 2,000 characters (RAIL-6)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_1111222233334444",
+        "tool_id": "monster",
+        "brief": "@repeat:a:2000",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "the bound counts code points, so 2,000 dice are 2,000 characters",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_1111222233336666",
+        "tool_id": "monster",
+        "brief": "@repeat:🎲:2000",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "surrounding whitespace does not count toward the bound",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_1111222233335555",
+        "tool_id": "monster",
+        "brief": "  CR 5, drowned  ",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "an integral JSON number is an integer however it is spelled: 1.0 is 1 on both sides",
+      "value": {
+        "schema_version": 1.0,
+        "invocation_id": "inv_1111222233337777",
+        "tool_id": "monster",
+        "brief": "CR 5, drowned",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "trimming removes what JavaScript's trim removes, the byte order mark and the ideographic space included, on both sides",
+      "value": { "schema_version": 1, "invocation_id": "inv_1111222233339999", "tool_id": "monster", "brief": "\ufeffCR 5, drowned\u3000", "campaign_id": "cmp_4b1d9e7a", "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d" }
+    },
+    {
+      "name": "NEL is not in that set, so it is kept on both sides: this brief is not empty",
+      "value": { "schema_version": 1, "invocation_id": "inv_111122223333aaaa", "tool_id": "monster", "brief": "\u0085CR 5", "campaign_id": "cmp_4b1d9e7a", "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d" }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a required brief that is empty",
+      "why": "RAIL-5: only recap is brief-optional",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a required brief that is only whitespace",
+      "why": "RAIL-5: the bound applies after trimming",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "monster",
+        "brief": " \t\n ",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a required brief that is only a byte order mark",
+      "why": "trimming is one explicit set on both sides: a mark JavaScript's trim removes is removed by the server too, so this brief is empty",
+      "value": { "schema_version": 1, "invocation_id": "inv_9f2c4e1a7b3d4c5e", "tool_id": "monster", "brief": "\ufeff", "campaign_id": "cmp_4b1d9e7a", "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d" }
+    },
+    {
+      "name": "a brief of 2,001 characters",
+      "why": "RAIL-6",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "monster",
+        "brief": "@repeat:a:2001",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "2,001 characters outside the BMP",
+      "why": "RAIL-6: code points, not UTF-16 units, on both sides",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "monster",
+        "brief": "@repeat:🎲:2001",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "the brief key is always present",
+      "why": "one shape for every tool; an optional brief is the empty string",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "recap",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "an unknown tool",
+      "why": "X-8 and SLASH-2: tool ids are matched exactly",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npcs",
+        "brief": "a guard",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "tool ids are lower-case on the wire",
+      "why": "the slash parser normalises case before the request is built",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "NPC",
+        "brief": "a guard",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "the handoff's free-form context object",
+      "why": "RAIL-7: the server assembles context; the client sends typed references only",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "the hooded stranger at the bar",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d",
+        "context": { "session": 12, "scene": "the marsh" }
+      }
+    },
+    {
+      "name": "no campaign",
+      "why": "RAIL-13: tools need a campaign",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "a guard",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "an invocation id too short to be an idempotency key",
+      "why": "16..64 characters of [A-Za-z0-9_-]",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_1",
+        "tool_id": "npc",
+        "brief": "a guard",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "an id with characters outside the opaque-id alphabet",
+      "why": "ids are [A-Za-z0-9_-] so they are safe in a fragment and in logs",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "a guard",
+        "campaign_id": "cmp 4b1d/9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a schema version this contract does not know",
+      "why": "requests fail closed on an unknown version",
+      "value": {
+        "schema_version": 2,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "a guard",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a schema version of true",
+      "why": "no coercion: to Python true equals 1, so a bare literal would let it through on one side only",
+      "value": {
+        "schema_version": true,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "a guard",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a schema version that is not an integer",
+      "why": "1.5 is no more a version than true is; only an integral number is an integer",
+      "value": {
+        "schema_version": 1.5,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "a guard",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a schema version sent as text",
+      "why": "no coercion",
+      "value": {
+        "schema_version": "1",
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "a guard",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a brief that is not a string",
+      "why": "no coercion",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": 42,
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a lone surrogate in the brief",
+      "why": "JSON allows the escape; UTF-8 does not, so the brief could be neither stored nor answered. Refused here it is a 422, not a 500",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_9f2c4e1a7b3d4c5e",
+        "tool_id": "npc",
+        "brief": "the hooded \ud83c stranger",
+        "campaign_id": "cmp_4b1d9e7a",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    }
+  ]
+}

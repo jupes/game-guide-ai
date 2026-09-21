@@ -3,6 +3,8 @@
 #
 # Activation state (jobs light up as infrastructure lands, nothing is faked):
 #   tests            — always run.
+#   contract-parity  — always runs. Informational: it does not gate deploy,
+#                       because no route serves the Workbench contract yet.
 #   ui-e2e           — always runs against the production Compose stack.
 #   retrieval-metrics — needs secrets EVAL_DATABASE_URL + OPENAI_API_KEY
 #                       (a reachable corpus DB; the corpus is deliberately not
@@ -186,6 +188,27 @@ jobs:
         with:
           name: eval-results-${{ github.sha }}
           path: ingestion/eval_results.json
+
+  # Do the Pydantic and Zod halves of the Workbench wire contract agree? The
+  # shared fixtures cover the examples someone wrote; this mutates every valid
+  # one and compares the two validators' verdicts (docs/workbench-wire-contract.md).
+  # It is the only job that needs both toolchains, which is why it is its own job.
+  contract-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: oven-sh/setup-bun@v2
+      - name: Install the service from the lockfile
+        run: uv sync --frozen --extra dev
+      - name: Install the UI from the lockfile
+        working-directory: ui
+        run: bun install --frozen-lockfile
+      - name: Differential fuzz (Pydantic vs Zod)
+        run: uv run --frozen --no-sync python contracts/workbench/tools/differential_fuzz.py
 
   # Auto-deploy when everything above is green. A metrics REGRESSION blocks
   # this job; override by re-running the workflow with force_deploy=true

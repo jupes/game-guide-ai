@@ -1,0 +1,18 @@
+{
+  "schema": "RestoreRequest",
+  "direction": "request",
+  "note": "CANVAS-26: a restore appends a new version equal to an earlier one, so nothing is lost and it needs no base revision. It is idempotent by nature: restoring a version the document already equals changes nothing and creates no version. The answer is the whole Document.",
+  "valid": [
+    { "name": "back to version 2", "value": { "schema_version": 1, "version_number": 2 } }
+  ],
+  "invalid": [
+    { "name": "no version", "why": "a restore names what it restores", "value": { "schema_version": 1 } },
+    { "name": "version zero", "why": "versions count from one", "value": { "schema_version": 1, "version_number": 0 } },
+    { "name": "the handoff's version label", "why": "a version is named by its number", "value": { "schema_version": 1, "version_number": "v2" } },
+    {
+      "name": "content sent with the restore",
+      "why": "the server restores what it stored; a client can never supply 'history'",
+      "value": { "schema_version": 1, "version_number": 2, "data": { "name": "Sister Ondrey Vashe" } }
+    }
+  ]
+}

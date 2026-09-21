@@ -1,0 +1,32 @@
+{
+  "schema": "EnrolRequest",
+  "direction": "request",
+  "valid": [
+    {
+      "name": "an enrolment code from a personal link (AUD-4)",
+      "value": {
+        "schema_version": 1,
+        "code": "Zx9yW8vU7tS6rQ5pO4nM3lK2jI1hG0fE9dC8bA7zY6x"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a code one character short",
+      "why": "SEC-5",
+      "value": {
+        "schema_version": 1,
+        "code": "Zx9yW8vU7tS6rQ5pO4nM3lK2jI1hG0fE9dC8bA7zY6"
+      }
+    },
+    {
+      "name": "a table token alongside",
+      "why": "SEC-11: enrolment is judged by the code alone; a request is strict",
+      "value": {
+        "schema_version": 1,
+        "code": "Zx9yW8vU7tS6rQ5pO4nM3lK2jI1hG0fE9dC8bA7zY6x",
+        "token": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8u"
+      }
+    }
+  ]
+}

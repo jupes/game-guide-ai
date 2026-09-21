@@ -1,0 +1,75 @@
+{
+  "schema": "CuePlayRequest",
+  "direction": "request",
+  "note": "Play to table (AUDIO-8). Idempotent by command_id; a stale audio epoch is a 409 (AUDIO-28). A push always starts at zero; start_offset_ms stays in the contract for forward compatibility and today only zero is valid.",
+  "valid": [
+    {
+      "name": "push ambience, looping",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_7a8b9c0d1e2f3a4b",
+        "cue_id": "cue_3f9a1b2c",
+        "audio_epoch": 3,
+        "loop": true,
+        "start_offset_ms": 0
+      }
+    },
+    {
+      "name": "push a one-shot; the offset may be left out",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_7a8b9c0d1e2f3a4c",
+        "cue_id": "cue_9d8e7f6a",
+        "audio_epoch": 3,
+        "loop": false
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a start offset",
+      "why": "AUDIO-8: a push always starts at zero; there is no table seek in v1",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_7a8b9c0d1e2f3a4b",
+        "cue_id": "cue_3f9a1b2c",
+        "audio_epoch": 3,
+        "loop": true,
+        "start_offset_ms": 5000
+      }
+    },
+    {
+      "name": "no epoch",
+      "why": "AUDIO-28: a push carries the audio epoch it was issued under",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_7a8b9c0d1e2f3a4b",
+        "cue_id": "cue_3f9a1b2c",
+        "loop": true
+      }
+    },
+    {
+      "name": "a table volume",
+      "why": "AUDIO-5: the slider is the GM's own volume and is never broadcast",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_7a8b9c0d1e2f3a4b",
+        "cue_id": "cue_3f9a1b2c",
+        "audio_epoch": 3,
+        "loop": true,
+        "volume": 0.8
+      }
+    },
+    {
+      "name": "loop as text",
+      "why": "no coercion",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_7a8b9c0d1e2f3a4b",
+        "cue_id": "cue_3f9a1b2c",
+        "audio_epoch": 3,
+        "loop": "yes"
+      }
+    }
+  ]
+}

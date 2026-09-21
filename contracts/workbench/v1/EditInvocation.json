@@ -1,0 +1,201 @@
+{
+  "schema": "EditInvocation",
+  "direction": "response",
+  "note": "The status resource behind an edit lane: the same lifecycle as a ToolInvocation (RAIL-15 to RAIL-27). A finished edit says what it changed and at which version; it never carries the document, which is read through the document endpoints only. A conflict is a FAILED invocation with code conflict: nothing was overwritten, and Try again starts a new attempt on a fresh base (CANVAS-25).",
+  "valid": [
+    {
+      "name": "working: its fields are read-only meanwhile (CANVAS-24)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "document_id": "doc_9k2f7a1c",
+        "status": "working",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:35:40Z",
+        "updated_at": "2026-09-16T19:35:40Z",
+        "result": null,
+        "error": null
+      }
+    },
+    {
+      "name": "done: a new version, and the fields to wash gold (CANVAS-28)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "document_id": "doc_9k2f7a1c",
+        "status": "done",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:35:40Z",
+        "updated_at": "2026-09-16T19:36:02Z",
+        "result": {
+          "outcome": "changed",
+          "prose": "She wants the signet back now — something the party is carrying.",
+          "version_number": 3,
+          "write_revision": 14,
+          "changed_fields": ["wants", "leverage"],
+          "suggestions": [{ "tool_id": "hooks", "label": "Hooks that use the signet" }]
+        },
+        "error": null
+      }
+    },
+    {
+      "name": "done with nothing to change: no version is created (CANVAS-25)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60719",
+        "document_id": "doc_9k2f7a1c",
+        "status": "done",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:35:40Z",
+        "updated_at": "2026-09-16T19:35:51Z",
+        "result": { "outcome": "no_change", "prose": "", "suggestions": [] },
+        "error": null
+      }
+    },
+    {
+      "name": "the document changed while the assistant was working: nothing was overwritten (CANVAS-25)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f6071a",
+        "document_id": "doc_9k2f7a1c",
+        "status": "failed",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:35:40Z",
+        "updated_at": "2026-09-16T19:36:05Z",
+        "result": null,
+        "error": {
+          "code": "conflict",
+          "message": "The document changed while the assistant was working. Nothing was overwritten.",
+          "retryable": true,
+          "conflict": { "write_revision": 16, "fields": ["wants"] }
+        }
+      }
+    },
+    {
+      "name": "cancelled: a cancelled edit never creates a version (RAIL-23)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f6071b",
+        "document_id": "doc_9k2f7a1c",
+        "status": "cancelled",
+        "attempt": 1,
+        "cancel_requested": true,
+        "created_at": "2026-09-16T19:35:40Z",
+        "updated_at": "2026-09-16T19:35:44Z",
+        "result": null,
+        "error": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "done without a result",
+      "why": "status and payload must agree, as for a tool",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "document_id": "doc_9k2f7a1c",
+        "status": "done",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:35:40Z",
+        "updated_at": "2026-09-16T19:36:02Z",
+        "result": null,
+        "error": null
+      }
+    },
+    {
+      "name": "a changed outcome that changed no field",
+      "why": "1kg.5.5: an empty patch creates no version; that outcome is no_change",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "document_id": "doc_9k2f7a1c",
+        "status": "done",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:35:40Z",
+        "updated_at": "2026-09-16T19:36:02Z",
+        "result": { "outcome": "changed", "prose": "", "version_number": 3, "write_revision": 14, "changed_fields": [], "suggestions": [] },
+        "error": null
+      }
+    },
+    {
+      "name": "a no-change outcome that claims a version",
+      "why": "CANVAS-25: a no-op creates no version, so it has none to name",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "document_id": "doc_9k2f7a1c",
+        "status": "done",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:35:40Z",
+        "updated_at": "2026-09-16T19:36:02Z",
+        "result": { "outcome": "no_change", "prose": "", "version_number": 3, "suggestions": [] },
+        "error": null
+      }
+    },
+    {
+      "name": "an outcome that does not exist",
+      "why": "a closed union: changed or no_change; a conflict is a failure, not an outcome",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "document_id": "doc_9k2f7a1c",
+        "status": "done",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:35:40Z",
+        "updated_at": "2026-09-16T19:36:02Z",
+        "result": { "outcome": "conflict", "prose": "", "suggestions": [] },
+        "error": null
+      }
+    },
+    {
+      "name": "the edited document riding in the result",
+      "why": "documents travel through document endpoints only, so the thread and its export never hold a body (EXPORT-12)",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "document_id": "doc_9k2f7a1c",
+        "status": "done",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:35:40Z",
+        "updated_at": "2026-09-16T19:36:02Z",
+        "result": {
+          "outcome": "changed",
+          "prose": "",
+          "version_number": 3,
+          "write_revision": 14,
+          "changed_fields": ["wants"],
+          "suggestions": [],
+          "data": { "name": "Sister Ondrey Vashe", "wants": "The signet." }
+        },
+        "error": null
+      }
+    },
+    {
+      "name": "an edit that does not say which document",
+      "why": "a lane and a canvas both need to know what was edited, whatever the outcome",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_e1d2c3b4a5f60718",
+        "status": "working",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:35:40Z",
+        "updated_at": "2026-09-16T19:35:40Z",
+        "result": null,
+        "error": null
+      }
+    }
+  ]
+}

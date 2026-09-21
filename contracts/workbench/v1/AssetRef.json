@@ -1,0 +1,19 @@
+{
+  "schema": "AssetRef",
+  "direction": "response",
+  "valid": [
+    { "name": "an image with its dimensions", "value": { "asset_id": "ast_77c1d0e2", "media_type": "image", "alt": "A hooded woman with a silver pin", "width": 768, "height": 1024 } },
+    { "name": "minimal", "value": { "asset_id": "ast_77c1d0e2", "media_type": "image", "alt": "Battlemap of the reed-paths" } }
+  ],
+  "invalid": [
+    { "name": "audio is a cue, never a media result", "why": "patterns.md: audio never lands as a card or a document", "value": { "asset_id": "ast_77c1d0e2", "media_type": "audio", "alt": "Tidewarden Chant" } },
+    { "name": "alt text is required", "why": "every media card needs a text alternative", "value": { "asset_id": "ast_77c1d0e2", "media_type": "image", "alt": "" } },
+    { "name": "a zero width", "why": "dimensions are positive when present", "value": { "asset_id": "ast_77c1d0e2", "media_type": "image", "alt": "Map", "width": 0, "height": 10 } },
+    {
+      "name": "an asset reference never carries a URL",
+      "why": "X-10: clients build a same-origin asset URL from the id; no remote subresource is ever named on the wire",
+      "applies_to": ["server"],
+      "value": { "asset_id": "ast_77c1d0e2", "media_type": "image", "alt": "Map", "url": "https://cdn.example.test/map.png" }
+    }
+  ]
+}

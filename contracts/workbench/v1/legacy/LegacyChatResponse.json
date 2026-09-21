@@ -1,0 +1,57 @@
+{
+  "schema": "LegacyChatResponse",
+  "direction": "response",
+  "note": "A guard, not a new contract. These are today's POST /chat responses. They are validated by the EXISTING service.models.ChatResponse and ui/src/schemas.ts ChatResponseSchema, so a later Workbench slice cannot break legacy clients without this file failing.",
+  "valid": [
+    {
+      "name": "a grounded answer with a citation",
+      "value": {
+        "answer": "A basilisk petrifies with its gaze [1].",
+        "sources": [
+          { "book": "mm-5e", "chapter": "Bestiary", "section": "Stat Block", "entity": "Basilisk", "page": 12, "snippet": "Armor Class 15 ..." }
+        ],
+        "answerable": true,
+        "mode": "sage",
+        "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d"
+      }
+    },
+    {
+      "name": "a refusal is a 200 with answerable false",
+      "value": { "answer": "I couldn't find that in the D&D 5e sources I have.", "sources": [], "answerable": false }
+    },
+    {
+      "name": "a spell answer with suggestions and a structured card",
+      "value": {
+        "answer": "Fireball is a 3rd-level evocation [1].",
+        "sources": [{ "book": "phb-5e", "chapter": null, "section": null, "entity": "Fireball", "page": 241, "snippet": "A bright streak..." }],
+        "answerable": true,
+        "mode": "spell",
+        "suggestions": [
+          { "style": "practical", "text": "Clear a corridor." },
+          { "style": "roleplay", "text": "Light the beacon." },
+          { "style": "wacky", "text": "Pop every balloon." }
+        ],
+        "spell_content": { "name": "Fireball", "description": "A bright streak flashes...", "level": 3, "school": "evocation" }
+      }
+    },
+    {
+      "name": "a GM answer with a stat block",
+      "value": {
+        "answer": "Here is a drowned guardian.",
+        "sources": [],
+        "answerable": false,
+        "mode": "gm",
+        "stat_block": { "name": "Tidewarden Drowned", "ac": 16, "hp": 82, "cr": "5" }
+      }
+    }
+  ],
+  "invalid": [
+    { "name": "missing answerable", "why": "required today", "value": { "answer": "x", "sources": [] } },
+    { "name": "sources is not a list", "why": "required list", "value": { "answer": "x", "sources": "none", "answerable": true } },
+    {
+      "name": "an unknown suggestion style",
+      "why": "closed enum today",
+      "value": { "answer": "x", "sources": [], "answerable": true, "suggestions": [{ "style": "sarcastic", "text": "no" }] }
+    }
+  ]
+}
