@@ -1,0 +1,291 @@
+/* ── CanvasPane ──────────────────────────────────────────────────────────────
+   The persistent canvas beside the chat (1kg.6.1).
+
+   Every colour is a design-system token, so both themes follow the palette and
+   neither is hard-coded. Every motion is repeated under
+   `prefers-reduced-motion: reduce` (LAYOUT-9). Interactive controls that this
+   file owns hold the 44 px touch floor; the ds Button and IconButton hold their
+   own. Nothing here encodes a document title, a summary or field text.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.gm-canvas {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--aether-font-ui);
+}
+
+/* §10.2, narrow: the canvas is a full-screen view. */
+.gm-canvas[data-layout="fullScreen"] {
+  height: 100%;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.gm-canvas__header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--aether-space-2);
+  padding: var(--aether-space-3) var(--aether-space-5);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container);
+}
+
+.gm-canvas__type-icon {
+  font-size: 18px;
+  color: var(--md-sys-color-primary);
+  flex-shrink: 0;
+}
+
+.gm-canvas__identity {
+  min-width: 0;
+  flex: 1 1 12rem;
+}
+
+.gm-canvas__title {
+  margin: 0;
+  font-family: var(--aether-font-ui);
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--md-sys-color-on-surface);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gm-canvas__meta {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* §10.2: below 560 px of canvas width the meta line hides. It stays in the
+   accessibility tree — the type icon beside it is decorative. */
+.gm-canvas__meta--offscreen {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── CANVAS-13 · the one aggregate status ───────────────────────────────── */
+
+.gm-canvas__status {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-canvas__status[data-tone="error"] {
+  color: var(--md-sys-color-error);
+}
+
+.gm-canvas__status[data-tone="progress"] {
+  color: var(--md-sys-color-on-surface);
+}
+
+/* ── CANVAS-29 · the gold wash acknowledgement ──────────────────────────── */
+
+.gm-canvas__wash {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--aether-space-1);
+  animation: gm-canvas-wash-in var(--md-sys-motion-duration-medium1) var(--md-sys-motion-easing-standard);
+}
+
+@keyframes gm-canvas-wash-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* The gold wash the document body carries while a live change is unacknowledged
+   (CANVAS-28). The fields themselves are 1kg.6.2's; this is the ground. */
+.gm-canvas__body[data-wash="true"] {
+  animation: gm-canvas-wash var(--md-sys-motion-duration-long2) var(--md-sys-motion-easing-standard);
+}
+
+@keyframes gm-canvas-wash {
+  from {
+    background: var(--md-sys-color-secondary-container);
+  }
+
+  to {
+    background: transparent;
+  }
+}
+
+/* ── REVEAL-13 / REVEAL-14 · state, then two separate controls ──────────── */
+
+.gm-canvas__reveal-state {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--aether-space-1) var(--aether-space-2);
+  border-radius: var(--aether-radius-chip);
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.gm-canvas__reveal-message {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface);
+}
+
+.gm-canvas__reveal-note {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-canvas__reveal-state[data-state="unknown"] .gm-canvas__reveal-message {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ── §10.2, narrow · the overflow menu ──────────────────────────────────── */
+
+.gm-canvas__menu-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.gm-canvas__more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--aether-touch-min);
+  min-height: var(--aether-touch-min);
+  padding: 0;
+  border: none;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  cursor: pointer;
+  transition: var(--aether-transition-button);
+}
+
+.gm-canvas__more:hover {
+  background: var(--md-sys-color-surface-container-high);
+}
+
+.gm-canvas__more:focus-visible,
+.gm-canvas__menu-item:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.gm-canvas__menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 2;
+  min-width: 13rem;
+  padding: var(--aether-space-1) 0;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-chip);
+  background: var(--md-sys-color-surface-container-high);
+  box-shadow: var(--md-sys-elevation-level2);
+}
+
+.gm-canvas__menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-2);
+  width: 100%;
+  min-height: var(--aether-touch-min);
+  padding: 0 var(--aether-space-4);
+  border: none;
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--aether-font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: var(--aether-transition-button);
+}
+
+.gm-canvas__menu-item:hover {
+  background: var(--md-sys-color-surface-container-highest);
+}
+
+.gm-canvas__menu-item .material-symbols-rounded {
+  font-size: 18px;
+}
+
+/* ── CANVAS-27 · the history disclosure ─────────────────────────────────── */
+
+.gm-canvas__history {
+  padding: var(--aether-space-3) var(--aether-space-5);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container-low);
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+/* §10.2, narrow: version history is a full-screen sub-view. */
+.gm-canvas[data-layout="fullScreen"] .gm-canvas__history {
+  max-height: none;
+  flex: 1;
+}
+
+.gm-canvas__history-heading {
+  margin: 0 0 var(--aether-space-2);
+  font-family: var(--aether-font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* ── The scrolling body ─────────────────────────────────────────────────── */
+
+.gm-canvas__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--aether-space-6) var(--aether-space-8);
+}
+
+.gm-canvas__body:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: -3px;
+}
+
+/* ── LAYOUT-9 · reduced motion ──────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-canvas__wash {
+    animation: none;
+  }
+
+  .gm-canvas__body[data-wash="true"] {
+    animation: none;
+  }
+
+  .gm-canvas__more {
+    transition: none;
+  }
+
+  .gm-canvas__menu-item {
+    transition: none;
+  }
+}
