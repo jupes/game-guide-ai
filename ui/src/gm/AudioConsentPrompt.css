@@ -1,0 +1,146 @@
+/* ── AudioConsentPrompt ──────────────────────────────────────────────────────
+   The table client's sound gate. It is the only audio surface a player sees,
+   so it is deliberately plain: one tap target, then one toggle. Tokens only,
+   both themes, and a 44px floor on a surface that is nearly always a phone. */
+
+.gm-audio-consent {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--aether-space-2);
+  width: 100%;
+  font-family: var(--aether-font-ui);
+  color: var(--md-sys-color-on-surface);
+}
+
+/* ── The tap target (AUDIO-19) ── */
+.gm-audio-consent__accept {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--aether-space-3);
+  width: 100%;
+  min-height: var(--aether-touch-min);
+  padding: var(--aether-space-3) var(--aether-space-4);
+  border: 1px solid var(--md-sys-color-primary);
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container-low);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
+}
+
+.gm-audio-consent__accept:hover {
+  background: color-mix(in srgb, var(--md-sys-color-primary) 10%, var(--md-sys-color-surface-container-low));
+}
+
+/* The banner is the compact form shown the moment a client joins; the full
+   prompt appears when a cue is already waiting on the tap. */
+.gm-audio-consent[data-variant='prompt'] .gm-audio-consent__accept {
+  flex-direction: column;
+  padding-block: var(--aether-space-5);
+}
+
+.gm-audio-consent__disc {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+.gm-audio-consent[data-variant='prompt'] .gm-audio-consent__disc {
+  width: 54px;
+  height: 54px;
+}
+
+.gm-audio-consent__disc .material-symbols-rounded {
+  font-size: 24px;
+}
+
+.gm-audio-consent[data-variant='prompt'] .gm-audio-consent__disc .material-symbols-rounded {
+  font-size: 30px;
+}
+
+.gm-audio-consent__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  text-align: center;
+}
+
+.gm-audio-consent__label {
+  font-size: var(--md-sys-typescale-label-large-size);
+  font-weight: 800;
+  color: var(--md-sys-color-on-surface);
+}
+
+.gm-audio-consent__detail {
+  font-size: var(--md-sys-typescale-label-small-size);
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+  text-wrap: pretty;
+}
+
+/* ── Mute (AUDIO-20) ── */
+.gm-audio-consent__mute {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--aether-space-2);
+  min-height: var(--aether-touch-min);
+  min-width: var(--aether-touch-min);
+  padding-inline: var(--aether-space-4);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface-variant);
+  font: inherit;
+  font-size: var(--md-sys-typescale-label-medium-size);
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
+}
+
+.gm-audio-consent__mute[aria-pressed='true'] {
+  border-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-primary);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 12%, var(--md-sys-color-surface-container-low));
+}
+
+.gm-audio-consent__status {
+  margin: 0;
+  font-size: var(--md-sys-typescale-label-small-size);
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-audio-consent__accept:focus-visible,
+.gm-audio-consent__mute:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+/* ── Narrow (§10.2): the player table view is usable from 320px ── */
+@container (max-width: 380px) {
+  .gm-audio-consent__accept {
+    flex-direction: column;
+    text-align: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-audio-consent__accept,
+  .gm-audio-consent__mute {
+    transition: none;
+  }
+}
