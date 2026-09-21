@@ -140,6 +140,25 @@ function barHasFocus(host: HTMLElement | null): boolean {
   return bar !== null && bar.contains(active)
 }
 
+/**
+ * REVEAL-13's three readings of the badge, and the difference between two of
+ * them that this component got wrong.
+ *
+ * An OMITTED prop is an owner who never had reveal state to pass — a fresh
+ * document nobody has revealed — and `GM ONLY` is the true thing to say.
+ * An EXPLICIT `null` is an owner who looked and could not confirm, which is
+ * exactly the case REVEAL-13 writes out: the indicator reads `Reveal state
+ * unknown — reconnecting`, **never "nothing revealed"**. `revealBadge ??
+ * 'GM ONLY'` collapsed the two, so `revealBadge={projection?.badge ?? null}`
+ * told the GM the table sees nothing at the moment the client stopped knowing.
+ */
+const REVEAL_UNKNOWN = 'Reveal state unknown — reconnecting'
+
+function revealBadgeText(badge: string | null | undefined): string {
+  if (badge === undefined) return 'GM ONLY'
+  return badge === null ? REVEAL_UNKNOWN : badge
+}
+
 /** The read presentation a node sits in, or `null` for a node outside one. */
 function fieldOf(node: Node | null): HTMLElement | null {
   if (node === null) return null
@@ -168,9 +187,13 @@ export interface GameDocumentProps {
   assistantEditing?: readonly string[]
   /** REVEAL-13: the keys the table can see. Read off the server's projection. */
   revealedFields?: readonly string[]
-  /** REVEAL-13's badge, in the owner's words — `REVEALED`, or `Reveal state
-   * unknown — reconnecting` when it could not be confirmed. Left out, the
-   * document says `GM ONLY`, which is what a document nobody has revealed is. */
+  /**
+   * REVEAL-13's badge, in the owner's words — `REVEALED`, or whatever the
+   * server's live projection says. Left out, the document says `GM ONLY`,
+   * which is what a document nobody has revealed is. Passed as an explicit
+   * `null` — the owner looked and could not confirm — it says so, because
+   * REVEAL-13 forbids reading an unconfirmed state as "nothing revealed".
+   */
   revealBadge?: string | null
   /** Rendered for a `cites_corpus` type only: plain text, no links, no images. */
   sources?: readonly Source[]
@@ -376,7 +399,7 @@ export function GameDocument({
       <header className="gm-document__head">
         <span className="gm-document__type">{type.label}</span>
         {/* REVEAL-13: repeated from the server's projection, never derived. */}
-        <span className="gm-document__badge">{revealBadge ?? 'GM ONLY'}</span>
+        <span className="gm-document__badge">{revealBadgeText(revealBadge)}</span>
 
         {/* One polite region for the whole document. It is empty at rest and a
             keystroke never changes it (CANVAS-13's aggregate is the canvas

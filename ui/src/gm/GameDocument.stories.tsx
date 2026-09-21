@@ -290,6 +290,29 @@ export const RevealStateUnknown: Story = {
   },
 }
 
+/**
+ * The same case reached the other way, which is the one that was wrong: an
+ * owner writing `revealBadge={projection?.badge ?? null}` while the projection
+ * has dropped. An explicit `null` is "could not confirm", not "nothing
+ * revealed".
+ */
+export const RevealStateUnconfirmed: Story = {
+  args: { revealBadge: null },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('Reveal state unknown — reconnecting')).toBeInTheDocument()
+    await expect(canvas.queryByText('GM ONLY')).toBeNull()
+  },
+}
+
+/** And the default the owner keeps: an omitted prop is a document nobody has
+ * revealed, and `GM ONLY` is the true thing to say about one. */
+export const GmOnlyByDefault: Story = {
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText('GM ONLY')).toBeInTheDocument()
+  },
+}
+
 // ── Keyboard editing, one structured kind at a time ──────────────────────────
 
 /** A `text_list` edited with nothing but a keyboard. */

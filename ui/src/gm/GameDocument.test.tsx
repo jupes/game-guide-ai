@@ -178,6 +178,22 @@ describe('the reveal badge and markers are props (REVEAL-13)', () => {
     show()
     expect(screen.getByText('GM ONLY')).toBeInTheDocument()
   })
+
+  it('reads an explicit null as unknown, never as GM ONLY', () => {
+    // An owner writing `revealBadge={projection?.badge ?? null}` is saying
+    // "I looked and could not confirm". REVEAL-13 names that case and forbids
+    // rendering it as "nothing revealed": a GM told the table sees nothing
+    // does not go and check.
+    show({ revealBadge: null })
+    expect(screen.queryByText('GM ONLY')).not.toBeInTheDocument()
+    expect(screen.getByText('Reveal state unknown — reconnecting')).toBeInTheDocument()
+  })
+
+  it('still repeats the owner’s own words, and computes none of them', () => {
+    show({ revealBadge: 'Reveal state unknown — reconnecting' })
+    expect(screen.getByText('Reveal state unknown — reconnecting')).toBeInTheDocument()
+    expect(screen.queryByText('GM ONLY')).not.toBeInTheDocument()
+  })
 })
 
 // ── AC 3 · structure survives ────────────────────────────────────────────────
