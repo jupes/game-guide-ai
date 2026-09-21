@@ -165,6 +165,21 @@ describe('an AI edit holds one field and leaves the rest alone (CANVAS-24)', () 
     expect(screen.queryByRole('button', { name: 'Edit Wants' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit Voice' })).toBeInTheDocument()
   })
+
+  it('explains the Edit control’s disappearance to somebody who cannot see it go', () => {
+    // The control is REMOVED rather than disabled — the alignment forbids
+    // leaving a disabled control in an emergency — so the removal owes a
+    // screen-reader user an explanation it can hear.
+    show({ assistantEditing: ['wants'] })
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Assistant is editing Wants. You cannot edit it by hand until it finishes.',
+    )
+  })
+
+  it('says nothing about a takeover when there is none', () => {
+    show()
+    expect(screen.getByRole('status')).toHaveTextContent('')
+  })
 })
 
 describe('the reveal badge and markers are props (REVEAL-13)', () => {

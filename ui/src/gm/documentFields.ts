@@ -100,10 +100,18 @@ export function statusOf(states: Readonly<Record<string, FieldStatus>>, key: str
  * announcements to one when an operation starts and one when it ends. A
  * keystroke therefore never changes this string, which is what keeps the region
  * from reading the document back on every character.
+ *
+ * CANVAS-24's takeover is the one *state* this region reports, and it is last,
+ * below every event. While the assistant holds a field the Edit control is
+ * REMOVED rather than disabled — the alignment's pitfall forbids leaving a
+ * disabled control in an emergency — and a control that vanishes silently is
+ * a control a screen-reader user simply cannot find again. Saying so is the
+ * explanation that removal owes them.
  */
 export function liveRegionMessage(
   fields: readonly DocumentFieldRead[],
   states: Readonly<Record<string, FieldStatus>>,
+  assistantEditing: readonly string[] = [],
 ): string {
   const firstIn = (state: FieldState): DocumentFieldRead | undefined =>
     fields.find((field) => statusOf(states, field.key).state === state)
@@ -114,6 +122,8 @@ export function liveRegionMessage(
   if (failed !== undefined) return `Couldn't save ${failed.label}`
   const saved = firstIn('saved')
   if (saved !== undefined) return `${saved.label} saved`
+  const held = fields.find((field) => assistantEditing.includes(field.key))
+  if (held !== undefined) return `Assistant is editing ${held.label}. You cannot edit it by hand until it finishes.`
   return ''
 }
 

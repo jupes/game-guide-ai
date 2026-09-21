@@ -392,12 +392,15 @@ export function DocumentField({
     if (focusRequest.slot === '') return
     const host = fieldRef.current
     if (host === null) return
-    // `editor` is "whichever control the editor put first"; everything else is
-    // a row, named by its position.
+    // `editor` is "whichever control the editor put first" and `add` is the
+    // one control still standing when the last row has gone; everything else
+    // is a row, named by its position.
     const node =
       focusRequest.slot === 'editor'
         ? host.querySelector<HTMLElement>('.gm-field__input')
-        : host.querySelector<HTMLElement>(`[data-slot="${focusRequest.slot}"]`)
+        : focusRequest.slot === 'add'
+          ? host.querySelector<HTMLElement>('.gm-field__add')
+          : host.querySelector<HTMLElement>(`[data-slot="${focusRequest.slot}"]`)
     node?.focus()
   }, [focusRequest])
 
@@ -746,15 +749,20 @@ export function DocumentField({
               onBlur={onControlBlur}
               onChange={(event) => change(replace(index, event.target.value))}
             />
-            {rowControls(index, items.length, move, () =>
-              structural(items.filter((_, at) => at !== index), `item-${Math.max(0, index - 1)}`),
-            )}
+            {rowControls(index, items.length, move, () => {
+              const next = items.filter((_, at) => at !== index)
+              // Removing the LAST row leaves no row to land on, and focus
+              // would fall to `<body>` — a keyboard user loses their place in
+              // the document and a screen reader stops reading the field.
+              structural(next, next.length === 0 ? 'add' : `item-${Math.max(0, index - 1)}`)
+            })}
           </div>
         ))}
         <Button
           variant="text"
           size="small"
           icon="add"
+          className="gm-field__add"
           onClick={() => {
             const next = [...items, '']
             settle({ value: next })
@@ -804,15 +812,17 @@ export function DocumentField({
               onBlur={onControlBlur}
               onChange={(event) => change(replace(index, { ...entry, text: event.target.value }))}
             />
-            {rowControls(index, entries.length, move, () =>
-              structural(entries.filter((_, at) => at !== index), `item-${Math.max(0, index - 1)}`),
-            )}
+            {rowControls(index, entries.length, move, () => {
+              const next = entries.filter((_, at) => at !== index)
+              structural(next, next.length === 0 ? 'add' : `item-${Math.max(0, index - 1)}`)
+            })}
           </div>
         ))}
         <Button
           variant="text"
           size="small"
           icon="add"
+          className="gm-field__add"
           onClick={() => {
             const next = [...entries, { name: '', text: '' }]
             settle({ value: next })

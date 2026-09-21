@@ -264,6 +264,18 @@ describe('text_list — rows, never one comma-joined string', () => {
     expect(moved).toHaveFocus()
   })
 
+  it('keeps focus in the field when the last row is removed', async () => {
+    // With no row left there is nothing at `item-0` to land on, and focus
+    // would fall to `<body>`: a keyboard user loses their place and a screen
+    // reader stops reading the field. The Add control is what is still there.
+    const user = userEvent.setup()
+    show('present', { typeId: 'session-notes', value: ['The only one'] })
+    await openEditor(user, 'Present')
+    await user.click(screen.getByRole('button', { name: 'Remove Present 1' }))
+    expect(screen.queryByRole('textbox', { name: 'Present 1' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add to Present' })).toHaveFocus()
+  })
+
   it('cannot move the first row up or the last row down', async () => {
     const user = userEvent.setup()
     show('present', { typeId: 'session-notes' })
@@ -312,6 +324,23 @@ describe('entry_list — a name and a text, both kept', () => {
       { name: 'Answering Tide', text: 'When struck, it rises and the water rises with it.' },
       { name: '', text: '' },
     ])
+  })
+
+  it('keeps focus in the field when the last entry is removed', async () => {
+    const user = userEvent.setup()
+    show('reactions', { typeId: 'statblock' })
+    await openEditor(user, 'Reactions')
+    await user.click(screen.getByRole('button', { name: 'Remove Reactions 1' }))
+    expect(screen.queryByRole('textbox', { name: 'Reactions 1 name' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add to Reactions' })).toHaveFocus()
+  })
+
+  it('keeps focus on the row above when a middle entry is removed', async () => {
+    const user = userEvent.setup()
+    show('actions', { typeId: 'statblock' })
+    await openEditor(user, 'Actions')
+    await user.click(screen.getByRole('button', { name: 'Remove Actions 2' }))
+    expect(screen.getByRole('textbox', { name: 'Actions 1 name' })).toHaveFocus()
   })
 
   it('refuses an entry that has a text and no name', async () => {

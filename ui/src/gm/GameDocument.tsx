@@ -405,7 +405,7 @@ export function GameDocument({
             keystroke never changes it (CANVAS-13's aggregate is the canvas
             header's; STATE-7 rations the rest). */}
         <p className="gm-document__live" role="status" aria-live="polite">
-          {liveRegionMessage(fields, fieldStates)}
+          {liveRegionMessage(fields, fieldStates, assistantEditing)}
         </p>
 
         {changed.size > 0 && onAcknowledgeChanges !== undefined && (

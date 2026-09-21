@@ -120,6 +120,25 @@ describe('liveRegionMessage — one polite region, silent at rest', () => {
       liveRegionMessage(fields, { voice: { state: 'error' }, wants: { state: 'conflict' } }),
     ).toBe('Wants changed elsewhere')
   })
+
+  it('explains a CANVAS-24 takeover, because the Edit control is removed rather than disabled', () => {
+    expect(liveRegionMessage(fields, {}, ['wants'])).toBe(
+      'Assistant is editing Wants. You cannot edit it by hand until it finishes.',
+    )
+  })
+
+  it('names the takeover with the registry label, never the key', () => {
+    expect(liveRegionMessage(fields, {}, ['wants'])).not.toContain('wants')
+  })
+
+  it('keeps the takeover below every event, so it never masks a failure', () => {
+    expect(liveRegionMessage(fields, { voice: { state: 'error' } }, ['wants'])).toBe("Couldn't save Voice")
+    expect(liveRegionMessage(fields, { voice: { state: 'saved' } }, ['wants'])).toBe('Voice saved')
+  })
+
+  it('says nothing for a key the type does not declare', () => {
+    expect(liveRegionMessage(fields, {}, ['constructor', 'nonesuch'])).toBe('')
+  })
 })
 
 describe('abilityModifier — 5e arithmetic, and an absent score is not zero', () => {
