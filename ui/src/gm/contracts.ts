@@ -1345,6 +1345,16 @@ export const TableSessionAnswerSchema = z
   })
 export type TableSessionAnswer = z.infer<typeof TableSessionAnswerSchema>
 
+/** What the deployment has switched on (RAIL-10, AE-58): the answer to the lookup
+ * a GM client makes once per load. A newer server may add a switch; it is
+ * stripped, because this client's registry cannot name a tool for it. */
+export const CapabilitiesSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  image_generation: z.boolean(),
+  audio_cues: z.boolean(),
+})
+export type Capabilities = z.infer<typeof CapabilitiesSchema>
+
 // ── Realtime events ──────────────────────────────────────────────────────────
 // Two channels, two unions (ADR RT-1, threat model 8.3). Every frame carries its
 // own schema_version; the heartbeat is an SSE comment, not an event. `snapshot`
@@ -1533,6 +1543,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   TableSession: TableSessionSchema,
   TableSessionRequest: TableSessionRequestSchema,
   TableSessionAnswer: TableSessionAnswerSchema,
+  Capabilities: CapabilitiesSchema,
   GmEvent: GmEventSchema,
   TableEvent: TableEventSchema,
   GmSnapshot: GmSnapshotSchema,

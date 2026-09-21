@@ -24,12 +24,29 @@ here: a page cannot fail a build.
 schema has no fixture file, or if a fixture has no valid or no invalid example.
 So neither language can quietly fall behind the other.
 
-`registry.json` pins the few registry facts the validators need — which tool
-lands as which result kind, which may run without a brief, which document type
-lives in which library category. Both languages keep those facts as constants
-and both suites compare them with the file. `1kg.3.1` owns the full tool and
-document-type catalogue and extends this same file, rather than starting a
-second source of truth.
+`registry.json` is the **canonical registry** (`1kg.3.1`): the ten tools with
+their commands, aliases, labels, icons, blurbs, working labels, result kinds,
+brief policies, what they create and which capability they need; the eight
+document types with their labels, icons, renderers, library categories, field
+definitions and field labels; the capability switches with the reason a
+disabled tool shows; the default pins and the rail limit; and the media, cue
+and slot vocabularies. Both languages keep it as validated data —
+`service/workbench_registry.py` for server policy, `ui/src/gm/registry.ts` for
+the rail, the slash menu and More — and both suites compare their copy with the
+file, so neither can drift. Each copy is validated when it loads: duplicate ids,
+a command or alias that collides with another (SLASH-2), an unknown result
+kind, type, card kind, capability or renderer, an HTML entity in a label, a
+default pin that is not a tool or that needs a capability which is off by
+default, or more than five pins (RAIL-11) is a build failure, never a running
+service. A lookup of an unknown id answers nothing — never the NPC config the
+handoff fell back to (X-8). The wire contract's own validators pin the subset
+of the registry they need as constants.
+
+What the registry does not carry yet, on purpose: which fields a table may see,
+reveal groups and warnings, audiences and per-audience default masks. Those are
+`agent-forge-harness-1ir.1.2`'s decision and arrive with the reveal family
+(`1kg.1.6`). The seven document types whose fields `1kg.5.3` has yet to declare
+carry no field labels until it does.
 
 ## Conventions
 

@@ -3,43 +3,37 @@
   "result_kinds": ["card", "document", "media"],
   "card_kinds": ["stat_block"],
   "library_categories": ["npcs", "bestiary", "documents", "session-log", "cues"],
+  "renderers": ["game_document", "stat_block_card"],
+  "capabilities": [
+    {"id": "image_generation", "label": "Image generation", "disabled_reason": "Image generation isn't set up yet."},
+    {"id": "audio_cues", "label": "Audio cues", "disabled_reason": "Audio cues aren't set up yet."}
+  ],
+  "default_pinned": ["npc", "monster", "loot", "names", "rules"],
+  "rail_limit": 5,
   "tools": [
-    { "id": "npc", "result_kind": "document", "creates_doc_type": "npc", "card_kind": null, "brief": "required" },
-    { "id": "monster", "result_kind": "card", "creates_doc_type": null, "card_kind": "stat_block", "brief": "required" },
-    { "id": "loot", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required" },
-    { "id": "names", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required" },
-    { "id": "rules", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required" },
-    { "id": "portrait", "result_kind": "media", "creates_doc_type": null, "card_kind": null, "brief": "required" },
-    { "id": "encounter", "result_kind": "document", "creates_doc_type": "encounter", "card_kind": null, "brief": "required" },
-    { "id": "hooks", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required" },
-    { "id": "recap", "result_kind": "document", "creates_doc_type": "session-notes", "card_kind": null, "brief": "optional" },
-    { "id": "map", "result_kind": "media", "creates_doc_type": null, "card_kind": null, "brief": "required" }
+    {"id": "npc", "result_kind": "document", "creates_doc_type": "npc", "card_kind": null, "brief": "required", "command": "/npc", "aliases": [], "label": "NPC", "icon": "person_add", "blurb": "Generate an NPC dossier", "working_label": "Writing the dossier…", "capability": null},
+    {"id": "monster", "result_kind": "card", "creates_doc_type": null, "card_kind": "stat_block", "brief": "required", "command": "/monster", "aliases": [], "label": "Monster", "icon": "shield", "blurb": "Generate a stat block", "working_label": "Building the stat block…", "capability": null},
+    {"id": "loot", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/loot", "aliases": [], "label": "Loot", "icon": "diamond", "blurb": "Roll treasure and hoards", "working_label": "Rolling treasure…", "capability": null},
+    {"id": "names", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/names", "aliases": [], "label": "Names", "icon": "badge", "blurb": "Names by culture and role", "working_label": "Gathering names…", "capability": null},
+    {"id": "rules", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/rules", "aliases": [], "label": "Rules", "icon": "gavel", "blurb": "Look up a rule, with citations", "working_label": "Checking the rules…", "capability": null},
+    {"id": "portrait", "result_kind": "media", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/portrait", "aliases": [], "label": "Portrait", "icon": "image", "blurb": "Portrait or scene art", "working_label": "Painting…", "capability": "image_generation"},
+    {"id": "encounter", "result_kind": "document", "creates_doc_type": "encounter", "card_kind": null, "brief": "required", "command": "/encounter", "aliases": [], "label": "Encounter", "icon": "swords", "blurb": "Build a balanced encounter", "working_label": "Balancing the encounter…", "capability": null},
+    {"id": "hooks", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/hook", "aliases": ["/hooks"], "label": "Hooks", "icon": "flag", "blurb": "Three plot hooks", "working_label": "Finding hooks…", "capability": null},
+    {"id": "recap", "result_kind": "document", "creates_doc_type": "session-notes", "card_kind": null, "brief": "optional", "command": "/recap", "aliases": [], "label": "Recap", "icon": "history_edu", "blurb": "Recap the session so far", "working_label": "Recapping the session…", "capability": null},
+    {"id": "map", "result_kind": "media", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/map", "aliases": [], "label": "Map", "icon": "map", "blurb": "Sketch a battlemap", "working_label": "Sketching the map…", "capability": "image_generation"}
   ],
   "field_kinds": ["text", "prose", "text_list", "asset"],
-  "common_fields": { "name": "text", "qualifier": "text", "tags": "text_list" },
+  "common_fields": {"name": "text", "qualifier": "text", "tags": "text_list"},
+  "common_field_labels": {"name": "Name", "qualifier": "Qualifier", "tags": "Tags"},
   "document_types": [
-    {
-      "id": "npc",
-      "library_category": "npcs",
-      "type_version": 1,
-      "fields": {
-        "portrait": "asset",
-        "voice": "text",
-        "tell": "text",
-        "attitude": "text",
-        "wants": "prose",
-        "leverage": "prose",
-        "if_attacked": "prose",
-        "notes": "prose"
-      }
-    },
-    { "id": "statblock", "library_category": "bestiary", "type_version": 1, "fields": {} },
-    { "id": "handout", "library_category": "documents", "type_version": 1, "fields": {} },
-    { "id": "session-notes", "library_category": "session-log", "type_version": 1, "fields": {} },
-    { "id": "quest-log", "library_category": "documents", "type_version": 1, "fields": {} },
-    { "id": "character-sheet", "library_category": "documents", "type_version": 1, "fields": {} },
-    { "id": "lore", "library_category": "documents", "type_version": 1, "fields": {} },
-    { "id": "encounter", "library_category": "documents", "type_version": 1, "fields": {} }
+    {"id": "npc", "library_category": "npcs", "type_version": 1, "fields": {"portrait": "asset", "voice": "text", "tell": "text", "attitude": "text", "wants": "prose", "leverage": "prose", "if_attacked": "prose", "notes": "prose"}, "label": "NPC Dossier", "icon": "person", "renderer": "game_document", "printable": false, "cites_corpus": false, "field_labels": {"portrait": "Portrait", "voice": "Voice", "tell": "Tell", "attitude": "Attitude", "wants": "Wants", "leverage": "Leverage", "if_attacked": "If the party attacks", "notes": "Notes"}},
+    {"id": "statblock", "library_category": "bestiary", "type_version": 1, "fields": {}, "label": "Stat Block", "icon": "shield", "renderer": "stat_block_card", "printable": false, "cites_corpus": false, "field_labels": {}},
+    {"id": "handout", "library_category": "documents", "type_version": 1, "fields": {}, "label": "Player Handout", "icon": "mail", "renderer": "game_document", "printable": true, "cites_corpus": false, "field_labels": {}},
+    {"id": "session-notes", "library_category": "session-log", "type_version": 1, "fields": {}, "label": "Session Notes", "icon": "history_edu", "renderer": "game_document", "printable": false, "cites_corpus": false, "field_labels": {}},
+    {"id": "quest-log", "library_category": "documents", "type_version": 1, "fields": {}, "label": "Quest Log", "icon": "flag", "renderer": "game_document", "printable": false, "cites_corpus": false, "field_labels": {}},
+    {"id": "character-sheet", "library_category": "documents", "type_version": 1, "fields": {}, "label": "Character Sheet", "icon": "contact_page", "renderer": "game_document", "printable": false, "cites_corpus": false, "field_labels": {}},
+    {"id": "lore", "library_category": "documents", "type_version": 1, "fields": {}, "label": "Lore Entry", "icon": "local_library", "renderer": "game_document", "printable": false, "cites_corpus": true, "field_labels": {}},
+    {"id": "encounter", "library_category": "documents", "type_version": 1, "fields": {}, "label": "Encounter", "icon": "swords", "renderer": "game_document", "printable": false, "cites_corpus": false, "field_labels": {}}
   ],
   "asset_kinds": ["image", "audio"],
   "media_types": {

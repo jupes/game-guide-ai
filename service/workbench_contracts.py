@@ -1714,6 +1714,17 @@ class TableSessionAnswer(_Contract):
         return self
 
 
+class Capabilities(_Contract):
+    """What the deployment has switched on (RAIL-10, AE-58): the answer to the
+    lookup a GM client makes once per load. Every switch is off until the owner
+    approves a provider (record 3.3). A newer server may add a switch; a client
+    strips it, because its registry cannot name a tool for it."""
+
+    schema_version: SchemaVersion
+    image_generation: StrictBool
+    audio_cues: StrictBool
+
+
 # ── Realtime events ──────────────────────────────────────────────────────────
 #
 # Two channels, two unions (ADR RT-1, threat model 8.3): the GM channel carries
@@ -1991,6 +2002,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "TableSession": TypeAdapter(TableSession),
     "TableSessionRequest": TypeAdapter(TableSessionRequest),
     "TableSessionAnswer": TypeAdapter(TableSessionAnswer),
+    "Capabilities": TypeAdapter(Capabilities),
     "GmEvent": TypeAdapter(GmEvent, config=_HIDE_INPUT),
     "TableEvent": TypeAdapter(TableEvent, config=_HIDE_INPUT),
     "GmSnapshot": TypeAdapter(GmSnapshot),
