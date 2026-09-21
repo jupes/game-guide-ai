@@ -16,7 +16,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-import { ABILITY_SCORE_MAX, INTEGER_FIELD_MAX, type DocumentTypeId, type FieldValue } from './contracts'
+import {
+  ABILITY_SCORE_MAX,
+  INTEGER_FIELD_MAX,
+  INTEGER_FIELD_MIN,
+  LIST_ITEM_MAX_CHARS,
+  PROSE_FIELD_MAX_CHARS,
+  TEXT_FIELD_MAX_CHARS,
+  type DocumentTypeId,
+  type FieldValue,
+} from './contracts'
 import { documentFieldReads, type DocumentFieldRead, type FieldStatus } from './documentFields'
 import { documentFixture } from './documentFixtures'
 import { DocumentField } from './DocumentField'
@@ -543,6 +552,137 @@ describe('the reveal marker', () => {
   it('shows nothing by itself', () => {
     show('voice')
     expect(screen.queryByText('The table can see this')).not.toBeInTheDocument()
+  })
+})
+
+// ── Validation a screen reader can reach, in ALL SIX editable kinds ──────────
+
+/**
+ * The message is on screen for everybody; these assert it is reachable FROM
+ * the control that is invalid, which is the half a sighted reviewer cannot see.
+ *
+ * `toHaveAccessibleDescription` resolves `aria-describedby` the way assistive
+ * technology does, so an editor that assigns a bare id of its own — replacing
+ * the description instead of joining it — fails here with the refusal still
+ * plainly rendered. Each kind gets its own case on purpose: a single test over
+ * one kind is what let two kinds ship with no association at all.
+ */
+function reachesFromTheControl(control: HTMLElement, message: string): void {
+  expect(screen.getByText(message)).toBeInTheDocument()
+  expect(control).toBeInvalid()
+  expect(control).toHaveAccessibleDescription(new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+}
+
+describe('a refused value is announced from the control that holds it', () => {
+  it('text — the bound the server counts', async () => {
+    const user = userEvent.setup()
+    show('voice', { value: 'x'.repeat(TEXT_FIELD_MAX_CHARS) })
+    await openEditor(user, 'Voice')
+    await user.type(screen.getByRole('textbox', { name: 'Voice' }), 'y')
+    await user.tab()
+    reachesFromTheControl(
+      screen.getByRole('textbox', { name: 'Voice' }),
+      `At most ${TEXT_FIELD_MAX_CHARS} characters`,
+    )
+  })
+
+  it('prose — the same bound, on a multi-line control', async () => {
+    const user = userEvent.setup()
+    show('wants', { value: 'x'.repeat(PROSE_FIELD_MAX_CHARS) })
+    await openEditor(user, 'Wants')
+    await user.type(screen.getByRole('textbox', { name: 'Wants' }), 'y')
+    await user.tab()
+    reachesFromTheControl(
+      screen.getByRole('textbox', { name: 'Wants' }),
+      `At most ${PROSE_FIELD_MAX_CHARS} characters`,
+    )
+  })
+
+  it('integer — a number outside the contract bound', async () => {
+    const user = userEvent.setup()
+    show('hp', { typeId: 'statblock' })
+    await openEditor(user, 'Hit Points')
+    const box = screen.getByRole('spinbutton', { name: 'Hit Points' })
+    await user.clear(box)
+    await user.type(box, String(INTEGER_FIELD_MAX + 1))
+    await user.tab()
+    reachesFromTheControl(
+      screen.getByRole('spinbutton', { name: 'Hit Points' }),
+      `Between ${INTEGER_FIELD_MIN} and ${INTEGER_FIELD_MAX}`,
+    )
+  })
+
+  it('abilities — the refused score, and only that score', async () => {
+    const user = userEvent.setup()
+    show('abilities', { typeId: 'statblock' })
+    await openEditor(user, 'Ability scores')
+    const strength = screen.getByRole('spinbutton', { name: 'Strength' })
+    await user.clear(strength)
+    await user.type(strength, String(ABILITY_SCORE_MAX + 1))
+    await user.tab()
+    reachesFromTheControl(screen.getByRole('spinbutton', { name: 'Strength' }), 'Between 0 and 99')
+    // The other five are fine, and saying they are invalid would send a
+    // screen-reader user hunting through six boxes for one mistake.
+    const dexterity = screen.getByRole('spinbutton', { name: 'Dexterity' })
+    expect(dexterity).not.toBeInvalid()
+    expect(dexterity).not.toHaveAccessibleDescription(/Between 0 and 99/)
+  })
+
+  it('text_list — the refused row', async () => {
+    const user = userEvent.setup()
+    show('present', { typeId: 'session-notes', value: ['x'.repeat(LIST_ITEM_MAX_CHARS)] })
+    await openEditor(user, 'Present')
+    await user.type(screen.getByRole('textbox', { name: 'Present 1' }), 'y')
+    await user.tab()
+    reachesFromTheControl(
+      screen.getByRole('textbox', { name: 'Present 1' }),
+      `At most ${LIST_ITEM_MAX_CHARS} characters`,
+    )
+  })
+
+  it('entry_list — an entry with a text and no name, from both of its controls', async () => {
+    const user = userEvent.setup()
+    show('reactions', { typeId: 'statblock' })
+    await openEditor(user, 'Reactions')
+    await user.clear(screen.getByRole('textbox', { name: 'Reactions 1 name' }))
+    await user.tab()
+    reachesFromTheControl(screen.getByRole('textbox', { name: 'Reactions 1 name' }), 'Every entry needs a name')
+    reachesFromTheControl(screen.getByRole('textbox', { name: 'Reactions 1 text' }), 'Every entry needs a name')
+  })
+
+  it('reads the server’s error from the control too, not only the client’s refusal', () => {
+    show('voice', { status: { state: 'error', message: 'Voice is too long' } })
+    expect(screen.getByRole('textbox', { name: 'Voice' })).toHaveAccessibleDescription(/Voice is too long/)
+  })
+})
+
+describe('the description of an ability box describes the box', () => {
+  it('never reads back the previous score’s modifier for a value that was refused', async () => {
+    // The refused value stays on screen but never enters the draft. Deriving
+    // the modifier from the draft would tell a screen-reader user `+4` while
+    // the box in front of them says 150.
+    const user = userEvent.setup()
+    show('abilities', { typeId: 'statblock' })
+    await openEditor(user, 'Ability scores')
+    const strength = screen.getByRole('spinbutton', { name: 'Strength' })
+    expect(strength).toHaveAccessibleDescription(/\+4/)
+    await user.clear(strength)
+    await user.type(strength, '150')
+    const refused = screen.getByRole('spinbutton', { name: 'Strength' })
+    expect(refused).toHaveValue(150)
+    expect(refused).not.toHaveAccessibleDescription(/\+4/)
+    expect(refused).toHaveAccessibleDescription(/Modifier unavailable/)
+  })
+
+  it('tracks the box while a legal score is being typed', async () => {
+    const user = userEvent.setup()
+    show('abilities', { typeId: 'statblock' })
+    await openEditor(user, 'Ability scores')
+    const strength = screen.getByRole('spinbutton', { name: 'Strength' })
+    await user.clear(strength)
+    expect(screen.getByRole('spinbutton', { name: 'Strength' })).toHaveAccessibleDescription(/Not set/)
+    await user.type(strength, '8')
+    expect(screen.getByRole('spinbutton', { name: 'Strength' })).toHaveAccessibleDescription(/−1/)
   })
 })
 

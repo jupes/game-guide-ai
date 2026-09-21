@@ -110,6 +110,14 @@ interface Edits {
   /** What is literally in each number box, so a refused value stays on screen. */
   typed: Readonly<Record<string, string>>
   problem: string | null
+  /**
+   * Which control the refusal is about, or `null` for the whole field.
+   *
+   * An editor of six ability boxes has six controls and one message; without
+   * this, one bad score marks all six invalid and a screen-reader user cannot
+   * tell which box the message is about.
+   */
+  problemSlot: string | null
 }
 
 // ── Reading a bare JSON value as the kind it is ──────────────────────────────
@@ -378,6 +386,7 @@ export function DocumentField({
   const draft = live === null ? committed : live.value
   const typed = live === null ? NO_TYPING : live.typed
   const problem = live === null ? null : live.problem
+  const problemSlot = live === null ? null : live.problemSlot
 
   React.useEffect(() => {
     if (focusRequest.slot === '') return
@@ -398,16 +407,39 @@ export function DocumentField({
   const editing = editable && EDITABLE_KINDS.has(field.kind) && (open || heldOpen)
   const singleControl = editing && SINGLE_CONTROL_KINDS.has(field.kind)
 
-  const describedBy = [problem === null ? null : problemId, status.state === 'error' ? errorId : null]
-    .filter((id): id is string => id !== null)
-    .join(' ')
+  /**
+   * The refusal one control has to answer for.
+   *
+   * A refusal about the whole field reaches every control in it; a refusal
+   * about one slot reaches only that slot. Without this, one ability score out
+   * of range marks all six boxes invalid.
+   */
+  function problemFor(slot: string | null = null): string | null {
+    if (problem === null) return null
+    return problemSlot === null || problemSlot === slot ? problem : null
+  }
+
+  /**
+   * What describes one control, as the space-separated LIST `aria-describedby`
+   * actually is.
+   *
+   * Every editor builds its value through here and passes whatever else it
+   * needs as `also`, because an editor that assigns a bare id of its own
+   * REPLACES this — and a replaced description is a validation message no
+   * screen reader will ever reach.
+   */
+  function describedByFor(slot: string | null = null, ...also: string[]): string | undefined {
+    const parts = [...also, problemFor(slot) === null ? null : problemId, status.state === 'error' ? errorId : null]
+      .filter((id): id is string => id !== null)
+    return parts.length === 0 ? undefined : parts.join(' ')
+  }
 
   function edit(change: Partial<Omit<Edits, 'signature'>>): void {
     setEdits((was) => {
       const base: Edits =
         was !== null && was.signature === signature
           ? was
-          : { signature, value: committed, typed: NO_TYPING, problem: null }
+          : { signature, value: committed, typed: NO_TYPING, problem: null, problemSlot: null }
       return { ...base, ...change, signature }
     })
   }
@@ -416,25 +448,26 @@ export function DocumentField({
     setFocusRequest((was) => ({ slot, nonce: was.nonce + 1 }))
   }
 
-  function refuse(message: string): false {
-    edit({ problem: message })
+  /** `slot` names the one control the message is about, where there is one. */
+  function refuse(message: string, slot: string | null = null): false {
+    edit({ problem: message, problemSlot: slot })
     return false
   }
 
   /** A commit went through: the validation message goes, and the parsed value
    * replaces whatever half-typed thing produced it. */
-  function settle(change: Partial<Omit<Edits, 'signature' | 'problem'>> = {}): void {
-    edit({ ...change, problem: null })
+  function settle(change: Partial<Omit<Edits, 'signature' | 'problem' | 'problemSlot'>> = {}): void {
+    edit({ ...change, problem: null, problemSlot: null })
   }
 
   function change(next: FieldValue): void {
-    edit({ value: next, problem: null })
+    edit({ value: next, problem: null, problemSlot: null })
     onDraft?.(field.key, next)
   }
 
   /** A structural change — add, remove, reorder — has no blur to wait for. */
   function structural(next: FieldValue, focus?: string): void {
-    edit({ value: next, problem: null })
+    edit({ value: next, problem: null, problemSlot: null })
     onDraft?.(field.key, next)
     onCommit?.(field.key, next)
     if (focus !== undefined) askFocus(focus)
@@ -475,7 +508,7 @@ export function DocumentField({
     for (const key of ABILITY_KEYS) {
       const score = abilityScore(current, key)
       const read = readIntegerInput(typedIn(key, score === null ? '' : String(score)), ABILITY_BOUNDS)
-      if (!read.ok) return refuse(read.message)
+      if (!read.ok) return refuse(read.message, key)
       next[key] = read.value
     }
     settle({ value: next })
@@ -582,8 +615,8 @@ export function DocumentField({
       id: controlId,
       className: 'gm-field__input',
       value: asText(draft),
-      'aria-invalid': problem !== null,
-      'aria-describedby': describedBy === '' ? undefined : describedBy,
+      'aria-invalid': problemFor() !== null,
+      'aria-describedby': describedByFor(),
       onKeyDown,
       onBlur: onControlBlur,
     }
@@ -614,8 +647,8 @@ export function DocumentField({
         min={INTEGER_FIELD_MIN}
         max={INTEGER_FIELD_MAX}
         value={typedIn('', current === null ? '' : String(current))}
-        aria-invalid={problem !== null}
-        aria-describedby={describedBy === '' ? undefined : describedBy}
+        aria-invalid={problemFor() !== null}
+        aria-describedby={describedByFor()}
         onKeyDown={onKeyDown}
         onBlur={onControlBlur}
         onChange={(event) => {
@@ -639,6 +672,16 @@ export function DocumentField({
           const score = abilityScore(current, key)
           const shown = typedIn(key, score === null ? '' : String(score))
           const modifierId = `${ids}-mod-${key}`
+          // The description has to describe what is IN the box. An out-of-range
+          // value never enters the draft, so deriving the modifier from the
+          // draft would read the PREVIOUS score's modifier back to a
+          // screen-reader user while the box in front of them says 150.
+          const reading = readIntegerInput(shown, ABILITY_BOUNDS)
+          const modifier = !reading.ok
+            ? 'Modifier unavailable'
+            : reading.value === null
+              ? 'Not set'
+              : formatModifier(abilityModifier(reading.value))
           return (
             <div className="gm-field__score" key={key}>
               <label className="gm-field__score-label" htmlFor={`${controlId}-${key}`}>
@@ -653,8 +696,10 @@ export function DocumentField({
                 min={ABILITY_SCORE_MIN}
                 max={ABILITY_SCORE_MAX}
                 value={shown}
-                aria-invalid={problem !== null}
-                aria-describedby={modifierId}
+                aria-invalid={problemFor(key) !== null}
+                // JOINED, never replaced: the modifier and, when this box is
+                // the one that was refused, the refusal.
+                aria-describedby={describedByFor(key, modifierId)}
                 onKeyDown={onKeyDown}
                 onBlur={onControlBlur}
                 onChange={(event) => {
@@ -667,7 +712,7 @@ export function DocumentField({
                 }}
               />
               <span className="gm-field__modifier" id={modifierId}>
-                {score === null ? 'Not set' : formatModifier(abilityModifier(score))}
+                {modifier}
               </span>
             </div>
           )
@@ -693,8 +738,8 @@ export function DocumentField({
               type="text"
               className="gm-field__input"
               aria-label={`${field.label} ${index + 1}`}
-              aria-invalid={problem !== null}
-              aria-describedby={describedBy === '' ? undefined : describedBy}
+              aria-invalid={problemFor() !== null}
+              aria-describedby={describedByFor()}
               data-slot={`item-${index}`}
               value={item}
               onKeyDown={onKeyDown}
@@ -740,6 +785,8 @@ export function DocumentField({
               type="text"
               className="gm-field__input"
               aria-label={`${field.label} ${index + 1} name`}
+              aria-invalid={problemFor() !== null}
+              aria-describedby={describedByFor()}
               data-slot={`item-${index}`}
               value={entry.name}
               onKeyDown={onKeyDown}
@@ -749,6 +796,8 @@ export function DocumentField({
             <textarea
               className="gm-field__input"
               aria-label={`${field.label} ${index + 1} text`}
+              aria-invalid={problemFor() !== null}
+              aria-describedby={describedByFor()}
               rows={3}
               value={entry.text}
               onKeyDown={onKeyDown}
