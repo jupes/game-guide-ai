@@ -3,8 +3,9 @@
  *
  * One definition, read by playwright.config.ts (baseURL), by global
  * setup/teardown (whether to drive Compose), and by fixtures.ts (which origin
- * counts as "ours" for the no-remote-subresource guard). They were drifting
- * apart as three copies of the same `??` expression.
+ * counts as "ours" for the no-remote-subresource guard). Three readers of the
+ * same fact is exactly where three copies of the same `??` expression would
+ * have gone, and the guard would have been the one to drift.
  */
 
 /**
