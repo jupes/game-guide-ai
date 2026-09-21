@@ -31,13 +31,20 @@ function root(): HTMLElement {
   return screen.getByRole('article')
 }
 
-/** Every non-blank text node of the rendered document. */
+/**
+ * Every non-blank text node anyone can actually read.
+ *
+ * A Material Symbols ligature IS a snake_case word — `auto_fix_high` — but it
+ * sits inside `aria-hidden="true"` and nobody reads it. Skipping hidden
+ * subtrees is what makes the sweep below about escaped KEYS rather than about
+ * the icon font.
+ */
 function textNodes(host: HTMLElement): string[] {
   const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT)
   const found: string[] = []
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
     const text = (node.textContent ?? '').trim()
-    if (text !== '') found.push(text)
+    if (text !== '' && node.parentElement?.closest('[aria-hidden="true"]') == null) found.push(text)
   }
   return found
 }
@@ -57,12 +64,28 @@ describe('every type renders with the registry, and never with a key', () => {
   })
 
   it.each(DOCUMENT_TYPE_IDS)('%s puts no raw key on screen', (id) => {
-    show({ typeId: id })
-    const declared = new Set(documentFieldReads(id).map((field) => field.key))
+    const keys = documentFieldReads(id).map((field) => field.key)
+    // Everything that decorates a field is on, so the icon ligatures, the wash
+    // and the markers are all in the tree while the sweep runs.
+    show({
+      typeId: id,
+      changedFields: keys.slice(3, 5),
+      revealedFields: keys.slice(0, 2),
+      onArmFieldEdit: vi.fn(),
+      onAcknowledgeChanges: vi.fn(),
+    })
+    const declared = new Set(keys)
     for (const text of textNodes(root())) {
       expect(SNAKE_CASE.test(text), `${id}: ${text}`).toBe(false)
       expect(declared.has(text), `${id}: ${text}`).toBe(false)
     }
+  })
+
+  it('hides every icon ligature from assistive technology', () => {
+    show({ changedFields: ['wants'], revealedFields: ['voice'], onArmFieldEdit: vi.fn() })
+    const ligatures = root().querySelectorAll('.material-symbols-rounded')
+    expect(ligatures.length).toBeGreaterThan(2)
+    for (const icon of ligatures) expect(icon).toHaveAttribute('aria-hidden', 'true')
   })
 
   it.each(DOCUMENT_TYPE_IDS)('%s puts no literal HTML entity on screen', (id) => {
