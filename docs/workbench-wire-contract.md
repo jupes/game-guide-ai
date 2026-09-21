@@ -931,15 +931,37 @@ snapshot is complete before `ready`, so a client that has seen `ready` knows
 every slot it is entitled to, and a GM client never reads missing state as
 "nothing revealed" (ADR RT-4, REVEAL-13).
 
-**A dead table shows nothing, in every frame that can show something.** Ending,
-expiring or rotating a link *clears every projection* (REVEAL-17, AE-51), so a
-`TableSnapshot` with no `session` frame carries no `slot` frame holding content
-and no `mine` `slot` frame at all — the same liveness the reveal picture obeys,
-applied to the incremental frames, which are the other half of the frames that
-can carry a projection. It is refused where `1kg.7.2` validates what it is about
-to emit, so a snapshot route answering a rotated link (SEC-9, TABLE-13) cannot
-attach the slots it had buffered. There is no role on such a resource, so the
-entitlement rule above never runs over it and this is the only rule that can.
+**A dead table projects nothing, in every frame that can carry a projection.**
+A `TableSnapshot` is **live** when it carries a `session` frame **and no
+`inactive` frame** — `TableSessionEvent` exists only while live, and `inactive`
+is what a dead table says (TABLE-9). Both facts, and neither order nor count
+changes either: an `inactive` frame kills the resource wherever it sits in the
+list and however often it is repeated. That one predicate is what the picture
+rule and the frame rules below read, in the Pydantic model, in the Zod schema
+and in the readers.
+
+Ending, expiring or rotating a link *clears every projection* (REVEAL-17,
+AE-51), so a `TableSnapshot` that is not live carries no reveal picture, no
+`slot` frame holding content, and no `mine` `slot` frame at all. An **empty**
+`table` `slot` frame stays legal, because reporting that a region holds nothing
+is what a cleared table looks like: `[inactive, slot(table, …, content: null),
+ready]` is a valid resource. There is no role on a dead resource, so the
+entitlement rule above never runs over it and these rules are the only ones that
+can. The scope is projections; a table `audio` frame is governed by the audio
+family and survives an inactive resource on both sides, so a table client that
+has gone inactive stops its own ambience rather than inferring it from this
+rule.
+
+An `inactive` frame and a `session` frame are **mutually exclusive** in a
+well-formed resource, and a resource carrying both is refused on its own clause.
+This is the confused emitter the rule exists to catch: a snapshot route
+answering a link the GM has just rotated (SEC-9, TABLE-13) builds the `inactive`
+frame and then appends the head frames it had buffered for the session it was
+serving — session frame included — and were the session frame alone the test,
+that resource would read as live and switch off *every* rule here, carrying the
+projection in the reveal picture as readily as in a `slot` frame. It is refused
+where `1kg.7.2` validates what it is about to emit, so neither the buffered
+slots nor the buffered picture can be attached.
 
 A `GmSnapshot` carries **one** `session` frame, and its reveal picture describes
 **that** session: `GmSnapshot` refuses a picture whose `session_id` or `gen`
@@ -948,14 +970,29 @@ differs from the session frame beside it. The reveal epoch is per session
 Rotate — is exactly the "number from last night" a Confirm must never be able to
 match.
 
-The **readers apply that rule too**, not only the emitter: `parseGmSnapshot` and
-`parseTableSnapshot` answer `{ kind: 'unknown', reason: 'invalid' }` for a live
-resource with no picture, for a resource with no live session that carries one,
-and for two pictures. They count on the raw `event` values, so a picture this
-bundle cannot parse still counts as a picture and becomes one placeholder inside
-an otherwise readable snapshot. Without this a GM tab in RT-9's polling mode
-would read a snapshot whose picture failed to build as `ok`, find no `snapshot`
-frame, and render *nothing revealed* while the table shows a dossier.
+The **readers apply the reveal-picture rule too**, not only the emitter:
+`parseGmSnapshot` and `parseTableSnapshot` answer
+`{ kind: 'unknown', reason: 'invalid' }` for a live resource with no picture,
+for a resource with no live session that carries one, and for two pictures.
+Without this a GM tab in RT-9's polling mode would read a snapshot whose picture
+failed to build as `ok`, find no `snapshot` frame, and render *nothing revealed*
+while the table shows a dossier.
+
+`parseTableSnapshot` applies the **liveness rule** above as well — the same
+predicate, the same two dead-resource clauses and the same mutual exclusion — so
+a resource the two models refuse for liveness is a resource the reader refuses.
+A table client is told elsewhere in this contract to blank a slot it cannot
+read; a reader that answered `ok` for `[inactive, slot(mine, …), ready]` would
+hand it the projection instead of something to blank. One rule, three places
+that agree.
+
+Both are counted on the raw `event` values, so a picture this bundle cannot
+parse still counts as a picture and becomes one placeholder inside an otherwise
+readable snapshot. The liveness clauses are read the same way, with one
+deliberate softness: a `slot` frame with **no** `content` key at all shows
+nothing, so it becomes one placeholder rather than making the whole resource
+unreadable. The models refuse that frame anyway — `content` is required and
+nullable on both sides.
 
 ### Refusals
 

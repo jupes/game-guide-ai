@@ -117,6 +117,29 @@
           }
         ]
       }
+    },
+    {
+      "name": "an inactive table reporting an empty table slot",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "table",
+            "seq": 12,
+            "content": null
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
     }
   ],
   "invalid": [
@@ -589,6 +612,261 @@
                 }
               ]
             }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive table whose picture still holds a private projection",
+      "why": "REVEAL-17, AE-51: `inactive` is what a dead table says (TABLE-9), so a resource carrying one is dead whatever else it carries — a session frame beside it is the head frames a snapshot route had buffered for the link the GM has just rotated (SEC-9, TABLE-13), and it does not bring the table back to life. The two frames are mutually exclusive in a well-formed resource, and the projection here travels in the reveal picture, which is the half a `slot` rule alone would not reach",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": "Sister Ondrey Vashe"
+                    },
+                    {
+                      "key": "notes",
+                      "value": "The tunnel under the mill is shown in red ink."
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive frame after the session frame",
+      "why": "order is not a fact: `inactive` says the table is dead wherever it sits in the frame list, so appending it to the buffered head frames refuses exactly as prefixing it does",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "mine",
+            "seq": 4,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "notes",
+                  "value": "The tunnel under the mill is shown in red ink."
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "three inactive frames beside a session and a buffered projection",
+      "why": "liveness counts nothing: one `inactive` frame kills the resource and so do three, so a route that repeated the generic frame while replaying its buffer is refused on the same clause rather than falling through a cardinality test",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "mine",
+            "seq": 4,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "notes",
+                  "value": "The tunnel under the mill is shown in red ink."
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive table whose guest session still shows the table slot",
+      "why": "REVEAL-17, AE-51: clearing every projection is not an entitlement test — the table slot a guest is entitled to while live is cleared too once the link is dead, so a guest resource carrying an `inactive` frame shows nothing either",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "table",
+            "seq": 12,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "notes",
+                  "value": "The tunnel under the mill is shown in red ink."
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive table that also carries a session frame",
+      "why": "an `inactive` frame and a `session` frame are mutually exclusive in a well-formed resource: TABLE-9 makes `inactive` what a dead table says, so the two together are one emitter holding two generations of the same link (SEC-9, TABLE-13). Refused on its own, with nothing to show, so the contradiction is named where `1kg.7.2` validates rather than left to the projection rules to catch by accident",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
           },
           {
             "schema_version": 1,

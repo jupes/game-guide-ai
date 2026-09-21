@@ -1094,6 +1094,43 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     for (const example of tableSnapshots.valid) expect([example.name, parseTableSnapshot(expand(example.value)).kind]).toEqual([example.name, 'ok'])
   })
 
+  it('applies the liveness rule where the readers are, so a dead table has nothing left to show (REVEAL-17, AE-51)', () => {
+    // One rule, three places that agree: the Pydantic model, the Zod schema and
+    // the reader. `docs/workbench-wire-contract.md` tells a table client to
+    // blank a slot it cannot read; a reader that answered `ok` with the
+    // projection intact would hand it nothing to blank. Every shipped fixture
+    // the liveness rule refuses is refused here too, on the raw values.
+    const byName = (doc: Fixture, kind: 'valid' | 'invalid', name: string): unknown => {
+      const found = doc[kind].find((example) => example.name === name)
+      if (!found) throw new Error(`no ${kind} example named ${name}`)
+      return expand(found.value)
+    }
+    const tableSnapshots = readJson<Fixture>(join(FIXTURES, 'TableSnapshot.json'))
+    for (const name of [
+      'an inactive table carrying a reveal picture',
+      'an inactive table carrying a mine slot frame',
+      'an inactive table carrying a slot frame with content',
+      'an inactive table whose picture still holds a private projection',
+      'an inactive frame after the session frame',
+      'three inactive frames beside a session and a buffered projection',
+      'an inactive table whose guest session still shows the table slot',
+      'an inactive table that also carries a session frame',
+    ]) {
+      expect([name, parseTableSnapshot(byName(tableSnapshots, 'invalid', name))]).toEqual([name, { kind: 'unknown', reason: 'invalid' }])
+    }
+    // The permitted half still reads: a cleared region reports that it holds
+    // nothing, which is not the same as showing something.
+    const empty = byName(tableSnapshots, 'valid', 'an inactive table reporting an empty table slot')
+    expect(parseTableSnapshot(empty).kind).toBe('ok')
+    // `inactive` is decisive wherever it sits, so appending it to a resource the
+    // reader would otherwise accept turns that resource dead — order is not a
+    // fact the reader reads differently from the schema.
+    const stillLive = tableSnapshots.valid[1].value as { frames: Array<Record<string, unknown>> }
+    expect(parseTableSnapshot(stillLive).kind).toBe('ok')
+    const soured = [...stillLive.frames.slice(0, -1), { schema_version: 1, event: 'inactive' }, { schema_version: 1, event: 'ready' }]
+    expect(parseTableSnapshot({ schema_version: 1, frames: soured })).toEqual({ kind: 'unknown', reason: 'invalid' })
+  })
+
   it('reports a broken frame as invalid and never throws', () => {
     // An audio slot name is not a reveal slot name, so only the sequence reads.
     const audio = first(table, 'ambience is playing')

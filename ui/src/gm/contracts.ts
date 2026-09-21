@@ -2046,25 +2046,48 @@ function theRoleDecidesTheSlots(frames: readonly TableEvent[], role: string): bo
 }
 const ROLE_ISSUE = { path: ['frames'], message: "a guest sees the table slot alone; an enrolled device also sees its own" }
 
-/** TableSessionEvent exists only while live — TABLE-9 makes `inactive` its own
- * kind — so holding a session frame *is* the liveness test here. One notion of
- * liveness, read by every rule below that needs it. */
-const tableIsLive = (frames: readonly TableEvent[]) => frames.some((frame) => frame.event === 'session')
+/** The one liveness predicate for a table resource — the twin of Python's
+ * `_the_table_is_live`, and the only thing any rule below asks about liveness.
+ *
+ * Two facts, not one. `TableSessionEvent` exists only while live, so a `session`
+ * frame is NECESSARY; but TABLE-9 makes `inactive` the frame a DEAD table sends,
+ * so an `inactive` frame anywhere in the list is decisive against it. Holding a
+ * session frame alone is not the test: a snapshot route answering a link the GM
+ * has just rotated (SEC-9, TABLE-13) builds the `inactive` frame and then
+ * appends the head frames it had buffered for the session it was serving —
+ * session frame included — and a "no session frame" predicate would read that
+ * resource as live and switch EVERY table rule off, letting the projection
+ * travel in the reveal picture as readily as in a `slot` frame.
+ *
+ * Order carries no meaning here and neither does count: `inactive` says the
+ * table is dead wherever it sits and however often it is repeated. The schema
+ * additionally refuses the combination outright (`EXCLUSIVE_ISSUE`) — the two
+ * frames are mutually exclusive in a well-formed resource — but that refusal is
+ * the second line of defence, not the predicate. */
+const tableIsLive = (frames: readonly TableEvent[]) =>
+  frames.some((frame) => frame.event === 'session') && !frames.some((frame) => frame.event === 'inactive')
+const EXCLUSIVE_ISSUE = { path: ['frames'], message: 'a resource is inactive or it has a session, never both' }
 
 /** REVEAL-17 and AE-51: ending, expiring or rotating a link CLEARS EVERY
- * PROJECTION, so a resource with no session frame shows nothing at all.
- * `oneRevealPictureWhileLive` says that of the picture; this says it of the
- * incremental `slot` frames, the other half of the frames that can carry a
- * projection. Without it `[inactive, slot(mine, …), ready]` would be emittable,
- * handing private content to a device whose session is dead (SEC-9, TABLE-13).
- * A dead resource carries no role either, so `theRoleDecidesTheSlots` never runs
- * over it: `mine` is refused here rather than left unchecked. */
+ * PROJECTION, so a resource that is not live (`tableIsLive`) shows nothing at
+ * all. `oneRevealPictureWhileLive` says that of the picture; these two say it of
+ * the incremental `slot` frames, the other half of the frames that can carry a
+ * projection. Without them `[inactive, slot(mine, …), ready]` would be
+ * emittable, handing private content to a device whose session is dead (SEC-9,
+ * TABLE-13). A dead resource carries no role either, so `theRoleDecidesTheSlots`
+ * never runs over it: `mine` is refused here rather than left unchecked.
+ *
+ * Two clauses with their own messages, matching the server's two refusals, so a
+ * client diagnostic can tell an entitlement slip from a buffered projection.
+ * An EMPTY `table` slot frame is the permitted half and stays legal:
+ * `[inactive, slot(table, …, content: null), ready]` reports that a region holds
+ * nothing, which is what a cleared table is. */
+const aDeadResourceCarriesNoPrivateSlot = (frames: readonly TableEvent[], live: boolean) =>
+  live || !frames.some((frame) => frame.event === 'slot' && frame.slot === 'mine')
+const PRIVATE_SLOT_ISSUE = { path: ['frames'], message: 'a dead resource carries no private slot' }
 const aDeadResourceShowsNothing = (frames: readonly TableEvent[], live: boolean) =>
-  live || !frames.some((frame) => frame.event === 'slot' && (frame.slot === 'mine' || frame.content !== null))
-const DEAD_ISSUE = {
-  path: ['frames'],
-  message: 'a resource with no session carries no private slot and shows nothing',
-}
+  live || !frames.some((frame) => frame.event === 'slot' && frame.content !== null)
+const DEAD_ISSUE = { path: ['frames'], message: 'a dead resource shows nothing' }
 
 /** The table channel read as a resource: session, one audio frame per slot, later the reveal slots, then ready. */
 export const TableSnapshotSchema = z
@@ -2077,8 +2100,20 @@ export const TableSnapshotSchema = z
     message: 'a snapshot describes one session',
   })
   .refine((snapshot) => oneRevealPictureWhileLive(snapshot.frames, tableIsLive(snapshot.frames)), PICTURE_ISSUE)
+  .refine((snapshot) => aDeadResourceCarriesNoPrivateSlot(snapshot.frames, tableIsLive(snapshot.frames)), PRIVATE_SLOT_ISSUE)
   .refine((snapshot) => aDeadResourceShowsNothing(snapshot.frames, tableIsLive(snapshot.frames)), DEAD_ISSUE)
+  // The projection rules above have already cleared this resource of anything it
+  // could show; what is left is the contradiction itself, and an emitter that
+  // builds it has confused two generations of the same link.
+  .refine(
+    (snapshot) => !snapshot.frames.some((frame) => frame.event === 'session') || tableIsLive(snapshot.frames),
+    EXCLUSIVE_ISSUE,
+  )
+  // Gated on the same predicate the server gates it on: a dead resource has no
+  // role, so the entitlement rule does not run over it and the rules above are
+  // the ones that refuse it.
   .refine((snapshot) => {
+    if (!tableIsLive(snapshot.frames)) return true
     const session = snapshot.frames.find((frame) => frame.event === 'session')
     return session === undefined || theRoleDecidesTheSlots(snapshot.frames, session.role)
   }, ROLE_ISSUE)
@@ -2360,10 +2395,44 @@ function oneRevealPictureRead(frames: readonly unknown[], live: boolean): boolea
   return pictures === (live ? 1 : 0)
 }
 
+/** `tableIsLive` on RAW values: the same two facts, read the same way. A table
+ * resource is live when it carries a `session` frame and NO `inactive` frame,
+ * whatever the order and however often either is repeated (TABLE-9). */
+function tableIsLiveRead(frames: readonly unknown[]): boolean {
+  return (
+    frames.some((item) => isRecord(item) && item.event === 'session') &&
+    !frames.some((item) => isRecord(item) && item.event === 'inactive')
+  )
+}
+
+/** REVEAL-17 and AE-51 where the READER is, the twin of the schema's two
+ * dead-resource clauses and of its mutual-exclusion clause — because a rule the
+ * emitter obeys and the reader does not is a rule a page cannot build on.
+ * `docs/workbench-wire-contract.md` tells `1kg.7.4` to blank a slot it cannot
+ * read; without this, `parseTableSnapshot` answered `ok` for
+ * `[inactive, slot(mine, <a projection>), ready]` with the projection intact,
+ * and the page had nothing to blank. Read on the RAW values, as
+ * `oneRevealPictureRead` is, so a frame this bundle cannot parse still counts.
+ * An EMPTY `table` slot frame is the permitted half and still reads. */
+function aDeadTableShowsNothingRead(frames: readonly unknown[], live: boolean): boolean {
+  if (live) return true
+  // Not live but carrying a session frame is the contradiction itself: an
+  // emitter holding two generations of one link (SEC-9, TABLE-13).
+  if (frames.some((item) => isRecord(item) && item.event === 'session')) return false
+  return !frames.some(
+    (item) =>
+      isRecord(item) &&
+      item.event === 'slot' &&
+      // `content` absent is a frame that shows nothing, and it becomes one
+      // placeholder on its own; only a projection that is actually there counts.
+      (item.slot === 'mine' || (item.content !== null && item.content !== undefined)),
+  )
+}
+
 function parseSnapshot<F>(
   raw: unknown,
   frame: (item: unknown) => F,
-  live: (frames: readonly unknown[]) => boolean,
+  complete: (frames: readonly unknown[]) => boolean,
 ): Parsed<ReadSnapshot<F>> {
   if (isRecord(raw)) {
     const version = versionNamed(raw.schema_version)
@@ -2373,7 +2442,7 @@ function parseSnapshot<F>(
   if (!envelope.success) return { kind: 'unknown', reason: 'invalid' }
   const last = envelope.data.frames[envelope.data.frames.length - 1]
   if (!isRecord(last) || last.event !== 'ready') return { kind: 'unknown', reason: 'invalid' }
-  if (!oneRevealPictureRead(envelope.data.frames, live(envelope.data.frames))) return { kind: 'unknown', reason: 'invalid' }
+  if (!complete(envelope.data.frames)) return { kind: 'unknown', reason: 'invalid' }
   return { kind: 'ok', value: { frames: envelope.data.frames.map(frame) } }
 }
 
@@ -2381,14 +2450,21 @@ function parseSnapshot<F>(
  * so one frame from a newer server becomes one placeholder (ADR RT-4). */
 export function parseGmSnapshot(raw: unknown): Parsed<ReadSnapshot<Parsed<GmEvent>>> {
   return parseSnapshot(raw, parseGmEvent, (frames) =>
-    frames.some((item) => isRecord(item) && item.event === 'session' && isRecord(item.session) && item.session.state === 'live'),
+    oneRevealPictureRead(
+      frames,
+      frames.some(
+        (item) => isRecord(item) && item.event === 'session' && isRecord(item.session) && item.session.state === 'live',
+      ),
+    ),
   )
 }
 
 export function parseTableSnapshot(raw: unknown): Parsed<ReadSnapshot<TableFrame>> {
-  // TableSessionEvent exists only while live — TABLE-9 makes `inactive` its own
-  // kind — so holding a session frame *is* the liveness test here.
-  return parseSnapshot(raw, parseTableEvent, (frames) => frames.some((item) => isRecord(item) && item.event === 'session'))
+  return parseSnapshot(raw, parseTableEvent, (frames) => {
+    // Liveness computed once and handed to both rules, as `_complete` does.
+    const live = tableIsLiveRead(frames)
+    return oneRevealPictureRead(frames, live) && aDeadTableShowsNothingRead(frames, live)
+  })
 }
 
 /**

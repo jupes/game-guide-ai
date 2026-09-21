@@ -2757,10 +2757,36 @@ def _the_role_decides_the_slots(frames: Sequence[Any], *, role: TableRole) -> No
             raise ValueError("an enrolled device's picture holds its own slot, present and possibly empty")
 
 
+def _the_table_is_live(frames: Sequence[Any]) -> bool:
+    """The one liveness predicate for a table resource, read by every rule that
+    needs it.
+
+    Two facts, not one. ``TableSessionEvent`` exists only while live, so a
+    ``session`` frame is *necessary*; but TABLE-9 makes ``inactive`` the frame a
+    **dead** table sends, so an ``inactive`` frame anywhere in the list is
+    decisive against it. Holding a session frame alone is not the test: a
+    snapshot route answering a link the GM has just rotated (SEC-9, TABLE-13)
+    builds the ``inactive`` frame and then appends the head frames it had
+    buffered for the session it was serving — session frame included — and a
+    "no session frame" predicate would read that resource as live and switch
+    **every** table rule off, letting the projection travel in the reveal
+    picture as readily as in a ``slot`` frame.
+
+    Order carries no meaning here and neither does count: ``inactive`` says the
+    table is dead wherever it sits and however often it is repeated.
+    ``TableSnapshot._complete`` additionally refuses the combination outright —
+    the two frames are mutually exclusive in a well-formed resource — but the
+    refusal is the second line of defence, not the predicate.
+    """
+    return any(frame.event == "session" for frame in frames) and not any(
+        frame.event == "inactive" for frame in frames
+    )
+
+
 def _a_dead_resource_shows_nothing(frames: Sequence[Any], *, live: bool) -> None:
     """Decisions REVEAL-17 and AE-51: ending, expiring or rotating a link
-    **clears every projection**, so a resource with no session frame shows
-    nothing at all.
+    **clears every projection**, so a resource that is not live (``_the_table_is_live``)
+    shows nothing at all.
 
     ``_one_reveal_picture_while_live`` says that of the picture; this says it of
     the incremental ``slot`` frames, which are the other half of the frames that
@@ -2771,6 +2797,10 @@ def _a_dead_resource_shows_nothing(frames: Sequence[Any], *, live: bool) -> None
     dead. A dead resource carries no role either, so
     ``_the_role_decides_the_slots`` never runs over it: ``mine`` is refused here
     rather than left unchecked.
+
+    An *empty* ``table`` slot frame is the permitted half and stays emittable:
+    ``[inactive, slot(table, …, content=None), ready]`` reports that a region
+    holds nothing, which is what a cleared table is.
     """
     if live:
         return
@@ -2778,9 +2808,9 @@ def _a_dead_resource_shows_nothing(frames: Sequence[Any], *, live: bool) -> None
         if frame.event != "slot":
             continue
         if frame.slot is TableSlotName.MINE:
-            raise ValueError("a resource with no session carries no private slot")
+            raise ValueError("a dead resource carries no private slot")
         if frame.content is not None:
-            raise ValueError("a resource with no session shows nothing")
+            raise ValueError("a dead resource shows nothing")
 
 
 class TableSnapshot(_Contract):
@@ -2793,17 +2823,24 @@ class TableSnapshot(_Contract):
     @model_validator(mode="after")
     def _complete(self) -> Self:
         _ends_with_ready(self.frames)
-        # ``TableSessionEvent`` exists only while live: TABLE-9 makes ``inactive``
-        # its own kind, so holding a session frame *is* the liveness test here.
         sessions = [frame for frame in self.frames if frame.event == "session"]
         if len(sessions) > 1:
             # Two session frames could disagree about the role, and a reader that
             # took the first would read a different resource from one that took
             # the last. One frame, one answer.
             raise ValueError("a snapshot describes one session")
-        live = bool(sessions)
+        # One notion of liveness, computed once and handed to every rule that
+        # needs it — the predicate, not a re-derivation, is what each rule reads.
+        live = _the_table_is_live(self.frames)
         _one_reveal_picture_while_live(self.frames, live=live)
         _a_dead_resource_shows_nothing(self.frames, live=live)
+        if sessions and not live:
+            # The projection rules above have already cleared this resource of
+            # anything it could show; what is left is the contradiction itself,
+            # and an emitter that builds it has confused two generations of the
+            # same link (SEC-9, TABLE-13). Refused rather than normalised, so
+            # ``1kg.7.2`` learns of it here instead of on a player's screen.
+            raise ValueError("a resource is inactive or it has a session, never both")
         if live:
             _the_role_decides_the_slots(self.frames, role=sessions[0].role)
         return self
