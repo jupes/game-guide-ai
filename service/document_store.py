@@ -103,7 +103,7 @@ TYPE_MAX_CHARS = 64
 
 #: What `search_key` joins its parts with. Safe as a separator precisely because
 #: `_fold`'s first step has already removed it from every contributing value.
-_SEPARATOR = ""
+_SEPARATOR = chr(0x1F)
 
 #: The three keys a library search matches, in the order they enter
 #: `search_key` (LIB-20). Never the body, never `notes`, never

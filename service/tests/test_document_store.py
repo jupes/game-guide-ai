@@ -373,7 +373,7 @@ def test_the_fold_sweeps_control_characters_out_before_anything_else():
     characters is 1kg.5.7's (F-9), and this module must keep reading documents
     that already hold them."""
     assert docs._fold("a\x00b\x1fc\x1bd") == "a b c d"
-    assert docs._fold("  a ​ b  ") == "a b"
+    assert docs._fold(f"  a {chr(0x200B)} b  ") == "a b"
     assert docs._fold("\ud800lone") == "lone", "a lone surrogate is swept, not raised on"
 
 
@@ -421,8 +421,8 @@ def test_the_search_key_holds_the_three_keys_a_search_matches_and_no_others():
 def test_a_control_character_in_a_tag_cannot_forge_a_field_boundary():
     """U+001F is safe as the separator precisely because the fold has already
     removed it from every contributing value."""
-    forged = search_key({"name": "a", "qualifier": "", "tags": ["xy"]})
-    assert forged.split("")[-1] == "x y"
+    forged = search_key({"name": "a", "qualifier": "", "tags": [f"x{chr(0x1F)}y"]})
+    assert forged.split(chr(0x1F))[-1] == "x y"
 
 
 def test_the_search_key_truncates_and_loses_tags_before_it_loses_the_name():
@@ -439,7 +439,7 @@ def test_the_search_key_truncates_and_loses_tags_before_it_loses_the_name():
         }
     )
     assert len(maximal) == SEARCH_KEY_MAX
-    assert maximal.startswith("vashtibroker"), "the name survives; the tags do not"
+    assert maximal.startswith(f"vashti{chr(0x1F)}broker{chr(0x1F)}"), "the name survives"
 
 
 def test_stale_fields_reports_exactly_the_keys_that_moved():
