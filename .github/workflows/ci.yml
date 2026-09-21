@@ -236,9 +236,17 @@ jobs:
     # `secrets` context is NOT available in a job-level `if`. So the other half of
     # the configuration cannot gate the job — set the SECRETS FIRST, then the
     # variable, or the job runs without credentials and fails at `docker push`.
+    #
+    # `github.ref` pins the deploy to master. `workflow_dispatch` takes any ref, so
+    # without it `gh workflow run ci.yml --ref <branch>` runs this job for that
+    # branch's SHA, and the only thing in the way is the WIF trust condition
+    # (docs/deploy-gcp.md §8) — a red deploy job failing at authentication. That
+    # condition is still the security boundary: a branch can edit its own copy of
+    # this file. This guards the accident — any other ref tests, and skips deploy.
     if: >-
       always()
       && github.event_name != 'pull_request'
+      && github.ref == 'refs/heads/master'
       && vars.DEPLOY_TARGET != ''
       && needs.python-tests.result == 'success'
       && needs.ui-tests.result == 'success'

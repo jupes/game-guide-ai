@@ -16,7 +16,7 @@ pull request / push to master
    └─ retrieval-metrics   eval_golden vs live corpus DB → regression gate
           │                    (skips loudly until secrets are configured)
           ▼
-       deploy             push/manual only; requires every gate to pass
+       deploy             push/manual, master only; requires every gate to pass
                           (skipped until hosting exists — never a green
                            check for having deployed nothing)
 ```
@@ -97,6 +97,10 @@ Your two options from there:
 - **Proceed anyway** — re-run the pipeline with the override:
   `gh workflow run CI -f force_deploy=true` (or Actions → CI → Run workflow →
   check *force_deploy*). Tests still must pass; only the metrics gate is waived.
+  A manual run deploys **only from `master`**: `gh workflow run` targets the
+  default branch unless you pass `--ref`, and the `deploy` job requires
+  `github.ref == 'refs/heads/master'`. A run on any other ref tests without
+  deploying — the job is skipped, with or without *force_deploy*.
 - **Back out** — `git revert <merge-sha> && git push`. The revert lands on
   `master`, the pipeline runs again and redeploys the previous behavior.
 
