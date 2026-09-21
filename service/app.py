@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from . import gcp_logging
+from . import gcp_logging, usage_capture
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .hashing import (
@@ -783,6 +783,15 @@ def chat(
         provider=effective_profile.provider, strategy=strategy,
     )
 
+    # yje.5.1.1: one usage-capture operation per turn, created AFTER every gate
+    # above (a turn a gate refuses makes no provider call and must record
+    # nothing) and before any provider call below. It is outside the try on
+    # purpose — `begin_operation` cannot raise, by construction rather than by
+    # hope — and torn down in the finally at the end of this chain.
+    op_token = usage_capture.begin_operation(
+        mode=req.mode.value, billed_account_id=session.user_id,
+        actor_kind=usage_capture.ACTOR_ACCOUNT, campaign_id=None, request=request,
+    )
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, conversation_id,
@@ -861,6 +870,8 @@ def chat(
         # Anything else is a bug in our code — log the full traceback, return 500.
         log.exception("internal error on /chat (mode=%s)", req.mode.value)
         raise HTTPException(status_code=500, detail="internal error") from None
+    finally:
+        usage_capture.end_operation(op_token)
 
 
 @app.post("/metrics/ui", status_code=status.HTTP_202_ACCEPTED)
