@@ -94,20 +94,37 @@ INSERT INTO chat.messages (conversation_id, mode, role, content) VALUES
   ('never-owned', 'sage', 'user', 'a row older than the ownership table');
 """
 
-COLUMNS = """
+#: Every schema the migrations own. `campaign` and `audit` arrive with 0004 and
+#: 0005; naming them here before they exist costs nothing and means a later file
+#: cannot quietly leave one out of the convergence comparison.
+SCHEMAS = "('chat', 'auth', 'app', 'campaign', 'audit')"
+
+COLUMNS = f"""
 SELECT table_schema, table_name, column_name, data_type, is_nullable, column_default
-  FROM information_schema.columns WHERE table_schema IN ('chat', 'auth', 'app')
+  FROM information_schema.columns WHERE table_schema IN {SCHEMAS}
 """
 #: By definition, not by name: 0001 deliberately leaves a fresh database with two
 #: identically-defined CHECKs on chat.conversations (one inline, one named).
-CONSTRAINTS = """
+CONSTRAINTS = f"""
 SELECT n.nspname, rel.relname, c.contype, pg_get_constraintdef(c.oid), c.convalidated
   FROM pg_constraint c
   JOIN pg_class rel ON rel.oid = c.conrelid
   JOIN pg_namespace n ON n.oid = rel.relnamespace
- WHERE n.nspname IN ('chat', 'auth', 'app')
+ WHERE n.nspname IN {SCHEMAS}
 """
-INDEXES = "SELECT schemaname, tablename, indexdef FROM pg_indexes WHERE schemaname IN ('chat', 'auth', 'app')"
+INDEXES = f"SELECT schemaname, tablename, indexdef FROM pg_indexes WHERE schemaname IN {SCHEMAS}"
+#: A trigger is schema the catalog queries above cannot see, and 0004's
+#: AFTER INSERT on campaigns is load-bearing (RQ-1). `tgisinternal` excludes the
+#: referential-integrity triggers PostgreSQL makes for foreign keys: their names
+#: embed an OID, so they differ between any two databases and would make every
+#: comparison fail for a reason that is not drift.
+TRIGGERS = f"""
+SELECT n.nspname, rel.relname, t.tgname, pg_get_triggerdef(t.oid)
+  FROM pg_trigger t
+  JOIN pg_class rel ON rel.oid = t.tgrelid
+  JOIN pg_namespace n ON n.oid = rel.relnamespace
+ WHERE n.nspname IN {SCHEMAS} AND NOT t.tgisinternal
+"""
 
 
 def _shape(dsn: str) -> dict[str, set[tuple]]:
@@ -116,6 +133,7 @@ def _shape(dsn: str) -> dict[str, set[tuple]]:
             "columns": set(conn.execute(COLUMNS).fetchall()),
             "constraints": set(conn.execute(CONSTRAINTS).fetchall()),
             "indexes": set(conn.execute(INDEXES).fetchall()),
+            "triggers": set(conn.execute(TRIGGERS).fetchall()),
         }
 
 
@@ -124,7 +142,21 @@ def test_a_fresh_database_gets_every_migration_once(dsn):
     assert report.applied == tuple(m.filename for m in PACKAGED)
     assert (report.current, report.state) == (len(PACKAGED), "current")
     assert _ledger(dsn) == [(m.version, m.name, m.checksum) for m in PACKAGED]
-    for relation in ("chat.messages", "chat.conversations", "auth.users", "auth.invites", "app.jobs"):
+    for relation in (
+        "chat.messages",
+        "chat.conversations",
+        "auth.users",
+        "auth.invites",
+        "app.jobs",
+        "campaign.campaigns",
+        "campaign.authz_state",
+        "campaign.participants",
+        "campaign.enrolment_codes",
+        "campaign.device_credentials",
+        "campaign.table_sessions",
+        "campaign.table_credentials",
+        "campaign.session_join_counters",
+    ):
         assert _exists(dsn, relation), f"{relation} was not created"
 
     again = mig.migrate(dsn)
@@ -154,7 +186,7 @@ def test_a_pre_expansion_database_is_adopted_and_ends_up_identical_to_a_fresh_on
     with throwaway_database("mig_fresh") as fresh:
         mig.migrate(fresh)
         adopted_shape, fresh_shape = _shape(dsn), _shape(fresh)
-        for part in ("columns", "constraints", "indexes"):
+        for part in ("columns", "constraints", "indexes", "triggers"):
             assert adopted_shape[part] == fresh_shape[part], f"{part} differ between an adopted and a fresh database"
         assert _ledger(dsn) == _ledger(fresh)
 
@@ -171,6 +203,290 @@ def test_the_stores_and_the_admin_cli_check_the_schema_and_never_change_it(dsn):
 
     mig.migrate(dsn)
     PostgresAuthStore(dsn).ensure_schema()
+
+
+# ── The campaign schema's own guarantees (1kg.2.1) ───────────────────────────
+
+#: A well-formed minted id, written out so the test does not depend on the minter.
+CAMPAIGN_ID = "cmp_" + "a" * 22
+
+
+def _one_user(conn, email: str = "gm@example.com") -> int:
+    return conn.execute(
+        "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id", (email,)
+    ).fetchone()[0]
+
+
+def test_a_campaign_inserted_by_raw_sql_still_gets_its_authorisation_row(dsn):
+    """RQ-1, proved where no store can stand in for it: the AFTER INSERT trigger
+    makes the `authz_state` row, so no route, script, fixture or later epic can
+    leave a campaign without one. This is the case the in-memory twin cannot
+    have — its only path to a campaign is the fake store's `create`, which
+    inserts the row itself — so it is proved here against the database."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, %s)",
+            (CAMPAIGN_ID, owner, "Nocturne"),
+        )
+        assert conn.execute(
+            "SELECT authz_revision, lock_token FROM campaign.authz_state WHERE campaign_id = %s",
+            (CAMPAIGN_ID,),
+        ).fetchone() == (0, 0), "a raw insert must still leave a campaign authorisable"
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        pytest.param("id", "campaign_1", id="no-prefix"),
+        pytest.param("id", "cmp_short", id="too-few-bits"),
+        pytest.param("name", "", id="empty-name"),
+    ],
+)
+def test_the_database_refuses_a_campaign_row_the_application_would_never_mint(dsn, column, value):
+    """The CHECK constraints of 0004 are generated from
+    `service.campaign_identity.id_check_regex`; this is the database half of that
+    agreement, and `service/tests/test_campaign_schema_sql.py` is the text half."""
+    import psycopg
+
+    mig.migrate(dsn)
+    row = {"id": CAMPAIGN_ID, "name": "Nocturne"} | {column: value}
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, %s)",
+                (row["id"], owner, row["name"]),
+            )
+
+
+#: Every table 0004 hangs off a campaign, with the column that reaches a user.
+CAMPAIGN_TABLES = (
+    "campaign.campaigns",
+    "campaign.authz_state",
+    "campaign.participants",
+    "campaign.enrolment_codes",
+    "campaign.device_credentials",
+    "campaign.table_sessions",
+    "campaign.table_credentials",
+    "campaign.session_join_counters",
+)
+
+
+def _a_whole_campaign(conn, owner: int) -> None:
+    """One row in every table of 0004, so the cascade has something to lose."""
+    conn.execute(
+        "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
+        (CAMPAIGN_ID, owner),
+    )
+    conn.execute(
+        "INSERT INTO campaign.participants (id, campaign_id, alias, alias_key) "
+        "VALUES (%s, %s, 'Rook', 'rook')",
+        ("prt_" + "a" * 22, CAMPAIGN_ID),
+    )
+    conn.execute(
+        "INSERT INTO campaign.enrolment_codes (id, participant_id, code_digest, expires_at) "
+        "VALUES (%s, %s, %s, now() + interval '7 days')",
+        ("enc_" + "a" * 22, "prt_" + "a" * 22, "0" * 64),
+    )
+    conn.execute(
+        "INSERT INTO campaign.device_credentials (id, participant_id, credential_digest) "
+        "VALUES (%s, %s, %s)",
+        ("dev_" + "a" * 22, "prt_" + "a" * 22, "1" * 64),
+    )
+    conn.execute(
+        "INSERT INTO campaign.table_sessions (id, campaign_id, gm_user_id, state, expires_at) "
+        "VALUES (%s, %s, %s, 'live', now() + interval '12 hours')",
+        ("ses_" + "a" * 22, CAMPAIGN_ID, owner),
+    )
+    conn.execute(
+        "INSERT INTO campaign.table_credentials "
+        "(id, session_id, link_generation, credential_digest) VALUES (%s, %s, 1, %s)",
+        ("tcr_" + "a" * 22, "ses_" + "a" * 22, "2" * 64),
+    )
+    conn.execute(
+        "INSERT INTO campaign.session_join_counters (session_id, link_generation, joins) "
+        "VALUES (%s, 1, 3)",
+        ("ses_" + "a" * 22,),
+    )
+
+
+def test_deleting_a_user_cascades_through_every_table_of_the_campaign_schema(dsn):
+    """SEC-36: deleting the account takes the campaigns with it, and everything
+    that hangs off them — including the authorisation row, which is what an
+    orphan would keep a deleted campaign authorisable by."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        _a_whole_campaign(conn, owner)
+        for table in CAMPAIGN_TABLES:
+            assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 1, table
+
+        conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+        for table in CAMPAIGN_TABLES:
+            assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0, (
+                f"{table} still holds a row of a deleted account"
+            )
+
+
+def test_audit_rows_outlive_the_campaign_they_name_and_its_owner(dsn):
+    """ED-26 ("ledger and audit rows, which are tombstoned past campaign
+    deletion") and ED-18(a)'s retention — NOT SEC-36, which says the opposite
+    about everything that hangs off a campaign and which behaviour 33 pins.
+    `campaign_id_tombstone` has no foreign key, so the row keeps the identifier
+    as plain text and stops being reachable from what it names."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        _a_whole_campaign(conn, owner)
+        conn.execute(
+            "INSERT INTO audit.events "
+            "(campaign_id_tombstone, actor_kind, action, object_kind, decision, detail) "
+            "VALUES (%s, 'gm', 'session.started', 'table_session', 'allowed', %s)",
+            (CAMPAIGN_ID, '{"generation": 1}'),
+        )
+
+        conn.execute("DELETE FROM campaign.campaigns WHERE id = %s", (CAMPAIGN_ID,))
+        assert conn.execute("SELECT count(*) FROM audit.events").fetchone()[0] == 1
+
+        conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+        kept = conn.execute(
+            "SELECT campaign_id_tombstone, action, detail FROM audit.events"
+        ).fetchall()
+        assert kept == [(CAMPAIGN_ID, "session.started", {"generation": 1})], (
+            "the ledger must survive the account it describes"
+        )
+
+
+def test_the_audit_table_is_reachable_from_no_foreign_key(dsn):
+    """The mechanism behind the test above, asserted directly: a foreign key
+    added later would silently reintroduce the cascade ED-26 forbids."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        edges = conn.execute(
+            "SELECT conname FROM pg_constraint c JOIN pg_class rel ON rel.oid = c.conrelid "
+            "JOIN pg_namespace n ON n.oid = rel.relnamespace "
+            "WHERE n.nspname = 'audit' AND c.contype = 'f'"
+        ).fetchall()
+        assert edges == []
+
+
+# ── Conversation metadata, and the uncampaigned state (0006) ─────────────────
+
+
+def test_a_conversation_written_before_the_migration_reads_back_uncampaigned(dsn):
+    """RAIL-13. A NULL campaign_id is the documented uncampaigned state — every
+    conversation that exists today, and plain chat from now on. It is not a
+    migration that has yet to finish."""
+    with connect(dsn) as conn:
+        conn.execute(PRE_EXPANSION)
+
+    mig.migrate(dsn)
+
+    with connect(dsn) as conn:
+        kept = conn.execute(
+            "SELECT conversation_id, campaign_id, title, updated_at, archived_at "
+            "FROM chat.conversations ORDER BY conversation_id"
+        ).fetchall()
+    assert kept == [("owned", None, None, None, None)], (
+        "a conversation older than the campaign schema must still read back, uncampaigned"
+    )
+
+
+def test_deleting_the_campaign_owner_is_refused_while_another_users_conversation_links_to_it(dsn):
+    """The cost of the second edge into chat.conversations, case (a): user V's
+    conversation points at user U's campaign, so deleting U is refused. The edge
+    is DEFERRABLE INITIALLY DEFERRED, so the refusal arrives at the COMMIT
+    rather than at the statement — which is why this test commits explicitly
+    instead of relying on autocommit to do it out of sight.
+
+    Unconditional referential integrity, and the fail-closed answer requirement
+    5 asks for: no conversation is silently detached or destroyed before 1kg.2.6
+    decides the deletion order.
+    """
+    import psycopg
+
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn, "gm@example.com")
+        guest = _one_user(conn, "player@example.com")
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
+            (CAMPAIGN_ID, owner),
+        )
+        conn.execute(
+            "INSERT INTO chat.conversations (conversation_id, user_id, campaign_id) "
+            "VALUES ('theirs', %s, %s)",
+            (guest, CAMPAIGN_ID),
+        )
+
+    with connect(dsn, autocommit=False) as conn:
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+            conn.commit()
+        conn.rollback()
+
+    with connect(dsn) as conn:
+        assert conn.execute("SELECT count(*) FROM campaign.campaigns").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT campaign_id FROM chat.conversations WHERE conversation_id = 'theirs'"
+        ).fetchone()[0] == CAMPAIGN_ID, "nothing was detached on the way to the refusal"
+        assert conn.execute("SELECT count(*) FROM auth.users WHERE id = %s", (owner,)).fetchone()[0] == 1
+
+
+def test_deleting_an_owner_whose_own_conversation_links_to_their_campaign_deletes_both(dsn):
+    """Case (b), which used to have no determinate answer and now has one.
+
+    With an IMMEDIATE NO ACTION edge the check was an AFTER DELETE row trigger
+    on campaign.campaigns queued at the end of the NESTED cascade query, so
+    whether the owner's own conversations were already gone fell out of the
+    firing order of two referential-integrity triggers on auth.users — and their
+    names embed an OID rendered as text. CI's freshly initialised cluster
+    cascaded; a long-lived cluster whose OID counter has six digits would have
+    refused the very same delete.
+
+    DEFERRABLE INITIALLY DEFERRED removes the question: the check runs at the
+    end of the transaction, by which time the owner's conversations have gone
+    with the user cascade and there is nothing left to check. The account goes,
+    its campaign goes, its conversations go, and no row is left pointing at a
+    campaign that is not there — on every cluster.
+    """
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
+            (CAMPAIGN_ID, owner),
+        )
+        conn.execute(
+            "INSERT INTO chat.conversations (conversation_id, user_id, campaign_id) "
+            "VALUES ('mine', %s, %s)",
+            (owner, CAMPAIGN_ID),
+        )
+        conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+
+    with connect(dsn) as conn:
+        assert conn.execute("SELECT count(*) FROM chat.conversations").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM campaign.campaigns").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM auth.users").fetchone()[0] == 0
+
+
+def test_the_conversation_edge_is_deferred_and_still_takes_no_delete_action(dsn):
+    """The mechanism behind the two tests above, asserted directly: a later
+    migration that made the edge immediate again, or gave it a cascade, would
+    reintroduce the OID-order dependency or silently destroy conversations."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        [(definition, deferrable, deferred)] = conn.execute(
+            "SELECT pg_get_constraintdef(c.oid), c.condeferrable, c.condeferred "
+            "FROM pg_constraint c JOIN pg_class rel ON rel.oid = c.conrelid "
+            "JOIN pg_namespace n ON n.oid = rel.relnamespace "
+            "WHERE n.nspname = 'chat' AND rel.relname = 'conversations' "
+            "AND c.contype = 'f' AND pg_get_constraintdef(c.oid) LIKE '%%campaign.campaigns%%'"
+        ).fetchall()
+    assert (deferrable, deferred) == (True, True), definition
+    assert "ON DELETE" not in definition, "still NO ACTION: 1kg.2.6 decides the deletion order"
 
 
 # ── Drift fails loudly ───────────────────────────────────────────────────────

@@ -195,6 +195,145 @@ py-module `config`; extras `test` / `eval` / `rerank` / `extract`). `docker comp
 → `vector-db` + `service` + `ui` (nginx, :5173); or a single `uvicorn` process serves the built
 `ui/dist` plus the API on :8000.
 
+## Campaign schema (GM Workbench)
+
+Storage for the Workbench, added by `1kg.2.1`. Migrations `0004`–`0006`; stores in
+`service/campaign_store.py`, `service/participant_store.py`,
+`service/table_session_store.py` and `service/audit_log.py`. **No routes read any
+of it yet** — those are `1kg.2.2`'s and `1kg.2.3`'s.
+
+### The tables
+
+| Table | Holds | The rule that shapes it |
+|---|---|---|
+| `campaign.campaigns` | a GM's table: owner, name, created/updated/archived | owner is `NOT NULL` and cascades from `auth.users` |
+| `campaign.authz_state` | `authz_revision`, and `lock_token` (never written) | an `AFTER INSERT` trigger on `campaigns` creates it, so no path can leave a campaign without one (RQ-1) |
+| `campaign.participants` | a seat: alias, `alias_key`, created, `removed_at` | marked removed, never deleted; the alias is unique within the campaign among seats that are not removed, compared over an `alias_key` the **application** computes (NFKC then `casefold`) so that PostgreSQL's `lower()` and Python's cannot disagree |
+| `campaign.enrolment_codes` | the personal link a GM hands a player | digest only; single-use; expires after 7 days; at most one live per seat |
+| `campaign.device_credentials` | the one device a seat is bound to | digest only; at most one unrevoked per seat |
+| `campaign.table_sessions` | a GM running a table now | at most one `live` session **per GM across campaigns** (a partial unique index), both epochs, the current link's digest (its own partial unique index); `(campaign_id, gm_user_id)` references `campaigns (id, owner_id)`, so the GM **is** the owner (AUD-1); `state` and `ended_at` are kept in step by a CHECK |
+| `campaign.table_credentials` | a joined device | bound to the `link_generation` it was made in |
+| `campaign.session_join_counters` | the durable per-generation join count and its window start | storage only in this bead; `1kg.2.3` owns the arithmetic |
+| `audit.events` | one recorded decision | append-only; `campaign_id_tombstone` has **no** foreign key, so rows outlive their campaign |
+
+### The uncampaigned state
+
+`chat.conversations.campaign_id` is nullable, and **`NULL` is the documented
+uncampaigned state**: every conversation that existed before `0006`, and plain
+chat from now on. Nothing about `/chat` changes because the column exists;
+`service/history.py` is untouched and reading or writing the new columns is
+`1kg.2.4`'s.
+
+The reference takes **no delete action**, and is `DEFERRABLE INITIALLY
+DEFERRED`. Until `1kg.2.6` decides whether deleting a campaign detaches its
+conversations or refuses while any remain, the database refuses — so nothing is
+silently detached. One consequence is worth knowing before it is met in a
+traceback: if user V has a conversation linked to user U's campaign, **deleting
+the account U fails**.
+
+Deferring the check is what makes the *owner's own* conversations a determinate
+case. Checked immediately, the answer depended on the firing order of two
+referential-integrity triggers on `auth.users`, whose names embed an OID
+rendered as text — so a freshly initialised cluster cascaded and a long-lived
+one, whose OID counter has six digits, would have refused the same delete.
+Checked at commit, the owner's conversations have already gone with the user
+cascade and there is nothing left to check: **deleting an account takes its
+campaigns and its own conversations with it, everywhere**.
+
+### Digests, and what is private
+
+A code, a device credential and a table link token are 32 random bytes; only the
+lowercase-hex SHA-256 digest is stored, and every lookup is an exact match on a
+unique index over it (SEC-5) — partial where the column is nullable, which is
+`table_sessions.link_digest` alone, because a retired link has no digest. A plain-text secret exists only as the return value
+of the five methods that mint one. `argon2` (`service/hashing.py`) is deliberately
+not used for these: they are 256-bit random values with nothing to brute-force,
+and a slow hash on a route anyone can call is a denial-of-service lever.
+
+An alias, a conversation title and a campaign name belong in no log line, no
+exception, no URL and no audit row (SEC-20). Two different things work towards
+that, and they are worth telling apart.
+
+**In the stores it is enforced.** The records hide those fields from `repr()` —
+a traceback is a log line — and every refusal names the rule or the key, never
+the value. A test sweeps the whole store and audit surface for a canary alias,
+title, secret and digest.
+
+**In the ledger it is a closed vocabulary, not a shape rule.**
+`0005_audit_events.sql` bounds lengths and types `actor_ref`, `object_ref` and
+`campaign_id_tombstone` as free `TEXT` with no CHECK, so `service/audit_log` is
+the enforcement — and what it enforces is ED-18(a)'s "closed, per-action
+`detail` of ids, codes and keys". `ACTION_DETAIL` says, for each action, exactly
+which keys a row of that action may carry and what each one is: a minted id of a
+named prefix, one of a closed set of codes, a Workbench field key (ED-2), a
+bounded list of them (which is how `1kg.7.1` will record a reveal's mask), a
+whole number or a boolean. A key the registry does not list is refused, and the
+refusal names neither the key nor the value.
+
+**Two kinds are open by construction, and a caller has to know which.** A
+`MintedId` accepts any well-formed body behind its prefix — the tombstone has no
+foreign key (ED-26), so nothing can ask whether that row exists — and what it
+closes is the prefix and the length. `FIELD_KEY(S)` is a shape: which keys a
+document may have belongs to its type, and the ledger does not know the types,
+so the caller recording a reveal's mask is the one that must check its keys
+against the type's declared keys. Everything else is a closed set.
+
+The columns beside `detail` are closed the same way: `campaign_id_tombstone` is
+a minted `cmp_` id, the two references are minted ids or the GM's numeric user
+id, `object_kind` is one of five `ObjectKind` members, `reason_code` is one of
+the codes its own action declares, and `authz_revision` carries the same `>= 0`
+the migration does. The rule this replaced was one shape test over every action
+at once, and it could not tell a one-word alias from an identifier —
+`{"alias": "Rook"}` passed it, and so did `object_kind="rook"`. Both are refused
+now. No kind holds the client-minted command id a reveal row needs; `1kg.7.1`
+decides how that is recorded. All of this is stricter than `jobs.check_payload`,
+which admits any short string, because a job is read and deleted while an audit
+row outlives everything it describes.
+
+### The campaign lock
+
+`UnitOfWork.lock_campaign(campaign_id, shared=...)` holds a campaign's
+authorisation still for the rest of a transaction — `FOR SHARE` to read under it,
+`FOR UPDATE` to change it — and `advance_authz_revision` is the only code that
+writes `authz_revision`, refusing unless the caller holds the lock exclusively.
+
+Three rules are enforced in both the PostgreSQL implementation and the in-memory
+twin, so the two cannot disagree about which calls are refused: it is the
+**first** lock a transaction takes, it is the **only** campaign that transaction
+locks, and a shared holder never upgrades to exclusive in place. Who *blocks*
+whom is the database's, and is tested there (`tests/test_campaign_db.py`).
+`Database.transaction()` opens every transaction **explicitly READ COMMITTED**, so
+no server, database or role default can change what the lock is reasoning about.
+
+### One setting interaction to know about
+
+`CAMPAIGN_LOCK_TIMEOUT_S` is bounded 0.05–4 and must be **below**
+`DB_POOL_TIMEOUT_S`, which is bounded 1–60: a request waiting for the campaign
+lock is holding one of the gate's connections, so a lock wait that outlasts the
+gate turns one contended campaign into a 503 for unrelated traffic. The
+invariant holds two ways, so that no documented gate can stop the service from
+starting. **Unset**, the lock timeout is *derived* from the gate — half of it,
+capped at RQ-8's two seconds — and is below it by construction for every value
+in 1–60. **Set**, it is checked against whatever the gate is, and one that is
+not below it is refused by name at startup rather than in a traceback. The wait
+reaches the server in whole milliseconds, which is that GUC's own unit; the
+default on the default gate is still exactly 2 s.
+
+Neither setting is read from the environment yet: nothing takes a campaign lock
+in this bead, so `Database` derives the lock timeout from its own gate. The bead
+that first takes one on a route passes `CampaignLockSettings.from_env(pool=...)`,
+the way `service/app.py` already passes `PoolSettings.from_env()`. The
+comparison is made in `Database.__init__` as well as in `from_env`, so it does
+not wait for that bead: a `Database` built in code with a short gate is refused
+at construction rather than silently keeping the default 2 s lock timeout.
+
+A caller may also raise the transaction bound for one long piece of work
+(`lock_campaign(..., transaction_timeout_s=...)`, and the same parameter on the
+session and participant holds). The value is checked — from one millisecond to
+600 seconds — in both units of work: PostgreSQL spells "no timeout" as `0` and
+measures this setting in milliseconds, so an unchecked parameter could switch
+off the very bound it exists to raise.
+
 ## Running it
 
 ```bash
