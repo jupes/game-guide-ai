@@ -1,0 +1,155 @@
+/* ── GameDocument ────────────────────────────────────────────────────────────
+   The config-driven document shell (1kg.6.2).
+
+   Colours are design-system tokens only, so both themes follow the palette.
+   Every motion is answered under `prefers-reduced-motion` (LAYOUT-9). The root
+   is the containing block for the SelectionBar, which is what lets the bar be a
+   child of its own field — so it follows that field in the tab order — while
+   being positioned in the document's coordinates.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.gm-document {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-2);
+  max-width: var(--aether-measure);
+  padding: var(--aether-space-4);
+  font-family: var(--aether-font-ui);
+  color: var(--md-sys-color-on-surface);
+}
+
+/* The registry's accent, as a token rather than the handoff's raw colour prop. */
+.gm-document[data-accent='arcane'] {
+  border-inline-start: 3px solid var(--md-sys-color-tertiary);
+  padding-inline-start: var(--aether-space-4);
+}
+
+.gm-document__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--aether-space-2);
+  padding-bottom: var(--aether-space-2);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.gm-document__type {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-document__badge {
+  padding: 2px var(--aether-space-2);
+  font-family: var(--aether-font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-document__live {
+  margin: 0;
+  flex: 1 1 8rem;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* CANVAS-29 · the acknowledgement. The written sentence is the cue; the colour
+   only agrees with it (WCAG 1.4.1). */
+.gm-document__wash {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--aether-space-1);
+  padding-inline-start: var(--aether-space-2);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--md-sys-color-on-secondary-container);
+  background: var(--md-sys-color-secondary-container);
+  border-radius: var(--md-sys-shape-corner-full);
+  animation: gm-document-wash-in var(--md-sys-motion-duration-medium1) var(--md-sys-motion-easing-standard);
+}
+
+@keyframes gm-document-wash-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.gm-document__wash .material-symbols-rounded {
+  font-size: 15px;
+}
+
+.gm-document__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-1);
+}
+
+/* The `stat_block_card` renderer: a run of consecutive one-line and number
+   fields is a stat strip. The run is chosen by kind and adjacency, so registry
+   order is preserved and nothing here names a key. */
+.gm-document__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 1px;
+  background: var(--md-sys-color-outline-variant);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-small);
+  overflow: hidden;
+}
+
+.gm-document__stats .gm-field {
+  background: var(--md-sys-color-surface-container-low);
+  border-radius: 0;
+}
+
+.gm-document__placeholder {
+  margin: 0;
+  font-family: var(--aether-font-body);
+  font-size: 15px;
+  font-style: italic;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-document__sources {
+  padding-top: var(--aether-space-3);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  font-family: var(--aether-font-body);
+  font-size: 13px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* §10.2 · a narrow canvas: the stat strip drops to one column rather than
+   squeezing a label and a number into 4 rem. */
+@media (max-width: 767px) {
+  .gm-document {
+    padding: var(--aether-space-3);
+  }
+
+  .gm-document__stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* EXPORT-1 is 1kg.6.6's; this is only the hint that a printable type carries,
+   so that print styles have something to hang on when they arrive. */
+@media print {
+  .gm-document[data-printable='true'] .gm-field__actions {
+    display: none;
+  }
+}
+
+/* ── LAYOUT-9 · reduced motion ──────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-document__wash {
+    animation: none;
+  }
+}
