@@ -892,7 +892,7 @@ while the GM's indicator says B.
 
 | Channel | Kind | Carries |
 | --- | --- | --- |
-| GM | `slot` | the session, the link generation, the reveal epoch, the slot as a `RevealAudience`, its sequence and `RevealLive` or `null` — the twin of `GmAudioEvent` |
+| GM | `slot` | the session, the link generation, the reveal epoch, the slot as a `RevealSlotRef`, its sequence and `RevealLive` or `null` — the twin of `GmAudioEvent` |
 | GM | `snapshot` | `RevealState`: the whole picture in one frame |
 | Table | `slot` | the slot as **`table` or `mine`**, its sequence, and a `TableProjection` or `null` — the twin of `TableAudioEvent`, and nothing else |
 | Table | `snapshot` | one or two slots: the table slot, always, and with the enrolled device credential this device's own. It is the **opening** frame only |
