@@ -12,6 +12,7 @@ Requires DATABASE_URL (CI always sets it). Run from the repo root:
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 import uuid
@@ -686,3 +687,99 @@ def test_the_cli_reports_pending_then_applies_then_reports_current(dsn, monkeypa
     assert mig.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "applied 0001_chat_schema.sql" in out and dsn not in out
+
+
+# ── The channel a conversation was started in, and the owner's index (0007) ──
+
+
+def test_a_conversation_written_before_the_migration_has_no_recorded_channel(dsn):
+    """`started_mode` is NULL for every conversation that exists today, and that
+    is the honest value: the channel it was started in was never recorded, so it
+    is unknown rather than absent. Nothing backfills it and nothing guesses it."""
+    with connect(dsn) as conn:
+        conn.execute(PRE_EXPANSION)
+
+    mig.migrate(dsn)
+
+    with connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT started_mode FROM chat.conversations ORDER BY conversation_id"
+        ).fetchall() == [(None,)]
+
+
+@pytest.mark.parametrize("mode", ["sage", "spell", "rules", "gm"])
+def test_the_database_accepts_every_channel_the_enum_carries(dsn, mode):
+    """The database half of the agreement
+    `service/tests/test_conversation_schema_sql.py` holds as text: a mode the
+    enum names must be a mode the column stores, or the application has a
+    channel it can never write."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO chat.conversations (conversation_id, user_id, started_mode) "
+            "VALUES (%s, %s, %s)",
+            (f"cnv_{mode}", owner, mode),
+        )
+        assert conn.execute(
+            "SELECT started_mode FROM chat.conversations WHERE conversation_id = %s",
+            (f"cnv_{mode}",),
+        ).fetchone() == (mode,)
+
+
+def test_the_database_refuses_a_channel_the_application_could_never_mean(dsn):
+    """The other direction. `chat.messages.mode` carries no CHECK because a
+    turn's mode is rewritten on every request; this column is bound once, so the
+    constraint costs nothing and catches a typo at the statement."""
+    import psycopg
+
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO chat.conversations (conversation_id, user_id, started_mode) "
+                "VALUES ('cnv_bad', %s, 'oracle')",
+                (owner,),
+            )
+
+
+def test_a_conversation_id_is_still_unconstrained_so_every_existing_id_keeps_working(dsn):
+    """Requirement 2's compatibility rule, proved against the server: the ids in
+    production are client-minted UUIDs and the column must never gain a prefix
+    CHECK that would make them illegal."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        legacy = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO chat.conversations (conversation_id, user_id) VALUES (%s, %s)",
+            (legacy, owner),
+        )
+        assert conn.execute(
+            "SELECT count(*) FROM chat.conversations WHERE conversation_id = %s", (legacy,)
+        ).fetchone() == (1,)
+
+
+def test_the_owner_index_exists_by_name_and_is_partial_on_the_default_filter(dsn):
+    """A15. `ConversationStore.list_for_owner`'s ordering and default filter are
+    written to match this index exactly, so an index quietly renamed, widened or
+    reordered turns the default page into a sequential scan without failing
+    anything else."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        definition = conn.execute(
+            "SELECT indexdef FROM pg_indexes "
+            "WHERE schemaname = 'chat' AND indexname = 'conversations_owner_recent_idx'"
+        ).fetchone()
+    assert definition is not None, "conversations_owner_recent_idx is gone or was renamed"
+    # Read through PostgreSQL's own rendering rather than matching it verbatim:
+    # `pg_get_indexdef` normalises whitespace, casing and the parentheses around
+    # an expression key, and a test pinned to one spelling of those would go red
+    # for a reason that is not drift. Order and direction are what matter, and
+    # both are still asserted.
+    created = re.sub(r"\s+", " ", definition[0])
+    assert "archived_at IS NULL" in created, created
+    keys = created.split("USING btree (", 1)[1]
+    assert keys.index("user_id") < keys.index("updated_at") < keys.index("conversation_id"), keys
+    assert "COALESCE" in keys and keys.count("DESC") == 2, keys
