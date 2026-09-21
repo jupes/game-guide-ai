@@ -123,11 +123,18 @@ def test_owner_of_finds_the_gm_who_owns_the_conversation(world: World) -> None:
         assert world.timeline.owner_of(unit, CONVERSATION) == world.owner
 
 
-def test_owner_of_answers_none_for_a_conversation_that_was_never_claimed(world: World) -> None:
-    """0001 declares `messages_conversation_fkey` NOT VALID, so a conversation
-    can hold rows and have no ownership row at all. `None` is not "not yours",
-    and the route answers 404 to both."""
-    say_it(world, "user", "written before the ownership table existed", conversation_id=UNCLAIMED)
+def test_owner_of_answers_none_for_a_conversation_with_no_ownership_row(world: World) -> None:
+    """`None` is not "not yours", and the route answers 404 to both.
+
+    Seeded with no message rows on purpose, and CI is why. `NOT VALID` on
+    `messages_conversation_fkey` exempts the rows that were already there — it
+    still **enforces every new insert** — so a fresh database refuses a message
+    whose conversation row is missing, while `InMemoryMessageStore` (a plain
+    dict and a plain list, and not this bead's to change) accepts one. The
+    legacy shape those two disagree about is real, and it is proved against
+    PostgreSQL by `test_a_conversation_that_predates_the_ownership_table…`
+    below, where it can be created the way it actually arose.
+    """
     with world.db.transaction() as unit:
         assert world.timeline.owner_of(unit, UNCLAIMED) is None
 
@@ -142,7 +149,6 @@ def test_the_authorization_helper_refuses_all_three_with_the_same_named_error(wo
     indistinguishable to the caller, in both worlds."""
     own_it(world, FOREIGN, owner=world.other_owner)
     say_it(world, "user", "not yours", conversation_id=FOREIGN)
-    say_it(world, "user", "unowned", conversation_id=UNCLAIMED)
     with world.db.transaction() as unit:
         for conversation_id in ("no-such-conversation", UNCLAIMED, FOREIGN):
             with pytest.raises(timeline.ConversationNotFound):
@@ -373,6 +379,76 @@ def test_a_stored_mode_no_contract_knows_costs_one_entry_and_not_the_page(dsn: s
             "SELECT mode FROM chat.messages WHERE conversation_id = %s ORDER BY id", (CONVERSATION,)
         ).fetchall()
     assert [m[0] for m in modes] == ["sage", "sage", "oracle", "sage", "sage", "sage"]
+
+
+def _a_legacy_orphan(dsn: str, conversation_id: str, rows: list[tuple[str, str, str]]) -> None:
+    """Message rows whose conversation row does not exist — the cold-start hole
+    0001 left behind, reproduced the only way it can be.
+
+    `messages_conversation_fkey` is `NOT VALID`, which exempts the rows that
+    were already there and enforces every new one, so these rows can only be
+    made the way the real ones were: while the constraint is not on the table.
+    It goes back exactly as 0001 declares it, `NOT VALID` included, so what the
+    test then reads is a database in the state a real one is in.
+    """
+    with connect(dsn) as conn:
+        conn.execute("ALTER TABLE chat.messages DROP CONSTRAINT messages_conversation_fkey")
+        for mode, role, content in rows:
+            conn.execute(
+                "INSERT INTO chat.messages (conversation_id, mode, role, content) "
+                "VALUES (%s, %s, %s, %s)",
+                (conversation_id, mode, role, content),
+            )
+        conn.execute(
+            "ALTER TABLE chat.messages ADD CONSTRAINT messages_conversation_fkey "
+            "FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id) "
+            "ON DELETE CASCADE NOT VALID"
+        )
+
+
+@needs_db
+def test_a_conversation_that_predates_the_ownership_table_is_refused_not_claimed(dsn: str) -> None:
+    """The case §8.1 decided: this route answers 404 for such a conversation
+    until some other route claims it, and it never claims one itself.
+
+    The rows are still there and still readable — the read model is not what is
+    withholding them — so `GET …/messages`, which does claim, keeps working
+    exactly as it did. That contrast is the whole point of the rule.
+    """
+    _a_legacy_orphan(dsn, UNCLAIMED, [("sage", "user", "asked before ownership existed"),
+                                      ("sage", "assistant", "answered before ownership existed")])
+    database = Database(dsn, PoolSettings(sync_max=4, async_max=0, acquire_timeout_s=5))
+    store = PostgresTimelineStore()
+    with database.transaction() as unit:
+        assert store.owner_of(unit, UNCLAIMED) is None
+        with pytest.raises(timeline.ConversationNotFound):
+            timeline.authorize(store, unit, UNCLAIMED, user_id=1)
+        # The transaction is still usable: a guard refused, not a statement.
+        rows = store.legacy_window(unit, UNCLAIMED, before=None, limit_rows=10)
+    assert [r.content for r in rows] == ["answered before ownership existed",
+                                         "asked before ownership existed"]
+
+    # And nothing was minted on the way through (SEC-3: no claim, no enumeration).
+    with connect(dsn) as conn:
+        claimed = conn.execute(
+            "SELECT count(*) FROM chat.conversations WHERE conversation_id = %s", (UNCLAIMED,)
+        ).fetchone()[0]
+    assert int(claimed) == 0
+
+
+@needs_db
+def test_a_fresh_database_refuses_a_message_whose_conversation_row_is_missing(dsn: str) -> None:
+    """Why the shared suite cannot seed the case above, stated as a test rather
+    than as a comment: `NOT VALID` exempts old rows and enforces new ones, so
+    the hole cannot be reopened by an ordinary write."""
+    import psycopg
+
+    with connect(dsn) as conn, pytest.raises(psycopg.errors.ForeignKeyViolation):
+        conn.execute(
+            "INSERT INTO chat.messages (conversation_id, mode, role, content) "
+            "VALUES (%s, 'sage', 'user', 'x')",
+            ("a-conversation-nobody-created",),
+        )
 
 
 @needs_db
