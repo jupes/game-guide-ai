@@ -43,6 +43,60 @@
           },
           {
             "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": "Sister Ondrey Vashe"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an enrolled device sees its own slot, present and empty",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
             "event": "ready"
           }
         ]
@@ -63,12 +117,35 @@
           }
         ]
       }
+    },
+    {
+      "name": "an inactive table reporting an empty table slot",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "table",
+            "seq": 12,
+            "content": null
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
     }
   ],
   "invalid": [
     {
       "name": "a snapshot that does not end with ready",
-      "why": "RT-4",
+      "why": "ADR RT-4, TABLE-7: `ready` is the boundary before which a client trusts nothing, so a snapshot that never reaches it is not one",
       "value": {
         "schema_version": 1,
         "frames": [
@@ -77,6 +154,53 @@
             "event": "session",
             "audio": true,
             "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "ambience",
+            "seq": 7,
+            "playing": {
+              "asset": {
+                "handle": "hdl_1a2b3c4d5e6f7a8b",
+                "kind": "audio",
+                "media_type": "audio/mpeg",
+                "width": null,
+                "height": null,
+                "duration_ms": 300000
+              },
+              "started_at": "2026-09-16T19:31:24Z",
+              "start_offset_ms": 0,
+              "loop": true,
+              "duration_ms": 300000
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "one_shot",
+            "seq": 4,
+            "playing": null
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": "Sister Ondrey Vashe"
+                    }
+                  ]
+                }
+              }
+            ]
           }
         ]
       }
@@ -110,6 +234,639 @@
               "muted": 1,
               "pending": 1
             }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a live table whose snapshot carries no reveal picture",
+      "why": "ADR RT-4: a snapshot is complete before ready, so a device that has seen ready knows every slot it is entitled to",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": true,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "ambience",
+            "seq": 7,
+            "playing": {
+              "asset": {
+                "handle": "hdl_1a2b3c4d5e6f7a8b",
+                "kind": "audio",
+                "media_type": "audio/mpeg",
+                "width": null,
+                "height": null,
+                "duration_ms": 300000
+              },
+              "started_at": "2026-09-16T19:31:24Z",
+              "start_offset_ms": 0,
+              "loop": true,
+              "duration_ms": 300000
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "one_shot",
+            "seq": 4,
+            "playing": null
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "two snapshot frames",
+      "why": "the snapshot frame is the whole picture, so a second one would be a second truth",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": true,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "ambience",
+            "seq": 7,
+            "playing": {
+              "asset": {
+                "handle": "hdl_1a2b3c4d5e6f7a8b",
+                "kind": "audio",
+                "media_type": "audio/mpeg",
+                "width": null,
+                "height": null,
+                "duration_ms": 300000
+              },
+              "started_at": "2026-09-16T19:31:24Z",
+              "start_offset_ms": 0,
+              "loop": true,
+              "duration_ms": 300000
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "audio",
+            "slot": "one_shot",
+            "seq": 4,
+            "playing": null
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": "Sister Ondrey Vashe"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": "Sister Ondrey Vashe"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a guest given a private slot",
+      "why": "threat model 8.2, ED-10: a private slot exists only with the enrolled device credential, which is what `role: participant` means on the wire — a snapshot route that resolved a revoked device as a guest and still attached its slot is refused here rather than emitted",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": {
+                  "content_kind": "document",
+                  "type": "handout",
+                  "fields": [
+                    {
+                      "key": "body",
+                      "value": "Bearer passes freely through the water gate."
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a guest's resource with a mine slot frame",
+      "why": "threat model 8.2: the entitlement rule holds for every frame of the resource, not just the picture — a later `slot` frame naming `mine` reaches the same device",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "mine",
+            "seq": 4,
+            "content": null
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a participant's picture without its own slot",
+      "why": "ADR RT-4: a snapshot is complete before ready, so for an entitled device `absent` and `present and empty` are different facts and only the second is legal — otherwise a page cannot tell `nothing revealed to me` from `I was not told`",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "two session frames with different roles",
+      "why": "a snapshot describes one session: two frames could disagree about the role, and a reader that took the first would read a different resource from one that took the last",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive table carrying a reveal picture",
+      "why": "TABLE-9, SEC-9: an inactive table gets one generic frame and then the connection closes — it never says which, and it shows nothing",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": "Sister Ondrey Vashe"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive table carrying a mine slot frame",
+      "why": "REVEAL-17, AE-51: rotating or ending a link clears every projection, and a resource with no session frame carries no role either — so a later `slot` frame naming `mine` is refused here, where the role rule cannot reach it",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "mine",
+            "seq": 4,
+            "content": null
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive table carrying a slot frame with content",
+      "why": "REVEAL-17, AE-51: the rule the reveal picture already obeys holds for the incremental frames too — an inactive table shows nothing, so a projection a snapshot route had buffered is refused rather than attached to a link the GM has just rotated",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "table",
+            "seq": 12,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive table whose picture still holds a private projection",
+      "why": "REVEAL-17, AE-51: `inactive` is what a dead table says (TABLE-9), so a resource carrying one is dead whatever else it carries — a session frame beside it is the head frames a snapshot route had buffered for the link the GM has just rotated (SEC-9, TABLE-13), and it does not bring the table back to life. The two frames are mutually exclusive in a well-formed resource, and the projection here travels in the reveal picture, which is the half a `slot` rule alone would not reach",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": "Sister Ondrey Vashe"
+                    },
+                    {
+                      "key": "notes",
+                      "value": "The tunnel under the mill is shown in red ink."
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive frame after the session frame",
+      "why": "order is not a fact: `inactive` says the table is dead wherever it sits in the frame list, so appending it to the buffered head frames refuses exactly as prefixing it does",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "mine",
+            "seq": 4,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "notes",
+                  "value": "The tunnel under the mill is shown in red ink."
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "three inactive frames beside a session and a buffered projection",
+      "why": "liveness counts nothing: one `inactive` frame kills the resource and so do three, so a route that repeated the generic frame while replaying its buffer is refused on the same clause rather than falling through a cardinality test",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "mine",
+            "seq": 4,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "notes",
+                  "value": "The tunnel under the mill is shown in red ink."
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive table whose guest session still shows the table slot",
+      "why": "REVEAL-17, AE-51: clearing every projection is not an entitlement test — the table slot a guest is entitled to while live is cleared too once the link is dead, so a guest resource carrying an `inactive` frame shows nothing either",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "guest"
+          },
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "slot",
+            "slot": "table",
+            "seq": 12,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "notes",
+                  "value": "The tunnel under the mill is shown in red ink."
+                }
+              ]
+            }
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an inactive table that also carries a session frame",
+      "why": "an `inactive` frame and a `session` frame are mutually exclusive in a well-formed resource: TABLE-9 makes `inactive` what a dead table says, so the two together are one emitter holding two generations of the same link (SEC-9, TABLE-13). Refused on its own, with nothing to show, so the contradiction is named where `1kg.7.2` validates rather than left to the projection rules to catch by accident",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "inactive"
+          },
+          {
+            "schema_version": 1,
+            "event": "session",
+            "audio": false,
+            "role": "participant"
           },
           {
             "schema_version": 1,

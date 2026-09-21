@@ -321,6 +321,10 @@ export const ErrorInfoSchema = z.object({
   in_flight: z.array(InvocationIdSchema).max(8).nullish(),
   /** Only for `conflict` on a document write or an AI edit. */
   conflict: ConflictInfoSchema.nullish(),
+  /** The mask keys at fault, for a 422 answering a reveal (1kg.1.6). **Keys only,
+   * never their text** (X-7): an error body is where logs and traces look, and
+   * the key shape makes prose unrepresentable. Additive, so no version bump. */
+  keys: z.array(FieldKeySchema).min(1).max(MAX_CHANGED_FIELDS).nullish(),
 })
 export type ErrorInfo = z.infer<typeof ErrorInfoSchema>
 
@@ -1079,8 +1083,8 @@ export const SESSION_STATES = ['live', 'ended'] as const
 export const SESSION_ACTIONS = ['start', 'end', 'rotate'] as const
 /** AUDIO-21, AUDIO-22: listening means playing and unmuted. */
 export const PRESENCE_AUDIO = ['listening', 'muted', 'pending', 'absent'] as const
-export const GM_EVENT_KINDS = ['tool_lane', 'edit_lane', 'session', 'audio', 'presence', 'asset', 'ready', 'reconnect'] as const
-export const TABLE_EVENT_KINDS = ['session', 'inactive', 'audio', 'ready', 'reconnect'] as const
+export const GM_EVENT_KINDS = ['tool_lane', 'edit_lane', 'session', 'audio', 'slot', 'snapshot', 'presence', 'asset', 'ready', 'reconnect'] as const
+export const TABLE_EVENT_KINDS = ['session', 'inactive', 'audio', 'slot', 'snapshot', 'ready', 'reconnect'] as const
 
 const MediaTypeSchema = z.string().regex(/^(image|audio)\/[a-z0-9.+-]{1,32}$/)
 const AltTextSchema = oneLine(1, ALT_MAX_CHARS)
@@ -1251,6 +1255,9 @@ export type CuePage = z.infer<typeof CuePageSchema>
 const StartOffsetSchema = z.literal(0)
 /** The audio epoch (AUDIO-28): every Stop and every committed push advances it. */
 const AudioEpochSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
+/** REVEAL-22, ED-9: the reveal epoch — every narrowing advances it, on an empty
+ * slot too. AudioEpoch's twin, and a session row carries both. */
+const RevealEpochSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
 /** A slot's sequence (AUDIO-15): per slot, monotonic, assigned by the database. */
 const SlotSequenceSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
 /** A link generation (SEC-9): every frame names the one it was produced under. */
@@ -1323,6 +1330,13 @@ export const TableSessionSchema = z
     gen: LinkGenerationSchema,
     /** AUDIO-24: two GM tabs converge on the epoch the resource carries. */
     audio_epoch: AudioEpochSchema,
+    /** REVEAL-22, ED-9: its twin, for the same reason. REVEAL-22 advances the
+     * reveal epoch on EVERY narrowing, "on an empty slot too" — a Stop with
+     * nothing live, a Rotate with nothing live, a participant removed. No slot
+     * changed, so there is no `slot` frame to carry the new number, and a GM tab
+     * whose own narrowing advanced it would otherwise send a stale epoch on its
+     * next Confirm and get a 409 for an ordinary stop-then-reveal. */
+    reveal_epoch: RevealEpochSchema,
     started_at: TimestampSchema,
     ends_at: TimestampSchema,
     ended_at: TimestampSchema.nullable(),
@@ -1378,6 +1392,400 @@ export const CapabilitiesSchema = z.object({
   audio_cues: z.boolean(),
 })
 export type Capabilities = z.infer<typeof CapabilitiesSchema>
+
+// ── Reveal ───────────────────────────────────────────────────────────────────
+// The family through which GM-private text could reach a player, so its shapes
+// are a security boundary (1kg.1.6). A table client is told less than the GM at
+// every turn: no epoch, no link generation, no session id, no participant id
+// (SEC-15, REVEAL-24, threat model 8.2 and 8.3).
+
+/** A mask never lists more keys than a document has fields to change. */
+export const MASK_MAX_KEYS = MAX_CHANGED_FIELDS
+/** One table slot, plus one per participant (AUD-8). */
+export const REVEAL_MAX_SLOTS = PRESENCE_MAX_PARTICIPANTS + 1
+
+/**
+ * REVEAL-9, ED-8: `all` is never stored and never sent — the client expands it
+ * into the keys that exist at the moment the GM decides, so a field added later
+ * is never revealed by a wildcard. It is a *word*, not a pattern: `all` matches
+ * the field-key shape, while `*` and `%` do not, so it is refused by name.
+ */
+export const RESERVED_MASK_KEYS: readonly string[] = ['all']
+
+/** A field key as a mask, a GM-side slot and a projection name it. */
+export const MaskKeySchema = FieldKeySchema.refine((key) => !RESERVED_MASK_KEYS.includes(key), {
+  message: 'a mask lists field keys, never a wildcard',
+})
+
+/**
+ * REVEAL-10, ED-5: the **allowlist** of the fields every type shares — one
+ * answer, in one place, to *may this field reach a player*. It is `1kg.5.3`'s
+ * per-field `revealable` rule (`registry.json` → `common_field_rules`), held
+ * here as a constant because `registry.ts` imports this module and so cannot be
+ * imported back; both suites pin it to that file, for every type, so the two
+ * cannot drift. `tags` is off it, on every type.
+ */
+export const REVEALABLE_COMMON_FIELDS: readonly string[] = ['name', 'qualifier']
+
+/** The same allowlist for each type's **own** fields (`registry.json` →
+ * `document_types[].field_rules`). It is an allowlist and not an opt-out list: a
+ * key whose rule does not say `revealable` is not revealable, so a field a type
+ * gains later is withheld until the registry says otherwise — `npc.true_identity`
+ * is ED-20's worked case and is absent below. */
+export const REVEALABLE_FIELDS: Readonly<Record<DocumentTypeId, readonly string[]>> = {
+  npc: ['portrait', 'voice', 'tell', 'attitude', 'wants', 'leverage', 'if_attacked', 'notes'],
+  statblock: ['ac', 'ac_note', 'hp', 'hit_dice', 'speed', 'size', 'creature_type', 'alignment', 'abilities', 'saving_throws', 'skills', 'damage_immunities', 'condition_immunities', 'senses', 'languages', 'challenge_rating', 'xp', 'traits', 'actions', 'bonus_actions', 'reactions', 'legendary_actions'],
+  handout: ['portrait', 'body'],
+  'session-notes': ['session', 'date', 'present', 'recap', 'beats', 'loose_threads'],
+  'quest-log': ['open_threads', 'cold_threads', 'resolved_threads'],
+  'character-sheet': ['portrait', 'ac', 'hp', 'speed', 'abilities', 'features', 'equipment', 'notes'],
+  lore: ['region', 'era', 'status', 'summary', 'history', 'rumours'],
+  encounter: ['difficulty', 'xp_budget', 'party_level', 'setup', 'combatants', 'terrain', 'outcome'],
+}
+
+/** The keys of `type` a mask may name, and the kind each holds (REVEAL-10, ED-5).
+ * The allowlist is intersected with what the type declares, so a key on the list
+ * that the type does not declare has no kind and cannot be projected — unknown is
+ * never revealable (X-8). */
+export function revealableFields(type: DocumentTypeId): Record<string, FieldKind> {
+  const allowed = new Set([...REVEALABLE_COMMON_FIELDS, ...REVEALABLE_FIELDS[type]])
+  const declared = { ...COMMON_FIELDS, ...DOC_TYPE_FIELDS[type] }
+  return Object.fromEntries(Object.entries(declared).filter(([key]) => allowed.has(key)))
+}
+
+/**
+ * Who a reveal is for (AUD-2, ED-10, owner decision O-3): the whole table, or
+ * **one or more participants by id**. A reveal to one player is a list of one;
+ * there is no separate singular shape, because a group display is per-recipient
+ * copies of one disclosure.
+ *
+ * A named group is expanded by the client into its member ids at the moment the
+ * GM confirms, exactly as `all` is expanded into field keys (ED-8) — so no group
+ * id and no wildcard ever travels or is stored, and a group whose membership
+ * changes later cannot silently widen a live reveal. An audience is an identity,
+ * never a credential and never an alias (AUD-11), so an alias is refused even
+ * beside an id. Nothing ties an audience to a document type: owner decision O-2
+ * makes a participant audience legal for any type.
+ *
+ * Since O-3 gave a **slot** its own shape (`RevealSlotRef`), an audience travels
+ * in one place only — `RevealRequest.audience` — so it is a request shape, and
+ * refuses a `__proto__` key like every other thing a client sends.
+ *
+ * The addendum says only "bounded". `PRESENCE_MAX_PARTICIPANTS` is the
+ * **roster** bound — revealing to everyone on it is the largest list that can
+ * exist — and is deliberately looser than SEC-10's 24 credentials and RT-8's 12
+ * connections, which count who holds the link and who is connected, not who may
+ * be named. A Confirm may name a participant who has not enrolled at all
+ * (AUD-10).
+ */
+export const RevealAudienceSchema = refusingProtoKeys(
+  z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('table') }),
+    z.strictObject({
+      kind: z.literal('participants'),
+      participant_ids: z
+        .array(OpaqueIdSchema)
+        .min(1)
+        .max(PRESENCE_MAX_PARTICIPANTS)
+        .refine((ids) => new Set(ids).size === ids.length, { message: 'a recipient list names each participant once' }),
+    }),
+  ]),
+)
+export type RevealAudience = z.infer<typeof RevealAudienceSchema>
+
+/** A **slot** is one region, so it names one participant, while an audience may
+ * name many: one Confirm to three players fills three slots with three copies of
+ * one disclosure (O-3). */
+export const RevealSlotRefSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('table') }),
+  z.strictObject({ kind: z.literal('participant'), participant_id: OpaqueIdSchema }),
+])
+export type RevealSlotRef = z.infer<typeof RevealSlotRefSchema>
+
+/** The keys one Confirm shows, explicit and non-empty (REVEAL-9, ED-8). A mask is
+ * a set: a repeat would make the ledger's one row per field ambiguous (ED-17). */
+const MaskSchema = z
+  .array(MaskKeySchema)
+  .min(1)
+  .max(MASK_MAX_KEYS)
+  .refine((keys) => new Set(keys).size === keys.length, { message: 'a mask names each field once' })
+
+/**
+ * Confirm (REVEAL-5, ED-9): one atomic mutation covering reveal, update, replace
+ * and move — the server derives which, and the request never says. It names the
+ * **sealed** version the sheet displayed (CANVAS-34), the mask as explicit keys,
+ * the audience, and **both** the session it was composed for and that session's
+ * reveal epoch, so a number from last night can never match tonight. No campaign
+ * id: the session names the campaign, and ownership is the route's (SEC-3).
+ */
+export const RevealRequestSchema = refusingProtoKeys(
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    command_id: CommandIdSchema,
+    document_id: OpaqueIdSchema,
+    session_id: OpaqueIdSchema,
+    reveal_epoch: RevealEpochSchema,
+    version: VersionNumberSchema,
+    mask: MaskSchema,
+    audience: RevealAudienceSchema,
+  }),
+)
+export type RevealRequest = z.infer<typeof RevealRequestSchema>
+
+/**
+ * Stop showing (REVEAL-6, REVEAL-22). A Stop names a **document**, or **all**.
+ *
+ * REVEAL-22 is *a Stop clears a slot only if it holds what the Stop names*. A
+ * slot-scoped Stop could not honour that — it named an audience and nothing
+ * else — so tab A's retried slot Stop (REVEAL-16 retries with backoff) would
+ * clear whatever tab B had deliberately revealed into that slot meanwhile.
+ * Naming the document makes the rule hold by construction: a GM client always
+ * knows the document, because every slot's document id is in the reveal
+ * picture, and a document has at most one live disclosure (owner decision O-3,
+ * amending ED-15's "at most one slot"), so what the Stop names is unambiguous
+ * however many copies that disclosure has — a Stop on the document clears every
+ * copy.
+ *
+ * **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and
+ * never refused for state, so there is no number to be stale against —
+ * `strictObject` is what makes sending one an error. There is no Retract in v1
+ * (ED-16).
+ */
+export const RevealStopRequestSchema = refusingProtoKeys(
+  z.discriminatedUnion('scope', [
+    z.strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      command_id: CommandIdSchema,
+      scope: z.literal('document'),
+      document_id: OpaqueIdSchema,
+    }),
+    z.strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      command_id: CommandIdSchema,
+      scope: z.literal('all'),
+    }),
+  ]),
+)
+export type RevealStopRequest = z.infer<typeof RevealStopRequestSchema>
+
+/** ADR 7.4: `document` is the **only** member in v1. Adding one later *is* a
+ * version bump; reserving the discriminator buys a v1 table client a neutral
+ * placeholder for an unknown kind rather than a parse failure. */
+export const CONTENT_KINDS = ['document'] as const
+export type ContentKind = (typeof CONTENT_KINDS)[number]
+
+/** REVEAL-5, ED-9: "present and non-empty" has to mean a player sees something.
+ * A value that trimming empties renders as a blank heading on a table, so a
+ * projection refuses it where a document would keep it. The trim is the
+ * contract's own (`trimWire`), so both sides agree on what "blank" is. */
+const notBlank = <T extends ZodType<string>>(schema: T) =>
+  schema.refine((value) => trimWire(value) !== '', { message: 'a revealed value is blank if trimming empties it' })
+
+/** ED-9: a block a player is shown carries scores, not gaps. A document may hold
+ * `{ str: null }` for a creature that lacks an ability; a projection of it leaves
+ * the key out, so no cell is drawn empty under a masked heading. */
+const presentAbilitiesShape = Object.fromEntries(
+  ABILITY_KEYS.map((key) => [key, z.number().int().min(ABILITY_SCORE_MIN).max(ABILITY_SCORE_MAX).optional()]),
+)
+const PresentAbilitiesSchema = z
+  .object(presentAbilitiesShape)
+  .refine((block) => ABILITY_KEYS.some((key) => block[key] !== undefined), { message: 'a block a table is shown holds at least one score' })
+
+/** One named block as a player sees it: a heading **and** its body, both present.
+ * A document may hold a trait whose text is still empty; projecting it would put a
+ * lone heading on a table, which REVEAL-5's *present and non-empty* rules out. */
+const PresentEntrySchema = z.object({
+  name: notBlank(oneLine(1, TEXT_FIELD_MAX_CHARS)),
+  text: notBlank(text(1, LIST_ITEM_MAX_CHARS)),
+})
+
+/** The same kinds a document declares, but a masked key is **present and
+ * non-empty** in the pinned version (REVEAL-5, ED-9), so nothing clears to a
+ * blank heading on a table; and an asset is the per-slot handle, never the
+ * GM-side AssetRef (SEC-15). Every kind `1kg.5.3` declares has a shape here: an
+ * `integer` is a count a player may read, never an id and never a revision, and it
+ * is present rather than null. The switch is exhaustive on purpose — a kind added
+ * without a table shape must stop this file compiling, not reach a table. */
+function projectionValueSchema(kind: FieldKind): ZodType<unknown> {
+  switch (kind) {
+    case 'text':
+      return notBlank(oneLine(1, TEXT_FIELD_MAX_CHARS))
+    case 'prose':
+      return notBlank(text(1, PROSE_FIELD_MAX_CHARS))
+    case 'text_list':
+      return z.array(notBlank(text(1, LIST_ITEM_MAX_CHARS))).min(1).max(LIST_FIELD_MAX_ITEMS)
+    case 'asset':
+      return TableAssetRefSchema
+    case 'integer':
+      return z.number().int().min(INTEGER_FIELD_MIN).max(INTEGER_FIELD_MAX)
+    case 'abilities':
+      return PresentAbilitiesSchema
+    case 'entry_list':
+      return z.array(PresentEntrySchema).min(1).max(LIST_FIELD_MAX_ITEMS)
+  }
+}
+
+/** One masked field as a player sees it: the key, and the text. The heading is
+ * NOT on the wire — a table client renders the registry's label for
+ * `(type, key)`, which its bundle already holds (`labelFor` in `registry.ts`) —
+ * so the projection has no free-text member at all and a title, an alias, a
+ * filename, a version or an id has nowhere to ride (TABLE-3, SEC-15). The page
+ * title is still built from the projection: the name appears only when `name` is
+ * masked. */
+const ProjectedFieldSchema = z.object({
+  key: MaskKeySchema,
+  /** The shapes a field kind can take on a table, mirroring the server's union.
+   * It is NOT `z.unknown()`: the refinement below only *tests* the value against
+   * the type's declared kind, so an unknown would survive verbatim and carry
+   * whatever rode inside it — an `asset_id`, a filename, a GM note — straight
+   * through a client that is supposed to strip them (SEC-15, REVEAL-21).
+   * Declaring the union is what makes the strip happen, and that is why the two
+   * structured kinds are spelled out here as well as in the per-kind check. */
+  value: z.union([
+    z.string(),
+    z.array(z.string()),
+    TableAssetRefSchema,
+    z.number(),
+    PresentAbilitiesSchema,
+    z.array(z.object({ name: z.string(), text: z.string() })),
+  ]),
+})
+
+/**
+ * What a table client is given, and the whole of it (SEC-14, SEC-15). It is
+ * **built** from a sealed version, a mask and an audience by one server-side
+ * builder, never derived by deleting keys from a GM payload, and the same
+ * builder answers the player-safe export and print (EXPORT-3, EXPORT-7). This
+ * schema is the second half of that guarantee: an asset id, a version number,
+ * either epoch, another slot's sequence, a title outside the mask, an alias or
+ * any eligibility class is a validation failure rather than a leak.
+ */
+export const TableProjectionSchema = z
+  .object({
+    content_kind: z.literal('document'),
+    type: z.enum(DOCUMENT_TYPE_IDS),
+    fields: z.array(ProjectedFieldSchema).min(1).max(MASK_MAX_KEYS),
+  })
+  .superRefine((projection, ctx) => {
+    const revealable = revealableFields(projection.type)
+    const seen = new Set<string>()
+    projection.fields.forEach((field, index) => {
+      if (seen.has(field.key)) {
+        ctx.addIssue({ code: 'custom', path: ['fields', index, 'key'], message: 'a projection shows each field once' })
+        return
+      }
+      seen.add(field.key)
+      if (!Object.hasOwn(revealable, field.key)) {
+        ctx.addIssue({ code: 'custom', path: ['fields', index, 'key'], message: 'that field is not revealable for this type' })
+        return
+      }
+      const kind = revealable[field.key]
+      if (!projectionValueSchema(kind).safeParse(field.value).success) {
+        ctx.addIssue({ code: 'custom', path: ['fields', index, 'value'], message: `not a present ${kind} value` })
+      }
+    })
+  })
+export type TableProjection = z.infer<typeof TableProjectionSchema>
+
+/**
+ * What one slot holds, as the **GM** sees it — the GM channel and `GmSnapshot`
+ * only (threat model 8.3: reveal state, with the epoch, every slot, version
+ * numbers and mask keys, is GM yes / participant never / guest never).
+ *
+ * `stale_text` is the alignment's "whether a newer version exists", named for
+ * the predicate REVEAL-8 fixes: the comparison is of **text**, not of version
+ * numbers, so ten autosaves raise one notice and reverting the text clears it.
+ * `pending_delivery` is AUD-10 — a reveal to a participant who is **not
+ * enrolled, or enrolled and not currently connected** confirms normally and
+ * waits, and never falls back to the table. Both cases are one flag because they
+ * are one fact for the GM, "nobody is reading this yet"; it is **per entry**,
+ * because one participant may be waiting while the others holding copies of the
+ * same disclosure are not.
+ *
+ * `disclosure_id` is owner decision O-3: a group display is per-recipient copies
+ * of ONE disclosure, and every copy carries its id. It is what makes "stop all
+ * copies" expressible, and what tells the GM's indicator that three slots are
+ * one act rather than three.
+ */
+export const RevealLiveSchema = z
+  .object({
+    disclosure_id: OpaqueIdSchema,
+    document_id: OpaqueIdSchema,
+    type: z.enum(DOCUMENT_TYPE_IDS),
+    version: VersionNumberSchema,
+    mask: MaskSchema,
+    stale_text: z.boolean(),
+    pending_delivery: z.boolean(),
+  })
+  .refine((live) => live.mask.every((key) => Object.hasOwn(revealableFields(live.type), key)), {
+    path: ['mask'],
+    message: "a slot's mask names only fields that are revealable for its type",
+  })
+export type RevealLive = z.infer<typeof RevealLiveSchema>
+
+/** One slot of the live session, GM-side. `live` is null for a slot the GM can
+ * see and which is empty; a slot a client is **not** entitled to is absent
+ * rather than marked, because a marker would confirm it exists (WT-7). */
+const RevealSlotSchema = z
+  .object({ slot: RevealSlotRefSchema, seq: SlotSequenceSchema, live: RevealLiveSchema.nullable() })
+  .refine((entry) => !(entry.live?.pending_delivery && entry.slot.kind === 'table'), {
+    path: ['live', 'pending_delivery'],
+    message: 'only a participant slot can be waiting for a device',
+  })
+
+/** A slot's identity as a string. Namespaced, because `table` is a legal
+ * participant id and would otherwise collide with the table slot. */
+const namedSlot = (slot: RevealSlotRef): string => (slot.kind === 'participant' ? `p:${slot.participant_id}` : 'table')
+
+/**
+ * The GM's whole reveal picture, carried by the GM channel's `snapshot` frame and
+ * nothing else: the session, its generation, its epoch, one entry per slot.
+ *
+ * The table slot is ALWAYS listed — "nothing revealed" is the table slot present
+ * and empty, never an absent entry, because a GM client must not read missing
+ * state as "nothing revealed" (REVEAL-13).
+ *
+ * Owner decision O-3, amending section 7.1, REVEAL-7 and NG-20: a DOCUMENT has
+ * at most one live disclosure, and a disclosure is EITHER the table slot alone
+ * OR one or more participant slots. Mixing them would make "stop all copies"
+ * ambiguous and let a player's private copy be mistaken for the shared one.
+ */
+export const RevealStateSchema = z
+  .object({
+    session_id: OpaqueIdSchema,
+    gen: LinkGenerationSchema,
+    reveal_epoch: RevealEpochSchema,
+    slots: z.array(RevealSlotSchema).min(1).max(REVEAL_MAX_SLOTS),
+  })
+  .refine((state) => new Set(state.slots.map((entry) => namedSlot(entry.slot))).size === state.slots.length, {
+    path: ['slots'],
+    message: 'a slot is listed once',
+  })
+  .refine((state) => state.slots.some((entry) => entry.slot.kind === 'table'), {
+    path: ['slots'],
+    message: 'the reveal picture always lists the table slot',
+  })
+  .refine(
+    (state) => {
+      const live = state.slots.flatMap((entry) => (entry.live ? [{ slot: entry.slot, held: entry.live }] : []))
+      const byDocument = new Map<string, Set<string>>()
+      const byDisclosure = new Map<string, Set<string>>()
+      const onTheTable = new Set<string>()
+      const privately = new Set<string>()
+      for (const { slot, held } of live) {
+        if (!byDocument.has(held.document_id)) byDocument.set(held.document_id, new Set())
+        byDocument.get(held.document_id)?.add(held.disclosure_id)
+        if (!byDisclosure.has(held.disclosure_id)) byDisclosure.set(held.disclosure_id, new Set())
+        byDisclosure.get(held.disclosure_id)?.add(held.document_id)
+        ;(slot.kind === 'table' ? onTheTable : privately).add(held.disclosure_id)
+      }
+      if ([...byDocument.values()].some((ids) => ids.size > 1)) return false
+      if ([...byDisclosure.values()].some((documents) => documents.size > 1)) return false
+      return ![...onTheTable].some((id) => privately.has(id))
+    },
+    { path: ['slots'], message: 'a document has at most one live disclosure, and a disclosure is the table or its participant copies' },
+  )
+export type RevealState = z.infer<typeof RevealStateSchema>
 
 // ── Realtime events ──────────────────────────────────────────────────────────
 // Two channels, two unions (ADR RT-1, threat model 8.3). Every frame carries its
@@ -1450,6 +1858,28 @@ const PresenceEventSchema = z.object({
   participants: z.array(ParticipantPresenceSchema).max(PRESENCE_MAX_PARTICIPANTS),
   guests: GuestPresenceSchema,
 })
+/** One reveal slot changed (REVEAL-22, ADR RT-4) — the GM's twin of GmAudioEvent:
+ * it names the session, the generation it was produced under (SEC-9) and the
+ * reveal epoch, because the GM's next Confirm must carry that number. */
+const GmSlotEventSchema = z
+  .object({
+    ...eventBase,
+    event: z.literal('slot'),
+    session_id: OpaqueIdSchema,
+    gen: LinkGenerationSchema,
+    reveal_epoch: RevealEpochSchema,
+    slot: RevealSlotRefSchema,
+    seq: SlotSequenceSchema,
+    live: RevealLiveSchema.nullable(),
+  })
+  .refine((frame) => !(frame.live?.pending_delivery && frame.slot.kind === 'table'), {
+    path: ['live', 'pending_delivery'],
+    message: 'only a participant slot can be waiting for a device',
+  })
+/** The whole reveal picture in one frame (ADR RT-4), so a GM tab that has seen
+ * `ready` knows every slot and the epoch — and never reads missing state as
+ * "nothing revealed" (REVEAL-13). */
+const GmRevealSnapshotEventSchema = z.object({ ...eventBase, event: z.literal('snapshot'), state: RevealStateSchema })
 /** An asset changed state (ADR MS-3): the GM's `Still processing…` ends here. */
 const GmAssetEventSchema = z.object({ ...eventBase, event: z.literal('asset'), asset: AssetSchema })
 /** The snapshot is complete; what follows is live (ADR RT-4) — the boundary TABLE-7 needs. */
@@ -1462,6 +1892,8 @@ export const GmEventSchema = z.discriminatedUnion('event', [
   EditLaneEventSchema,
   GmSessionEventSchema,
   GmAudioEventSchema,
+  GmSlotEventSchema,
+  GmRevealSnapshotEventSchema,
   PresenceEventSchema,
   GmAssetEventSchema,
   GmReadyEventSchema,
@@ -1475,10 +1907,44 @@ const endsWithReady = (frames: ReadonlyArray<{ event: string }>) =>
   frames.length > 0 && frames[frames.length - 1].event === 'ready' && !frames.some((frame) => frame.event === 'reconnect')
 const SNAPSHOT_ISSUE = { path: ['frames'], message: 'a snapshot ends with ready and never carries a reconnect' }
 
+/** ADR RT-4: a snapshot is **complete** before `ready`, so a client that has seen
+ * `ready` knows every slot it is entitled to — and never reads the absence of the
+ * picture as "nothing revealed" (REVEAL-13). A live channel carries exactly one
+ * `snapshot` frame; one with no live session carries none, which is why the
+ * no-session and inactive-table snapshots stay valid as they are (TABLE-9). */
+const oneRevealPictureWhileLive = (frames: ReadonlyArray<{ event: string }>, live: boolean) =>
+  frames.filter((frame) => frame.event === 'snapshot').length === (live ? 1 : 0)
+const PICTURE_ISSUE = {
+  path: ['frames'],
+  message: 'a live snapshot carries one reveal picture, and one with no session carries none',
+}
+
 /** The GM channel read as a resource — a stream's opening frames, and the polling mode of ADR RT-9. */
 export const GmSnapshotSchema = z
   .object({ schema_version: z.literal(CONTRACT_VERSION), frames: z.array(GmEventSchema).min(1).max(200) })
   .refine((snapshot) => endsWithReady(snapshot.frames), SNAPSHOT_ISSUE)
+  .refine((snapshot) => snapshot.frames.filter((frame) => frame.event === 'session').length <= 1, {
+    path: ['frames'],
+    message: 'a snapshot describes one session',
+  })
+  .refine(
+    (snapshot) =>
+      oneRevealPictureWhileLive(
+        snapshot.frames,
+        snapshot.frames.some((frame) => frame.event === 'session' && frame.session.state === 'live'),
+      ),
+    PICTURE_ISSUE,
+  )
+  // ED-9: the reveal epoch is PER SESSION, so a picture from another session —
+  // or from a generation before a Rotate — is exactly the "number from last
+  // night" a Confirm must never be able to match.
+  .refine((snapshot) => {
+    const session = snapshot.frames.find((frame) => frame.event === 'session')
+    if (session === undefined || session.session.state !== 'live') return true
+    return snapshot.frames
+      .filter((frame) => frame.event === 'snapshot')
+      .every((frame) => frame.state.session_id === session.session.session_id && frame.state.gen === session.session.gen)
+  }, { path: ['frames'], message: 'a reveal picture describes the session and generation beside it' })
 export type GmSnapshot = z.infer<typeof GmSnapshotSchema>
 
 /** A live session as a table client may know it (AUDIO-19), and this device's own role. */
@@ -1509,6 +1975,44 @@ const TableAudioEventSchema = z
     playing: TablePlayingSchema.nullable(),
   })
   .refine((frame) => playingFitsSlot(frame.slot, frame.playing), SLOT_ISSUE)
+/** How a **table** client is told which region a projection belongs in.
+ * Deliberately *not* a RevealAudience: an audience carries a participant id, and
+ * every table-side shape here is id-free (TableRole, TableJoinResponse,
+ * EnrolResponse). Which participant `mine` is, the server resolves from the
+ * credential pair, never from a field (eligibility ADR section 4, SEC-15). */
+export const TABLE_SLOT_NAMES = ['table', 'mine'] as const
+export type TableSlotName = (typeof TABLE_SLOT_NAMES)[number]
+
+const TableSlotSchema = z.object({
+  slot: z.enum(TABLE_SLOT_NAMES),
+  seq: SlotSequenceSchema,
+  content: TableProjectionSchema.nullable(),
+})
+export type TableSlot = z.infer<typeof TableSlotSchema>
+
+/** Threat model 8.2: a table client is entitled to the table slot and, with the
+ * enrolled device credential, its own — and to nothing else. A slot it is NOT
+ * entitled to is absent, never marked: a marker would confirm the slot exists
+ * and that a private reveal is happening (WT-7, T-8). */
+const entitledSlots = (slots: ReadonlyArray<{ slot: string }>) => {
+  const names = slots.map((entry) => entry.slot)
+  return names.includes('table') && new Set(names).size === names.length
+}
+const SLOTS_ISSUE = { path: ['slots'], message: 'a device sees the table slot and, at most, its own' }
+
+/** One reveal slot changed, as a table client is told it — the twin of
+ * TableAudioEvent: no session id, no generation, no epoch (SEC-15, REVEAL-24). */
+const TableSlotEventSchema = z.object({
+  ...eventBase,
+  event: z.literal('slot'),
+  slot: z.enum(TABLE_SLOT_NAMES),
+  seq: SlotSequenceSchema,
+  content: TableProjectionSchema.nullable(),
+})
+/** The whole picture this device is entitled to, in one frame (ADR RT-4). */
+const TableRevealSnapshotEventSchema = z
+  .object({ ...eventBase, event: z.literal('snapshot'), slots: z.array(TableSlotSchema).min(1).max(2) })
+  .refine((frame) => entitledSlots(frame.slots), SLOTS_ISSUE)
 const TableReadyEventSchema = z.object({ ...eventBase, event: z.literal('ready') })
 const TableReconnectEventSchema = z.object({ ...eventBase, event: z.literal('reconnect') })
 
@@ -1516,15 +2020,103 @@ export const TableEventSchema = z.discriminatedUnion('event', [
   TableSessionEventSchema,
   TableInactiveEventSchema,
   TableAudioEventSchema,
+  TableSlotEventSchema,
+  TableRevealSnapshotEventSchema,
   TableReadyEventSchema,
   TableReconnectEventSchema,
 ])
 export type TableEvent = z.infer<typeof TableEventSchema>
 
+/** Threat model 8.2, ED-10: a private slot exists for this device only with the
+ * **enrolled device credential**, which is exactly what `role === 'participant'`
+ * means on the wire. So a guest's resource holds no `mine` anywhere — not in the
+ * picture and not as a later `slot` frame — and an enrolled device's picture is
+ * exactly `table` and `mine`: for an entitled device, *absent* and *present and
+ * empty* are different facts, and only the second is legal. */
+function theRoleDecidesTheSlots(frames: readonly TableEvent[], role: string): boolean {
+  const holdsMine = frames.some(
+    (frame) =>
+      (frame.event === 'slot' && frame.slot === 'mine') ||
+      (frame.event === 'snapshot' && frame.slots.some((slot) => slot.slot === 'mine')),
+  )
+  if (role === 'guest') return !holdsMine
+  return frames
+    .filter((frame) => frame.event === 'snapshot')
+    .every((picture) => picture.slots.some((slot) => slot.slot === 'mine'))
+}
+const ROLE_ISSUE = { path: ['frames'], message: "a guest sees the table slot alone; an enrolled device also sees its own" }
+
+/** The one liveness predicate for a table resource — the twin of Python's
+ * `_the_table_is_live`, and the only thing any rule below asks about liveness.
+ *
+ * Two facts, not one. `TableSessionEvent` exists only while live, so a `session`
+ * frame is NECESSARY; but TABLE-9 makes `inactive` the frame a DEAD table sends,
+ * so an `inactive` frame anywhere in the list is decisive against it. Holding a
+ * session frame alone is not the test: a snapshot route answering a link the GM
+ * has just rotated (SEC-9, TABLE-13) builds the `inactive` frame and then
+ * appends the head frames it had buffered for the session it was serving —
+ * session frame included — and a "no session frame" predicate would read that
+ * resource as live and switch EVERY table rule off, letting the projection
+ * travel in the reveal picture as readily as in a `slot` frame.
+ *
+ * Order carries no meaning here and neither does count: `inactive` says the
+ * table is dead wherever it sits and however often it is repeated. The schema
+ * additionally refuses the combination outright (`EXCLUSIVE_ISSUE`) — the two
+ * frames are mutually exclusive in a well-formed resource — but that refusal is
+ * the second line of defence, not the predicate. */
+const tableIsLive = (frames: readonly TableEvent[]) =>
+  frames.some((frame) => frame.event === 'session') && !frames.some((frame) => frame.event === 'inactive')
+const EXCLUSIVE_ISSUE = { path: ['frames'], message: 'a resource is inactive or it has a session, never both' }
+
+/** REVEAL-17 and AE-51: ending, expiring or rotating a link CLEARS EVERY
+ * PROJECTION, so a resource that is not live (`tableIsLive`) shows nothing at
+ * all. `oneRevealPictureWhileLive` says that of the picture; these two say it of
+ * the incremental `slot` frames, the other half of the frames that can carry a
+ * projection. Without them `[inactive, slot(mine, …), ready]` would be
+ * emittable, handing private content to a device whose session is dead (SEC-9,
+ * TABLE-13). A dead resource carries no role either, so `theRoleDecidesTheSlots`
+ * never runs over it: `mine` is refused here rather than left unchecked.
+ *
+ * Two clauses with their own messages, matching the server's two refusals, so a
+ * client diagnostic can tell an entitlement slip from a buffered projection.
+ * An EMPTY `table` slot frame is the permitted half and stays legal:
+ * `[inactive, slot(table, …, content: null), ready]` reports that a region holds
+ * nothing, which is what a cleared table is. */
+const aDeadResourceCarriesNoPrivateSlot = (frames: readonly TableEvent[], live: boolean) =>
+  live || !frames.some((frame) => frame.event === 'slot' && frame.slot === 'mine')
+const PRIVATE_SLOT_ISSUE = { path: ['frames'], message: 'a dead resource carries no private slot' }
+const aDeadResourceShowsNothing = (frames: readonly TableEvent[], live: boolean) =>
+  live || !frames.some((frame) => frame.event === 'slot' && frame.content !== null)
+const DEAD_ISSUE = { path: ['frames'], message: 'a dead resource shows nothing' }
+
 /** The table channel read as a resource: session, one audio frame per slot, later the reveal slots, then ready. */
 export const TableSnapshotSchema = z
   .object({ schema_version: z.literal(CONTRACT_VERSION), frames: z.array(TableEventSchema).min(1).max(50) })
   .refine((snapshot) => endsWithReady(snapshot.frames), SNAPSHOT_ISSUE)
+  // Two session frames could disagree about the role, and a reader that took the
+  // first would read a different resource from one that took the last.
+  .refine((snapshot) => snapshot.frames.filter((frame) => frame.event === 'session').length <= 1, {
+    path: ['frames'],
+    message: 'a snapshot describes one session',
+  })
+  .refine((snapshot) => oneRevealPictureWhileLive(snapshot.frames, tableIsLive(snapshot.frames)), PICTURE_ISSUE)
+  .refine((snapshot) => aDeadResourceCarriesNoPrivateSlot(snapshot.frames, tableIsLive(snapshot.frames)), PRIVATE_SLOT_ISSUE)
+  .refine((snapshot) => aDeadResourceShowsNothing(snapshot.frames, tableIsLive(snapshot.frames)), DEAD_ISSUE)
+  // The projection rules above have already cleared this resource of anything it
+  // could show; what is left is the contradiction itself, and an emitter that
+  // builds it has confused two generations of the same link.
+  .refine(
+    (snapshot) => !snapshot.frames.some((frame) => frame.event === 'session') || tableIsLive(snapshot.frames),
+    EXCLUSIVE_ISSUE,
+  )
+  // Gated on the same predicate the server gates it on: a dead resource has no
+  // role, so the entitlement rule does not run over it and the rules above are
+  // the ones that refuse it.
+  .refine((snapshot) => {
+    if (!tableIsLive(snapshot.frames)) return true
+    const session = snapshot.frames.find((frame) => frame.event === 'session')
+    return session === undefined || theRoleDecidesTheSlots(snapshot.frames, session.role)
+  }, ROLE_ISSUE)
 export type TableSnapshot = z.infer<typeof TableSnapshotSchema>
 
 /** Name → schema, in the order `contracts/workbench/v1/schemas.json` lists them. */
@@ -1568,6 +2160,13 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   TableSessionRequest: TableSessionRequestSchema,
   TableSessionAnswer: TableSessionAnswerSchema,
   Capabilities: CapabilitiesSchema,
+  RevealAudience: RevealAudienceSchema,
+  RevealSlotRef: RevealSlotRefSchema,
+  RevealRequest: RevealRequestSchema,
+  RevealStopRequest: RevealStopRequestSchema,
+  RevealLive: RevealLiveSchema,
+  RevealState: RevealStateSchema,
+  TableProjection: TableProjectionSchema,
   GmEvent: GmEventSchema,
   TableEvent: TableEventSchema,
   GmSnapshot: GmSnapshotSchema,
@@ -1617,20 +2216,33 @@ function at(raw: unknown, path: readonly string[]): unknown {
   return node
 }
 
+/** A path segment meaning "fan out over this array". `at` walks records only —
+ * `isRecord` excludes arrays by construction — so a discriminator nested inside a
+ * list, as `content_kind` is inside a snapshot frame's `slots`, is unreachable
+ * without it. A kind unknown in ANY element makes the frame unknown, which is the
+ * fail-safe direction and matches how an unknown card kind already makes a whole
+ * ToolResult unknown. No object-only path contains it, so none changes behaviour. */
+const ARRAY_SEGMENT = '[]'
+
 function hasUnknownKind(raw: unknown, path: readonly string[], known: readonly string[]): boolean {
+  const fanOut = path.indexOf(ARRAY_SEGMENT)
+  if (fanOut >= 0) {
+    const node = at(raw, path.slice(0, fanOut))
+    return Array.isArray(node) && node.some((item) => hasUnknownKind(item, path.slice(fanOut + 1), known))
+  }
   const value = at(raw, path)
   return typeof value === 'string' && !known.includes(value)
 }
 
 /** Every discriminator a result carries; 1kg.4.3 adds card kinds. */
-const RESULT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
+export const RESULT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
   [['result_kind'], RESULT_KINDS],
   [['card', 'card_kind'], CARD_KINDS],
 ]
 
 /** Every discriminator an entry carries. A value this client does not know at
  * any of them reads as "made by a newer version", never as damage. */
-const ENTRY_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
+export const ENTRY_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
   [['entry_kind'], ENTRY_KINDS],
   ...RESULT_DISCRIMINATORS.map(([path, known]): [readonly string[], readonly string[]] => [['invocation', 'result', ...path], known]),
   [['invocation', 'result', 'outcome'], EDIT_OUTCOMES],
@@ -1669,12 +2281,25 @@ export function parseDocument(raw: unknown): Parsed<Document> {
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
 }
 
-const GM_EVENT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
+export const GM_EVENT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
   [['event'], GM_EVENT_KINDS],
   ...RESULT_DISCRIMINATORS.map(([path, known]): [readonly string[], readonly string[]] => [['invocation', 'result', ...path], known]),
   [['invocation', 'result', 'outcome'], EDIT_OUTCOMES],
 ]
-const TABLE_EVENT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [[['event'], TABLE_EVENT_KINDS]]
+/** ADR 7.4: reserving `content_kind` buys a v1 table client a neutral placeholder
+ * for a future kind instead of a parse failure — but only where the client can
+ * see it. Both frames that carry a projection need an entry: the incremental
+ * `slot` frame, and the `snapshot` frame, whose content sits behind an array and
+ * is the path a future kind actually arrives on, since every stream opens with a
+ * snapshot and every reconnect takes a fresh one (RT-4).
+ * `RevealState.slots[].slot.audience` needs none: only `content_kind` reserves
+ * future members, AUD-2/ED-10 fix the audience vocabulary, and lifting ED-14 is
+ * already a wire amendment. */
+const TABLE_EVENT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
+  [['event'], TABLE_EVENT_KINDS],
+  [['content', 'content_kind'], CONTENT_KINDS],
+  [['slots', ARRAY_SEGMENT, 'content', 'content_kind'], CONTENT_KINDS],
+]
 
 /** How a GM channel reads a frame: a kind this client does not know — `snapshot`
  * and `slot` until the reveal family lands, anything newer after — is a
@@ -1686,17 +2311,71 @@ export function parseGmEvent(raw: unknown): Parsed<GmEvent> {
   return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
 }
 
-/** The same for a table channel. */
-export function parseTableEvent(raw: unknown): Parsed<TableEvent> {
-  if (namesNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema' }
-  if (hasAnyUnknownKind(raw, TABLE_EVENT_DISCRIMINATORS)) return { kind: 'unknown', reason: 'unknown_kind' }
-  const result = TableEventSchema.safeParse(raw)
-  return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
+/** One entry of a `snapshot` frame, read on its own. An entry this client cannot
+ * use keeps its slot name and its sequence when those parse, so one unreadable
+ * entry does not discard the readable table slot beside it. */
+export type TableSlotRead =
+  | { kind: 'ok'; value: TableSlot }
+  | { kind: 'unknown'; reason: UnknownReason; slot: TableSlotName | null; seq: number | null }
+
+/**
+ * One table frame, read. Decision X-4: what a table client cannot read, it
+ * **blanks** — so the placeholder has to say *which* region to blank and which
+ * mark to advance, or the natural implementation skips the frame and the page
+ * keeps showing what the GM believes is gone.
+ *
+ * This is not a future-version problem only. The client checks a projection key
+ * against its OWN copy of the field definitions, so a server one deploy ahead of
+ * a table bundle — a type gained a revealable field, "no bump" by the versioning
+ * table — makes the frame unreadable today.
+ */
+export type TableFrame =
+  | { kind: 'ok'; value: TableEvent }
+  | {
+      kind: 'unknown'
+      reason: UnknownReason
+      /** The region a `slot` frame names, when it parses; `null` otherwise. */
+      slot: TableSlotName | null
+      /** That frame's sequence, when it parses; `null` otherwise. */
+      seq: number | null
+      /** Per-entry results for a `snapshot` frame; `null` for any other kind. */
+      slots: TableSlotRead[] | null
+    }
+
+const TableSlotNameSchema = z.enum(TABLE_SLOT_NAMES)
+
+/** What is still readable about a frame or an entry this client cannot use. */
+function readableMarks(raw: unknown): { slot: TableSlotName | null; seq: number | null } {
+  if (!isRecord(raw)) return { slot: null, seq: null }
+  const slot = TableSlotNameSchema.safeParse(raw.slot)
+  const seq = SlotSequenceSchema.safeParse(raw.seq)
+  return { slot: slot.success ? slot.data : null, seq: seq.success ? seq.data : null }
 }
 
-export interface ReadSnapshot<T> {
+function parseTableSlot(raw: unknown): TableSlotRead {
+  const result = TableSlotSchema.safeParse(raw)
+  if (result.success) return { kind: 'ok', value: result.data }
+  const reason: UnknownReason = hasUnknownKind(raw, ['content', 'content_kind'], CONTENT_KINDS) ? 'unknown_kind' : 'invalid'
+  return { kind: 'unknown', reason, ...readableMarks(raw) }
+}
+
+/** The same for a table channel, keeping whatever is readable (X-4). */
+export function parseTableEvent(raw: unknown): TableFrame {
+  const unreadable = (reason: UnknownReason): TableFrame => ({
+    kind: 'unknown',
+    reason,
+    ...readableMarks(raw),
+    slots: isRecord(raw) && raw.event === 'snapshot' && Array.isArray(raw.slots) ? raw.slots.map(parseTableSlot) : null,
+  })
+  if (namesNewerVersion(raw)) return unreadable('newer_schema')
+  if (hasAnyUnknownKind(raw, TABLE_EVENT_DISCRIMINATORS)) return unreadable('unknown_kind')
+  const result = TableEventSchema.safeParse(raw)
+  return result.success ? { kind: 'ok', value: result.data } : unreadable('invalid')
+}
+
+export interface ReadSnapshot<F> {
   /** One item per frame the server sent, none dropped; the last is `ready`. */
-  frames: Array<Parsed<T>>
+  frames: F[]
 }
 
 const SnapshotEnvelopeSchema = z.object({
@@ -1704,7 +2383,57 @@ const SnapshotEnvelopeSchema = z.object({
   frames: z.array(z.unknown()).min(1).max(200),
 })
 
-function parseSnapshot<T>(raw: unknown, frame: (item: unknown) => Parsed<T>): Parsed<ReadSnapshot<T>> {
+/** ADR RT-4, REVEAL-13: a snapshot is COMPLETE before `ready`, so a live channel
+ * carries exactly one reveal picture and a channel with no live session carries
+ * none. The reader applies it too, not only the emitter: a GM tab whose picture
+ * failed to build would otherwise read `ok`, find no `snapshot` frame and render
+ * "nothing revealed" while the table shows a dossier — the one state REVEAL-13
+ * forbids. Counted on the RAW `event` values, so a picture this client cannot
+ * parse, or one from a newer server, still counts as a picture. */
+function oneRevealPictureRead(frames: readonly unknown[], live: boolean): boolean {
+  const pictures = frames.filter((item) => isRecord(item) && item.event === 'snapshot').length
+  return pictures === (live ? 1 : 0)
+}
+
+/** `tableIsLive` on RAW values: the same two facts, read the same way. A table
+ * resource is live when it carries a `session` frame and NO `inactive` frame,
+ * whatever the order and however often either is repeated (TABLE-9). */
+function tableIsLiveRead(frames: readonly unknown[]): boolean {
+  return (
+    frames.some((item) => isRecord(item) && item.event === 'session') &&
+    !frames.some((item) => isRecord(item) && item.event === 'inactive')
+  )
+}
+
+/** REVEAL-17 and AE-51 where the READER is, the twin of the schema's two
+ * dead-resource clauses and of its mutual-exclusion clause — because a rule the
+ * emitter obeys and the reader does not is a rule a page cannot build on.
+ * `docs/workbench-wire-contract.md` tells `1kg.7.4` to blank a slot it cannot
+ * read; without this, `parseTableSnapshot` answered `ok` for
+ * `[inactive, slot(mine, <a projection>), ready]` with the projection intact,
+ * and the page had nothing to blank. Read on the RAW values, as
+ * `oneRevealPictureRead` is, so a frame this bundle cannot parse still counts.
+ * An EMPTY `table` slot frame is the permitted half and still reads. */
+function aDeadTableShowsNothingRead(frames: readonly unknown[], live: boolean): boolean {
+  if (live) return true
+  // Not live but carrying a session frame is the contradiction itself: an
+  // emitter holding two generations of one link (SEC-9, TABLE-13).
+  if (frames.some((item) => isRecord(item) && item.event === 'session')) return false
+  return !frames.some(
+    (item) =>
+      isRecord(item) &&
+      item.event === 'slot' &&
+      // `content` absent is a frame that shows nothing, and it becomes one
+      // placeholder on its own; only a projection that is actually there counts.
+      (item.slot === 'mine' || (item.content !== null && item.content !== undefined)),
+  )
+}
+
+function parseSnapshot<F>(
+  raw: unknown,
+  frame: (item: unknown) => F,
+  complete: (frames: readonly unknown[]) => boolean,
+): Parsed<ReadSnapshot<F>> {
   if (isRecord(raw)) {
     const version = versionNamed(raw.schema_version)
     if (version !== null && version > CONTRACT_VERSION) return { kind: 'unknown', reason: 'newer_schema' }
@@ -1713,17 +2442,29 @@ function parseSnapshot<T>(raw: unknown, frame: (item: unknown) => Parsed<T>): Pa
   if (!envelope.success) return { kind: 'unknown', reason: 'invalid' }
   const last = envelope.data.frames[envelope.data.frames.length - 1]
   if (!isRecord(last) || last.event !== 'ready') return { kind: 'unknown', reason: 'invalid' }
+  if (!complete(envelope.data.frames)) return { kind: 'unknown', reason: 'invalid' }
   return { kind: 'ok', value: { frames: envelope.data.frames.map(frame) } }
 }
 
 /** How a channel reads its snapshot: the envelope strictly, each frame on its own,
  * so one frame from a newer server becomes one placeholder (ADR RT-4). */
-export function parseGmSnapshot(raw: unknown): Parsed<ReadSnapshot<GmEvent>> {
-  return parseSnapshot(raw, parseGmEvent)
+export function parseGmSnapshot(raw: unknown): Parsed<ReadSnapshot<Parsed<GmEvent>>> {
+  return parseSnapshot(raw, parseGmEvent, (frames) =>
+    oneRevealPictureRead(
+      frames,
+      frames.some(
+        (item) => isRecord(item) && item.event === 'session' && isRecord(item.session) && item.session.state === 'live',
+      ),
+    ),
+  )
 }
 
-export function parseTableSnapshot(raw: unknown): Parsed<ReadSnapshot<TableEvent>> {
-  return parseSnapshot(raw, parseTableEvent)
+export function parseTableSnapshot(raw: unknown): Parsed<ReadSnapshot<TableFrame>> {
+  return parseSnapshot(raw, parseTableEvent, (frames) => {
+    // Liveness computed once and handed to both rules, as `_complete` does.
+    const live = tableIsLiveRead(frames)
+    return oneRevealPictureRead(frames, live) && aDeadTableShowsNothingRead(frames, live)
+  })
 }
 
 /**

@@ -15,7 +15,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
-import type { ZodType } from 'zod'
+import { z, type ZodType } from 'zod'
 import {
   ABILITY_SCORE_MAX,
   ABILITY_SCORE_MIN,
@@ -35,6 +35,7 @@ import {
   DocumentSchema,
   EditRequestSchema,
   FIELD_KINDS,
+  CONTENT_KINDS,
   FieldPatchRequestSchema,
   GM_EVENT_KINDS,
   GmEventSchema,
@@ -44,8 +45,15 @@ import {
   LIST_FIELD_MAX_ITEMS,
   LIST_ITEM_MAX_CHARS,
   LibraryQuerySchema,
+  MaskKeySchema,
   MEDIA_TYPES,
+  ENTRY_DISCRIMINATORS,
+  GM_EVENT_DISCRIMINATORS,
   PROSE_FIELD_MAX_CHARS,
+  RESERVED_MASK_KEYS,
+  RESULT_DISCRIMINATORS,
+  REVEALABLE_COMMON_FIELDS,
+  REVEALABLE_FIELDS,
   RESULT_KINDS,
   TEXT_FIELD_MAX_CHARS,
   TABLE_EVENT_KINDS,
@@ -54,6 +62,7 @@ import {
   TOOL_IDS,
   TOOL_RESULT_KIND,
   TableEventSchema,
+  TableProjectionSchema,
   ToolInvocationRequestSchema,
   codePointLength,
   isKnownErrorCode,
@@ -68,6 +77,7 @@ import {
   parseToolInvocation,
   parseToolResult,
   readErrorBody,
+  revealableFields,
   trimWire,
 } from './contracts'
 import type { DocumentTypeId } from './contracts'
@@ -90,6 +100,10 @@ interface Example {
 }
 interface Fixture {
   schema: string
+  /** `request`, `response` or `both`; it documents, it does not change a check. */
+  direction?: string
+  /** `table` marks a shape a table device sends or receives (threat model 8.2). */
+  channel?: string
   valid: Example[]
   invalid: Example[]
 }
@@ -173,6 +187,66 @@ describe('shared fixtures', () => {
   })
 })
 
+describe('what v1 deliberately has no shape for', () => {
+  it('names no participant in anything a table client sends or receives (threat model 8.2, SEC-15)', () => {
+    // The table client is not a restricted view of the GM API, it is a separate,
+    // smaller API with its own principal. A guest asking beyond the table slot
+    // gets what an empty table gives, never a refusal — which is only possible
+    // if there is no shape in which it can ask.
+    //
+    // The *word* is not the test: `TableRole` is the enum `participant | guest`
+    // and belongs on the table channel (TABLE-13). The identifier is. And what
+    // no textual guard can catch is an id under another name — this is a
+    // tripwire against the shape drifting, not a proof; the fixtures pin the
+    // actual content of each frame.
+    const namesAParticipant = (schema: ZodType) => {
+      const json = JSON.stringify(z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }))
+      return json.includes('participant_id') || json.includes('participant_ids')
+    }
+    // The list is read from the fixtures, not written here: a fixture file marks
+    // itself `"channel": "table"` and `"direction": "request"`, so a table-side
+    // request someone adds later joins this test by existing. A hard-coded pair
+    // would go on passing while the new shape carried an id.
+    const tableRequests = fixtureFiles()
+      .map((file) => readJson<Fixture>(file))
+      .filter((doc) => doc.channel === 'table' && doc.direction === 'request')
+      .map((doc) => doc.schema)
+    expect(tableRequests.length).toBeGreaterThan(0)
+    for (const name of tableRequests) {
+      expect([name, namesAParticipant(CONTRACT_SCHEMAS[name])]).toEqual([name, false])
+    }
+    // The frames a table client receives name their slot `table` or `mine`,
+    // never a slot reference, so no id travels that way either.
+    for (const option of TableEventSchema.options) {
+      expect([option.shape.event.value, namesAParticipant(option)]).toEqual([option.shape.event.value, false])
+    }
+  })
+
+  it('keeps content_kind at exactly one member in v1 (ADR 7.4)', () => {
+    // What reserving the discriminator buys is that a v1 table client meets a
+    // future member as its neutral placeholder; adding one IS a version bump.
+    // The cardinality is the claim, so it is the assertion — and the literal is
+    // read from the schema, so the constant beside it cannot drift.
+    expect([...CONTENT_KINDS]).toEqual(['document'])
+    const projection = z.toJSONSchema(TableProjectionSchema, { io: 'input', unrepresentable: 'any' }) as unknown as {
+      properties: Record<string, { const?: unknown }>
+    }
+    expect(projection.properties.content_kind.const).toBe('document')
+  })
+
+  it('declares no eligibility field anywhere (ED-11, ED-25)', () => {
+    // v1 ships mask-only: eligibility binds reveal from 1ir.11.1, and the refusal
+    // it needs is an additive error code. Nothing about classes or revisions ever
+    // reaches a table client (REVEAL-24).
+    for (const [name, schema] of Object.entries(CONTRACT_SCHEMAS)) {
+      const json = JSON.stringify(z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }))
+      for (const word of ['eligibility', 'classification', 'authz_revision', 'projection_revision']) {
+        expect([name, json.includes(`"${word}"`)]).toEqual([name, false])
+      }
+    }
+  })
+})
+
 describe('registry facts', () => {
   interface Registry {
     contract_version: number
@@ -183,7 +257,14 @@ describe('registry facts', () => {
     field_kinds: string[]
     field_bounds: Record<string, number>
     common_fields: Record<string, string>
-    document_types: Array<{ id: string; library_category: string; type_version: number; fields: Record<string, string> }>
+    common_field_rules: Record<string, { revealable: boolean }>
+    document_types: Array<{
+      id: string
+      library_category: string
+      type_version: number
+      fields: Record<string, string>
+      field_rules: Record<string, { revealable: boolean }>
+    }>
     asset_kinds: string[]
     media_types: Record<string, string[]>
     cue_kinds: string[]
@@ -217,6 +298,52 @@ describe('registry facts', () => {
     for (const type of DOCUMENT_TYPE_IDS) {
       expect(DOC_TYPE_LIBRARY_CATEGORY[type]).toBe(registry.document_types.find((d) => d.id === type)?.library_category)
     }
+  })
+
+  it('pin the revealable allowlist to the registry, for every type', () => {
+    // REVEAL-10, ED-5, ED-20: ONE answer to "may this field reach a player", and
+    // it is an allowlist. `1kg.5.3`'s per-field rule is the source; this module
+    // holds a copy only because registry.ts imports it. Pinning the copy for
+    // EVERY type is what stops a field marked `revealable: false` on a type
+    // nobody wrote an assertion for from reaching a table.
+    const allowed = (rules: Record<string, { revealable: boolean }>): string[] =>
+      Object.entries(rules)
+        .filter(([, rule]) => rule.revealable)
+        .map(([key]) => key)
+        .sort()
+
+    expect([...REVEALABLE_COMMON_FIELDS].sort()).toEqual(allowed(registry.common_field_rules))
+    expect(Object.keys(REVEALABLE_FIELDS).sort()).toEqual(registry.document_types.map((d) => d.id).sort())
+    for (const row of registry.document_types) {
+      const type = row.id as DocumentTypeId
+      expect([type, [...REVEALABLE_FIELDS[type]].sort()]).toEqual([type, allowed(row.field_rules)])
+      // And the derived set — what a mask and a projection are checked against —
+      // never names a key the registry withholds, on any type.
+      const withheld = Object.keys(row.field_rules)
+        .concat(Object.keys(registry.common_field_rules))
+        .filter((key) => !allowed(row.field_rules).includes(key) && !allowed(registry.common_field_rules).includes(key))
+      for (const key of withheld) {
+        expect([type, key, Object.hasOwn(revealableFields(type), key)]).toEqual([type, key, false])
+      }
+    }
+
+    // ED-20's worked case, spelled out: the link between a face and what wears it.
+    expect(Object.hasOwn(DOC_TYPE_FIELDS.npc, 'true_identity')).toBe(true)
+    expect(Object.hasOwn(revealableFields('npc'), 'true_identity')).toBe(false)
+    for (const type of DOCUMENT_TYPE_IDS) {
+      expect(Object.hasOwn(revealableFields(type), 'tags')).toBe(false)
+      expect(Object.hasOwn(revealableFields(type), 'all')).toBe(false)
+    }
+  })
+
+  it('refuse a wildcard where a mask key is expected', () => {
+    // REVEAL-9, ED-8: `all` matches the field-key shape, so it is refused by name;
+    // `*` and `%` never matched it in the first place.
+    expect(MaskKeySchema.safeParse('notes').success).toBe(true)
+    for (const wildcard of ['all', '*', '**', '%', 'ALL']) {
+      expect(MaskKeySchema.safeParse(wildcard).success).toBe(false)
+    }
+    expect([...RESERVED_MASK_KEYS]).toEqual(['all'])
   })
 
   it('declare the same fields for every document type', () => {
@@ -777,11 +904,131 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     for (const example of table.valid) expect(parseTableEvent(expand(example.value)).kind).toBe('ok')
   })
 
-  it('turns a kind it does not know — snapshot and slot until the reveal family lands — into a placeholder', () => {
-    expect(parseGmEvent({ schema_version: 1, event: 'snapshot', slots: [] })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
-    expect(parseTableEvent({ schema_version: 1, event: 'slot', slot: 'table', seq: 1 })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+  it('turns a kind it does not know into a placeholder', () => {
+    // `snapshot` and `slot` were the stand-ins here until the reveal family landed;
+    // both are known kinds now, so the probe moves to one this contract does not define.
+    expect(parseGmEvent({ schema_version: 1, event: 'excerpt', span: {} })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(parseTableEvent({ schema_version: 1, event: 'excerpt', span: {} })).toEqual({
+      kind: 'unknown',
+      reason: 'unknown_kind',
+      slot: null,
+      seq: null,
+      slots: null,
+    })
     // Presence never travels on the table channel; to a table client the kind is simply unknown.
-    expect(parseTableEvent(first(gm, 'who is listening'))).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(parseTableEvent(first(gm, 'who is listening'))).toMatchObject({ kind: 'unknown', reason: 'unknown_kind' })
+  })
+
+  it('strips what a table client may never see, however deep it rides (SEC-15)', () => {
+    // The client is deliberately tolerant of a field a newer server added, so it
+    // cannot *refuse* these — but it must not pass them on either. A value typed
+    // `unknown` would survive verbatim, which is how a GM-side asset id, a
+    // filename and a GM note reached a component in an earlier revision.
+    const slot = first(table, 'the table slot is now showing') as { content: { fields: Array<Record<string, unknown>> } }
+    const portrait = slot.content.fields.find((field) => field.key === 'portrait')
+    if (!portrait) throw new Error('the fixture needs an asset field')
+    const smuggled = {
+      ...slot,
+      content: {
+        ...slot.content,
+        fields: [
+          {
+            ...portrait,
+            value: { ...(portrait.value as object), asset_id: 'ast_77c1d0e2', filename: 'ondrey-true-face.webp', gm_note: 'she is the lich' },
+          },
+        ],
+      },
+    }
+    const read = parseTableEvent(smuggled)
+    expect(read.kind).toBe('ok')
+    const rendered = JSON.stringify(read)
+    for (const secret of ['ast_77c1d0e2', 'ondrey-true-face.webp', 'she is the lich', 'asset_id', 'filename', 'gm_note']) {
+      expect([secret, rendered.includes(secret)]).toEqual([secret, false])
+    }
+  })
+
+  it('strips every key the server is forbidden to emit, at every depth of a projection (SEC-15)', () => {
+    // The eleven `applies_to: ["server"]` examples in TableProjection.json are
+    // skipped by this suite by design — the server refuses them, a client
+    // tolerates and strips. "Tolerates" was never pinned: with a loose object
+    // they would have travelled to a player's device intact. This is that pin,
+    // read from the same fixtures so it cannot fall behind them.
+    const projection = readJson<Fixture>(join(FIXTURES, 'TableProjection.json'))
+    const serverOnly = projection.invalid.filter((example) => example.applies_to?.length === 1 && example.applies_to[0] === 'server')
+    expect(serverOnly.length).toBeGreaterThanOrEqual(11)
+
+    // The whole vocabulary a projection may use, at every level — read from the
+    // schema itself, so it cannot drift from what the shapes declare. Two of the
+    // eleven examples smuggle their key *inside* a field object rather than at
+    // the top, so a top-level check alone would assert nothing about them.
+    const declaredBy = (node: unknown): string[] =>
+      node !== null && typeof node === 'object'
+        ? Object.entries(node).flatMap(([key, child]) =>
+            key === 'properties' && child !== null && typeof child === 'object'
+              ? [...Object.keys(child), ...declaredBy(child)]
+              : declaredBy(child),
+          )
+        : []
+    const declared = new Set(declaredBy(z.toJSONSchema(TableProjectionSchema, { io: 'output' })))
+    expect(declared.size).toBeGreaterThan(0)
+
+    const keysAtEveryDepth = (node: unknown): string[] =>
+      Array.isArray(node)
+        ? node.flatMap(keysAtEveryDepth)
+        : node !== null && typeof node === 'object'
+          ? Object.entries(node).flatMap(([key, child]) => [key, ...keysAtEveryDepth(child)])
+          : []
+
+    for (const example of serverOnly) {
+      const parsed = TableProjectionSchema.safeParse(expand(example.value))
+      expect([example.name, parsed.success]).toEqual([example.name, true])
+      if (!parsed.success) continue
+      const survived = [...new Set(keysAtEveryDepth(parsed.data))].filter((key) => !declared.has(key))
+      expect([example.name, survived]).toEqual([example.name, []])
+      // And the example really did carry something to strip, wherever it sat —
+      // otherwise this would pass by asserting nothing.
+      const sent = [...new Set(keysAtEveryDepth(expand(example.value)))].filter((key) => !declared.has(key))
+      expect([example.name, sent]).not.toEqual([example.name, []])
+    }
+  })
+
+  it('reads a content kind it does not know as a placeholder, in both frames that carry one (ADR 7.4)', () => {
+    // Reserving `content_kind` is only worth something if a v1 client meets a
+    // future member as a placeholder rather than as a parse failure. The snapshot
+    // frame matters most: every stream opens with one and every reconnect takes a
+    // fresh one, so `slots[].content.content_kind` is the path a future kind
+    // actually arrives on (RT-4).
+    const slot = first(table, 'the table slot is now showing') as { slot: string; seq: number; content: Record<string, unknown> }
+    const future = { ...slot.content, content_kind: 'excerpt' }
+    // X-4: the placeholder still says which region to blank and which mark to advance.
+    expect(parseTableEvent({ ...slot, content: future })).toEqual({
+      kind: 'unknown',
+      reason: 'unknown_kind',
+      slot: slot.slot,
+      seq: slot.seq,
+      slots: null,
+    })
+
+    const snapshot = first(table, "a participant's opening picture") as { slots: Array<Record<string, unknown>> }
+    const [tableSlot, mine] = snapshot.slots
+    // …and one unreadable entry does not discard the readable table slot beside it.
+    expect(parseTableEvent({ ...snapshot, slots: [tableSlot, { ...mine, content: future }] })).toEqual({
+      kind: 'unknown',
+      reason: 'unknown_kind',
+      slot: null,
+      seq: null,
+      slots: [
+        { kind: 'ok', value: tableSlot },
+        { kind: 'unknown', reason: 'unknown_kind', slot: mine.slot, seq: mine.seq },
+      ],
+    })
+    // …and the object-only paths are untouched: a known kind still reads as itself,
+    // which holds by construction because none of them names the array segment.
+    expect(parseTableEvent(snapshot).kind).toBe('ok')
+    for (const example of gm.valid) expect(parseGmEvent(expand(example.value)).kind).toBe('ok')
+    for (const paths of [RESULT_DISCRIMINATORS, ENTRY_DISCRIMINATORS, GM_EVENT_DISCRIMINATORS]) {
+      for (const [path] of paths) expect(path).not.toContain('[]')
+    }
   })
 
   it('reads a newer version, or a newer result kind inside a lane frame, as the future', () => {
@@ -797,24 +1044,139 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
 
   it('reads a snapshot frame by frame, so one unknown kind is one placeholder (ADR RT-4)', () => {
     const snapshot = readJson<Fixture>(join(FIXTURES, 'TableSnapshot.json')).valid[0].value as { frames: unknown[] }
-    const withUnknown = { schema_version: 1, frames: [...snapshot.frames.slice(0, -1), { schema_version: 1, event: 'slot', slot: 'table', seq: 1 }, { schema_version: 1, event: 'ready' }] }
+    // `slot` was the unknown kind here until the reveal family landed; the probe
+    // moves to one this contract does not define. The expectation is computed
+    // from the fixture, so growing it cannot make this assertion quietly wrong.
+    const known = snapshot.frames.slice(0, -1)
+    const withUnknown = { schema_version: 1, frames: [...known, { schema_version: 1, event: 'excerpt', span: {} }, { schema_version: 1, event: 'ready' }] }
     const read = parseTableSnapshot(withUnknown)
     expect(read.kind).toBe('ok')
     if (read.kind !== 'ok') return
-    expect(read.value.frames.map((frame) => frame.kind)).toEqual(['ok', 'ok', 'ok', 'unknown', 'ok'])
-    expect(read.value.frames[3]).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(read.value.frames.map((frame) => frame.kind)).toEqual([...known.map(() => 'ok'), 'unknown', 'ok'])
+    expect(read.value.frames[known.length]).toEqual({ kind: 'unknown', reason: 'unknown_kind', slot: null, seq: null, slots: null })
     // Without its ready boundary a snapshot is not one (TABLE-7).
     expect(parseTableSnapshot({ schema_version: 1, frames: snapshot.frames.slice(0, -1) })).toEqual({ kind: 'unknown', reason: 'invalid' })
     expect(parseGmSnapshot({ schema_version: 2, frames: [] })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
     for (const junk of [null, 42, {}, { schema_version: 1, frames: [] }]) expect(parseGmSnapshot(junk).kind).toBe('unknown')
   })
 
+  it('applies the one-reveal-picture rule where the readers are, not only where the emitter is (REVEAL-13)', () => {
+    // A GM tab in RT-9's polling mode gets a GmSnapshot whose picture failed to
+    // build; if parseGmSnapshot answered `ok`, the indicator would find no
+    // `snapshot` frame and render "nothing revealed" while the table shows a
+    // dossier — the one state REVEAL-13 forbids. Every invalid example that
+    // breaks the rule is refused by the reader as well as by the schema.
+    const byName = (doc: Fixture, name: string): unknown => {
+      const found = doc.invalid.find((example) => example.name === name)
+      if (!found) throw new Error(`no invalid example named ${name}`)
+      return expand(found.value)
+    }
+    const gmSnapshots = readJson<Fixture>(join(FIXTURES, 'GmSnapshot.json'))
+    const tableSnapshots = readJson<Fixture>(join(FIXTURES, 'TableSnapshot.json'))
+
+    for (const name of ['a live session whose snapshot carries no reveal picture', 'two snapshot frames', 'a reveal picture with no session running']) {
+      expect([name, parseGmSnapshot(byName(gmSnapshots, name))]).toEqual([name, { kind: 'unknown', reason: 'invalid' }])
+    }
+    for (const name of ['a live table whose snapshot carries no reveal picture', 'two snapshot frames', 'an inactive table carrying a reveal picture']) {
+      expect([name, parseTableSnapshot(byName(tableSnapshots, name))]).toEqual([name, { kind: 'unknown', reason: 'invalid' }])
+    }
+    // Counted on the RAW event values: a picture this bundle cannot parse is
+    // still a picture, so a live snapshot whose one picture is unreadable stays
+    // `ok` with one placeholder in it, rather than reading as "no picture".
+    const live = tableSnapshots.valid[0].value as { frames: Array<Record<string, unknown>> }
+    const unreadable = live.frames.map((frame) => (frame.event === 'snapshot' ? { ...frame, slots: 'not a list' } : frame))
+    const read = parseTableSnapshot({ schema_version: 1, frames: unreadable })
+    expect(read.kind).toBe('ok')
+    if (read.kind !== 'ok') return
+    expect(read.value.frames.some((frame) => frame.kind === 'unknown')).toBe(true)
+    // And every valid example still reads.
+    for (const example of gmSnapshots.valid) expect([example.name, parseGmSnapshot(expand(example.value)).kind]).toEqual([example.name, 'ok'])
+    for (const example of tableSnapshots.valid) expect([example.name, parseTableSnapshot(expand(example.value)).kind]).toEqual([example.name, 'ok'])
+  })
+
+  it('applies the liveness rule where the readers are, so a dead table has nothing left to show (REVEAL-17, AE-51)', () => {
+    // One rule, three places that agree: the Pydantic model, the Zod schema and
+    // the reader. `docs/workbench-wire-contract.md` tells a table client to
+    // blank a slot it cannot read; a reader that answered `ok` with the
+    // projection intact would hand it nothing to blank. Every shipped fixture
+    // the liveness rule refuses is refused here too, on the raw values.
+    const byName = (doc: Fixture, kind: 'valid' | 'invalid', name: string): unknown => {
+      const found = doc[kind].find((example) => example.name === name)
+      if (!found) throw new Error(`no ${kind} example named ${name}`)
+      return expand(found.value)
+    }
+    const tableSnapshots = readJson<Fixture>(join(FIXTURES, 'TableSnapshot.json'))
+    for (const name of [
+      'an inactive table carrying a reveal picture',
+      'an inactive table carrying a mine slot frame',
+      'an inactive table carrying a slot frame with content',
+      'an inactive table whose picture still holds a private projection',
+      'an inactive frame after the session frame',
+      'three inactive frames beside a session and a buffered projection',
+      'an inactive table whose guest session still shows the table slot',
+      'an inactive table that also carries a session frame',
+    ]) {
+      expect([name, parseTableSnapshot(byName(tableSnapshots, 'invalid', name))]).toEqual([name, { kind: 'unknown', reason: 'invalid' }])
+    }
+    // The permitted half still reads: a cleared region reports that it holds
+    // nothing, which is not the same as showing something.
+    const empty = byName(tableSnapshots, 'valid', 'an inactive table reporting an empty table slot')
+    expect(parseTableSnapshot(empty).kind).toBe('ok')
+    // `inactive` is decisive wherever it sits, so appending it to a resource the
+    // reader would otherwise accept turns that resource dead — order is not a
+    // fact the reader reads differently from the schema.
+    const stillLive = tableSnapshots.valid[1].value as { frames: Array<Record<string, unknown>> }
+    expect(parseTableSnapshot(stillLive).kind).toBe('ok')
+    const soured = [...stillLive.frames.slice(0, -1), { schema_version: 1, event: 'inactive' }, { schema_version: 1, event: 'ready' }]
+    expect(parseTableSnapshot({ schema_version: 1, frames: soured })).toEqual({ kind: 'unknown', reason: 'invalid' })
+  })
+
   it('reports a broken frame as invalid and never throws', () => {
-    expect(parseTableEvent({ ...first(table, 'ambience is playing'), slot: 'one_shot' })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    // An audio slot name is not a reveal slot name, so only the sequence reads.
+    const audio = first(table, 'ambience is playing')
+    expect(parseTableEvent({ ...audio, slot: 'one_shot' })).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+      slot: null,
+      seq: audio.seq,
+      slots: null,
+    })
     for (const junk of [null, undefined, 42, 'x', [], {}, { event: 7 }]) {
       expect(parseGmEvent(junk).kind).toBe('unknown')
       expect(parseTableEvent(junk).kind).toBe('unknown')
     }
+  })
+
+  it('keeps the slot and the sequence when a stale bundle cannot read the frame (X-4)', () => {
+    // Not a future-version problem: the client checks a projection key against
+    // its OWN copy of the field definitions, so a server one deploy ahead of a
+    // table bundle — a type gained a revealable field, "no bump" by the
+    // versioning table — makes the frame unreadable today. If the placeholder
+    // lost the slot, the page would have nothing to blank, the natural
+    // implementation would skip the frame, and document A would stay on the
+    // player's screen while the GM's indicator says B.
+    const ahead = { content_kind: 'document', type: 'lore', fields: [{ key: 'a_field_this_bundle_has_never_heard_of', value: 'x' }] }
+    expect(parseTableEvent({ schema_version: 1, event: 'slot', slot: 'table', seq: 31, content: ahead })).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+      slot: 'table',
+      seq: 31,
+      slots: null,
+    })
+    // …and in a picture, the readable table slot survives its unreadable neighbour.
+    const readable = { slot: 'table', seq: 12, content: null }
+    expect(
+      parseTableEvent({ schema_version: 1, event: 'snapshot', slots: [readable, { slot: 'mine', seq: 3, content: ahead }] }),
+    ).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+      slot: null,
+      seq: null,
+      slots: [
+        { kind: 'ok', value: readable },
+        { kind: 'unknown', reason: 'invalid', slot: 'mine', seq: 3 },
+      ],
+    })
   })
 })
 

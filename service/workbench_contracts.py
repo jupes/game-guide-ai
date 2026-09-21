@@ -536,6 +536,17 @@ class ErrorInfo(_Contract):
     in_flight: Annotated[list[InvocationId], Field(max_length=8)] | None = None
     #: Only for ``conflict`` on a document write or an AI edit.
     conflict: ConflictInfo | None = None
+    #: The mask keys at fault, for a 422 answering a reveal (``1kg.1.6``). **Keys
+    #: only, never their text** (X-7): an error body is where logs and traces
+    #: look, and the key shape makes prose unrepresentable. Additive, so it is
+    #: no version bump; the field is declared where ``ConflictInfo`` already sets
+    #: the precedent of naming fields and never their values.
+    #:
+    #: ``FieldKey`` rather than ``MaskKey``, which is defined further down with
+    #: the reveal family: the envelope is declared before it. Nothing is lost —
+    #: a request whose mask says ``all`` is refused by ``MaskKey`` before any
+    #: key can be at fault, so ``keys`` never carries one.
+    keys: Annotated[list[FieldKey], Field(min_length=1, max_length=MAX_CHANGED_FIELDS)] | None = None
 
 
 class ErrorBody(_Contract):
@@ -1668,6 +1679,9 @@ class AudioSlot(str, Enum):
 StartOffsetMs = Annotated[Literal[0], BeforeValidator(_an_integer)]
 #: The audio epoch (AUDIO-28): every Stop and every committed push advances it.
 AudioEpoch = Annotated[WireInt, Field(ge=0, le=WRITE_REVISION_MAX)]
+#: Decision REVEAL-22, ED-9: the reveal epoch — every narrowing advances it, on
+#: an empty slot too. ``AudioEpoch``'s twin, and a session row carries both.
+RevealEpoch = Annotated[WireInt, Field(ge=0, le=WRITE_REVISION_MAX)]
 #: A slot's sequence (AUDIO-15): per slot, monotonic, assigned by the database.
 SlotSequence = Annotated[WireInt, Field(ge=0, le=WRITE_REVISION_MAX)]
 #: A link generation (SEC-9): counts rotations, and every frame names the one it was produced under.
@@ -1771,6 +1785,15 @@ class TableSession(_Contract):
     gen: LinkGeneration
     #: Decision AUDIO-24: two GM tabs converge on the epoch the resource carries.
     audio_epoch: AudioEpoch
+    #: Decisions REVEAL-22, ED-9: its twin, for the same reason. REVEAL-22
+    #: advances the reveal epoch on **every** narrowing, "on an empty slot too"
+    #: — a Stop with nothing live, a Rotate with nothing live, a participant
+    #: removed. No slot changed, so there is no ``slot`` frame to carry the new
+    #: number, and a GM tab whose own narrowing advanced it would otherwise send
+    #: a stale epoch on its next Confirm and get a 409 for an ordinary
+    #: stop-then-reveal. Carrying it on the session resource is what lets two GM
+    #: tabs converge, exactly as they do on the audio epoch (AUDIO-24).
+    reveal_epoch: RevealEpoch
     started_at: Timestamp
     ends_at: Timestamp
     ended_at: Timestamp | None
@@ -1833,6 +1856,511 @@ class Capabilities(_Contract):
     schema_version: SchemaVersion
     image_generation: StrictBool
     audio_cues: StrictBool
+
+
+# ── Reveal ───────────────────────────────────────────────────────────────────
+#
+# The family through which GM-private text could reach a player, so its shapes
+# are a security boundary (`agent-forge-harness-1kg.1.6`). Decisions:
+# ``docs/adr/gm-workbench-interactions.md`` §7–8 (REVEAL, AUD, X),
+# ``gm-workbench-threat-model.md`` (SEC-13 to SEC-16, §8.2, §8.3) and
+# ``shared-eligibility-display-disclosure.md`` (ED-8 to ED-16, ED-25).
+
+
+#: A mask never lists more keys than a document has fields to change.
+MASK_MAX_KEYS = MAX_CHANGED_FIELDS
+#: One table slot, plus one per participant (AUD-8, ``PRESENCE_MAX_PARTICIPANTS``).
+REVEAL_MAX_SLOTS = PRESENCE_MAX_PARTICIPANTS + 1
+
+#: Decisions REVEAL-9, ED-8: ``all`` is never stored and never sent — the client
+#: expands it into the keys that exist at the moment the GM decides, so a field
+#: added later is never revealed by a wildcard. It is a *word*, not a pattern:
+#: ``all`` matches ``FieldKey``, while ``*`` and ``%`` do not, so it is refused
+#: by name. A document type may therefore not declare a field called ``all``.
+RESERVED_MASK_KEYS = frozenset({"all"})
+
+
+def _not_a_wildcard(value: str) -> str:
+    if value in RESERVED_MASK_KEYS:
+        raise PydanticCustomError("wildcard_mask_key", "a mask lists field keys, never a wildcard")
+    return value
+
+
+#: A field key as a mask, a GM-side slot and a projection name it.
+MaskKey = Annotated[FieldKey, AfterValidator(_not_a_wildcard)]
+
+#: Decisions REVEAL-10, ED-5: the **allowlist** of the fields every type shares
+#: — one answer, in one place, to *may this field reach a player*. It is
+#: ``1kg.5.3``'s per-field ``revealable`` rule (``registry.json`` →
+#: ``common_field_rules``), held here as a constant because
+#: ``workbench_registry`` imports this module and so cannot be imported back;
+#: both suites pin it to that file, for every type, so the two cannot drift.
+#: ``tags`` is off it, on every type.
+REVEALABLE_COMMON_FIELDS: frozenset[str] = frozenset({"name", "qualifier"})
+
+#: The same allowlist for each type's **own** fields (``registry.json`` →
+#: ``document_types[].field_rules``). It is an allowlist and not an opt-out
+#: list: a key whose rule does not say ``revealable`` is not revealable, so a
+#: field a type gains later is withheld until the registry says otherwise —
+#: ``npc.true_identity`` is ED-20's worked case and is absent below.
+REVEALABLE_FIELDS: dict[DocumentTypeId, frozenset[str]] = {
+    DocumentTypeId.NPC: frozenset(
+        {"portrait", "voice", "tell", "attitude", "wants", "leverage", "if_attacked", "notes"}
+    ),
+    DocumentTypeId.STATBLOCK: frozenset(
+        {
+            "ac",
+            "ac_note",
+            "hp",
+            "hit_dice",
+            "speed",
+            "size",
+            "creature_type",
+            "alignment",
+            "abilities",
+            "saving_throws",
+            "skills",
+            "damage_immunities",
+            "condition_immunities",
+            "senses",
+            "languages",
+            "challenge_rating",
+            "xp",
+            "traits",
+            "actions",
+            "bonus_actions",
+            "reactions",
+            "legendary_actions",
+        }
+    ),
+    DocumentTypeId.HANDOUT: frozenset({"portrait", "body"}),
+    DocumentTypeId.SESSION_NOTES: frozenset({"session", "date", "present", "recap", "beats", "loose_threads"}),
+    DocumentTypeId.QUEST_LOG: frozenset({"open_threads", "cold_threads", "resolved_threads"}),
+    DocumentTypeId.CHARACTER_SHEET: frozenset(
+        {"portrait", "ac", "hp", "speed", "abilities", "features", "equipment", "notes"}
+    ),
+    DocumentTypeId.LORE: frozenset({"region", "era", "status", "summary", "history", "rumours"}),
+    DocumentTypeId.ENCOUNTER: frozenset(
+        {"difficulty", "xp_budget", "party_level", "setup", "combatants", "terrain", "outcome"}
+    ),
+}
+
+
+def revealable_fields(doc_type: DocumentTypeId) -> dict[str, FieldKind]:
+    """The keys of ``doc_type`` a mask may name, and the kind each holds.
+
+    Decisions REVEAL-10 and ED-5. The allowlist is intersected with what the
+    type declares, so a key on the list that the type does not declare has no
+    kind and cannot be projected: unknown is never revealable (X-8).
+    """
+    declared = {**COMMON_FIELDS, **DOC_TYPE_FIELDS[doc_type]}
+    allowed = REVEALABLE_COMMON_FIELDS | REVEALABLE_FIELDS[doc_type]
+    return {key: kind for key, kind in declared.items() if key in allowed}
+
+
+def _distinct_ids(ids: list[str]) -> list[str]:
+    """A recipient list is a set: a repeat would mean two copies of one
+    disclosure for one participant, and it is always a client bug."""
+    if len(set(ids)) != len(ids):
+        raise ValueError("a recipient list names each participant once")
+    return ids
+
+
+#: Owner decision O-3: a group display is **per-recipient copies of one
+#: disclosure**, so a Confirm names one or more participants. The addendum says
+#: only *bounded*; this is the **participant-roster** bound
+#: (``PRESENCE_MAX_PARTICIPANTS``), because revealing to everyone on the roster
+#: is the largest list that can exist. It is deliberately looser than SEC-10's
+#: 24 and RT-8's 12: those count *credentials* and *connections* — who can hold
+#: the link and who is connected right now — while a Confirm names identities,
+#: including participants who are not enrolled at all (AUD-10). A schema that
+#: bounded a Confirm by the credential count would refuse a legal reveal to a
+#: roster member who has not joined yet.
+ParticipantIds = Annotated[
+    list[OpaqueId],
+    Field(min_length=1, max_length=PRESENCE_MAX_PARTICIPANTS),
+    AfterValidator(_distinct_ids),
+]
+
+
+class TableAudience(_Contract):
+    """The whole table: everyone holding a live table credential, guests included."""
+
+    kind: Literal["table"]
+
+
+class ParticipantsAudience(_Contract):
+    """One or more participants, by **id** (AUD-2, ED-10, owner decision O-3).
+
+    A reveal to one player is a list of one; there is no separate singular
+    shape. A named group is expanded by the client into its member ids at the
+    moment the GM confirms, exactly as ``all`` is expanded into field keys
+    (ED-8) — so **no group id and no wildcard ever travels or is stored**, and a
+    group whose membership changes later cannot silently widen a live reveal.
+
+    An audience is an identity, not a credential; an alias is a display name and
+    never leaves the GM's channel (AUD-11), so it is refused here even beside an
+    id.
+    """
+
+    kind: Literal["participants"]
+    participant_ids: ParticipantIds
+
+
+#: Decision ED-14, owner decision O-2: nothing here ties an audience to a
+#: document type — a participant audience is legal for **any** type, and the
+#: registry's ``audience`` flag now says only whose default reveal a type seeds.
+RevealAudience = Annotated[TableAudience | ParticipantsAudience, Field(discriminator="kind")]
+
+
+class TableSlotRef(_Contract):
+    """The table slot."""
+
+    kind: Literal["table"]
+
+
+class ParticipantSlotRef(_Contract):
+    """One participant's slot, by id."""
+
+    kind: Literal["participant"]
+    participant_id: OpaqueId
+
+
+#: A **slot** is one region, so it names one participant, while an audience may
+#: name many: one Confirm to three players fills three slots with three copies
+#: of one disclosure (O-3).
+RevealSlotRef = Annotated[TableSlotRef | ParticipantSlotRef, Field(discriminator="kind")]
+
+
+def _distinct_keys(keys: list[str]) -> list[str]:
+    """A mask is a set: a repeat would make the ledger's one row per field
+    ambiguous (ED-17), and it is always a client bug."""
+    if len(set(keys)) != len(keys):
+        raise ValueError("a mask names each field once")
+    return keys
+
+
+#: The keys one Confirm shows, explicit and non-empty (REVEAL-9, ED-8).
+Mask = Annotated[
+    list[MaskKey],
+    Field(min_length=1, max_length=MASK_MAX_KEYS),
+    AfterValidator(_distinct_keys),
+]
+
+
+class RevealRequest(_Contract):
+    """Confirm (REVEAL-5, ED-9): one atomic mutation covering reveal, update,
+    replace and move — the server derives which, and the request never says.
+
+    It names the **sealed** version the sheet displayed (CANVAS-34), so what the
+    GM reviewed is what the table gets; the mask as explicit keys; the audience;
+    and **both** the session it was composed for and that session's reveal epoch,
+    so that a number from last night's session can never match tonight's (ED-9).
+
+    No ``campaign_id``: the session names the campaign, and ownership is the
+    route's (SEC-3) — the same shape as ``CuePlayRequest``.
+    """
+
+    schema_version: SchemaVersion
+    command_id: CommandId
+    document_id: OpaqueId
+    session_id: OpaqueId
+    reveal_epoch: RevealEpoch
+    version: VersionNumber
+    mask: Mask
+    audience: RevealAudience
+
+
+class _StopBase(_Contract):
+    """Decision X-3: **no epoch on any Stop.** A narrowing is never stale, never
+    queued and never refused for state, so there is no number to be stale
+    against; ``extra="forbid"`` is what makes sending one an error."""
+
+    schema_version: SchemaVersion
+    command_id: CommandId
+
+
+class StopDocument(_StopBase):
+    """Stop showing **this document**, wherever it is live (REVEAL-6, REVEAL-7).
+
+    Decision REVEAL-22: *a Stop clears a slot only if it holds what the Stop
+    names*. A **slot**-scoped Stop could not honour that — it names an audience
+    and nothing else — so tab A's retried slot Stop (REVEAL-16 retries with
+    backoff) would clear whatever tab B had deliberately revealed into that slot
+    in the meantime. Naming the document makes the rule hold by construction: a
+    GM client always knows the document, because every slot's document id is in
+    the GM's reveal picture, and a document has **at most one live disclosure**
+    (owner decision O-3, amending ED-15's "at most one slot"), so *what the Stop
+    names* is unambiguous however many copies that disclosure has — a Stop on
+    the document clears every copy. The scope exists so that the canvas header
+    can stop *that document* without knowing which slots hold it.
+    """
+
+    scope: Literal["document"]
+    document_id: OpaqueId
+
+
+class StopAll(_StopBase):
+    """Every slot of the session, whatever is in them (REVEAL-6)."""
+
+    scope: Literal["all"]
+
+
+#: Stop showing (REVEAL-6, REVEAL-22, ED-16 — there is no Retract in v1). A Stop
+#: names a **document**, or **all**.
+RevealStopRequest = Annotated[StopDocument | StopAll, Field(discriminator="scope")]
+
+
+class ContentKind(str, Enum):
+    """Decision ADR §7.4: ``document`` is the **only** member in v1. Adding one
+    later *is* a version bump; what reserving the discriminator buys is that a v1
+    table client meets an unknown kind as its neutral placeholder rather than as
+    a parse failure."""
+
+    DOCUMENT = "document"
+
+
+def _not_blank(value: str) -> str:
+    """Decisions REVEAL-5, ED-9: *present and non-empty* has to mean a player
+    sees something. A value that trimming empties renders as a blank heading on
+    a table, so a projection refuses it where a document would keep it — and the
+    trim is the contract's own, so both sides agree on what "blank" is."""
+    if not trim(value):
+        raise ValueError("a revealed value is blank if trimming empties it")
+    return value
+
+
+_PresentText = Annotated[
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=TEXT_FIELD_MAX_CHARS),
+    AfterValidator(_one_line),
+    AfterValidator(_not_blank),
+]
+_PresentProse = Annotated[
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=PROSE_FIELD_MAX_CHARS),
+    AfterValidator(_not_blank),
+]
+_PresentListItem = Annotated[
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=LIST_ITEM_MAX_CHARS),
+    AfterValidator(_not_blank),
+]
+_PresentList = Annotated[list[_PresentListItem], Field(min_length=1, max_length=LIST_FIELD_MAX_ITEMS)]
+#: Decision ED-9: a block a player is shown carries scores, not gaps. A document
+#: may hold ``{"str": null}`` for a creature that lacks an ability; a projection
+#: of it leaves the key out, so no cell is drawn empty under a masked heading.
+_PresentAbilities = Annotated[dict[AbilityKey, _AbilityScore], Field(min_length=1)]
+
+
+class _PresentEntry(_Contract):
+    """One named block as a player sees it: a heading **and** its body, both
+    present. A document may hold a trait whose text is still empty; projecting it
+    would put a lone heading on a table, which REVEAL-5's *present and non-empty*
+    rules out — so the Confirm is refused rather than half-shown."""
+
+    name: _PresentText
+    text: _PresentListItem
+
+
+_PresentEntryList = Annotated[list[_PresentEntry], Field(min_length=1, max_length=LIST_FIELD_MAX_ITEMS)]
+
+#: The same kinds a document declares, but a masked key is **present and
+#: non-empty** in the pinned version (REVEAL-5, ED-9), so nothing clears to a
+#: blank heading on a table; and an asset is the per-slot handle, never the
+#: GM-side ``AssetRef`` (SEC-15). Every kind ``1kg.5.3`` declares has a shape
+#: here: an ``integer`` is a count a player may read, never an id and never a
+#: revision, and it is present rather than ``None``.
+_PROJECTION_VALUE: dict[FieldKind, TypeAdapter[Any]] = {
+    FieldKind.TEXT: TypeAdapter(_PresentText, config=_HIDE_INPUT),
+    FieldKind.PROSE: TypeAdapter(_PresentProse, config=_HIDE_INPUT),
+    FieldKind.TEXT_LIST: TypeAdapter(_PresentList, config=_HIDE_INPUT),
+    FieldKind.ASSET: TypeAdapter(TableAssetRef),
+    FieldKind.INTEGER: TypeAdapter(_IntegerValue, config=_HIDE_INPUT),
+    FieldKind.ABILITIES: TypeAdapter(_PresentAbilities, config=_HIDE_INPUT),
+    FieldKind.ENTRY_LIST: TypeAdapter(_PresentEntryList, config=_HIDE_INPUT),
+}
+
+
+class ProjectedField(_Contract):
+    """One masked field as a player sees it: the key, and the text.
+
+    The heading is **not** on the wire. A table client renders the registry's
+    label for ``(type, key)``, which its bundle already holds, so the projection
+    has no free-text member at all — and a title, an alias, a filename, a
+    version or an id has nowhere to ride (TABLE-3, SEC-15). The page title is
+    still built from the projection: the document's name appears only when
+    ``name`` is masked.
+    """
+
+    key: MaskKey
+    #: The shapes a field kind can take on a table; which one this key must be,
+    #: and its bounds, are checked against the type in ``TableProjection``.
+    value: StrictStr | list[StrictStr] | TableAssetRef | WireInt | dict[AbilityKey, WireInt] | list[_PresentEntry]
+
+
+class TableProjection(_Contract):
+    """What a table client is given, and the whole of it (SEC-14, SEC-15).
+
+    It is **built** from a sealed version, a mask and an audience by one
+    server-side builder, never derived by deleting keys from a GM payload, and
+    the same builder answers the player-safe export and print (EXPORT-3,
+    EXPORT-7). This schema is the second half of that guarantee: every member is
+    closed — a literal, an enum, a key on the type's allowlist, a value checked
+    against that key's kind — so an asset id, a version number, either epoch,
+    another slot's sequence, a title outside the mask, an alias or any
+    eligibility class is refused here rather than emitted.
+
+    The *server* is the confidentiality boundary: by the time a client parses,
+    the bytes are on the device. An undeclared key is refused here and stripped
+    by the client, and both halves are pinned (``applies_to: ["server"]``
+    fixtures, and the client's strip test).
+    """
+
+    content_kind: Literal[ContentKind.DOCUMENT]
+    type: DocumentTypeId
+    fields: Annotated[list[ProjectedField], Field(min_length=1, max_length=MASK_MAX_KEYS)]
+
+    @model_validator(mode="after")
+    def _only_revealable_fields_of_this_type(self) -> Self:
+        revealable = revealable_fields(self.type)
+        seen: set[str] = set()
+        for field in self.fields:
+            if field.key in seen:
+                raise ValueError("a projection shows each field once")
+            seen.add(field.key)
+            kind = revealable.get(field.key)
+            if kind is None:
+                raise ValueError("that field is not revealable for this type")
+            # ``.get``, not ``[]``: a kind ``1kg.5.3`` adds without a projection
+            # shape must refuse the payload, not raise out of validation and
+            # answer 500. The TypeScript side gets this from an exhaustive switch.
+            shape = _PROJECTION_VALUE.get(kind)
+            if shape is None:
+                raise ValueError(f"{kind.value} fields have no shape a table can be shown")
+            try:
+                shape.validate_python(field.value)
+            except ValidationError:
+                # ``from None``: a chained cause would put revealed text in a traceback.
+                raise ValueError(f"{field.key} is not a present {kind.value} value") from None
+        return self
+
+
+class RevealLive(_Contract):
+    """What one slot holds, as the **GM** sees it.
+
+    The GM channel and ``GmSnapshot`` only: the threat model's §8.3 row reads
+    *reveal state, with the epoch, every slot, version numbers and mask keys —
+    GM yes, participant never, guest never*.
+
+    ``stale_text`` is the alignment's *whether a newer version exists*, named for
+    the predicate REVEAL-8 actually fixes: **the comparison is of text, not of
+    version numbers**, so ten autosaves raise one notice and reverting the text
+    clears it. It is what raises ``Table is seeing an earlier version`` and its
+    *Use latest version*. ``pending_delivery`` is AUD-10 — a reveal to a
+    participant who is **not enrolled, or enrolled and not currently connected**
+    confirms normally and waits, and never falls back to the table. Both cases
+    are one flag because they are one fact for the GM, *nobody is reading this
+    yet*; it is **per entry**, because one participant may be waiting while the
+    others holding copies of the same disclosure are not.
+
+    ``disclosure_id`` is owner decision O-3: a group display is per-recipient
+    copies of **one** disclosure, and every copy carries its id. It is what makes
+    *stop all copies* expressible, and what tells the GM's indicator that three
+    slots are one act rather than three.
+    """
+
+    disclosure_id: OpaqueId
+    document_id: OpaqueId
+    type: DocumentTypeId
+    #: The **sealed** version the table is pinned to (REVEAL-8, CANVAS-34).
+    version: VersionNumber
+    mask: Mask
+    stale_text: StrictBool
+    pending_delivery: StrictBool
+
+    @model_validator(mode="after")
+    def _mask_is_revealable_for_its_type(self) -> Self:
+        revealable = revealable_fields(self.type)
+        if any(key not in revealable for key in self.mask):
+            raise ValueError("a slot's mask names only fields that are revealable for its type")
+        return self
+
+
+class RevealSlot(_Contract):
+    """One slot of the live session, GM-side. ``live`` is ``None`` for a slot the
+    GM can see and which is empty. A slot a client is **not** entitled to is
+    absent rather than marked: a marker would confirm that it exists (WT-7,
+    threat model §8.2)."""
+
+    slot: RevealSlotRef
+    seq: SlotSequence
+    live: RevealLive | None
+
+    @model_validator(mode="after")
+    def _only_a_participant_waits_for_a_device(self) -> Self:
+        """Decision AUD-10: the table has no one to wait for."""
+        if self.live is not None and self.live.pending_delivery and isinstance(self.slot, TableSlotRef):
+            raise ValueError("only a participant slot can be waiting for a device")
+        return self
+
+
+def _named(slot: RevealSlotRef) -> str:
+    """A slot's identity as a string. Namespaced, because ``table`` is a legal
+    participant id and would otherwise collide with the table slot."""
+    return "table" if isinstance(slot, TableSlotRef) else f"p:{slot.participant_id}"
+
+
+class RevealState(_Contract):
+    """The GM's whole reveal picture, carried by the GM channel's ``snapshot``
+    frame and nothing else: the session, its link generation, its reveal epoch,
+    and one entry per slot (AUD-8).
+
+    **The table slot is always listed.** "Nothing revealed" is the table slot,
+    present and empty — never an absent entry, because a GM client must not read
+    missing state as *nothing revealed* (REVEAL-13).
+    """
+
+    session_id: OpaqueId
+    gen: LinkGeneration
+    reveal_epoch: RevealEpoch
+    slots: Annotated[list[RevealSlot], Field(min_length=1, max_length=REVEAL_MAX_SLOTS)]
+
+    @model_validator(mode="after")
+    def _one_live_disclosure_per_document(self) -> Self:
+        """Owner decision O-3, amending §7.1, REVEAL-7 and NG-20.
+
+        A **document has at most one live disclosure**, and a disclosure is
+        *either* the table slot alone *or* one or more participant slots. So:
+        every entry of one document carries the same ``disclosure_id``; one
+        ``disclosure_id`` belongs to one document; and a disclosure is never
+        mixed — the table and a private copy of the same document at once would
+        make *stop all copies* ambiguous and let a player's private copy be
+        mistaken for the shared one.
+        """
+        names = [_named(slot.slot) for slot in self.slots]
+        if len(set(names)) != len(names):
+            raise ValueError("a slot is listed once")
+        if "table" not in names:
+            raise ValueError("the reveal picture always lists the table slot")
+
+        live = [(slot.slot, slot.live) for slot in self.slots if slot.live is not None]
+        by_document: dict[str, set[str]] = {}
+        by_disclosure: dict[str, set[str]] = {}
+        on_the_table: set[str] = set()
+        privately: set[str] = set()
+        for named_slot, held in live:
+            by_document.setdefault(held.document_id, set()).add(held.disclosure_id)
+            by_disclosure.setdefault(held.disclosure_id, set()).add(held.document_id)
+            (on_the_table if isinstance(named_slot, TableSlotRef) else privately).add(held.disclosure_id)
+
+        if any(len(ids) > 1 for ids in by_document.values()):
+            raise ValueError("a document has at most one live disclosure")
+        if any(len(documents) > 1 for documents in by_disclosure.values()):
+            raise ValueError("a disclosure shows one document")
+        if on_the_table & privately:
+            raise ValueError("a disclosure is the table slot, or participant slots, never both")
+        return self
 
 
 # ── Realtime events ──────────────────────────────────────────────────────────
@@ -1943,6 +2471,36 @@ class PresenceEvent(_EventBase):
     guests: GuestPresence
 
 
+class GmSlotEvent(_EventBase):
+    """One reveal slot changed (REVEAL-22, ADR RT-4). The GM's twin of
+    ``GmAudioEvent``: it names the session, the link generation it was produced
+    under (SEC-9) and the reveal epoch, because the GM's next Confirm must carry
+    that number (REVEAL-13). ``live`` is ``None`` for a slot that was stopped."""
+
+    event: Literal["slot"]
+    session_id: OpaqueId
+    gen: LinkGeneration
+    reveal_epoch: RevealEpoch
+    slot: RevealSlotRef
+    seq: SlotSequence
+    live: RevealLive | None
+
+    @model_validator(mode="after")
+    def _only_a_participant_waits_for_a_device(self) -> Self:
+        if self.live is not None and self.live.pending_delivery and isinstance(self.slot, TableSlotRef):
+            raise ValueError("only a participant slot can be waiting for a device")
+        return self
+
+
+class GmRevealSnapshotEvent(_EventBase):
+    """The whole reveal picture in one frame (ADR RT-4), so a GM tab that has seen
+    ``ready`` knows every slot and the epoch — and never reads missing state as
+    *nothing revealed* (REVEAL-13)."""
+
+    event: Literal["snapshot"]
+    state: RevealState
+
+
 class GmAssetEvent(_EventBase):
     """An asset changed state (ADR MS-3): the GM's `Still processing…` ends here."""
 
@@ -1968,6 +2526,8 @@ GmEvent = Annotated[
     | EditLaneEvent
     | GmSessionEvent
     | GmAudioEvent
+    | GmSlotEvent
+    | GmRevealSnapshotEvent
     | PresenceEvent
     | GmAssetEvent
     | GmReadyEvent
@@ -1986,6 +2546,21 @@ def _ends_with_ready(frames: Sequence[Any]) -> None:
         raise ValueError("a snapshot never carries a reconnect")
 
 
+def _one_reveal_picture_while_live(frames: Sequence[Any], *, live: bool) -> None:
+    """Decision ADR RT-4: a snapshot is **complete** before ``ready``, so a client
+    that has seen ``ready`` knows every slot it is entitled to — and never reads
+    the absence of the picture as *nothing revealed* (REVEAL-13).
+
+    A live channel therefore carries exactly one ``snapshot`` frame, and a channel
+    with no live session carries none: there is no epoch and there are no slots to
+    describe. That is why ``GmSnapshot``'s *no session running* and
+    ``TableSnapshot``'s *inactive table* stay valid as they are (TABLE-9).
+    """
+    pictures = sum(1 for frame in frames if frame.event == "snapshot")
+    if pictures != (1 if live else 0):
+        raise ValueError("a live snapshot carries one reveal picture, and one with no session carries none")
+
+
 class GmSnapshot(_Contract):
     """The GM channel read as a resource — a stream's opening frames, and the
     polling mode of ADR RT-9 — ending with ``ready``."""
@@ -1996,7 +2571,29 @@ class GmSnapshot(_Contract):
     @model_validator(mode="after")
     def _complete(self) -> Self:
         _ends_with_ready(self.frames)
+        sessions = [frame for frame in self.frames if frame.event == "session"]
+        if len(sessions) > 1:
+            raise ValueError("a snapshot describes one session")
+        live = any(frame.session.state is SessionState.LIVE for frame in sessions)
+        _one_reveal_picture_while_live(self.frames, live=live)
+        if sessions and live:
+            self._the_picture_is_of_the_session_beside_it(sessions[0].session)
         return self
+
+    def _the_picture_is_of_the_session_beside_it(self, session: TableSession) -> None:
+        """Decision ED-9: the reveal epoch is **per session**, so a picture from
+        another session — or from a generation before a Rotate — is exactly the
+        "number from last night" a Confirm must never be able to match. A GM tab
+        that took its epoch from such a frame would compose a Confirm that is
+        either a 409 forever or, worse, valid against the wrong session.
+        """
+        for frame in self.frames:
+            if frame.event != "snapshot":
+                continue
+            if frame.state.session_id != session.session_id:
+                raise ValueError("a reveal picture describes the session beside it")
+            if frame.state.gen != session.gen:
+                raise ValueError("a reveal picture is of the link generation beside it")
 
 
 class TableSessionEvent(_EventBase):
@@ -2045,6 +2642,74 @@ class TableAudioEvent(_EventBase):
         return self
 
 
+class TableSlotName(str, Enum):
+    """How a **table** client is told which region a projection belongs in.
+
+    Deliberately *not* a ``RevealSlotRef``: a slot reference carries a
+    participant id, and every table-side shape in this contract is id-free —
+    ``TableRole`` is an enum, ``TableJoinResponse`` answers with a role and no
+    id, ``EnrolResponse`` with a status alone. Which participant ``mine`` is,
+    the server resolves from the credential pair, "never from request fields"
+    (eligibility ADR §4), so the id never has to be on the wire at all (SEC-15).
+
+    It also carries no ``disclosure_id`` and no count: under owner decision O-3
+    a private reveal may be one copy of several, and nothing a player's client
+    receives may say so (REVEAL-24).
+    """
+
+    TABLE = "table"
+    MINE = "mine"
+
+
+class TableSlot(_Contract):
+    """One slot as a table client sees it: where it goes, its sequence, and what
+    it holds (ADR RT-4). ``content`` is ``None`` for a slot this device is
+    entitled to and which is empty."""
+
+    slot: TableSlotName
+    seq: SlotSequence
+    content: TableProjection | None
+
+
+def _entitled_slots(slots: Sequence[TableSlot]) -> None:
+    """Decision threat model §8.2: a table client is entitled to the table slot
+    and, with the enrolled device credential, its own — and to nothing else.
+
+    A slot it is *not* entitled to is **absent**, never marked: a marker would
+    confirm the slot exists and that a private reveal is happening (WT-7, T-8).
+    So the whole picture is one or two entries, the table one always present.
+    """
+    names = [slot.slot for slot in slots]
+    if TableSlotName.TABLE not in names:
+        raise ValueError("every table client is entitled to the table slot")
+    if len(set(names)) != len(names):
+        raise ValueError("a device holds one credential, so it has one of each slot")
+
+
+class TableSlotEvent(_EventBase):
+    """One reveal slot changed, as a table client is told it. The twin of
+    ``TableAudioEvent``: no session id, no link generation, no epoch — nothing a
+    table client has no use for (SEC-15, REVEAL-24)."""
+
+    event: Literal["slot"]
+    slot: TableSlotName
+    seq: SlotSequence
+    content: TableProjection | None
+
+
+class TableRevealSnapshotEvent(_EventBase):
+    """The whole picture this device is entitled to, in one frame (ADR RT-4): the
+    table slot, and with the enrolled device credential its own."""
+
+    event: Literal["snapshot"]
+    slots: Annotated[list[TableSlot], Field(min_length=1, max_length=2)]
+
+    @model_validator(mode="after")
+    def _only_what_this_device_is_entitled_to(self) -> Self:
+        _entitled_slots(self.slots)
+        return self
+
+
 class TableReadyEvent(_EventBase):
     event: Literal["ready"]
 
@@ -2054,9 +2719,98 @@ class TableReconnectEvent(_EventBase):
 
 
 TableEvent = Annotated[
-    TableSessionEvent | TableInactiveEvent | TableAudioEvent | TableReadyEvent | TableReconnectEvent,
+    TableSessionEvent
+    | TableInactiveEvent
+    | TableAudioEvent
+    | TableSlotEvent
+    | TableRevealSnapshotEvent
+    | TableReadyEvent
+    | TableReconnectEvent,
     Field(discriminator="event"),
 ]
+
+
+def _the_role_decides_the_slots(frames: Sequence[Any], *, role: TableRole) -> None:
+    """Decision threat model §8.2, ED-10: a private slot exists for this device
+    only with the **enrolled device credential**, which is exactly what
+    ``role == participant`` means on the wire.
+
+    So a guest's resource holds no ``mine`` anywhere — not in the reveal
+    picture and not as a later ``slot`` frame — and a participant's picture is
+    exactly ``table`` and ``mine``: for an entitled device, *absent* and
+    *present and empty* are different facts, and only the second is legal. This
+    is the entitlement rule the family is built on, expressed where an emitter
+    is checked against it (``1kg.7.2``), so a snapshot route that resolved a
+    revoked device as a guest and still attached its slot cannot be emitted.
+    """
+    mine = [
+        frame
+        for frame in frames
+        if (frame.event == "slot" and frame.slot is TableSlotName.MINE)
+        or (frame.event == "snapshot" and any(slot.slot is TableSlotName.MINE for slot in frame.slots))
+    ]
+    if role is TableRole.GUEST and mine:
+        raise ValueError("a guest is entitled to the table slot and nothing else")
+    if role is TableRole.PARTICIPANT:
+        pictures = [frame for frame in frames if frame.event == "snapshot"]
+        if any(not any(slot.slot is TableSlotName.MINE for slot in picture.slots) for picture in pictures):
+            raise ValueError("an enrolled device's picture holds its own slot, present and possibly empty")
+
+
+def _the_table_is_live(frames: Sequence[Any]) -> bool:
+    """The one liveness predicate for a table resource, read by every rule that
+    needs it.
+
+    Two facts, not one. ``TableSessionEvent`` exists only while live, so a
+    ``session`` frame is *necessary*; but TABLE-9 makes ``inactive`` the frame a
+    **dead** table sends, so an ``inactive`` frame anywhere in the list is
+    decisive against it. Holding a session frame alone is not the test: a
+    snapshot route answering a link the GM has just rotated (SEC-9, TABLE-13)
+    builds the ``inactive`` frame and then appends the head frames it had
+    buffered for the session it was serving — session frame included — and a
+    "no session frame" predicate would read that resource as live and switch
+    **every** table rule off, letting the projection travel in the reveal
+    picture as readily as in a ``slot`` frame.
+
+    Order carries no meaning here and neither does count: ``inactive`` says the
+    table is dead wherever it sits and however often it is repeated.
+    ``TableSnapshot._complete`` additionally refuses the combination outright —
+    the two frames are mutually exclusive in a well-formed resource — but the
+    refusal is the second line of defence, not the predicate.
+    """
+    return any(frame.event == "session" for frame in frames) and not any(
+        frame.event == "inactive" for frame in frames
+    )
+
+
+def _a_dead_resource_shows_nothing(frames: Sequence[Any], *, live: bool) -> None:
+    """Decisions REVEAL-17 and AE-51: ending, expiring or rotating a link
+    **clears every projection**, so a resource that is not live (``_the_table_is_live``)
+    shows nothing at all.
+
+    ``_one_reveal_picture_while_live`` says that of the picture; this says it of
+    the incremental ``slot`` frames, which are the other half of the frames that
+    can carry a projection — from the *same* liveness, computed once in
+    ``_complete``. Without it ``[inactive, slot(mine, …), ready]`` would be
+    emittable, and a snapshot route answering a rotated link (SEC-9, TABLE-13)
+    could still attach the slots it had buffered to a device whose session is
+    dead. A dead resource carries no role either, so
+    ``_the_role_decides_the_slots`` never runs over it: ``mine`` is refused here
+    rather than left unchecked.
+
+    An *empty* ``table`` slot frame is the permitted half and stays emittable:
+    ``[inactive, slot(table, …, content=None), ready]`` reports that a region
+    holds nothing, which is what a cleared table is.
+    """
+    if live:
+        return
+    for frame in frames:
+        if frame.event != "slot":
+            continue
+        if frame.slot is TableSlotName.MINE:
+            raise ValueError("a dead resource carries no private slot")
+        if frame.content is not None:
+            raise ValueError("a dead resource shows nothing")
 
 
 class TableSnapshot(_Contract):
@@ -2069,6 +2823,26 @@ class TableSnapshot(_Contract):
     @model_validator(mode="after")
     def _complete(self) -> Self:
         _ends_with_ready(self.frames)
+        sessions = [frame for frame in self.frames if frame.event == "session"]
+        if len(sessions) > 1:
+            # Two session frames could disagree about the role, and a reader that
+            # took the first would read a different resource from one that took
+            # the last. One frame, one answer.
+            raise ValueError("a snapshot describes one session")
+        # One notion of liveness, computed once and handed to every rule that
+        # needs it — the predicate, not a re-derivation, is what each rule reads.
+        live = _the_table_is_live(self.frames)
+        _one_reveal_picture_while_live(self.frames, live=live)
+        _a_dead_resource_shows_nothing(self.frames, live=live)
+        if sessions and not live:
+            # The projection rules above have already cleared this resource of
+            # anything it could show; what is left is the contradiction itself,
+            # and an emitter that builds it has confused two generations of the
+            # same link (SEC-9, TABLE-13). Refused rather than normalised, so
+            # ``1kg.7.2`` learns of it here instead of on a player's screen.
+            raise ValueError("a resource is inactive or it has a session, never both")
+        if live:
+            _the_role_decides_the_slots(self.frames, role=sessions[0].role)
         return self
 
 
@@ -2113,6 +2887,13 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "TableSessionRequest": TypeAdapter(TableSessionRequest),
     "TableSessionAnswer": TypeAdapter(TableSessionAnswer),
     "Capabilities": TypeAdapter(Capabilities),
+    "RevealAudience": TypeAdapter(RevealAudience, config=_HIDE_INPUT),
+    "RevealSlotRef": TypeAdapter(RevealSlotRef, config=_HIDE_INPUT),
+    "RevealRequest": TypeAdapter(RevealRequest),
+    "RevealStopRequest": TypeAdapter(RevealStopRequest, config=_HIDE_INPUT),
+    "RevealLive": TypeAdapter(RevealLive),
+    "RevealState": TypeAdapter(RevealState),
+    "TableProjection": TypeAdapter(TableProjection),
     "GmEvent": TypeAdapter(GmEvent, config=_HIDE_INPUT),
     "TableEvent": TypeAdapter(TableEvent, config=_HIDE_INPUT),
     "GmSnapshot": TypeAdapter(GmSnapshot),

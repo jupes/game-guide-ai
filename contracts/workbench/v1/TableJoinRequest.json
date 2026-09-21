@@ -1,6 +1,7 @@
 {
   "schema": "TableJoinRequest",
   "direction": "request",
+  "channel": "table",
   "note": "SEC-8: the table page reads the token from the fragment, strips it, and POSTs it once. 32 CSPRNG bytes are 43 base64url characters (SEC-5).",
   "valid": [
     {

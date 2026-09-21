@@ -98,6 +98,27 @@ def test_every_listed_schema_is_implemented_and_exercised() -> None:
     assert all(counts["valid"] >= 1 and counts["invalid"] >= 1 for counts in seen.values()), seen
 
 
+def test_a_request_shape_is_tagged_as_one() -> None:
+    """``direction`` decides how much the differential fuzz generates for a shape:
+    a ``request`` gets the stray-key and ``__proto__`` mutations a client→server
+    body must refuse, a ``response`` does not. The fuzz fails closed on a tag it
+    does not recognise, but a *recognised and wrong* tag — ``response`` by
+    copy-paste on a new ``*Request`` — silently drops that coverage while the
+    job still prints ``0 disagreements in the contract's own shapes``. So the tag
+    is pinned against the name rather than trusted.
+
+    One-way on purpose: ``RevealAudience`` is a request body that is not named
+    like one (it travels as ``RevealRequest.audience``), so a ``request`` tag on
+    a shape with another name is legal.
+    """
+    mistagged = {}
+    for path in _fixture_files():
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if doc["schema"].endswith(("Request", "Query")) and doc.get("direction") != "request":
+            mistagged[doc["schema"]] = doc.get("direction")
+    assert not mistagged, f"named like a request body, tagged otherwise: {mistagged}"
+
+
 def test_registry_constants_match_the_shared_registry() -> None:
     """The facts the validators lean on come from one file (1kg.3.1 extends it)."""
     registry = json.loads((FIXTURES / "registry.json").read_text(encoding="utf-8"))
@@ -131,6 +152,150 @@ def test_registry_constants_match_the_shared_registry() -> None:
         # A type's own field may not shadow a common one, and every key is a field key.
         assert not set(doc_type["fields"]) & set(registry["common_fields"])
         assert all(re.fullmatch(r"[a-z][a-z0-9_]{0,39}", key) for key in doc_type["fields"])
+
+
+def test_the_revealable_set_is_the_registry_s_allowlist_for_every_type() -> None:
+    """Decisions REVEAL-10, ED-5, ED-20: **one** answer to *may this field reach a
+    player*, and it is an allowlist.
+
+    ``1kg.5.3``'s per-field ``revealable`` rule is the source; this module holds a
+    copy only because the registry imports it and cannot be imported back. Pinning
+    the copy to ``registry.json`` for **every** type is what stops the two from
+    ever giving different answers — the failure that would otherwise be silent is
+    a field marked ``revealable: false`` on a type nobody wrote an assertion for.
+    """
+    registry = json.loads((FIXTURES / "registry.json").read_text(encoding="utf-8"))
+
+    def allowed(rules: dict[str, Any]) -> set[str]:
+        return {key for key, rule in rules.items() if rule["revealable"]}
+
+    assert set(wc.REVEALABLE_COMMON_FIELDS) == allowed(registry["common_field_rules"])
+    assert {t.value for t in wc.REVEALABLE_FIELDS} == {doc["id"] for doc in registry["document_types"]}
+    for doc_type in registry["document_types"]:
+        type_id = wc.DocumentTypeId(doc_type["id"])
+        assert set(wc.REVEALABLE_FIELDS[type_id]) == allowed(doc_type["field_rules"]), doc_type["id"]
+        # And the derived set — what a mask and a projection are actually checked
+        # against — never names a key the registry withholds, on any type.
+        withheld = set(doc_type["field_rules"]) - allowed(doc_type["field_rules"])
+        withheld |= set(registry["common_field_rules"]) - allowed(registry["common_field_rules"])
+        assert not withheld & set(wc.revealable_fields(type_id)), doc_type["id"]
+
+    # ED-20's worked case, spelled out: the link between a face and what wears it.
+    assert "true_identity" in wc.DOC_TYPE_FIELDS[wc.DocumentTypeId.NPC]
+    assert "true_identity" not in wc.revealable_fields(wc.DocumentTypeId.NPC)
+    # …and tags never are, on any type (SEC-15).
+    assert all("tags" not in wc.revealable_fields(doc_type) for doc_type in wc.DocumentTypeId)
+
+
+def test_every_revealable_kind_has_a_shape_a_table_can_be_shown() -> None:
+    """A field kind a type declares and the registry marks revealable must have a
+    projection shape, or REVEAL-10's *each stat cell* has nowhere to land. The
+    TypeScript twin gets this from an exhaustive ``switch``; Python needs the
+    assertion, because a missing entry only shows up as a refused reveal."""
+    reachable = {
+        kind for doc_type in wc.DocumentTypeId for kind in wc.revealable_fields(doc_type).values()
+    }
+    assert reachable <= set(wc._PROJECTION_VALUE)
+    # Every kind the registry declares is reachable today, so the two sets agree.
+    assert reachable == set(wc.FieldKind)
+
+
+def test_a_mask_key_is_never_a_wildcard() -> None:
+    """Decisions REVEAL-9, ED-8. ``all`` matches the field-key pattern, so it is
+    refused by name; ``*`` and ``%`` never matched it in the first place."""
+    keys = TypeAdapter(wc.MaskKey)
+    assert keys.validate_python("notes") == "notes"
+    for wildcard in ("all", "*", "**", "%", "ALL"):
+        with pytest.raises(ValidationError):
+            keys.validate_python(wildcard)
+    # A registry that declared a field called `all` would make a mask unspeakable.
+    assert all("all" not in wc.revealable_fields(doc_type) for doc_type in wc.DocumentTypeId)
+
+
+def test_a_field_kind_with_no_table_shape_refuses_rather_than_raising() -> None:
+    """When ``1kg.5.3`` adds a field kind, a projection of it must be **refused**
+    until this family gives it a shape — not raise a ``KeyError`` out of
+    validation and answer 500. TypeScript gets this from an exhaustive switch;
+    Python needs the lookup to miss safely.
+    """
+    kinds = {kind: wc._PROJECTION_VALUE[kind] for kind in wc._PROJECTION_VALUE}
+    try:
+        del wc._PROJECTION_VALUE[wc.FieldKind.TEXT]
+        with pytest.raises(ValidationError) as caught:
+            wc.TableProjection.model_validate(
+                {
+                    "content_kind": "document",
+                    "type": "npc",
+                    "fields": [{"key": "name", "value": "Sister Ondrey Vashe"}],
+                }
+            )
+        assert "no shape a table can be shown" in str(caught.value)
+    finally:
+        wc._PROJECTION_VALUE.update(kinds)
+
+
+def test_no_request_a_table_client_sends_names_a_participant() -> None:
+    """Decision threat model §8.2: the table client is not a restricted view of
+    the GM API, it is a separate, smaller API with its own principal. A guest
+    asking beyond the table slot gets what an empty table gives, never a refusal
+    — which is only possible if there is no shape in which it can *ask*.
+    """
+    def names_a_participant(schema: dict[str, Any]) -> bool:
+        """The whole schema, not its top-level field names: a shape that nests an
+        audience carries the id one level down and would read as clean.
+
+        The *word* is not the test — ``TableRole`` is the enum ``participant |
+        guest`` and belongs on the table channel (TABLE-13). The **identifier**
+        is: the field, or the shape that holds it.
+
+        What this cannot catch, and no textual guard can: an id under another
+        name. It is a tripwire against the shape drifting, not a proof; the
+        fixtures are what pin each frame's actual content.
+        """
+        text = json.dumps(schema)
+        named = ("participant_id", "participant_ids", "ParticipantSlotRef", "ParticipantsAudience")
+        return any(word in text for word in named)
+
+    # The list is read from the fixtures, not written here: a fixture file marks
+    # itself ``"channel": "table"`` and ``"direction": "request"``, so a table-side
+    # request someone adds later joins this test by existing. A hard-coded pair
+    # would go on passing while the new shape carried an id.
+    table_requests = sorted(
+        doc["schema"]
+        for doc in (json.loads(path.read_text(encoding="utf-8")) for path in FIXTURES.glob("*.json"))
+        if doc.get("channel") == "table" and doc.get("direction") == "request"
+    )
+    assert table_requests, "no fixture file declares itself a table-side request"
+    for name in table_requests:
+        assert not names_a_participant(wc.CONTRACT_SCHEMAS[name].json_schema(ref_template="{model}")), name
+
+    # The frames a table client receives name their slot ``table`` or ``mine``,
+    # never a slot reference, so no id travels that way either (SEC-15).
+    for member in get_args(get_args(wc.TableEvent)[0]):
+        assert not names_a_participant(TypeAdapter(member).json_schema(ref_template="{model}")), member.__name__
+
+
+def test_content_kind_has_exactly_one_member_in_v1() -> None:
+    """Decision ADR §7.4, and the alignment's sixth acceptance row. What reserving
+    the discriminator buys is that a v1 table client meets a future member as its
+    neutral placeholder; adding one **is** a version bump. The cardinality is the
+    claim, so it is the assertion — read from the schema itself, not from a list
+    beside it, so the enum and the literal cannot drift apart."""
+    assert [kind.value for kind in wc.ContentKind] == ["document"]
+    projection = wc.TableProjection.model_json_schema()
+    assert projection["properties"]["content_kind"]["const"] == "document"
+
+
+def test_no_shape_in_v1_declares_an_eligibility_field() -> None:
+    """Decision ED-11: Workbench v1 ships mask-only. Eligibility binds reveal from
+    the assistant's enforcement release (``1ir.11.1``), and the refusal it needs
+    is an additive error code — so nothing here carries a class or a revision,
+    and nothing about eligibility ever reaches a table client (ED-25, REVEAL-24).
+    """
+    forbidden = ("eligibility", "classification", "authz_revision", "projection_revision")
+    for name, adapter in wc.CONTRACT_SCHEMAS.items():
+        schema = json.dumps(adapter.json_schema(ref_template="{model}"))
+        assert not any(f'"{word}"' in schema for word in forbidden), name
 
 
 def test_every_field_kinds_bounds_are_the_shared_registrys() -> None:
@@ -805,8 +970,9 @@ def test_a_write_revision_survives_javascript() -> None:
 
 def test_the_event_kind_vocabularies_are_the_unions() -> None:
     """What ``1kg.7.5`` and ``1kg.8.6`` emit is pinned to the models, per channel."""
-    gm = {"tool_lane", "edit_lane", "session", "audio", "presence", "asset", "ready", "reconnect"}
-    for union, kinds in ((wc.GmEvent, gm), (wc.TableEvent, {"session", "inactive", "audio", "ready", "reconnect"})):
+    gm = {"tool_lane", "edit_lane", "session", "audio", "slot", "snapshot", "presence", "asset", "ready", "reconnect"}
+    table = {"session", "inactive", "audio", "slot", "snapshot", "ready", "reconnect"}
+    for union, kinds in ((wc.GmEvent, gm), (wc.TableEvent, table)):
         tags = {get_args(member.model_fields["event"].annotation)[0] for member in get_args(get_args(union)[0])}
         assert tags == kinds
 
