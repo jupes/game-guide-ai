@@ -486,6 +486,59 @@ def test_embedding_scope_is_a_no_op_without_an_operation():
     usage_capture.end_embedding_scope(token)
 
 
+def test_observer_for_never_raises_when_the_recorder_cannot_be_built(monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="service.usage_capture")
+    monkeypatch.setattr(usage_capture, "operation_from_config", lambda config: _operation())
+    monkeypatch.setattr(usage_capture, "AttemptRecorder", _boom)
+
+    observer = usage_capture.observer_for({}, purpose="answer", alias="gpt-4o-mini")
+
+    assert isinstance(observer, NullAttemptObserver)
+    assert any("observer_for" in r.getMessage() for r in caplog.records)
+
+
+def test_run_config_with_operation_returns_the_config_untouched_on_failure(monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="service.usage_capture")
+    monkeypatch.setattr(usage_capture, "current_operation", _boom)
+    original = {"metadata": {"trace_marker": "v1u"}}
+
+    assert usage_capture.run_config_with_operation(original) is original
+    assert usage_capture.run_config_with_operation(None) is None
+    assert any("run_config_with_operation" in r.getMessage() for r in caplog.records)
+
+
+def test_run_config_with_operation_leaves_config_none_when_no_turn_is_in_flight():
+    """B8: with tracing off and no operation, graph.invoke must still be called
+    with config=None exactly as it is today."""
+    assert usage_capture.run_config_with_operation(None) is None
+
+
+def test_begin_embedding_scope_never_raises(monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="service.usage_capture")
+    monkeypatch.setattr(usage_capture, "operation_from_config", lambda config: _operation())
+    monkeypatch.setattr(usage_capture.retrieval, "set_embedding_sink", _boom)
+
+    assert usage_capture.begin_embedding_scope({}) is None
+    assert any("begin_embedding_scope" in r.getMessage() for r in caplog.records)
+
+
+def test_end_embedding_scope_never_raises_on_a_foreign_token(caplog):
+    caplog.set_level("WARNING", logger="service.usage_capture")
+
+    usage_capture.end_embedding_scope(object())
+
+    assert any("end_embedding_scope" in r.getMessage() for r in caplog.records)
+
+
+def test_record_embedding_never_raises_when_the_emitter_does():
+    recorder = usage_capture.AttemptRecorder(
+        _operation(), purpose=usage_capture.PURPOSE_EMBEDDING, alias=EMBED_MODEL,
+        emit=_RaisingEmitter(),
+    )
+    recorder.attempt_started()
+    recorder.record_embedding(input_tokens=7, error=None)
+
+
 # ---------------------------------------------------------------------------
 # AC 3 — the structuring reroute is behaviour-preserving on a bare response
 # ---------------------------------------------------------------------------
