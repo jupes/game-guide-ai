@@ -1,0 +1,141 @@
+/* ── ToolRail ────────────────────────────────────────────────────────────────
+   The five-tool rail above the composer (record §3, §10.2).
+
+   Wide:   one row with the `/ for all tools` hint.
+   Medium: one row; the hint hides below 900px.
+   Narrow: one line that scrolls sideways under edge fades, More pinned right,
+           no hint.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.gm-tool-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-2);
+  font-family: var(--aether-font-ui);
+}
+
+.gm-tool-rail__row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.gm-tool-rail__tools {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+}
+
+.gm-tool-rail__tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-height: var(--aether-touch-min);
+  padding: 0 14px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-chip);
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  cursor: pointer;
+  transition: background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+@media (hover: hover) {
+  .gm-tool-rail__tool:not([aria-disabled='true']):hover {
+    background: var(--md-sys-color-surface-container-high);
+  }
+}
+
+/* RAIL-10: a disabled pin keeps its place and reads as unavailable. It stays
+   focusable — `aria-disabled`, not `disabled` — so its reason can be heard. */
+.gm-tool-rail__tool[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.gm-tool-rail__tool:focus-visible,
+.gm-tool-rail__notice-action:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.gm-tool-rail__icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.gm-tool-rail__hint {
+  flex: 0 0 auto;
+  font-family: var(--aether-font-mono);
+  font-size: 11px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-tool-rail__notice {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-2);
+  margin: 0;
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-tool-rail__notice-action {
+  min-height: var(--aether-touch-min);
+  padding: 0 12px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-chip);
+  background: transparent;
+  color: var(--md-sys-color-primary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* Visually hidden, still announced — the reason behind an aria-disabled tool. */
+.gm-tool-rail__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+/* §10.2 — the hint hides below 900px. */
+@media (max-width: 899px) {
+  .gm-tool-rail__hint {
+    display: none;
+  }
+}
+
+/* §10.2 — narrow: one sideways-scrolling line under edge fades, More pinned. */
+@media (max-width: 767px) {
+  .gm-tool-rail__tools {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    /* The edge fades. Only the ALPHA of these stops is used — a mask paints no
+       colour — so this is not a palette value and needs no token. */
+    mask-image: linear-gradient(to right, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
+  }
+
+  .gm-tool-rail__tools::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-tool-rail__tool {
+    transition: none;
+  }
+}
