@@ -375,3 +375,30 @@ describe('va8 — no channel renders a remote subresource', () => {
     expect(container.querySelector('img')).toBeNull()
   })
 })
+
+// ── fu9 — an image that survives always carries alt text ─────────────────────
+
+describe('fu9 — surviving images carry alt text', () => {
+  it('gives a campaign-asset image that arrived with NO alt attribute alt=""', () => {
+    const img = md('<img src="/campaigns/c/assets/a">').querySelector('img')
+    // It is given a caption, not deleted: a portrait the GM asked for must not
+    // be destroyed for lack of one.
+    expect(img).not.toBeNull()
+    expect(img!.getAttribute('src')).toBe('/campaigns/c/assets/a')
+    expect(img!.getAttribute('alt')).toBe('')
+  })
+
+  it('every image that survives a mixed fixture carries an alt attribute', () => {
+    const c = md([
+      '![Ondrey](/campaigns/c/assets/one)',
+      '<img src="/campaigns/c/assets/two">',
+      '![](/campaigns/c/assets/three)',
+      '![sigil](https://example.test/pixel.png)',
+    ].join('\n\n'))
+    const images = [...c.querySelectorAll('img')]
+    // Positive control: "every image has alt" is true of no images at all.
+    expect(images).toHaveLength(3)
+    for (const image of images) expect(image.hasAttribute('alt')).toBe(true)
+    expect(images.map((image) => image.getAttribute('alt'))).toEqual(['Ondrey', '', ''])
+  })
+})

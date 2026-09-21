@@ -26,7 +26,7 @@
  * Nothing rendered here may fetch anything by itself:
  *
  *   - the one surviving image is a reference to a campaign asset this origin
- *     serves (MS-7);
+ *     serves (MS-7), and it always carries an alt attribute (fu9);
  *   - every other subresource element and attribute is dropped;
  *   - a `style` attribute is dropped when its value could fetch — see
  *     `styleMayFetch`;
@@ -137,7 +137,18 @@ function stripRemoteSubresources(host: HTMLElement): void {
   // An image is kept only when it points at a campaign asset this origin serves;
   // there is no half-measure, because an <img> with a stripped src is a broken icon.
   for (const image of host.querySelectorAll('img')) {
-    if (!isAssetReference(image.getAttribute('src'))) image.remove()
+    if (!isAssetReference(image.getAttribute('src'))) {
+      image.remove()
+      continue
+    }
+    // fu9: an image that survives always carries alt text. DOMPurify trims every
+    // attribute value, so `alt="   "` arrives here as `alt=""` and the only
+    // reachable alt-less case is a MISSING attribute — hence one condition and
+    // no trim guard, which would be a branch that cannot be taken. `marked`
+    // already emits `alt=""` for `![](…)`, so raw HTML is normalised to the same
+    // thing, and a portrait the GM asked for is not destroyed for lack of a
+    // caption.
+    if (!image.hasAttribute('alt')) image.setAttribute('alt', '')
   }
 }
 
