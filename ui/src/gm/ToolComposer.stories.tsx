@@ -82,6 +82,64 @@ export const TwoPresses: Story = {
   },
 }
 
+/**
+ * agent-forge-harness-27h — the menu's scroll region is reachable by keyboard.
+ *
+ * `/` lists all ten tools in a box capped at 40vh, so the last rows start below
+ * the fold. Focus never enters the menu, so the browser will not scroll it;
+ * before SlashMenu's scroll-into-view effect, End moved
+ * `aria-activedescendant` onto a row the GM could not see and could only reach
+ * with a pointer. Asserted against real layout — delete the effect and the
+ * bottom edge assertion fails.
+ */
+export const KeyboardReachesTheLastOption: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('textbox', { name: 'Message' }))
+    await userEvent.keyboard('/')
+
+    const list = canvas.getByRole('listbox', { name: 'Tools' })
+    const options = canvas.getAllByRole('option')
+    // The premise: the menu really does overflow its own box here. Without this
+    // the assertion below would pass for the wrong reason.
+    await expect(list.scrollHeight).toBeGreaterThan(list.clientHeight)
+
+    // Keyboard only — no click, no wheel, no scrollTop poke.
+    await userEvent.keyboard('{End}')
+
+    const last = options[options.length - 1]
+    await expect(last).toHaveAttribute('aria-selected', 'true')
+    const listBox = list.getBoundingClientRect()
+    const lastBox = last.getBoundingClientRect()
+    await expect(Math.round(lastBox.bottom)).toBeLessThanOrEqual(Math.round(listBox.bottom))
+    await expect(Math.round(lastBox.top)).toBeGreaterThanOrEqual(Math.round(listBox.top))
+
+    // …and back to the top the same way.
+    await userEvent.keyboard('{Home}')
+    const firstBox = options[0].getBoundingClientRect()
+    await expect(Math.round(firstBox.top)).toBeGreaterThanOrEqual(Math.round(list.getBoundingClientRect().top))
+  },
+}
+
+/**
+ * agent-forge-harness-27h — the composer declares the combobox it has always
+ * been, so assistive tech is told the popup exists and whether it is open.
+ */
+export const ComboboxIsDeclared: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const combobox = canvas.getByRole('combobox', { name: 'Message' })
+    await expect(combobox).toHaveAttribute('aria-expanded', 'false')
+
+    await userEvent.click(canvas.getByRole('textbox', { name: 'Message' }))
+    await userEvent.keyboard('/mo')
+
+    await expect(combobox).toHaveAttribute('aria-expanded', 'true')
+    const list = canvas.getByRole('listbox', { name: 'Tools' })
+    await expect(combobox).toHaveAttribute('aria-controls', list.id)
+  },
+}
+
 /** AE-3: a required tool with an empty brief shows its hint and sends nothing. */
 export const BriefRequired: Story = {
   args: { draft: '/npc ' },

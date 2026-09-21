@@ -65,6 +65,14 @@ const PAIRS: [string, string, string][] = [
   ['Spell chip fill (arcane)', '--aether-on-arcane-container', '--aether-arcane-container'],
   ['Rules chip fill (gold)', '--md-sys-color-on-secondary-container', '--md-sys-color-secondary-container'],
   ['GM chip fill (ember)', '--md-sys-color-on-primary-container', '--md-sys-color-primary-container'],
+  // agent-forge-harness-27h — the dice tones, added when the axe gate went from
+  // 'todo' to 'error'. Badge renders "NAT 20"/"NAT 1" at 11px bold and DiceRoll
+  // renders the pip value at 20px; both are <tone> on <tone>-container, and both
+  // are NORMAL text by WCAG's definition (bold only counts as large from
+  // 18.66px). nat20 measured 4.14:1 light and 4.49:1 dark before the fix — the
+  // dark one had no story covering it, so axe never saw it.
+  ['NAT 20 label / dice pip on its container', '--aether-nat20', '--aether-nat20-container'],
+  ['NAT 1 label / dice pip on its container', '--aether-nat1', '--aether-nat1-container'],
 ]
 
 describe('shell text tokens meet WCAG AA (4.5:1)', () => {

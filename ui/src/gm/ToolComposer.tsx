@@ -238,24 +238,42 @@ export function ToolComposer({
       )}
 
       <div className="gm-composer__row">
-        <TextField
-          multiline
-          autoGrow
-          rows={1}
-          fullWidth
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          placeholder={placeholder}
+        {/* The composer IS a combobox — it has had `aria-autocomplete="list"`,
+            an `aria-controls` popup and `aria-activedescendant` since 1kg.3.3 —
+            but it never said so, so assistive tech was never told a popup
+            existed or whether it was open. (SLASH-12's debounced live region
+            was the workaround for exactly that gap.) The role goes on a wrapper
+            rather than on the field because `role="combobox"` is not permitted
+            on `<textarea>`; that is the ARIA 1.1 shape, and it is the only one
+            available to a MULTILINE autocomplete. `aria-controls` is set only
+            while the menu is open, so it never dangles at a missing id. */}
+        <div
+          className="gm-composer__combobox"
+          role="combobox"
           aria-label="Message"
-          aria-autocomplete="list"
+          aria-expanded={menu.open}
+          aria-haspopup="listbox"
           {...(menu.open ? { 'aria-controls': menu.listboxId } : {})}
-          {...(menu.activeOptionId ? { 'aria-activedescendant': menu.activeOptionId } : {})}
-          aria-invalid={overLength || undefined}
-          ref={fieldRef}
-        />
+        >
+          <TextField
+            multiline
+            autoGrow
+            rows={1}
+            fullWidth
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            placeholder={placeholder}
+            aria-label="Message"
+            aria-autocomplete="list"
+            {...(menu.open ? { 'aria-controls': menu.listboxId } : {})}
+            {...(menu.activeOptionId ? { 'aria-activedescendant': menu.activeOptionId } : {})}
+            aria-invalid={overLength || undefined}
+            ref={fieldRef}
+          />
+        </div>
         <IconButton
           icon="send"
           // RAIL-3: the Send button says what it will run.
