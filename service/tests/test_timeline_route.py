@@ -17,11 +17,13 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
 
+from service import timeline
 from service.app import (
     app,
     get_message_store,
@@ -479,3 +481,217 @@ def test_the_route_is_absent_until_its_dependencies_are_overridden() -> None:
     """Every existing app test keeps passing untouched: without an override both
     dependencies answer `None` and nothing new runs on any other path."""
     assert TestClient(app).get(f"/conversations/{CONVERSATION}/timeline").status_code == 503
+
+
+# ── Carry items from the part-1 review ───────────────────────────────────────
+
+
+def test_a_cursors_entry_position_survives_every_page_boundary(world: _World, client) -> None:
+    """M-2. Slice B reads one source, so the cursor's `entries` slot is always
+    null in practice and a `read_page` that dropped it passes every other test
+    here. It is still the line slice A's stored-entry source rides on: lose it
+    at a page boundary and stored entries are re-read or skipped every time the
+    client turns a page. Pinned as behaviour, with a position this server would
+    never mint on its own, so nothing can reconstruct it by accident.
+    """
+    world.own()
+    for n in range(6):
+        world.say("user", f"q{n}")
+        world.say("assistant", f"a{n}")
+    held = timeline.Position(created_at=datetime(2021, 3, 4, 5, 6, 7, tzinfo=UTC), tiebreak=4242)
+    supplied = timeline.encode_cursor(timeline.TimelineCursor(entries=held, messages=None))
+
+    pages = 0
+    cursor: str | None = supplied
+    while cursor is not None:
+        page = _timeline(client, limit="2", cursor=cursor)
+        assert page.status_code == 200, page.text
+        cursor = page.json()["next_cursor"]
+        pages += 1
+        if cursor is not None:
+            assert timeline.decode_cursor(cursor).entries == held, (
+                "the entries position must be carried verbatim across the boundary"
+            )
+    assert pages > 1, "the walk must cross a page boundary for this to prove anything"
+
+
+def test_the_page_a_carried_entry_position_produces_is_the_page_without_one(
+    world: _World, client
+) -> None:
+    """The other half of M-2: carrying the slot changes nothing this slice
+    serves, so a future source can be added without moving a single item."""
+    world.own()
+    for n in range(5):
+        world.say("user", f"q{n}")
+        world.say("assistant", f"a{n}")
+    held = timeline.encode_cursor(timeline.TimelineCursor(
+        entries=timeline.Position(created_at=datetime(2021, 3, 4, 5, 6, 7, tzinfo=UTC), tiebreak=7),
+        messages=None,
+    ))
+    with_slot = _timeline(client, limit="3", cursor=held).json()
+    without = _timeline(client, limit="3").json()
+    assert with_slot["items"] == without["items"]
+
+
+# ── The route's own obligations, pinned rather than read off the source ──────
+
+
+class _Recorder:
+    """A store that answers exactly as the twin does and remembers the order
+    it was called in, and the unit of work it was handed each time."""
+
+    def __init__(self, inner: InMemoryTimelineStore) -> None:
+        self._inner = inner
+        self.calls: list[tuple[str, int]] = []
+
+    def owner_of(self, unit, conversation_id):
+        self.calls.append(("owner_of", id(unit)))
+        return self._inner.owner_of(unit, conversation_id)
+
+    def legacy_window(self, unit, conversation_id, *, before, limit_rows):
+        self.calls.append(("legacy_window", id(unit)))
+        return self._inner.legacy_window(
+            unit, conversation_id, before=before, limit_rows=limit_rows
+        )
+
+
+class _CountingDatabase:
+    """The twin's database, counting the transactions the route opens."""
+
+    def __init__(self, inner: InMemoryDatabase) -> None:
+        self._inner = inner
+        self.transactions = 0
+
+    def transaction(self):
+        self.transactions += 1
+        return self._inner.transaction()
+
+
+@pytest.fixture
+def recorded(world: _World):
+    store = _Recorder(world.timeline)
+    db = _CountingDatabase(world.db)
+    app.dependency_overrides[get_timeline_store] = lambda: store
+    app.dependency_overrides[get_timeline_database] = lambda: db
+    app.dependency_overrides[get_message_store] = lambda: world.messages
+    yield store, db, TestClient(app)
+    for dependency in (get_timeline_store, get_timeline_database, get_message_store):
+        app.dependency_overrides.pop(dependency, None)
+
+
+def test_ownership_is_resolved_before_the_read_and_in_the_same_unit_of_work(
+    world: _World, recorded
+) -> None:
+    """Carry item 1. `read_page` does not enforce ownership itself — `authorize`
+    is a separate call — so nothing in the read model stops a handler reading
+    first and checking afterwards. SEC-2 requires the resolution to happen in
+    the same unit as the read, and §8.1 requires the refusal to come before any
+    content is touched. Both are properties of the handler, so the handler is
+    what this test drives.
+    """
+    store, db, client = recorded
+    world.own()
+    world.say("user", "q")
+    world.say("assistant", "a")
+    assert _timeline(client).status_code == 200
+    assert [name for name, _ in store.calls] == ["owner_of", "legacy_window"], (
+        "the ownership check must come first"
+    )
+    assert len({unit for _, unit in store.calls}) == 1, (
+        "one unit of work, so ownership cannot be resolved against a different snapshot"
+    )
+    assert db.transactions == 1, "one transaction, and therefore one connection"
+
+
+@pytest.mark.parametrize("conversation_id", ["no-such-conversation", "never-claimed", "someone-elses"])
+def test_a_refused_conversation_is_never_read_at_all(
+    world: _World, recorded, conversation_id: str
+) -> None:
+    """The other half: a 404 costs exactly one ownership statement, and the
+    conversation's rows are not touched on the way to it."""
+    store, _db, client = recorded
+    world.own("someone-elses", STRANGER)
+    world.say("user", "not yours", conversation_id="someone-elses")
+    world.say("user", "unowned but written", conversation_id="never-claimed")
+    store.calls.clear()
+    assert _timeline(client, conversation_id).status_code == 404
+    assert [name for name, _ in store.calls] == ["owner_of"]
+
+
+def test_the_three_404s_are_indistinguishable_in_status_body_and_headers(
+    world: _World, client
+) -> None:
+    """SEC-3, restated over the whole response rather than over its body: a
+    header that differed would be an oracle just as surely as a message."""
+    answers = _bodies_for_404(world, client)
+    assert {a.status_code for a in answers} == {404}
+    assert len({a.text for a in answers}) == 1
+    varying = {"date", "content-length", "server"}
+    shapes = {
+        tuple(sorted((k.lower(), v) for k, v in a.headers.items() if k.lower() not in varying))
+        for a in answers
+    }
+    assert len(shapes) == 1, f"the 404 responses differ outside the body: {shapes}"
+
+
+def test_no_refusal_of_this_route_is_ever_logged_with_a_traceback(
+    world: _World, client, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Carry item 2. The refusal body is fixed-sentence and the refusal no
+    longer chains the value (`parse_page_query` raises `from None`), but a log
+    line carrying `exc_info` would print whatever chain there is. There is no
+    such line, and this is what keeps it that way.
+    """
+    world.own()
+    with caplog.at_level(logging.DEBUG):
+        for params in ({"limit": CANARY}, {"cursor": CANARY}, {"limit": "0"}):
+            assert _timeline(client, **params).status_code == 422
+        assert _timeline(client, "no-such-conversation").status_code == 404
+    # The service's own loggers. `httpx`'s DEBUG line repeats the request URL of
+    # every call the test client makes, for every route in the tree; that is the
+    # harness talking, not this handler, and SEC-23 is about what the server
+    # emits.
+    def ours() -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name.startswith("service")]
+
+    assert ours() == [], "a refused parameter or a refused conversation was logged at all"
+
+    # Not vacuous: the one path that does log — a database failure during the
+    # read — is driven here, and the same assertions are made of it.
+    class _Exploding:
+        def owner_of(self, unit, conversation_id):
+            import psycopg
+
+            raise psycopg.OperationalError(f"the server closed the connection: {CANARY}")
+
+        def legacy_window(self, unit, conversation_id, *, before, limit_rows):
+            raise AssertionError("never reached")
+
+    app.dependency_overrides[get_timeline_store] = lambda: _Exploding()
+    try:
+        with caplog.at_level(logging.DEBUG):
+            assert _timeline(client).status_code == 503
+    finally:
+        app.dependency_overrides[get_timeline_store] = lambda: world.timeline
+    logged = ours()
+    assert logged, "the 503 must leave a trace, or the assertions below are vacuous"
+    for record in logged:
+        assert record.exc_info is None, "logged with a traceback: the chain reaches the input"
+        assert CANARY not in record.getMessage()
+        assert all(CANARY not in str(arg) for arg in (record.args or ()))
+
+
+def test_the_chat_request_path_gains_no_statement_no_round_trip_and_no_branch() -> None:
+    """The owner's standing constraint, and R-1's sentence that it is not
+    relaxed. Slice B is the read side only: `/chat` writes no entry, so its
+    handler must not name the timeline at all — not a store, not a database,
+    not a helper. A diff can be read once; this fails the day someone adds one.
+    """
+    import inspect
+
+    from service import app as app_module
+
+    source = inspect.getsource(app_module.chat)
+    assert "timeline" not in source.lower()
+    signature = inspect.signature(app_module.chat)
+    assert not any("timeline" in name for name in signature.parameters)

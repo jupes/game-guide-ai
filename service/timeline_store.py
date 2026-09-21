@@ -160,7 +160,13 @@ class InMemoryTimelineStore:
     seeding parity: both worlds seed through `MessageStore`.
     """
 
-    def __init__(self, db: Any, *, messages: MessageStore) -> None:
+    def __init__(
+        # justification: an `InMemoryDatabase`, held and never used while this
+        # slice only reads, so the twin is not pinned to one concrete database
+        # class before slice A takes `shared_rows(db, "timeline_entries")` and
+        # gives it a real type.
+        self, db: Any, *, messages: MessageStore,
+    ) -> None:
         # `db` is accepted (and unused while this slice only reads) so that the
         # twin is constructed exactly as slice A will need it, when its rows
         # take `shared_rows(db, "timeline_entries")`.

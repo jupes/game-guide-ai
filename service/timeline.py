@@ -355,22 +355,37 @@ def parse_page_query(limit: str | None, cursor: str | None) -> tuple[int, Timeli
     if limit is not None:
         try:
             size = _LIMIT.validate_python(limit)
-        except ValidationError as exc:
-            raise ParameterRefused("limit") from exc
+        except ValidationError:
+            # `from None`, deliberately. `_LIMIT` and `_CURSOR` are bare
+            # `TypeAdapter`s and do not carry `_Contract`'s
+            # `hide_input_in_errors=True`, so their `ValidationError` prints
+            # `input_value=...`; a forged cursor position reaches
+            # `datetime.fromisoformat`, whose `ValueError` quotes the string.
+            # Chaining either would leave the caller's raw parameter one
+            # `__cause__` hop from any `exc_info=True` log line (SEC-20,
+            # SEC-23, R-12). Clearing the cause also suppresses `__context__`,
+            # so the formatted traceback holds the refusal and nothing else.
+            raise ParameterRefused("limit") from None
         if not 1 <= size <= TIMELINE_PAGE_MAX_ITEMS:
             raise ParameterRefused("limit")
     if cursor is None:
         return size, None
     try:
         return size, decode_cursor(_CURSOR.validate_python(cursor))
-    except (ValidationError, CursorUnreadable) as exc:
-        raise ParameterRefused("cursor") from exc
+    except (ValidationError, CursorUnreadable):
+        raise ParameterRefused("cursor") from None
 
 
 # ── Requirement 9: authorization, and the page ───────────────────────────────
 
 
-def authorize(store: TimelineStore, unit: Any, conversation_id: str, *, user_id: int) -> None:
+def authorize(
+    # justification: the unit is passed straight through to the store, which
+    # types it as `UnitOfWork`. Naming that type here would make this module
+    # import `service.db`, and requirement 10 keeps the read model free of the
+    # database layer — it holds no SQL and touches no connection.
+    store: TimelineStore, unit: Any, conversation_id: str, *, user_id: int,
+) -> None:
     """The caller owns this conversation, or one refusal for every other case.
 
     **Never a claim.** A conversation with no ownership row — 0001 declares
@@ -385,6 +400,8 @@ def authorize(store: TimelineStore, unit: Any, conversation_id: str, *, user_id:
 
 
 def read_page(
+    # justification: as in `authorize` above — the unit is opaque here and is
+    # only ever handed back to the store, which types it as `UnitOfWork`.
     store: TimelineStore, unit: Any, conversation_id: str, *,
     limit: int, cursor: TimelineCursor | None,
 ) -> TimelinePage:
