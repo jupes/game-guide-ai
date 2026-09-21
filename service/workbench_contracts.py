@@ -1967,9 +1967,15 @@ def _distinct_ids(ids: list[str]) -> list[str]:
 
 
 #: Owner decision O-3: a group display is **per-recipient copies of one
-#: disclosure**, so a Confirm names one or more participants. Bounded by the
-#: participants a session can hold (``PRESENCE_MAX_PARTICIPANTS``), because
-#: revealing to everyone is the largest list that can exist.
+#: disclosure**, so a Confirm names one or more participants. The addendum says
+#: only *bounded*; this is the **participant-roster** bound
+#: (``PRESENCE_MAX_PARTICIPANTS``), because revealing to everyone on the roster
+#: is the largest list that can exist. It is deliberately looser than SEC-10's
+#: 24 and RT-8's 12: those count *credentials* and *connections* — who can hold
+#: the link and who is connected right now — while a Confirm names identities,
+#: including participants who are not enrolled at all (AUD-10). A schema that
+#: bounded a Confirm by the credential count would refuse a legal reveal to a
+#: roster member who has not joined yet.
 ParticipantIds = Annotated[
     list[OpaqueId],
     Field(min_length=1, max_length=PRESENCE_MAX_PARTICIPANTS),

@@ -1470,6 +1470,13 @@ export function revealableFields(type: DocumentTypeId): Record<string, FieldKind
  * Since O-3 gave a **slot** its own shape (`RevealSlotRef`), an audience travels
  * in one place only — `RevealRequest.audience` — so it is a request shape, and
  * refuses a `__proto__` key like every other thing a client sends.
+ *
+ * The addendum says only "bounded". `PRESENCE_MAX_PARTICIPANTS` is the
+ * **roster** bound — revealing to everyone on it is the largest list that can
+ * exist — and is deliberately looser than SEC-10's 24 credentials and RT-8's 12
+ * connections, which count who holds the link and who is connected, not who may
+ * be named. A Confirm may name a participant who has not enrolled at all
+ * (AUD-10).
  */
 export const RevealAudienceSchema = refusingProtoKeys(
   z.discriminatedUnion('kind', [
