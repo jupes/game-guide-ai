@@ -334,6 +334,63 @@ session and participant holds). The value is checked — from one millisecond to
 measures this setting in milliseconds, so an unchecked parameter could switch
 off the very bound it exists to raise.
 
+### Documents and their versions
+
+`0007_document_schema.sql` adds two tables and `service/document_store.py` the
+store over them (`1kg.5.1`). **No routes read either yet** — those are
+`1kg.5.2`'s.
+
+`campaign.documents` holds one document's **live** content as flat JSON, one
+value per field key its type declares, plus the two counters. `campaign.document_versions`
+holds its history. There is deliberately **no `campaign_id` on the version
+table**: every statement against it joins through `campaign.documents` and names
+the campaign in the same statement, so a version of another campaign's document
+is indistinguishable from one that does not exist (SEC-2).
+
+**The write revision is not the version number.** `write_revision` is the
+concurrency token: every committed write advances it by one, and `field_revisions`
+records which write last touched each key, so a conflict is decided **per field**
+— a write is refused only when a key it *touches* has moved since its base.
+A stale write touching untouched fields is **rebased by the store**: the patch is
+merged over the row's current content under the row lock and the merged document
+is re-validated before the commit, so nothing is left to the caller. A version
+`number` is history: consecutive from 1, never reused, never renumbered, and the
+current version is `MAX(number)` rather than a pointer column that could disagree
+with the rows it names.
+
+**Sealed means immutable; open means staging.** A burst of GM autosaves
+accumulates into **one** open working version — `sealed_at IS NULL`, enforced by
+a partial unique index — which is rewritten in place, so a document does not grow
+a whole-document snapshot per pause. It is sealed by another author's write, by
+ten minutes of idleness (`SEAL_IDLE_S`), or by an explicit `seal(...)` that a
+route calls. Once sealed a version never changes: every `UPDATE` in the store
+carries `AND sealed_at IS NULL`, and the module runs no `DELETE` against that
+table at all. Every mutator takes `now`, so none of this needs a timer, a job or
+a background sealer.
+
+**Search folds in the application, as the alias does.** `name_key` and
+`search_key` are computed by `service/document_store._fold` — control characters
+to spaces, NFKC, `casefold`, whitespace collapsed — and stored, so PostgreSQL's
+`lower()` and Python's cannot disagree about a final sigma or a dotted capital I.
+A search matches `name`, `qualifier` and `tags` only, by `strpos` over the
+already-folded column (never `ILIKE`, `lower()` or `LIKE`, which would need `%`
+and `_` escaped in the term). `search_key` is **truncated** at 8,000 folded
+characters, which is a known limit: a document with very many long tags stops
+matching on its later ones, silently. There is **no dedicated search index in
+v1** — the four campaign-scoped partial indexes bound the scan and pilot
+campaigns hold hundreds of documents. Revisit it when one campaign passes about
+5,000 documents; adding a `tsvector` column with a GIN index is a later pure
+expansion that nothing here precludes.
+
+**The character-sheet link** is one nullable `linked_participant_id` column with
+a partial unique index: a sheet links to at most one participant and a
+participant to at most one sheet (AUD-13, AUD-15). It is `ON DELETE SET NULL`
+rather than `CASCADE`, which would destroy the sheet that AUD-16 says Remove
+keeps; participants are marked removed and never deleted, so it never fires in
+the application. **Nothing about visibility is stored on a document or a version**
+(ED-6): a reveal's pin is `1kg.7.1`'s slot row and references
+`(document_id, number)` from here.
+
 ## Running it
 
 ```bash
