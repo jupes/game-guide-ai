@@ -68,3 +68,22 @@ export const Sizes: Story = {
     </div>
   ),
 }
+
+/**
+ * agent-forge-harness-27h — the crit tones in Dark Tavern.
+ *
+ * The pip value is 20px normal text on the tone's container. The nat20 pair was
+ * 4.14:1 light (which the axe gate caught the moment it was turned on) and
+ * 4.49:1 dark — equally under AA, and invisible only because nothing rendered
+ * the dark theme. Both are gated here now.
+ */
+export const DarkCrits: Story = {
+  globals: { theme: 'dark' },
+  render: () => (
+    <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+      <DiceRoll die={20} value={20} label="Attack roll" />
+      <DiceRoll die={20} value={1} label="Saving throw" />
+      <DiceRoll die={20} value={14} modifier={3} label="Stealth check" />
+    </div>
+  ),
+}

@@ -19,9 +19,30 @@ const COLORS_CSS = join(dirname(fileURLToPath(import.meta.url)), 'tokens', 'colo
 
 type Tokens = Record<string, string>
 
+/**
+ * A stylesheet with its comments removed.
+ *
+ * agent-forge-harness-27h, rework 1 — `tokenIntegrity.test.ts` grew this same
+ * helper in this branch, for this same reason, and this file was left without
+ * it. Everything below reads token VALUES; a token name and hex quoted in a
+ * comment to explain what a value replaced is prose, and parsing it as a
+ * declaration makes this guard measure a colour nobody ships. `parseBlock`
+ * takes the LAST match for a token, so a note written in the obvious
+ * `--aether-nat20: #1f7a3d` form anywhere BELOW the real declaration silently
+ * replaces it — and the test then passes or fails on the old value. The two
+ * "was #…" notes this branch added to colors.css sit above their declarations
+ * and are phrased in prose, so they happen not to trip it; that is luck, not
+ * design, and this branch already wrote the same helper for the same reason in
+ * `shell/tokenIntegrity.test.ts`.
+ */
+function stripComments(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
 /** Pull `--md-sys-color-*` / `--aether-*: #hex;` pairs out of a single CSS rule
  * block. The `(?:…)` is non-capturing so m[1]=token name, m[2]=hex stay put. */
-function parseBlock(css: string, selector: RegExp): Tokens {
+function parseBlock(rawCss: string, selector: RegExp): Tokens {
+  const css = stripComments(rawCss)
   const block = css.match(selector)?.[1] ?? ''
   const tokens: Tokens = {}
   for (const m of block.matchAll(/(--(?:md-sys-color|aether)-[a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{3,8})/g)) {
@@ -65,6 +86,14 @@ const PAIRS: [string, string, string][] = [
   ['Spell chip fill (arcane)', '--aether-on-arcane-container', '--aether-arcane-container'],
   ['Rules chip fill (gold)', '--md-sys-color-on-secondary-container', '--md-sys-color-secondary-container'],
   ['GM chip fill (ember)', '--md-sys-color-on-primary-container', '--md-sys-color-primary-container'],
+  // agent-forge-harness-27h — the dice tones, added when the axe gate went from
+  // 'todo' to 'error'. Badge renders "NAT 20"/"NAT 1" at 11px bold and DiceRoll
+  // renders the pip value at 20px; both are <tone> on <tone>-container, and both
+  // are NORMAL text by WCAG's definition (bold only counts as large from
+  // 18.66px). nat20 measured 4.14:1 light and 4.49:1 dark before the fix — the
+  // dark one had no story covering it, so axe never saw it.
+  ['NAT 20 label / dice pip on its container', '--aether-nat20', '--aether-nat20-container'],
+  ['NAT 1 label / dice pip on its container', '--aether-nat1', '--aether-nat1-container'],
 ]
 
 describe('shell text tokens meet WCAG AA (4.5:1)', () => {

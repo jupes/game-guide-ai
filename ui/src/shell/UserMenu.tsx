@@ -54,7 +54,14 @@ export function UserMenu(): React.JSX.Element {
       </button>
 
       {open && (
-        <div role="menu" className="user-menu__popover">
+        /* agent-forge-harness-27h: `role="menu"` may contain ONLY menu items
+           (ARIA `aria-required-children`; axe rates it serious). The role row
+           is a read-only status display and the sign-out error is an alert —
+           neither is a command — so the menu element now wraps just the two
+           menuitems and they sit beside it inside the popover. Nothing moves
+           on screen: the popover is still one flex column in the same order.
+           The first story to open this popover found it. */
+        <div className="user-menu__popover">
           <div className="user-menu__item user-menu__role">
             <span id="user-menu-role-label">Dungeon Master</span>
             {/* Read-only (x5bz.2): role is server-authoritative from the
@@ -66,22 +73,24 @@ export function UserMenu(): React.JSX.Element {
               ariaLabel="Dungeon Master role"
             />
           </div>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={handleOpenProfile}
-            className="user-menu__item"
-          >
-            Profile
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={handleSignOut}
-            className="user-menu__item"
-          >
-            Sign out
-          </button>
+          <div role="menu" aria-label="User menu" className="user-menu__items">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={handleOpenProfile}
+              className="user-menu__item"
+            >
+              Profile
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={handleSignOut}
+              className="user-menu__item"
+            >
+              Sign out
+            </button>
+          </div>
           {signOutError && (
             <p role="alert" className="user-menu__item user-menu__error">
               {signOutError}

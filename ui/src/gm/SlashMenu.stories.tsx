@@ -1,17 +1,42 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
+import * as React from 'react'
+
 import { menuOptions, toolAvailability } from './registry'
 import { SlashMenu } from './SlashMenu'
 
 const ALL_ENABLED = toolAvailability({ image_generation: true, audio_cues: true })
 const DEFAULTS = toolAvailability({ image_generation: false, audio_cues: false })
 
+/**
+ * The composer the menu belongs to, reduced to its ARIA.
+ *
+ * The menu's own props say what this is for — `id` is documented as "the
+ * composer's `aria-controls` target" and `optionId` feeds
+ * `aria-activedescendant` — so a story that renders the listbox on its own is
+ * rendering half a widget: a popup with nothing declaring that it is a popup,
+ * or that it is open. This mirrors ToolComposer's real markup (the role sits on
+ * a wrapper because `role="combobox"` is not allowed on `<textarea>`), which is
+ * also what lets axe judge the listbox as the combobox popup it is.
+ */
+function ComboboxHost({ children }: { children: React.ReactNode }): React.JSX.Element {
+  return (
+    <div>
+      {children}
+      <div role="combobox" aria-label="Message" aria-expanded aria-haspopup="listbox" aria-controls="slash-menu">
+        <textarea aria-label="Message" defaultValue="/" rows={1} />
+      </div>
+    </div>
+  )
+}
+
 const meta = {
   title: 'GM/SlashMenu',
   component: SlashMenu,
   tags: ['autodocs'],
   parameters: { layout: 'padded' },
+  decorators: [(Story: React.ComponentType) => <ComboboxHost><Story /></ComboboxHost>],
   args: {
     id: 'slash-menu',
     token: '',

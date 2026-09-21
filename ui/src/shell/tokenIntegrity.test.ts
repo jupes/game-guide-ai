@@ -34,12 +34,25 @@ function cssFiles(dir: string): string[] {
   return out
 }
 
+/**
+ * A stylesheet with its comments removed. Every check below reads CSS VALUES;
+ * a token name or a hex quoted in a comment — to explain what a rule replaced,
+ * say — is prose, and counting it as a declaration would make writing that
+ * explanation fail the build.
+ */
+function stripComments(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
+function readCss(file: string): string {
+  return stripComments(readFileSync(file, 'utf8'))
+}
+
 /** Custom properties DEFINED anywhere in the design system (`--x: value;`). */
 function definedTokens(): Set<string> {
   const defs = new Set<string>()
   for (const file of cssFiles(SRC_DIR)) {
-    const css = readFileSync(file, 'utf8')
-    for (const m of css.matchAll(/(--[a-z0-9-]+)\s*:/gi)) defs.add(m[1])
+    for (const m of readCss(file).matchAll(/(--[a-z0-9-]+)\s*:/gi)) defs.add(m[1])
   }
   return defs
 }
@@ -54,15 +67,51 @@ function noFallbackRefs(css: string): string[] {
   return refs
 }
 
+/** Every `var(--token …)` reference, fallback or not. */
+function allRefs(css: string): string[] {
+  const refs: string[] = []
+  for (const m of css.matchAll(/var\(\s*(--[a-z0-9-]+)\s*[,)]/gi)) refs.push(m[1])
+  return refs
+}
+
 describe('shell CSS token integrity', () => {
   const defined = definedTokens()
 
   for (const file of cssFiles(SHELL_DIR)) {
     const name = file.slice(file.indexOf('shell'))
     it(`${name} references only defined custom properties`, () => {
-      const undefinedRefs = [...new Set(noFallbackRefs(readFileSync(file, 'utf8')))]
+      const undefinedRefs = [...new Set(noFallbackRefs(readCss(file)))]
         .filter((token) => !defined.has(token))
       expect(undefinedRefs, `${name} uses undefined tokens: ${undefinedRefs.join(', ')}`).toEqual([])
+    })
+  }
+})
+
+/**
+ * agent-forge-harness-27h — the hole the two guards above left between them.
+ *
+ * A fallback is only tolerant if the token exists: `var(--defined, 16px)` never
+ * uses its fallback, so excluding it from the check above is right. But
+ * `var(--not-a-token, #b3261e)` resolves to the literal, ALWAYS, in every
+ * theme — and the hardcoded-colour guard below deliberately strips `var(…)`
+ * before it looks, so the literal is invisible to that one too. Between them, a
+ * light-theme red sat on the sign-in form's error message and read at 2.62:1 on
+ * the dark tavern surface until a dark story was written for it.
+ *
+ * So: a `var()` whose token is undefined is a failure, fallback or not.
+ */
+describe('a var() fallback never stands in for a missing token', () => {
+  const defined = definedTokens()
+
+  for (const file of cssFiles(SRC_DIR)) {
+    const name = file.split(/[\\/]/).slice(-2).join('/')
+    it(`${name} names only tokens that exist`, () => {
+      const missing = [...new Set(allRefs(readCss(file)))]
+        .filter((token) => !defined.has(token))
+      expect(
+        missing,
+        `${name} falls back to a literal for undefined tokens: ${missing.join(', ')}`,
+      ).toEqual([])
     })
   }
 })
@@ -92,7 +141,7 @@ describe('component CSS themes via tokens, not hardcoded colors (swe1.11)', () =
   for (const file of componentCssFiles()) {
     const name = file.split(/[\\/]/).slice(-2).join('/')
     it(`${name} has no hardcoded color literals`, () => {
-      const literals = colorLiterals(readFileSync(file, 'utf8'))
+      const literals = colorLiterals(readCss(file))
       expect(literals, `${name} hardcodes colors: ${literals.join(', ')}`).toEqual([])
     })
   }

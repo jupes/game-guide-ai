@@ -1,0 +1,190 @@
+/**
+ * WorkspaceShell — the whole signed-in workspace: TopBar, AppHeader, LeftNav
+ * and ChatPane assembled.
+ *
+ * Nothing inside takes props, so the seam is the network. One stub answers
+ * every endpoint the workspace reaches for on mount (`/models`, a
+ * conversation's messages, its attachments) and `/chat` when a turn is sent.
+ */
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, userEvent, within } from 'storybook/test'
+
+import { json, stubFetch, withShell } from '../../.storybook/shellHarness'
+import { WorkspaceShell } from './WorkspaceShell'
+
+const CATALOG = {
+  default: 'auto',
+  models: [
+    { id: 'auto', display_name: 'Automatic' },
+    { id: 'sonnet', display_name: 'Sonnet — balanced' },
+  ],
+}
+
+const MESSAGES = [
+  {
+    id: 1,
+    role: 'user',
+    content: 'What does a shield spell stop?',
+    mode: 'sage',
+    created_at: '2026-09-18T19:02:00Z',
+  },
+  {
+    id: 2,
+    role: 'assistant',
+    content: 'It stops the triggering attack, and *magic missile* outright.',
+    mode: 'sage',
+    created_at: '2026-09-18T19:02:04Z',
+  },
+]
+
+/**
+ * Answers everything the workspace asks for on mount, plus a chat turn.
+ * `conversation_id` is not optional decoration: the client validates both
+ * bodies with zod, and a response without it degrades to "unreadable".
+ */
+function workspaceApi(messages: unknown[] = MESSAGES) {
+  return stubFetch((url) => {
+    if (url.includes('/models')) return json(CATALOG)
+    if (url.includes('/messages')) return json({ conversation_id: 'story', messages })
+    if (url.includes('/attachments')) return json({ conversation_id: 'story', attachments: [] })
+    if (url.includes('/chat')) {
+      return json({ answer: 'A reaction, and worth the slot.', sources: [], answerable: true })
+    }
+    return json({ detail: `unrouted: ${url}` }, 404)
+  })
+}
+
+const meta = {
+  title: 'Shell/WorkspaceShell',
+  component: WorkspaceShell,
+  tags: ['autodocs'],
+  parameters: { layout: 'fullscreen' },
+  beforeEach: workspaceApi(),
+  decorators: [
+    withShell({
+      conversations: [
+        { mode: 'sage', firstPrompt: 'Shield spell: what does it stop?' },
+        { mode: 'sage', firstPrompt: 'Grappling, briefly' },
+      ],
+      selected: 0,
+    }),
+  ],
+} satisfies Meta<typeof WorkspaceShell>
+
+export default meta
+type Story = StoryObj<typeof meta>
+
+/** The workspace as a DM opens it: a conversation selected and recalled. */
+export const Playground: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(await canvas.findByText(/magic missile/)).toBeInTheDocument()
+    // Brand lives once, in the TopBar (swe1.10) — never duplicated in the nav.
+    await expect(canvas.getAllByText('Aetheril')).toHaveLength(1)
+  },
+}
+
+/** A fresh account: no conversations, and the channel's own empty prompt. */
+export const NothingYet: Story = {
+  decorators: [withShell()],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(await canvas.findByText('Ask the Sage…')).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: 'New conversation' })).toBeEnabled()
+  },
+}
+
+/** History recall failed for the open conversation. The workspace still works. */
+export const HistoryUnavailable: Story = {
+  beforeEach: stubFetch((url) => {
+    if (url.includes('/models')) return json(CATALOG)
+    if (url.includes('/messages')) return json({ detail: 'nope' }, 503)
+    if (url.includes('/attachments')) return json({ conversation_id: 'story', attachments: [] })
+    return json({ detail: 'unrouted' }, 404)
+  }),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(await canvas.findByRole('textbox')).toBeEnabled()
+  },
+}
+
+/** A player: three channels, and no GM chip anywhere in the shell. */
+export const Player: Story = {
+  decorators: [
+    withShell({ role: 'player', conversations: [{ mode: 'sage' }], selected: 0 }),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.queryByRole('button', { name: 'GM' })).not.toBeInTheDocument()
+  },
+}
+
+/**
+ * Keyboard only, across the whole shell: open the second conversation from the
+ * nav with Enter and watch the TopBar title follow.
+ */
+export const ConversationOpenedByKeyboard: Story = {
+  beforeEach: workspaceApi([]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const second = await canvas.findByRole('button', { name: 'Grappling, briefly' })
+    second.focus()
+    await userEvent.keyboard('{Enter}')
+    await expect(second).toHaveAttribute('aria-pressed', 'true')
+    await expect(
+      canvasElement.querySelector('.top-bar__conversation-title'),
+    ).toHaveTextContent('Grappling, briefly')
+  },
+}
+
+/**
+ * agent-forge-harness-27h, rework 1 — the assembled shell's tab order, written
+ * down.
+ *
+ * ChatPane's transcript became a tab stop in this branch: it is the scroller,
+ * and `scrollable-region-focusable` (WCAG 2.1.1) wants a keyboard user to be
+ * able to scroll back through their own conversation. That is a NEW stop on
+ * every keyboard user's way to the composer, and it is UNCONDITIONAL — an
+ * empty or two-line thread gets it too, where there is nothing to scroll, so
+ * it is a dead stop there. That is a deliberate trade (measuring overflow to
+ * decide would mean a ResizeObserver and a re-render on every message, for a
+ * stop that is correct whenever it matters), but until now nothing in the
+ * repository measured the shell's tab order at all, so the stop existed in no
+ * test and any later change to it would have been invisible.
+ *
+ * This walks the whole shell with real Tab presses and records what it finds.
+ */
+export const ShellTabOrder: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await canvas.findByText(/magic missile/)
+
+    const transcript = canvas.getByRole('region', { name: 'Conversation' })
+    const composer = canvas.getByRole('textbox')
+
+    // Walk until focus leaves the shell or wraps round to something already
+    // seen — a bounded loop, because Tab cycles within the document.
+    const order: Element[] = []
+    for (let i = 0; i < 40; i += 1) {
+      await userEvent.tab()
+      const el = document.activeElement
+      if (!el || !canvasElement.contains(el) || order.includes(el)) break
+      order.push(el)
+    }
+
+    await expect(order).toContain(transcript)
+    await expect(order).toContain(composer)
+    // The transcript comes first: you tab past the conversation into the box
+    // you answer it in, not the other way round.
+    await expect(order.indexOf(transcript)).toBeLessThan(order.indexOf(composer))
+  },
+}
+
+export const Dark: Story = {
+  globals: { theme: 'dark' },
+}
+
+export const DarkNothingYet: Story = {
+  globals: { theme: 'dark' },
+  decorators: [withShell()],
+}
