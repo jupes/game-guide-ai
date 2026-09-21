@@ -64,13 +64,14 @@ test('production app preserves a conversation and emits bounded performance evid
     })
   await expect(page.getByText('session-notes.txt', { exact: true })).toBeVisible()
 
-  const screenshotDirectory = path.resolve(
-    '..',
-    'docs',
-    'forge',
-    'reports',
-    'assets',
-  )
+  // Under `e2e-results/` (gitignored, and what CI uploads as an artifact) —
+  // NOT under `docs/forge/reports/assets/`, where these two names are TRACKED
+  // files referenced by a shipped report. Running the suite used to rewrite
+  // them every time, so `git status` was dirty after a test run and the report
+  // silently re-pointed at whatever the last local run happened to render.
+  // Promoting a run's screenshots into a report is a deliberate copy, not a
+  // side effect of `bun run test:e2e`.
+  const screenshotDirectory = path.resolve('e2e-results', 'screenshots')
   await fs.mkdir(screenshotDirectory, { recursive: true })
   await page.screenshot({
     path: path.join(screenshotDirectory, 'eiio-e2e-light.png'),
@@ -96,9 +97,18 @@ test('production app preserves a conversation and emits bounded performance evid
     budgets,
     path.resolve('e2e-results'),
   )
+  // The reported set is pinned to the budget file FIRST. `every()` is vacuously
+  // true over an empty object, so a metric quietly dropped from
+  // performance.ts's report would shrink the gate while leaving it green —
+  // the same "assertion that cannot fail" shape as the dialog handler in
+  // workspace.spec.ts. Naming the over-budget metrics rather than asserting
+  // `true` also means a failure says which one blew the budget.
+  expect(Object.keys(report.metrics).sort()).toEqual(Object.keys(budgets).sort())
   expect(
-    Object.values(report.metrics).every((metric) => metric.passed),
-  ).toBe(true)
+    Object.entries(report.metrics)
+      .filter(([, metric]) => !metric.passed)
+      .map(([name]) => name),
+  ).toEqual([])
   await expect(
     fs.access(path.resolve('e2e-results', 'performance.json')),
   ).resolves.toBeUndefined()
