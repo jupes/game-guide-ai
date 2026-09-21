@@ -9,6 +9,7 @@
  * a guard that is missing from the next spec somebody adds.
  */
 
+import { randomUUID } from 'node:crypto'
 import { expect, test as base, type Page } from '@playwright/test'
 import { APP_ORIGIN, BASE_URL } from './stack'
 
@@ -27,13 +28,30 @@ const TESTER_PASSWORD = 'e2e-password-123'
 const ACCOUNT_SLOTS = [0, 1] as const
 
 /**
- * Invites are single-use and seeded by name in service/e2e_app.py, so the token
- * has to be predictable AND unused. `workerIndex` is unique per worker PROCESS
- * — a worker that is restarted after a failure gets a fresh one — which is
- * exactly the grain at which this fixture runs.
+ * A nonce per worker PROCESS, which is the grain this fixture runs at.
+ *
+ * Both an account's email and its invite have to be unused, and neither
+ * `workerIndex` nor the retry count gives that. `workerIndex` restarts at 0 on
+ * every invocation, so the second `E2E_BASE_URL=… bun run test:e2e` against a
+ * stack that is already up found `e2e-account-0-0@example.com` registered and
+ * its invite spent, and failed at provisioning with a 400 — a fixture fault
+ * that reads exactly like a product one. It also collides with itself: a worker
+ * restarted after a failure is issued a fresh index, so a run with enough
+ * failures walked past whatever fixed range the service had seeded.
+ *
+ * A random nonce has neither ceiling. The service mints any `e2e-invite-…`
+ * token on first sight (service/e2e_app.py, `E2EInviteStore`), so the token no
+ * longer has to appear in a list somebody remembered to widen — but it is still
+ * single-use once redeemed.
  */
-function inviteToken(workerIndex: number, slot: number): string {
-  return `e2e-invite-account-${workerIndex}-${slot}`
+const WORKER_NONCE = randomUUID().slice(0, 8)
+
+function inviteToken(slot: number): string {
+  return `e2e-invite-account-${WORKER_NONCE}-${slot}`
+}
+
+function accountEmail(slot: number): string {
+  return `e2e-account-${WORKER_NONCE}-${slot}@example.com`
 }
 
 // ── Guards ───────────────────────────────────────────────────────────────────
@@ -113,7 +131,7 @@ export const test = base.extend<Guards, Accounts>({
   ],
 
   accounts: [
-    async ({ playwright }, use, workerInfo) => {
+    async ({ playwright }, use) => {
       // Provisioned over the API, not through the UI: these accounts exist so
       // the flows BELOW sign-up have something to sign in as. Creating them
       // through the form would spend an extra invite per test and make every
@@ -123,19 +141,19 @@ export const test = base.extend<Guards, Accounts>({
       const created: TesterAccount[] = []
       for (const slot of ACCOUNT_SLOTS) {
         const account: TesterAccount = {
-          email: `e2e-account-${workerInfo.workerIndex}-${slot}@example.com`,
+          email: accountEmail(slot),
           password: TESTER_PASSWORD,
         }
         const response = await request.post('/auth/signup', {
           data: {
             email: account.email,
             password: account.password,
-            invite: inviteToken(workerInfo.workerIndex, slot),
+            invite: inviteToken(slot),
           },
         })
         expect(
           response.status(),
-          `seeding ${account.email} (invite ${inviteToken(workerInfo.workerIndex, slot)})`,
+          `seeding ${account.email} (invite ${inviteToken(slot)})`,
         ).toBe(200)
         created.push(account)
       }

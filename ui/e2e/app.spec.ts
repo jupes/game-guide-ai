@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from './fixtures'
@@ -10,12 +11,17 @@ import {
 
 test('production app preserves a conversation and emits bounded performance evidence', async ({
   page,
-}, testInfo) => {
-  // Invites are single-use and emails unique, so each attempt needs its own —
-  // otherwise a retry fails at account creation instead of retrying the test.
-  // Tokens are seeded by service/e2e_app.py (E2E_INVITE_TOKENS).
-  const invite = `e2e-invite-token-${testInfo.retry}`
-  const testerEmail = `e2e-tester-${testInfo.retry}@example.com`
+}) => {
+  // Invites are single-use and emails unique, so each ATTEMPT needs its own —
+  // otherwise a retry fails at account creation instead of retrying the test —
+  // and so does each RUN, or a second `bun run test:e2e` against a stack that
+  // is already up fails on the identity the first one registered. `retry`
+  // supplies neither; a nonce supplies both. service/e2e_app.py mints any
+  // `e2e-invite-…` token on first sight, so it does not have to be seeded by
+  // name (it is still single-use once redeemed).
+  const nonce = randomUUID().slice(0, 8)
+  const invite = `e2e-invite-token-${nonce}`
+  const testerEmail = `e2e-tester-${nonce}@example.com`
   await page.emulateMedia({ reducedMotion: 'reduce' })
   // The font guard that used to live here is now the `guards` fixture, which
   // watches EVERY origin (not just Google Fonts) on every spec in this suite.
