@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import {
   collectPerformanceMetrics,
   installPerformanceObservers,
@@ -16,13 +16,9 @@ test('production app preserves a conversation and emits bounded performance evid
   // Tokens are seeded by service/e2e_app.py (E2E_INVITE_TOKENS).
   const invite = `e2e-invite-token-${testInfo.retry}`
   const testerEmail = `e2e-tester-${testInfo.retry}@example.com`
-  const externalFontRequests: string[] = []
   await page.emulateMedia({ reducedMotion: 'reduce' })
-  page.on('request', (request) => {
-    if (/fonts\.(googleapis|gstatic)\.com/.test(request.url())) {
-      externalFontRequests.push(request.url())
-    }
-  })
+  // The font guard that used to live here is now the `guards` fixture, which
+  // watches EVERY origin (not just Google Fonts) on every spec in this suite.
   await installPerformanceObservers(page)
   // Access is invite-gated (x5bz.2): land on the invite deep-link and create the
   // account, exactly as a real tester does. The token is seeded by
@@ -61,7 +57,6 @@ test('production app preserves a conversation and emits bounded performance evid
       buffer: Buffer.from('The party carries a silver key.'),
     })
   await expect(page.getByText('session-notes.txt', { exact: true })).toBeVisible()
-  expect(externalFontRequests).toEqual([])
 
   const screenshotDirectory = path.resolve(
     '..',

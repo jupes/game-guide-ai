@@ -25,6 +25,18 @@ from .models import ChatMode, ChatResponse
 # creation rather than actually retrying the test.
 E2E_INVITE_TOKENS = [f"e2e-invite-token-{attempt}" for attempt in range(5)]
 
+# Kept in sync with ui/e2e/fixtures.ts, which redeems these over the API to
+# provision the accounts the signed-in specs sign in as. Two per Playwright
+# worker — the second account is what proves a new sign-in does not inherit the
+# previous one's conversations — and a worker restarted after a failure is
+# issued a fresh workerIndex, so the token is keyed by (worker, slot) rather
+# than by attempt.
+E2E_ACCOUNT_INVITE_TOKENS = [
+    f"e2e-invite-account-{worker}-{slot}"
+    for worker in range(5)
+    for slot in range(2)
+]
+
 
 class DeterministicRagService:
     def answer(
@@ -52,7 +64,7 @@ async def e2e_lifespan(application: FastAPI):
 message_store = InMemoryMessageStore()
 auth_store = InMemoryAuthStore()
 # DM role so every channel (incl. GM) is reachable in the browser test.
-for _token in E2E_INVITE_TOKENS:
+for _token in (*E2E_INVITE_TOKENS, *E2E_ACCOUNT_INVITE_TOKENS):
     auth_store.seed_invite(_token, role="dm")
 
 app.router.lifespan_context = e2e_lifespan
