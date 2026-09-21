@@ -96,6 +96,13 @@ function ShellHarness({
     return { store: created, ids: providedStore ? [] : seed(conversations, created) }
   })
 
+  // PARALLEL IMPLEMENTATION of `shell/AppNav.tsx`'s state machine — not a
+  // wrapper around AppNavProvider, because a story has to be able to START at
+  // any screen/mode/conversation rather than drive the UI there first.
+  // Nothing keeps the two in step: a transition added to AppNavProvider has to
+  // be added here too, or the stories exercise a shell the product no longer
+  // has (agent-forge-harness-27h review, note F8). AppNav.tsx carries the
+  // matching pointer back to this file.
   const [screen, setScreen] = React.useState<Screen>(initialScreen)
   const [mode, setModeState] = React.useState<ChatMode>(initialMode)
   const [conversationId, setConversationIdState] = React.useState<string | null>(

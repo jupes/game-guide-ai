@@ -19,9 +19,30 @@ const COLORS_CSS = join(dirname(fileURLToPath(import.meta.url)), 'tokens', 'colo
 
 type Tokens = Record<string, string>
 
+/**
+ * A stylesheet with its comments removed.
+ *
+ * agent-forge-harness-27h, rework 1 — `tokenIntegrity.test.ts` grew this same
+ * helper in this branch, for this same reason, and this file was left without
+ * it. Everything below reads token VALUES; a token name and hex quoted in a
+ * comment to explain what a value replaced is prose, and parsing it as a
+ * declaration makes this guard measure a colour nobody ships. `parseBlock`
+ * takes the LAST match for a token, so a note written in the obvious
+ * `--aether-nat20: #1f7a3d` form anywhere BELOW the real declaration silently
+ * replaces it — and the test then passes or fails on the old value. The two
+ * "was #…" notes this branch added to colors.css sit above their declarations
+ * and are phrased in prose, so they happen not to trip it; that is luck, not
+ * design, and this branch already wrote the same helper for the same reason in
+ * `shell/tokenIntegrity.test.ts`.
+ */
+function stripComments(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
 /** Pull `--md-sys-color-*` / `--aether-*: #hex;` pairs out of a single CSS rule
  * block. The `(?:…)` is non-capturing so m[1]=token name, m[2]=hex stay put. */
-function parseBlock(css: string, selector: RegExp): Tokens {
+function parseBlock(rawCss: string, selector: RegExp): Tokens {
+  const css = stripComments(rawCss)
   const block = css.match(selector)?.[1] ?? ''
   const tokens: Tokens = {}
   for (const m of block.matchAll(/(--(?:md-sys-color|aether)-[a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{3,8})/g)) {

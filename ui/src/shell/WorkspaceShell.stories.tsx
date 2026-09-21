@@ -137,6 +137,49 @@ export const ConversationOpenedByKeyboard: Story = {
   },
 }
 
+/**
+ * agent-forge-harness-27h, rework 1 — the assembled shell's tab order, written
+ * down.
+ *
+ * ChatPane's transcript became a tab stop in this branch: it is the scroller,
+ * and `scrollable-region-focusable` (WCAG 2.1.1) wants a keyboard user to be
+ * able to scroll back through their own conversation. That is a NEW stop on
+ * every keyboard user's way to the composer, and it is UNCONDITIONAL — an
+ * empty or two-line thread gets it too, where there is nothing to scroll, so
+ * it is a dead stop there. That is a deliberate trade (measuring overflow to
+ * decide would mean a ResizeObserver and a re-render on every message, for a
+ * stop that is correct whenever it matters), but until now nothing in the
+ * repository measured the shell's tab order at all, so the stop existed in no
+ * test and any later change to it would have been invisible.
+ *
+ * This walks the whole shell with real Tab presses and records what it finds.
+ */
+export const ShellTabOrder: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await canvas.findByText(/magic missile/)
+
+    const transcript = canvas.getByRole('region', { name: 'Conversation' })
+    const composer = canvas.getByRole('textbox')
+
+    // Walk until focus leaves the shell or wraps round to something already
+    // seen — a bounded loop, because Tab cycles within the document.
+    const order: Element[] = []
+    for (let i = 0; i < 40; i += 1) {
+      await userEvent.tab()
+      const el = document.activeElement
+      if (!el || !canvasElement.contains(el) || order.includes(el)) break
+      order.push(el)
+    }
+
+    await expect(order).toContain(transcript)
+    await expect(order).toContain(composer)
+    // The transcript comes first: you tab past the conversation into the box
+    // you answer it in, not the other way round.
+    await expect(order.indexOf(transcript)).toBeLessThan(order.indexOf(composer))
+  },
+}
+
 export const Dark: Story = {
   globals: { theme: 'dark' },
 }

@@ -10,6 +10,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, within } from 'storybook/test'
 
+import { tabTo } from '../../.storybook/keyboard'
 import { json, stubFetch, withShell } from '../../.storybook/shellHarness'
 import { AppHeader } from './AppHeader'
 
@@ -84,13 +85,20 @@ export const ChannelSwitchedByKeyboard: Story = {
   },
 }
 
-/** The theme switch is a real switch, reachable and operable from the keyboard. */
+/**
+ * The theme switch is a real switch, reachable and operable from the keyboard.
+ *
+ * REACHABLE is asserted with Tab presses (`tabTo`), not `.focus()`: it sits at
+ * the far right of the header behind the channel chips and the model picker,
+ * and a scripted focus would keep this green even if it fell out of the tab
+ * order entirely.
+ */
 export const ThemeToggledByKeyboard: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const themeSwitch = canvas.getByRole('switch', { name: 'Dark theme' })
     await expect(themeSwitch).not.toBeChecked()
-    themeSwitch.focus()
+    await tabTo(themeSwitch)
     await userEvent.keyboard(' ')
     await expect(themeSwitch).toBeChecked()
     await expect(document.documentElement).toHaveAttribute('data-theme', 'dark')

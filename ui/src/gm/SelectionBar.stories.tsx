@@ -88,11 +88,28 @@ export const BelowTheSelection: Story = {
  * The toolbar contract, by keyboard alone: one Tab reaches the bar, the arrows
  * move between the actions and WRAP, Home and End jump to the ends, and Tab
  * leaves — so the wrap can never become a trap.
+ *
+ * "One stop, not three" is asserted by COUNTING the tab stops, not by tabbing
+ * off the last button. An earlier version of this story closed with
+ * `tab()` while focus was on `darker` — the last button in DOM order — and
+ * asserted `darker` no longer had focus, which is true whether the bar is one
+ * stop or three. It could not fail on the half it is named for. It now counts
+ * `tabIndex === 0` across the three buttons, and tabs OUT from the FIRST
+ * button, where three tab stops would land on `shorter` instead of leaving.
+ * Both halves go red against `tabIndex={0}` on every action in
+ * `SelectionBar.tsx`.
  */
 export const OneTabStopAndArrowKeys: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
+    const toolbar = canvas.getByRole('toolbar')
     const [rewrite, shorter, darker] = canvas.getAllByRole('button')
+    /** The actions the browser will stop on when Tab walks the document. */
+    const tabStops = () => canvas.getAllByRole('button').filter((b) => b.tabIndex === 0)
+
+    // ONE stop on the way in, and it is the first action.
+    await expect(tabStops()).toHaveLength(1)
+    await expect(tabStops()[0]).toBe(rewrite)
 
     await userEvent.tab()
     await expect(rewrite).toHaveFocus()
@@ -114,9 +131,17 @@ export const OneTabStopAndArrowKeys: Story = {
     await userEvent.keyboard('{End}')
     await expect(darker).toHaveFocus()
 
-    // Tab is the way out: the bar is one stop, not three.
+    // Still exactly one stop, and it ROVED to the action last used — that is
+    // what carries the keyboard user back to where they were.
+    await expect(tabStops()).toHaveLength(1)
+    await expect(tabStops()[0]).toBe(darker)
+
+    // Tab is the way out, and it leaves from the FIRST action: with three tab
+    // stops this lands on `shorter` and the bar is still holding focus.
+    await userEvent.keyboard('{Home}')
+    await expect(rewrite).toHaveFocus()
     await userEvent.tab()
-    await expect(darker).not.toHaveFocus()
+    await expect(toolbar.contains(document.activeElement)).toBe(false)
   },
 }
 

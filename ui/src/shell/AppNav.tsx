@@ -53,6 +53,15 @@ export const AppNavContext = createContext<AppNavState>(defaultState)
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
+/**
+ * PARALLEL IMPLEMENTATION — `.storybook/shellHarness.tsx` re-implements this
+ * state machine rather than wrapping `AppNavProvider`, so that a story can
+ * start at any `screen`/`mode`/`conversationId` without driving the UI there
+ * first. The two agree today; they are not kept in step by anything, so a
+ * transition added below has to be added there too or the stories will be
+ * exercising a shell that no longer matches the product
+ * (agent-forge-harness-27h review, note F8).
+ */
 interface AppNavProviderProps {
   children: ReactNode
 }

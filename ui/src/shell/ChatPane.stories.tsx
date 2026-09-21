@@ -8,6 +8,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
+import { tabTo } from '../../.storybook/keyboard'
 import { withShell } from '../../.storybook/shellHarness'
 import { ChatPane } from './ChatPane'
 import type { GetAttachmentsFn } from './ChatPane'
@@ -166,19 +167,67 @@ export const WithRecalledHistory: Story = {
   },
 }
 
+/**
+ * agent-forge-harness-27h, rework 1 — the transcript is a NAMED REGION, and
+ * deliberately not a live region.
+ *
+ * The measured defect was `scrollable-region-focusable`: the feed is the
+ * scroller and nothing inside it was focusable, so a keyboard-only reader could
+ * not scroll back through their own conversation. The fix is a tab stop plus
+ * the accessible name a focusable region needs — `role="region"` +
+ * `aria-label`, and nothing beyond that.
+ *
+ * It is NOT `role="log"`. `log` carries an implicit `aria-live="polite"` over
+ * everything inside it, the user's own prompts included; and because
+ * `WorkspaceShell` mounts `ChatPane` with no `key` while `useChat` swaps
+ * `exchanges` in place, switching conversations would MUTATE that live region
+ * rather than remount it — a recalled history announced as though it had just
+ * arrived. Axe has no rule for any of this in either direction, so the role is
+ * pinned here by name: put `log` back and this story is the only thing in the
+ * repository that goes red.
+ */
+export const TranscriptIsANamedRegionNotALiveRegion: Story = {
+  args: {
+    loadHistory: history(
+      turn(1, 'What does a shield spell stop?', 'The triggering attack, and *magic missile*.'),
+    ),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await canvas.findByText('What does a shield spell stop?')
+
+    const feed = canvas.getByRole('region', { name: 'Conversation' })
+    await expect(feed).toHaveClass('chat-pane__exchanges')
+    await expect(feed).toHaveAttribute('role', 'region')
+    await expect(feed).toHaveAttribute('tabindex', '0')
+
+    // No live region: not implicitly (the role is `region`, not `log` or
+    // `status`) and not explicitly either.
+    await expect(canvasElement.querySelector('[role="log"]')).toBeNull()
+    await expect(canvasElement.querySelector('[aria-live]')).toBeNull()
+
+    // …and the stop is a real one. `tabTo` uses Tab presses, so this fails if
+    // the transcript ever drops back out of the tab order.
+    await tabTo(feed)
+  },
+}
+
 // ── Sending ──────────────────────────────────────────────────────────────────
 
 /**
  * Sent by keyboard alone: Tab to the composer, type, press Enter. Enter sends
  * and Shift+Enter is a newline — the composer contract.
+ *
+ * Reached with real Tab presses (`tabTo`), not `field.focus()`: "by keyboard
+ * alone" is a claim about the TAB ORDER, and a scripted `.focus()` would keep
+ * this story green on a composer no keyboard could get to.
  */
 export const SentByKeyboard: Story = {
   args: { post: fn(async () => ({ kind: 'ok', response: answer() })) as PostFn },
   play: async ({ args, canvasElement }) => {
     const canvas = within(canvasElement)
     const field = await canvas.findByRole('textbox')
-    field.focus()
-    await expect(field).toHaveFocus()
+    await tabTo(field)
 
     await userEvent.keyboard('Does shield stop magic missile?{Enter}')
 

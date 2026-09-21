@@ -7,6 +7,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, within } from 'storybook/test'
 
+import { tabTo } from '../../.storybook/keyboard'
 import { withShell } from '../../.storybook/shellHarness'
 import { LeftNav } from './LeftNav'
 
@@ -84,6 +85,11 @@ export const Player: Story = {
 /**
  * Renaming, driven by keyboard alone: the rename button is reachable, the
  * input takes focus, and Enter commits.
+ *
+ * "Reachable" is asserted with Tab presses (`tabTo`), not `.focus()`. This one
+ * matters: the rename affordance is a per-row control that a design change
+ * could easily make pointer-only (revealed on `:hover`, `tabindex="-1"`,
+ * `aria-hidden`) without anything else in the repository noticing.
  */
 export const RenamedByKeyboard: Story = {
   play: async ({ canvasElement }) => {
@@ -91,7 +97,7 @@ export const RenamedByKeyboard: Story = {
     const rename = canvas.getByRole('button', {
       name: 'Rename Shield spell: what does it stop?',
     })
-    rename.focus()
+    await tabTo(rename)
     await userEvent.keyboard('{Enter}')
 
     const input = canvas.getByRole('textbox', {

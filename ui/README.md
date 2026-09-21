@@ -124,6 +124,14 @@ test**. Stories live next to their components (`src/**/*.stories.tsx`); shell st
 their contexts from `.storybook/shellHarness.tsx`, which provides AppNav, CurrentUser,
 ConversationStore and Theme with real state and injectable fakes.
 
+> **"In both themes" means per story, not per component.** A story renders in ONE theme —
+> the default Parchment, or Tavern when it sets `globals: { theme: 'dark' }` — so the suite
+> is a union of light renders and dark renders, not every story twice. A component with no
+> dark story has never been rendered against the dark palette by anything, which is how
+> `--aether-nat20` sat at 4.49:1 on its dark container until a dark `DiceRoll` story was
+> written for it. **Give a themed component at least one dark story**, and pick the state
+> where the colours differ most — an error message, a selected state, a filled surface.
+
 Before `'error'` the setting was `'todo'`, which maps to warning mode: axe still ran and
 still recorded violations, and the suite still went green. Four real violations lived
 behind it. If you ever need to know whether the gate is live, add a story with a
@@ -149,8 +157,26 @@ particular it has:
 Three real defects found in a review two days before this note was written would all have
 passed a strict axe gate for exactly these reasons. Axe also cannot judge whether a role
 keeps its promise — a `role="menu"` navigated with Tab instead of arrow keys, or a
-`role="toolbar"` with three tab stops, is invisible to it (see `SelectionBar.stories.tsx`,
-which asserts the toolbar contract by hand).
+`role="toolbar"` with three tab stops, is invisible to it. The toolbar contract is asserted
+by hand in two places: `src/gm/SelectionBar.test.tsx` (jsdom) and
+`SelectionBar.stories.tsx > OneTabStopAndArrowKeys`, which counts the buttons carrying
+`tabindex="0"` and tabs out from the FIRST action. Both go red against three tab stops.
+
+It cannot see a **box-shadow, a spacing value or any other computed style** either. A
+`var()` naming a token that does not exist resolves silently to its fallback in every theme,
+which is how a neutral-black shadow and a hard-coded light-theme red both shipped unnoticed;
+`src/shell/tokenIntegrity.test.ts` is what catches that, and where a computed value matters
+on screen a story asserts it directly (`UserMenu.stories.tsx >
+PopoverCarriesTheRaisedElevation`).
+
+Nor can it see a **live region**. `role="log"`, `role="status"` and `aria-live` change what a
+screen reader says and nothing about the rendered DOM, so adding or deleting one leaves every
+story and every axe run green. Where the choice matters it is pinned by an explicit assertion
+on the role — `ChatPane.stories.tsx > TranscriptIsANamedRegionNotALiveRegion`.
+
+Finally, **"reachable by keyboard" is not the same claim as "operable by keyboard"**.
+`element.focus()` works on a control the tab order has lost, so a story whose name promises
+reachability walks there with real Tab presses instead — `.storybook/keyboard.ts`'s `tabTo`.
 
 Two limits of the **runner**, rather than of axe, are worth knowing before you write an
 interaction story: `userEvent` synthesises untrusted events, so a browser's native

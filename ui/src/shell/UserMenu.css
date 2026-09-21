@@ -30,6 +30,26 @@
   border-radius: var(--aether-radius-card, 16px);
   padding: 8px 0;
   min-width: 160px;
+  /* agent-forge-harness-27h — a DELIBERATE VISUAL CHANGE, and the only one in
+     this branch. This asked for `var(--aether-elevation-2, 0 2px 8px
+     rgba(0, 0, 0, 0.15))`. `--aether-elevation-2` is not a token this design
+     system has ever defined, so the literal fallback is what has shipped:
+     a single-layer NEUTRAL BLACK shadow, on a palette whose entire elevation
+     ramp is deliberately warm umber (see ds/tokens/elevation.css), and the
+     only floating surface in the app not drawn from that ramp — every other
+     one (SlashMenu, ToolMenu, CustomiseRailDialog, SelectionBar, CanvasPane)
+     already uses --md-sys-elevation-level2 or level3.
+
+     Defining --aether-elevation-2 to hold the old literal would have kept the
+     pixels identical at the cost of promoting an accident to a token and
+     putting a neutral-black shadow into a warm ramp, so the popover takes the
+     ramp instead. What changes on screen: warm umber instead of neutral
+     black, two layers instead of one, a tighter blur with a 2px spread.
+     It is smaller and warmer, not bigger.
+
+     Pinned by UserMenu.stories.tsx > PopoverCarriesTheRaisedElevation, which
+     asserts the RESOLVED computed value — axe cannot see a box-shadow and no
+     screenshot is diffed, so nothing else in the repository would notice. */
   box-shadow: var(--aether-elevation-raised);
   z-index: 100;
 }

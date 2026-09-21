@@ -114,6 +114,41 @@ export const LongDisplayName: Story = {
   },
 }
 
+/**
+ * agent-forge-harness-27h, rework 1 — the one DELIBERATE VISUAL CHANGE in this
+ * branch, pinned so it cannot drift back or drift on.
+ *
+ * The popover asked for `var(--aether-elevation-2, 0 2px 8px rgba(0,0,0,0.15))`
+ * and `--aether-elevation-2` is defined nowhere, so the neutral-black literal
+ * is what has shipped — the only floating surface in the app not taking the
+ * design system's (warm umber, two-layer) elevation ramp. It now takes
+ * `--aether-elevation-raised` = `--md-sys-elevation-level2`, like every other
+ * menu surface.
+ *
+ * The assertion is on the RESOLVED computed value rather than on the token
+ * name, because naming a token that does not exist is exactly the bug being
+ * fixed: an assertion written against the name would have passed on the old
+ * CSS too. Axe has no box-shadow rule and nothing here is screenshot-diffed,
+ * so this story is the only thing that can see this change at all.
+ */
+export const PopoverCarriesTheRaisedElevation: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: 'Open user menu' }))
+
+    const popover = canvasElement.querySelector('.user-menu__popover')
+    await expect(popover).toBeInstanceOf(HTMLElement)
+    const shadow = getComputedStyle(popover as HTMLElement).boxShadow
+
+    // --md-sys-elevation-level2, as the browser serialises it.
+    await expect(shadow).toBe(
+      'rgba(58, 34, 12, 0.28) 0px 1px 2px 0px, rgba(58, 34, 12, 0.14) 0px 2px 6px 2px',
+    )
+    // And explicitly NOT the neutral-black literal that used to ship.
+    await expect(shadow).not.toContain('rgba(0, 0, 0')
+  },
+}
+
 export const Dark: Story = {
   globals: { theme: 'dark' },
   play: async ({ canvasElement }) => {

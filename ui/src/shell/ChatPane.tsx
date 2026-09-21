@@ -303,16 +303,32 @@ export function ChatPane({
           focusable <summary>; a recalled history has none.
 
           `tabIndex={0}` puts the transcript in the tab order, where PageUp,
-          PageDown and the arrow keys scroll it. `role="log"` is the role this
-          content has always had — new entries appended in meaningful order —
-          and it carries the accessible name that a focusable region needs.
-          It also means the arrival of an answer is announced: the pending
-          state was already announced, its resolution was not. */}
+          PageDown and the arrow keys scroll it, and `role="region"` +
+          `aria-label` give that new stop the name a focusable region needs, so
+          assistive tech announces it as something rather than as a bare group.
+
+          Rework 1 — this was briefly `role="log"`, and that was broader than
+          the defect. `log` carries an implicit `aria-live="polite"` over
+          EVERYTHING inside it, the user's own prompts included; and
+          WorkspaceShell mounts ChatPane with no `key` while useChat replaces
+          `exchanges` in place (its effect keys on `conversationId`), so
+          switching conversations mutates the live region rather than
+          remounting it — a recalled 40-turn history arriving as "new" content.
+          The pending state is already announced by the `role="status"` node
+          below, which is the narrow form of the same idea. The RESOLUTION of a
+          turn is still not announced; that is a real gap, but it is a new
+          announcement rather than one of the accessibility defects this bead
+          measured, so it is filed (agent-forge-harness-ekf) rather than
+          smuggled in as a whole-transcript live region.
+
+          Axe has no rule for any of this, in either direction, so
+          ChatPane.stories.tsx > TranscriptIsANamedRegionNotALiveRegion pins
+          the role by name. */}
       <div
         className="chat-pane__exchanges aether-parchment"
         ref={feedRef}
         onScroll={handleFeedScroll}
-        role="log"
+        role="region"
         aria-label="Conversation"
         tabIndex={0}
       >

@@ -149,3 +149,13 @@ export const PagingInFlight: Story = {
     await expect(canvas.getByRole('status')).toHaveTextContent('Loading older versions…')
   },
 }
+
+// ── Dark Tavern ──────────────────────────────────────────────────────────────
+// agent-forge-harness-27h, rework 1. This file had NO dark story, so strict axe
+// had never rendered the version list against the dark palette. `DarkFailed`
+// covers the error state, which is where a themed palette most often slips
+// below AA — the same shape of defect as the AuthScreen error this branch fixed.
+
+export const Dark: Story = { ...Playground, globals: { theme: 'dark' } }
+
+export const DarkFailed: Story = { ...Failed, globals: { theme: 'dark' } }

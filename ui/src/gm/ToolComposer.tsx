@@ -246,7 +246,24 @@ export function ToolComposer({
             rather than on the field because `role="combobox"` is not permitted
             on `<textarea>`; that is the ARIA 1.1 shape, and it is the only one
             available to a MULTILINE autocomplete. `aria-controls` is set only
-            while the menu is open, so it never dangles at a missing id. */}
+            while the menu is open, so it never dangles at a missing id.
+
+            Rework 1 — `aria-label="Message"` appears TWICE here, on the
+            wrapper and on the field, and a review asked for one of them to go.
+            Both were measured, and both are load-bearing:
+
+              - wrapper only: the `<textarea>`'s accessible name falls through
+                to its PLACEHOLDER, which changes with the armed tool, so the
+                field would be named "Ask the Game Master…" one moment and
+                "Describe the NPC…" the next. 6 of 12 stories go red on the
+                name; axe stays quiet, because a placeholder satisfies its
+                `label` rule.
+              - field only: axe fails all 12 stories with
+                `aria-input-field-name` — "ARIA input fields must have an
+                accessible name" — on the unnamed `role="combobox"`.
+
+            Both elements are in the accessible-name-required set, so naming
+            both is what the ARIA 1.1 wrapper shape costs. Kept deliberately. */}
         <div
           className="gm-composer__combobox"
           role="combobox"

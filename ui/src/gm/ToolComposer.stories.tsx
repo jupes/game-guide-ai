@@ -2,6 +2,7 @@ import * as React from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
+import { tabTo } from '../../.storybook/keyboard'
 import { REGISTRY, toolAvailability } from './registry'
 import { ToolComposer } from './ToolComposer'
 import type { ToolComposerProps } from './ToolComposer'
@@ -91,11 +92,17 @@ export const TwoPresses: Story = {
  * `aria-activedescendant` onto a row the GM could not see and could only reach
  * with a pointer. Asserted against real layout — delete the effect and the
  * bottom edge assertion fails.
+ *
+ * Rework 1: this used to open with `userEvent.click(field)` while the PR body
+ * claimed it "presses End and nothing else". The click never touched the menu
+ * — the menu does not exist until `/` is typed — but the wording was wrong, so
+ * the pointer is gone instead. Focus is placed with `tabTo`, and everything
+ * after it is keys.
  */
 export const KeyboardReachesTheLastOption: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByRole('textbox', { name: 'Message' }))
+    await tabTo(canvas.getByRole('textbox', { name: 'Message' }))
     await userEvent.keyboard('/')
 
     const list = canvas.getByRole('listbox', { name: 'Tools' })

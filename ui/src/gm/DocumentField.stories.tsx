@@ -12,6 +12,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
+import { tabTo } from '../../.storybook/keyboard'
 import { DocumentField } from './DocumentField'
 import type { DocumentTypeId, FieldValue } from './contracts'
 import { documentFieldReads } from './documentFields'
@@ -161,13 +162,16 @@ export const Revealed: Story = {
 /**
  * Edited by keyboard alone: the Edit control is reachable, Enter opens the
  * editor, the control takes focus, and the edited value reaches `onCommit`.
+ *
+ * "Reachable" means reached with Tab presses (`tabTo`) — a scripted `.focus()`
+ * works on a control the tab order has lost, which is the failure this half of
+ * the claim exists to catch.
  */
 export const EditedByKeyboard: Story = {
   play: async ({ args, canvasElement }) => {
     const canvas = within(canvasElement)
     const edit = canvas.getByRole('button', { name: 'Edit Voice' })
-    edit.focus()
-    await expect(edit).toHaveFocus()
+    await tabTo(edit)
     await userEvent.keyboard('{Enter}')
 
     const control = canvas.getByRole('textbox', { name: 'Voice' })

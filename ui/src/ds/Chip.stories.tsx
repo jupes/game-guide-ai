@@ -92,3 +92,18 @@ export const Disabled: Story = {
     disabled: true,
   },
 }
+
+// ── Dark Tavern ──────────────────────────────────────────────────────────────
+// agent-forge-harness-27h, rework 1, and the sharpest case of the lot: Chip is
+// one of the components THIS branch changed, and it had no dark story, so
+// strict axe had never rendered a chip against the dark palette. The branch's
+// own headline finding is a dark contrast failure that hid for exactly that
+// reason (`--aether-nat20` at 4.49:1, invisible until a dark DiceRoll story
+// existed). The dark stories below re-run the same play functions, so the
+// `aria-pressed` contract and the dark colours are both covered.
+
+export const Dark: Story = { ...SelectedFilterIsPressed, globals: { theme: 'dark' } }
+
+export const DarkModeFilters: Story = { ...ModeFilters, globals: { theme: 'dark' } }
+
+export const DarkInputWithRemove: Story = { ...InputWithRemove, globals: { theme: 'dark' } }

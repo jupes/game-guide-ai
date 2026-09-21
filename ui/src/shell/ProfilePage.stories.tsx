@@ -5,6 +5,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, within } from 'storybook/test'
 
+import { tabTo } from '../../.storybook/keyboard'
 import { withShell } from '../../.storybook/shellHarness'
 import { ProfilePage } from './ProfilePage'
 
@@ -57,7 +58,14 @@ export const RenamedByKeyboard: Story = {
   },
 }
 
-/** Tone selection, driven from the keyboard, with the pressed state asserted. */
+/**
+ * Tone selection, driven from the keyboard, with the pressed state asserted.
+ *
+ * The swatch is reached with Tab presses (`tabTo`) rather than `.focus()`, so
+ * "from the keyboard" covers getting there as well as activating it — a colour
+ * swatch is exactly the kind of control that ends up as a pointer-only
+ * `<div onClick>`.
+ */
 export const TonePickedByKeyboard: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
@@ -66,7 +74,7 @@ export const TonePickedByKeyboard: Story = {
       'aria-pressed',
       'true',
     )
-    ember.focus()
+    await tabTo(ember)
     await userEvent.keyboard('{Enter}')
     await expect(ember).toHaveAttribute('aria-pressed', 'true')
     await expect(canvas.getByRole('button', { name: 'Gold avatar' })).toHaveAttribute(
