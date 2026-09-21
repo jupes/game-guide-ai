@@ -15,8 +15,15 @@
  * and runs the production Compose stack exactly as before. Pointing this at a
  * stack that is not actually up fails loudly on the first navigation rather
  * than quietly passing.
+ *
+ * `||`, not `??`: an EMPTY `E2E_BASE_URL` (`E2E_BASE_URL= bun run test:e2e`, or
+ * a shell variable that expanded to nothing) is not a stack anybody owns. With
+ * `??` the empty string is a value, so Compose would be suppressed and the run
+ * would then die in `new URL('')` with `ERR_INVALID_URL` at config load — a
+ * stack trace about URL parsing for what is really an unset variable. `||`
+ * treats it as unset, which is what the caller meant.
  */
-export const EXTERNAL_STACK_URL: string | null = process.env.E2E_BASE_URL ?? null
+export const EXTERNAL_STACK_URL: string | null = process.env.E2E_BASE_URL || null
 
 /** The Compose stack's published address (docker-compose.e2e.yml, ui: 4173:80). */
 const COMPOSE_STACK_URL = 'http://127.0.0.1:4173'
