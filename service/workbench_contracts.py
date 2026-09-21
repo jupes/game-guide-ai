@@ -2252,9 +2252,11 @@ class RevealLive(_Contract):
     version numbers**, so ten autosaves raise one notice and reverting the text
     clears it. It is what raises ``Table is seeing an earlier version`` and its
     *Use latest version*. ``pending_delivery`` is AUD-10 — a reveal to a
-    participant with no device confirms normally and waits, and never falls back
-    to the table. It is **per entry**, because one participant may be waiting
-    for a device while the others holding copies of the same disclosure are not.
+    participant who is **not enrolled, or enrolled and not currently connected**
+    confirms normally and waits, and never falls back to the table. Both cases
+    are one flag because they are one fact for the GM, *nobody is reading this
+    yet*; it is **per entry**, because one participant may be waiting while the
+    others holding copies of the same disclosure are not.
 
     ``disclosure_id`` is owner decision O-3: a group display is per-recipient
     copies of **one** disclosure, and every copy carries its id. It is what makes

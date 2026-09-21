@@ -1688,10 +1688,12 @@ export type TableProjection = z.infer<typeof TableProjectionSchema>
  * `stale_text` is the alignment's "whether a newer version exists", named for
  * the predicate REVEAL-8 fixes: the comparison is of **text**, not of version
  * numbers, so ten autosaves raise one notice and reverting the text clears it.
- * `pending_delivery` is AUD-10 — a reveal to a participant with no device waits,
- * and never falls back to the table. It is **per entry**, because one
- * participant may be waiting while the others holding copies of the same
- * disclosure are not.
+ * `pending_delivery` is AUD-10 — a reveal to a participant who is **not
+ * enrolled, or enrolled and not currently connected** confirms normally and
+ * waits, and never falls back to the table. Both cases are one flag because they
+ * are one fact for the GM, "nobody is reading this yet"; it is **per entry**,
+ * because one participant may be waiting while the others holding copies of the
+ * same disclosure are not.
  *
  * `disclosure_id` is owner decision O-3: a group display is per-recipient copies
  * of ONE disclosure, and every copy carries its id. It is what makes "stop all
