@@ -276,6 +276,59 @@ def _rendered(node: ast.expr) -> str:
     return ""
 
 
+def _definition(function: str, inside: str | None = None) -> ast.FunctionDef:
+    """One function's AST — the module-level one, or the method of a named class.
+
+    `inside` matters: `write_fields` is written three times, once per world and
+    once as the Protocol's stub, and a check that walked the module as a whole
+    would be satisfied by whichever copy still called the guard.
+    """
+    tree = ast.parse(SOURCE)
+    scope: ast.AST = tree
+    if inside is not None:
+        owners = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef) and node.name == inside
+        ]
+        assert len(owners) == 1, f"this module no longer defines {inside} exactly once"
+        scope = owners[0]
+    found = [
+        node
+        for node in ast.walk(scope)
+        if isinstance(node, ast.FunctionDef) and node.name == function
+    ]
+    assert len(found) == 1, f"{inside or 'the module'} no longer defines {function} once"
+    return found[0]
+
+
+@pytest.mark.parametrize(
+    ("owner", "guard"),
+    [
+        (None, "next_write_revision"),
+        ("PostgresDocumentStore", "next_version_number"),
+        ("InMemoryDocumentStore", "next_version_number"),
+        ("PostgresDocumentStore", "check_summary"),
+        ("InMemoryDocumentStore", "check_summary"),
+    ],
+)
+def test_every_value_a_column_checks_goes_through_its_guard_on_the_way_in(
+    owner: str | None, guard: str
+):
+    """The guards are worth their line only if the write path calls them, and
+    **both worlds** must call them or the twin and PostgreSQL disagree about
+    which writes are refused — the divergence this bead's whole shape exists to
+    prevent. Read out of the AST rather than grepped, and asserted per world, so
+    a lost call in one cannot hide behind the other."""
+    node = _definition("_planned" if owner is None else "write_fields", owner)
+    called = {
+        inner.func.id
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+    }
+    assert guard in called, f"{owner or '_planned'} no longer routes through {guard}"
+
+
 def test_the_statement_reader_finds_the_modules_statements():
     """Guarding the guards: every assertion below is vacuous if this returns an
     empty list, and an empty list is exactly what a refactor to a query builder
