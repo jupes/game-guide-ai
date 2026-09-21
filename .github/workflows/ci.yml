@@ -92,7 +92,8 @@ jobs:
           uv run --frozen --no-sync python -m pytest -q --no-cov \
             service/tests/test_invite_atomic.py tests/test_schema.py \
             tests/test_migrations_db.py tests/test_db_postgres.py \
-            tests/test_campaign_db.py
+            tests/test_campaign_db.py \
+            tests/test_document_db.py
 
   ui-tests:
     runs-on: ubuntu-latest
