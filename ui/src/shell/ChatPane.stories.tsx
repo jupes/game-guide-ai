@@ -201,10 +201,15 @@ export const TranscriptIsANamedRegionNotALiveRegion: Story = {
     await expect(feed).toHaveAttribute('role', 'region')
     await expect(feed).toHaveAttribute('tabindex', '0')
 
-    // No live region: not implicitly (the role is `region`, not `log` or
-    // `status`) and not explicitly either.
-    await expect(canvasElement.querySelector('[role="log"]')).toBeNull()
-    await expect(canvasElement.querySelector('[aria-live]')).toBeNull()
+    // The TRANSCRIPT is not a live region — not implicitly (no `log` role on
+    // it or around it) and not explicitly (no `aria-live` on it or on an
+    // ancestor). Deliberately scoped to the transcript rather than to the
+    // whole pane: a targeted `role="status"` announcement elsewhere in
+    // ChatPane is the RIGHT answer to agent-forge-harness-ekf, and this story
+    // must not stand in its way.
+    await expect(feed.querySelector('[role="log"]')).toBeNull()
+    await expect(feed.closest('[role="log"]')).toBeNull()
+    await expect(feed.closest('[aria-live]')).toBeNull()
 
     // …and the stop is a real one. `tabTo` uses Tab presses, so this fails if
     // the transcript ever drops back out of the tab order.
