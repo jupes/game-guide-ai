@@ -19,6 +19,34 @@ def _python_job() -> str:
     )[0]
 
 
+def _deploy_gates() -> list[str]:
+    """The clauses the deploy job's job-level `if:` ANDs together at its top level.
+
+    Read out of the `if: >-` block itself, not searched for in the job's text: the
+    comments around it quote the same expressions, and a guard that survives only
+    in a comment guards nothing. Splitting on the `&&`s outside every parenthesis
+    is what makes a clause a gate — one demoted into the `||` group would still be
+    "in" the condition and no longer be required by it.
+    """
+    deploy_job = WORKFLOW.read_text(encoding="utf-8").split("\n  deploy:\n", 1)[1]
+    block = re.search(r"^ {4}if: >-\n((?: {6}.*\n)+)", deploy_job, re.M)
+    assert block, "the deploy job must keep its job-level `if: >-` block"
+    condition = " ".join(block.group(1).split())
+
+    gates: list[str] = []
+    depth = start = 0
+    for index, char in enumerate(condition):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif depth == 0 and condition.startswith("&&", index):
+            gates.append(condition[start:index].strip())
+            start = index + 2
+    gates.append(condition[start:].strip())
+    return gates
+
+
 def test_ci_runs_e2e_on_pull_requests_and_never_deploys_them():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
@@ -32,6 +60,22 @@ def test_ci_runs_e2e_on_pull_requests_and_never_deploys_them():
     deploy_job = workflow.split("\n  deploy:\n", 1)[1]
     assert "ui-e2e" in deploy_job.split("\n    if:", 1)[0]
     assert "github.event_name != 'pull_request'" in deploy_job
+
+
+def test_ci_deploys_only_from_master():
+    """`workflow_dispatch` takes any ref, so `gh workflow run ci.yml --ref <branch>`
+    reaches the deploy job with that branch's SHA. The WIF trust condition
+    (docs/deploy-gcp.md §8) would still refuse the token, but as a red deploy job
+    failing at authentication — and as the only thing in the way."""
+    gates = _deploy_gates()
+
+    assert "github.ref == 'refs/heads/master'" in gates, (
+        "the deploy job must be gated on the master ref at the top level of its "
+        f"`if:` — a run on any other ref tests without deploying. Gates found: {gates}"
+    )
+    # The guard is one more gate, not a replacement for the ones already there.
+    assert "github.event_name != 'pull_request'" in gates
+    assert "vars.DEPLOY_TARGET != ''" in gates
 
 
 # ── The database-backed tests must actually RUN in CI ────────────────────────
