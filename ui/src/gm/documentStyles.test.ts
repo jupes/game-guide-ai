@@ -159,6 +159,39 @@ describe('tokens only — neither theme is hard-coded', () => {
   }
 })
 
+// ── 1b. X-10 · no sheet fetches anything ─────────────────────────────────────
+
+/**
+ * The one leak a rendered test can never see.
+ *
+ * jsdom evaluates no CSS, so `background-image: url(https://cdn.example/x.png)`
+ * in any of these sheets would load a remote image in a real browser, carry
+ * the GM's referrer to a third party, and leave every DOM sweep in this suite
+ * green. `@import` is the same hole with a stylesheet on the end of it, and
+ * `image-set()`, `src` and `cursor` all take a URL too. These sheets need no
+ * external resource at all — the icon font is the app's, loaded once in
+ * `index.html` — so the honest rule is: none, of any kind, relative included.
+ */
+describe('X-10 — no sheet fetches anything, from anywhere', () => {
+  for (const [name, css] of SHEETS) {
+    it(`${name} references no URL`, () => {
+      const clean = stripComments(css)
+      expect(clean.match(/\burl\s*\(/gi) ?? [], `${name}: url()`).toEqual([])
+      expect(clean.match(/\bimage-set\s*\(/gi) ?? [], `${name}: image-set()`).toEqual([])
+    })
+
+    it(`${name} imports no other stylesheet`, () => {
+      // `split` only sees an at-rule that opens a block, and a bare
+      // `@import "…";` has no braces — so this is read from the text.
+      expect(stripComments(css)).not.toMatch(/@import\b/i)
+    })
+
+    it(`${name} names no host`, () => {
+      expect(stripComments(css)).not.toMatch(/\/\/[a-z0-9-]+(\.[a-z0-9-]+)+/i)
+    })
+  }
+})
+
 // ── 2. LAYOUT-9 · reduced motion ─────────────────────────────────────────────
 
 describe('LAYOUT-9 — every motion is answered under prefers-reduced-motion', () => {

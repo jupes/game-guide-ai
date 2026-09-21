@@ -71,15 +71,49 @@ describe('the three actions of CANVAS-23', () => {
 })
 
 describe('the keyboard', () => {
-  it('reaches every action by Tab, in order', async () => {
+  it('is ONE tab stop, which is what role="toolbar" promises', async () => {
+    // Three tab stops is three extra presses to get past the bar on every
+    // selection, and it promises arrow keys that then do nothing. A toolbar
+    // is entered once and navigated with the arrows.
     const user = userEvent.setup()
     show()
     await user.tab()
     expect(screen.getByRole('button', { name: 'Rewrite' })).toHaveFocus()
     await user.tab()
-    expect(screen.getByRole('button', { name: 'Shorter' })).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Shorter' })).not.toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Darker' })).not.toHaveFocus()
+  })
+
+  it('moves between the actions with the arrow keys, and wraps', async () => {
+    const user = userEvent.setup()
+    show()
     await user.tab()
+    await user.keyboard('{ArrowRight}')
+    expect(screen.getByRole('button', { name: 'Shorter' })).toHaveFocus()
+    await user.keyboard('{ArrowRight}')
     expect(screen.getByRole('button', { name: 'Darker' })).toHaveFocus()
+    await user.keyboard('{ArrowRight}')
+    expect(screen.getByRole('button', { name: 'Rewrite' })).toHaveFocus()
+    await user.keyboard('{ArrowLeft}')
+    expect(screen.getByRole('button', { name: 'Darker' })).toHaveFocus()
+  })
+
+  it('jumps to the first and last action with Home and End', async () => {
+    const user = userEvent.setup()
+    show()
+    await user.tab()
+    await user.keyboard('{End}')
+    expect(screen.getByRole('button', { name: 'Darker' })).toHaveFocus()
+    await user.keyboard('{Home}')
+    expect(screen.getByRole('button', { name: 'Rewrite' })).toHaveFocus()
+  })
+
+  it('carries the tab stop to whichever action was last used', async () => {
+    const user = userEvent.setup()
+    show()
+    await user.click(screen.getByRole('button', { name: 'Darker' }))
+    expect(screen.getByRole('button', { name: 'Darker' })).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('button', { name: 'Rewrite' })).toHaveAttribute('tabindex', '-1')
   })
 
   it('dismisses on Escape from anywhere inside the bar', async () => {
@@ -88,6 +122,8 @@ describe('the keyboard', () => {
     await user.tab()
     await user.keyboard('{Escape}')
     expect(onDismiss).toHaveBeenCalledTimes(1)
+    await user.keyboard('{ArrowRight}{Escape}')
+    expect(onDismiss).toHaveBeenCalledTimes(2)
   })
 })
 

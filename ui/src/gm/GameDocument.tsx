@@ -86,6 +86,19 @@ function isCommon(key: string): boolean {
 }
 
 /**
+ * One field's committed value, or `undefined` for a key the document does not
+ * carry.
+ *
+ * `data[key]` would answer with something off `Object.prototype` for
+ * `constructor` or `__proto__`, both of which match the wire's field-key
+ * grammar (CANVAS-19). A field called `constructor` would then render a
+ * function rather than "nothing yet".
+ */
+function valueOf(data: Document['data'], key: string): FieldValue | undefined {
+  return Object.hasOwn(data, key) ? data[key] : undefined
+}
+
+/**
  * Consecutive one-line and number fields of the type's own become one strip;
  * everything else stands alone. Adjacency, not a list of keys — so the registry
  * order is preserved exactly and nothing here knows what a stat block holds.
@@ -240,7 +253,8 @@ export function GameDocument({
   const changed = new Set(changedFields.filter((key) => fields.some((field) => field.key === key)))
   const holding = new Set(assistantEditing)
   const revealed = new Set(revealedFields)
-  const name = typeof gameDocument.data.name === 'string' ? gameDocument.data.name : ''
+  const declaredName = valueOf(gameDocument.data, 'name')
+  const name = typeof declaredName === 'string' ? declaredName : ''
 
   /**
    * Read the live selection and decide whether it may raise the bar. Registered
@@ -346,7 +360,7 @@ export function GameDocument({
       <DocumentField
         key={field.key}
         field={field}
-        value={gameDocument.data[field.key]}
+        value={valueOf(gameDocument.data, field.key)}
         status={statusOf(fieldStates, field.key)}
         assistantEditing={holding.has(field.key)}
         changed={changed.has(field.key)}

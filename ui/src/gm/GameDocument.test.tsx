@@ -430,15 +430,58 @@ describe('the gold wash marks exactly the keys it was given (CANVAS-28)', () => 
 
 // ── AC 6 · X-7 and X-10 ──────────────────────────────────────────────────────
 
+/** A citation as the corpus hands one over, with every hostile shape a model
+ * could put in one: the footer is in the sweep below, so it stays inert. */
+const SOURCES = [
+  {
+    book: "Player's Handbook",
+    chapter: 'Tides & older',
+    section: null,
+    entity: '<script>alert(1)</script>',
+    page: 12,
+    snippet: 'The ninth tide, and the <b>name</b> under it. javascript:alert(1)',
+  },
+]
+
 describe('nothing leaves the page', () => {
   it.each(DOCUMENT_TYPE_IDS)('%s loads no remote subresource (X-10)', (id) => {
-    show({ typeId: id })
+    // `sources` is passed on every type: the footer renders only for a type
+    // that cites the corpus, and the sweep has to be inside the one that does.
+    show({ typeId: id, sources: SOURCES })
     for (const element of root().querySelectorAll('[src], [href], [srcset], [poster], [data]')) {
       for (const name of ['src', 'href', 'srcset', 'poster', 'data']) {
         const value = element.getAttribute(name)
         if (value === null) continue
         expect(value, `${id}: ${name}=${value}`).toMatch(/^\/campaigns\/[^/]+\/assets\/[^/?#]+$|^#/)
       }
+    }
+  })
+
+  it('renders a citation as text, with no link and no element that could fetch', () => {
+    show({ typeId: 'lore', sources: SOURCES })
+    const footer = root().querySelector('.gm-document__sources')
+    expect(footer).not.toBeNull()
+    expect(footer?.querySelector('a')).toBeNull()
+    expect(footer?.querySelector('img')).toBeNull()
+    expect(footer?.querySelector('script')).toBeNull()
+    expect(footer?.querySelector('[onerror]')).toBeNull()
+  })
+
+  it('reads a field the document does not carry as absent', () => {
+    // The lookup behind this is `Object.hasOwn`, because `constructor` and
+    // `__proto__` both match the wire's field-key grammar (CANVAS-19) and a
+    // plain-object lookup would answer with something off `Object.prototype`
+    // rather than "not declared". No registry type declares such a key today,
+    // so that half is defence this suite cannot reach; what it can reach is
+    // that a missing key renders the empty state and never a stray value.
+    const document = documentFixture('npc')
+    const stripped = { ...document, data: { ...document.data } }
+    delete stripped.data.voice
+    render(<GameDocument document={stripped} />)
+    expect(screen.getAllByText('Nothing yet — press Edit to add it').length).toBeGreaterThan(0)
+    for (const text of textNodes(screen.getAllByRole('article').slice(-1)[0])) {
+      expect(text).not.toContain('function ')
+      expect(text).not.toContain('[object ')
     }
   })
 
