@@ -61,6 +61,8 @@ PROTECTED_ROUTES: list[Route] = [
     ("GET", "/auth/me", "/auth/me", None),
     ("GET", "/conversations/{conversation_id}/messages",
      "/conversations/abc/messages", None),
+    ("GET", "/conversations/{conversation_id}/timeline",
+     "/conversations/abc/timeline", None),
     ("GET", "/conversations/{conversation_id}/attachments",
      "/conversations/abc/attachments", None),
     ("POST", "/conversations/{conversation_id}/attachments",
