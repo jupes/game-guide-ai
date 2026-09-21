@@ -23,8 +23,10 @@ def _rule(rule: reg.FieldRule) -> dict[str, object]:
     return {
         "label": rule.label,
         "editable": rule.editable,
+        "required": rule.required,
         "revealable": rule.revealable,
         "warning": rule.warning,
+        "bounds": list(rule.bounds) if rule.bounds is not None else None,
     }
 
 
@@ -310,11 +312,15 @@ def test_each_selector_answers_the_flag_it_names() -> None:
     assert reg.REGISTRY.accent_token(_doc("npc")) is None
 
 
-def test_only_the_character_sheet_offers_an_audience_picker() -> None:
-    """Decision AUD-9: every other type is table-only in v1."""
-    owners = [doc.id.value for doc in reg.REGISTRY.document_types if reg.REGISTRY.shows_audience_picker(doc)]
+def test_only_the_character_sheet_seeds_an_owner_default() -> None:
+    """Records ED-14 and A-19 (owner decision O-2), which amend AUD-9: the flag
+    says whose default reveal a type **seeds**, and nothing about who may receive
+    one — any type may be revealed to a participant, and every type but the sheet
+    seeds that participant empty."""
+    owners = [doc.id.value for doc in reg.REGISTRY.document_types if reg.REGISTRY.seeds_owner_default(doc)]
     assert owners == ["character-sheet"]
     assert reg.REGISTRY.audience_of(_doc("character-sheet")) == "owner"
+    assert not reg.REGISTRY.seeds_owner_default(_doc("npc"))
 
 
 def test_a_default_reveal_answers_empty_for_an_audience_its_type_does_not_name() -> None:
@@ -381,15 +387,76 @@ def test_every_key_of_a_field_rule_is_read_by_a_selector() -> None:
 
 def test_each_field_selector_answers_the_flag_it_names() -> None:
     npc = _doc("npc")
+    statblock = _doc("statblock")
     assert reg.REGISTRY.label_for(npc, "if_attacked") == "If the party attacks"
     assert reg.REGISTRY.is_editable(npc, "wants")
     assert reg.REGISTRY.is_revealable(npc, "wants")
     assert not reg.REGISTRY.is_revealable(npc, "tags")
     assert reg.REGISTRY.warning_for(npc, "wants") == "Would spoil the lie"
-    # X-8 again: an undeclared key is not editable, not revealable, has no label.
+    # LIB-12, as the flag rather than as an invention of the New dialog.
+    assert reg.REGISTRY.is_required(statblock, "ac")
+    assert reg.REGISTRY.is_required(statblock, "hp")
+    assert reg.REGISTRY.is_required(statblock, "name"), "the common rule answers through the type"
+    assert not reg.REGISTRY.is_required(npc, "voice")
+    # Per-use integer bounds, and the one integer field deliberately without them.
+    assert reg.REGISTRY.bounds_for(statblock, "ac") == (0, 1_000_000)
+    assert reg.REGISTRY.bounds_for(_doc("session-notes"), "session") == (1, 1_000_000)
+    assert reg.REGISTRY.bounds_for(statblock, "xp") is None
+    assert reg.REGISTRY.bounds_for(npc, "voice") is None
+    # X-8 again: an undeclared key is not editable, not revealable, not required,
+    # has no bounds and has no label.
     assert not reg.REGISTRY.is_editable(npc, "nonesuch")
     assert not reg.REGISTRY.is_revealable(npc, "nonesuch")
+    assert not reg.REGISTRY.is_required(npc, "nonesuch")
+    assert reg.REGISTRY.bounds_for(npc, "nonesuch") is None
     assert reg.REGISTRY.label_for(npc, "nonesuch") is None
+
+
+def test_only_three_rules_in_the_whole_registry_are_required() -> None:
+    """Decision LIB-12 names a stat block's name, AC and HP and nothing else, and
+    ruling 5.7#2 keeps the character sheet's own ``ac`` and ``hp`` optional. Pinned
+    as a list rather than derived, so widening it is a deliberate act — a field
+    that becomes required is a ``type_version`` bump for every stored document."""
+    required = {
+        doc.id.value: sorted(key for key in (*REGISTRY_JSON["common_fields"], *doc.fields)
+                             if reg.REGISTRY.is_required(doc, key))
+        for doc in reg.REGISTRY.document_types
+    }
+    assert required == {
+        "npc": ["name"],
+        "statblock": ["ac", "hp", "name"],
+        "handout": ["name"],
+        "session-notes": ["name"],
+        "quest-log": ["name"],
+        "character-sheet": ["name"],
+        "lore": ["name"],
+        "encounter": ["name"],
+    }
+
+
+def test_only_an_integer_field_may_carry_bounds_and_only_inside_its_kinds_range() -> None:
+    """Three rules, each with its own negative case, because ``bounds`` is the
+    first field-rule key whose value a validator has to make sense of rather than
+    merely read."""
+    statblock = _doc("statblock")
+    rules = dict(statblock.field_rules)
+
+    def broken(**changed: reg.FieldRule) -> reg.Registry:
+        return _broken(
+            document_types=tuple(
+                replace(doc, field_rules={**rules, **changed}) if doc.id.value == "statblock" else doc
+                for doc in reg.REGISTRY.document_types
+            )
+        )
+
+    with pytest.raises(reg.RegistryError, match="is not an integer field"):
+        reg.validate(broken(speed=reg.FieldRule("Speed", bounds=(0, 10))))
+    with pytest.raises(reg.RegistryError, match="lowest is above its highest"):
+        reg.validate(broken(ac=reg.FieldRule("Armor Class", bounds=(10, 0))))
+    with pytest.raises(reg.RegistryError, match="outside the integer kind's own range"):
+        reg.validate(broken(ac=reg.FieldRule("Armor Class", bounds=(0, 1_000_001))))
+    # …and the shipped data satisfies all three.
+    reg.validate(broken())
 
 
 def test_a_field_flagged_not_editable_reads_as_not_editable() -> None:
@@ -526,13 +593,15 @@ def test_the_wire_contracts_tables_are_the_registry() -> None:
         }
         groups = {key: group.label for group in doc.reveal_groups for key in group.keys}
         seeded = set(doc.default_reveal.get(doc.audience, ()))
-        expected = [(key, "common", rule["label"], rule["revealable"]) for key, rule in common.items()]
+        expected = [
+            (key, "common", rule["label"], rule["required"], rule["revealable"]) for key, rule in common.items()
+        ]
         expected += [
-            (key, f"`{doc.fields[key].value}`", rule.label, rule.revealable)
+            (key, f"`{doc.fields[key].value}`", rule.label, rule.required, rule.revealable)
             for key, rule in doc.field_rules.items()
         ]
         assert list(rows) == [key for key, *_ in expected], f"{doc.id.value}: the table's keys are not the registry's"
-        for key, kind, label, revealable in expected:
+        for key, kind, label, required, revealable in expected:
             cells = rows[key]
             rule = reg.REGISTRY.rule_for(doc, key)
             assert rule is not None
@@ -540,9 +609,39 @@ def test_the_wire_contracts_tables_are_the_registry() -> None:
             warned = f"{label} ⚠ {rule.warning}" if rule.warning else label
             assert cells[1] == warned, f"{doc.id.value}.{key}: label"
             assert cells[2] == ("yes" if rule.editable else "no"), f"{doc.id.value}.{key}: editable"
-            assert cells[3] == ("yes" if revealable else "**never**"), f"{doc.id.value}.{key}: revealable"
-            assert cells[4] == (f"*{groups[key]}*" if key in groups else "—"), f"{doc.id.value}.{key}: group"
-            assert cells[5] == ("yes" if key in seeded else "—"), f"{doc.id.value}.{key}: seeded"
+            assert cells[3] == ("yes" if required else "—"), f"{doc.id.value}.{key}: required"
+            assert cells[4] == ("yes" if revealable else "**never**"), f"{doc.id.value}.{key}: revealable"
+            assert cells[5] == (f"*{groups[key]}*" if key in groups else "—"), f"{doc.id.value}.{key}: group"
+            assert cells[6] == ("yes" if key in seeded else "—"), f"{doc.id.value}.{key}: seeded"
+
+
+def test_the_integer_bounds_table_is_the_registry() -> None:
+    """``bounds`` gets a table of its own rather than a ninth column: it is a pair
+    of numbers, not a per-row yes or no, and it is ``null`` on 59 of the 66 rules.
+    A separate table still has to be true, so it gets the same cell-by-cell check
+    the per-type tables get — a registry fact with no column is otherwise a fact
+    with no test.
+    """
+    doc_text = (FIXTURES.parents[2] / "docs" / "workbench-wire-contract.md").read_text(encoding="utf-8")
+    heading = "#### Per-field integer bounds"
+    assert heading in doc_text, "the integer-bounds table is missing from the wire contract"
+    section = doc_text[doc_text.index(heading) :]
+    section = section[: section.index("\n#### ")] if "\n#### " in section else section
+    rows = {
+        row.split("|")[1].strip().strip("`"): [cell.strip() for cell in row.split("|")[2:-1]]
+        for row in section.splitlines()
+        if row.startswith("| `")
+    }
+    expected = {
+        f"{doc.id.value}.{key}": rule.bounds
+        for doc in reg.REGISTRY.document_types
+        for key, rule in doc.field_rules.items()
+        if doc.fields[key] is reg.FieldKind.INTEGER
+    }
+    assert list(rows) == list(expected), "the bounds table lists other fields than the registry's integer ones"
+    for name, bounds in expected.items():
+        lowest, highest = bounds if bounds is not None else (reg.INTEGER_FIELD_MIN, reg.INTEGER_FIELD_MAX)
+        assert rows[name] == [f"{lowest:,}", f"{highest:,}"], name
 
 
 def test_nothing_off_the_allowlist_is_a_tag_a_source_an_id_or_an_identity_link() -> None:

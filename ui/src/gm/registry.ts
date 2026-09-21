@@ -15,13 +15,14 @@
  *
  * Since 1kg.5.3 it also carries, per field, the RULE that says how the field is
  * presented and who may ever see it — its label, whether it is editable, whether
- * it is on the type's revealable allowlist (REVEAL-10, and by ED-5 the same list
- * that can ever be classified), and the warning a reveal sheet shows above it
- * (REVEAL-11) — and, per type, the audience whose picker it offers (AUD-9), its
- * accent, its reveal groups, its per-audience default reveal (REVEAL-4) and the
- * keys it has retired (ED-24). Not here: a reveal mask, a projection or an
- * eligibility row. Those are state, not registry, and belong to 1kg.1.6 and
- * agent-forge-harness-1ir.2.1.
+ * a document of the type is REQUIRED to carry it (LIB-12), the BOUNDS an integer
+ * field narrows its kind to, whether it is on the type's revealable allowlist
+ * (REVEAL-10, and by ED-5 the same list that can ever be classified), and the
+ * warning a reveal sheet shows above it (REVEAL-11) — and, per type, the audience
+ * whose default reveal it seeds (REVEAL-4, ED-14), its accent, its reveal groups,
+ * its per-audience default reveal and the keys it has retired (ED-24). Not here:
+ * a reveal mask, a projection or an eligibility row. Those are state, not
+ * registry, and belong to 1kg.1.6 and agent-forge-harness-1ir.2.1.
  */
 
 import {
@@ -31,6 +32,8 @@ import {
   DOC_TYPE_LIBRARY_CATEGORY,
   DOC_TYPE_VERSION,
   DOCUMENT_TYPE_IDS,
+  INTEGER_FIELD_MAX,
+  INTEGER_FIELD_MIN,
   TOOL_CARD_KIND,
   TOOL_CREATES_DOC_TYPE,
   TOOL_IDS,
@@ -70,8 +73,14 @@ export interface Tool {
   capability: CapabilityId | null
 }
 
-/** The audience a TYPE has (AUD-9): only an `owner` type offers the sheet's
- * audience picker, and every other type is table-only in v1. */
+/**
+ * The audience a TYPE has. After owner decision O-2 (records ED-14 and A-19,
+ * which amend AUD-9) the flag no longer says which types may use a participant
+ * slot — ANY type may. It says only WHOSE DEFAULT REVEAL A TYPE SEEDS
+ * (REVEAL-4): an owner-audience type seeds its linked owner's mask, and any
+ * other audience — or any other type revealed to a participant — seeds empty.
+ * The audience PICKER itself belongs to 1kg.7.3 (shared ADR §7.1).
+ */
 export const AUDIENCES = ['table', 'owner'] as const
 export type Audience = (typeof AUDIENCES)[number]
 
@@ -88,12 +97,25 @@ export type Accent = (typeof ACCENTS)[number]
  * and citation text, ids, authorship, asset metadata, and any identity link
  * (ED-20) — is `gm_only` by construction. `warning` is the sub-line a reveal
  * sheet shows above the toggle, in the type's own words (REVEAL-11).
+ *
+ * `required` is decision LIB-12 as data: a document of this type is not valid
+ * without the field, so a create and a patch that would clear it are refused.
+ * The rule the VALIDATOR enforces lives in `contracts.ts`'s `REQUIRED_FIELDS`,
+ * which this module cannot reach — the import runs the other way — and a test
+ * pins the two to `registry.json`.
+ *
+ * `bounds` narrows an `integer` field's kind range for this one use: a
+ * `[lowest, highest]` pair, or `null` for the kind's full range.
+ * `validateRegistry` allows it only on an `integer` field, only with
+ * `lowest <= highest`, and only inside the kind's own range.
  */
 export interface FieldRule {
   label: string
   editable: boolean
+  required: boolean
   revealable: boolean
   warning: string | null
+  bounds: readonly [number, number] | null
 }
 
 /** REVEAL-11: one labelled row that toggles a fixed set of keys. The stored
@@ -175,20 +197,33 @@ function tool(
   }
 }
 
-/** The common fields' rules, shared by every type (REVEAL-10, ED-5). */
+/** The common fields' rules, shared by every type (REVEAL-10, ED-5). `name` is
+ * the one common field a document cannot be without (LIB-12). */
 const COMMON_FIELD_RULES: Readonly<Record<string, FieldRule>> = {
-  name: { label: 'Name', editable: true, revealable: true, warning: null },
-  qualifier: { label: 'Qualifier', editable: true, revealable: true, warning: null },
-  tags: { label: 'Tags', editable: true, revealable: false, warning: null },
+  name: { label: 'Name', editable: true, required: true, revealable: true, warning: null, bounds: null },
+  qualifier: { label: 'Qualifier', editable: true, required: false, revealable: true, warning: null, bounds: null },
+  tags: { label: 'Tags', editable: true, required: false, revealable: false, warning: null, bounds: null },
 }
 
-/** A rule, with the defaults spelled once: editable, revealable, no warning. */
-function rule(label: string, extra: { editable?: boolean; revealable?: boolean; warning?: string } = {}): FieldRule {
+/** A rule, with the defaults spelled once: editable, revealable, not required,
+ * no warning, no per-use bounds. */
+function rule(
+  label: string,
+  extra: {
+    editable?: boolean
+    required?: boolean
+    revealable?: boolean
+    warning?: string
+    bounds?: readonly [number, number]
+  } = {},
+): FieldRule {
   return {
     label,
     editable: extra.editable ?? true,
+    required: extra.required ?? false,
     revealable: extra.revealable ?? true,
     warning: extra.warning ?? null,
+    bounds: extra.bounds ?? null,
   }
 }
 
@@ -272,9 +307,10 @@ export const REGISTRY: Registry = {
     documentType('statblock', 'Stat Block', 'shield', {
       renderer: 'stat_block_card',
       rules: {
-        ac: rule('Armor Class'),
+        // LIB-12: a stat block without its AC and HP is not valid.
+        ac: rule('Armor Class', { required: true, bounds: [0, INTEGER_FIELD_MAX] }),
         ac_note: rule('Armor Class note'),
-        hp: rule('Hit Points'),
+        hp: rule('Hit Points', { required: true, bounds: [0, INTEGER_FIELD_MAX] }),
         hit_dice: rule('Hit dice'),
         speed: rule('Speed'),
         size: rule('Size'),
@@ -288,6 +324,9 @@ export const REGISTRY: Registry = {
         senses: rule('Senses'),
         languages: rule('Languages'),
         challenge_rating: rule('Challenge rating'),
+        // The one integer field with no per-use bounds, deliberately: it is what
+        // keeps the kind's own floor reachable through a declared field, and so
+        // keeps the shared boundary fixtures honest.
         xp: rule('XP'),
         traits: rule('Traits'),
         actions: rule('Actions'),
@@ -307,7 +346,8 @@ export const REGISTRY: Registry = {
     }),
     documentType('session-notes', 'Session Notes', 'history_edu', {
       rules: {
-        session: rule('Session number'),
+        // There is no session 0.
+        session: rule('Session number', { bounds: [1, INTEGER_FIELD_MAX] }),
         date: rule('Date'),
         present: rule('Present'),
         recap: rule('Recap', { warning: 'Summarises your private GM thread' }),
@@ -328,8 +368,11 @@ export const REGISTRY: Registry = {
       audience: 'owner',
       rules: {
         portrait: rule('Portrait'),
-        ac: rule('Armor Class'),
-        hp: rule('Hit Points'),
+        // The same field and the same meaning as a stat block's, so the same
+        // range — but NOT required (ruling 5.7#2): LIB-12 speaks of stat blocks,
+        // and you name a character before you know its hit points.
+        ac: rule('Armor Class', { bounds: [0, INTEGER_FIELD_MAX] }),
+        hp: rule('Hit Points', { bounds: [0, INTEGER_FIELD_MAX] }),
         speed: rule('Speed'),
         abilities: rule('Ability scores'),
         features: rule('Features'),
@@ -354,8 +397,9 @@ export const REGISTRY: Registry = {
     documentType('encounter', 'Encounter', 'swords', {
       rules: {
         difficulty: rule('Difficulty'),
-        xp_budget: rule('XP budget'),
-        party_level: rule('Party level'),
+        xp_budget: rule('XP budget', { bounds: [0, INTEGER_FIELD_MAX] }),
+        // There is no level 0.
+        party_level: rule('Party level', { bounds: [1, INTEGER_FIELD_MAX] }),
         setup: rule('Setup'),
         combatants: rule('Combatants'),
         terrain: rule('Terrain & hazards'),
@@ -426,6 +470,18 @@ function documentTypeProblems(registry: Registry, d: DocumentType): string[] {
 
   for (const [key, r] of Object.entries(d.field_rules)) {
     problems.push(...labelProblems(r.label))
+    if (r.bounds !== null) {
+      const [lowest, highest] = r.bounds
+      // A range on anything else would be data no validator reads, which is the
+      // defect FIELD_FLAG_SELECTORS exists to catch one level up.
+      if (!Object.hasOwn(d.fields, key) || d.fields[key] !== 'integer') {
+        problems.push(`${key} carries integer bounds but is not an integer field`)
+      }
+      if (lowest > highest) problems.push(`${key} has bounds whose lowest is above its highest`)
+      if (lowest < INTEGER_FIELD_MIN || highest > INTEGER_FIELD_MAX) {
+        problems.push(`${key} has bounds outside the integer kind's own range`)
+      }
+    }
     if (r.warning !== null) {
       problems.push(...labelProblems(r.warning, 'warning', 80))
       if (!r.revealable) problems.push(`${key} carries a reveal warning but can never be revealed`)
@@ -487,7 +543,7 @@ export const TYPE_FLAG_SELECTORS: Readonly<Record<string, readonly string[]>> = 
   renderer: ['rendererFor'],
   printable: ['isPrintable'],
   cites_corpus: ['citesCorpus'],
-  audience: ['audienceOf', 'showsAudiencePicker'],
+  audience: ['audienceOf', 'seedsOwnerDefault'],
   accent: ['accentToken'],
 }
 
@@ -498,8 +554,10 @@ export const TYPE_FLAG_SELECTORS: Readonly<Record<string, readonly string[]>> = 
 export const FIELD_FLAG_SELECTORS: Readonly<Record<string, readonly string[]>> = {
   label: ['labelFor'],
   editable: ['isEditable'],
+  required: ['isRequired'],
   revealable: ['isRevealable', 'revealableKeys'],
   warning: ['warningFor'],
+  bounds: ['boundsFor'],
 }
 
 /** The keys that ARE the type rather than a flag about it. Pinned by a test, so
@@ -537,8 +595,15 @@ export function audienceOf(d: DocumentType): Audience {
   return d.audience
 }
 
-/** AUD-9: only an owner-audience type offers the picker. */
-export function showsAudiencePicker(d: DocumentType): boolean {
+/**
+ * Whether this type seeds its LINKED OWNER'S mask rather than empty.
+ *
+ * Records ED-14 and A-19 (owner decision O-2), which amend AUD-9: the flag says
+ * nothing about who may RECEIVE a reveal — any type may go to a participant —
+ * only whose default reveal the type seeds (REVEAL-4). An owner-audience type
+ * still seeds nothing for the table (AUD-12).
+ */
+export function seedsOwnerDefault(d: DocumentType): boolean {
   return d.audience === 'owner'
 }
 
@@ -588,6 +653,19 @@ export function isEditable(d: DocumentType, key: string, registry: Registry = RE
 
 export function labelFor(d: DocumentType, key: string, registry: Registry = REGISTRY): string | undefined {
   return ruleFor(d, key, registry)?.label
+}
+
+/** LIB-12: whether a document of this type must carry the field, present and not
+ * empty. `false` for a key the type does not declare — unknown is never required
+ * (X-8), the same posture as `isEditable`. */
+export function isRequired(d: DocumentType, key: string, registry: Registry = REGISTRY): boolean {
+  return ruleFor(d, key, registry)?.required ?? false
+}
+
+/** The range this one use of an `integer` field narrows its kind to, or `null`
+ * for the kind's own range — and `null` for an undeclared key. */
+export function boundsFor(d: DocumentType, key: string, registry: Registry = REGISTRY): readonly [number, number] | null {
+  return ruleFor(d, key, registry)?.bounds ?? null
 }
 
 /** The allowlist, per key (REVEAL-10). `false` for an undeclared key: by ED-5
