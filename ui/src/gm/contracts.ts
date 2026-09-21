@@ -1466,18 +1466,24 @@ export function revealableFields(type: DocumentTypeId): Record<string, FieldKind
  * never a credential and never an alias (AUD-11), so an alias is refused even
  * beside an id. Nothing ties an audience to a document type: owner decision O-2
  * makes a participant audience legal for any type.
+ *
+ * Since O-3 gave a **slot** its own shape (`RevealSlotRef`), an audience travels
+ * in one place only — `RevealRequest.audience` — so it is a request shape, and
+ * refuses a `__proto__` key like every other thing a client sends.
  */
-export const RevealAudienceSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('table') }),
-  z.strictObject({
-    kind: z.literal('participants'),
-    participant_ids: z
-      .array(OpaqueIdSchema)
-      .min(1)
-      .max(PRESENCE_MAX_PARTICIPANTS)
-      .refine((ids) => new Set(ids).size === ids.length, { message: 'a recipient list names each participant once' }),
-  }),
-])
+export const RevealAudienceSchema = refusingProtoKeys(
+  z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('table') }),
+    z.strictObject({
+      kind: z.literal('participants'),
+      participant_ids: z
+        .array(OpaqueIdSchema)
+        .min(1)
+        .max(PRESENCE_MAX_PARTICIPANTS)
+        .refine((ids) => new Set(ids).size === ids.length, { message: 'a recipient list names each participant once' }),
+    }),
+  ]),
+)
 export type RevealAudience = z.infer<typeof RevealAudienceSchema>
 
 /** A **slot** is one region, so it names one participant, while an audience may

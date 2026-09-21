@@ -57,6 +57,15 @@ REPLACEMENTS: list[Any] = [True, False, 0, 1, -1, 1.5, 10**12, "1", "", "x", " "
 #: escape; UTF-8 does not) and NUL.
 _BOM, _NEL, _LONE_SURROGATE, _NUL = chr(0xFEFF), chr(0x85), chr(0xD83C), chr(0)
 
+#: Every ``direction`` a fixture file may declare. The split below decides which
+#: shapes get stray-key mutations, so an unknown or missing tag must stop the run
+#: rather than silently drop a shape's coverage while the summary still reads
+#: "0 disagreements".
+DIRECTIONS = {"request", "response", "both"}
+#: A shape a client sends is one whose undeclared keys are a finding on both
+#: sides; a response's are the recorded server-strict / client-strips asymmetry.
+SENT_BY_A_CLIENT = {"request", "both"}
+
 Path_ = tuple[str | int, ...]
 
 
@@ -112,9 +121,9 @@ def _added_keys(node: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
 def mutations(value: Any, *, request: bool) -> Iterator[tuple[Path_, str, Any]]:
     """One break at a time, so a disagreement names the field that caused it.
 
-    Keys are only *added* to a request: a response with an undeclared key is
-    invalid for the server to emit and valid for a client to receive, and that
-    recorded asymmetry is not a finding.
+    Keys are only *added* to a shape a client sends: a response with an
+    undeclared key is invalid for the server to emit and valid for a client to
+    receive, and that recorded asymmetry is not a finding.
     """
     if not isinstance(value, dict | list) or _is_directive(value):
         for replacement in REPLACEMENTS:
@@ -167,11 +176,14 @@ def build_cases() -> list[dict[str, Any]]:
         if file.name in {"schemas.json", "registry.json"}:
             continue
         doc = json.loads(file.read_text(encoding="utf-8"))
+        direction = doc.get("direction")
+        if direction not in DIRECTIONS:
+            raise SystemExit(f"{file.name}: direction is {direction!r}; expected one of {sorted(DIRECTIONS)}")
         for example in doc["valid"]:
             # An example limited to one side is a *recorded* asymmetry, not a finding.
             if set(example.get("applies_to", ["server", "client"])) != {"server", "client"}:
                 continue
-            for path, how, mutated in mutations(example["value"], request=doc.get("direction") == "request"):
+            for path, how, mutated in mutations(example["value"], request=direction in SENT_BY_A_CLIENT):
                 expanded = expand(mutated)
                 accepted, emitted = _server_reads(doc["schema"], expanded)
                 cases.append(
