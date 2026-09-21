@@ -2353,7 +2353,6 @@ class RevealState(_Contract):
         if on_the_table & privately:
             raise ValueError("a disclosure is the table slot, or participant slots, never both")
         return self
-        return self
 
 
 # ── Realtime events ──────────────────────────────────────────────────────────
