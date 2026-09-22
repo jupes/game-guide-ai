@@ -18,6 +18,7 @@ import base64
 import json
 import logging
 from datetime import UTC, datetime
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -695,3 +696,98 @@ def test_the_chat_request_path_gains_no_statement_no_round_trip_and_no_branch() 
     assert "timeline" not in source.lower()
     signature = inspect.signature(app_module.chat)
     assert not any("timeline" in name for name in signature.parameters)
+
+
+# ── Rework 1: carry items from the part-2 review ─────────────────────────────
+
+#: Ids `/chat` accepts — its `conversation_id` is a bare `str` — and that
+#: `TimelinePage.conversation_id`'s `OpaqueId` (`^[A-Za-z0-9_-]{1,64}$`) does
+#: not. Each one is owned and readable through the unchanged legacy route; each
+#: one used to build the page and raise a `ValidationError` inside the
+#: transaction, where it was neither `ConversationNotFound` nor a database
+#: error, and escaped as a bare 500.
+MALFORMED_IDS = [
+    "has.a.dot", "has:a:colon", "has a space", "café-ünïcode",
+    "a" * 65, " ", "nul\x00byte", "newline\nforged",
+]
+
+
+def _timeline_encoded(client: TestClient, conversation_id: str) -> Response:
+    """The id percent-encoded here rather than by httpx, which refuses to put a
+    control character on the wire at all. Starlette hands the handler the
+    decoded string, which is the one the store was seeded under."""
+    return client.get(f"/conversations/{quote(conversation_id, safe='')}/timeline")
+
+
+@pytest.mark.parametrize("conversation_id", MALFORMED_IDS)
+def test_an_id_the_contract_cannot_carry_is_the_same_404_and_costs_no_statement(
+    world: _World, recorded, conversation_id: str
+) -> None:
+    """H-1. An owner asking for a conversation whose id is outside `OpaqueId`
+    used to get a 500 from their own conversation. It is refused now — through
+    the *same* code path a missing or a foreign conversation takes, so malformed
+    and missing stay indistinguishable (SEC-3) — and before any statement runs.
+    """
+    store, _db, client = recorded
+    world.own(conversation_id)
+    world.say("user", "written through /chat, which accepts this id",
+              conversation_id=conversation_id)
+    store.calls.clear()
+    refused = _timeline_encoded(client, conversation_id)
+    assert refused.status_code == 404
+    assert refused.json()["detail"]["code"] == "not_found"
+    assert store.calls == [], "the shape is decided before the ownership statement"
+    # Byte-identical to a missing conversation's, which is the check that cannot
+    # go vacuous the way `id not in text` does for an id like `" "`.
+    assert refused.text == _timeline(client, "no-such-conversation").text
+
+
+def test_a_malformed_a_missing_and_a_foreign_id_are_one_response(
+    world: _World, client
+) -> None:
+    """H-1, over the whole response rather than its status: a fourth refusal
+    shape would be a fourth oracle. Status, body and every header that does not
+    vary per request are diffed equal across all three."""
+    answers = _bodies_for_404(world, client) + [
+        _timeline_encoded(client, malformed) for malformed in MALFORMED_IDS
+    ]
+    assert {a.status_code for a in answers} == {404}
+    assert len({a.text for a in answers}) == 1, "the bodies must be byte-identical"
+    varying = {"date", "content-length", "server"}
+    shapes = {
+        tuple(sorted((k.lower(), v) for k, v in a.headers.items() if k.lower() not in varying))
+        for a in answers
+    }
+    assert len(shapes) == 1, f"the responses differ outside the body: {shapes}"
+
+
+def test_the_cursor_bound_is_the_routes_own_and_is_applied_before_any_decode(
+    world: _World, client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H-2. `Cursor` is `^[A-Za-z0-9_-]{1,512}$`, and that bound is what stops a
+    50 kB parameter being base64-decoded and `json.loads`-ed by this route. The
+    bound was unpinned: `TypeAdapter(Cursor)` -> `TypeAdapter(str)` left the
+    suite green. Pinned here at the boundary, and by *whether a decode was
+    attempted* — which is the only thing that separates the two sides.
+    """
+    world.own()
+    world.say("user", "q")
+    attempted: list[str] = []
+    real = timeline.decode_cursor
+    monkeypatch.setattr(
+        timeline, "decode_cursor", lambda text: (attempted.append(text), real(text))[1]
+    )
+
+    at_bound = "A" * 512
+    refused = _timeline(client, cursor=at_bound)
+    assert refused.status_code == 422, "512 characters is inside the bound"
+    assert attempted == [at_bound], "a cursor at the bound must reach the decoder"
+
+    for outside in ("A" * 513, "A" * 4096, "not-base64url!"):
+        attempted.clear()
+        refused = _timeline(client, cursor=outside)
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["code"] == "validation_failed"
+        assert refused.json()["detail"]["field"] == "cursor"
+        assert outside not in refused.text
+        assert attempted == [], "outside the shape, the route must not decode at all"

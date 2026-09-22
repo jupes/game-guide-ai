@@ -1088,6 +1088,24 @@ def conversation_timeline(
     if store is None or db is None:
         raise unavailable
     try:
+        # The path id's shape, before any statement runs. An id outside
+        # `OpaqueId` is one the contract's `TimelinePage` cannot carry, and
+        # reaching the page build with one used to raise a `ValidationError`
+        # inside the transaction — neither `ConversationNotFound` nor a
+        # database error — so an owner got a bare 500 from their own
+        # conversation. It is `ConversationNotFound` here, which is to say the
+        # identical 404 a missing or a foreign conversation gets, from this
+        # handler's one refusal path: malformed and missing are
+        # indistinguishable (SEC-3), and no new refusal shape is added.
+        #
+        # Checked *after* the 503 gate above for the same reason: with the
+        # store absent both malformed and missing answer 503, with it present
+        # both answer 404, so the two never diverge in any reachable state.
+        #
+        # Acceptable for real users: the shipped UI mints UUIDs, which fit the
+        # shape. `/chat` and `GET …/messages` are deliberately untouched, so a
+        # legacy conversation with an id outside it stays readable there.
+        timeline.require_readable_id(conversation_id)
         # One transaction covers the ownership check and the read, so the whole
         # request takes one connection.
         with db.transaction() as unit:

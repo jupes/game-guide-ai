@@ -52,6 +52,7 @@ from .workbench_contracts import (
     ErrorBody,
     ErrorCode,
     ErrorInfo,
+    OpaqueId,
     SchemaVersion,
     TimelinePage,
     entry_or_opaque,
@@ -377,6 +378,37 @@ def parse_page_query(limit: str | None, cursor: str | None) -> tuple[int, Timeli
 
 
 # ── Requirement 9: authorization, and the page ───────────────────────────────
+
+
+#: The path id, against the shape the *contract* carries it in. `OpaqueId` is
+#: `^[A-Za-z0-9_-]{1,64}$`; `ChatRequest.conversation_id` is a bare `str`, so
+#: `/chat` can and did mint ids outside it.
+_CONVERSATION_ID = TypeAdapter(OpaqueId)
+
+
+def require_readable_id(conversation_id: str) -> None:
+    """The id this route can answer with, or the one refusal it already has.
+
+    An id outside `OpaqueId` is one `TimelinePage.conversation_id` cannot
+    carry, so building the page raises a `ValidationError` — inside the
+    transaction, where it is neither `ConversationNotFound` nor a database
+    error, and a caller's own conversation answers **500**. Refused up front
+    instead, and refused as `ConversationNotFound`: malformed, missing and
+    foreign must stay one response from one code path (SEC-3), and a second
+    refusal shape here would be a second oracle.
+
+    Acceptable for real users: the shipped UI mints UUIDs, which fit the shape.
+    A legacy conversation whose id does not is not readable through this route
+    and stays readable through the unchanged `GET …/messages`.
+    """
+    try:
+        _CONVERSATION_ID.validate_python(conversation_id)
+    except ValidationError:
+        # `from None`, for `parse_page_query`'s reason: a bare `TypeAdapter`'s
+        # `ValidationError` prints `input_value=...`, and chaining it would put
+        # the raw path parameter one `__cause__` hop from any traceback
+        # (SEC-20, SEC-23, R-12).
+        raise ConversationNotFound("the conversation id is not readable here") from None
 
 
 def authorize(
