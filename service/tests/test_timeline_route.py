@@ -103,22 +103,35 @@ def _timeline(client: TestClient, conversation_id: str = CONVERSATION, **params)
     return client.get(f"/conversations/{conversation_id}/timeline", params=params)
 
 
-def _walk(client: TestClient, size: int) -> list[dict]:
-    """Every entry of the conversation, newest first, at this page size."""
-    items: list[dict] = []
-    cursor: str | None = None
-    for _ in range(500):  # a bound, so a cursor that never ends fails instead of hangs
+#: Every cursor walk in this file goes through `_pages` and is bounded by this;
+#: none is written as a bare `while True`. A cursor that stops advancing is a
+#: real regression — `_window`'s `<` becoming `<=` is one — and an unbounded
+#: walk turns it into a hung suite with no diagnostic instead of a failing test.
+_WALK_BOUND = 500
+
+
+def _pages(client: TestClient, size: int, *, cursor: str | None = None):
+    """Every page of the conversation at this size, from this cursor, bounded."""
+    for _ in range(_WALK_BOUND):
         params = {"limit": str(size)} | ({"cursor": cursor} if cursor is not None else {})
         page = _timeline(client, **params)
         assert page.status_code == 200, page.text
         body = page.json()
-        assert len(body["items"]) <= size
-        items.extend(body["items"])
         assert "next_cursor" in body, "next_cursor is required: the end is null, never a missing key"
+        yield body
         cursor = body["next_cursor"]
         if cursor is None:
-            return items
+            return
     raise AssertionError("the cursor walk did not terminate")
+
+
+def _walk(client: TestClient, size: int) -> list[dict]:
+    """Every entry of the conversation, newest first, at this page size."""
+    items: list[dict] = []
+    for body in _pages(client, size):
+        assert len(body["items"]) <= size
+        items.extend(body["items"])
+    return items
 
 
 # ── The happy path ───────────────────────────────────────────────────────────
@@ -167,15 +180,9 @@ def test_every_page_the_route_emits_validates_and_reserialises_under_the_contrac
         world.say("assistant", f"a{i}")
     world.say("assistant", "an orphan")
     for size in (1, 3, 100):
-        cursor = None
-        while True:
-            params = {"limit": str(size)} | ({"cursor": cursor} if cursor else {})
-            body = _timeline(client, **params).json()
+        for body in _pages(client, size):
             page = TimelinePage.model_validate(body)
             assert json.loads(page.model_dump_json()) == body
-            cursor = body["next_cursor"]
-            if cursor is None:
-                break
 
 
 # ── C3: pagination never splits a prompt from its result ─────────────────────
@@ -218,17 +225,11 @@ def test_no_page_boundary_can_separate_a_prompt_from_its_answer(world: _World, c
     are on the same page whatever the page size or where the boundary falls."""
     _a_long_mixed_conversation(world)
     for size in range(1, 11):
-        cursor = None
-        while True:
-            params = {"limit": str(size)} | ({"cursor": cursor} if cursor else {})
-            body = _timeline(client, **params).json()
+        for body in _pages(client, size):
             for entry in body["items"]:
                 if entry["entry_kind"] == "chat" and entry["prompt"] is not None:
                     # Whatever the answer is, it travelled with its prompt.
                     assert "answer" in entry
-            cursor = body["next_cursor"]
-            if cursor is None:
-                break
 
 
 def test_a_cursor_resumes_exactly_where_the_page_stopped(world: _World, client) -> None:
@@ -503,11 +504,8 @@ def test_a_cursors_entry_position_survives_every_page_boundary(world: _World, cl
     supplied = timeline.encode_cursor(timeline.TimelineCursor(entries=held, messages=None))
 
     pages = 0
-    cursor: str | None = supplied
-    while cursor is not None:
-        page = _timeline(client, limit="2", cursor=cursor)
-        assert page.status_code == 200, page.text
-        cursor = page.json()["next_cursor"]
+    for body in _pages(client, 2, cursor=supplied):
+        cursor = body["next_cursor"]
         pages += 1
         if cursor is not None:
             assert timeline.decode_cursor(cursor).entries == held, (
