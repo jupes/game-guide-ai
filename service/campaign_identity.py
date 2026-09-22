@@ -50,6 +50,8 @@ ENROLMENT_CODE: Final = "enc_"
 DEVICE_CREDENTIAL: Final = "dev_"
 TABLE_SESSION: Final = "ses_"
 TABLE_CREDENTIAL: Final = "tcr_"
+#: SEC-4 names this one: a GM Workbench document (1kg.5.1).
+DOCUMENT: Final = "doc_"
 
 PREFIXES: Final[tuple[str, ...]] = (
     CAMPAIGN,
@@ -58,6 +60,7 @@ PREFIXES: Final[tuple[str, ...]] = (
     DEVICE_CREDENTIAL,
     TABLE_SESSION,
     TABLE_CREDENTIAL,
+    DOCUMENT,
 )
 
 #: What each prefix is called in a refusal. Never the value, only the kind (SEC-20).
@@ -68,6 +71,7 @@ _KINDS: Final[dict[str, str]] = {
     DEVICE_CREDENTIAL: "device-credential identifier",
     TABLE_SESSION: "table-session identifier",
     TABLE_CREDENTIAL: "table-credential identifier",
+    DOCUMENT: "document identifier",
 }
 
 #: 16 bytes = 128 bits, SEC-4's floor, which `token_urlsafe` renders as 22 characters.
