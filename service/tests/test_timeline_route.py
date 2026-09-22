@@ -791,3 +791,42 @@ def test_the_cursor_bound_is_the_routes_own_and_is_applied_before_any_decode(
         assert refused.json()["detail"]["field"] == "cursor"
         assert outside not in refused.text
         assert attempted == [], "outside the shape, the route must not decode at all"
+
+
+def test_no_log_line_of_this_route_carries_the_path_parameter(
+    world: _World, client, caplog: pytest.LogCaptureFixture
+) -> None:
+    """M-2. The 503 path used to interpolate the raw path parameter into its log
+    line, so a `%0A` in the id forged a log record. H-1 keeps a newline out of
+    that id, but the log line must not rest on it: it records the fact, never
+    the value. Driven with a canary the id shape *does* admit, so the assertion
+    cannot pass merely because the request was refused earlier.
+    """
+    class _Exploding:
+        def owner_of(self, unit, conversation_id):
+            import psycopg
+
+            raise psycopg.OperationalError("the server closed the connection")
+
+        def legacy_window(self, unit, conversation_id, *, before, limit_rows):
+            raise AssertionError("never reached")
+
+    app.dependency_overrides[get_timeline_store] = lambda: _Exploding()
+    try:
+        with caplog.at_level(logging.DEBUG):
+            assert _timeline(client, f"{CANARY}-conversation").status_code == 503
+    finally:
+        app.dependency_overrides[get_timeline_store] = lambda: world.timeline
+    ours = [r for r in caplog.records if r.name.startswith("service")]
+    assert ours, "the 503 must leave a trace, or what follows is vacuous"
+    for record in ours:
+        assert CANARY not in record.getMessage()
+        assert all(CANARY not in str(arg) for arg in (record.args or ()))
+
+    # And the forging shape itself never reaches a logger at all.
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        assert _timeline_encoded(
+            client, "forged\nWARNING:root:not a real line"
+        ).status_code == 404
+    assert [r for r in caplog.records if r.name.startswith("service")] == []

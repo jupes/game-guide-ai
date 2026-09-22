@@ -1117,10 +1117,11 @@ def conversation_timeline(
         ) from missing
     except _DB_ERRORS as exc:
         # Content-free: the exception TYPE, never its message, which can carry
-        # a statement and therefore a prompt (SEC-20).
-        log.warning(
-            "timeline read failed (conversation_id=%s): %s", conversation_id, type(exc).__name__,
-        )
+        # a statement and therefore a prompt (SEC-20) — and never the path
+        # parameter either, which is caller-controlled and whose `%0A` would
+        # forge a log line. The fact, not the value: the route and the status
+        # are already in the access log, so nothing diagnostic is lost.
+        log.warning("timeline read failed: %s", type(exc).__name__)
         raise unavailable from exc
 
 
