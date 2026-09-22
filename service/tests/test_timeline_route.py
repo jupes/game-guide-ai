@@ -778,9 +778,12 @@ def test_the_cursor_bound_is_the_routes_own_and_is_applied_before_any_decode(
     world.say("user", "q")
     attempted: list[str] = []
     real = timeline.decode_cursor
-    monkeypatch.setattr(
-        timeline, "decode_cursor", lambda text: (attempted.append(text), real(text))[1]
-    )
+
+    def _spy(text: str) -> timeline.TimelineCursor:
+        attempted.append(text)
+        return real(text)
+
+    monkeypatch.setattr(timeline, "decode_cursor", _spy)
 
     at_bound = "A" * 512
     refused = _timeline(client, cursor=at_bound)
