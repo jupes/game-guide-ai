@@ -324,9 +324,16 @@ def _position_from(value: object) -> Position | None:
 def decode_cursor(text: str) -> TimelineCursor:
     """The inverse of `encode_cursor`, refusing anything it did not mint.
 
-    Nothing here is guessed at: a cursor of another version, a damaged one or
-    one a caller invented is a refusal, so a client can never be served a page
+    Nothing here is guessed at: a cursor of another version, or a damaged one,
+    is a refusal rather than a guess, so a client can never be served a page
     that silently skips or repeats entries.
+
+    What this does **not** claim is authenticity. Cursors are unsigned, so a
+    structurally valid one a caller minted themselves is honoured — it names a
+    position, and every window is scoped to `conversation_id` on top of an
+    ownership check, so the most such a caller can do is re-read or skip part of
+    a conversation they already own. Signing was never asked for, and a cursor
+    carries ids and times only (X-7).
     """
     try:
         raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))

@@ -395,7 +395,13 @@ def test_a_limit_outside_the_bound_is_a_422_that_never_echoes_it(
     body = refused.json()
     assert body["detail"]["code"] == "validation_failed"
     assert body["detail"]["field"] == "limit"
-    assert params["limit"] not in refused.text or params["limit"] == ""
+    # L-1. `"" not in text` is true of nothing, so the empty `limit` cannot be
+    # pinned by looking for it. It is pinned the other way instead: its refusal
+    # is byte-identical to another limit's, so it carries none of its own input.
+    if params["limit"]:
+        assert params["limit"] not in refused.text
+    else:
+        assert refused.text == _timeline(client, limit="nine").text
 
 
 def test_a_cursor_this_server_did_not_mint_is_a_422_that_never_echoes_it(
