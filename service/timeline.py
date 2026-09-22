@@ -52,6 +52,7 @@ from .workbench_contracts import (
     ErrorBody,
     ErrorCode,
     ErrorInfo,
+    OpaqueId,
     SchemaVersion,
     TimelinePage,
     entry_or_opaque,
@@ -323,9 +324,16 @@ def _position_from(value: object) -> Position | None:
 def decode_cursor(text: str) -> TimelineCursor:
     """The inverse of `encode_cursor`, refusing anything it did not mint.
 
-    Nothing here is guessed at: a cursor of another version, a damaged one or
-    one a caller invented is a refusal, so a client can never be served a page
+    Nothing here is guessed at: a cursor of another version, or a damaged one,
+    is a refusal rather than a guess, so a client can never be served a page
     that silently skips or repeats entries.
+
+    What this does **not** claim is authenticity. Cursors are unsigned, so a
+    structurally valid one a caller minted themselves is honoured — it names a
+    position, and every window is scoped to `conversation_id` on top of an
+    ownership check, so the most such a caller can do is re-read or skip part of
+    a conversation they already own. Signing was never asked for, and a cursor
+    carries ids and times only (X-7).
     """
     try:
         raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
@@ -355,22 +363,68 @@ def parse_page_query(limit: str | None, cursor: str | None) -> tuple[int, Timeli
     if limit is not None:
         try:
             size = _LIMIT.validate_python(limit)
-        except ValidationError as exc:
-            raise ParameterRefused("limit") from exc
+        except ValidationError:
+            # `from None`, deliberately. `_LIMIT` and `_CURSOR` are bare
+            # `TypeAdapter`s and do not carry `_Contract`'s
+            # `hide_input_in_errors=True`, so their `ValidationError` prints
+            # `input_value=...`; a forged cursor position reaches
+            # `datetime.fromisoformat`, whose `ValueError` quotes the string.
+            # Chaining either would leave the caller's raw parameter one
+            # `__cause__` hop from any `exc_info=True` log line (SEC-20,
+            # SEC-23, R-12). Clearing the cause also suppresses `__context__`,
+            # so the formatted traceback holds the refusal and nothing else.
+            raise ParameterRefused("limit") from None
         if not 1 <= size <= TIMELINE_PAGE_MAX_ITEMS:
             raise ParameterRefused("limit")
     if cursor is None:
         return size, None
     try:
         return size, decode_cursor(_CURSOR.validate_python(cursor))
-    except (ValidationError, CursorUnreadable) as exc:
-        raise ParameterRefused("cursor") from exc
+    except (ValidationError, CursorUnreadable):
+        raise ParameterRefused("cursor") from None
 
 
 # ── Requirement 9: authorization, and the page ───────────────────────────────
 
 
-def authorize(store: TimelineStore, unit: Any, conversation_id: str, *, user_id: int) -> None:
+#: The path id, against the shape the *contract* carries it in. `OpaqueId` is
+#: `^[A-Za-z0-9_-]{1,64}$`; `ChatRequest.conversation_id` is a bare `str`, so
+#: `/chat` can and did mint ids outside it.
+_CONVERSATION_ID = TypeAdapter(OpaqueId)
+
+
+def require_readable_id(conversation_id: str) -> None:
+    """The id this route can answer with, or the one refusal it already has.
+
+    An id outside `OpaqueId` is one `TimelinePage.conversation_id` cannot
+    carry, so building the page raises a `ValidationError` — inside the
+    transaction, where it is neither `ConversationNotFound` nor a database
+    error, and a caller's own conversation answers **500**. Refused up front
+    instead, and refused as `ConversationNotFound`: malformed, missing and
+    foreign must stay one response from one code path (SEC-3), and a second
+    refusal shape here would be a second oracle.
+
+    Acceptable for real users: the shipped UI mints UUIDs, which fit the shape.
+    A legacy conversation whose id does not is not readable through this route
+    and stays readable through the unchanged `GET …/messages`.
+    """
+    try:
+        _CONVERSATION_ID.validate_python(conversation_id)
+    except ValidationError:
+        # `from None`, for `parse_page_query`'s reason: a bare `TypeAdapter`'s
+        # `ValidationError` prints `input_value=...`, and chaining it would put
+        # the raw path parameter one `__cause__` hop from any traceback
+        # (SEC-20, SEC-23, R-12).
+        raise ConversationNotFound("the conversation id is not readable here") from None
+
+
+def authorize(
+    # justification: the unit is passed straight through to the store, which
+    # types it as `UnitOfWork`. Naming that type here would make this module
+    # import `service.db`, and requirement 10 keeps the read model free of the
+    # database layer — it holds no SQL and touches no connection.
+    store: TimelineStore, unit: Any, conversation_id: str, *, user_id: int,
+) -> None:
     """The caller owns this conversation, or one refusal for every other case.
 
     **Never a claim.** A conversation with no ownership row — 0001 declares
@@ -385,6 +439,8 @@ def authorize(store: TimelineStore, unit: Any, conversation_id: str, *, user_id:
 
 
 def read_page(
+    # justification: as in `authorize` above — the unit is opaque here and is
+    # only ever handed back to the store, which types it as `UnitOfWork`.
     store: TimelineStore, unit: Any, conversation_id: str, *,
     limit: int, cursor: TimelineCursor | None,
 ) -> TimelinePage:

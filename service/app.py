@@ -32,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from . import gcp_logging
+from . import gcp_logging, timeline
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .db import Database, PoolSettings
@@ -79,6 +79,8 @@ from .ratelimit import (
     client_source,
 )
 from .session import SessionData, decode_session, encode_session
+from .timeline_store import PostgresTimelineStore, TimelineStore
+from .workbench_contracts import ErrorBody, ErrorCode, TimelinePage
 
 log = logging.getLogger(__name__)
 
@@ -252,6 +254,7 @@ def _build_stores(db: Database) -> None:
     Only ever called once the schema has been checked."""
     _state["store"] = PostgresMessageStore(db=db)
     _state["auth"] = PostgresAuthStore(db=db)
+    _state["timeline"] = PostgresTimelineStore()
 
 
 def _build_rag(db: Database) -> None:
@@ -343,6 +346,22 @@ def get_message_store() -> MessageStore | None:
     if "store" not in _state:
         recover_database()
     return _state.get("store")
+
+
+def get_timeline_store() -> TimelineStore | None:
+    # Same posture as `get_message_store`: None is a valid state. Without one
+    # the timeline route answers 503 and no other path is affected.
+    if "timeline" not in _state:
+        recover_database()
+    return _state.get("timeline")
+
+
+def get_timeline_database() -> Database | None:
+    # The database only when a store exists, so a degraded instance whose schema
+    # was never checked cannot be read through.
+    if "timeline" not in _state:
+        recover_database()
+    return _state.get("db") if "timeline" in _state else None
 
 
 def get_metrics_sink(request: Request) -> MetricsSink:
@@ -1024,6 +1043,86 @@ def conversation_messages(
         )
         raise HTTPException(status_code=503, detail="message history unavailable") from exc
     return MessagesResponse(conversation_id=conversation_id, messages=messages)
+
+
+def _timeline_refusal(status: int, body: ErrorBody) -> HTTPException:
+    """A Workbench refusal as FastAPI raises one: `detail` holds the object, so
+    the wire body is exactly `ErrorBody`. `exclude_none` keeps the optional keys
+    out, as the contract's own examples do."""
+    return HTTPException(status_code=status, detail=body.detail.model_dump(mode="json", exclude_none=True))
+
+
+@app.get("/conversations/{conversation_id}/timeline", response_model=TimelinePage)
+def conversation_timeline(
+    conversation_id: str,
+    # Declared `str | None` so FastAPI never validates them: its default 422
+    # body repeats the request's own input (SEC-23, R-12). This route validates
+    # both itself and answers with `validation_error_body`.
+    limit: str | None = None,
+    cursor: str | None = None,
+    store: TimelineStore | None = Depends(get_timeline_store),
+    db: Database | None = Depends(get_timeline_database),
+    # Authentication only. `require_session` answers three 401 bodies today;
+    # SEC-2's single body belongs to `agent-forge-harness-oe6`, which will also
+    # move this route onto its scaffolding (R-4, R-5).
+    session: SessionData = Depends(require_session),
+) -> TimelinePage:
+    """The conversation as typed entries, newest first (1kg.4.2).
+
+    Ownership is resolved through `owner_of` in one read-only statement and a
+    conversation that is missing, unowned or another user's answers the same
+    404 from one code path (§8.1, SEC-2, SEC-3). This route **never claims**;
+    `GET …/messages` still does, and is deliberately unchanged.
+    """
+    try:
+        size, page_cursor = timeline.parse_page_query(limit, cursor)
+    except timeline.ParameterRefused as refused:
+        raise _timeline_refusal(422, timeline.parameter_error_body(refused.field)) from refused
+    if session.role != "dm":
+        raise _timeline_refusal(
+            403, timeline.error_body(ErrorCode.FORBIDDEN, timeline.FORBIDDEN_MESSAGE, retryable=False)
+        )
+    unavailable = _timeline_refusal(
+        503, timeline.error_body(ErrorCode.BACKEND_UNAVAILABLE, timeline.UNAVAILABLE_MESSAGE, retryable=True)
+    )
+    if store is None or db is None:
+        raise unavailable
+    try:
+        # The path id's shape, before any statement runs. An id outside
+        # `OpaqueId` is one the contract's `TimelinePage` cannot carry, and
+        # reaching the page build with one used to raise a `ValidationError`
+        # inside the transaction — neither `ConversationNotFound` nor a
+        # database error — so an owner got a bare 500 from their own
+        # conversation. It is `ConversationNotFound` here, which is to say the
+        # identical 404 a missing or a foreign conversation gets, from this
+        # handler's one refusal path: malformed and missing are
+        # indistinguishable (SEC-3), and no new refusal shape is added.
+        #
+        # Checked *after* the 503 gate above for the same reason: with the
+        # store absent both malformed and missing answer 503, with it present
+        # both answer 404, so the two never diverge in any reachable state.
+        #
+        # Acceptable for real users: the shipped UI mints UUIDs, which fit the
+        # shape. `/chat` and `GET …/messages` are deliberately untouched, so a
+        # legacy conversation with an id outside it stays readable there.
+        timeline.require_readable_id(conversation_id)
+        # One transaction covers the ownership check and the read, so the whole
+        # request takes one connection.
+        with db.transaction() as unit:
+            timeline.authorize(store, unit, conversation_id, user_id=session.user_id)
+            return timeline.read_page(store, unit, conversation_id, limit=size, cursor=page_cursor)
+    except timeline.ConversationNotFound as missing:
+        raise _timeline_refusal(
+            404, timeline.error_body(ErrorCode.NOT_FOUND, timeline.NOT_FOUND_MESSAGE, retryable=False)
+        ) from missing
+    except _DB_ERRORS as exc:
+        # Content-free: the exception TYPE, never its message, which can carry
+        # a statement and therefore a prompt (SEC-20) — and never the path
+        # parameter either, which is caller-controlled and whose `%0A` would
+        # forge a log line. The fact, not the value: the route and the status
+        # are already in the access log, so nothing diagnostic is lost.
+        log.warning("timeline read failed: %s", type(exc).__name__)
+        raise unavailable from exc
 
 
 def _to_attachment(sa: StoredAttachment) -> Attachment:

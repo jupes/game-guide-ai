@@ -390,20 +390,28 @@ def _a_legacy_orphan(dsn: str, conversation_id: str, rows: list[tuple[str, str, 
     made the way the real ones were: while the constraint is not on the table.
     It goes back exactly as 0001 declares it, `NOT VALID` included, so what the
     test then reads is a database in the state a real one is in.
+
+    The restore is in a `finally`. `connect()` is `autocommit=True`, so a
+    failure between the two `ALTER`s would otherwise leave the constraint off
+    for the rest of the test. It cannot bleed past the test — `throwaway_database`
+    gives every one its own uuid-named database and drops it — but a reader
+    should not have to establish that to trust the helper.
     """
     with connect(dsn) as conn:
         conn.execute("ALTER TABLE chat.messages DROP CONSTRAINT messages_conversation_fkey")
-        for mode, role, content in rows:
+        try:
+            for mode, role, content in rows:
+                conn.execute(
+                    "INSERT INTO chat.messages (conversation_id, mode, role, content) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (conversation_id, mode, role, content),
+                )
+        finally:
             conn.execute(
-                "INSERT INTO chat.messages (conversation_id, mode, role, content) "
-                "VALUES (%s, %s, %s, %s)",
-                (conversation_id, mode, role, content),
+                "ALTER TABLE chat.messages ADD CONSTRAINT messages_conversation_fkey "
+                "FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id) "
+                "ON DELETE CASCADE NOT VALID"
             )
-        conn.execute(
-            "ALTER TABLE chat.messages ADD CONSTRAINT messages_conversation_fkey "
-            "FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id) "
-            "ON DELETE CASCADE NOT VALID"
-        )
 
 
 @needs_db
@@ -467,6 +475,64 @@ def test_deleting_the_conversation_takes_its_messages_with_it(dsn: str) -> None:
             "SELECT count(*) FROM chat.messages WHERE conversation_id = %s", (CONVERSATION,)
         ).fetchone()[0]
     assert int(left) == 0
+
+
+@needs_db
+def test_two_rows_on_one_instant_still_come_back_in_a_total_order(dsn: str) -> None:
+    """M-3. `_LEGACY_ORDER` ends `, id DESC`, and nothing proved it.
+
+    Every other PostgreSQL test here writes its rows through separate
+    statements, so `now()` differs on each and `ORDER BY created_at DESC`
+    alone already orders them — drop the tiebreak and they all stay green.
+    The twin's equivalent dies only because `InMemoryMessageStore.append`
+    stamps `datetime.now(UTC)` in a tight loop and really does tie. A real
+    conversation ties for the same reason, and an order PostgreSQL is free to
+    choose is an order that can differ between two reads of the same page:
+    an entry repeated on one side of a cursor and missing on the other.
+
+    So: two rows, one explicit instant, and the window must still be a total
+    order. Both halves are asserted — the raw window the SQL returns, and the
+    page the read model builds on top of it.
+    """
+    with connect(dsn) as conn:
+        owner = conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES ('tied@example.com', 'x') "
+            "RETURNING id"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO chat.conversations (conversation_id, user_id) VALUES (%s, %s)",
+            (CONVERSATION, int(owner)),
+        )
+        tied = conn.execute("SELECT now()").fetchone()[0]
+        ids = [
+            conn.execute(
+                "INSERT INTO chat.messages (conversation_id, mode, role, content, created_at) "
+                "VALUES (%s, 'sage', %s, %s, %s) RETURNING id",
+                (CONVERSATION, role, content, tied),
+            ).fetchone()[0]
+            for role, content in (("user", "asked"), ("assistant", "answered"))
+        ]
+        stamps = conn.execute(
+            "SELECT count(DISTINCT created_at) FROM chat.messages WHERE conversation_id = %s",
+            (CONVERSATION,),
+        ).fetchone()[0]
+    assert int(stamps) == 1, "the two rows must share one instant or this test proves nothing"
+
+    database = Database(dsn, PoolSettings(sync_max=4, async_max=0, acquire_timeout_s=5))
+    store = PostgresTimelineStore()
+    with database.transaction() as unit:
+        window = store.legacy_window(unit, CONVERSATION, before=None, limit_rows=10)
+        bounded = store.legacy_window(unit, CONVERSATION, before=None, limit_rows=1)
+        page = timeline.read_page(store, unit, CONVERSATION, limit=10, cursor=None)
+    assert [row.id for row in window] == [int(ids[1]), int(ids[0])], (
+        "newest first, and on a tie the higher id first — the ordering key is total"
+    )
+    assert [row.role for row in window] == ["assistant", "user"]
+    # A bound of one must take the newest of the tied pair, not an arbitrary one.
+    assert [row.id for row in bounded] == [int(ids[1])]
+    # And the pair still adapts to one exchange rather than two half ones.
+    assert [entry.prompt for entry in page.items] == ["asked"]
+    assert [entry.answer.text for entry in page.items] == ["answered"]
 
 
 # ── Ownership is in the query, statically ────────────────────────────────────

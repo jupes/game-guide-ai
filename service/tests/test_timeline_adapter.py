@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import traceback
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -373,3 +374,52 @@ def test_a_cursor_that_is_not_base64url_is_refused_before_it_is_decoded() -> Non
     with pytest.raises(timeline.ParameterRefused) as refused:
         timeline.parse_page_query(None, "has spaces and $")
     assert refused.value.field == "cursor"
+
+
+_PARAMETER_CANARY = "Zx9CanaryQ7"
+
+
+def _chain(exc: BaseException) -> list[BaseException]:
+    """The links a logger following `__cause__` would reach."""
+    links: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        links.append(current)
+        current = current.__cause__
+    return links
+
+
+@pytest.mark.parametrize("limit,cursor", [
+    (_PARAMETER_CANARY, None),
+    (None, f"{_PARAMETER_CANARY}!!!not-base64!!!"),
+    (None, base64.urlsafe_b64encode(
+        json.dumps({"v": 1, "e": None, "m": [_PARAMETER_CANARY, 1]}).encode()
+    ).decode().rstrip("=")),
+])
+def test_a_refused_parameter_is_not_reachable_through_the_exception_chain(
+    limit: str | None, cursor: str | None
+) -> None:
+    """The refusal *body* never echoes the value, and neither may the refusal.
+
+    `_LIMIT` and `_CURSOR` are bare `TypeAdapter`s, which do not carry
+    `_Contract`'s `hide_input_in_errors=True`, so their `ValidationError`
+    prints `input_value=...`; and a forged cursor position reaches
+    `datetime.fromisoformat`, whose `ValueError` quotes the string it was
+    given. Chaining either onto `ParameterRefused` would put the caller's raw
+    parameter one `__cause__` hop away, and the day a route logs a refusal
+    with `exc_info=True` that is a leak (SEC-20, SEC-23, R-12). The refusal is
+    raised `from None`: `__cause__` is cleared and `__context__` suppressed, so
+    the traceback a logger formats holds the refusal and nothing else.
+    """
+    with pytest.raises(timeline.ParameterRefused) as refused:
+        timeline.parse_page_query(limit, cursor)
+    links = _chain(refused.value)
+    assert len(links) == 1, "the refusal carries a cause that holds the parameter"
+    assert all(_PARAMETER_CANARY not in str(link) for link in links)
+    assert refused.value.__suppress_context__, "exc_info would print __context__ otherwise"
+    printed = "".join(traceback.format_exception(
+        type(refused.value), refused.value, refused.value.__traceback__
+    ))
+    assert _PARAMETER_CANARY not in printed

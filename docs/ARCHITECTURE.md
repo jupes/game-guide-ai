@@ -509,7 +509,11 @@ deleted, and the read model writes nothing at all. Ownership is resolved through
 `owner_of` in one read-only statement, in the same transaction as the read, and
 a conversation that is missing, that has no ownership row, or that belongs to
 another user is refused identically, from one code path (threat model §8.1,
-SEC-2, SEC-3) — and it is never claimed.
+SEC-2, SEC-3) — and it is never claimed. A legacy conversation whose id does not
+fit the contract's `OpaqueId` shape (`^[A-Za-z0-9_-]{1,64}$`, which every id the
+shipped UI mints does) is not readable through the timeline route — it answers
+that same 404, before any statement runs — and remains readable through the
+unchanged legacy route.
 
 **Two sources, one order.** Turns taken after the durable timeline ships carry a
 typed entry row; every older turn is **adapted** from its `chat.messages` rows,
@@ -532,3 +536,12 @@ validate — written by a newer version before a rollback, damaged, or carrying 
 `opaque` entry in the same place, carrying nothing of the payload. The stored
 row is left untouched: never repaired, never rewritten, never dropped, so it
 renders again after a roll-forward, and one bad row never takes a page down.
+**404, and never a claim.** The route resolves ownership through `owner_of` in
+one read-only statement inside the same transaction as the read, and a
+conversation that is missing, has no ownership row, or belongs to another user
+answers the **identical 404** from one code path (threat model §8.1, SEC-2,
+SEC-3). That is deliberately unlike `GET …/messages`, which answers 403 and
+claims an unowned conversation that has content — grandfathered, and left as it
+is. The route requires the `dm` role (SEC-2), validates `limit` and `cursor`
+itself so FastAPI's default 422 can never echo the request back (SEC-23), and
+fails closed with `backend_unavailable` when the store or the database is away.
