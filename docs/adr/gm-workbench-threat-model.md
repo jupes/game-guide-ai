@@ -1,6 +1,8 @@
 # GM Workbench threat model and security rules
 
-Status: **proposed** · Bead: `agent-forge-harness-1kg.1.3` · Date: 2026-09-17
+Status: **proposed** · Bead: `agent-forge-harness-1kg.1.3` · Date: 2026-09-17 ·
+**Amended 2026-09-24 — read section 14 first: players hold accounts, there are no
+guests, and the four bearer secrets of §6.2 are superseded.**
 Implements and constrains: [`gm-workbench-interactions.md`](gm-workbench-interactions.md)
 (`1kg.1.1`) · Sibling model: the Live Session Assistant's privacy and threat
 model (`agent-forge-harness-1ir.1.3`, PR #60) · Master plan:
@@ -562,3 +564,15 @@ join route's timing is one digest and one lookup in every case; `Path=/table` do
 not match `/table-sessions`; `SameSite=Strict` does not break the first join; the
 table page's microphone denial is compatible with the sibling plan; same-origin
 media is a permitted tightening of REVEAL-21, not a reversal.
+
+## 14. Amendments
+
+Rows below amend the rules they name. A downstream bead reads the rule and then
+this table. Where a row says **superseded**, the rule above it is kept as the
+record of what was decided and why, and must not be built.
+
+| # | Amends | Amendment | Made by |
+| --- | --- | --- | --- |
+| TA-1 | R-6, SEC-17 (GM pages), SEC-33, WT-9, S-4 | **`va8` shipped** (PR #89, deployed 2026-09-24). Every channel's Markdown now drops remote subresources unconditionally, not only the Workbench's, and every image that survives carries an `alt` (`fu9`). The application and `ui/nginx.conf` serve one byte-identical policy, `img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`, verified live on the production origin. R-6's "no security headers are set anywhere" is no longer true. **S-4's gate is met**: no Workbench tool is blocked by `va8` any longer. SEC-17's stricter table-page policy (and `nosniff`, `Referrer-Policy`, the COOP/CORP and `Permissions-Policy` headers) is **not** shipped and still binds the first table route. | lead, from PR #89's review |
+| TA-2 | SEC-1, SEC-5, SEC-6, SEC-8 to SEC-13, §6.2, the residue after §6.2, WT-3, WT-5, WT-7, §8 principals, §8.2, §8.3, T-6, §10 rows 1 and 4, S-3, §12.1 items 3, 6, 7 | **Owner decisions D-1 and D-4 (2026-09-21): every player holds an account and there are no guests** — a shared screen or projector is signed in by someone. **Superseded:** the enrolment code, the device credential and every rule that exists to protect them (single use, interception residue, device replacement, device approval, the 180-day idle expiry); the **Guest** principal and its matrix column; WT-5's accepted residue and the §10 row that accepts it; S-3's device-approval consequence. **What replaces them, at the level of rule:** a table route authenticates by the **account session**, and authorises by the caller's **seat at the campaign** (a participant is an account seated there, bead `fma`), resolved in the same query as the resource, exactly as SEC-2 does for the GM. **Still in force:** SEC-3 (no enumeration), SEC-4, SEC-7 (origin check), SEC-9's rule that End and Rotate revoke at once *for whatever table-access grant replaces the link generation*, SEC-12 and SEC-13's "no revealed content in browser storage", §6.3 in full, and the reveal model (slots, disclosures, one live disclosure per document). **Open, for the rewrite bead (`agent-forge-harness-hgm`, which blocks `1kg.7.1` and `1kg.7.2`):** whether a table link survives as an invitation that a signed-in, seated account must still present; how one cookie serves both the GM and the table route families now that SEC-1's two-credential split is gone (the session cookie is `SameSite=Lax`, `Path=/`, R-1); and the rate-limit key for table routes. | owner, 2026-09-21; recorded by the lead |
+| TA-3 | SEC-2 (the `dm` role), R-3, §8 principal **Other account** | **Owner decision D-5: creating a campaign makes you its GM**, and what an account may use is set by its tier (Free, Player, GM), not by a role. Ownership-in-the-query (SEC-2) is the whole GM authorisation for a Workbench route. **Nothing is loosened by this row**: a route that also requires the `dm` role today keeps that check until entitlement (`yje.4.1`) replaces it in a bead of its own, with a test that a non-`dm` owner is refused before and admitted after. | owner, 2026-09-21; interactions ADR A-25 |

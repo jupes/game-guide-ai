@@ -1,6 +1,19 @@
 # Invite-gated authentication
 
-Status: accepted · 2026-07-25
+Status: accepted · 2026-07-25 · **to be superseded** — see the note below
+
+> **Superseding note (2026-09-24, owner decisions of 2026-09-21).** This record
+> still describes the running system and stays in force until open signup ships
+> (epic `agent-forge-harness-yje`, `yje.2.6`); nothing here is switched off by
+> this note. What changes when it is replaced: **anyone 13 or over may sign up
+> for a free account** (D-3, D-6), so the invite stops being the gate; **the
+> account role fixed by the invite is retired** — creating a campaign makes you
+> its GM, and what an account may use is set by its tier (Free, Player, GM), not
+> by a role (D-5); and **every player holds an account** (D-1). Content
+> licensing is a separate launch gate (`yje.6.1`) and is not decided by
+> accounts or payment. The decisions are recorded in the billing plan, section
+> "Owner decisions 2026-09-21", and in the Workbench interactions record, A-23
+> to A-25.
 
 ## Context
 

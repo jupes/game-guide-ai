@@ -1,6 +1,6 @@
 # GM Workbench interactions and scope
 
-Status: accepted · 2026-09-16 · independently reviewed, verified and revised twice (§18); ten product-scope decisions await owner confirmation (§17)
+Status: accepted · 2026-09-16 · independently reviewed, verified and revised twice (§18); product-scope decisions in §17, three of them since decided (see §19 A-23 to A-26, 2026-09-24)
 
 Bead: `agent-forge-harness-1kg.1.1` · Epic: `agent-forge-harness-1kg`
 Master plan: [`forge/plans/aetheril-gm-workbench-expansion.md`](../forge/plans/aetheril-gm-workbench-expansion.md) ·
@@ -1019,6 +1019,10 @@ another should add it here. The second is pointers.
 
 ## 17. Decisions that await the owner's confirmation
 
+**Decided 2026-09-21:** E-1, E-6 and E-10 are no longer defaults — players hold
+accounts and there are no guests (§19, A-23 to A-25). E-8's limits are decided in
+the billing plan (D-7). The rows below are kept as the record of the defaults.
+
 Each of these changes what the product *is*, not merely how it behaves. Each has
 a default in force so that work is not blocked. Confirming or changing one is
 cheap now and dear after its dependants ship.
@@ -1126,7 +1130,9 @@ every table well formed — and by the author against each finding.
 Decisions this record left to a later bead, now made there. Rows A-1 to A-18
 reverse nothing: each closes something a row above left open, and the row's own
 text stands as written. **Rows A-19 to A-22 are different: they are the owner's
-decisions of 2026-09-20, and they amend the rows they name.** A downstream bead reads the row and then this table.
+decisions of 2026-09-20, and they amend the rows they name.** **Rows A-23 to A-25
+are the owner's decisions of 2026-09-21 and amend in the same way; A-26 records a
+shipped fix.** A downstream bead reads the row and then this table.
 
 | # | Decision | Amendment | Made by |
 | --- | --- | --- | --- |
@@ -1152,3 +1158,7 @@ decisions of 2026-09-20, and they amend the rows they name.** A downstream bead 
 | A-20 | §7.1, REVEAL-6, REVEAL-7, REVEAL-22, NG-20 | **Owner decision O-3:** group displays ship as per-recipient copies. A slot still holds one live document; **a document has at most one live disclosure**, which is the table slot alone or one or more participant slots. Stop on the document clears every copy in one transaction; revealing it to a new audience replaces the whole previous disclosure; a member's removal stops that member's copy; an addition displays nothing. Nothing on the table side shows that a display is one copy of several (REVEAL-24). | owner, 2026-09-20; shared eligibility ADR ED-15 |
 | A-21 | X-2 | **Owner decision O-4:** for *re-displays* in the Live Session Assistant's Phase 5, a rule the GM wrote and enabled — naming documents or excerpts, fields, audience and trigger — is the explicit GM action. A first disclosure always needs a Confirm; a GM Stop disables that rule's re-display of that subject until the GM re-arms it. Workbench v1 ships no automation. | owner, 2026-09-20; shared eligibility ADR ED-17, section 7.3 |
 | A-22 | §7.1 slot model, REVEAL-5, REVEAL-9, NG-25 | **Owner decision O-5:** a reference-excerpt slot content kind for deterministic, cited rules text is approved in principle and **gated**: no excerpt reaches a player device before the licensing review (`agent-forge-harness-yje.6.1`) lands. | owner, 2026-09-20; shared eligibility ADR section 7.4 |
+| A-23 | AUD-1, AUD-3, AUD-4, AUD-5, E-1, E-6, A-3, A-7, A-19 (its device-approval half), TABLE-13 | **Owner decision D-1: every player holds an account.** A *participant* is an **account seated at a campaign**; the alias becomes a display name the GM or the player sets. Joining a table is an account **accepting a seat**, not a code being consumed, and the owner audience is proven by the account session, not by an enrolled device. **Superseded and not to be built:** the single-use personal link and its enrolment code, the device credential, device replacement, GM approval of a new device (`1kg.2.9` and its children), the 180-day idle expiry. **Unchanged:** A-19's first half (a participant audience is open to every document type), A-20's disclosure rule, the slot model, and the character-sheet link, which now points at the seat. Built by `agent-forge-harness-fma`; migration 0004's `enrolment_codes` and `device_credentials` tables are dead and are dropped or ignored by a later migration, never edited. | owner, 2026-09-21; threat model TA-2 |
+| A-24 | AUD-7, E-10, AUD-17, REVEAL-19, REVEAL-20, REVEAL-25, TABLE-10, TABLE-16 | **Owner decision D-4: there are no guests.** Every viewer of the table signs in; a shared screen or projector is signed in by someone. AUD-17's personal-link statuses (`Not sent`, `Waiting`, …) have nothing to describe and are withdrawn. The rules for the table link, its credential and its per-generation bounds are **held, not built**, until the threat model's table-access rewrite (TA-2) says whether a table link survives as an invitation a signed-in account must present. The shared-screen sign-in needs a design. | owner, 2026-09-21; threat model TA-2 |
+| A-25 | AUD-1 (the GM), R-3, E-6 (one GM) | **Owner decision D-5: creating a campaign makes you its GM.** There is no account-level role to pick or grant for the Workbench; a GM route authorises by **campaign ownership** in the query (threat model SEC-2), which it already does. What a GM may *use* is a matter of tier, not role: **three tiers — Free; Player (player features and a credit limit); GM (GM-focused features)**, entitled by `yje.4.1`. One GM per campaign stands. **No route is loosened by this row:** a route that today also requires the `dm` role keeps it until entitlement replaces the role, in its own bead. | owner, 2026-09-21; billing plan §"Owner decisions 2026-09-21" |
+| A-26 | X-10, AE-66, S-4 (threat model) | **`va8` shipped** (PR #89, 2026-09-24): X-10's rule now holds in **every** channel, chat included, and a Content-Security-Policy is served by the application and by `nginx.conf`. AE-66 passes in the chat lane as well as the Workbench's. | lead; threat model TA-1 |

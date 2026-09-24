@@ -2,7 +2,8 @@
 
 Date: 2026-09-16  
 Epic: `agent-forge-harness-yje`  
-Status: proposed standalone initiative, revised after [plan review](../reports/additive-retrieval-and-billing-plan-review.md)
+Status: proposed standalone initiative, revised after [plan review](../reports/additive-retrieval-and-billing-plan-review.md);
+**amended 2026-09-24 with the owner's decisions of 2026-09-21 — read that section first**
 
 ## Outcome
 
@@ -196,6 +197,26 @@ flowchart LR
     COST --> FIN
 ```
 
+## Owner decisions 2026-09-21
+
+These are decisions, not proposals, and they win over any other text in this
+plan until it is rewritten around them. The Workbench interactions record (A-23
+to A-25) and its threat model (TA-2, TA-3) carry the account-side half.
+
+| # | Decision | What it changes here |
+|---|---|---|
+| D-1 | **Every player holds an account.** | Accounts are the only identity; no anonymous or device-only access to anything. |
+| D-2 | **The GM's subscription covers the table; players join with a free account.** An enhanced player tier exists for higher-end AI features. | Table cost is the GM's (as the cost model already assumed). |
+| D-3 | **Free = the cheap surfaces:** chat with a monthly cap, campaigns and documents, joining tables as a player. **Paid = the costly ones:** running a live table, session listening, media, premium-model routing, web fallback. | Adds the **free** lifecycle state below (bead `idm`); the verify-then-checkout assumption is gone — verifying an email lands in Free, not in checkout. The rulebook corpus is one surface among these; its licensing stays a launch gate (`yje.6.1`). |
+| D-4 | **No guests.** Every viewer of the table signs in, a shared screen included. | Nothing is sold to or metered for an anonymous viewer. |
+| D-5 | **Creating a campaign makes you its GM.** **Three tiers: Free; Player (player features and a credit limit); GM (GM-focused features).** | `yje.1.2` prices three tiers, not one plan; entitlement (`yje.4.1`) is per tier and per surface. The invite-fixed account role is retired (`invite-auth.md`, superseding note). |
+| D-6 | **Minimum age 13+, self-attested at signup; a refusal is remembered so a retry does not work; no guardian path for now.** The owner confirms with counsel before launch. | A signup gate in `yje.2.6`; the refusal marker must not itself be personal data beyond what is needed to refuse. |
+| D-7 | **At the credit limit:** a warning at 80%; at 100% the turn in flight completes on the cheapest model, premium features switch off, and an upsell is shown. **Never a cut-off mid-answer.** | Replaces the paid-only limit behaviour; applies to Free, Player and GM alike, each at its own limit. |
+
+**Still open:** which higher-end AI features the Player tier includes, and every
+tier's credit number — both wait on the real per-attempt costs `yje.5.1.1`
+started recording on 2026-09-24 and on the cost ledger (`yje.5.1.2`).
+
 ## Subscription and access lifecycle
 
 The final transition table belongs to `yje.1.3`. The baseline policy is:
@@ -203,6 +224,7 @@ The final transition table belongs to `yje.1.3`. The baseline policy is:
 | State | Paid generation | User data | Recovery |
 |---|---|---|---|
 | Email unverified | No | Minimal account record | Verify/resend |
+| **Free (verified, never subscribed)** — D-3 | Free surfaces only, within the free monthly cap; at the cap, D-7 | Full for free surfaces | Upgrade to Player or GM |
 | Checkout incomplete | No | Existing data if migrated | Resume checkout |
 | Active paid | Yes within plan budget | Full | Portal |
 | Active promotion | Yes within sponsored budget | Full | Purchase or portal |
