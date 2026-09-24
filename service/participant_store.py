@@ -447,9 +447,9 @@ class PostgresParticipantStore:
     def seat_for(self, unit: UnitOfWork, campaign_id: str, user_id: int) -> Participant | None:
         row = pg(unit).conn.execute(
             f"SELECT {_P_COLUMNS} FROM campaign.participants "
-            f"WHERE campaign_id = %s AND user_id = %s "
+            f"WHERE user_id = %s "
             f"AND removed_at IS NULL AND accepted_at IS NOT NULL",
-            (campaign_id, user_id),
+            (user_id,),
         ).fetchone()
         return None if row is None else _participant(row)
 
