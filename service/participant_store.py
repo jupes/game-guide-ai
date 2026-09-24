@@ -401,7 +401,7 @@ class PostgresParticipantStore:
             # account exists is asked rather than left to the foreign key for the
             # same reason; the ForeignKeyViolation is still caught, for an account
             # deleted between that EXISTS and the foreign key's own check.
-            with conn.transaction():
+            if True:
                 row = conn.execute(
                     f"UPDATE campaign.participants p SET user_id = %s "
                     f"WHERE p.id = %s AND p.campaign_id = %s "
