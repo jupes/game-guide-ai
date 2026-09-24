@@ -40,6 +40,11 @@ re-applies `vector-db/init/` files to a database that already has data (`service
 `ALL_SCHEMAS` only covers chat/auth). This is exactly what happened locally: I had to apply it by
 hand there too.
 
+> Since `1kg.1.5` the bootstrap script applies the corpus files (`01`–`03a`) only, and
+> `service/schema.py` is gone: `04`/`05` became migrations `0001`/`0002`, applied by
+> `python -m service.migrations migrate` and at service startup (`docs/migrations.md`).
+> The advice below still holds for the corpus files.
+
 **Recommended — re-run the full bootstrap script.** All five schema files (`01`–`03a`, `04`, `05`)
 are written idempotently (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, etc. — see
 `service/schema.py`'s own "must be idempotent and safe to re-run against a live database under

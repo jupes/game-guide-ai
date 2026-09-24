@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Apply every schema file, in order, to a database that does not have them yet.
+# Apply the corpus schema, in order, to a database that does not have it yet.
 #
 # For a managed instance (Cloud SQL) where nothing mounts an init directory —
 # see docs/deploy-gcp.md §3. Compose does this automatically for local volumes.
@@ -13,27 +13,27 @@
 #
 # Order matters: 01 creates the vector extension and dnd schema, 02-03 add the
 # corpus tables and hybrid search, 03a adds corpus source-provenance columns
-# (dnd-corpus-wikidot-expansion), 04 the chat schema, 05 the auth schema — whose
-# ownership foreign key is added onto 04's table.
+# (dnd-corpus-wikidot-expansion).
+#
+# The APPLICATION schema (chat, auth, app) is not applied here. It belongs to
+# the ordered migration runner — `python -m service.migrations migrate` — which
+# the service also runs at every startup, and which `python -m
+# service.admin_invites` runs before minting the first invite. One mechanism,
+# so a fresh database and an old one cannot drift apart (docs/migrations.md).
 #
 # Stopping at the first failure is the point. psql continues past a SQL error
-# without ON_ERROR_STOP, and continuing past a failed FILE would run 05 against a
-# database where 04 never created the table it references. A partially
-# bootstrapped database is not a working one: minting the first invite with
-# `python -m service.admin_invites` needs auth.users and auth.invites to exist.
+# without ON_ERROR_STOP, and continuing past a failed FILE would run 03 against a
+# database where 02 never created the tables it indexes. A partially
+# bootstrapped database is not a working one.
 set -euo pipefail
 
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Corpus schema, then the canonical application schema (service/sql/ is the one
-# definition the running service also applies — see service/schema.py).
 readonly FILES=(
   "vector-db/init/01-extensions.sql"
   "vector-db/init/02-schema.sql"
   "vector-db/init/03-hybrid-search.sql"
   "vector-db/init/03a-corpus-provenance.sql"
-  "service/sql/04-chat-schema.sql"
-  "service/sql/05-auth-schema.sql"
 )
 
 usage() { echo "usage: $(basename "$0") <dsn>" >&2; exit 2; }
@@ -55,7 +55,8 @@ main() {
       exit 1
     fi
   done
-  echo "schema bootstrap complete (${#FILES[@]} files)"
+  echo "corpus schema bootstrap complete (${#FILES[@]} files)"
+  echo "next: DATABASE_URL=<dsn> python -m service.migrations migrate   # the application schema"
 }
 
 main "$@"

@@ -10,6 +10,8 @@ WORKFLOW = Path(".github/workflows/ci.yml")
 DB_BACKED_TESTS = [
     "service/tests/test_invite_atomic.py",
     "tests/test_schema.py",
+    "tests/test_migrations_db.py",
+    "tests/test_db_postgres.py",
 ]
 
 

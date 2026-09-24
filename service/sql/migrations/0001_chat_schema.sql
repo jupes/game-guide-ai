@@ -1,11 +1,14 @@
--- Chat message history and per-user conversation ownership.
+-- Migration 0001 — chat message history and per-user conversation ownership.
 --
--- CANONICAL. This file is the only definition of the `chat` schema. It is
--- applied by both paths and must stay idempotent:
---   * fresh database — mounted into the container's init directory
---   * existing database — re-applied at every service startup, which is the
---     migration path for volumes that predate any of this
---     (service/history.py PostgresMessageStore.ensure_schema)
+-- BASELINE, and FROZEN. Until the ordered runner (service/migrations.py,
+-- 1kg.1.5) this file was the idempotent definition of the `chat` schema that
+-- every service startup re-applied. It is now applied once and recorded with
+-- its checksum, so it must never be edited again: a change is a new migration.
+--
+-- It stays idempotent on purpose. Every database that predates the migration
+-- ledger already holds these objects, and the runner applies this file over
+-- them once to adopt them (docs/migrations.md, "Adopting an existing
+-- database"). The guards below are what make that safe against live data.
 
 CREATE SCHEMA IF NOT EXISTS chat;
 
@@ -55,10 +58,9 @@ CREATE TABLE IF NOT EXISTS chat.conversations (
   catalog_revision  TEXT
 );
 
--- Migration path for a database created before b8o.2 (CREATE TABLE IF NOT
--- EXISTS above is a no-op there). ADD COLUMN IF NOT EXISTS is idempotent;
--- re-running this file at every startup must never error on a column that's
--- already there.
+-- For a database created before b8o.2 (CREATE TABLE IF NOT EXISTS above is a
+-- no-op there). ADD COLUMN IF NOT EXISTS is idempotent, so adopting a database
+-- that already has the column never errors.
 ALTER TABLE chat.conversations ADD COLUMN IF NOT EXISTS selection_strategy TEXT;
 ALTER TABLE chat.conversations ADD COLUMN IF NOT EXISTS manual_alias TEXT;
 ALTER TABLE chat.conversations ADD COLUMN IF NOT EXISTS catalog_revision TEXT;
@@ -77,12 +79,12 @@ END $$;
 -- START, so a request already in flight when an account is deleted must not be
 -- able to append into a conversation whose ownership row is gone; and deleting
 -- an account must take its content with it (the cascade chains from auth.users
--- — see 05-auth-schema.sql). NOT VALID leaves pre-ownership-table rows alone
+-- — see 0002_auth_schema.sql). NOT VALID leaves pre-ownership-table rows alone
 -- and enforces every new write.
 --
--- Guarded so a re-run is a no-op: this runs at every startup, and an
--- unconditional DROP/ADD would take an ACCESS EXCLUSIVE lock on a live table at
--- every cold start. The predicate pins the whole shape — confdeltype 'c' =
+-- Guarded so that adopting a database which already has the right constraint is
+-- a no-op: an unconditional DROP/ADD would take an ACCESS EXCLUSIVE lock on a
+-- live table and re-validate it. The predicate pins the whole shape — confdeltype 'c' =
 -- CASCADE, and conkey/confkey pin the exact COLUMNS, so a same-named CASCADE FK
 -- on another text column cannot pass for the real one and leave
 -- conversation_id unprotected.

@@ -1,10 +1,11 @@
 """
-The canonical schema files enforce what the application relies on.
+The application schema enforces what the application relies on.
 
-`service/sql/*.sql` is the single definition of the `chat` and `auth` schemas.
-Both the fresh-database path (compose init dir, `scripts/bootstrap-db.sh`) and
-the existing-database path (`ensure_schema()` at every service startup) apply
-these same files, so there is no second copy to drift.
+`service/sql/migrations/*.sql` is the single definition of the `chat`, `auth` and
+`app` schemas, and the ordered runner (`service/migrations.py`, 1kg.1.5) is the
+single path that applies it — to a fresh database and to an old one alike — so
+there is no second copy and no second mechanism to drift. The runner itself is
+tested in `tests/test_migrations_db.py`.
 
 The tests below therefore check *behaviour against a real PostgreSQL* rather
 than comparing text: what tables and columns exist, which columns each foreign
@@ -28,7 +29,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SQL_DIR = REPO_ROOT / "service" / "sql"
+SQL_DIR = REPO_ROOT / "service" / "sql" / "migrations"
 DSN = os.environ.get("DATABASE_URL") or None
 
 needs_db = pytest.mark.skipif(DSN is None, reason="no DATABASE_URL (CI always sets it)")
@@ -37,32 +38,67 @@ needs_db = pytest.mark.skipif(DSN is None, reason="no DATABASE_URL (CI always se
 # ── The canonical files reach the places that apply them ─────────────────────
 
 
-def test_the_schema_files_load_through_the_package():
-    """`ensure_schema()` reads them via importlib, so an image that ships the
-    code without the SQL cannot migrate a database."""
-    from service.schema import ALL_SCHEMAS, load
+def test_the_migrations_load_through_the_package():
+    """The runner reads them via importlib, so an image that ships the code
+    without the SQL cannot bring a database up to its own schema."""
+    from service.migrations import discover
 
-    for name in ALL_SCHEMAS:
-        assert "CREATE" in load(name).upper(), f"{name} loaded empty"
+    packaged = discover()
+    assert len(packaged) >= 3
+    for migration in packaged:
+        assert "CREATE" in migration.sql.upper(), f"{migration.filename} loaded empty"
 
 
-def test_packaging_ships_the_sql():
+def test_packaging_ships_the_sql_and_its_manifest():
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert re.search(r"\[tool\.setuptools\.package-data\]", text), (
-        "service/sql/*.sql must be declared as package-data or `pip install .` "
+        "the migrations must be declared as package-data or `pip install .` "
         "silently produces an image that cannot apply its own schema"
     )
-    assert re.search(r'service\s*=\s*\[[^\]]*sql/\*\.sql', text)
+    declared = re.search(r'service\s*=\s*\[([^\]]*)\]', text)
+    assert declared is not None
+    assert "sql/migrations/*.sql" in declared.group(1)
+    assert "sql/migrations/manifest.txt" in declared.group(1), (
+        "without the manifest the packaged runner refuses to start"
+    )
 
 
-def test_compose_mounts_the_canonical_files():
-    """Not a second copy under vector-db/init/ — that duplication is what this
-    layout removes."""
+def test_every_file_in_the_migrations_directory_is_shipped():
+    """The package-data globs are `*.sql` and the manifest. Anything else in the
+    directory would exist in a checkout and not in the image — the kind of
+    difference that only shows in production."""
+    names = sorted(p.name for p in SQL_DIR.iterdir() if p.is_file())
+    assert all(name.endswith(".sql") or name == "manifest.txt" for name in names), names
+
+
+def test_the_image_build_context_keeps_the_migrations():
+    """Both Dockerfiles `COPY service/` and `pip install .`; the package-data
+    globs then pick the files up. A `.dockerignore` line that dropped SQL or text
+    files from the context would build an image that refuses to start — and only
+    the image, never a checkout."""
+    ignored = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    patterns = [line.strip() for line in ignored if line.strip() and not line.startswith("#")]
+    dropped = ("service/sql", "service/**", "**/*.sql", "*.sql", "**/*.txt", "*.txt")
+    for pattern in patterns:
+        assert not pattern.startswith(dropped), (
+            f".dockerignore excludes the migrations from the build context: {pattern}"
+        )
+    for dockerfile in ("Dockerfile.cloud", "Dockerfile.service"):
+        text = (REPO_ROOT / dockerfile).read_text(encoding="utf-8")
+        assert "COPY service/ service/" in text, f"{dockerfile} must copy the whole service package"
+
+
+def test_there_is_one_path_to_the_application_schema():
+    """Compose initialises the corpus schema and nothing of the application's:
+    the service's migration runner builds that, for a fresh volume and an old
+    one alike. A second path would produce databases with no ledger — and no
+    second copy of the files may reappear under vector-db/init/."""
     compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    for name in ("04-chat-schema.sql", "05-auth-schema.sql"):
-        assert f"./service/sql/{name}:" in compose, f"compose must mount {name}"
-        assert not (REPO_ROOT / "vector-db" / "init" / name).exists(), (
-            f"vector-db/init/{name} is back — the schema has one definition"
+    assert "service/sql" not in compose, "the init directory must not apply application DDL"
+    for stale in ("04-chat-schema.sql", "05-auth-schema.sql"):
+        assert not (REPO_ROOT / "vector-db" / "init" / stale).exists()
+        assert not (REPO_ROOT / "service" / "sql" / stale).exists(), (
+            f"service/sql/{stale} is back — it is migration 000x now"
         )
 
 
@@ -90,7 +126,7 @@ def test_initdb_files_are_mounted_individually_not_nested_in_a_directory_mount()
 
 
 def test_the_stores_do_not_embed_their_own_ddl():
-    for module in ("service/history.py", "service/auth_store.py"):
+    for module in ("service/history.py", "service/auth_store.py", "service/jobs.py", "service/db.py"):
         text = (REPO_ROOT / module).read_text(encoding="utf-8")
         assert "CREATE TABLE" not in text.upper(), (
             f"{module} embeds DDL again; the .sql file is the definition"
@@ -112,18 +148,17 @@ def _target_dsn(dsn: str, dbname: str) -> str:
 
 @pytest.fixture(scope="module")
 def db():
-    """A throwaway database with the canonical schema applied, as a fresh
-    install would."""
-    from service.schema import ALL_SCHEMAS, load
+    """A throwaway database brought up by the migration runner, as a fresh
+    install is."""
+    from service.migrations import migrate
 
     assert DSN is not None
     name = f"schema_{uuid.uuid4().hex[:12]}"
     with _connect(DSN) as admin:
         admin.execute(f'CREATE DATABASE "{name}"')
     try:
+        migrate(_target_dsn(DSN, name))
         with _connect(_target_dsn(DSN, name)) as conn:
-            for sql in ALL_SCHEMAS:
-                conn.execute(load(sql))
             yield conn
     finally:
         with _connect(DSN) as admin:
@@ -257,20 +292,22 @@ def test_deleting_an_account_keeps_the_invite_as_a_spent_token(db):
 
 @needs_db
 def test_reapplying_over_legacy_rows_succeeds_and_leaves_them_alone(db):
-    """NOT VALID is what makes the startup migration safe.
+    """NOT VALID is what makes adopting an old database safe.
 
     Conversations predating the ownership table have messages with no parent
     row. A validating constraint would refuse to be created against that data —
-    on the production volume only — so every startup would fail after deploy.
+    on the production volume only — so the baseline migration would fail there.
     """
-    from service.schema import CHAT_SCHEMA, load
+    from service.migrations import discover
+
+    chat_schema = discover()[0].sql
 
     orphan = f"orphan-{uuid.uuid4().hex[:8]}"
     db.execute("ALTER TABLE chat.messages DROP CONSTRAINT messages_conversation_fkey")
     db.execute("INSERT INTO chat.messages (conversation_id, mode, role, content) "
                "VALUES (%s, 'sage', 'user', 'legacy')", (orphan,))
 
-    db.execute(load(CHAT_SCHEMA))  # the startup migration path
+    db.execute(chat_schema)  # what adopting a pre-ledger database runs
 
     row = db.execute(FK_QUERY, ("messages_conversation_fkey",)).fetchone()
     assert row is not None, "the migration did not restore the constraint"
@@ -280,11 +317,14 @@ def test_reapplying_over_legacy_rows_succeeds_and_leaves_them_alone(db):
 
 
 @needs_db
-def test_reapplying_is_a_no_op(db):
-    """Every cold start re-applies this against a live database. Re-creating a
-    constraint would take an ACCESS EXCLUSIVE lock each time; identical OIDs
-    prove nothing was dropped and re-added."""
-    from service.schema import ALL_SCHEMAS, load
+def test_reapplying_the_baseline_is_a_no_op(db):
+    """The baseline (0001, 0002) is applied over every database that predates the
+    ledger, live. Re-creating a constraint there would take an ACCESS EXCLUSIVE
+    lock and re-validate it; identical OIDs prove nothing was dropped and
+    re-added."""
+    from service.migrations import discover
+
+    baseline = [m.sql for m in discover()[:2]]
 
     def oids():
         return dict(db.execute(
@@ -294,8 +334,8 @@ def test_reapplying_is_a_no_op(db):
 
     before = oids()
     for _ in range(3):
-        for sql in ALL_SCHEMAS:
-            db.execute(load(sql))
+        for sql in baseline:
+            db.execute(sql)
     assert oids() == before, "re-applying the schema rebuilt constraints"
 
 
