@@ -412,7 +412,9 @@ class PostgresParticipantStore:
                     f"RETURNING {_P_COLUMNS}",
                     (user_id, participant_id, campaign_id, user_id, user_id),
                 ).fetchone()
-        except (psycopg.errors.UniqueViolation, psycopg.errors.ForeignKeyViolation):
+        except psycopg.errors.UniqueViolation:
+            raise SeatUnavailable() from None
+        except psycopg.errors.ForeignKeyViolation:
             # Both quote the campaign and the account in their DETAIL. The
             # refusal is raised below, OUTSIDE this handler: raised in here, even
             # `from None`, it would carry the driver's error on `__context__`
