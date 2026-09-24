@@ -74,6 +74,7 @@ from .ratelimit import (
     check_chat_request,
     client_source,
 )
+from .security_headers import CONTENT_SECURITY_POLICY
 from .session import SessionData, decode_session, encode_session
 
 log = logging.getLogger(__name__)
@@ -479,6 +480,36 @@ async def capture_chat_metrics(request: Request, call_next):
                 labels=labels,
             ),
         )
+    return response
+
+
+@app.middleware("http")
+async def set_security_headers(request: Request, call_next):
+    """Send the Content-Security-Policy on every response this app produces (va8).
+
+    A separate middleware rather than two lines inside `capture_chat_metrics`:
+    that one returns early for every path that is not `/chat`, so folding the
+    header into it would leave the SPA document, `/healthz`, `/auth/*` and every
+    404 with no policy at all — and its metric contract is pinned by
+    `service/tests/test_metrics.py`.
+
+    Declared last, so it is the OUTERMOST user middleware (Starlette inserts
+    each one at position 0) and `setdefault` therefore gets the last word. That
+    ordering is not what puts the header on the production SPA, though: ANY user
+    middleware wraps the router, and the router is what holds the `StaticFiles`
+    mount at the bottom of this file.
+
+    `setdefault`, not assignment: a route may answer with a stricter policy of
+    its own — SEC-19 requires `default-src 'none'; sandbox` on asset responses —
+    and must not have to unpick this middleware to keep it.
+
+    Known and accepted: a 500 raised by an UNHANDLED exception is produced by
+    Starlette's `ServerErrorMiddleware`, which sits outside all user middleware,
+    so it carries no policy. Handled responses — including `HTTPException`, 401,
+    404 and 422 — do.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
     return response
 
 
