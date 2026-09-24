@@ -2365,7 +2365,6 @@ class _ScriptedConnection:
         ),
     ],
 )
-@pytest.mark.skip(reason="DELIBERATELY BROKEN COMMIT: offer raises inside its handler")
 def test_a_driver_refusal_inside_offer_becomes_the_one_refusal_with_nothing_attached(
     error: Exception,
 ) -> None:
