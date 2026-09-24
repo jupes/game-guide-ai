@@ -32,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from . import gcp_logging, timeline
+from . import gcp_logging, timeline, usage_capture
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .db import Database, PoolSettings
@@ -78,6 +78,7 @@ from .ratelimit import (
     check_chat_request,
     client_source,
 )
+from .security_headers import CONTENT_SECURITY_POLICY
 from .session import SessionData, decode_session, encode_session
 from .timeline_store import PostgresTimelineStore, TimelineStore
 from .workbench_contracts import ErrorBody, ErrorCode, TimelinePage
@@ -612,6 +613,36 @@ async def capture_chat_metrics(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def set_security_headers(request: Request, call_next):
+    """Send the Content-Security-Policy on every response this app produces (va8).
+
+    A separate middleware rather than two lines inside `capture_chat_metrics`:
+    that one returns early for every path that is not `/chat`, so folding the
+    header into it would leave the SPA document, `/healthz`, `/auth/*` and every
+    404 with no policy at all — and its metric contract is pinned by
+    `service/tests/test_metrics.py`.
+
+    Declared last, so it is the OUTERMOST user middleware (Starlette inserts
+    each one at position 0) and `setdefault` therefore gets the last word. That
+    ordering is not what puts the header on the production SPA, though: ANY user
+    middleware wraps the router, and the router is what holds the `StaticFiles`
+    mount at the bottom of this file.
+
+    `setdefault`, not assignment: a route may answer with a stricter policy of
+    its own — SEC-19 requires `default-src 'none'; sandbox` on asset responses —
+    and must not have to unpick this middleware to keep it.
+
+    Known and accepted: a 500 raised by an UNHANDLED exception is produced by
+    Starlette's `ServerErrorMiddleware`, which sits outside all user middleware,
+    so it carries no policy. Handled responses — including `HTTPException`, 401,
+    404 and 422 — do.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+    return response
+
+
 def _persist_turn(
     store: MessageStore | None, conversation_id: str | None,
     mode: str, role: str, content: str,
@@ -924,6 +955,15 @@ def chat(
         provider=effective_profile.provider, strategy=strategy,
     )
 
+    # yje.5.1.1: one usage-capture operation per turn, created AFTER every gate
+    # above (a turn a gate refuses makes no provider call and must record
+    # nothing) and before any provider call below. It is outside the try on
+    # purpose — `begin_operation` cannot raise, by construction rather than by
+    # hope — and torn down in the finally at the end of this chain.
+    op_token = usage_capture.begin_operation(
+        mode=req.mode.value, billed_account_id=session.user_id,
+        actor_kind=usage_capture.ACTOR_ACCOUNT, campaign_id=None, request=request,
+    )
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, conversation_id,
@@ -1002,6 +1042,8 @@ def chat(
         # Anything else is a bug in our code — log the full traceback, return 500.
         log.exception("internal error on /chat (mode=%s)", req.mode.value)
         raise HTTPException(status_code=500, detail="internal error") from None
+    finally:
+        usage_capture.end_operation(op_token)
 
 
 @app.post("/metrics/ui", status_code=status.HTTP_202_ACCEPTED)

@@ -47,6 +47,7 @@ from ingestion.rerank import should_rerank
 from ingestion.retrieval import RetrievalResult, RetrievedChunk, assemble_result
 from ingestion.scope import scope_for_mode
 
+from . import usage_capture
 from .attachments import cap_text
 from .generate import (
     _looks_like_statblock,
@@ -120,8 +121,18 @@ def build_rag_graph(svc: RagService) -> Any:
         # Empty/whitespace prompt refuses without retrieval or an LLM call.
         return "embed" if state["prompt"].strip() else "refuse"
 
-    def embed_node(state: GraphState) -> GraphState:
-        return {"emb": svc.retriever.embed(state["prompt"])}
+    def embed_node(state: GraphState, config: RunnableConfig) -> GraphState:
+        # The `config` annotation is load-bearing here for the same reason it is
+        # on the three LLM nodes below — see the comment on generate_node.
+        # yje.5.1.1: the query embedding is a paid provider call, so the usage
+        # sink is installed AROUND the embed and torn down in a finally. Scoped
+        # rather than passed: RagRetriever.embed takes one positional argument
+        # in every fake in the suite.
+        token = usage_capture.begin_embedding_scope(config)
+        try:
+            return {"emb": svc.retriever.embed(state["prompt"])}
+        finally:
+            usage_capture.end_embedding_scope(token)
 
     def extract_hints_node(state: GraphState) -> GraphState:
         classes, entities, ctypes = svc.retriever.analyze(state["prompt"])
@@ -237,9 +248,13 @@ def build_rag_graph(svc: RagService) -> Any:
             attachment_label=state.get("attachment_label"),
             top_n=CONTEXT_TOP_N,
         )
+        observer = usage_capture.observer_for(
+            config, purpose=usage_capture.PURPOSE_ANSWER, alias=svc.model,
+        )
         answer = generate_answer(
             state["prompt"], context, mode=state["mode"],
             model=svc.model, client=svc.factory.client_for(svc.model), config=config,
+            observer=observer,
         )
         # An attachment can ground an answer the corpus alone couldn't — treat
         # the response as answerable even when corpus retrieval wasn't.
@@ -262,10 +277,19 @@ def build_rag_graph(svc: RagService) -> Any:
         # Best-effort garnish: any LLM/parse failure degrades to no suggestions
         # rather than failing an answer that already generated.
         context = build_context(state["result"], top_n=CONTEXT_TOP_N)
+        # Built BEFORE the try: a failure here must never be swallowed by the
+        # degrade-to-None below, which would drop the suggestions, return 200
+        # and pass any test that only checks a status code. It cannot fail —
+        # observer_for owns its own isolation — and this placement is what
+        # makes that provable rather than assumed.
+        observer = usage_capture.observer_for(
+            config, purpose=usage_capture.PURPOSE_SUGGESTIONS, alias=svc.model,
+        )
         try:
             suggestions = generate_suggestions(
                 state["prompt"], context,
                 model=svc.model, client=svc.factory.client_for(svc.model), config=config,
+                observer=observer,
             )
         except Exception:
             log.warning("spell suggestions failed; answering without them", exc_info=True)
@@ -276,9 +300,14 @@ def build_rag_graph(svc: RagService) -> Any:
         # Best-effort structuring: any LLM/parse failure degrades to None
         # rather than failing an answer that already generated.
         if state["mode"] == "spell":
+            # Before the try, for the reason spelled out in suggest_node.
+            observer = usage_capture.observer_for(
+                config, purpose=usage_capture.PURPOSE_SPELL_STRUCTURING, alias=svc.model,
+            )
             try:
                 spell_content = generate_spell_content(
                     state["answer"], model=svc.model, client=svc.factory.client_for(svc.model), config=config,
+                    observer=observer,
                 )
             except Exception:
                 log.warning("spell content structuring failed; answering without it", exc_info=True)
@@ -291,9 +320,16 @@ def build_rag_graph(svc: RagService) -> Any:
         # heuristic doesn't match: no LLM call at all.
         if not _looks_like_statblock(state["answer"]):
             return {"stat_block": None}
+        # Before the try, for the reason spelled out in suggest_node. Also
+        # after the cost guard above, so a skipped structuring call stays a
+        # call that was never made rather than an attempt that was.
+        observer = usage_capture.observer_for(
+            config, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING, alias=svc.model,
+        )
         try:
             stat_block = generate_stat_block(
                 state["answer"], model=svc.model, client=svc.factory.client_for(svc.model), config=config,
+                observer=observer,
             )
         except Exception:
             log.warning("stat block structuring failed; answering without it", exc_info=True)
