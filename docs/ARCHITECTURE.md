@@ -197,10 +197,24 @@ py-module `config`; extras `test` / `eval` / `rerank` / `extract`). `docker comp
 
 ## Campaign schema (GM Workbench)
 
-Storage for the Workbench, added by `1kg.2.1`. Migrations `0004`–`0006`; stores in
-`service/campaign_store.py`, `service/participant_store.py`,
+Storage for the Workbench, added by `1kg.2.1`. Migrations `0004`–`0006`, with
+`0009` making a participant **an account's seat at a campaign** (bead `fma`, the
+owner's decisions D-1 and D-4: every player holds an account and there are no
+guests); stores in `service/campaign_store.py`, `service/participant_store.py`,
 `service/table_session_store.py` and `service/audit_log.py`. **No routes read any
 of it yet** — those are `1kg.2.2`'s and `1kg.2.3`'s.
+
+A seat is **open** (an alias the GM seated while preparing, no account),
+**offered** (to one account), **accepted** (by that account) or **removed**
+(marked, never deleted). Only an offer followed by that same account's
+acceptance moves a seat forward: there is no claiming an open seat by
+possession of a link or a code, because that would be the retired enrolment
+code under a new name, and a GM is never offered a seat in their own campaign.
+Every refusal is one `SeatUnavailable` with a fixed message that names nothing.
+The store takes no campaign lock and advances no `authz_revision`; the route
+that composes an offer or an acceptance (`1kg.2.2`) does both, as for `add`
+(RQ-4, RQ-10). The single-use enrolment code and the device credential are
+retired, and `0009` drops their tables.
 
 ### The tables
 
@@ -208,9 +222,7 @@ of it yet** — those are `1kg.2.2`'s and `1kg.2.3`'s.
 |---|---|---|
 | `campaign.campaigns` | a GM's table: owner, name, created/updated/archived | owner is `NOT NULL` and cascades from `auth.users` |
 | `campaign.authz_state` | `authz_revision`, and `lock_token` (never written) | an `AFTER INSERT` trigger on `campaigns` creates it, so no path can leave a campaign without one (RQ-1) |
-| `campaign.participants` | a seat: alias, `alias_key`, created, `removed_at` | marked removed, never deleted; the alias is unique within the campaign among seats that are not removed, compared over an `alias_key` the **application** computes (NFKC then `casefold`) so that PostgreSQL's `lower()` and Python's cannot disagree |
-| `campaign.enrolment_codes` | the personal link a GM hands a player | digest only; single-use; expires after 7 days; at most one live per seat |
-| `campaign.device_credentials` | the one device a seat is bound to | digest only; at most one unrevoked per seat |
+| `campaign.participants` | a seat: alias, `alias_key`, created, `removed_at`, and (`0009`) the account it is offered to (`user_id`) and when that account accepted it (`accepted_at`) | marked removed, never deleted; the alias is unique within the campaign among seats that are not removed, compared over an `alias_key` the **application** computes (NFKC then `casefold`) so that PostgreSQL's `lower()` and Python's cannot disagree; an account holds at most one live seat per campaign (a partial unique index); `user_id` is `ON DELETE NO ACTION`, so deleting an account that holds a seat, removed or not, is refused until account deletion handles seats (`agent-forge-harness-zkc`); a CHECK keeps an accepted seat from having no account |
 | `campaign.table_sessions` | a GM running a table now | at most one `live` session **per GM across campaigns** (a partial unique index), both epochs, the current link's digest (its own partial unique index); `(campaign_id, gm_user_id)` references `campaigns (id, owner_id)`, so the GM **is** the owner (AUD-1); `state` and `ended_at` are kept in step by a CHECK |
 | `campaign.table_credentials` | a joined device | bound to the `link_generation` it was made in |
 | `campaign.session_join_counters` | the durable per-generation join count and its window start | storage only in this bead; `1kg.2.3` owns the arithmetic |
@@ -299,11 +311,11 @@ answer — and no code here is allowed to catch one.
 
 ### Digests, and what is private
 
-A code, a device credential and a table link token are 32 random bytes; only the
+A table link token and a join credential are 32 random bytes; only the
 lowercase-hex SHA-256 digest is stored, and every lookup is an exact match on a
 unique index over it (SEC-5) — partial where the column is nullable, which is
 `table_sessions.link_digest` alone, because a retired link has no digest. A plain-text secret exists only as the return value
-of the five methods that mint one. `argon2` (`service/hashing.py`) is deliberately
+of the three methods that mint one. `argon2` (`service/hashing.py`) is deliberately
 not used for these: they are 256-bit random values with nothing to brute-force,
 and a slow hash on a route anyone can call is a denial-of-service lever.
 
