@@ -82,11 +82,10 @@ export const Sanitized: Story = {
       'A perfectly ordinary answer.',
       '',
       '<script>window.__pwned = true</script>',
-      // The alt text is part of the fixture, not of the defence: DOMPurify
-      // keeps a model-authored <img>, and an alt-less one would be an
-      // image-alt violation THIS story introduced rather than one the
-      // component has. Tracked separately — see the bead note in the PR.
-      '<img src=x alt="a broken image" onerror="window.__pwned = true">',
+      // No alt on purpose: the renderer must supply one (fu9), so an alt-less
+      // model-authored <img> never reaches the page. The src is a campaign
+      // asset path, the only kind of image the renderer keeps (AE-66).
+      '<img src="/campaigns/c/assets/a" onerror="window.__pwned = true">',
       '',
       '[Click me](javascript:window.__pwned=true)',
     ].join('\n'),
@@ -96,14 +95,18 @@ export const Sanitized: Story = {
     await expect(canvas.getByText(/perfectly ordinary answer/)).toBeInTheDocument()
     await expect(canvasElement.querySelector('script')).toBeNull()
     await expect(canvasElement.querySelector('[onerror]')).toBeNull()
+    const image = canvasElement.querySelector('img')
+    await expect(image).not.toBeNull()
+    await expect(image?.hasAttribute('alt')).toBe(true)
     const link = canvasElement.querySelector('a')
     await expect(link?.getAttribute('href') ?? '').not.toMatch(/^javascript:/i)
   },
 }
 
 /**
- * Decision X-10, the Workbench setting: a remote image is an exfiltration
- * channel for a steered model, so nothing here may fetch anything by itself.
+ * Decision X-10, applied in every channel since va8: a remote image is an
+ * exfiltration channel for a steered model, so nothing here may fetch anything
+ * by itself. The prop is redundant now and kept only because it still compiles.
  * Only a campaign asset on this origin survives.
  */
 export const CampaignAssetsOnly: Story = {
