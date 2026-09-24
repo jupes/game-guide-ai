@@ -371,7 +371,7 @@ class PostgresParticipantStore:
         # all, which is the whole difference (G-11).
         row = transaction.conn.execute(
             f"SELECT {_P_COLUMNS} FROM campaign.participants "
-            f"WHERE id = %s AND campaign_id = %s FOR NO KEY UPDATE NOWAIT",
+            f"WHERE id = %s AND campaign_id = %s FOR NO KEY UPDATE",
             (participant_id, campaign_id),
         ).fetchone()
         return None if row is None else _participant(row)
@@ -411,8 +411,8 @@ class PostgresParticipantStore:
                     f"RETURNING {_P_COLUMNS}",
                     (user_id, participant_id, campaign_id, user_id, user_id),
                 ).fetchone()
-        except psycopg.errors.UniqueViolation as driver:
-            raise SeatUnavailable() from driver
+        except psycopg.errors.UniqueViolation:
+            raise SeatUnavailable() from None
         if row is None:
             raise SeatUnavailable()
         return _participant(row)
