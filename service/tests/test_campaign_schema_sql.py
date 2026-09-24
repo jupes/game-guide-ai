@@ -31,6 +31,7 @@ CAMPAIGN_SQL = (MIGRATIONS / "0004_campaign_schema.sql").read_text(encoding="utf
 AUDIT_SQL = (MIGRATIONS / "0005_audit_events.sql").read_text(encoding="utf-8")
 CONVERSATION_SQL = (MIGRATIONS / "0006_conversation_metadata.sql").read_text(encoding="utf-8")
 DOCUMENT_SQL = (MIGRATIONS / "0008_document_schema.sql").read_text(encoding="utf-8")
+SEAT_SQL = (MIGRATIONS / "0009_participant_accounts.sql").read_text(encoding="utf-8")
 
 #: Every migration, sorted and concatenated. The two identifier tests below read
 #: THIS rather than one file: the prefix registry is service-wide, so a prefix
@@ -269,16 +270,75 @@ def test_the_conversation_columns_are_the_four_agreed_and_carry_no_cascade():
     )
 
 
+# ── 0009: a participant is an account's seat (agent-forge-harness-fma) ──────
+
+
+def _statements(sql: str) -> str:
+    """The file without its comment lines, so a pin on a clause cannot be
+    satisfied by the prose that explains it."""
+    return "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
+
+
+def test_the_seat_migration_adds_the_account_with_no_delete_action_and_one_check():
+    """L-1 and L-2. `NO ACTION` is written out: CASCADE would delete a seat the
+    disclosures, the character-sheet link and the audit rows reference, and
+    SET NULL would re-open an accepted seat to whoever next accepted it. The one
+    CHECK is safe only because both columns it reads are new here; a second
+    CHECK added by ALTER TABLE would validate every existing row."""
+    body = _statements(SEAT_SQL)
+    assert set(re.findall(r"ADD COLUMN (\w+)", body)) == {"user_id", "accepted_at"}
+    assert "ADD COLUMN user_id BIGINT REFERENCES auth.users (id) ON DELETE NO ACTION," in body
+    assert "ADD COLUMN accepted_at TIMESTAMPTZ," in body
+    assert "CHECK (accepted_at IS NULL OR user_id IS NOT NULL)" in body
+    assert body.count("CHECK") == 1, "the only CHECK this file may add"
+    assert "CASCADE" not in body and "SET NULL" not in body
+    assert "NOT NULL" not in body.replace("IS NOT NULL", ""), "both columns stay nullable"
+
+
+def test_the_seat_migration_carries_both_partial_indexes_and_both_drops():
+    """L-3 and L-8: one live seat per account per campaign, the account's own
+    list, and the two tables D-1 and D-4 retired. No transaction control: the
+    runner owns the transaction (docs/migrations.md section 2)."""
+    body = _statements(SEAT_SQL)
+    assert re.search(
+        r"CREATE UNIQUE INDEX \w+\s+ON campaign\.participants \(campaign_id, user_id\)\s+"
+        r"WHERE removed_at IS NULL AND user_id IS NOT NULL;",
+        body,
+    ), "one live seat per account per campaign"
+    assert re.search(
+        r"CREATE INDEX \w+\s+ON campaign\.participants \(user_id\) WHERE removed_at IS NULL;",
+        body,
+    ), "the account's own list of its live seats"
+    assert "CONCURRENTLY" not in body
+    assert re.findall(r"DROP TABLE ([\w.]+);", body) == [
+        "campaign.enrolment_codes",
+        "campaign.device_credentials",
+    ]
+    assert not re.search(r"\b(BEGIN|COMMIT|END|ROLLBACK)\s*;", body)
+
+
+def test_the_seat_migration_states_why_its_check_and_its_drops_are_safe():
+    """The two proofs L-1 and L-8 ask the file itself to carry, so that the
+    reason for a contraction is read where the contraction is."""
+    prose = " ".join(
+        line.lstrip("- ").strip() for line in SEAT_SQL.splitlines() if line.startswith("--")
+    )
+    assert "Both columns it reads are new in this file" in prose
+    assert "the previous build writes neither column" in prose
+    assert (
+        "No build that reads campaign.enrolment_codes or campaign.device_credentials "
+        "has ever been deployed"
+    ) in prose
+
+
 # ── Digests only, in output ──────────────────────────────────────────────────
 
-#: The five methods that are allowed to hand a caller a secret in plain text —
+#: The three methods that are allowed to hand a caller a secret in plain text —
 #: the moment it is minted, and the only moment it exists. Each returns it
 #: beside a record whose stored form is the digest. `rotate_link` is here
 #: because retiring a generation and minting the next one is a single act
 #: (SEC-9), so the new link leaves with the same call that revoked the old.
 MINTING_METHODS = {
-    "issue_code",
-    "issue_device_credential",
     "start",
     "issue_credential",
     "rotate_link",
