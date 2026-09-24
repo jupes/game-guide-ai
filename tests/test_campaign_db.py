@@ -946,7 +946,10 @@ def test_every_refusal_of_an_offer_or_an_accept_is_the_same_refusal(world: World
 
     The cases include the three the evaluator names: no path accepts a seat not
     offered to that account, re-opens an accepted seat, or seats the campaign's
-    owner."""
+    owner. And a stranger's acceptance of a seat somebody else has accepted is
+    refused like the rest rather than answered False — only the account that
+    accepted it may hear "already done", or a stranger learns the seat is
+    taken."""
     campaign = _a_campaign(world)
     elsewhere = _a_campaign(world, owner=world.other_owner, name="Theirs")
     first, second, third = world.players
@@ -980,6 +983,8 @@ def test_every_refusal_of_an_offer_or_an_accept_is_the_same_refusal(world: World
          lambda u: p.accept(u, campaign, theirs_offered, user_id=first)),
         ("accept of a seat that does not exist",
          lambda u: p.accept(u, campaign, nobody, user_id=first)),
+        ("accept of a seat another account has accepted",
+         lambda u: p.accept(u, campaign, taken, user_id=first)),
         ("offer of a removed seat", lambda u: p.offer(u, campaign, gone, user_id=first)),
         ("offer of a seat already offered", lambda u: p.offer(u, campaign, offered, user_id=third)),
         ("offer of an accepted seat", lambda u: p.offer(u, campaign, taken, user_id=third)),
@@ -995,7 +1000,7 @@ def test_every_refusal_of_an_offer_or_an_accept_is_the_same_refusal(world: World
             with pytest.raises(SeatUnavailable) as refused:
                 attempt(unit)
         messages[name] = str(refused.value)
-    assert len(messages) == len(cases) == 13
+    assert len(messages) == len(cases) == 14
     assert len(set(messages.values())) == 1, messages
     assert next(iter(messages.values())), "one message, and not an empty one"
 
@@ -1015,6 +1020,24 @@ def test_every_refusal_of_an_offer_or_an_accept_is_the_same_refusal(world: World
         theirs_open: (None, False, True),
         theirs_offered: (first, False, True),
     }, "a refusal changes nothing"
+
+
+def test_an_accounts_seat_answers_for_its_own_campaign_and_no_other(world: World) -> None:
+    """`seat_for` is what a table route will authorise by, so it must name the
+    campaign as well as the account: a player seated at A is nobody at B, even
+    though B has seats of its own — one of them accepted by somebody else, and
+    one merely offered to this player."""
+    player, other = world.players[0], world.players[1]
+    table_a = _a_campaign(world, name="A")
+    table_b = _a_campaign(world, owner=world.other_owner, name="B")
+    mine = _seat(world, table_a, "Rook", player)
+    _seat(world, table_b, "Wren", other)
+    _offer(world, table_b, _a_participant(world, table_b, "Rook"), player)
+    with world.db.transaction() as unit:
+        assert world.participants.seat_for(unit, table_b, player) is None
+        found = world.participants.seat_for(unit, table_a, player)
+        assert found is not None and found.id == mine and found.campaign_id == table_a
+        assert world.participants.seat_for(unit, table_a, other) is None
 
 
 def test_accepting_a_seat_twice_is_not_an_error_and_changes_nothing(world: World) -> None:
@@ -1135,6 +1158,10 @@ def test_no_seat_refusal_names_the_alias_the_account_or_the_seat(
                 with pytest.raises(SeatUnavailable) as refused:
                     attempt(unit)
             spoken.append("".join(traceback.format_exception(refused.value)))
+            # `from None` only hides a chained error from the printed traceback:
+            # the driver's error, DETAIL and all, would still be on
+            # `__context__` for anything that walks it. There must be none.
+            assert refused.value.__context__ is None and refused.value.__cause__ is None
     assert len(spoken) == len(attempts)
     text = "\n".join([*spoken, caplog.text])
     for kind, value in (
@@ -2200,6 +2227,31 @@ def test_deleting_an_account_that_holds_a_seat_is_refused(dsn: str, owner: int) 
 
 
 @needs_db
+def test_a_refused_offer_leaves_the_callers_transaction_usable(dsn: str, owner: int) -> None:
+    """The one-live-seat index refuses the second offer with a UniqueViolation,
+    which would abort the caller's whole transaction — every write it had
+    composed, and every one after — had `offer` not run its statement in a
+    savepoint. So: refuse, then write again in the same unit, commit, and find
+    the write."""
+    db, participants = _database(dsn), PostgresParticipantStore()
+    (player,) = _accounts(dsn, 1)
+    first = _a_seat(db, participants, offered_to=player)
+    with db.transaction() as unit:
+        second = participants.add(unit, CAMPAIGN, alias="Wren")
+        with pytest.raises(SeatUnavailable):
+            participants.offer(unit, CAMPAIGN, second.id, user_id=player)
+        later = participants.add(unit, CAMPAIGN, alias="Fern")
+
+    with db.transaction() as unit:
+        kept = participants.get(unit, later.id)
+        assert kept is not None and kept.is_active, "the write after the refusal was kept"
+        refused = participants.get(unit, second.id)
+        assert refused is not None and refused.user_id is None
+        held = participants.get(unit, first)
+        assert held is not None and held.user_id == player
+
+
+@needs_db
 def test_offering_a_seat_to_an_account_that_does_not_exist_is_the_same_refusal(
     dsn: str, owner: int
 ) -> None:
@@ -2254,6 +2306,82 @@ def test_a_postgres_store_refuses_the_twins_unit_of_work(store: Any, method: str
     with InMemoryDatabase().transaction() as unit:
         with pytest.raises(TypeError, match="PostgreSQL transaction"):
             getattr(store, method)(unit, *args)
+
+
+class _Rows:
+    def __init__(self, row: tuple | None) -> None:
+        self._row = row
+
+    def fetchone(self) -> tuple | None:
+        return self._row
+
+
+class _ScriptedConnection:
+    """Just enough of a connection for `PostgresParticipantStore.offer`: it
+    answers `hold`'s two statements with an open seat, then fails the offer's
+    UPDATE — inside the savepoint — with the driver error it was given. What a
+    real server does between the EXISTS and the foreign-key check cannot be
+    interleaved from a test, so the error is scripted rather than raced."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.savepoints = 0
+        self.inside_savepoint = False
+
+    def execute(self, statement: str, params: tuple = ()) -> _Rows:
+        if statement.lstrip().startswith("UPDATE"):
+            assert self.inside_savepoint, "the offer's statement runs inside its savepoint"
+            raise self.error
+        if "set_config" in statement:
+            return _Rows(("5s",))
+        return _Rows(("prt_x", "cmp_x", "Rook", datetime.now(UTC), None, None, None))
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        self.savepoints += 1
+        self.inside_savepoint = True
+        try:
+            yield
+        finally:
+            self.inside_savepoint = False
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(
+            psycopg.errors.UniqueViolation(
+                'duplicate key value violates unique constraint "participants_one_live_seat_per_account_uidx"'
+                "\nDETAIL:  Key (campaign_id, user_id)=(cmp_x, 987654321) already exists."
+            ),
+            id="one-live-seat-index",
+        ),
+        pytest.param(
+            psycopg.errors.ForeignKeyViolation(
+                'insert or update on table "participants" violates foreign key constraint '
+                '"participants_user_id_fkey"\nDETAIL:  Key (user_id)=(987654321) is not present.'
+            ),
+            id="account-deleted-mid-offer",
+        ),
+    ],
+)
+def test_a_driver_refusal_inside_offer_becomes_the_one_refusal_with_nothing_attached(
+    error: Exception,
+) -> None:
+    """M-1 and N-1. The index's UniqueViolation, and the ForeignKeyViolation an
+    account deleted between the offer's EXISTS and its foreign-key check would
+    raise, both quote the account in their DETAIL. Each becomes the one
+    `SeatUnavailable`, raised OUTSIDE the handler so that neither `__cause__`
+    nor `__context__` carries the driver's error — `from None` would only have
+    hidden it from a printed traceback."""
+    connection = _ScriptedConnection(error)
+    account = PRIVATE_USER_ID
+    with pytest.raises(SeatUnavailable) as refused:
+        PostgresParticipantStore().offer(PgTransaction(conn=connection), "cmp_x", "prt_x", user_id=account)
+    assert refused.value.__context__ is None and refused.value.__cause__ is None
+    assert str(refused.value) == SeatUnavailable.MESSAGE
+    assert connection.savepoints == 1
+    assert str(PRIVATE_USER_ID) not in "".join(traceback.format_exception(refused.value))
 
 
 def test_an_in_memory_store_refuses_a_postgres_unit_of_work() -> None:

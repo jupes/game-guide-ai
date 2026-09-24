@@ -392,14 +392,15 @@ class PostgresParticipantStore:
     ) -> Participant:
         self.hold(unit, participant_id, campaign_id=campaign_id)
         conn = pg(unit).conn
+        row: tuple | None = None
         try:
             # A savepoint, because the one refusal this statement cannot express
             # in its WHERE — the account already holds a live seat in this
             # campaign — is the partial unique index's, and a UniqueViolation
             # would otherwise abort the caller's whole transaction. Whether the
             # account exists is asked rather than left to the foreign key for the
-            # same reason. `from None` below keeps the driver's DETAIL, which
-            # quotes the campaign and the account, out of every traceback.
+            # same reason; the ForeignKeyViolation is still caught, for an account
+            # deleted between that EXISTS and the foreign key's own check.
             with conn.transaction():
                 row = conn.execute(
                     f"UPDATE campaign.participants p SET user_id = %s "
@@ -411,8 +412,12 @@ class PostgresParticipantStore:
                     f"RETURNING {_P_COLUMNS}",
                     (user_id, participant_id, campaign_id, user_id, user_id),
                 ).fetchone()
-        except psycopg.errors.UniqueViolation:
-            raise SeatUnavailable() from None
+        except (psycopg.errors.UniqueViolation, psycopg.errors.ForeignKeyViolation):
+            # Both quote the campaign and the account in their DETAIL. The
+            # refusal is raised below, OUTSIDE this handler: raised in here, even
+            # `from None`, it would carry the driver's error on `__context__`
+            # for anything that walks the chain.
+            row = None
         if row is None:
             raise SeatUnavailable()
         return _participant(row)
