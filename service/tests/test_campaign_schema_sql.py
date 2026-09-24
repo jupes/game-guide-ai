@@ -279,7 +279,6 @@ def _statements(sql: str) -> str:
     return "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
 
 
-@pytest.mark.skip(reason="DELIBERATELY BROKEN COMMIT: 0009 mutated to prove the PostgreSQL tests can fail")
 def test_the_seat_migration_adds_the_account_with_no_delete_action_and_one_check():
     """L-1 and L-2. `NO ACTION` is written out: CASCADE would delete a seat the
     disclosures, the character-sheet link and the audit rows reference, and

@@ -371,10 +371,10 @@ class PostgresParticipantStore:
         # all, which is the whole difference (G-11).
         row = transaction.conn.execute(
             f"SELECT {_P_COLUMNS} FROM campaign.participants "
-            f"WHERE id = %s FOR NO KEY UPDATE",
-            (participant_id,),
+            f"WHERE id = %s AND campaign_id = %s FOR NO KEY UPDATE",
+            (participant_id, campaign_id),
         ).fetchone()
-        return None if row is None or row[1] != campaign_id else _participant(row)
+        return None if row is None else _participant(row)
 
     def remove(
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
@@ -382,7 +382,7 @@ class PostgresParticipantStore:
         self.hold(unit, participant_id, campaign_id=campaign_id)
         changed = pg(unit).conn.execute(
             "UPDATE campaign.participants SET removed_at = %s "
-            "WHERE id = %s AND campaign_id = %s AND removed_at IS NULL AND accepted_at IS NULL RETURNING id",
+            "WHERE id = %s AND campaign_id = %s AND removed_at IS NULL RETURNING id",
             (now_or(now), participant_id, campaign_id),
         ).fetchone()
         return changed is not None
@@ -404,11 +404,12 @@ class PostgresParticipantStore:
                 row = conn.execute(
                     f"UPDATE campaign.participants p SET user_id = %s "
                     f"WHERE p.id = %s AND p.campaign_id = %s "
-                    f"AND p.removed_at IS NULL "
+                    f"AND p.removed_at IS NULL AND p.user_id IS NULL "
+                    f"AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = %s) "
                     f"AND NOT EXISTS (SELECT 1 FROM campaign.campaigns c "
                     f"WHERE c.id = p.campaign_id AND c.owner_id = %s) "
                     f"RETURNING {_P_COLUMNS}",
-                    (user_id, participant_id, campaign_id, user_id),
+                    (user_id, participant_id, campaign_id, user_id, user_id),
                 ).fetchone()
         except psycopg.errors.UniqueViolation:
             raise SeatUnavailable() from None
@@ -426,13 +427,13 @@ class PostgresParticipantStore:
         now: datetime | None = None,
     ) -> bool:
         seat = self.hold(unit, participant_id, campaign_id=campaign_id)
-        if seat is None or seat.user_id != user_id:
+        if seat is None or not seat.is_active or seat.user_id != user_id:
             raise SeatUnavailable()
         if seat.accepted_at is not None:
             return False
         changed = pg(unit).conn.execute(
             "UPDATE campaign.participants SET accepted_at = %s "
-            "WHERE id = %s AND campaign_id = %s "
+            "WHERE id = %s AND campaign_id = %s AND removed_at IS NULL "
             "AND user_id = %s AND accepted_at IS NULL RETURNING id",
             (now_or(now), participant_id, campaign_id, user_id),
         ).fetchone()

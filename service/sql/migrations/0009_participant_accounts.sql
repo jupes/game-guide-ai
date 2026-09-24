@@ -45,8 +45,10 @@
 -- therefore no such rollback to protect.
 
 ALTER TABLE campaign.participants
-  ADD COLUMN user_id BIGINT REFERENCES auth.users (id) ON DELETE CASCADE,
-  ADD COLUMN accepted_at TIMESTAMPTZ;
+  ADD COLUMN user_id BIGINT REFERENCES auth.users (id) ON DELETE NO ACTION,
+  ADD COLUMN accepted_at TIMESTAMPTZ,
+  ADD CONSTRAINT participants_accepted_has_account_chk
+    CHECK (accepted_at IS NULL OR user_id IS NOT NULL);
 
 CREATE UNIQUE INDEX participants_one_live_seat_per_account_uidx
   ON campaign.participants (campaign_id, user_id)
