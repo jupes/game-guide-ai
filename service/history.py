@@ -45,7 +45,7 @@ class MessageStore(Protocol):
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
         suggestions: list[dict[str, Any]] | None = None,
-    ) -> None: ...  # pragma: no cover - structural type
+    ) -> int | None: ...  # pragma: no cover - structural type
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         ...  # pragma: no cover - structural type
@@ -102,12 +102,14 @@ class InMemoryMessageStore:
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
         suggestions: list[dict[str, Any]] | None = None,
-    ) -> None:
-        self._rows.append(_Row(
+    ) -> int | None:
+        row = _Row(
             id=len(self._rows) + 1, conversation_id=conversation_id,
             mode=mode, role=role, content=content, suggestions=suggestions,
             created_at=datetime.now(UTC),
-        ))
+        )
+        self._rows.append(row)
+        return row.id
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         rows = [r for r in self._rows if r.conversation_id == conversation_id]
@@ -226,14 +228,15 @@ class PostgresMessageStore:
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
         suggestions: list[dict[str, Any]] | None = None,
-    ) -> None:
+    ) -> int | None:
         with self._connect() as conn:
-            conn.execute(
+            row = conn.execute(
                 "INSERT INTO chat.messages (conversation_id, mode, role, content, suggestions) "
-                "VALUES (%s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
                 (conversation_id, mode, role, content,
                  json.dumps(suggestions) if suggestions is not None else None),
-            )
+            ).fetchone()
+        return int(row[0])
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         with self._connect() as conn:

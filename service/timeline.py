@@ -26,9 +26,12 @@ Three pieces, all of them free of SQL — every statement lives in
   SEC-2) | — | 401 |`). `GET …/messages` keeps its 403 and its claim, untouched
   (R-4, R-5).
 
-**This slice serves legacy rows only.** Slice A adds `chat.timeline_entries`
-and a second source; the ordering key and the cursor are already the merged
-form, so it adds a source and never a second format.
+**Two sources.** A turn taken since the durable timeline shipped is a stored
+entry (`chat.timeline_entries`), served through `entry_or_opaque` and never as
+it stands. Every other turn is adapted from its `chat.messages` rows. A legacy
+row that an entry links is **covered**: it is never adapted, so no turn renders
+twice. The rule is derived from data rather than from time, so it holds under
+rollout, rollback and a failed entry write without a watermark or a backfill.
 """
 
 from __future__ import annotations
@@ -36,14 +39,14 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
 from pydantic import TypeAdapter, ValidationError
 
-from .timeline_store import LegacyMessageRow, TimelineStore
+from .timeline_store import LegacyMessageRow, StoredEntryRow, TimelineStore
 from .workbench_contracts import (
     CONTRACT_VERSION,
     TIMELINE_PAGE_MAX_ITEMS,
@@ -144,17 +147,29 @@ class Exchange:
         return anchor
 
 
-def group_exchanges(rows: Sequence[LegacyMessageRow]) -> list[Exchange]:
+def group_exchanges(
+    rows: Sequence[LegacyMessageRow], covered: Collection[int] = frozenset()
+) -> list[Exchange]:
     """An **ascending** run of rows, grouped into exchanges, ascending.
 
     A `user` row opens an exchange; the next `assistant` row completes and
     closes it. Two `user` rows in a row therefore close the first with no
     answer, and an `assistant` row with no open exchange becomes an entry with
     no prompt — rendered, never dropped, which is the loss `useChat` has today.
+
+    A **covered** row — one a stored entry already carries — is never adapted,
+    and it is a BOUNDARY: it closes whatever is open. Dropped before grouping
+    instead, it would let a prompt whose answer was never written pair with the
+    orphan answer of a later turn, across a stored turn between them.
     """
     exchanges: list[Exchange] = []
     open_prompt: LegacyMessageRow | None = None
     for row in rows:
+        if row.id in covered:
+            if open_prompt is not None:
+                exchanges.append(Exchange(prompt=open_prompt, answer=None))
+                open_prompt = None
+            continue
         if row.role == "user":
             if open_prompt is not None:
                 exchanges.append(Exchange(prompt=open_prompt, answer=None))
@@ -181,26 +196,25 @@ class LegacyWindow:
 
 
 def complete_exchanges(
-    rows: Sequence[LegacyMessageRow], *, window_was_full: bool
+    rows: Sequence[LegacyMessageRow], *, window_was_full: bool, covered: Collection[int] = frozenset(),
 ) -> LegacyWindow:
     """A **newest-first** window of rows as complete exchanges, ascending.
 
-    Reading newest-first, the only ambiguous group is the oldest: if its oldest
-    row is an `assistant` row, its `user` row may lie below the window, and
-    rendering it as an orphan answer would invent a turn that never happened.
-    It is dropped — but only when the window came back **full**, because a short
-    window read everything there was and a leading `assistant` row is then a
-    genuine orphan that must be kept.
+    Reading newest-first, the only ambiguous group is the oldest: if it starts
+    at the window's oldest row and that row is an `assistant` row, its `user`
+    row may lie below the window, and rendering it as an orphan answer would
+    invent a turn that never happened. It is dropped — but only when the window
+    came back **full**, because a short window read everything there was and a
+    leading `assistant` row is then a genuine orphan that must be kept. A group
+    above a covered oldest row is complete: the covered row closed it.
 
-    Separated from `read_page` so the rule is observable on its own. It is
-    otherwise invisible, and a first pass at this bead proved it: breaking the
-    drop changed no page, because `read_page` over-reads by `2 * limit + 3`
-    rows, a full window of which makes at least `limit + 2` groups, so the
-    dropped group is never one the page would have taken. That margin is an
-    accident of the over-read, and this function must not depend on it.
+    Separated from `read_page` so the rule is observable on its own. Without
+    covered rows it is otherwise invisible — `read_page` over-reads by
+    `2 * limit + 3` rows, a full window of which then makes at least `limit + 2`
+    groups — and this function must not depend on that margin.
     """
-    exchanges = group_exchanges(list(reversed(rows)))
-    if window_was_full and exchanges and exchanges[0].prompt is None:
+    exchanges = group_exchanges(list(reversed(rows)), covered)
+    if window_was_full and exchanges and exchanges[0].prompt is None and exchanges[0].anchor.id == rows[-1].id:
         return LegacyWindow(exchanges[1:], partial_dropped=True)
     return LegacyWindow(exchanges, partial_dropped=False)
 
@@ -241,10 +255,13 @@ def adapt(exchange: Exchange) -> AnyEntry:
 # ── Requirement 7: the ordering key, the merge and the cursor ────────────────
 
 #: A stored entry outranks an adapted exchange at the same instant. The two can
-#: never describe the same turn — an adapted exchange is suppressed once an
-#: entry covers its rows (slice A) — so the rank only has to be *stable*.
+#: never describe the same turn — a covered legacy row is never adapted — so the
+#: rank only has to be *stable*.
 ADAPTED_RANK = 0
 STORED_RANK = 1
+
+#: The ordering key, as a value: `(created_at, source_rank, tiebreak)`.
+OrderKey = tuple[datetime, int, int]
 
 
 @dataclass(frozen=True)
@@ -257,15 +274,22 @@ class Candidate:
     tiebreak: int
 
 
-def order_key(candidate: Candidate) -> tuple[datetime, int, int]:
+def order_key(candidate: Candidate) -> OrderKey:
     """The total order, stated once. Descending, it is the page's order: no two
     candidates compare equal, so the order can never depend on the page size."""
     return (candidate.created_at, candidate.source_rank, candidate.tiebreak)
 
 
-def merge(*sources: Iterable[Candidate], limit: int) -> list[Candidate]:
-    """The newest `limit` candidates across every source, newest first."""
-    everything = [c for source in sources for c in source]
+def merge(*sources: Iterable[Candidate], limit: int, floor: OrderKey | None = None) -> list[Candidate]:
+    """The newest `limit` candidates across every source, newest first — none
+    of them older than `floor`, when one is given.
+
+    A floor is what a source that could not be read to its end imposes: below
+    it that source may still hold a candidate nobody has seen, and taking
+    anything older than the floor from another source would put it ahead of
+    that unseen one.
+    """
+    everything = [c for source in sources for c in source if floor is None or order_key(c) >= floor]
     everything.sort(key=order_key, reverse=True)
     return everything[:limit]
 
@@ -438,6 +462,42 @@ def authorize(
         raise ConversationNotFound(conversation_id)
 
 
+def _before(position: Position | None) -> tuple[datetime, int] | None:
+    return None if position is None else (position.created_at, position.tiebreak)
+
+
+def _stored_candidate(row: StoredEntryRow) -> Candidate:
+    """A stored row, served through `entry_or_opaque` and never as it stands:
+    the row's own columns are the authority on identity and on time, and a
+    payload this server cannot validate becomes an `opaque` entry in its place.
+    The row itself is never repaired, rewritten or dropped."""
+    return Candidate(
+        entry=entry_or_opaque(row.payload, entry_id=row.entry_id, created_at=row.created_at),
+        created_at=row.created_at, source_rank=STORED_RANK, tiebreak=row.seq,
+    )
+
+
+def _messages_position(
+    rows: Sequence[LegacyMessageRow], consumed: Collection[int], previous: Position | None,
+) -> Position | None:
+    """Where the legacy source was left off: below every row read, newest
+    first, until the first one neither taken nor covered.
+
+    Anchoring at the oldest exchange TAKEN is not enough once rows can be
+    covered. A window full of covered rows yields no exchange at all, so the
+    position would never move: the same rows would be read on every page, and
+    once the stored source ran out the uncovered rows below them would be lost
+    or looped over for ever. A covered row is never shown from this source, so
+    passing it is always safe; passing an unshown uncovered row never is.
+    """
+    position = previous
+    for row in rows:
+        if row.id not in consumed:
+            break
+        position = Position(created_at=row.created_at, tiebreak=row.id)
+    return position
+
+
 def read_page(
     # justification: as in `authorize` above — the unit is opaque here and is
     # only ever handed back to the store, which types it as `UnitOfWork`.
@@ -447,19 +507,34 @@ def read_page(
     """One page of this conversation, newest first.
 
     Each source contributes a bounded window under the cursor predicate, so a
-    page is a bounded index read and never a scan. **The legacy window is a
-    window of exchanges, not of rows**: an exchange is at most two rows, and
-    reading newest-first the only ambiguous group is the oldest — if its oldest
-    row is an `assistant` row, its `user` row may lie below the window. So the
-    read over-reads by `2 * limit + 3` rows and discards that group when the
-    window came back full; everything above it is unambiguous.
+    page is a bounded index read per source and never a scan. The entry window
+    asks for `limit + 1` rows. **The legacy window is a window of exchanges, not
+    of rows**: an exchange is at most two rows, and reading newest-first the only
+    ambiguous group is the oldest — if its oldest row is an `assistant` row, its
+    `user` row may lie below the window. So the read over-reads by
+    `2 * limit + 3` rows and discards that group when the window came back full.
+
+    Covered rows change two things. A full legacy window may now hold fewer
+    exchanges than a page takes, while older uncovered rows wait below it; so a
+    full window imposes a FLOOR — its oldest row — and nothing older than the
+    floor is taken from either source on this page. And the legacy position
+    moves past covered rows as well as taken ones (`_messages_position`). A page
+    can therefore hold fewer than `limit` entries, even none, with a non-null
+    cursor; the walk still ends, because every such page moves the legacy
+    position by at least a window of covered rows.
     """
-    before = None if cursor is None or cursor.messages is None else (
-        cursor.messages.created_at, cursor.messages.tiebreak
-    )
     limit_rows = 2 * limit + 3
-    rows = store.legacy_window(unit, conversation_id, before=before, limit_rows=limit_rows)
-    window = complete_exchanges(rows, window_was_full=len(rows) == limit_rows)
+    stored_rows = store.entry_window(
+        unit, conversation_id, before=_before(None if cursor is None else cursor.entries), limit=limit + 1,
+    )
+    rows = store.legacy_window(
+        unit, conversation_id, before=_before(None if cursor is None else cursor.messages), limit_rows=limit_rows,
+    )
+    legacy_full = len(rows) == limit_rows
+    covered = store.covered_message_ids(unit, conversation_id, [r.id for r in rows]) if rows else set()
+    window = complete_exchanges(rows, window_was_full=legacy_full, covered=covered)
+    by_anchor = {exchange.anchor.id: exchange for exchange in window.exchanges}
+    stored = [_stored_candidate(row) for row in stored_rows]
     adapted = [
         Candidate(
             entry=adapt(exchange), created_at=exchange.anchor.created_at,
@@ -467,23 +542,26 @@ def read_page(
         )
         for exchange in window.exchanges
     ]
-    taken = merge(adapted, limit=limit)
-    # Null ONLY when nothing was dropped as a partial exchange and every
-    # candidate read was taken.
-    #
-    # The first clause cannot fire on its own today, and saying so is worth more
-    # than a line that looks load-bearing and is not: a dropped group means the
-    # window was full, a full window of `2 * limit + 3` rows makes at least
-    # `limit + 2` groups, and `len(adapted) <= limit` is then already false. It
-    # is kept because it states the rule the cursor actually depends on, and it
-    # is what stays correct if the over-read above is ever narrowed.
-    exhausted = not window.partial_dropped and len(adapted) <= limit
-    next_cursor = None if exhausted else encode_cursor(
-        TimelineCursor(
-            entries=None if cursor is None else cursor.entries,
-            messages=Position(created_at=taken[-1].created_at, tiebreak=taken[-1].tiebreak),
-        )
-    )
+    floor = (rows[-1].created_at, ADAPTED_RANK, rows[-1].id) if legacy_full else None
+    taken = merge(stored, adapted, limit=limit, floor=floor)
+    # Null ONLY when neither source can hold anything more: the legacy window
+    # was not full, so it read everything below its position, and every
+    # candidate read — the entry window's `limit + 1` included — was taken.
+    exhausted = not legacy_full and len(stored) + len(adapted) <= limit
+    next_cursor = None
+    if not exhausted:
+        taken_stored = [c for c in taken if c.source_rank == STORED_RANK]
+        consumed = set(covered)
+        for c in taken:
+            if c.source_rank == ADAPTED_RANK:
+                exchange = by_anchor[c.tiebreak]
+                consumed.update(r.id for r in (exchange.prompt, exchange.answer) if r is not None)
+        previous_entries = None if cursor is None else cursor.entries
+        next_cursor = encode_cursor(TimelineCursor(
+            entries=Position(created_at=taken_stored[-1].created_at, tiebreak=taken_stored[-1].tiebreak)
+            if taken_stored else previous_entries,
+            messages=_messages_position(rows, consumed, None if cursor is None else cursor.messages),
+        ))
     return TimelinePage(
         schema_version=PAGE_SCHEMA_VERSION,
         conversation_id=conversation_id,

@@ -15,15 +15,18 @@ Run from the repo root:
 from __future__ import annotations
 
 import base64
+import copy
 import json
+import random
 import traceback
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from service import timeline
-from service.timeline_store import LegacyMessageRow
-from service.workbench_contracts import CONTRACT_VERSION, Cursor, OpaqueId
+from service.timeline_store import LegacyMessageRow, StoredEntryRow
+from service.workbench_contracts import CONTRACT_VERSION, Cursor, OpaqueId, OpaqueReason
 
 _T0 = datetime(2026, 9, 16, 19, 20, 11, tzinfo=UTC)
 
@@ -423,3 +426,180 @@ def test_a_refused_parameter_is_not_reachable_through_the_exception_chain(
         type(refused.value), refused.value, refused.value.__traceback__
     ))
     assert _PARAMETER_CANARY not in printed
+
+
+# ── Slice A: covered rows, stored rows, and the merged walk ──────────────────
+
+
+def test_a_covered_row_closes_the_exchange_that_was_open_before_it() -> None:
+    """A covered row is a boundary, not merely a gap. Here turn 1's answer and
+    turn 3's prompt were both lost, and turn 2 is stored: dropping turn 2's rows
+    before grouping would pair turn 1's prompt with turn 3's answer — a turn
+    that never happened."""
+    asked, stored_q, stored_a, orphan = (
+        _row(1, "user", "turn 1"), _row(2, "user", "turn 2"),
+        _row(3, "assistant", "turn 2"), _row(4, "assistant", "turn 3"),
+    )
+    exchanges = timeline.group_exchanges([asked, stored_q, stored_a, orphan], {2, 3})
+    assert [(x.prompt, x.answer) for x in exchanges] == [(asked, None), (None, orphan)]
+
+
+def test_a_full_window_whose_oldest_row_is_covered_keeps_the_answer_above_it() -> None:
+    """Only a group that STARTS at the window's oldest row can be half an
+    exchange. Above a covered row, an answer with no prompt is a real orphan."""
+    window = timeline.complete_exchanges(
+        [_row(9, "assistant", "orphan"), _row(8, "assistant", "stored")], window_was_full=True, covered={8},
+    )
+    assert [x.answer.id for x in window.exchanges if x.answer] == [9] and not window.partial_dropped
+
+
+class _Stub:
+    """A store over rows and entries at times the test chooses — including the
+    ones no well-behaved clock produces, which is the point."""
+
+    def __init__(self, rows: list[LegacyMessageRow], entries: list[StoredEntryRow]) -> None:
+        self.rows, self.entries = rows, entries
+
+    def owner_of(self, unit: object, conversation_id: str) -> int:
+        return 1
+
+    def append(self, *args: object, **kwargs: object) -> str:
+        raise AssertionError("the read model never writes")
+
+    def legacy_window(self, unit: object, conversation_id: str, *, before: tuple[datetime, int] | None,
+                      limit_rows: int) -> list[LegacyMessageRow]:
+        kept = sorted((r for r in self.rows if before is None or (r.created_at, r.id) < before),
+                      key=lambda r: (r.created_at, r.id), reverse=True)
+        return kept[:limit_rows]
+
+    def entry_window(self, unit: object, conversation_id: str, *, before: tuple[datetime, int] | None,
+                     limit: int) -> list[StoredEntryRow]:
+        kept = sorted((e for e in self.entries if before is None or (e.created_at, e.seq) < before),
+                      key=lambda e: (e.created_at, e.seq), reverse=True)
+        return kept[:limit]
+
+    def covered_message_ids(self, unit: object, conversation_id: str, message_ids: Collection[int]) -> set[int]:
+        linked = {i for e in self.entries for i in (e.user_message_id, e.assistant_message_id) if i is not None}
+        return linked & set(message_ids)
+
+
+def _payload(entry_id: str, at: datetime, prompt: str = "a stored question") -> dict[str, object]:
+    return {
+        "schema_version": CONTRACT_VERSION, "entry_kind": "chat", "entry_id": entry_id,
+        "created_at": at.isoformat(), "mode": "sage", "prompt": prompt,
+        "answer": {"text": "a stored answer", "answerable": True, "sources": [], "created_at": at.isoformat()},
+    }
+
+
+def _stored(seq: int, at: datetime, payload: object = None, *, user: int | None = None,
+            assistant: int | None = None) -> StoredEntryRow:
+    entry_id = f"ent_{seq:022d}"
+    return StoredEntryRow(entry_id, at, seq, _payload(entry_id, at) if payload is None else payload, user, assistant)
+
+
+def _page(stub: _Stub, limit: int = 100, cursor: str | None = None) -> timeline.TimelinePage:
+    return timeline.read_page(stub, None, "conv", limit=limit,
+                              cursor=None if cursor is None else timeline.decode_cursor(cursor))
+
+
+def test_every_stored_row_is_served_through_entry_or_opaque_and_left_as_it_was() -> None:
+    """C5, in the read model: a newer version, a damaged payload, a payload
+    naming another entry's id, and one carrying a key no contract declares —
+    each keeps its place, the page around it renders, and the payload object
+    the store handed over is not touched."""
+    at = [_T0 + timedelta(minutes=n) for n in range(6)]
+    newer = {**_payload("ent_" + "2" * 22, at[1]), "schema_version": CONTRACT_VERSION + 1}
+    damaged = {"entry_kind": "chat", "schema_version": CONTRACT_VERSION}
+    borrowed = _payload("ent_" + "9" * 22, at[3])
+    extra = {**_payload("ent_" + "4" * 22, at[4]), "added_by_a_newer_build": True}
+    rows = [
+        _stored(1, at[0]),
+        StoredEntryRow("ent_" + "2" * 22, at[1], 2, newer, None, None),
+        StoredEntryRow("ent_" + "3" * 22, at[2], 3, damaged, None, None),
+        StoredEntryRow("ent_" + "5" * 22, at[3], 4, borrowed, None, None),
+        StoredEntryRow("ent_" + "4" * 22, at[4], 5, extra, None, None),
+        _stored(6, at[5]),
+    ]
+    before = copy.deepcopy([r.payload for r in rows])
+    items = _page(_Stub([], rows)).items
+    assert [(e.entry_kind, getattr(e, "reason", None)) for e in items] == [
+        ("chat", None), ("chat", None), ("opaque", OpaqueReason.UNREADABLE),
+        ("opaque", OpaqueReason.UNREADABLE), ("opaque", OpaqueReason.NEWER_VERSION), ("chat", None),
+    ]
+    assert [e.entry_id for e in items] == [r.entry_id for r in reversed(rows)], "the row is the authority on identity"
+    assert [r.payload for r in rows] == before
+
+
+def test_a_window_full_of_covered_rows_moves_the_legacy_position_past_them() -> None:
+    """Without it the walk below never ends: the stored turns are taken one a
+    page, the legacy window stays on the same covered rows, and once the
+    stored source runs dry the two old turns beneath it are looped over."""
+    rows = [_row(1, "user", "old q"), _row(2, "assistant", "old a")]
+    entries = []
+    for n in range(8):
+        asked, reply = _row(3 + 2 * n, "user", f"q{n}"), _row(4 + 2 * n, "assistant", f"a{n}")
+        rows += [asked, reply]
+        entries.append(_stored(n + 1, reply.created_at + timedelta(milliseconds=1), user=asked.id, assistant=reply.id))
+    stub = _Stub(rows, entries)
+    assert _walk(stub, 1) == [e.entry_id for e in _page(stub).items]
+    assert len(_walk(stub, 1)) == 9
+
+
+def _walk(stub: _Stub, limit: int) -> list[str]:
+    seen: list[str] = []
+    cursor: str | None = None
+    for _ in range(2_000):
+        page = _page(stub, limit, cursor)
+        assert len(page.items) <= limit
+        seen.extend(e.entry_id for e in page.items)
+        cursor = page.next_cursor
+        if cursor is None:
+            return seen
+    raise AssertionError("the cursor walk did not terminate")
+
+
+def _reference(stub: _Stub) -> list[str]:
+    """What the whole conversation is, computed without windows or cursors:
+    every row grouped at once, every entry, one sort by the ordering key."""
+    rows = sorted(stub.rows, key=lambda r: (r.created_at, r.id))
+    covered = stub.covered_message_ids(None, "conv", [r.id for r in rows])
+    keyed = [((x.anchor.created_at, timeline.ADAPTED_RANK, x.anchor.id), str(x.anchor.id))
+             for x in timeline.group_exchanges(rows, covered)]
+    keyed += [((e.created_at, timeline.STORED_RANK, e.seq), e.entry_id) for e in stub.entries]
+    return [entry_id for _, entry_id in sorted(keyed, reverse=True)]
+
+
+def _a_random_conversation(rng: random.Random) -> _Stub:
+    """Turns in every shape requirement 8 can leave behind, at times that tie,
+    run backwards, and put an entry before the rows it links."""
+    rows: list[LegacyMessageRow] = []
+    entries: list[StoredEntryRow] = []
+    clock = 0
+    for _ in range(rng.randint(0, 24)):
+        clock += rng.choice([0, 0, 1, 2, 5])
+        asked = answered = None
+        if rng.random() < 0.9:
+            asked = _row(len(rows) + 1, "user", f"q{len(rows)}", seconds=clock + rng.choice([0, 0, -1]))
+            rows.append(asked)
+        if rng.random() < 0.85:
+            answered = _row(len(rows) + 1, "assistant", f"a{len(rows)}", seconds=clock + rng.choice([0, 0, 1]))
+            rows.append(answered)
+        if (asked or answered) and rng.random() < 0.55:
+            at = _T0 + timedelta(seconds=clock + rng.choice([-7, 0, 0, 1, 2]))
+            entries.append(_stored(len(entries) + 1, at, user=asked.id if asked else None,
+                                   assistant=answered.id if answered else None))
+    return _Stub(rows, entries)
+
+
+@pytest.mark.parametrize("seeds", [range(0, 150), range(150, 300)])
+def test_any_conversation_walks_to_exactly_what_it_is_at_every_page_size(seeds: range) -> None:
+    """C3 as a property, over conversations nobody wrote by hand: ties, rows
+    out of time order, entries older than their own rows, every partial write.
+    Every page size walks to the reference list — the whole conversation,
+    computed without a window or a cursor — and so does one unpaged read."""
+    for seed in seeds:
+        stub = _a_random_conversation(random.Random(seed))
+        expected = _reference(stub)
+        assert [e.entry_id for e in _page(stub).items] == expected, f"seed {seed}, unpaged"
+        for limit in (*range(1, 11), 100):
+            assert _walk(stub, limit) == expected, f"seed {seed}, page size {limit}"

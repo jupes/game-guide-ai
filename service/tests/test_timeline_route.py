@@ -559,6 +559,14 @@ class _Recorder:
             unit, conversation_id, before=before, limit_rows=limit_rows
         )
 
+    def entry_window(self, unit, conversation_id, *, before, limit):
+        self.calls.append(("entry_window", id(unit)))
+        return self._inner.entry_window(unit, conversation_id, before=before, limit=limit)
+
+    def covered_message_ids(self, unit, conversation_id, message_ids):
+        self.calls.append(("covered_message_ids", id(unit)))
+        return self._inner.covered_message_ids(unit, conversation_id, message_ids)
+
 
 class _CountingDatabase:
     """The twin's database, counting the transactions the route opens."""
@@ -599,9 +607,9 @@ def test_ownership_is_resolved_before_the_read_and_in_the_same_unit_of_work(
     world.say("user", "q")
     world.say("assistant", "a")
     assert _timeline(client).status_code == 200
-    assert [name for name, _ in store.calls] == ["owner_of", "legacy_window"], (
-        "the ownership check must come first"
-    )
+    assert [name for name, _ in store.calls] == [
+        "owner_of", "entry_window", "legacy_window", "covered_message_ids",
+    ], "the ownership check must come first"
     assert len({unit for _, unit in store.calls}) == 1, (
         "one unit of work, so ownership cannot be resolved against a different snapshot"
     )
