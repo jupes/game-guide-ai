@@ -920,6 +920,94 @@ def test_one_legacy_row_is_carried_by_at_most_one_entry_and_an_entry_is_stored_o
     assert [r.payload["prompt"] for r in _entries(world)] == ["still usable", "q"]
 
 
+# ── F1 (PR #94 review): no refusal ever echoes the prompt or the owner id ───
+
+#: Fed through every guard below as the entry's prompt and as `owner_id`.
+#: Both are long enough that a 4-character slice of either is distinctive —
+#: unlike `world.owner` (1 or 2 in the fake world), which is too short for
+#: the same check to mean anything.
+REFUSAL_PROMPT_CANARY = "Zq4_gryphon_nest_Wp8_scandal_Mx2"
+REFUSAL_OWNER = 78_453_912
+
+
+def _assert_refusal_names_neither(exc: Exception, *secrets: object) -> None:
+    """No 4-character run of any secret appears in `str()` or `repr()` of a
+    refusal — the same check `test_what_an_entry_may_never_carry_is_refused_
+    by_where_and_never_by_what` makes for `EntryInvalid`. PR #94's mutant O1b
+    showed the twin's `EntryNotStored` needs it too, and `EntryMismatch` is
+    raised by the same shared guard code (`_checked`), before either world's
+    statement runs."""
+    told = f"{exc} {exc!r}"
+    for secret in secrets:
+        value = str(secret)
+        leaked = [value[i:i + 4] for i in range(len(value) - 3) if value[i:i + 4] in told]
+        assert not leaked, f"{exc!r} echoes a piece of {value!r}: {leaked}"
+
+
+def test_no_refusal_ever_names_the_prompt_or_the_owner(world: World) -> None:
+    """F1: `EntryNotStored` and `EntryMismatch` are each one fixed sentence
+    from a guard (Focus 3 of the lean review) — never built from the call's
+    own arguments. Mutant O1b changed the twin to quote the prompt and the
+    owner id and 171 tests still passed, because every existing refusal test
+    reuses the same short prompt and the same small owner id for every
+    conversation, so neither is distinctive enough to notice an echo. This
+    drives a canary prompt and a distinctive owner id through every guard
+    that raises either exception, in both worlds, and reads the exception
+    the way a caller or a log line would: `str()` and `repr()`."""
+    own_it(world)
+    own_it(world, FOREIGN, owner=world.other_owner)
+
+    # EntryNotStored: a missing, an unclaimed and a foreign conversation — the
+    # same three guards `test_a_missing_an_unclaimed_and_a_foreign_
+    # conversation_are_refused_alike` drives, with the canary and a
+    # distinctive owner id fed through instead of the usual defaults.
+    with world.db.transaction() as unit:
+        for conversation_id in ("no-such-conversation", UNCLAIMED, FOREIGN):
+            with pytest.raises(timeline_store.EntryNotStored) as refused:
+                world.timeline.append(
+                    unit, conversation_id, *_chat_entry(REFUSAL_PROMPT_CANARY),
+                    owner_id=REFUSAL_OWNER,
+                )
+            _assert_refusal_names_neither(refused.value, REFUSAL_PROMPT_CANARY, REFUSAL_OWNER)
+        _append_in(world, unit, *_chat_entry("still usable"))
+    assert [r.payload["prompt"] for r in _entries(world)] == ["still usable"]
+
+    # EntryNotStored: a message row linked from another conversation.
+    theirs = say_it(world, "user", "not yours", conversation_id=FOREIGN)
+    with world.db.transaction() as unit:
+        with pytest.raises(timeline_store.EntryNotStored) as refused:
+            world.timeline.append(
+                unit, CONVERSATION, *_chat_entry(REFUSAL_PROMPT_CANARY),
+                owner_id=REFUSAL_OWNER, user_message_id=theirs,
+            )
+        _assert_refusal_names_neither(refused.value, REFUSAL_PROMPT_CANARY, REFUSAL_OWNER)
+
+    # EntryNotStored: the same entry stored twice.
+    canary_entry, moment = _chat_entry(REFUSAL_PROMPT_CANARY)
+    with world.db.transaction() as unit:
+        _append_in(world, unit, canary_entry, moment)
+        with pytest.raises(timeline_store.EntryNotStored) as refused:
+            world.timeline.append(unit, CONVERSATION, canary_entry, moment, owner_id=REFUSAL_OWNER)
+        _assert_refusal_names_neither(refused.value, REFUSAL_PROMPT_CANARY, REFUSAL_OWNER)
+
+    # EntryMismatch: created_at disagrees with the row, and an unminted id —
+    # both raised by `_checked`, shared code that runs before either world's
+    # own guard.
+    with world.db.transaction() as unit:
+        skewed_entry, skewed_moment = _chat_entry(REFUSAL_PROMPT_CANARY)
+        with pytest.raises(timeline_store.EntryMismatch) as refused:
+            world.timeline.append(
+                unit, CONVERSATION, skewed_entry, skewed_moment + timedelta(microseconds=1),
+                owner_id=REFUSAL_OWNER,
+            )
+        _assert_refusal_names_neither(refused.value, REFUSAL_PROMPT_CANARY, REFUSAL_OWNER)
+        unminted_entry, unminted_moment = _chat_entry(REFUSAL_PROMPT_CANARY, entry_id="42")
+        with pytest.raises(timeline_store.EntryMismatch) as refused:
+            world.timeline.append(unit, CONVERSATION, unminted_entry, unminted_moment, owner_id=REFUSAL_OWNER)
+        _assert_refusal_names_neither(refused.value, REFUSAL_PROMPT_CANARY, REFUSAL_OWNER)
+        _append_in(world, unit, *_chat_entry("still usable, second time"))
+
+
 def test_the_entry_window_is_newest_first_bounded_and_strictly_below_its_position(world: World) -> None:
     own_it(world)
     base = datetime.now(UTC)
