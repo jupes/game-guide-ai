@@ -171,7 +171,10 @@ names it starts fresh rather than reading another caller's status or result
 
 List responses are `{ "items": [...], "next_cursor": "<opaque>" | null }`, read
 with `?cursor=` and `?limit=`. `next_cursor` is always present: the end of a list
-is `null`, never a missing key. A cursor is opaque to clients and is base64url
+is `null`, never a missing key. **A page may hold fewer items than were asked
+for — including none at all — while `next_cursor` stays non-null: a short or
+empty page is not the end of the list. Only a `null` cursor is; a client keeps
+paging until it sees one.** A cursor is opaque to clients and is base64url
 (`[A-Za-z0-9_-]{1,512}`), so it may travel in a query string. **Search text may
 not**: it travels in a request body (X-7), and a cursor never encodes any.
 
@@ -639,7 +642,11 @@ messages with reply pointers.
 
 - A page boundary can never separate a prompt from its result, so the rule in
   `1kg.4.2` — *pagination never splits a prompt/result association* — holds by
-  construction instead of by cursor arithmetic.
+  construction instead of by cursor arithmetic. That guarantee is why a
+  `TimelinePage` can come back short, or even with `items: []`, while
+  `next_cursor` is still non-null: skipping a whole legacy window is sometimes
+  the only way to avoid splitting one exchange across a page (see
+  *Pagination* above).
 - Tool results finish in any order (RAIL-16). Embedded, each one sits beneath the
   turn that asked for it without the client regrouping anything.
 - It is what the client already keeps: `useChat` pairs stored rows into
