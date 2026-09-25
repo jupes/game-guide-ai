@@ -61,3 +61,8 @@ CREATE UNIQUE INDEX timeline_entries_user_message_uidx
   ON chat.timeline_entries (user_message_id) WHERE user_message_id IS NOT NULL;
 CREATE UNIQUE INDEX timeline_entries_assistant_message_uidx
   ON chat.timeline_entries (assistant_message_id) WHERE assistant_message_id IS NOT NULL;
+
+-- DELIBERATELY BROKEN (2): deleting a campaign now takes its conversations with it.
+ALTER TABLE chat.conversations DROP CONSTRAINT conversations_campaign_id_fkey,
+  ADD CONSTRAINT conversations_campaign_id_fkey
+  FOREIGN KEY (campaign_id) REFERENCES campaign.campaigns (id) ON DELETE CASCADE;
