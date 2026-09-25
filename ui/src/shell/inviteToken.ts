@@ -46,16 +46,26 @@ export function getInviteTokenFromHash(hash: string): string | null {
  * in the one fragment grammar (CANVAS-30). */
 export const RESERVED_FRAGMENT_KEYS: readonly string[] = ['invite', 'token']
 
-/** Strip every reserved key out of a fragment, leaving every other key
- * untouched. Returns the remaining fragment WITHOUT a leading '#' (`''` if
- * nothing is left). Used by `UrlNavigation` so a single-use credential never
- * lingers in browser history, regardless of which path it arrived on. */
+/** Strip every reserved key out of a fragment, leaving everything else in it
+ * byte for byte. Returns the remaining fragment WITHOUT a leading '#' (`''` if
+ * nothing is left) -- so with no reserved key present, it is the input minus
+ * its '#', and `UrlNavigation` writes nothing. Used by `UrlNavigation` so a
+ * single-use credential never lingers in browser history, regardless of
+ * which path it arrived on.
+ *
+ * Filters the raw `&`-separated pairs rather than round-tripping the whole
+ * fragment through URLSearchParams, which would rewrite pairs it has no
+ * business touching (`section` -> `section=`, `%20` -> `+`); R3 leaves the
+ * fragment as it is apart from this scrub. Each pair's NAME is still decoded
+ * by URLSearchParams, so a key is recognised exactly as `readFragmentToken`
+ * would read it (`tok%65n=T` is `token`). */
 export function scrubReservedFragmentKeys(hash: string): string {
   const raw = hash.startsWith('#') ? hash.slice(1) : hash
-  if (raw === '') return ''
-  const params = new URLSearchParams(raw)
-  for (const key of RESERVED_FRAGMENT_KEYS) {
-    params.delete(key)
-  }
-  return params.toString()
+  return raw
+    .split('&')
+    .filter((pair) => {
+      const params = new URLSearchParams(pair)
+      return !RESERVED_FRAGMENT_KEYS.some((key) => params.has(key))
+    })
+    .join('&')
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppNavProvider, useAppNav } from './AppNav'
@@ -20,8 +20,7 @@ function Screens(): React.JSX.Element {
   )
 }
 
-function renderAt(url: string) {
-  window.history.replaceState({}, '', url)
+function mountAtCurrentUrl() {
   const boot = startScreen(window.location.pathname)
   return render(
     <AppNavProvider initialScreen={boot.screen}>
@@ -31,7 +30,13 @@ function renderAt(url: string) {
   )
 }
 
+function renderAt(url: string) {
+  window.history.replaceState({}, '', url)
+  return mountAtCurrentUrl()
+}
+
 afterEach(() => {
+  vi.restoreAllMocks()
   window.history.replaceState({}, '', '/')
 })
 
@@ -72,6 +77,31 @@ describe('cold-load URL correction', () => {
     expect(screen.getByRole('status')).toHaveTextContent('profile')
     expect(window.location.pathname).toBe('/profile')
     expect(window.location.hash).toBe('#keep=1')
+  })
+
+  // R3 leaves the fragment as it is apart from R7's scrub. With no reserved
+  // key there is nothing to scrub, so the address must not be written at all
+  // -- a URLSearchParams round trip would turn `#section` into `#section=`
+  // and `%20` into `+`.
+  it.each(['#section', '#q=a%20b'])(
+    'leaves a fragment with no reserved key byte-for-byte and writes nothing (%s)',
+    (hash) => {
+      window.history.replaceState({}, '', `/${hash}`)
+      const replaceState = vi.spyOn(window.history, 'replaceState')
+      const pushState = vi.spyOn(window.history, 'pushState')
+
+      mountAtCurrentUrl()
+
+      expect(window.location.hash).toBe(hash)
+      expect(replaceState).not.toHaveBeenCalled()
+      expect(pushState).not.toHaveBeenCalled()
+    },
+  )
+
+  it('removes only the reserved pairs and keeps every other key byte-for-byte', () => {
+    renderAt('/profile#q=a%20b&token=tok-abc&section&invite=tok-def')
+    expect(window.location.pathname).toBe('/profile')
+    expect(window.location.hash).toBe('#q=a%20b&section')
   })
 
   it('does not write to history at all when nothing needs correcting', () => {
