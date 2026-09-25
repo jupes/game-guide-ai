@@ -20,6 +20,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from enum import Enum
 from importlib.util import find_spec
 from pathlib import Path
@@ -80,8 +81,8 @@ from .ratelimit import (
 from .security_headers import CONTENT_SECURITY_POLICY
 from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
-from .timeline_store import PostgresTimelineStore, TimelineStore
-from .workbench_contracts import ErrorBody, ErrorCode, TimelinePage
+from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
+from .workbench_contracts import CONTRACT_VERSION, ErrorBody, ErrorCode, TimelinePage
 
 log = logging.getLogger(__name__)
 
@@ -647,18 +648,70 @@ def _persist_turn(
     store: MessageStore | None, conversation_id: str | None,
     mode: str, role: str, content: str,
     suggestions: list[dict[str, Any]] | None = None,
-) -> None:
+) -> int | None:
     """Best-effort history write: a failure is logged, never raised — a chat
     answer must not fail because persistence did (deliberately outside the
-    _DB_ERRORS → 503 taxonomy, which is reserved for retrieval)."""
+    _DB_ERRORS → 503 taxonomy, which is reserved for retrieval).
+
+    Answers the new row's id, or `None` when nothing was written: the turn's
+    timeline entry links the rows it carries (1kg.4.2, ruling R-1)."""
     if store is None or conversation_id is None:
-        return
+        return None
     try:
-        store.append(conversation_id, mode, role, content, suggestions=suggestions)
+        return store.append(conversation_id, mode, role, content, suggestions=suggestions)
     except Exception:
         log.warning(
             "history write failed (mode=%s, conversation_id=%s, role=%s)",
             mode, conversation_id, role, exc_info=True,
+        )
+        return None
+
+
+#: What `/chat` answered, under the names `ChatAnswer` keeps it by. `text` is
+#: `resp.answer` and `created_at` is minted: `ChatResponse` has no time.
+_ANSWER_FIELDS = {
+    "answerable", "sources", "suggestions", "routing", "suggestions_routing", "spell_content", "stat_block",
+}
+
+
+def _record_timeline_entry(
+    timeline: TimelineStore | None, tdb: Database | None, *,
+    conversation_id: str, owner_id: int, req: ChatRequest, resp: ChatResponse,
+    user_message_id: int | None, assistant_message_id: int | None,
+) -> None:
+    """Best-effort: the answered turn as one typed timeline entry (1kg.4.2).
+
+    The posture of `_persist_turn`, and for the same reason: an answer must
+    never fail because a record of it did. The call sits inside `chat()`'s
+    `try:`, so this catch-all is load-bearing — without it a failure here
+    would be answered as a 500. It runs only once `svc.answer` has returned
+    and both message rows are written, on one short transaction of its own,
+    and makes no provider call. A turn it cannot write — the contract bounds
+    what `/chat`'s own models do not — is served by the legacy adapter from its
+    rows instead.
+
+    The log line is content-free: the exception's TYPE, never its message,
+    which can quote a statement and with it the prompt or the answer (X-7).
+    """
+    if timeline is None or tdb is None:
+        return
+    try:
+        created_at = datetime.now(UTC)
+        answer = resp.model_dump(mode="json", include=_ANSWER_FIELDS)
+        entry = {
+            "schema_version": CONTRACT_VERSION, "entry_kind": "chat", "entry_id": new_entry_id(),
+            "created_at": created_at, "mode": req.mode.value, "prompt": req.prompt,
+            "answer": {**answer, "text": resp.answer, "created_at": created_at},
+        }
+        with tdb.transaction() as unit:
+            timeline.append(
+                unit, conversation_id, entry, created_at, owner_id=owner_id,
+                user_message_id=user_message_id, assistant_message_id=assistant_message_id,
+            )
+    except Exception as exc:
+        log.warning(
+            "timeline entry write failed (mode=%s, conversation_id=%s): %s",
+            req.mode.value, conversation_id, type(exc).__name__,
         )
 
 
@@ -887,6 +940,8 @@ def chat(
     store: MessageStore | None = Depends(get_message_store),
     metrics: MetricsSink = Depends(get_metrics_sink),
     session: SessionData = Depends(require_session),
+    timeline: TimelineStore | None = Depends(get_timeline_store),
+    tdb: Database | None = Depends(get_timeline_database),
 ) -> ChatResponse:
     # Cost guard (x5bz.3): spend one of this tester's chat budget before any
     # work happens. Before the try for the same reason as the gates below — a
@@ -991,13 +1046,17 @@ def chat(
                 labels=MetricLabels(mode=req.mode.value, route_template="/chat"),
             ),
         )
-        _persist_turn(store, conversation_id, req.mode.value, "user", req.prompt)
-        _persist_turn(
+        user_message_id = _persist_turn(store, conversation_id, req.mode.value, "user", req.prompt)
+        assistant_message_id = _persist_turn(
             store, conversation_id, req.mode.value, "assistant", resp.answer,
             suggestions=(
                 [s.model_dump(mode="json") for s in resp.suggestions]
                 if resp.suggestions else None
             ),
+        )
+        _record_timeline_entry(
+            timeline, tdb, conversation_id=conversation_id, owner_id=session.user_id, req=req, resp=resp,
+            user_message_id=user_message_id, assistant_message_id=assistant_message_id,
         )
         return resp
     except _LLM_ERRORS as exc:

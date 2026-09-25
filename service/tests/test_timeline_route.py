@@ -4,9 +4,10 @@ The route, its authorization, its refusals, and the paging walk that proves a
 page boundary never splits a prompt from its result. Everything runs through
 the app's test client against the in-memory twins — no database, no LLM.
 
-Slice B serves **legacy `chat.messages` rows only**, so every answer here
-carries `answerable: null` and `sources: null`. The stored-entry half of the
-field-for-field check is slice A's.
+Most conversations here are seeded as legacy `chat.messages` rows, so their
+answers carry `answerable: null` and `sources: null`. What `POST /chat` writes —
+the typed entry, and the field-for-field check against what it answered — is
+`service/tests/test_timeline_write.py`'s.
 
 Run from the repo root:
     uv run python -m pytest service/tests/test_timeline_route.py -q
@@ -284,27 +285,6 @@ def test_the_two_endpoints_describe_the_same_conversation(world: _World, client)
     ]
 
 
-# ── C1: live and reloaded carry the same answer text ─────────────────────────
-
-
-def test_what_chat_answered_is_what_the_timeline_reads_back(world: _World, client) -> None:
-    """C1, as far as legacy rows can prove it: the prompt and the answer text
-    survive the round trip exactly. `answerable` and `sources` read back as
-    *not recorded* until slice A writes a typed entry for the turn."""
-    world.own()
-    live = client.post("/chat", json={"prompt": "How does a gaze work?", "mode": "sage",
-                                      "conversation_id": CONVERSATION})
-    assert live.status_code == 200, live.text
-    answered = live.json()
-
-    entry = _timeline(client).json()["items"][0]
-    assert entry["prompt"] == "How does a gaze work?"
-    assert entry["answer"]["text"] == answered["answer"]
-    assert entry["mode"] == answered["mode"]
-    assert entry["answer"]["answerable"] is None
-    assert entry["answer"]["sources"] is None
-
-
 # ── C10(b): authorization ────────────────────────────────────────────────────
 
 
@@ -559,6 +539,14 @@ class _Recorder:
             unit, conversation_id, before=before, limit_rows=limit_rows
         )
 
+    def entry_window(self, unit, conversation_id, *, before, limit):
+        self.calls.append(("entry_window", id(unit)))
+        return self._inner.entry_window(unit, conversation_id, before=before, limit=limit)
+
+    def covered_message_ids(self, unit, conversation_id, message_ids):
+        self.calls.append(("covered_message_ids", id(unit)))
+        return self._inner.covered_message_ids(unit, conversation_id, message_ids)
+
 
 class _CountingDatabase:
     """The twin's database, counting the transactions the route opens."""
@@ -599,9 +587,9 @@ def test_ownership_is_resolved_before_the_read_and_in_the_same_unit_of_work(
     world.say("user", "q")
     world.say("assistant", "a")
     assert _timeline(client).status_code == 200
-    assert [name for name, _ in store.calls] == ["owner_of", "legacy_window"], (
-        "the ownership check must come first"
-    )
+    assert [name for name, _ in store.calls] == [
+        "owner_of", "entry_window", "legacy_window", "covered_message_ids",
+    ], "the ownership check must come first"
     assert len({unit for _, unit in store.calls}) == 1, (
         "one unit of work, so ownership cannot be resolved against a different snapshot"
     )
@@ -684,22 +672,6 @@ def test_no_refusal_of_this_route_is_ever_logged_with_a_traceback(
         assert record.exc_info is None, "logged with a traceback: the chain reaches the input"
         assert CANARY not in record.getMessage()
         assert all(CANARY not in str(arg) for arg in (record.args or ()))
-
-
-def test_the_chat_request_path_gains_no_statement_no_round_trip_and_no_branch() -> None:
-    """The owner's standing constraint, and R-1's sentence that it is not
-    relaxed. Slice B is the read side only: `/chat` writes no entry, so its
-    handler must not name the timeline at all — not a store, not a database,
-    not a helper. A diff can be read once; this fails the day someone adds one.
-    """
-    import inspect
-
-    from service import app as app_module
-
-    source = inspect.getsource(app_module.chat)
-    assert "timeline" not in source.lower()
-    signature = inspect.signature(app_module.chat)
-    assert not any("timeline" in name for name in signature.parameters)
 
 
 # ── Rework 1: carry items from the part-2 review ─────────────────────────────

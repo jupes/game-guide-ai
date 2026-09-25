@@ -557,3 +557,40 @@ claims an unowned conversation that has content — grandfathered, and left as i
 is. The route requires the `dm` role (SEC-2), validates `limit` and `cursor`
 itself so FastAPI's default 422 can never echo the request back (SEC-23), and
 fails closed with `backend_unavailable` when the store or the database is away.
+
+**The typed entries.** `chat.timeline_entries` holds one row per exchange that
+`POST /chat` answered once the durable timeline shipped. The row is the entry's
+identity and time — `entry_id` (minted: `ent_` and 128 CSPRNG bits, SEC-4),
+`created_at`, and `seq`, which only breaks ties — and `payload` is the validated
+wire entry. The write refuses, before any statement runs, a payload that
+disagrees with its own row, and anything the contract does not declare: a
+document body, an assembled prompt, attachment text, a provider payload or an
+owner's user id cannot ride along. No hash or digest of any text is stored
+(ED-26). An entry goes with its conversation, and a conversation with its user.
+
+**Two link columns, so no turn renders twice.** `user_message_id` and
+`assistant_message_id` name the `chat.messages` rows the entry carries. A legacy
+row an entry names is *covered*: it is never adapted again, and it closes any
+exchange left open before it, so a lost answer can never pair with a later
+turn's prompt. The rule is derived from data rather than from time, so it holds
+under rollout, rollback and a failed write, with no watermark and no backfill.
+The ids come from `MessageStore.append`'s return value — the one change to
+`service/history.py` — never from a second query.
+
+**Best-effort, after the answer.** The write runs after `svc.answer(...)` has
+returned and both message rows are written, on one short transaction of its
+own; nothing is held across the provider call and nothing is added before it.
+It catches everything and logs one content-free line (the mode, the
+conversation id and the exception's type), so it can never fail an answer or
+change a byte of one. A turn whose entry could not be written — the contract
+bounds sources, suggestions and text where `/chat`'s own models do not — reads
+back adapted from its rows, with `answerable` and `sources` *not recorded*.
+
+**The merged cursor.** A page is two bounded windows: `limit + 1` entry rows and
+`2 * limit + 3` legacy rows. The legacy position moves past covered rows as well
+as the exchanges a page takes, or a window full of covered rows would never
+move; and while the legacy window comes back full, nothing older than its oldest
+row is taken from either source, because an older exchange may still wait
+below it. A page may therefore hold fewer entries than asked for — even none —
+with a non-null `next_cursor`; the walk still ends, and it never loses, repeats
+or reorders an entry.
