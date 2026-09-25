@@ -100,8 +100,17 @@ export const SignedOutWithAnInvite: Story = {
   },
 }
 
-/** Signed in. Navigation resets to Landing whenever the identity changes. */
+/**
+ * Signed in. Navigation resets to Landing whenever the identity changes --
+ * except on the FIRST settled observation (agent-forge-harness-y40, R8),
+ * which is what lets a cold-loaded deep link survive the session check
+ * resolving. `shellHarness` has no "checking" phase of its own (`authStatus`
+ * is fixed from the first render), so that first-ever observation is exactly
+ * this story's case: explicit here, rather than relying on a reset that must
+ * NOT fire for a real cold load either.
+ */
 export const SignedIn: Story = {
+  decorators: [withShell({ authStatus: 'authenticated', screen: 'landing' })],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('button', { name: /enter the tavern/i })).toBeInTheDocument()
@@ -110,9 +119,11 @@ export const SignedIn: Story = {
 
 /**
  * The whole entry path by keyboard alone: Tab to the CTA, press Enter, and the
- * workspace replaces the landing screen.
+ * workspace replaces the landing screen. Starts on Landing explicitly -- see
+ * the SignedIn story's note (agent-forge-harness-y40, R8).
  */
 export const EnteredByKeyboard: Story = {
+  decorators: [withShell({ authStatus: 'authenticated', screen: 'landing' })],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await userEvent.tab()
@@ -127,8 +138,12 @@ export const EnteredByKeyboard: Story = {
   },
 }
 
-/** A channel chip is a shortcut straight into that channel. */
+/**
+ * A channel chip is a shortcut straight into that channel. Starts on Landing
+ * explicitly -- see the SignedIn story's note (agent-forge-harness-y40, R8).
+ */
 export const EnteredOnTheGmChannel: Story = {
+  decorators: [withShell({ authStatus: 'authenticated', screen: 'landing' })],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const gm = canvas.getByRole('button', { name: 'GM' })
