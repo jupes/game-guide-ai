@@ -70,6 +70,16 @@ takes its conversations, messages and attachments with it.
 credential stays out of request logs. Root-path because there is no client
 router — the built SPA 404s on deeper paths.
 
+> **Partially superseded (2026-09-24, `agent-forge-harness-y40`).** The SPA
+> now has a client router — see [`client-routing.md`](client-routing.md) —
+> so `/`, `/workspace` and `/profile` all resolve on a cold load in
+> production; "the built SPA 404s on deeper paths" is now true only for
+> paths OUTSIDE that three-route allowlist. The fragment half of this
+> decision is unchanged: `invite` and `token` are reserved fragment keys,
+> scrubbed from the address bar on load whatever the path, precisely because
+> a path or query string would reach Cloud Run's request logs and a fragment
+> does not.
+
 **Auth ships as flat `service/*.py` modules**, not a `service/auth/`
 subpackage: `pyproject.toml` uses an explicit package list, so a subpackage would
 have been silently dropped by `pip install .` — working in local source-path
