@@ -280,7 +280,7 @@ _INSERT_ENTRY = (
     "SELECT %s::text, c.conversation_id, %s::text, %s::integer, %s::timestamptz, %s::jsonb, "
     "%s::bigint, %s::bigint "
     "FROM chat.conversations c "
-    "WHERE c.conversation_id = %s "
+    "WHERE c.conversation_id = %s AND c.user_id = %s "
     "AND (%s::bigint IS NULL OR EXISTS (SELECT 1 FROM chat.messages m "
     "WHERE m.id = %s AND m.conversation_id = c.conversation_id)) "
     "AND (%s::bigint IS NULL OR EXISTS (SELECT 1 FROM chat.messages m "
@@ -335,7 +335,7 @@ class PostgresTimelineStore:
         row = conn.execute(_INSERT_ENTRY, (
             validated.entry_id, validated.entry_kind, validated.schema_version, created_at, payload,
             user_message_id, assistant_message_id,
-            conversation_id,
+            conversation_id, owner_id,
             user_message_id, user_message_id,
             assistant_message_id, assistant_message_id,
         )).fetchone()
