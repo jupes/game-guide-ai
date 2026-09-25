@@ -28,7 +28,6 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.staticfiles import StaticFiles
 
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
@@ -81,6 +80,7 @@ from .ratelimit import (
 )
 from .security_headers import CONTENT_SECURITY_POLICY
 from .session import SessionData, decode_session, encode_session
+from .spa_fallback import install_spa
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
 from .workbench_contracts import CONTRACT_VERSION, ErrorBody, ErrorCode, TimelinePage
 
@@ -1415,8 +1415,9 @@ def me(
     return AuthUser(email=user.email, role=user.role)
 
 
-# Mount the pre-built UI at "/" — after route decorators so API routes always win.
-# Only active when `cd ui && bun run build` has been run (ui/dist/ must exist).
+# Mount the pre-built UI last, as an ALLOWLIST fallback, not a catch-all
+# (agent-forge-harness-y40) -- see service/spa_fallback.py for what each path
+# answers and why the order matters. Only active when `cd ui && bun run build`
+# has been run (ui/dist/ must exist).
 _UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
-if _UI_DIST.is_dir():
-    app.mount("/", StaticFiles(directory=_UI_DIST, html=True), name="ui")
+install_spa(app, _UI_DIST)
