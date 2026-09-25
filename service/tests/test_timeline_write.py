@@ -468,12 +468,40 @@ def test_no_log_line_and_no_metric_carries_the_turns_text(
 # ── The one change to chat(), pinned ─────────────────────────────────────────
 
 
+def _offset(source: str, lineno: int, col: int) -> int:
+    """`source`'s absolute character offset for one `ast` position — `lineno`
+    1-indexed and `col` 0-indexed, exactly as `ast` reports both."""
+    return sum(len(line) for line in source.splitlines(keepends=True)[:lineno - 1]) + col
+
+
+def _span(source: str, node: ast.expr | ast.stmt | ast.arg) -> tuple[int, int]:
+    """The half-open `(start, end)` character span `node` covers in `source`.
+    Typed as the union of node kinds this file actually passes in — plain
+    `ast.AST` has no position fields in typeshed, only its stmt/expr/arg
+    subclasses do."""
+    assert node.end_lineno is not None and node.end_col_offset is not None
+    return (
+        _offset(source, node.lineno, node.col_offset),
+        _offset(source, node.end_lineno, node.end_col_offset),
+    )
+
+
 def test_chat_gains_two_dependencies_and_one_call_and_nothing_else() -> None:
     """Requirement 8: two dependency parameters, one call — placed after the
     two `_persist_turn` calls, whose ids it passes on, and before `return
     resp`, inside the `try:` — and no other mention of the timeline. A diff
-    can be read once; this fails the day someone moves the call."""
-    tree = ast.parse(textwrap.dedent(inspect.getsource(app_module.chat)))
+    can be read once; this fails the day someone moves the call.
+
+    F2 (PR #94 review): the `ast.Name` check below (`mentions`) only catches a
+    *new reference to the `timeline`/`tdb` parameters*. Mutant W6 added a call
+    to `get_timeline_store()`/`get_timeline_database()` — the dependency
+    *providers*, a different identifier — before `svc.answer`, and it
+    survived. The substring scan at the end of this test is independent of
+    identifiers: every place the text "timeline" (any case) appears anywhere
+    in this function's source must fall inside the two dependency parameters
+    or the one helper call."""
+    source = textwrap.dedent(inspect.getsource(app_module.chat))
+    tree = ast.parse(source)
     handler = tree.body[0]
     assert isinstance(handler, ast.FunctionDef)
     assert [a.arg for a in handler.args.args] == [
@@ -495,4 +523,30 @@ def test_chat_gains_two_dependencies_and_one_call_and_nothing_else() -> None:
     mentions = [n for n in ast.walk(handler) if isinstance(n, ast.Name) and n.id in ("timeline", "tdb")]
     assert len(mentions) == 2 and all(n in list(ast.walk(record)) for n in mentions), (
         "the timeline is named somewhere other than the one call"
+    )
+
+    # F2: no other TEXT names it either (mutant W6). `timeline`/`tdb` are the
+    # last two parameters and share no other tokens with the rest of the
+    # signature, so their combined span — name through default, for both —
+    # runs from the first parameter's start to the second's default's end.
+    timeline_param, tdb_param = handler.args.args[-2], handler.args.args[-1]
+    assert (timeline_param.arg, tdb_param.arg) == ("timeline", "tdb")
+    allowed = [
+        (_span(source, timeline_param)[0], _span(source, handler.args.defaults[-1])[1]),
+        _span(source, record),
+    ]
+    lowered = source.lower()
+    positions = []
+    cursor = lowered.find("timeline")
+    while cursor != -1:
+        positions.append(cursor)
+        cursor = lowered.find("timeline", cursor + 1)
+    assert positions, "sanity: chat()'s source should name the timeline at least once"
+    stray = [
+        pos for pos in positions
+        if not any(lo <= pos and pos + len("timeline") <= hi for lo, hi in allowed)
+    ]
+    assert not stray, (
+        f"'timeline' appears outside the two dependency parameters and the one "
+        f"helper call, at character offset(s) {stray}"
     )
