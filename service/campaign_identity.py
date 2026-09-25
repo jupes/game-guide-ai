@@ -11,9 +11,10 @@ sequential id leaks volume and invites probing. Ids are **not** secrets — ever
 authorisation rule still applies to the row they name — but they are opaque, and
 they must fit the wire contract's ``OpaqueId`` (``^[A-Za-z0-9_-]{1,64}$``).
 
-**SEC-5 — secrets.** An enrolment code, a table link token and a device
-credential are each 32 random bytes, and the server stores **only a SHA-256
-digest**, looked up by that digest. A slow password hash is deliberately *not*
+**SEC-5 — secrets.** A table link token and a join credential are each 32
+random bytes, and the server stores **only a SHA-256 digest**, looked up by that
+digest. (The enrolment code and the device credential were the other two until
+the owner's decisions D-1 and D-4 retired them; bead `fma`, migration 0009.) A slow password hash is deliberately *not*
 used here: these are 256-bit random values with nothing to brute-force, and a slow
 hash on a route anyone can call is a denial-of-service lever. ``service/hashing.py``
 is the other case — human-chosen passwords — and the two must not be confused.
@@ -23,10 +24,6 @@ is the other case — human-chosen passwords — and the two must not be confuse
 mints the values. One rule spelled twice drifts, so :func:`id_check_regex` is the
 single source and the migration is written from it;
 ``service/tests/test_campaign_schema_sql.py`` asserts the file still agrees.
-
-**AUD-4 — an unused enrolment code expires after seven days.** The window belongs
-to this module rather than to the caller, so no route can mint a code that
-outlives the rule.
 """
 
 from __future__ import annotations
@@ -35,7 +32,6 @@ import hashlib
 import re
 import secrets
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
 from typing import Final
 
 # ── The prefix registry ──────────────────────────────────────────────────────
@@ -46,6 +42,9 @@ from typing import Final
 
 CAMPAIGN: Final = "cmp_"
 PARTICIPANT: Final = "prt_"
+#: Retired with their tables (D-1, D-4; migration 0009) and nothing mints them
+#: now, but kept: 0004 still constrains their columns with these prefixes, and a
+#: retired prefix is never reused.
 ENROLMENT_CODE: Final = "enc_"
 DEVICE_CREDENTIAL: Final = "dev_"
 TABLE_SESSION: Final = "ses_"
@@ -87,9 +86,6 @@ SECRET_BYTES: Final = 32
 SECRET_CHARS: Final = 43
 #: SHA-256 as lowercase hex.
 DIGEST_CHARS: Final = 64
-
-#: AUD-4: a personal link's code expires seven days after it is issued.
-CODE_LIFETIME: Final = timedelta(days=7)
 
 _PREFIX_SHAPE: Final = re.compile(r"^[a-z]{3}_$")
 _BODY: Final = re.compile(rf"^[A-Za-z0-9_-]{{{ID_BODY_MIN},{ID_BODY_MAX}}}$")
@@ -167,19 +163,3 @@ def digest(secret: str) -> str:
     if not secret:
         raise ValueError("a secret is never empty")
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
-
-
-# ── Expiry ───────────────────────────────────────────────────────────────────
-
-
-def code_expiry(now: datetime | None = None) -> datetime:
-    """When an enrolment code issued at `now` expires (AUD-4: seven days).
-
-    Takes a clock, never a duration, so that no caller can widen the window.
-    """
-    moment = datetime.now(UTC) if now is None else now
-    if moment.tzinfo is None:
-        # A naive value would be read as UTC by the driver and as local time by
-        # everything else — a silent off-by-hours against a TIMESTAMPTZ column.
-        raise ValueError("a clock passed here is timezone-aware")
-    return moment + CODE_LIFETIME

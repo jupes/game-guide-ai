@@ -113,18 +113,52 @@ def test_the_action_set_is_closed_and_a_caller_cannot_invent_one():
             assert value not in str(refused.value), "a refusal never repeats what it refused"
 
 
-def test_the_sixteen_actions_sec38_names_are_the_ones_that_ship():
+def test_the_fourteen_actions_sec38_names_are_the_ones_that_ship():
     """Reveal's three and the export ones are not here: ED-18(a) makes the table
     shared, and they belong to the beads that will write them (1kg.7.1, 1kg.5.2),
-    which add their own members without a migration."""
+    which add their own members without a migration.
+
+    `agent-forge-harness-fma` retired the enrolment code and the device
+    credential (D-1, D-4), so their four actions went with them, and a seat is
+    now offered to an account and accepted by it. There is deliberately no
+    `seat.removed`: `participant.removed` already records a seat's removal, and
+    two words for one event is the drift a closed vocabulary exists to stop."""
     assert {a.value for a in AuditAction} == {
         "session.started", "session.ended", "session.expired", "session.rotated",
         "participant.added", "participant.removed", "participant.linked",
-        "participant.unlinked", "code.issued", "code.consumed", "device.replaced",
-        "device.reset", "campaign.archived", "campaign.restored", "campaign.deleted",
+        "participant.unlinked", "seat.offered", "seat.accepted",
+        "campaign.archived", "campaign.restored", "campaign.deleted",
         "join.burst_refused",
     }
     assert not [a for a in AuditAction if a.value.startswith(("reveal.", "export."))]
+    assert not [a for a in AuditAction if a.value.startswith(("code.", "device."))], "retired"
+    assert "seat.removed" not in {a.value for a in AuditAction}
+
+
+def test_a_seat_row_carries_the_seat_and_nothing_else():
+    """L-9. An offer is the GM's decision and an acceptance the account's, and
+    each row names the seat by its minted id — never the account, whose user id
+    is personal data the ledger does not need to answer "who was seated"."""
+    for action in (AuditAction.SEAT_OFFERED, AuditAction.SEAT_ACCEPTED):
+        assert set(ACTION_DETAIL[action]) == {"participant_id"}, action
+        assert ACTION_DETAIL[action]["participant_id"] == MintedId(ident.PARTICIPANT)
+        assert ACTION_REASONS[action] == frozenset(), action
+        with pytest.raises(ValueError, match="no such detail key"):
+            check_detail(action, {"user_id": 7})
+
+
+_WORDS = {3: "three", 14: "fourteen"}
+
+
+def test_the_module_docstrings_count_what_the_enums_hold():
+    """The counts are prose, so nothing else would notice them go stale: the
+    ledger's docstring names how many actions there are, and `ObjectKind`'s how
+    many things they act on."""
+    actions, kinds = _WORDS[len(AuditAction)], _WORDS[len(ObjectKind)]
+    module = " ".join((audit_log.__doc__ or "").split())
+    assert f"for the {actions} that are here" in module
+    object_doc = " ".join((ObjectKind.__doc__ or "").split())
+    assert f"one of the {kinds} things the {actions} actions act on" in object_doc
 
 
 # ── The closed, per-action detail of ED-18(a) ────────────────────────────────
@@ -330,9 +364,7 @@ def test_every_kind_the_ledger_knows_is_a_thing_the_schema_mints_an_id_for():
     member together with its action, as `AuditAction`'s docstring says."""
     minted = {audit_log.ObjectKind(kind) for kind in ("campaign", "participant", "table_session")}
     assert minted <= set(ObjectKind)
-    assert {kind.value for kind in ObjectKind} == {
-        "campaign", "table_session", "participant", "enrolment_code", "device_credential",
-    }
+    assert {kind.value for kind in ObjectKind} == {"campaign", "table_session", "participant"}
     assert len(ObjectKind) < len(ident.PREFIXES), "table_credential has no action yet"
 
 
@@ -440,10 +472,6 @@ def test_no_alias_title_or_secret_reaches_a_log_line_or_an_exception(caplog):
         with db.transaction() as unit:
             campaign = campaigns.create(unit, owner_id=1, name=PRIVATE["campaign name"])
             seat = participants.add(unit, campaign.id, alias=PRIVATE["alias"])
-            code, secret = participants.issue_code(unit, campaign.id, seat.id)
-            credential, device_secret = participants.issue_device_credential(
-                unit, campaign.id, seat.id
-            )
             session, link = sessions.start(
                 unit,
                 campaign.id,
@@ -451,7 +479,7 @@ def test_no_alias_title_or_secret_reaches_a_log_line_or_an_exception(caplog):
                 expires_at=datetime.now(UTC) + timedelta(hours=12),
             )
             joined, join_secret = sessions.issue_credential(unit, campaign.id, session.id)
-            said += [repr(r) for r in (campaign, seat, code, credential, session, joined)]
+            said += [repr(r) for r in (campaign, seat, session, joined)]
 
             with pytest.raises(ValueError) as refused:
                 participants.add(unit, campaign.id, alias="a" * 41)
@@ -469,15 +497,11 @@ def test_no_alias_title_or_secret_reaches_a_log_line_or_an_exception(caplog):
     for kind, value in PRIVATE.items():
         assert value not in spoken, f"a {kind} reached a message"
     for kind, value in (
-        ("enrolment code", secret),
-        ("device credential", device_secret),
         ("table link", link),
         ("join credential", join_secret),
     ):
         assert value not in spoken, f"a {kind} reached a message"
     for kind, digest in (
-        ("code", code.code_digest),
-        ("device", credential.credential_digest),
         ("link", session.link_digest or ""),
         ("join", joined.credential_digest),
     ):

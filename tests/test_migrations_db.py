@@ -152,13 +152,13 @@ def test_a_fresh_database_gets_every_migration_once(dsn):
         "campaign.campaigns",
         "campaign.authz_state",
         "campaign.participants",
-        "campaign.enrolment_codes",
-        "campaign.device_credentials",
         "campaign.table_sessions",
         "campaign.table_credentials",
         "campaign.session_join_counters",
     ):
         assert _exists(dsn, relation), f"{relation} was not created"
+    for retired in ("campaign.enrolment_codes", "campaign.device_credentials"):
+        assert not _exists(dsn, retired), f"{retired} outlived 0009"
 
     again = mig.migrate(dsn)
     assert again.applied == () and again.state == "current"
@@ -262,13 +262,12 @@ def test_the_database_refuses_a_campaign_row_the_application_would_never_mint(ds
             )
 
 
-#: Every table 0004 hangs off a campaign, with the column that reaches a user.
+#: Every table 0004 hangs off a campaign that 0009 kept, with the column that
+#: reaches a user.
 CAMPAIGN_TABLES = (
     "campaign.campaigns",
     "campaign.authz_state",
     "campaign.participants",
-    "campaign.enrolment_codes",
-    "campaign.device_credentials",
     "campaign.table_sessions",
     "campaign.table_credentials",
     "campaign.session_join_counters",
@@ -276,7 +275,8 @@ CAMPAIGN_TABLES = (
 
 
 def _a_whole_campaign(conn, owner: int) -> None:
-    """One row in every table of 0004, so the cascade has something to lose."""
+    """One row in every table of 0004 that 0009 kept, so the cascade has
+    something to lose."""
     conn.execute(
         "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
         (CAMPAIGN_ID, owner),
@@ -285,16 +285,6 @@ def _a_whole_campaign(conn, owner: int) -> None:
         "INSERT INTO campaign.participants (id, campaign_id, alias, alias_key) "
         "VALUES (%s, %s, 'Rook', 'rook')",
         ("prt_" + "a" * 22, CAMPAIGN_ID),
-    )
-    conn.execute(
-        "INSERT INTO campaign.enrolment_codes (id, participant_id, code_digest, expires_at) "
-        "VALUES (%s, %s, %s, now() + interval '7 days')",
-        ("enc_" + "a" * 22, "prt_" + "a" * 22, "0" * 64),
-    )
-    conn.execute(
-        "INSERT INTO campaign.device_credentials (id, participant_id, credential_digest) "
-        "VALUES (%s, %s, %s)",
-        ("dev_" + "a" * 22, "prt_" + "a" * 22, "1" * 64),
     )
     conn.execute(
         "INSERT INTO campaign.table_sessions (id, campaign_id, gm_user_id, state, expires_at) "

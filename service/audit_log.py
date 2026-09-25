@@ -12,7 +12,7 @@ reviewer sees, not a string a caller invents, so the ledger cannot quietly grow
 a vocabulary nobody agreed to. Reveal's three actions and the export ones are
 not here: ED-18(a) makes the table shared, and those belong to `1kg.7.1` and
 `1kg.5.2`, which add their own members without a migration. Nor is there a
-writer in this bead for the sixteen that are here — their callers are
+writer in this bead for the fourteen that are here — their callers are
 `1kg.2.2`'s and `1kg.2.3`'s routes. The reason is ownership, not use.
 
 **A row carries identifiers, never content** (SEC-20, ED-26) — and no hash of
@@ -115,10 +115,13 @@ class AuditAction(str, Enum):
     PARTICIPANT_REMOVED = "participant.removed"
     PARTICIPANT_LINKED = "participant.linked"
     PARTICIPANT_UNLINKED = "participant.unlinked"
-    CODE_ISSUED = "code.issued"
-    CODE_CONSUMED = "code.consumed"
-    DEVICE_REPLACED = "device.replaced"
-    DEVICE_RESET = "device.reset"
+    #: The GM offered a seat to an account (actor `gm`). Bead `fma`: the
+    #: enrolment code and the device credential are retired (D-1, D-4), and
+    #: their four actions with them.
+    SEAT_OFFERED = "seat.offered"
+    #: The account accepted the seat offered to it (actor `participant`). There
+    #: is no `seat.removed`: `participant.removed` records a seat's removal.
+    SEAT_ACCEPTED = "seat.accepted"
     CAMPAIGN_ARCHIVED = "campaign.archived"
     CAMPAIGN_RESTORED = "campaign.restored"
     CAMPAIGN_DELETED = "campaign.deleted"
@@ -135,7 +138,7 @@ class ActorKind(str, Enum):
 
 
 class ObjectKind(str, Enum):
-    """What the decision was **about** — one of the five things the sixteen
+    """What the decision was **about** — one of the three things the fourteen
     actions act on, and nothing else.
 
     Closed for the same reason `AuditAction` is, and for one more: a lower-case
@@ -148,8 +151,6 @@ class ObjectKind(str, Enum):
     CAMPAIGN = "campaign"
     TABLE_SESSION = "table_session"
     PARTICIPANT = "participant"
-    ENROLMENT_CODE = "enrolment_code"
-    DEVICE_CREDENTIAL = "device_credential"
 
 
 class Decision(str, Enum):
@@ -243,8 +244,6 @@ def _describes(kind: Kind) -> str:
 _CAMPAIGN = MintedId(ident.CAMPAIGN)
 _PARTICIPANT = MintedId(ident.PARTICIPANT)
 _SESSION = MintedId(ident.TABLE_SESSION)
-_CODE = MintedId(ident.ENROLMENT_CODE)
-_DEVICE = MintedId(ident.DEVICE_CREDENTIAL)
 
 #: SEC-10 bounds a generation two ways — 24 credentials, and 60 joins in ten
 #: minutes. Which one a refused join hit is a closed code, not a sentence.
@@ -272,14 +271,10 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     },
     AuditAction.PARTICIPANT_LINKED: {"participant_id": _PARTICIPANT},
     AuditAction.PARTICIPANT_UNLINKED: {"participant_id": _PARTICIPANT},
-    AuditAction.CODE_ISSUED: {"participant_id": _PARTICIPANT, "code_id": _CODE},
-    AuditAction.CODE_CONSUMED: {"participant_id": _PARTICIPANT, "code_id": _CODE},
-    AuditAction.DEVICE_REPLACED: {"participant_id": _PARTICIPANT, "credential_id": _DEVICE},
-    AuditAction.DEVICE_RESET: {
-        "participant_id": _PARTICIPANT,
-        "credential_id": _DEVICE,
-        "code_id": _CODE,
-    },
+    # The seat, and never the account: "who was seated" is answered by the
+    # participant row, and a user id is personal data the ledger does not need.
+    AuditAction.SEAT_OFFERED: {"participant_id": _PARTICIPANT},
+    AuditAction.SEAT_ACCEPTED: {"participant_id": _PARTICIPANT},
     AuditAction.CAMPAIGN_ARCHIVED: {"campaign_id": _CAMPAIGN},
     AuditAction.CAMPAIGN_RESTORED: {"campaign_id": _CAMPAIGN},
     AuditAction.CAMPAIGN_DELETED: {

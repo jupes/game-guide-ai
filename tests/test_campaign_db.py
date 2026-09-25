@@ -25,8 +25,10 @@ Without it they skip, and a skip is reported as a skip. From the repo root:
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
+import traceback
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -54,8 +56,8 @@ from service.campaign_store import (
     LiveSessionExists,
     MissingParent,
     NotLive,
-    ParticipantRemoved,
     PostgresCampaignStore,
+    SeatUnavailable,
     check_name,
 )
 from service.db import (
@@ -68,8 +70,6 @@ from service.db import (
     PoolSettings,
 )
 from service.participant_store import (
-    DeviceCredential,
-    EnrolmentCode,
     InMemoryParticipantStore,
     Participant,
     PostgresParticipantStore,
@@ -400,17 +400,17 @@ def test_the_first_transaction_bound_a_transaction_sets_is_the_one_that_fires(
 
 @needs_db
 def test_a_participant_only_transaction_is_bounded_like_every_other_holder(dsn: str, owner: int) -> None:
-    """RQ-6 rests on "every holder is bounded by `transaction_timeout`", and an
-    enrolment — the unauthenticated route — holds a participant row without ever
-    taking the campaign lock. Before this, that was the one transaction in the
-    schema with no bound at all."""
+    """RQ-6 rests on "every holder is bounded by `transaction_timeout`", and a
+    participant row can be held without the campaign lock ever being taken.
+    Before `hold` bounded it, that was the one transaction in the schema with no
+    bound at all."""
     db = _database(dsn, CampaignLockSettings(lock_timeout_s=1, transaction_timeout_s=9))
     participants = PostgresParticipantStore()
     with db.transaction() as unit:
         seat = participants.add(unit, CAMPAIGN, alias="Rook")
     with db.transaction() as unit:
         assert unit.conn.execute("SHOW transaction_timeout").fetchone()[0] == "0", "not yet"
-        participants.hold(unit, seat.id)
+        participants.hold(unit, seat.id, campaign_id=CAMPAIGN)
         assert unit.conn.execute("SHOW transaction_timeout").fetchone()[0] == "9s"
 
 
@@ -483,14 +483,17 @@ def _holding_a_row(dsn: str, statement: str, params: tuple) -> Iterator[None]:
         raise failure[0]
 
 
-def _insert_a_code_referencing_the_participant(dsn: str) -> None:
-    """The foreign-key check this makes takes FOR KEY SHARE on the participant."""
+def _insert_a_sheet_referencing_the_participant(dsn: str) -> None:
+    """A character sheet linked to the seat (0008). The foreign-key check this
+    makes takes FOR KEY SHARE on the participant. It was an enrolment code until
+    0009 dropped that table; the sheet is the reference to a seat that remains."""
     with connect(dsn, autocommit=False) as conn:
         conn.execute("SET LOCAL lock_timeout = '2s'")
         conn.execute(
-            "INSERT INTO campaign.enrolment_codes (id, participant_id, code_digest, expires_at) "
-            "VALUES (%s, %s, %s, now() + interval '7 days')",
-            ("enc_" + "a" * 22, PARTICIPANT, "0" * 64),
+            "INSERT INTO campaign.documents (id, campaign_id, type, type_version, data, "
+            "write_revision, field_revisions, name_key, search_key, linked_participant_id) "
+            "VALUES (%s, %s, 'character_sheet', 1, '{}', 1, '{}', '', '', %s)",
+            ("doc_" + "a" * 22, CAMPAIGN, PARTICIPANT),
         )
         conn.commit()
 
@@ -508,15 +511,15 @@ def test_a_participant_locked_for_no_key_update_does_not_block_a_row_that_refere
     _a_participant_row(dsn)
     held = "SELECT id FROM campaign.participants WHERE id = %s FOR NO KEY UPDATE"
     with _holding_a_row(dsn, held, (PARTICIPANT,)):
-        _insert_a_code_referencing_the_participant(dsn)
+        _insert_a_sheet_referencing_the_participant(dsn)
 
     with connect(dsn) as conn:
-        conn.execute("DELETE FROM campaign.enrolment_codes")
+        conn.execute("DELETE FROM campaign.documents")
 
     stronger = "SELECT id FROM campaign.participants WHERE id = %s FOR UPDATE"
     with _holding_a_row(dsn, stronger, (PARTICIPANT,)):
         with pytest.raises(psycopg.errors.LockNotAvailable):
-            _insert_a_code_referencing_the_participant(dsn)
+            _insert_a_sheet_referencing_the_participant(dsn)
 
 
 def _a_session_row(dsn: str, owner: int) -> None:
@@ -631,6 +634,8 @@ class World:
     audit: Any
     owner: int
     other_owner: int
+    #: Three accounts that own nothing: the people a GM offers seats to.
+    players: tuple[int, int, int]
     #: Every `(unit, session_id)` the slot-clearing extension point was called with.
     slot_clears: list[tuple[Any, str]]
 
@@ -653,6 +658,7 @@ def world(request: pytest.FixtureRequest) -> Iterator[World]:
             InMemoryAuditLog(),
             owner=1,
             other_owner=2,
+            players=(3, 4, 5),
             slot_clears=clears,
         )
         return
@@ -664,7 +670,13 @@ def world(request: pytest.FixtureRequest) -> Iterator[World]:
                 "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id",
                 (email,),
             ).fetchone()[0]
-            for email in ("gm@example.com", "other@example.com")
+            for email in (
+                "gm@example.com",
+                "other@example.com",
+                "p1@example.com",
+                "p2@example.com",
+                "p3@example.com",
+            )
         ]
     yield World(
         "postgres",
@@ -675,6 +687,7 @@ def world(request: pytest.FixtureRequest) -> Iterator[World]:
         PostgresAuditLog(),
         owner=int(gms[0]),
         other_owner=int(gms[1]),
+        players=(int(gms[2]), int(gms[3]), int(gms[4])),
         slot_clears=clears,
     )
 
@@ -711,12 +724,6 @@ def _a_session(
             expires_at=started + timedelta(hours=hours),
             now=started,
         )
-
-
-def _a_code(world: World, campaign_id: str, seat: str) -> str:
-    with world.db.transaction() as unit:
-        _, secret = world.participants.issue_code(unit, campaign_id, seat)
-    return sha256(secret.encode("utf-8")).hexdigest()
 
 
 # Behaviour 9 — the tracer.
@@ -855,169 +862,333 @@ def test_a_removed_participant_frees_their_alias_and_keeps_their_row(world: Worl
 def test_a_participant_of_another_campaign_cannot_be_changed_through_this_one(world: World) -> None:
     """`docs/migrations.md` section 4: ownership belongs in the query. Ids are
     not secrets (SEC-4), so a route in 1kg.2.2 that forgot one comparison would
-    otherwise let GM A remove, reset or re-enrol GM B's participant by id."""
+    otherwise let GM A remove GM B's participant, or offer B's seat, by id."""
     mine, theirs = _a_campaign(world), _a_campaign(world, owner=world.other_owner, name="Theirs")
     seat = _a_participant(world, theirs, "Rook")
     nobody = "prt_" + "z" * 22
+    player = world.players[0]
     with world.db.transaction() as unit:
         assert not world.participants.remove(unit, mine, seat)
-        assert world.participants.revoke_codes(unit, mine, seat) == 0
-        assert world.participants.revoke_device_credentials(unit, mine, seat) == 0
-        with pytest.raises(MissingParent):
-            world.participants.issue_code(unit, mine, seat)
-        with pytest.raises(MissingParent):
-            world.participants.issue_device_credential(unit, mine, seat)
-        assert not world.participants.consume_code(unit, mine, seat, "0" * 64)
+        with pytest.raises(SeatUnavailable):
+            world.participants.offer(unit, mine, seat, user_id=player)
 
         # The same answers a participant that is not there gets, which is the
         # point: the seat of another campaign must be indistinguishable from one
         # that does not exist, now that the mutators hold the row themselves.
         assert not world.participants.remove(unit, mine, nobody)
-        assert world.participants.revoke_codes(unit, mine, nobody) == 0
-        assert world.participants.revoke_device_credentials(unit, mine, nobody) == 0
-        with pytest.raises(MissingParent):
-            world.participants.issue_code(unit, mine, nobody)
-        assert not world.participants.consume_code(unit, mine, nobody, "0" * 64)
+        with pytest.raises(SeatUnavailable):
+            world.participants.offer(unit, mine, nobody, user_id=player)
     with world.db.transaction() as unit:
         still = world.participants.get(unit, seat)
-        assert still is not None and still.is_active
+        assert still is not None and still.is_active and still.user_id is None
 
 
-# Behaviours 12 and 13 — codes and devices.
+# Seats — an account offered a seat, and accepting it (agent-forge-harness-fma).
+#
+# D-1 and D-4: every player holds an account and there are no guests, so a
+# participant is an account's seat at a campaign. A seat is open (an alias the
+# GM seated while preparing), offered (to one account), accepted (by that
+# account) or removed. Only offer-then-accept is built; claiming an open seat by
+# any other proof would be the retired enrolment code under a new name.
 
 
-def test_a_code_is_single_use_and_only_its_own_participant_can_spend_it(world: World) -> None:
-    campaign = _a_campaign(world)
-    seat, other = _a_participant(world, campaign, "Rook"), _a_participant(world, campaign, "Wren")
+def _offer(world: World, campaign_id: str, seat: str, player: int) -> None:
     with world.db.transaction() as unit:
-        code, secret = world.participants.issue_code(unit, campaign, seat)
-        digest = sha256(secret.encode("utf-8")).hexdigest()
-        assert code.code_digest == digest, "the store keeps the digest, never the code"
-
-        assert world.participants.find_code(unit, digest) is not None
-        assert not world.participants.consume_code(unit, campaign, other, digest), "not that seat's"
-        assert world.participants.consume_code(unit, campaign, seat, digest)
-        assert not world.participants.consume_code(unit, campaign, seat, digest), "single use"
+        world.participants.offer(unit, campaign_id, seat, user_id=player)
 
 
-def test_an_expired_code_is_refused_and_its_replacement_revokes_the_dead_row(world: World) -> None:
-    """AUD-4's seven days, and the consequence of the live-code index being
-    unable to read the clock: without the revocation, issuing a replacement for
-    an expired code would collide with it."""
-    campaign = _a_campaign(world)
-    seat = _a_participant(world, campaign, "Rook")
-    long_ago = datetime.now(UTC) - timedelta(days=8)
+def _seat(world: World, campaign_id: str, alias: str, player: int, *, now: datetime | None = None) -> str:
+    """A seat offered to `player` and accepted by them."""
+    seat = _a_participant(world, campaign_id, alias)
+    _offer(world, campaign_id, seat, player)
     with world.db.transaction() as unit:
-        stale, secret = world.participants.issue_code(unit, campaign, seat, now=long_ago)
-        assert stale.expires_at == long_ago + timedelta(days=7)
-        digest = sha256(secret.encode("utf-8")).hexdigest()
-        assert not world.participants.consume_code(unit, campaign, seat, digest), "expired"
-
-        fresh, _ = world.participants.issue_code(unit, campaign, seat)
-        codes = {c.id: c for c in world.participants.codes(unit, seat)}
-        assert codes[stale.id].revoked_at is not None, "the dead row is revoked first"
-        assert codes[fresh.id].revoked_at is None
-        live = [c for c in codes.values() if c.consumed_at is None and c.revoked_at is None]
-        assert [c.id for c in live] == [fresh.id], "at most one live code per participant"
+        assert world.participants.accept(unit, campaign_id, seat, user_id=player, now=now) is True
+    return seat
 
 
-def test_a_participant_has_at_most_one_unrevoked_device(world: World) -> None:
-    """AUD-5. Resetting a personal link is revoking the old credential and
-    issuing a new one, so the old browser stops working at that moment."""
+def test_a_seat_is_open_then_offered_then_accepted_and_only_then_is_it_a_seat(world: World) -> None:
+    """L-1 and L-10. An offered seat is not a seat yet: `seat_for` answers only
+    for one the account has accepted, so nothing a route authorises by it can
+    be reached by an account that was merely offered one."""
     campaign = _a_campaign(world)
     seat = _a_participant(world, campaign, "Rook")
+    player, bystander = world.players[0], world.players[1]
     with world.db.transaction() as unit:
-        first, first_secret = world.participants.issue_device_credential(unit, campaign, seat)
-        second, _ = world.participants.issue_device_credential(unit, campaign, seat)
-        held = {d.id: d for d in world.participants.device_credentials(unit, seat)}
-        assert held[first.id].revoked_at is not None
-        assert held[second.id].revoked_at is None
-        assert [d.id for d in held.values() if d.is_active] == [second.id]
-        # The revoked credential is still findable by digest: a request carrying
-        # it is refused for being revoked, not mistaken for an unknown device.
-        found = world.participants.find_device_credential(
-            unit, sha256(first_secret.encode("utf-8")).hexdigest()
-        )
-        assert found is not None and not found.is_active
+        opened = world.participants.get(unit, seat)
+        assert opened is not None
+        assert (opened.user_id, opened.accepted_at, opened.is_accepted) == (None, None, False)
+
+        offered = world.participants.offer(unit, campaign, seat, user_id=player)
+        assert (offered.id, offered.user_id, offered.accepted_at) == (seat, player, None)
+        assert not offered.is_accepted and offered.is_active
+        assert world.participants.seat_for(unit, campaign, player) is None, "offered is not seated"
+        assert world.participants.seats_for_user(unit, player) == []
+
+    with world.db.transaction() as unit:
+        assert world.participants.accept(unit, campaign, seat, user_id=player) is True
+
+    with world.db.transaction() as unit:
+        mine = world.participants.seat_for(unit, campaign, player)
+        assert mine is not None and mine.id == seat and mine.user_id == player
+        assert mine.is_accepted and mine.accepted_at is not None
+        assert [p.id for p in world.participants.seats_for_user(unit, player)] == [seat]
+        assert world.participants.seat_for(unit, campaign, bystander) is None
+        assert world.participants.seats_for_user(unit, bystander) == []
+        assert [p.id for p in world.participants.list_for_campaign(unit, campaign)] == [seat]
 
 
-# Behaviour 11b — Remove and Reset, which need primitives that only revoke.
+def test_every_refusal_of_an_offer_or_an_accept_is_the_same_refusal(world: World) -> None:
+    """L-4 and L-5, and SEC-3. Every way an offer or an acceptance can be
+    refused raises `SeatUnavailable` with one message, byte for byte — so a
+    seat that does not exist, one in another GM's campaign, one that is taken
+    and one that is removed cannot be told apart by the caller — and none of
+    them changes anything.
 
-
-def test_removing_a_participant_revokes_their_codes_and_their_device(world: World) -> None:
-    """RQ-5: a revocation makes its change true in step 1 — "the credential and
-    the codes revoked, the participant marked removed". AUD-16 says the same of
-    Remove. Nobody ever wants a removed participant with a live credential, so
-    `remove` does all three in one call rather than leaving two of them to a
-    caller that might forget."""
+    The cases include the three the evaluator names: no path accepts a seat not
+    offered to that account, re-opens an accepted seat, or seats the campaign's
+    owner. And a stranger's acceptance of a seat somebody else has accepted is
+    refused like the rest rather than answered False — only the account that
+    accepted it may hear "already done", or a stranger learns the seat is
+    taken."""
     campaign = _a_campaign(world)
-    seat = _a_participant(world, campaign, "Rook")
-    with world.db.transaction() as unit:
-        world.participants.issue_code(unit, campaign, seat)
-        world.participants.issue_device_credential(unit, campaign, seat)
+    elsewhere = _a_campaign(world, owner=world.other_owner, name="Theirs")
+    first, second, third = world.players
+    nobody = "prt_" + "z" * 22
 
+    open_seat = _a_participant(world, campaign, "Open")
+    spare = _a_participant(world, campaign, "Spare")
+    left = _a_participant(world, campaign, "Left")
+    _offer(world, campaign, left, third)
+    with world.db.transaction() as unit:
+        assert world.participants.remove(unit, campaign, left)
+    gone = _a_participant(world, campaign, "Gone")
+    with world.db.transaction() as unit:
+        assert world.participants.remove(unit, campaign, gone)
+    offered = _a_participant(world, campaign, "Offered")
+    _offer(world, campaign, offered, first)
+    taken = _seat(world, campaign, "Taken", second)
+    theirs_open = _a_participant(world, elsewhere, "Stranger")
+    theirs_offered = _a_participant(world, elsewhere, "Guest")
+    _offer(world, elsewhere, theirs_offered, first)
+
+    p = world.participants
+    cases: list[tuple[str, Callable[[Any], object]]] = [
+        ("accept by an account it was not offered to",
+         lambda u: p.accept(u, campaign, offered, user_id=second)),
+        ("accept of an open seat nobody was offered",
+         lambda u: p.accept(u, campaign, open_seat, user_id=first)),
+        ("accept of a removed seat by the account it was offered to",
+         lambda u: p.accept(u, campaign, left, user_id=third)),
+        ("accept of another campaign's seat",
+         lambda u: p.accept(u, campaign, theirs_offered, user_id=first)),
+        ("accept of a seat that does not exist",
+         lambda u: p.accept(u, campaign, nobody, user_id=first)),
+        ("accept of a seat another account has accepted",
+         lambda u: p.accept(u, campaign, taken, user_id=first)),
+        ("offer of a removed seat", lambda u: p.offer(u, campaign, gone, user_id=first)),
+        ("offer of a seat already offered", lambda u: p.offer(u, campaign, offered, user_id=third)),
+        ("offer of an accepted seat", lambda u: p.offer(u, campaign, taken, user_id=third)),
+        ("offer to the campaign's owner", lambda u: p.offer(u, campaign, open_seat, user_id=world.owner)),
+        ("offer to an account seated there", lambda u: p.offer(u, campaign, spare, user_id=second)),
+        ("offer to an account offered a seat there", lambda u: p.offer(u, campaign, spare, user_id=first)),
+        ("offer of another campaign's seat", lambda u: p.offer(u, campaign, theirs_open, user_id=third)),
+        ("offer of a seat that does not exist", lambda u: p.offer(u, campaign, nobody, user_id=third)),
+    ]
+    messages: dict[str, str] = {}
+    for name, attempt in cases:
+        with world.db.transaction() as unit:
+            with pytest.raises(SeatUnavailable) as refused:
+                attempt(unit)
+        messages[name] = str(refused.value)
+    assert len(messages) == len(cases) == 14
+    assert len(set(messages.values())) == 1, messages
+    assert next(iter(messages.values())), "one message, and not an empty one"
+
+    with world.db.transaction() as unit:
+        states = {
+            seat: (found.user_id, found.accepted_at is not None, found.is_active)
+            for seat in (open_seat, spare, left, gone, offered, taken, theirs_open, theirs_offered)
+            if (found := p.get(unit, seat)) is not None
+        }
+    assert states == {
+        open_seat: (None, False, True),
+        spare: (None, False, True),
+        left: (third, False, False),
+        gone: (None, False, False),
+        offered: (first, False, True),
+        taken: (second, True, True),
+        theirs_open: (None, False, True),
+        theirs_offered: (first, False, True),
+    }, "a refusal changes nothing"
+
+
+def test_an_accounts_seat_answers_for_its_own_campaign_and_no_other(world: World) -> None:
+    """`seat_for` is what a table route will authorise by, so it must name the
+    campaign as well as the account: a player seated at A is nobody at B, even
+    though B has seats of its own — one of them accepted by somebody else, and
+    one merely offered to this player."""
+    player, other = world.players[0], world.players[1]
+    table_a = _a_campaign(world, name="A")
+    table_b = _a_campaign(world, owner=world.other_owner, name="B")
+    mine = _seat(world, table_a, "Rook", player)
+    _seat(world, table_b, "Wren", other)
+    _offer(world, table_b, _a_participant(world, table_b, "Rook"), player)
+    with world.db.transaction() as unit:
+        assert world.participants.seat_for(unit, table_b, player) is None
+        found = world.participants.seat_for(unit, table_a, player)
+        assert found is not None and found.id == mine and found.campaign_id == table_a
+        assert world.participants.seat_for(unit, table_a, other) is None
+
+
+def test_accepting_a_seat_twice_is_not_an_error_and_changes_nothing(world: World) -> None:
+    """L-5, the way `remove` twice is not an error: the account already has what
+    it asked for, and the moment it first accepted is kept."""
+    campaign = _a_campaign(world)
+    player = world.players[0]
+    first_time = datetime.now(UTC) - timedelta(hours=1)
+    seat = _seat(world, campaign, "Rook", player, now=first_time)
+    with world.db.transaction() as unit:
+        assert world.participants.accept(unit, campaign, seat, user_id=player) is False
+    with world.db.transaction() as unit:
+        kept = world.participants.get(unit, seat)
+        assert kept is not None and kept.accepted_at == first_time and kept.user_id == player
+
+
+def test_a_removed_seat_is_nobodys_and_its_account_may_be_seated_again(world: World) -> None:
+    """Removal marks the seat — the account and the moment it accepted stay on
+    the row, for the audit rows and the character-sheet link that name it — and
+    it is then nobody's seat: `seat_for` and `seats_for_user` stop answering,
+    accepting it again is refused rather than reported as already done, and the
+    partial unique index lets the same account be offered a NEW seat there."""
+    campaign = _a_campaign(world)
+    player = world.players[0]
+    seat = _seat(world, campaign, "Rook", player)
     with world.db.transaction() as unit:
         assert world.participants.remove(unit, campaign, seat)
-        assert [c for c in world.participants.codes(unit, seat) if c.revoked_at is None] == []
-        assert [
-            d for d in world.participants.device_credentials(unit, seat) if d.is_active
-        ] == []
-
-
-def test_a_reset_can_revoke_the_device_without_minting_another_one(world: World) -> None:
-    """AUD-5's Reset revokes the device and issues a CODE, so it cannot go
-    through `issue_device_credential`, which revokes-and-issues. Before these
-    primitives, Remove and Reset could not be built at all."""
-    campaign = _a_campaign(world)
-    seat = _a_participant(world, campaign, "Rook")
-    with world.db.transaction() as unit:
-        world.participants.issue_device_credential(unit, campaign, seat)
 
     with world.db.transaction() as unit:
-        held = world.participants.hold(unit, seat)
-        assert held is not None and held.is_active and held.campaign_id == campaign
-        assert world.participants.revoke_device_credentials(unit, campaign, seat) == 1
-        assert world.participants.revoke_device_credentials(unit, campaign, seat) == 0, "idempotent"
-        assert [
-            d for d in world.participants.device_credentials(unit, seat) if d.is_active
-        ] == []
-        fresh, _ = world.participants.issue_code(unit, campaign, seat)
-        assert fresh.revoked_at is None
+        assert world.participants.seat_for(unit, campaign, player) is None
+        assert world.participants.seats_for_user(unit, player) == []
+        gone = world.participants.get(unit, seat)
+        assert gone is not None and not gone.is_active and not gone.is_accepted
+        assert gone.user_id == player and gone.accepted_at is not None, "marked, never cleared"
+        with pytest.raises(SeatUnavailable):
+            world.participants.accept(unit, campaign, seat, user_id=player)
 
-
-def test_revoking_the_codes_mints_nothing_and_says_how_many_it_revoked(world: World) -> None:
-    campaign = _a_campaign(world)
-    seat = _a_participant(world, campaign, "Rook")
+    again = _seat(world, campaign, "Rook", player)
+    assert again != seat
     with world.db.transaction() as unit:
-        world.participants.issue_code(unit, campaign, seat)
-        assert world.participants.revoke_codes(unit, campaign, seat) == 1
-        assert world.participants.revoke_codes(unit, campaign, seat) == 0
-        assert world.participants.codes(unit, seat) != [], "revoked, never deleted"
-        assert [c for c in world.participants.codes(unit, seat) if c.revoked_at is None] == []
+        found = world.participants.seat_for(unit, campaign, player)
+        assert found is not None and found.id == again
 
 
-#: The six methods that change a participant's own rows, each called the way a
+def test_an_accounts_seats_are_listed_most_recently_accepted_first(world: World) -> None:
+    """The "enter the tavern" list: accepted, live seats only, newest acceptance
+    first, across every campaign and every GM."""
+    player = world.players[0]
+    oldest, newest = _a_campaign(world, name="Oldest"), _a_campaign(world, name="Newest")
+    between = _a_campaign(world, owner=world.other_owner, name="Between")
+    offered_only, removed = _a_campaign(world, name="Offered"), _a_campaign(world, name="Removed")
+    now = datetime.now(UTC)
+    first = _seat(world, oldest, "Rook", player, now=now - timedelta(hours=3))
+    third = _seat(world, newest, "Rook", player, now=now - timedelta(hours=1))
+    second = _seat(world, between, "Rook", player, now=now - timedelta(hours=2))
+    _offer(world, offered_only, _a_participant(world, offered_only, "Rook"), player)
+    dropped = _seat(world, removed, "Rook", player, now=now)
+    with world.db.transaction() as unit:
+        assert world.participants.remove(unit, removed, dropped)
+
+    with world.db.transaction() as unit:
+        listed = world.participants.seats_for_user(unit, player)
+    assert [p.id for p in listed] == [third, second, first]
+    assert all(p.user_id == player and p.is_accepted for p in listed)
+
+
+def test_a_seat_accepted_by_no_account_cannot_exist_in_the_twin() -> None:
+    """L-1's CHECK, kept by the record itself so that no twin path can build a
+    row PostgreSQL would refuse. The database half is
+    `test_the_database_refuses_a_seat_accepted_by_no_account`."""
+    moment = datetime.now(UTC)
+    with pytest.raises(ValueError, match="accepted by an account"):
+        Participant("prt_x", "cmp_x", "Rook", moment, accepted_at=moment)
+    assert Participant("prt_x", "cmp_x", "Rook", moment, user_id=3, accepted_at=moment).is_accepted
+
+
+PRIVATE_ALIAS = "Wren the Unseen"
+PRIVATE_EMAIL = "wren.hidden@example.com"
+PRIVATE_USER_ID = 987654321
+
+
+def _a_private_account(world: World) -> int:
+    """An account whose id would stand out in any text it leaked into."""
+    if world.kind == "postgres":
+        with world.db.transaction() as unit:
+            unit.conn.execute(
+                "INSERT INTO auth.users (id, email, password_hash) VALUES (%s, %s, 'x')",
+                (PRIVATE_USER_ID, PRIVATE_EMAIL),
+            )
+    return PRIVATE_USER_ID
+
+
+def test_no_seat_refusal_names_the_alias_the_account_or_the_seat(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    """L-5 and AC-9 (SEC-20, SEC-3). Every refusal path, fed a private-looking
+    alias and account, says nothing a log line may not carry: no alias, email,
+    user id, participant id or campaign id in the message, in the whole printed
+    traceback — which is where a chained driver error would put its DETAIL
+    line, quoting the key values — or in anything logged meanwhile."""
+    private = _a_private_account(world)
+    campaign = _a_campaign(world, name="The Nocturne of Vex")
+    seat = _a_participant(world, campaign, PRIVATE_ALIAS)
+    spare = _a_participant(world, campaign, "Spare")
+    _offer(world, campaign, seat, private)
+    p = world.participants
+    attempts: list[Callable[[Any], object]] = [
+        lambda u: p.offer(u, campaign, seat, user_id=world.players[0]),
+        lambda u: p.offer(u, campaign, spare, user_id=private),
+        lambda u: p.accept(u, campaign, seat, user_id=world.players[0]),
+        lambda u: p.accept(u, campaign, spare, user_id=private),
+        lambda u: p.offer(u, campaign, spare, user_id=world.owner),
+    ]
+    spoken: list[str] = []
+    with caplog.at_level(logging.DEBUG):
+        for attempt in attempts:
+            with world.db.transaction() as unit:
+                with pytest.raises(SeatUnavailable) as refused:
+                    attempt(unit)
+            spoken.append("".join(traceback.format_exception(refused.value)))
+            # `from None` only hides a chained error from the printed traceback:
+            # the driver's error, DETAIL and all, would still be on
+            # `__context__` for anything that walks it. There must be none.
+            assert refused.value.__context__ is None and refused.value.__cause__ is None
+    assert len(spoken) == len(attempts)
+    text = "\n".join([*spoken, caplog.text])
+    for kind, value in (
+        ("alias", PRIVATE_ALIAS),
+        ("email", PRIVATE_EMAIL),
+        ("user id", str(PRIVATE_USER_ID)),
+        ("participant id", seat),
+        ("participant id", spare),
+        ("campaign id", campaign),
+        ("campaign name", "The Nocturne of Vex"),
+    ):
+        assert value not in text, f"a {kind} reached a message"
+
+
+#: The three methods that change a participant's own row, each called the way a
 #: caller who has composed nothing else would call it. Every one of them takes
-#: the seat's row lock itself (G-6): two did and four relied on the caller, so
-#: the participant-first order RC-13 rests on was advisory rather than true.
-PARTICIPANT_MUTATORS: dict[str, Callable[[Any, Any, str, str, str], object]] = {
-    "remove": lambda store, unit, campaign, seat, digest: store.remove(unit, campaign, seat),
-    "revoke_codes": lambda store, unit, campaign, seat, digest: store.revoke_codes(
-        unit, campaign, seat
+#: the seat's row lock itself (G-6), naming the campaign there, so the
+#: participant-first order RQ-3 asks for is a property of the store and not of
+#: every caller. `accept` needs a seat offered to `player` first; the tests that
+#: use this dict arrange that before they call it.
+PARTICIPANT_MUTATORS: dict[str, Callable[[Any, Any, str, str, int], object]] = {
+    "remove": lambda store, unit, campaign, seat, player: store.remove(unit, campaign, seat),
+    "offer": lambda store, unit, campaign, seat, player: store.offer(
+        unit, campaign, seat, user_id=player
     ),
-    "revoke_device_credentials": (
-        lambda store, unit, campaign, seat, digest: store.revoke_device_credentials(
-            unit, campaign, seat
-        )
-    ),
-    "consume_code": lambda store, unit, campaign, seat, digest: store.consume_code(
-        unit, campaign, seat, digest
-    ),
-    "issue_code": lambda store, unit, campaign, seat, digest: store.issue_code(unit, campaign, seat),
-    "issue_device_credential": (
-        lambda store, unit, campaign, seat, digest: store.issue_device_credential(
-            unit, campaign, seat
-        )
+    "accept": lambda store, unit, campaign, seat, player: store.accept(
+        unit, campaign, seat, user_id=player
     ),
 }
 
@@ -1026,39 +1197,38 @@ PARTICIPANT_MUTATORS: dict[str, Callable[[Any, Any, str, str, str], object]] = {
 def test_every_participant_mutator_takes_the_seats_row_and_bounds_its_transaction(
     world: World, mutator: str
 ) -> None:
-    """G-6, and the residue of F-15. `issue_code` and `issue_device_credential`
-    held the row; `remove`, `consume_code` and the two `revoke_*` relied on the
-    caller to have done it. So the order was one forgotten call away from F-1's
-    deadlock — a Reset taking device rows before the participant row while an
-    enrolment takes the participant row first — and a bare Remove, which is the
-    composition the Protocol documents, ran in a transaction with no bound at
-    all. A second `FOR NO KEY UPDATE` on a row this transaction already holds is
-    free, so the caller's own hold stays where it is.
+    """G-6, and the residue of F-15: every mutator holds the seat's row itself,
+    so the order RQ-3 rests on is one no caller can forget, and a bare call is
+    bounded like every other holder (RQ-8). A second `FOR NO KEY UPDATE` on a row
+    this transaction already holds is free, so a caller's own hold can stay.
 
     Both halves are read off the unit of work, which keeps them assertable in
     both worlds: the bound the mutator asked for, and the refusal that proves it
     declared a row lock (`lock_campaign` is the first lock a transaction takes,
-    RQ-2, so a declared row lock makes a later one illegal).
+    RQ-2, so a declared row lock makes a later one illegal). The call must also
+    have succeeded, so the bound cannot come from a refusal's path alone.
     """
     campaign = _a_campaign(world)
     seat = _a_participant(world, campaign, "Rook")
-    digest = _a_code(world, campaign, seat)
+    player = world.players[0]
+    if mutator == "accept":
+        _offer(world, campaign, seat, player)
     with world.db.transaction() as unit:
-        PARTICIPANT_MUTATORS[mutator](world.participants, unit, campaign, seat, digest)
+        outcome = PARTICIPANT_MUTATORS[mutator](world.participants, unit, campaign, seat, player)
+        assert outcome is True or isinstance(outcome, Participant), outcome
         assert unit.transaction_bounds[:1] == ["5s"], "bounded before anything else (RQ-8)"
         with pytest.raises(CampaignLockOrder):
             unit.lock_campaign(campaign, shared=True)
 
 
-def test_a_hold_may_name_the_campaign_and_then_answers_for_no_other_ones_seat(
-    world: World,
-) -> None:
-    """G-11. Ids are not secrets (SEC-4), so an unscoped hold let GM A take
-    `FOR NO KEY UPDATE` on GM B's participant row — for as long as the
-    transaction bound allows — and be handed B's alias and campaign id, before
-    the scoped call that followed refused. A GM path names its campaign; the
-    answer is then the one a participant that does not exist gets, and the row
-    is neither locked nor returned."""
+def test_a_hold_names_its_campaign_and_answers_for_no_other_ones_seat(world: World) -> None:
+    """G-11 and L-7. Ids are not secrets (SEC-4), so an unscoped hold let GM A
+    take `FOR NO KEY UPDATE` on GM B's participant row and be handed B's alias.
+    The one caller that could not name a campaign — the unauthenticated
+    enrolment route — is retired with the enrolment code, so the campaign is now
+    required on every hold: another campaign's seat is None, the same answer a
+    participant that does not exist gets, and a hold that names none is a
+    programming error rather than a wider lock."""
     mine, theirs = _a_campaign(world), _a_campaign(world, owner=world.other_owner, name="Theirs")
     seat = _a_participant(world, theirs, "Rook")
     with world.db.transaction() as unit:
@@ -1067,10 +1237,8 @@ def test_a_hold_may_name_the_campaign_and_then_answers_for_no_other_ones_seat(
         assert world.participants.hold(unit, seat, campaign_id=theirs) is not None
 
     with world.db.transaction() as unit:
-        held = world.participants.hold(unit, seat)
-        assert held is not None and held.campaign_id == theirs, (
-            "the unauthenticated enrolment route knows a code and nothing else"
-        )
+        with pytest.raises(TypeError, match="campaign_id"):
+            world.participants.hold(unit, seat)
 
 
 def test_a_hold_obeys_the_lock_order_and_cannot_be_left_unbounded(world: World) -> None:
@@ -1091,43 +1259,23 @@ def test_a_hold_obeys_the_lock_order_and_cannot_be_left_unbounded(world: World) 
     with world.db.transaction() as unit:
         for switched_off in (0, -1, 1e-05):
             with pytest.raises(ValueError, match="a transaction bound is from"):
-                world.participants.hold(unit, seat, transaction_timeout_s=switched_off)
+                world.participants.hold(
+                    unit, seat, campaign_id=campaign, transaction_timeout_s=switched_off
+                )
 
 
 def test_holding_a_participant_hands_back_the_row_so_the_caller_can_read_it(world: World) -> None:
-    """F-1: the lock the ADR says "the caller holds" (RQ-5, RC-13) is a
-    primitive rather than something private to two methods. It returns the row
-    because the caller must test `is_active` UNDER the lock — that is the whole
-    of RC-13 — and because the enrolment route learns the campaign from it."""
+    """F-1: the lock the ADR says "the caller holds" (RQ-5) is a primitive
+    rather than something private to the mutators. It returns the row because
+    the caller must test the seat's state UNDER the lock, which is how `offer`
+    and `accept` themselves decide."""
     campaign = _a_campaign(world)
     seat = _a_participant(world, campaign, "Rook")
     with world.db.transaction() as unit:
-        held = world.participants.hold(unit, seat)
+        held = world.participants.hold(unit, seat, campaign_id=campaign)
         assert held is not None
         assert (held.id, held.campaign_id, held.is_active) == (seat, campaign, True)
-        assert world.participants.hold(unit, "prt_" + "z" * 22) is None
-
-
-def test_nothing_is_minted_against_a_removed_seat_and_its_old_code_is_spent_by_nobody(
-    world: World,
-) -> None:
-    """RC-13's other half. `consume_code` answers False rather than raising: it
-    is the unauthenticated route, RQ-5 asks it to fail generically when no row
-    changed, and a caller must not be able to tell a removed seat from a spent
-    code. The two that return a record cannot answer False, so they name it."""
-    campaign = _a_campaign(world)
-    seat = _a_participant(world, campaign, "Rook")
-    digest = _a_code(world, campaign, seat)
-
-    with world.db.transaction() as unit:
-        assert world.participants.remove(unit, campaign, seat)
-
-    with world.db.transaction() as unit:
-        assert not world.participants.consume_code(unit, campaign, seat, digest)
-        with pytest.raises(ParticipantRemoved):
-            world.participants.issue_device_credential(unit, campaign, seat)
-        with pytest.raises(ParticipantRemoved):
-            world.participants.issue_code(unit, campaign, seat)
+        assert world.participants.hold(unit, "prt_" + "z" * 22, campaign_id=campaign) is None
 
 
 # Behaviour 14 — one live session per GM, across campaigns.
@@ -1463,8 +1611,8 @@ def test_a_rolled_back_unit_of_work_leaves_no_row_in_any_of_the_three_stores(
         with world.db.transaction() as unit:
             doomed = world.campaigns.create(unit, owner_id=world.owner, name="Doomed")
             seat = world.participants.add(unit, campaign, alias="Wren")
-            world.participants.issue_code(unit, campaign, seat.id)
-            world.participants.issue_device_credential(unit, campaign, seat.id)
+            world.participants.offer(unit, campaign, seat.id, user_id=world.players[0])
+            assert world.participants.accept(unit, campaign, seat.id, user_id=world.players[0])
             session, _ = world.sessions.start(
                 unit,
                 campaign,
@@ -1487,8 +1635,7 @@ def test_a_rolled_back_unit_of_work_leaves_no_row_in_any_of_the_three_stores(
         assert world.campaigns.get(unit, doomed.id, owner_id=world.owner) is None
         assert world.campaigns.authz_revision(unit, doomed.id) is None
         assert world.participants.get(unit, seat.id) is None
-        assert world.participants.codes(unit, seat.id) == []
-        assert world.participants.device_credentials(unit, seat.id) == []
+        assert world.participants.seats_for_user(unit, world.players[0]) == []
         assert world.sessions.get(unit, session.id) is None
         assert world.sessions.credentials(unit, session.id) == []
         assert world.audit.for_campaign(unit, campaign) == []
@@ -1673,20 +1820,15 @@ def test_a_campaign_that_is_archived_and_restored_ends_up_where_it_started(world
 
 def test_a_row_whose_parent_does_not_exist_is_refused_in_both_worlds(world: World) -> None:
     """F-6. The twins each kept their own rows and never looked at `db`, so a
-    participant could be added to a campaign that does not exist, and a code or
-    a credential minted for a participant that does not exist — every unit test
+    participant could be added to a campaign that does not exist, and a join
+    credential minted for a session that does not exist — every unit test
     on the fakes green, and the first real request a 500 carrying the driver's
     text. They share one state now, and both worlds answer with the same named
     refusal rather than an integrity error."""
     nowhere = "cmp_" + "z" * 22
-    nobody = "prt_" + "z" * 22
     with world.db.transaction() as unit:
         with pytest.raises(MissingParent):
             world.participants.add(unit, nowhere, alias="Rook")
-        with pytest.raises(MissingParent):
-            world.participants.issue_code(unit, nowhere, nobody)
-        with pytest.raises(MissingParent):
-            world.participants.issue_device_credential(unit, nowhere, nobody)
         with pytest.raises(MissingParent):
             world.sessions.start(
                 unit,
@@ -1770,14 +1912,13 @@ def test_the_ledger_refuses_a_row_that_could_carry_content_in_both_worlds(world:
 def test_no_store_record_shows_a_digest_or_an_alias_when_it_is_printed() -> None:
     """A traceback is a log line, and `repr()` is what a traceback prints. A
     digest is the lookup key for a live credential (SEC-5) and an alias is
-    private text (SEC-20), so neither belongs in one."""
+    private text (SEC-20), so neither belongs in one — nor does the account a
+    seat belongs to, whose user id is personal data (L-5)."""
     moment = datetime.now(UTC)
     digest = "f" * 64
     records = [
         Campaign("cmp_x", 1, "Nocturne", moment, moment),
-        Participant("prt_x", "cmp_x", "Rook", moment),
-        EnrolmentCode("enc_x", "prt_x", digest, moment, moment),
-        DeviceCredential("dev_x", "prt_x", digest, moment),
+        Participant("prt_x", "cmp_x", "Rook", moment, user_id=987654321, accepted_at=moment),
         TableSession("ses_x", "cmp_x", 1, "live", moment, moment, 1, digest),
         TableCredential("tcr_x", "ses_x", 1, digest, moment),
     ]
@@ -1786,6 +1927,7 @@ def test_no_store_record_shows_a_digest_or_an_alias_when_it_is_printed() -> None
         assert digest not in printed, f"{type(record).__name__} shows a digest"
         assert "Rook" not in printed, f"{type(record).__name__} shows an alias"
         assert "Nocturne" not in printed, f"{type(record).__name__} shows a campaign name"
+        assert "987654321" not in printed, f"{type(record).__name__} shows an account"
         assert type(record).__name__ in printed, "a record still says what it is"
 
 
@@ -1818,25 +1960,6 @@ def _race(work: Callable[[], object], runners: int = 2) -> list[object]:
 
 
 @needs_db
-def test_two_racing_consumptions_of_one_code_leave_exactly_one_winner(dsn: str) -> None:
-    """RC-13. The guard is the statement itself: under READ COMMITTED the second
-    UPDATE re-reads the row the first committed and matches nothing."""
-    _seed(dsn)
-    db = _database(dsn)
-    participants = PostgresParticipantStore()
-    with db.transaction() as unit:
-        seat = participants.add(unit, CAMPAIGN, alias="Rook")
-        _, secret = participants.issue_code(unit, CAMPAIGN, seat.id)
-    digest = sha256(secret.encode("utf-8")).hexdigest()
-
-    def consume() -> bool:
-        with db.transaction() as unit:
-            return participants.consume_code(unit, CAMPAIGN, seat.id, digest)
-
-    assert sorted(_race(consume), key=str) == [False, True]
-
-
-@needs_db
 def test_two_racing_session_starts_for_one_gm_leave_exactly_one_winner(dsn: str) -> None:
     """REVEAL-2's concurrency half. The partial unique index decides it; the
     loser gets the same refusal a sequential second start gets."""
@@ -1862,13 +1985,13 @@ def test_two_racing_session_starts_for_one_gm_leave_exactly_one_winner(dsn: str)
     assert live == 1
 
 
-# ── RC-13 on a real server: a Reset or a Remove against an enrolment ─────────
+# ── Seats on a real server: an accept or an offer against a remove ───────────
 #
-# "in either order ... once the Reset or the Remove has committed, no credential
-# made from an older code is valid: all three lock the participant row, and the
-# code is consumed by a conditional write under it". The interleaving is
-# explicit — one transaction holds the row, the other is started and the server
-# is asked whether it is really blocked — so nothing here depends on timing.
+# RQ-3/RQ-5: every mutator takes the participant row first, so two of them on
+# one seat serialise on it and the second decides on the row the first
+# committed. The interleaving is explicit — one transaction holds the row, the
+# other is started and the server is asked whether it is really blocked — so
+# nothing here depends on timing.
 
 
 def _while_another_transaction_holds_the_seat(
@@ -1893,7 +2016,8 @@ def _while_another_transaction_holds_the_seat(
     def holder() -> None:
         try:
             with db.transaction() as unit:
-                assert PostgresParticipantStore().hold(unit, participant_id) is not None
+                held = PostgresParticipantStore().hold(unit, participant_id, campaign_id=CAMPAIGN)
+                assert held is not None
                 holder_work(unit)
                 took.set()
                 release.wait(PATIENCE)
@@ -1928,133 +2052,237 @@ def _while_another_transaction_holds_the_seat(
     return produced[0]
 
 
-@contextmanager
-def _a_seat_with_a_code(dsn: str) -> Iterator[tuple[Database, PostgresParticipantStore, str, str]]:
-    db = _database(dsn, PATIENT)
-    participants = PostgresParticipantStore()
+def _accounts(dsn: str, count: int = 2) -> list[int]:
+    """Accounts that own nothing: the people a GM offers seats to."""
+    with connect(dsn) as conn:
+        return [
+            int(
+                conn.execute(
+                    "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id",
+                    (f"player{n}@example.com",),
+                ).fetchone()[0]
+            )
+            for n in range(count)
+        ]
+
+
+def _a_seat(
+    db: Database, participants: PostgresParticipantStore, *, offered_to: int | None = None
+) -> str:
     with db.transaction() as unit:
         seat = participants.add(unit, CAMPAIGN, alias="Rook")
-        _, secret = participants.issue_code(unit, CAMPAIGN, seat.id)
-    yield db, participants, seat.id, sha256(secret.encode("utf-8")).hexdigest()
+        if offered_to is not None:
+            participants.offer(unit, CAMPAIGN, seat.id, user_id=offered_to)
+    return seat.id
 
 
 @needs_db
-def test_a_reset_waiting_behind_an_enrolment_finishes_and_kills_the_older_code(
+def test_an_accept_waiting_behind_a_remove_is_refused_and_the_seat_stays_removed(
     dsn: str, owner: int
 ) -> None:
-    """RC-13, enrolment first. The enrolment holds the seat, spends the code and
-    binds a device; the Reset waits for the seat — it never deadlocks, because
-    both took the participant row before any code row — and when it commits the
-    device is revoked and the spent code is spent for good."""
-    with _a_seat_with_a_code(dsn) as (db, participants, seat, digest):
-        def enrol(unit: Any) -> None:
-            assert participants.consume_code(unit, CAMPAIGN, seat, digest)
-            participants.issue_device_credential(unit, CAMPAIGN, seat)
+    """AC-5, remove first. The acceptance waits for the seat's row; when it gets
+    it the row it is handed is the removed one — READ COMMITTED re-reads a row
+    a lock wait was for — so it is refused, and nobody is seated."""
+    db, participants = _database(dsn, PATIENT), PostgresParticipantStore()
+    (player,) = _accounts(dsn, 1)
+    seat = _a_seat(db, participants, offered_to=player)
 
-        def reset(unit: Any) -> int:
-            assert participants.hold(unit, seat) is not None
-            revoked = participants.revoke_device_credentials(unit, CAMPAIGN, seat)
-            participants.issue_code(unit, CAMPAIGN, seat)
-            return revoked
+    def remove(unit: Any) -> None:
+        assert participants.remove(unit, CAMPAIGN, seat)
 
-        revoked = _while_another_transaction_holds_the_seat(dsn, db, seat, enrol, reset)
-        assert revoked == 1, "the Reset revoked the device the enrolment had just bound"
+    def accept(unit: Any) -> bool:
+        return participants.accept(unit, CAMPAIGN, seat, user_id=player)
+
+    with pytest.raises(SeatUnavailable):
+        _while_another_transaction_holds_the_seat(dsn, db, seat, remove, accept)
 
     with db.transaction() as unit:
-        assert not participants.consume_code(unit, CAMPAIGN, seat, digest), "spent for good"
-        assert [d for d in participants.device_credentials(unit, seat) if d.is_active] == []
+        gone = participants.get(unit, seat)
+        assert gone is not None and not gone.is_active and gone.accepted_at is None
+        assert participants.seat_for(unit, CAMPAIGN, player) is None
 
 
 @needs_db
-def test_an_enrolment_waiting_behind_a_reset_makes_no_credential_from_the_older_code(
+def test_a_remove_waiting_behind_an_accept_wins_and_the_seat_reads_removed(
     dsn: str, owner: int
 ) -> None:
-    """RC-13, Reset first — the direction that matters. Once the Reset has
-    committed, the code the player is holding is revoked, so the conditional
-    write matches nothing and no device is ever bound."""
-    with _a_seat_with_a_code(dsn) as (db, participants, seat, digest):
-        def reset(unit: Any) -> None:
-            participants.revoke_device_credentials(unit, CAMPAIGN, seat)
-            participants.issue_code(unit, CAMPAIGN, seat)
+    """AC-5, accept first. The removal waits for the seat, then marks the seat
+    the account has just accepted: a GM's Remove is never lost to a player who
+    accepted a moment earlier."""
+    db, participants = _database(dsn, PATIENT), PostgresParticipantStore()
+    (player,) = _accounts(dsn, 1)
+    seat = _a_seat(db, participants, offered_to=player)
 
-        def enrol(unit: Any) -> bool:
-            assert participants.hold(unit, seat) is not None
-            return participants.consume_code(unit, CAMPAIGN, seat, digest)
+    def accept(unit: Any) -> None:
+        assert participants.accept(unit, CAMPAIGN, seat, user_id=player) is True
 
-        assert _while_another_transaction_holds_the_seat(dsn, db, seat, reset, enrol) is False
+    def remove(unit: Any) -> bool:
+        return participants.remove(unit, CAMPAIGN, seat)
 
-    with db.transaction() as unit:
-        assert participants.device_credentials(unit, seat) == [], "no device was ever bound"
-
-
-@needs_db
-def test_a_remove_waiting_behind_an_enrolment_still_revokes_what_it_bound(
-    dsn: str, owner: int
-) -> None:
-    """AUD-16 and RC-13 together, Remove second. The removal waits for the seat,
-    then revokes the credential the enrolment bound a moment earlier — which is
-    the whole reason `remove` revokes rather than only marking."""
-    with _a_seat_with_a_code(dsn) as (db, participants, seat, digest):
-        def enrol(unit: Any) -> None:
-            assert participants.consume_code(unit, CAMPAIGN, seat, digest)
-            participants.issue_device_credential(unit, CAMPAIGN, seat)
-
-        def remove(unit: Any) -> bool:
-            assert participants.hold(unit, seat) is not None
-            return participants.remove(unit, CAMPAIGN, seat)
-
-        assert _while_another_transaction_holds_the_seat(dsn, db, seat, enrol, remove) is True
+    assert _while_another_transaction_holds_the_seat(dsn, db, seat, accept, remove) is True
 
     with db.transaction() as unit:
         gone = participants.get(unit, seat)
         assert gone is not None and not gone.is_active
-        assert [d for d in participants.device_credentials(unit, seat) if d.is_active] == []
+        assert gone.user_id == player and gone.accepted_at is not None, "marked, never cleared"
+        assert participants.seat_for(unit, CAMPAIGN, player) is None
+        assert participants.seats_for_user(unit, player) == []
 
 
 @needs_db
-def test_an_enrolment_waiting_behind_a_remove_binds_nothing(dsn: str, owner: int) -> None:
-    """Remove first. The seat is gone by the time the enrolment gets the row, so
-    the conditional write matches nothing — the statement itself names the
-    participant's status, so there is no window between the check and the write
-    — and minting a credential is refused outright."""
-    with _a_seat_with_a_code(dsn) as (db, participants, seat, digest):
-        def remove(unit: Any) -> None:
-            assert participants.remove(unit, CAMPAIGN, seat)
+def test_two_offers_of_one_open_seat_leave_exactly_one_account_in_it(dsn: str, owner: int) -> None:
+    """AC-5. Two GM requests offering one open seat to two accounts: the second
+    waits for the row, is handed the seat the first has just offered, and is
+    refused — so exactly one account holds the offer."""
+    db, participants = _database(dsn, PATIENT), PostgresParticipantStore()
+    first, second = _accounts(dsn, 2)
+    seat = _a_seat(db, participants)
 
-        def enrol(unit: Any) -> bool:
-            held = participants.hold(unit, seat)
-            assert held is not None and not held.is_active, "read under the lock (RC-13)"
-            return participants.consume_code(unit, CAMPAIGN, seat, digest)
+    def offer_first(unit: Any) -> None:
+        participants.offer(unit, CAMPAIGN, seat, user_id=first)
 
-        assert _while_another_transaction_holds_the_seat(dsn, db, seat, remove, enrol) is False
+    def offer_second(unit: Any) -> object:
+        return participants.offer(unit, CAMPAIGN, seat, user_id=second)
+
+    with pytest.raises(SeatUnavailable):
+        _while_another_transaction_holds_the_seat(dsn, db, seat, offer_first, offer_second)
 
     with db.transaction() as unit:
-        with pytest.raises(ParticipantRemoved):
-            participants.issue_device_credential(unit, CAMPAIGN, seat)
+        held = participants.get(unit, seat)
+        assert held is not None and held.user_id == first and held.accepted_at is None
 
 
-@pytest.mark.parametrize(
-    "mutator", ["consume_code", "remove", "revoke_codes", "revoke_device_credentials"]
-)
+@pytest.mark.parametrize("mutator", sorted(PARTICIPANT_MUTATORS))
 @needs_db
 def test_a_bare_participant_mutator_waits_for_the_seat_another_transaction_holds(
     dsn: str, owner: int, mutator: str
 ) -> None:
     """G-6 on the server rather than in the unit of work's bookkeeping: called
     with nothing composed around it, each of these really is behind the
-    participant row. Before, only `remove` was — and only by accident, because
-    its own UPDATE takes the row — while `consume_code` and the two `revoke_*`
-    touched code and credential rows and sailed past a seat somebody else was
-    holding. `pg_stat_activity` is asked whether the second transaction is
-    blocked before the first is released, so nothing here depends on timing."""
-    with _a_seat_with_a_code(dsn) as (db, participants, seat, digest):
-        def nothing_else(unit: Any) -> None:
-            """The harness's own `hold` is the whole of the holder's work."""
+    participant row. `pg_stat_activity` is asked whether the second transaction
+    is blocked before the first is released, so nothing here depends on
+    timing."""
+    db, participants = _database(dsn, PATIENT), PostgresParticipantStore()
+    (player,) = _accounts(dsn, 1)
+    seat = _a_seat(db, participants, offered_to=player if mutator == "accept" else None)
 
-        def mutate(unit: Any) -> object:
-            return PARTICIPANT_MUTATORS[mutator](participants, unit, CAMPAIGN, seat, digest)
+    def nothing_else(unit: Any) -> None:
+        """The harness's own `hold` is the whole of the holder's work."""
 
-        _while_another_transaction_holds_the_seat(dsn, db, seat, nothing_else, mutate)
+    def mutate(unit: Any) -> object:
+        return PARTICIPANT_MUTATORS[mutator](participants, unit, CAMPAIGN, seat, player)
+
+    outcome = _while_another_transaction_holds_the_seat(dsn, db, seat, nothing_else, mutate)
+    assert outcome is True or isinstance(outcome, Participant), outcome
+
+
+@needs_db
+def test_a_hold_naming_the_wrong_campaign_locks_nothing(dsn: str, owner: int) -> None:
+    """L-7 and G-11 on the server. The campaign is in the statement that takes
+    the lock, so a row the WHERE does not match is never locked at all: a second
+    connection asking for it with NOWAIT gets it at once. The control is the
+    same probe against a hold that names the right campaign, which must fail —
+    otherwise the probe could not tell a locked row from a free one."""
+    _seed(dsn, email="other@example.com", campaign=OTHER_CAMPAIGN)
+    db, participants = _database(dsn), PostgresParticipantStore()
+    seat = _a_seat(db, participants)
+    probe = "SELECT id FROM campaign.participants WHERE id = %s FOR NO KEY UPDATE NOWAIT"
+
+    with db.transaction() as unit:
+        assert participants.hold(unit, seat, campaign_id=OTHER_CAMPAIGN) is None
+        with connect(dsn) as other:
+            assert other.execute(probe, (seat,)).fetchone() == (seat,), "nothing was locked"
+
+    with db.transaction() as unit:
+        assert participants.hold(unit, seat, campaign_id=CAMPAIGN) is not None
+        with connect(dsn) as other:
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                other.execute(probe, (seat,))
+
+
+@needs_db
+def test_deleting_an_account_that_holds_a_seat_is_refused(dsn: str, owner: int) -> None:
+    """L-2. `ON DELETE NO ACTION`: CASCADE would delete a seat the disclosures,
+    the character-sheet link and the audit rows reference, and SET NULL would
+    re-open an accepted seat to whoever next accepted it. So the database
+    refuses to delete an account that holds a seat — live or removed — until
+    the account-deletion work (`agent-forge-harness-zkc`) handles seats. An
+    account that holds none is deleted as before, which is the control."""
+    db, participants = _database(dsn), PostgresParticipantStore()
+    seated, removed, free = _accounts(dsn, 3)
+    live_seat = _a_seat(db, participants, offered_to=seated)
+    with db.transaction() as unit:
+        assert participants.accept(unit, CAMPAIGN, live_seat, user_id=seated)
+        dropped = participants.add(unit, CAMPAIGN, alias="Wren")
+        participants.offer(unit, CAMPAIGN, dropped.id, user_id=removed)
+        assert participants.remove(unit, CAMPAIGN, dropped.id)
+
+    with connect(dsn) as conn:
+        for account in (seated, removed):
+            with pytest.raises(psycopg.errors.ForeignKeyViolation):
+                conn.execute("DELETE FROM auth.users WHERE id = %s", (account,))
+        conn.execute("DELETE FROM auth.users WHERE id = %s", (free,))
+        left = {row[0] for row in conn.execute("SELECT id FROM auth.users").fetchall()}
+    assert {seated, removed} <= left and free not in left
+
+
+@needs_db
+def test_a_refused_offer_leaves_the_callers_transaction_usable(dsn: str, owner: int) -> None:
+    """The one-live-seat index refuses the second offer with a UniqueViolation,
+    which would abort the caller's whole transaction — every write it had
+    composed, and every one after — had `offer` not run its statement in a
+    savepoint. So: refuse, then write again in the same unit, commit, and find
+    the write."""
+    db, participants = _database(dsn), PostgresParticipantStore()
+    (player,) = _accounts(dsn, 1)
+    first = _a_seat(db, participants, offered_to=player)
+    with db.transaction() as unit:
+        second = participants.add(unit, CAMPAIGN, alias="Wren")
+        with pytest.raises(SeatUnavailable):
+            participants.offer(unit, CAMPAIGN, second.id, user_id=player)
+        later = participants.add(unit, CAMPAIGN, alias="Fern")
+
+    with db.transaction() as unit:
+        kept = participants.get(unit, later.id)
+        assert kept is not None and kept.is_active, "the write after the refusal was kept"
+        refused = participants.get(unit, second.id)
+        assert refused is not None and refused.user_id is None
+        held = participants.get(unit, first)
+        assert held is not None and held.user_id == player
+
+
+@needs_db
+def test_offering_a_seat_to_an_account_that_does_not_exist_is_the_same_refusal(
+    dsn: str, owner: int
+) -> None:
+    """The statement asks whether the account exists rather than letting the
+    foreign key refuse it: a `ForeignKeyViolation` would abort the caller's
+    whole transaction and arrive carrying the driver's DETAIL, which quotes the
+    user id. The twin has no accounts table, so this half is PostgreSQL's."""
+    db, participants = _database(dsn), PostgresParticipantStore()
+    seat = _a_seat(db, participants)
+    with db.transaction() as unit:
+        with pytest.raises(SeatUnavailable):
+            participants.offer(unit, CAMPAIGN, seat, user_id=987654321)
+        still = participants.get(unit, seat)
+        assert still is not None and still.user_id is None, "and the transaction is still usable"
+
+
+@needs_db
+def test_the_database_refuses_a_seat_accepted_by_no_account(dsn: str, owner: int) -> None:
+    """L-1's CHECK, on the server. The twin's half is
+    `test_a_seat_accepted_by_no_account_cannot_exist_in_the_twin`."""
+    _a_participant_row(dsn)
+    with connect(dsn) as conn:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE campaign.participants SET accepted_at = now() WHERE id = %s", (PARTICIPANT,)
+            )
+        (player,) = _accounts(dsn, 1)
+        conn.execute(
+            "UPDATE campaign.participants SET user_id = %s, accepted_at = now() WHERE id = %s",
+            (player, PARTICIPANT),
+        )
 
 
 # The guards and bounds, which belong to neither world ────────────────────────
@@ -2078,6 +2306,82 @@ def test_a_postgres_store_refuses_the_twins_unit_of_work(store: Any, method: str
     with InMemoryDatabase().transaction() as unit:
         with pytest.raises(TypeError, match="PostgreSQL transaction"):
             getattr(store, method)(unit, *args)
+
+
+class _Rows:
+    def __init__(self, row: tuple | None) -> None:
+        self._row = row
+
+    def fetchone(self) -> tuple | None:
+        return self._row
+
+
+class _ScriptedConnection:
+    """Just enough of a connection for `PostgresParticipantStore.offer`: it
+    answers `hold`'s two statements with an open seat, then fails the offer's
+    UPDATE — inside the savepoint — with the driver error it was given. What a
+    real server does between the EXISTS and the foreign-key check cannot be
+    interleaved from a test, so the error is scripted rather than raced."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.savepoints = 0
+        self.inside_savepoint = False
+
+    def execute(self, statement: str, params: tuple = ()) -> _Rows:
+        if statement.lstrip().startswith("UPDATE"):
+            assert self.inside_savepoint, "the offer's statement runs inside its savepoint"
+            raise self.error
+        if "set_config" in statement:
+            return _Rows(("5s",))
+        return _Rows(("prt_x", "cmp_x", "Rook", datetime.now(UTC), None, None, None))
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        self.savepoints += 1
+        self.inside_savepoint = True
+        try:
+            yield
+        finally:
+            self.inside_savepoint = False
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(
+            psycopg.errors.UniqueViolation(
+                'duplicate key value violates unique constraint "participants_one_live_seat_per_account_uidx"'
+                "\nDETAIL:  Key (campaign_id, user_id)=(cmp_x, 987654321) already exists."
+            ),
+            id="one-live-seat-index",
+        ),
+        pytest.param(
+            psycopg.errors.ForeignKeyViolation(
+                'insert or update on table "participants" violates foreign key constraint '
+                '"participants_user_id_fkey"\nDETAIL:  Key (user_id)=(987654321) is not present.'
+            ),
+            id="account-deleted-mid-offer",
+        ),
+    ],
+)
+def test_a_driver_refusal_inside_offer_becomes_the_one_refusal_with_nothing_attached(
+    error: Exception,
+) -> None:
+    """M-1 and N-1. The index's UniqueViolation, and the ForeignKeyViolation an
+    account deleted between the offer's EXISTS and its foreign-key check would
+    raise, both quote the account in their DETAIL. Each becomes the one
+    `SeatUnavailable`, raised OUTSIDE the handler so that neither `__cause__`
+    nor `__context__` carries the driver's error — `from None` would only have
+    hidden it from a printed traceback."""
+    connection = _ScriptedConnection(error)
+    account = PRIVATE_USER_ID
+    with pytest.raises(SeatUnavailable) as refused:
+        PostgresParticipantStore().offer(PgTransaction(conn=connection), "cmp_x", "prt_x", user_id=account)
+    assert refused.value.__context__ is None and refused.value.__cause__ is None
+    assert str(refused.value) == SeatUnavailable.MESSAGE
+    assert connection.savepoints == 1
+    assert str(PRIVATE_USER_ID) not in "".join(traceback.format_exception(refused.value))
 
 
 def test_an_in_memory_store_refuses_a_postgres_unit_of_work() -> None:

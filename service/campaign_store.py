@@ -11,9 +11,10 @@ or write names the **owner** in the same statement as the row; a participant or
 session write names the **campaign**. A row that is not the caller's is
 therefore indistinguishable from one that does not exist, and there is no
 "fetch, then check" — a check that happens after the fetch is a check something
-can skip. The one deliberate exception is the player's unauthenticated path,
-which holds no campaign: it locks the participant row and is authorised by the
-code it presents, never by an id it was handed (RQ-5, RC-12).
+can skip. There is no exception any more: the player's unauthenticated
+enrolment path, which held a participant row without naming its campaign, was
+retired with the enrolment code (owner decisions D-1 and D-4, bead `fma`), and
+a player is now an account whose seat is found by campaign and account together.
 
 **Mutations take the unit of work first**, like `JobQueue.enqueue`, so that
 `1kg.2.2` and `1kg.2.3` can compose all three stores — and the audit writer —
@@ -78,10 +79,26 @@ class MissingParent(CampaignStoreError, LookupError):
     """
 
 
-class ParticipantRemoved(CampaignStoreError):
-    """That seat has been removed, so nothing may be minted against it (RQ-5,
-    RC-13, AUD-16). A removal revokes the codes and the device credential; this
-    is the other half — nothing issues a new one afterwards."""
+class SeatUnavailable(CampaignStoreError):
+    """A seat cannot be offered to, or accepted by, that account (bead `fma`).
+
+    **One refusal for every reason**, raised identically by both worlds: the
+    seat is missing or belongs to another campaign, it is removed, it is not
+    open (an offer) or not offered to this account (an acceptance), the account
+    is the campaign's owner, or the account already holds a live seat there. A
+    seat that does not exist and one in another GM's campaign must be
+    indistinguishable to the caller (SEC-3), so the reasons are not told apart
+    here either.
+
+    **The message is fixed and carries no identifier** — no alias, email, user
+    id, participant id or campaign id (SEC-20). The constructor takes nothing,
+    so no caller can put one in.
+    """
+
+    MESSAGE = "that seat is not available to that account"
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
 
 
 # ── Plumbing the three stores share ──────────────────────────────────────────

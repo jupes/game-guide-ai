@@ -1,14 +1,12 @@
 """
 Identifiers and secret digests for the campaign domain (1kg.2.1, checkpoint A).
 
-Behaviours 1, 2, 3 and 5 of `plans/drafts/1kg.2.1-campaign-schema.md`. Nothing
-here touches a database: these are the pure rules SEC-4, SEC-5 and AUD-4 fix, and
+Behaviours 1, 2 and 3 of `plans/drafts/1kg.2.1-campaign-schema.md`. Nothing
+here touches a database: these are the pure rules SEC-4 and SEC-5 fix, and
 they are the rules both the migration's `CHECK` constraints and the stores rely on.
 """
 
 from __future__ import annotations
-
-from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -26,7 +24,6 @@ from service.campaign_identity import (
     TABLE_CREDENTIAL,
     TABLE_SESSION,
     check_id,
-    code_expiry,
     digest,
     id_check_regex,
     is_id,
@@ -210,36 +207,3 @@ def test_a_digest_of_an_empty_secret_is_refused():
     well-known digest that matches any row a bug left empty."""
     with pytest.raises(ValueError, match="secret"):
         digest("")
-
-
-# ── Behaviour 5: a code expires seven days after it is issued ───────────────
-
-
-def test_an_enrolment_code_expires_seven_days_after_it_is_issued():
-    issued = datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
-
-    assert code_expiry(issued) == issued + timedelta(days=7)
-
-
-def test_the_expiry_window_belongs_to_the_store_not_the_caller():
-    """AUD-4 fixes seven days. A caller that could pass its own window could
-    mint a code that outlives the rule."""
-    import inspect
-
-    parameters = inspect.signature(code_expiry).parameters
-    assert set(parameters) == {"now"}, "code_expiry takes a clock, never a duration"
-
-
-def test_code_expiry_defaults_to_now_and_is_timezone_aware():
-    before = datetime.now(UTC)
-    expiry = code_expiry()
-
-    assert expiry.tzinfo is not None
-    assert timedelta(days=7) <= expiry - before <= timedelta(days=7, seconds=5)
-
-
-def test_a_naive_clock_is_refused():
-    """A naive datetime compared against a `TIMESTAMPTZ` is a silent bug: it
-    would be read as UTC by the driver and as local time by anything else."""
-    with pytest.raises(ValueError, match="timezone-aware"):
-        code_expiry(datetime(2026, 9, 19, 12, 0))  # noqa: DTZ001 - the point of the test
