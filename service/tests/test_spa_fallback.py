@@ -128,7 +128,9 @@ def test_allowlisted_path_serves_index_html(
 
 @pytest.mark.parametrize(
     "path",
-    ["/nope", "/verify", "/reset", "/billing/return", "/table/x", "/t/abc", "/profile/"],
+    # `/auth/nope`: an unknown subpath of a real API prefix (N-2) must not
+    # fall through to index.html either.
+    ["/nope", "/verify", "/reset", "/billing/return", "/table/x", "/t/abc", "/profile/", "/auth/nope"],
 )
 def test_unknown_path_is_a_json_404(routed_client: TestClient, path: str) -> None:
     response = routed_client.get(path)
@@ -177,40 +179,49 @@ def test_post_chat_reaches_the_api(routed_client: TestClient) -> None:
 # ── A4 -- nothing is registered after the SPA installer ─────────────────────
 
 
-def _install_spa_call_line(tree: ast.Module) -> int:
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "install_spa"
-        ):
-            return node.lineno
-    raise AssertionError("no install_spa(...) call found in service/app.py")
-
-
 def test_spa_fallback_is_registered_after_every_api_route() -> None:
+    """`install_spa(app, _UI_DIST)` is the ONLY installer call in
+    `service/app.py`, a bare top-level statement, and the module's LAST one.
+
+    A `Mount("/")` shadows everything registered after it, however it is
+    registered: `@app.get`, `@app.api_route`, `app.router.add_api_route`,
+    `app.add_route`, `app.mount`, a helper handed `app`, even a second
+    statement on the same line. A list of registration methods can only ever
+    name some of those; "nothing comes after the installer" covers them all.
+    And there must be exactly one call: an earlier one would shadow every
+    route registered between the two."""
     tree = ast.parse(APP_PY.read_text(encoding="utf-8"))
-    install_line = _install_spa_call_line(tree)
+    installer_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "install_spa"
+    ]
+    assert len(installer_calls) == 1, (
+        f"expected exactly one install_spa(...) call in service/app.py, found "
+        f"{len(installer_calls)} at line(s) {[call.lineno for call in installer_calls]}"
+    )
+    (installer,) = installer_calls
 
-    registration_methods = {"get", "post", "put", "patch", "delete", "add_api_route", "include_router"}
-    offending: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not isinstance(func, ast.Attribute):
-            continue
-        if not (isinstance(func.value, ast.Name) and func.value.id == "app"):
-            continue
-        if func.attr not in registration_methods:
-            continue
-        if node.lineno > install_line:
-            offending.append(f"app.{func.attr}(...) at line {node.lineno}")
-
-    assert not offending, (
-        f"route registration(s) found AFTER install_spa(...) (line {install_line}) in "
-        f"service/app.py: {offending}. A Mount('/') matches everything, so anything "
-        "registered after it is unreachable."
+    positions = [
+        index
+        for index, statement in enumerate(tree.body)
+        if isinstance(statement, ast.Expr) and statement.value is installer
+    ]
+    assert positions, (
+        f"install_spa(...) (line {installer.lineno}) must be a bare top-level "
+        "statement of service/app.py, not nested inside another statement"
+    )
+    after_installer = positions[0] + 1
+    trailing = [
+        f"line {statement.lineno}: {ast.unparse(statement).splitlines()[0]}"
+        for statement in tree.body[after_installer:]
+    ]
+    assert not trailing, (
+        f"statement(s) found AFTER install_spa(...) (line {installer.lineno}) in "
+        f"service/app.py: {trailing}. A Mount('/') matches everything, so any route "
+        "registered after it is unreachable -- keep install_spa(...) the last statement."
     )
 
 
@@ -247,8 +258,10 @@ def _spa_installed_on_the_real_app(tmp_dist: Path) -> Iterator[None]:
     `test_security_headers.py::test_the_spa_document_from_the_static_mount_carries_the_policy`
     already do for their own temporary mounts."""
     saved_routes = list(service_app.app.routes)
-    install_spa(service_app.app, tmp_dist)
     try:
+        # Inside the `try`: an install that fails partway through must not
+        # leak the routes it did register.
+        install_spa(service_app.app, tmp_dist)
         yield
     finally:
         service_app.app.router.routes[:] = saved_routes
