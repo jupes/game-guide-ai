@@ -61,8 +61,3 @@ CREATE UNIQUE INDEX timeline_entries_user_message_uidx
   ON chat.timeline_entries (user_message_id) WHERE user_message_id IS NOT NULL;
 CREATE UNIQUE INDEX timeline_entries_assistant_message_uidx
   ON chat.timeline_entries (assistant_message_id) WHERE assistant_message_id IS NOT NULL;
-
--- DELIBERATELY BROKEN (1): the conversation edge no longer cascades.
-ALTER TABLE chat.timeline_entries DROP CONSTRAINT timeline_entries_conversation_id_fkey,
-  ADD CONSTRAINT timeline_entries_conversation_id_fkey
-  FOREIGN KEY (conversation_id) REFERENCES chat.conversations (conversation_id);
