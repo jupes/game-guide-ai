@@ -42,7 +42,7 @@
 
 CREATE TABLE chat.timeline_entries (
   entry_id             TEXT        PRIMARY KEY CHECK (entry_id ~ '^ent_[A-Za-z0-9_-]{22,60}$'),
-  conversation_id      TEXT        NOT NULL REFERENCES chat.conversations (conversation_id),
+  conversation_id      TEXT        NOT NULL REFERENCES chat.conversations (conversation_id) ON DELETE CASCADE,
   entry_kind           TEXT        NOT NULL CHECK (entry_kind IN ('chat', 'tool', 'edit', 'session_divider', 'opaque')),
   schema_version       INTEGER     NOT NULL,
   created_at           TIMESTAMPTZ NOT NULL,
