@@ -266,10 +266,7 @@ class TimelineStore(Protocol):
 _LEGACY_COLUMNS = "id, mode, role, content, suggestions, created_at"
 #: Newest first, and total: `created_at` alone is not unique.
 _LEGACY_ORDER = "ORDER BY created_at DESC, id DESC LIMIT %s"
-_ENTRY_COLUMNS = (
-    "COALESCE(payload->>'entry_id', entry_id), created_at, seq, payload, "
-    "user_message_id, assistant_message_id"
-)
+_ENTRY_COLUMNS = "entry_id, created_at, seq, payload, user_message_id, assistant_message_id"
 #: The same shape for entries: `seq` makes the key total.
 _ENTRY_ORDER = "ORDER BY created_at DESC, seq DESC LIMIT %s"
 
