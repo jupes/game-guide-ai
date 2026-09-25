@@ -1206,16 +1206,24 @@ def _every_entry_row(dsn: str) -> list[str]:
 def test_deleting_a_conversation_or_its_owner_takes_every_entry_with_it(dsn: str) -> None:
     """C12. The entry's edge to its conversation is `ON DELETE CASCADE`, as
     `chat.messages`'s is, and deleting a user reaches it through 0002's chain.
-    Another user's entries are untouched by either."""
+    Another user's entries are untouched by either.
+
+    Each conversation also holds an entry that links no message row. A linked
+    entry would go with its message rows even if the conversation edge did not
+    cascade, and the test would then prove nothing about that edge.
+    """
     mine, theirs = _a_user(dsn, "mine@example.com"), _a_user(dsn, "theirs@example.com")
-    _a_stored_turn(dsn, CONVERSATION, mine)
-    _a_stored_turn(dsn, FOREIGN, theirs)
-    assert _pg_count(dsn, "chat.timeline_entries") == 2
+    database, _, store = _pg_stores(dsn)
+    for conversation_id, owner in ((CONVERSATION, mine), (FOREIGN, theirs)):
+        _a_stored_turn(dsn, conversation_id, owner)
+        with database.transaction() as unit:
+            store.append(unit, conversation_id, *_chat_entry("linked to nothing"), owner_id=owner)
+    assert _pg_count(dsn, "chat.timeline_entries") == 4
     with connect(dsn) as conn:
         conn.execute("DELETE FROM chat.conversations WHERE conversation_id = %s", (CONVERSATION,))
     assert _pg_count(dsn, "chat.timeline_entries", CONVERSATION) == 0
     assert _pg_count(dsn, "chat.messages", CONVERSATION) == 0
-    assert _pg_count(dsn, "chat.timeline_entries", FOREIGN) == 1, "another conversation's entry went too"
+    assert _pg_count(dsn, "chat.timeline_entries", FOREIGN) == 2, "another conversation's entries went too"
     with connect(dsn) as conn:
         conn.execute("DELETE FROM auth.users WHERE id = %s", (theirs,))
     assert [_pg_count(dsn, t) for t in ("chat.timeline_entries", "chat.messages", "chat.conversations")] == [0, 0, 0]
