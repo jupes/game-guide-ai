@@ -10,6 +10,7 @@ import { ConversationStoreProvider } from './ConversationStoreContext'
 import { MemoryConversationStore } from './conversationStore'
 import { ThemeProvider } from '../ds/theme'
 import { ChatPane } from './ChatPane'
+import { CHAT_TEXT_MAX_CHARS } from '../gm/contracts'
 import type { Attachment, AttachmentsResult, ChatResult, MessagesResult, UploadAttachmentResult } from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
 import type { GetAttachmentsFn, UploadAttachmentFn } from './ChatPane'
@@ -282,6 +283,20 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
     await userEvent.type(ta, 'line two')
     expect(post).not.toHaveBeenCalled()
     expect(ta.value).toBe('line one\nline two')
+  })
+
+  it('agent-forge-harness-764: disables Send and shows a counter past CHAT_TEXT_MAX_CHARS', async () => {
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Wrapper post={post} />)
+    const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+    // fireEvent.change, not userEvent.type: this draft is 100,001 characters —
+    // typing it key by key would be a real per-character simulation, not a
+    // meaningfully different test.
+    fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+    expect(screen.getByText(`${CHAT_TEXT_MAX_CHARS + 1} of ${CHAT_TEXT_MAX_CHARS} characters`, { exact: false })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    await userEvent.keyboard('{Enter}')
+    expect(post).not.toHaveBeenCalled()
   })
 })
 
