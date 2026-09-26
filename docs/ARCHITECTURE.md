@@ -460,6 +460,21 @@ the application. **Nothing about visibility is stored on a document or a version
 (ED-6): a reveal's pin is `1kg.7.1`'s slot row and references
 `(document_id, number)` from here.
 
+**The library, restore, archive, delete and the link (slice B).**
+`list_documents` answers one campaign's page: a category as a set of types,
+Recent or Name A-Z ordered exactly as the library indexes key them (`COLLATE
+"C"`, the id breaking ties), Active or Archived, and keyset pages anchored on a
+document id whose sort key is looked up server-side. "Restore" is two things:
+`restore` appends a sealed version equal to an earlier one (CANVAS-26, and a
+no-op when the content already matches), while `set_archived(archived=False)`
+un-archives (LIB-16); neither brings back a reveal. `delete` is LIB-18's hard
+delete of the document and its whole history. `link_character_sheet`,
+`unlink_character_sheet` and `sheet_for_participant` hold the document row and
+only read the seat. **None of these takes the campaign lock or advances
+`authz_revision`**: the two-step orchestration around archive, delete and unlink
+(`narrow`, then the exclusive lock, the re-scan and the advance) belongs to the
+routes that call them, `1kg.5.2` for documents and `1kg.2.2` for participants.
+
 ## Running it
 
 ```bash
