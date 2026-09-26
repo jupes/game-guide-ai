@@ -2214,6 +2214,9 @@ def test_the_default_library_page_is_read_off_its_index(dsn: str) -> None:
     """B-15's plan layer, with no escape hatch: if the default page — Active,
     Recent, the Documents category's five types, LIMIT 25 — is not an ordered
     scan of `documents_active_recent_idx`, the index or the statement is wrong.
+    The plan must also hold no sort of any kind: an index that no longer
+    matches the ORDER BY (a lost `COLLATE "C"`) is still scanned, for its
+    leading keys, under an Incremental Sort.
 
     It EXPLAINs the store's own statement (`_library_statement`), not a copy of
     it, with the values inlined client-side so the plan is the one those values
@@ -2255,6 +2258,7 @@ def test_the_default_library_page_is_read_off_its_index(dsn: str) -> None:
             plan = "\n".join(row[0] for row in cursor.fetchall())
 
     assert "Index Scan using documents_active_recent_idx" in plan, plan
+    assert "Sort" not in plan, "the index gives the order: a sort means it matches no longer"
 
 
 @needs_db
@@ -2305,15 +2309,16 @@ def test_one_sheet_linked_to_two_seats_at_once_is_never_re_pointed(dsn: str) -> 
     def holder(unit: Any) -> None:
         assert store.link_character_sheet(unit, CAMPAIGN, sheet.id, participant_id=rook)
 
-    def waiter(unit: Any) -> Any:
+    def waiter(unit: Any) -> tuple[str, str] | None:
+        # The refusal's ids, never the exception itself: the harness re-raises
+        # whatever exception a waiter hands back.
         try:
             store.link_character_sheet(unit, CAMPAIGN, sheet.id, participant_id=wren)
         except SheetAlreadyLinked as refused:
-            return refused
+            return refused.document_id, refused.participant_id
         return None
 
     refused = _while_another_transaction_holds(dsn, world.db, holder, waiter)
 
-    assert isinstance(refused, SheetAlreadyLinked), "the sheet was re-pointed"
-    assert (refused.document_id, refused.participant_id) == (sheet.id, wren)
+    assert refused == (sheet.id, wren), "the sheet was re-pointed"
     assert _got(world, CAMPAIGN, sheet.id).linked_participant_id == rook
