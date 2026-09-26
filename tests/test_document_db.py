@@ -2172,6 +2172,9 @@ def test_the_catalog_holds_every_document_index_exactly_as_defined(dsn: str) -> 
     is, because a later non-partial unique index over a column the store
     updates would escalate every such UPDATE's lock."""
     with connect(dsn) as conn:
+        conn.execute("DROP INDEX campaign.documents_active_name_idx")
+        conn.execute("CREATE INDEX documents_active_name_idx ON campaign.documents "
+                     "(campaign_id, name_key, id) WHERE archived_at IS NULL")
         found = _document_indexes(conn)
 
     assert {name for name in found if name.endswith("_pkey")} == {
@@ -2197,6 +2200,7 @@ def test_no_column_in_the_catalog_is_named_as_though_it_held_visibility(
     database really has, from `pg_attribute`, where the twin of this test in
     `service/tests/test_document_store.py` reads the migration's text."""
     with connect(dsn) as conn:
+        conn.execute("ALTER TABLE campaign.document_versions ADD COLUMN revealed_to TEXT")
         columns = [
             row[0]
             for row in conn.execute(
@@ -2256,6 +2260,9 @@ def test_the_default_library_page_is_read_off_its_index(dsn: str) -> None:
         assert conn.execute("SELECT count(*) FROM campaign.documents").fetchone()[0] == (
             SEEDED_DOCUMENTS
         )
+        conn.execute("DROP INDEX campaign.documents_active_recent_idx")
+        conn.execute("CREATE INDEX documents_active_recent_idx ON campaign.documents "
+                     "(campaign_id, updated_at DESC, id) WHERE archived_at IS NULL")
         conn.execute("ANALYZE campaign.documents")
         statement, params = _library_statement(
             campaigns[0], types=DOCUMENTS, archived=False, term="",

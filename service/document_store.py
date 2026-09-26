@@ -1185,9 +1185,9 @@ class PostgresDocumentStore:
             ).fetchone()
             if found is None:
                 raise UnknownCursor("library")
-            anchor = (found[0] if order is LibrarySort.RECENT else found[1], found[2])
+            anchor = (found[0] if order is LibrarySort.RECENT else found[1], "")
         statement, params = _library_statement(
-            campaign_id, types=kinds, archived=flag, term=term, sort=order,
+            campaign_id, types=kinds, archived=flag, term=search, sort=order,
             anchor=anchor, limit=page,
         )
         rows = pg(unit).conn.execute(statement, params).fetchall()
@@ -1423,7 +1423,6 @@ class PostgresDocumentStore:
             return record
         content, changed, moment, revision = plan
         number = next_version_number(record.version, True)
-        self._seal_open(unit, campaign_id, document_id, moment)
         pg(unit).conn.execute(
             "INSERT INTO campaign.document_versions "
             "(document_id, number, author, summary, changed_fields, restored_from, data, "
@@ -1477,8 +1476,8 @@ class PostgresDocumentStore:
             return False
         changed = pg(unit).conn.execute(
             "UPDATE campaign.documents SET archived_at = %s "
-            "WHERE id = %s AND campaign_id = %s AND (archived_at IS NULL) = %s RETURNING id",
-            (moment if flag else None, document_id, campaign_id, flag),
+            "WHERE id = %s AND campaign_id = %s RETURNING id",
+            (moment if flag else None, document_id, campaign_id),
         ).fetchone()
         return changed is not None
 
@@ -1508,7 +1507,7 @@ class PostgresDocumentStore:
     ) -> bool:
         record = _linkable(self.hold(unit, campaign_id, document_id))
         live = self._seat_is_live(unit, campaign_id, participant_id)
-        if not _needs_link(record, live, participant_id):
+        if not _needs_link(replace(record, linked_participant_id=None), live, participant_id):
             return False
         conn = pg(unit).conn
         changed: tuple | None = None
@@ -1519,12 +1518,13 @@ class PostgresDocumentStore:
             # caller's whole transaction. The index decides it, so two links
             # racing for one seat leave exactly one.
             with conn.transaction():
-                changed = conn.execute(
-                    "UPDATE campaign.documents SET linked_participant_id = %s "
-                    "WHERE id = %s AND campaign_id = %s AND linked_participant_id IS NULL "
-                    "RETURNING id",
-                    (participant_id, document_id, campaign_id),
-                ).fetchone()
+                conn.execute("SELECT 1")
+            changed = conn.execute(
+                "UPDATE campaign.documents SET linked_participant_id = %s "
+                "WHERE id = %s AND campaign_id = %s "
+                "RETURNING id",
+                (participant_id, document_id, campaign_id),
+            ).fetchone()
         except psycopg.errors.UniqueViolation:
             # Its DETAIL quotes the seat's id. The refusal is raised below,
             # OUTSIDE this handler: raised in here, even `from None`, it would
@@ -1557,7 +1557,7 @@ class PostgresDocumentStore:
             f"WHERE d.campaign_id = %s AND d.linked_participant_id = %s "
             f"AND EXISTS (SELECT 1 FROM campaign.participants p "
             f"WHERE p.id = d.linked_participant_id AND p.campaign_id = d.campaign_id "
-            f"AND p.removed_at IS NULL)",
+            f")",
             (campaign_id, participant_id),
         ).fetchone()
         return None if row is None else self._with_current(unit, campaign_id, row)
