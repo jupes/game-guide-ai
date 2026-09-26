@@ -6,10 +6,10 @@ production. Until this shipped, the service measured **no model cost at all**, s
 figure in `docs/forge/plans/subscription-billing-coupons-profitability.md` was a
 list-price estimate rather than a measurement.
 
-**What this is not:** a table, a migration, a price table in code, or a dashboard.
-Slice b (`agent-forge-harness-yje.5.1.2`) replaces the sink behind these field names
-with a durable ledger; `yje.5.4a` adds p50/p95 per account, starting from these same
-logs. Nothing here needs a schema change to get there.
+**What this is not:** a dashboard. Slice b (`agent-forge-harness-yje.5.1.2`) adds a
+durable ledger **beside** these log records, not instead of them: every attempt is still
+written here exactly as below, and also as one row of `metering.provider_attempts`
+(section 7). `yje.5.4a` adds p50/p95 per account, starting from these same logs.
 
 ---
 
@@ -284,3 +284,102 @@ In order, cheapest first:
 3. Is `--freshness` inside the bucket's retention window (section 5)?
 4. Has anyone used `/chat` since the deploy? Records only exist for live turns — an
    eval script, a local run or the E2E app produces none, by design.
+
+---
+
+## 7. The ledger (slice b)
+
+**Bead:** `agent-forge-harness-yje.5.1.2`. **Code:** `service/usage_ledger.py`; the
+schema is the `metering` migration (`service/sql/migrations/*_usage_ledger.sql`).
+
+### What a row is
+
+One row of `metering.provider_attempts` is **one provider attempt** — the same grain as
+one log record above, with the same values. It carries 15 of the record's keys
+(`operation_id`, `operation`, `purpose`, `mode`, `alias`, `provider`, `retry_index`,
+`status`, the four token counts, `billed_account_id`, `actor_kind`, `campaign_id`), plus:
+
+- `attempt_index`: 0, 1, 2 … across the whole turn, in recording order. The key is
+  `(operation_id, attempt_index)`; `retry_index` repeats within a turn and cannot be one.
+- `occurred_at`: when the attempt was recorded (the application's UTC clock).
+- `price_revision_id`: the price revision that was in force when the row was written, or
+  NULL — **provenance only**. Cost is never stored (see *Prices* below).
+
+`error_class`, `finish_reason`, `latency_ms` and `provider_request_id` are operational and
+stay in the log line only. A token count the provider did not report — or reported as
+something that is not a whole number between 0 and 2³¹−1 — is NULL: unknown, never zero.
+
+**Both sinks are written.** The log record is emitted exactly as before, and the row is
+captured beside it; either can fail without the other noticing. The turn's rows are written
+**once, when the turn ends**, in one short transaction on the same connection gate as every
+other write — after the last provider call, never across one. The table is append-only:
+there is no update and no delete path, and none may be added by hand.
+
+### Reconciling the ledger against the log, per day
+
+The log is the independent witness of what a lost ledger write lost. Compare the two counts
+per day; they should be equal from the first day the release that ships this served traffic:
+
+```sql
+SELECT date_trunc('day', occurred_at) AS day, count(*) AS attempts
+  FROM metering.provider_attempts
+ GROUP BY 1 ORDER BY 1;
+```
+
+against the count of `jsonPayload.event="provider_attempt"` log entries per day (section 2's
+filter, counted by the log entry's `timestamp`). A day where the ledger is lower lost that
+many rows to failed writes or to a process that died mid-turn; each failed write also logs
+`usage ledger write failed (rows=N, error=<ClassName>)`.
+
+### Prices: adding one, and correcting one
+
+Prices live in `metering.price_revisions`, **one immutable row per (provider, alias,
+effective_from)** with three rates in US dollars per million tokens. A row is **never
+updated and never deleted** — a revision a ledger row names cannot be deleted anyway. Every
+change is an `INSERT`, run as the schema owner:
+
+```sql
+INSERT INTO metering.price_revisions
+  (provider, alias, effective_from, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok, source)
+VALUES
+  ('openai', 'text-embedding-3-small', '<true effective date>T00:00:00+00:00', <input>, NULL, NULL,
+   '<where the price was read, and the date it was read>');
+```
+
+- **A new price from a date:** insert it with that `effective_from`. Attempts from that
+  instant on are priced by it; nothing before it moves. A future date is fine.
+- **Wrong numbers:** insert the same provider, alias and `effective_from` again with the
+  right numbers. The later-recorded row (greatest `id`) governs that window from then on.
+- **A price entered late, or for the first time:** insert it with its **true, past**
+  `effective_from`. It prices every attempt from that instant, including rows written as
+  unpriced.
+- `cached_input_usd_per_mtok` NULL prices cached input at the input rate (the conservative
+  rule of section 4). `output_usd_per_mtok` NULL means the model has no priced output: an
+  attempt that produced output against it is reported as unpriced.
+
+A row's cost is always computed from the revision in force **now**, so a correction reaches
+every row it covers; the stored `price_revision_id` says what was believed when the row was
+written, and a reader counts the rows whose revision has since changed (`repriced_attempts`).
+The arithmetic is section 3's: unknown counts are counted, never priced as zero; cached input
+is clipped to input; reasoning tokens are inside output and never priced again.
+
+The migration seeds one price: `gpt-4o-mini` at $0.15 input / $0.075 cached / $0.60 output,
+effective 2026-09-24, from the billing plan's D-8 evidence note. A unit test fails CI when
+the catalog enables a model alias with no seeded price.
+
+### The embedding gap
+
+`text-embedding-3-small` has **no price row**: the owner supplies it. Until then every
+embedding row is counted as unpriced. Enter it with its true `effective_from` and every
+embedding row already written is priced by it — nothing is lost by waiting.
+
+### Honest limits
+
+- **A write is best-effort.** A failed write, or an instance that dies mid-turn, loses that
+  turn's rows; the answer is never affected, and the log line is the witness.
+- **Rows start at the release that ships this.** Nothing is backfilled from the logs.
+- **The write can wait on the gate.** Like every other write of a turn, it waits up to
+  `DB_POOL_TIMEOUT_S` (5 s) for a connection when the gate is saturated — after the answer
+  is complete, never between provider calls.
+- `guest` is not an actor the ledger accepts (there are no guests, billing plan D-4), although
+  section 1's field table still lists it for the log record.

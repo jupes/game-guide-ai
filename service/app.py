@@ -257,6 +257,13 @@ def _build_stores(db: Database) -> None:
     _state["store"] = PostgresMessageStore(db=db)
     _state["auth"] = PostgresAuthStore(db=db)
     _state["timeline"] = PostgresTimelineStore()
+    # The provider-attempt cost ledger (yje.5.1.2): installed rather than
+    # injected, because `chat()` does not change. Imported here so that this
+    # function and the lifespan teardown stay the only lines of this module
+    # the ledger touches.
+    from .usage_ledger import LedgerWriter, PostgresUsageLedgerStore
+
+    usage_capture.install_ledger(LedgerWriter(PostgresUsageLedgerStore(), db))
 
 
 def _build_rag(db: Database) -> None:
@@ -326,6 +333,7 @@ async def lifespan(app: FastAPI):
         _build_stores(db)
     yield
     _state.clear()
+    usage_capture.install_ledger(None)
     await db.aclose()
     del app.state.metrics_sink
 
