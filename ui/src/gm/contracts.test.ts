@@ -1515,6 +1515,10 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
       'three inactive frames beside a session and a buffered projection',
       'an inactive table whose guest session still shows the table slot',
       'an inactive table that also carries a session frame',
+      // Bead 929: the session arm of the predicate, which the fixtures above
+      // never reached — each is a resource with no session frame at all.
+      'a session-less resource whose picture shows the table a projection',
+      'a session-less resource whose picture holds a private projection',
     ]) {
       expect([name, parseTableSnapshot(byName(tableSnapshots, 'invalid', name))]).toEqual([name, { kind: 'unknown', reason: 'invalid' }])
     }
