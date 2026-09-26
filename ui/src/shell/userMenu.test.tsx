@@ -216,8 +216,17 @@ describe('UserMenu popover (agent-forge-harness-3j4)', () => {
   it('U2: Escape closes the popover and returns focus to the trigger', async () => {
     renderMenu()
     const trigger = screen.getByRole('button', { name: /open user menu/i })
-    await userEvent.click(trigger)
+    // Keyboard only, and Escape is pressed from INSIDE the popover: were
+    // focus still on the trigger, the focus assertion below would pass
+    // whether or not Escape moved it.
+    await userEvent.tab()
+    expect(trigger).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
     expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    await userEvent.tab()
+    await userEvent.tab()
+    const group = screen.getByRole('group', { name: 'User menu' })
+    expect(within(group).getByRole('button', { name: 'Sign out' })).toHaveFocus()
 
     await userEvent.keyboard('{Escape}')
     expect(trigger).toHaveAttribute('aria-expanded', 'false')
