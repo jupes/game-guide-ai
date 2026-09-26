@@ -309,6 +309,25 @@ edge is `DEFERRABLE INITIALLY DEFERRED`, so an integrity failure on it would
 arrive at `COMMIT` — outside every `try` and after a route had composed its
 answer — and no code here is allowed to catch one.
 
+**The routes** (`service/conversations_api.py`, `1kg.2.4` A2) are
+`GET|POST /conversations` and `GET|PATCH /conversations/{id}`, on an
+`APIRouter` that imports nothing from `service/app.py` and is wired in by two
+lines there. They take the Workbench posture by hand until
+`agent-forge-harness-oe6`'s scaffolding moves them onto it: the origin check on
+a write, the `dm` role, validation that answers `validation_error_body` and
+never FastAPI's default 422, and **one `404`** for a conversation that is
+missing, someone else's, never owned or unreadable. They **never claim** a
+conversation. The contract is *The conversation family* in
+[`workbench-wire-contract.md`](workbench-wire-contract.md).
+
+**Two postures on one `/conversations` prefix.** The legacy routes —
+`GET …/messages` and the attachment routes — keep what they answer today: a
+`403` for a conversation that exists and is someone else's, and a claim on
+first read of one with content (R-4, R-5). The new routes answer the generic
+`404` and claim nothing. A prober can therefore still ask the old route what
+the new one will not say; the threat model's §10 records that as accepted for
+the pilot rather than leaving it silent.
+
 ### Digests, and what is private
 
 A table link token and a join credential are 32 random bytes; only the
