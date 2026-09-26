@@ -880,6 +880,31 @@ def test_the_census_filters_the_spa_fallback_by_name(tmp_path: Path) -> None:
     assert _census(target) == ({("GET", "/healthz")}, set())
 
 
+def test_api_routes_reports_router_mounted_routes_with_their_prefix() -> None:
+    """The prefix-joined path and the ROUTE object, for a router route too;
+    FastAPI's documentation routes are not API routes and are not reported."""
+    target = FastAPI()
+
+    @target.get("/legacy")
+    def legacy() -> dict[str, str]:
+        return {}
+
+    router = workbench_router(gm_session(require_session))
+
+    @router.get("/things/{thing_id}")
+    def read_thing(thing_id: str) -> dict[str, str]:
+        return {"id": thing_id}
+
+    target.include_router(router, prefix="/api")
+    rows = [(path, type(route).__name__) for path, route in api_routes(target)]
+    assert rows == [("/legacy", "APIRoute"), ("/api/things/{thing_id}", "WorkbenchRoute")]
+
+
+def test_api_routes_is_loud_when_it_finds_nothing() -> None:
+    with pytest.raises(AssertionError, match="found no APIRoute"):
+        api_routes(FastAPI())
+
+
 # ── 10.4: a route module that builds its own 401/403/404 is refused ──────────
 
 #: Built by concatenation so that this file does not itself contain the token,
