@@ -358,7 +358,7 @@ class ConversationStore(Protocol):
 
 
 _COLUMNS = (
-    "conversation_id, user_id, campaign_id, title, COALESCE(started_mode, 'sage'), "
+    "conversation_id, user_id, campaign_id, title, started_mode, "
     "created_at, updated_at, archived_at"
 )
 #: The index's keys, written once so the ORDER BY and the cursor's comparison
