@@ -767,15 +767,6 @@ def chat(
     # model_preference 422 below. `detail` stays a static string; the prompt
     # itself must never appear in it. Raised before the try so it isn't masked
     # as a 500, same as the gates around it.
-    # Prompt length gate (agent-forge-harness-764): reuse the Workbench's own
-    # request-side ceiling rather than a `Field(max_length=...)` on
-    # ChatRequest.prompt, whose rejection would go through FastAPI's default
-    # RequestValidationError handler and echo the whole oversized prompt back
-    # in the 422 body (R-12, docs/adr/gm-workbench-threat-model.md). A plain
-    # HTTPException here is handled ordinarily -- no echo -- exactly like the
-    # model_preference 422 below. `detail` stays a static string; the prompt
-    # itself must never appear in it. Raised before the try so it isn't masked
-    # as a 500, same as the gates around it.
     if len(req.prompt) > CHAT_TEXT_MAX_CHARS:
         raise HTTPException(
             status_code=422,
