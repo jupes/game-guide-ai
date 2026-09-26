@@ -419,14 +419,15 @@ def test_the_fold_is_the_comparison_both_worlds_make():
 
 
 def test_the_fold_sweeps_control_characters_out_before_anything_else():
-    """`tags` accepts control characters today and `name` accepts NUL: `_ListItem`
-    carries neither `_one_line` nor `_well_formed`, and `_TextValue`'s
-    `_one_line` refuses only the four line breaks. Any separator `search_key`
-    picked could otherwise occur inside a value.
+    """Since F-9 (1kg.5.7.2) `check_fields` refuses NUL, ESC and the bidirectional
+    controls in every document field kind on write, but category C is wider than
+    that refusal — U+200C and U+200D are allowed in real names, and format,
+    private-use and unassigned code points are stored. Any separator
+    `search_key` picked could otherwise occur inside a value.
 
-    This is NOT validation and must not become validation: refusing those
-    characters is 1kg.5.7's (F-9), and this module must keep reading documents
-    that already hold them."""
+    This is NOT validation and must not become validation: refusing characters
+    is `check_plain_text`'s, and this module must keep reading whatever a stored
+    row already holds."""
     assert docs._fold("a\x00b\x1fc\x1bd") == "a b c d"
     assert docs._fold(f"  a {chr(0x200B)} b  ") == "a b"
     assert docs._fold("\ud800lone") == "lone", "a lone surrogate is swept, not raised on"
