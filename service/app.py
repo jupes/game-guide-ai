@@ -82,6 +82,7 @@ from .security_headers import CONTENT_SECURITY_POLICY
 from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
+from .workbench_api import install_workbench
 from .workbench_contracts import CONTRACT_VERSION, ErrorBody, ErrorCode, TimelinePage
 
 log = logging.getLogger(__name__)
@@ -331,6 +332,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="D&D 5e RAG — Agent Service", version="1.0", lifespan=lifespan)
+install_workbench(app)
 
 
 def get_service() -> RagService:
