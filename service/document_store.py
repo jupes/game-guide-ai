@@ -17,11 +17,11 @@ document does not grow a whole-document snapshot per pause. That version is
 sealed by another author's write, by ten minutes of idleness, or by an explicit
 `seal(...)` — which is the primitive the route events of CANVAS-34 (closing the
 canvas, starting an AI edit, opening the reveal sheet or an export dialog) call.
-There is no timer, no job and no background sealer: every mutator takes `now`,
-so the rule is deterministic and a test needs no sleep. Once sealed a version
-never changes again — every `UPDATE` against `campaign.document_versions` here
-carries `AND sealed_at IS NULL`, and this module runs no `DELETE` against that
-table at all.
+There is no timer, no job and no background sealer: every mutator that writes a
+timestamp takes `now`, so the rule is deterministic and a test needs no sleep.
+Once sealed a version never changes again — every `UPDATE` against
+`campaign.document_versions` here carries `AND sealed_at IS NULL`, and this
+module runs no `DELETE` against that table at all.
 
 **Ownership is in the query** (`docs/migrations.md` section 4, SEC-2). Every
 statement names the **campaign** in the same statement as the row, and every
@@ -51,6 +51,19 @@ and `search_key` folded from field text are private text. They live in this
 module and in the database, and nowhere else: every record that can hold one
 hides it from `repr()` — a traceback prints every `repr()` on the way out — and
 every refusal names the **field**, never the value.
+
+**Slice B adds the rest of the aggregate's life.** `list_documents` is the
+library (LIB-20 to LIB-23): one campaign, a category as a set of types, Recent
+or Name A-Z in the library indexes' own order, Active or Archived, a search
+folded as the stored key is and matched with `strpos`, keyset pages anchored on
+a document id. "Restore" means two things and both are here: `restore` appends
+a version equal to an earlier one (CANVAS-26), and `set_archived(archived=False)`
+brings an archived document back (LIB-16); neither brings back a reveal.
+`delete` is LIB-18's hard delete, the one `DELETE` in this module. The
+character-sheet link's two primitives, and `sheet_for_participant`, hold the
+document row and only read the seat. **None of them takes the campaign lock or
+advances the authorisation revision**: the two-step orchestration around
+archive, delete and unlink (RQ-5, RQ-7) is `1kg.5.2`'s and `1kg.2.2`'s.
 """
 
 from __future__ import annotations
@@ -61,6 +74,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
+
+import psycopg
 
 from . import campaign_identity as ident
 from .campaign_store import (
@@ -73,6 +88,7 @@ from .campaign_store import (
     shared_rows,
 )
 from .db import InMemoryDatabase, InMemoryTransaction, UnitOfWork
+from .participant_store import Participant
 from .workbench_contracts import (
     DOC_TYPE_VERSION,
     HISTORY_PAGE_MAX_ITEMS,
@@ -194,6 +210,39 @@ class UnknownCursor(CampaignStoreError, LookupError):
     def __init__(self, kind: str) -> None:
         self.kind = kind
         super().__init__(f"that {kind} cursor names no row")
+
+
+class SheetAlreadyLinked(CampaignStoreError):
+    """A character sheet links to at most one seat (AUD-15), and a seat to at
+    most one sheet (AUD-13, lead ruling 5.1#2) — and this link would break one
+    of the two. A linked sheet is never re-pointed: moving it is an unlink and
+    a link, and the unlink is the route's narrowing step (RQ-5).
+
+    It carries the two ids as attributes for the route, and its message names
+    neither: which seat already holds a sheet is the GM's to be told by a
+    route, not a traceback's.
+    """
+
+    def __init__(self, document_id: str, participant_id: str) -> None:
+        self.document_id = document_id
+        self.participant_id = participant_id
+        super().__init__("a character sheet links to one seat, and a seat to one sheet")
+
+
+class NotLinkable(CampaignStoreError):
+    """Only a character sheet links to a seat — AUD-15 names a character sheet,
+    and this is decided on the document's TYPE, in Python, in both worlds.
+
+    **Not on the registry's `audience` flag.** Owner decision O-2 narrowed that
+    flag to whose default reveal a type seeds (ED-14 as amended), and nothing
+    ties an audience to a document type. The two rules coincide today and
+    would part the moment another type seeded its owner's reveal. There is no
+    database constraint either: nothing in the schema ties a link to a type.
+    """
+
+    def __init__(self, doc_type: str) -> None:
+        self.type = doc_type
+        super().__init__(f"a {doc_type} document is not a character sheet and links to no seat")
 
 
 # ── The fold, and the two keys derived from field text ───────────────────────
@@ -626,9 +675,10 @@ class DocumentStore(Protocol):
     **Every mutator takes the unit of work first** (the `JobQueue.enqueue` and
     campaign-store pattern), so `1kg.5.2` can compose this store with the
     participant and audit writers in one transaction that commits or rolls back
-    together — and **every mutator takes `now`**, so the sealing rules are
-    deterministic. The readers take none, because nothing they do depends on
-    the clock.
+    together — and **every mutator that writes a timestamp takes `now`**, so
+    the sealing rules are deterministic. The readers take none, because nothing
+    they do depends on the clock, and neither do `delete` and the two link
+    primitives, which write no timestamp (B-9).
     """
 
     def create(
@@ -688,12 +738,13 @@ class DocumentStore(Protocol):
         longer passes its bound to the first primitive it calls, which for
         every fact-changing path is `lock_campaign`.
 
-        **The signature deliberately differs from `ParticipantStore.hold`, and
-        that is not drift.** There the campaign is a keyword and optional,
-        because the unauthenticated enrolment route looks a code up before it
-        knows the campaign. No document path lacks the campaign, so here it is
-        positional and required and SEC-2's "one query, one 404" is
-        unconditional.
+        **Both holds require the campaign; only the spelling differs, and that
+        is not drift.** `ParticipantStore.hold` takes it as a required keyword
+        (`hold(unit, participant_id, *, campaign_id, ...)`), and here it is
+        positional; in both it goes into the statement that takes the lock, so
+        another campaign's row is None and is never locked, and SEC-2's "one
+        query, one 404" is unconditional. (The enrolment route that once looked
+        a seat up before it knew the campaign is retired, bead `fma`.)
         """
         ...  # pragma: no cover - structural type
 
@@ -889,6 +940,68 @@ class DocumentStore(Protocol):
         Like `set_archived` it takes no campaign lock and advances no revision:
         the two-step orchestration around it is `1kg.5.2`'s. It writes no
         timestamp, so it takes no `now`.
+        """
+        ...  # pragma: no cover - structural type
+
+    def link_character_sheet(
+        self, unit: UnitOfWork, campaign_id: str, document_id: str, *, participant_id: str
+    ) -> bool:
+        """Link a character sheet to a seat of the same campaign (AUD-15).
+
+        It holds the document row and reads the seat **without locking it**:
+        RQ-3 puts participant and document rows at one level of the lock order
+        with no order between them, so no primitive here takes both (inferred
+        decision 9). It decides in B-4's order: a missing or foreign document
+        is `MissingParent`; a type other than `character-sheet` is
+        `NotLinkable`; a missing, foreign or removed seat is `MissingParent`
+        (B-1) — any other seat, open, offered or accepted, is linkable (B-2);
+        already linked to that seat is `False`; linked to another seat is
+        `SheetAlreadyLinked`, never a re-point; and a seat that already has a
+        sheet is `SheetAlreadyLinked` too, which in PostgreSQL the partial
+        unique index decides inside a savepoint, so the caller's transaction
+        survives it. An archived sheet is linkable: the route decides.
+
+        **It changes the link and nothing else.** No timestamp (so no `now`),
+        no write revision, no version — and no campaign lock and no revision
+        advance, for `set_archived`'s reason. Linking widens what a seat may
+        be shown, so the route that calls it (`1kg.2.2` for the Participants
+        panel, `1kg.5.2` for the document side) takes the campaign lock first
+        and advances the revision (RQ-4, RQ-10), and writes the
+        `participant.linked` audit row that names this document (SEC-38).
+        """
+        ...  # pragma: no cover - structural type
+
+    def unlink_character_sheet(
+        self, unit: UnitOfWork, campaign_id: str, document_id: str
+    ) -> str | None:
+        """Clear the sheet's link and return the seat it was linked to, or None
+        when it was not linked — so the route can write its
+        `participant.unlinked` row. A missing or foreign document is
+        `MissingParent`.
+
+        **This is only the second half of an unlink.** An unlink is a
+        fact-changing narrowing (RQ-5, ED-12, A-17): its first step stops the
+        live private display of that sheet and advances the reveal epoch under
+        the session row through `table_session_store.narrow`, never waiting for
+        the campaign lock; its second clears the link under the exclusive
+        campaign lock, scans again and advances the revision, in the request,
+        answering "not applied yet" when the lock cannot be had in time (RC-15).
+        All of that is the route's (`1kg.2.2`, `1kg.5.2`). This primitive holds
+        the document row, clears one column and writes no timestamp.
+        """
+        ...  # pragma: no cover - structural type
+
+    def sheet_for_participant(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str
+    ) -> DocumentRecord | None:
+        """The sheet linked to that seat, for REVEAL-4's seeding (`1kg.7.1`) —
+        and only for a seat of that campaign that is not removed (B-3). A
+        missing, foreign or removed seat is None, one answer (SEC-2).
+
+        Removing a seat does NOT unlink its sheet (AUD-16 says what Remove does,
+        and unlinking is not on the list): the link survives on
+        `DocumentRecord.linked_participant_id`, read through `get`. It takes no
+        lock.
         """
         ...  # pragma: no cover - structural type
 
@@ -1378,6 +1491,77 @@ class PostgresDocumentStore:
         ).fetchone()
         return gone is not None
 
+    def _seat_is_live(self, unit: UnitOfWork, campaign_id: str, participant_id: str) -> bool:
+        """Whether that campaign has that seat and it is not removed — read, and
+        deliberately NOT locked (inferred decision 9)."""
+        return (
+            pg(unit).conn.execute(
+                "SELECT 1 FROM campaign.participants "
+                "WHERE id = %s AND campaign_id = %s AND removed_at IS NULL",
+                (participant_id, campaign_id),
+            ).fetchone()
+            is not None
+        )
+
+    def link_character_sheet(
+        self, unit: UnitOfWork, campaign_id: str, document_id: str, *, participant_id: str
+    ) -> bool:
+        record = _linkable(self.hold(unit, campaign_id, document_id))
+        live = self._seat_is_live(unit, campaign_id, participant_id)
+        if not _needs_link(record, live, participant_id):
+            return False
+        conn = pg(unit).conn
+        changed: tuple | None = None
+        try:
+            # A savepoint, because the one refusal this statement cannot express
+            # in its WHERE — the seat already has another sheet — is the partial
+            # unique index's, and a UniqueViolation would otherwise abort the
+            # caller's whole transaction. The index decides it, so two links
+            # racing for one seat leave exactly one.
+            with conn.transaction():
+                changed = conn.execute(
+                    "UPDATE campaign.documents SET linked_participant_id = %s "
+                    "WHERE id = %s AND campaign_id = %s AND linked_participant_id IS NULL "
+                    "RETURNING id",
+                    (participant_id, document_id, campaign_id),
+                ).fetchone()
+        except psycopg.errors.UniqueViolation:
+            # Its DETAIL quotes the seat's id. The refusal is raised below,
+            # OUTSIDE this handler: raised in here, even `from None`, it would
+            # carry the driver's error on `__context__`.
+            changed = None
+        if changed is None:
+            raise SheetAlreadyLinked(document_id, participant_id)
+        return True
+
+    def unlink_character_sheet(
+        self, unit: UnitOfWork, campaign_id: str, document_id: str
+    ) -> str | None:
+        record = self.hold(unit, campaign_id, document_id)
+        if record is None:
+            raise MissingParent("no such document in that campaign")
+        if record.linked_participant_id is None:
+            return None
+        pg(unit).conn.execute(
+            "UPDATE campaign.documents SET linked_participant_id = NULL "
+            "WHERE id = %s AND campaign_id = %s",
+            (document_id, campaign_id),
+        )
+        return record.linked_participant_id
+
+    def sheet_for_participant(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str
+    ) -> DocumentRecord | None:
+        row = pg(unit).conn.execute(
+            f"SELECT {_D_COLUMNS} FROM campaign.documents d "
+            f"WHERE d.campaign_id = %s AND d.linked_participant_id = %s "
+            f"AND EXISTS (SELECT 1 FROM campaign.participants p "
+            f"WHERE p.id = d.linked_participant_id AND p.campaign_id = d.campaign_id "
+            f"AND p.removed_at IS NULL)",
+            (campaign_id, participant_id),
+        ).fetchone()
+        return None if row is None else self._with_current(unit, campaign_id, row)
+
 
 # ── The rules both worlds obey, spelled once ─────────────────────────────────
 
@@ -1436,6 +1620,31 @@ def _planned(
     _validated(kind, record.type_version, merged)
     name_key(str(merged.get("name", "")))
     return writer, merged, (now_or(now), next_write_revision(record.write_revision))
+
+
+def _linkable(record: DocumentRecord | None) -> DocumentRecord:
+    """B-4's first two decisions, spelled once for both worlds: the document
+    (`MissingParent`), then its TYPE (`NotLinkable`) — the type and not the
+    registry's `audience` flag, which O-2 narrowed to reveal seeding."""
+    if record is None:
+        raise MissingParent("no such document in that campaign")
+    if record.type != DocumentTypeId.CHARACTER_SHEET.value:
+        raise NotLinkable(record.type)
+    return record
+
+
+def _needs_link(record: DocumentRecord, seat_is_live: bool, participant_id: str) -> bool:
+    """B-4's next three: a missing, foreign or removed seat (`MissingParent`,
+    B-1), then `False` for a sheet already linked to that seat, then
+    `SheetAlreadyLinked` for one linked to another — never a re-point. The
+    sixth, a seat that already has another sheet, is each world's own."""
+    if not seat_is_live:
+        raise MissingParent("no such seat in that campaign")
+    if record.linked_participant_id == participant_id:
+        return False
+    if record.linked_participant_id is not None:
+        raise SheetAlreadyLinked(record.id, participant_id)
+    return True
 
 
 def _writable_kind(record: DocumentRecord) -> DocumentTypeId:
@@ -1580,6 +1789,7 @@ class InMemoryDocumentStore:
 
     def __init__(self, db: InMemoryDatabase) -> None:
         self._campaigns: Staging[Any] = shared_rows(db, "campaigns")
+        self._participants: Staging[Participant] = shared_rows(db, "participants")
         self._documents: Staging[_DocumentRow] = shared_rows(db, "documents")
         self._versions: Staging[_VersionRow] = shared_rows(db, "document_versions")
 
@@ -1994,3 +2204,55 @@ class InMemoryDocumentStore:
         twin = fake(unit)
         self._documents.replace(twin, document_id, _tombstone(self._live(twin)[document_id]))
         return True
+
+    def _seat_is_live(
+        self, twin: InMemoryTransaction, campaign_id: str, participant_id: str
+    ) -> bool:
+        seat = self._participants.visible(twin).get(participant_id)
+        return seat is not None and seat.campaign_id == campaign_id and seat.is_active
+
+    def link_character_sheet(
+        self, unit: UnitOfWork, campaign_id: str, document_id: str, *, participant_id: str
+    ) -> bool:
+        twin = fake(unit)
+        record = _linkable(self.hold(unit, campaign_id, document_id))
+        live = self._seat_is_live(twin, campaign_id, participant_id)
+        if not _needs_link(record, live, participant_id):
+            return False
+        # `documents_participant_uidx`, kept here as the index keeps it there:
+        # over the rows this unit can see, tombstones excluded.
+        if any(
+            row.linked_participant_id == participant_id
+            for row in self._live(twin).values()
+            if row.id != document_id
+        ):
+            raise SheetAlreadyLinked(document_id, participant_id)
+        row = self._live(twin)[document_id]
+        self._documents.replace(
+            twin, document_id, replace(row, linked_participant_id=participant_id)
+        )
+        return True
+
+    def unlink_character_sheet(
+        self, unit: UnitOfWork, campaign_id: str, document_id: str
+    ) -> str | None:
+        record = self.hold(unit, campaign_id, document_id)
+        if record is None:
+            raise MissingParent("no such document in that campaign")
+        if record.linked_participant_id is None:
+            return None
+        twin = fake(unit)
+        row = self._live(twin)[document_id]
+        self._documents.replace(twin, document_id, replace(row, linked_participant_id=None))
+        return record.linked_participant_id
+
+    def sheet_for_participant(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str
+    ) -> DocumentRecord | None:
+        twin = fake(unit)
+        if not self._seat_is_live(twin, campaign_id, participant_id):
+            return None
+        for row in self._live(twin).values():
+            if row.campaign_id == campaign_id and row.linked_participant_id == participant_id:
+                return self._with_current(twin, row)
+        return None

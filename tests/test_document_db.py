@@ -57,7 +57,9 @@ from service.document_store import (
     DocumentRecord,
     FieldConflict,
     InMemoryDocumentStore,
+    NotLinkable,
     PostgresDocumentStore,
+    SheetAlreadyLinked,
     StaleTypeVersion,
     UnknownCursor,
     UnknownWriteRevision,
@@ -1799,3 +1801,307 @@ def test_a_library_query_it_cannot_honour_is_refused_without_quoting_it(
                 {"archived": "no"}):
         with pytest.raises(ValueError):
             _library(world, campaign, **bad)
+
+
+# The character-sheet link (AUD-13, AUD-15, AUD-16, O-2, B-1 to B-4) ──────────
+
+
+def _a_sheet(world: World, campaign_id: str, name: str = "Rook") -> DocumentRecord:
+    return _a_document(world, campaign_id, data=A_CHARACTER_SHEET | {"name": name},
+                       doc_type=DocumentTypeId.CHARACTER_SHEET)
+
+
+def _link(world: World, campaign_id: str, document_id: str, participant_id: str) -> bool:
+    with world.db.transaction() as unit:
+        return world.documents.link_character_sheet(
+            unit, campaign_id, document_id, participant_id=participant_id
+        )
+
+
+def _sheet_of(world: World, campaign_id: str, participant_id: str) -> DocumentRecord | None:
+    with world.db.transaction() as unit:
+        return world.documents.sheet_for_participant(unit, campaign_id, participant_id)
+
+
+def _got(world: World, campaign_id: str, document_id: str) -> DocumentRecord:
+    with world.db.transaction() as unit:
+        found = world.documents.get(unit, campaign_id, document_id)
+    assert found is not None
+    return found
+
+
+def _an_account(world: World, email: str) -> int:
+    """An account to offer a seat to: a row of `auth.users` in PostgreSQL, whose
+    foreign key the offer checks; any id in the twin, which has no users."""
+    if world.kind == "fake":
+        return 1000 + len(email)
+    with world.db.transaction() as unit:
+        return int(unit.conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id",
+            (email,),
+        ).fetchone()[0])
+
+
+def test_a_sheet_links_to_a_seat_and_linking_it_again_is_not_a_change(world: World) -> None:
+    """B-4 step 4: already linked to that seat is `False`, so a retried link is
+    not an error. The link changes the link and nothing else — no timestamp,
+    no write revision, no version (B-9)."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+
+    assert _link(world, campaign, sheet.id, seat) is True
+    assert _link(world, campaign, sheet.id, seat) is False
+
+    linked = _got(world, campaign, sheet.id)
+    assert linked.linked_participant_id == seat
+    assert (linked.updated_at, linked.write_revision, linked.version) == (
+        sheet.updated_at, sheet.write_revision, sheet.version,
+    )
+    found = _sheet_of(world, campaign, seat)
+    assert found is not None and found.id == sheet.id
+
+
+def test_a_linked_sheet_is_never_re_pointed_at_another_seat(world: World) -> None:
+    """B-4 step 5. Moving a sheet is an unlink and a link, and the unlink is a
+    fact-changing narrowing the route owns (RQ-5); the primitive never does it
+    silently."""
+    campaign = _a_campaign(world)
+    first = _a_participant(world, campaign, alias="Rook")
+    second = _a_participant(world, campaign, alias="Wren")
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, first)
+
+    with pytest.raises(SheetAlreadyLinked) as refused:
+        _link(world, campaign, sheet.id, second)
+
+    assert (refused.value.document_id, refused.value.participant_id) == (sheet.id, second)
+    assert _got(world, campaign, sheet.id).linked_participant_id == first
+
+
+def test_a_seat_holds_one_sheet_and_the_refusal_leaves_the_transaction_usable(
+    world: World,
+) -> None:
+    """B-4 step 6 and lead ruling 5.1#2. In PostgreSQL the partial unique index
+    decides it, inside a savepoint, so the caller's transaction survives the
+    `UniqueViolation` and the refusal carries none of the driver's text; the
+    twin decides it over the rows it can see."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    first = _a_sheet(world, campaign, "Rook")
+    second = _a_sheet(world, campaign, "Rook's second")
+    _link(world, campaign, first.id, seat)
+
+    with world.db.transaction() as unit:
+        with pytest.raises(SheetAlreadyLinked) as refused:
+            world.documents.link_character_sheet(unit, campaign, second.id, participant_id=seat)
+        still = world.documents.get(unit, campaign, second.id)
+        world.documents.set_archived(unit, campaign, second.id, archived=True)
+
+    assert refused.value.__cause__ is None and refused.value.__context__ is None
+    assert still is not None and still.linked_participant_id is None
+    after = _got(world, campaign, second.id)
+    assert after.archived_at is not None, "the transaction went on and committed"
+    assert after.linked_participant_id is None
+
+
+def test_only_a_character_sheet_is_linkable(world: World) -> None:
+    """AUD-15 names a character sheet, and the check is the TYPE, in Python, in
+    both worlds, with no database constraint and without reading the registry's
+    `audience` flag (owner decision O-2 narrowed that flag to reveal seeding)."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    npc = _a_document(world, campaign)
+
+    with pytest.raises(NotLinkable) as refused:
+        _link(world, campaign, npc.id, seat)
+
+    assert refused.value.type == "npc"
+    assert _got(world, campaign, npc.id).linked_participant_id is None
+
+
+def test_a_missing_foreign_or_removed_seat_cannot_be_linked(world: World) -> None:
+    """B-1: one refusal, `MissingParent`, raised before any statement fails.
+    Participants are marked removed and never deleted, so a removed seat is
+    still a row, and it is refused all the same."""
+    campaign = _a_campaign(world)
+    other = _a_campaign(world, name="Someone else's")
+    removed = _a_participant(world, campaign, alias="Gone")
+    with world.db.transaction() as unit:
+        world.participants.remove(unit, campaign, removed)
+    theirs = _a_participant(world, other)
+    sheet = _a_sheet(world, campaign)
+
+    for seat in ("prt_" + "z" * 22, theirs, removed):
+        with pytest.raises(MissingParent):
+            _link(world, campaign, sheet.id, seat)
+    assert _got(world, campaign, sheet.id).linked_participant_id is None
+
+
+def test_a_missing_or_foreign_document_cannot_be_linked_or_unlinked(world: World) -> None:
+    """B-8: link and unlink RAISE for a missing or foreign document, where
+    archive and delete report `False`."""
+    campaign = _a_campaign(world)
+    other = _a_campaign(world, name="Someone else's")
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+
+    for owner, document in ((other, sheet.id), (campaign, DOCUMENT)):
+        with pytest.raises(MissingParent):
+            _link(world, owner, document, seat)
+        with pytest.raises(MissingParent):
+            with world.db.transaction() as unit:
+                world.documents.unlink_character_sheet(unit, owner, document)
+
+
+def test_the_link_decides_in_the_order_the_ruling_gives(world: World) -> None:
+    """B-4's order is observable where two refusals apply at once: the type is
+    decided before the seat, and the seat before the existing link."""
+    campaign = _a_campaign(world)
+    live = _a_participant(world, campaign, alias="Rook")
+    removed = _a_participant(world, campaign, alias="Gone")
+    with world.db.transaction() as unit:
+        world.participants.remove(unit, campaign, removed)
+    npc = _a_document(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, live)
+
+    with pytest.raises(NotLinkable):
+        _link(world, campaign, npc.id, removed)
+    with pytest.raises(MissingParent):
+        _link(world, campaign, sheet.id, removed)
+
+
+def test_any_seat_that_is_not_removed_is_linkable(world: World) -> None:
+    """B-2: open, offered or accepted alike. The store never reads the seat's
+    account or when it accepted."""
+    campaign = _a_campaign(world)
+    open_seat = _a_participant(world, campaign, alias="Open")
+    offered = _a_participant(world, campaign, alias="Offered")
+    accepted = _a_participant(world, campaign, alias="Accepted")
+    offered_to, accepted_by = _an_account(world, "o@example.com"), _an_account(world, "ab@example.com")
+    with world.db.transaction() as unit:
+        world.participants.offer(unit, campaign, offered, user_id=offered_to)
+        world.participants.offer(unit, campaign, accepted, user_id=accepted_by)
+        world.participants.accept(unit, campaign, accepted, user_id=accepted_by)
+
+    for index, seat in enumerate((open_seat, offered, accepted)):
+        assert _link(world, campaign, _a_sheet(world, campaign, f"sheet {index}").id, seat)
+
+
+def test_an_archived_sheet_is_linkable(world: World) -> None:
+    """B-4: whether an archived sheet may be linked is the route's to decide."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    with world.db.transaction() as unit:
+        world.documents.set_archived(unit, campaign, sheet.id, archived=True)
+    assert _link(world, campaign, sheet.id, seat) is True
+
+
+def test_removing_a_seat_leaves_the_link_and_the_sheet_standing(world: World) -> None:
+    """AUD-16 says what Remove does, and unlinking is not on the list: the seat
+    is marked removed, the sheet stays, and the link stays on the document
+    (B-3). `sheet_for_participant` answers only for a live seat, so it now
+    answers None; the link is still read through `get`."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, seat)
+
+    with world.db.transaction() as unit:
+        assert world.participants.remove(unit, campaign, seat)
+
+    assert _got(world, campaign, sheet.id).linked_participant_id == seat
+    assert _sheet_of(world, campaign, seat) is None
+
+
+def test_unlinking_reports_the_seat_it_was_linked_to_and_frees_both(world: World) -> None:
+    """The former seat id comes back so the route can audit it (SEC-38); a
+    second unlink finds nothing. Afterwards either side may be linked again."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, seat)
+
+    with world.db.transaction() as unit:
+        assert world.documents.unlink_character_sheet(unit, campaign, sheet.id) == seat
+        assert world.documents.unlink_character_sheet(unit, campaign, sheet.id) is None
+
+    unlinked = _got(world, campaign, sheet.id)
+    assert unlinked.linked_participant_id is None and unlinked.updated_at == sheet.updated_at
+    assert _sheet_of(world, campaign, seat) is None
+    assert _link(world, campaign, _a_sheet(world, campaign, "Another").id, seat) is True
+
+
+def test_deleting_a_linked_sheet_frees_its_seat(world: World) -> None:
+    """The link is a column of the row, so it goes with the row — and in the
+    twin the uniqueness scan reads through `_live`, so the tombstone left
+    behind does not keep the seat taken."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, seat)
+    with world.db.transaction() as unit:
+        world.documents.delete(unit, campaign, sheet.id)
+
+    assert _sheet_of(world, campaign, seat) is None
+    assert _link(world, campaign, _a_sheet(world, campaign, "Rook again").id, seat) is True
+
+
+def test_sheet_for_participant_answers_only_for_a_live_seat_of_that_campaign(
+    world: World,
+) -> None:
+    """B-3: None for a missing seat, a seat of another campaign and a seat with
+    no sheet — one answer, as SEC-2 asks. It takes no lock."""
+    campaign = _a_campaign(world)
+    other = _a_campaign(world, name="Someone else's")
+    seat = _a_participant(world, campaign)
+    bare = _a_participant(world, campaign, alias="Wren")
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, seat)
+
+    assert _sheet_of(world, other, seat) is None
+    assert _sheet_of(world, campaign, "prt_" + "z" * 22) is None
+    assert _sheet_of(world, campaign, bare) is None
+    found = _sheet_of(world, campaign, seat)
+    assert found is not None and found == _got(world, campaign, sheet.id)
+
+
+# Every slice-B mutator is transactional ─────────────────────────────────────
+
+
+@pytest.mark.parametrize("mutator", ["set_archived", "delete", "restore", "link", "unlink"])
+def test_a_rolled_back_mutation_leaves_no_trace_in_either_world(
+    world: World, mutator: str
+) -> None:
+    """Every mutator takes the unit of work first, so a unit that rolls back
+    takes the change with it — in PostgreSQL by the transaction, in the twin by
+    `Staging` dropping the unit's rows."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    _write(world, campaign, sheet.id, fields={"hp": 9},
+           author=Author.ASSISTANT, base_write_revision=None)
+    if mutator == "unlink":
+        _link(world, campaign, sheet.id, seat)
+    before = _got(world, campaign, sheet.id)
+    calls: dict[str, Callable[[Any], Any]] = {
+        "set_archived": lambda unit: world.documents.set_archived(
+            unit, campaign, sheet.id, archived=True),
+        "delete": lambda unit: world.documents.delete(unit, campaign, sheet.id),
+        "restore": lambda unit: world.documents.restore(
+            unit, campaign, sheet.id, version_number=1),
+        "link": lambda unit: world.documents.link_character_sheet(
+            unit, campaign, sheet.id, participant_id=seat),
+        "unlink": lambda unit: world.documents.unlink_character_sheet(
+            unit, campaign, sheet.id),
+    }
+
+    with pytest.raises(RuntimeError, match="deliberate"):
+        with world.db.transaction() as unit:
+            assert calls[mutator](unit)
+            raise RuntimeError("deliberate")
+
+    assert _got(world, campaign, sheet.id) == before
+    assert len(_versions(world, campaign, sheet.id)) == 2
