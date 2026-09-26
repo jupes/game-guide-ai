@@ -331,7 +331,6 @@ def test_deleting_a_user_cascades_through_every_table_of_the_campaign_schema(dsn
     with connect(dsn) as conn:
         owner = _one_user(conn)
         _a_whole_campaign(conn, owner)
-        conn.execute("ALTER TABLE campaign.documents DROP CONSTRAINT documents_campaign_id_fkey")
         for table in CAMPAIGN_TABLES:
             assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 1, table
 
@@ -403,10 +402,6 @@ def test_deleting_one_document_takes_its_versions_and_its_link_and_leaves_the_le
             (CAMPAIGN_ID, json.dumps(detail)),
         )
 
-        conn.execute(
-            "ALTER TABLE campaign.document_versions DROP CONSTRAINT "
-            "document_versions_document_id_fkey"
-        )
         conn.execute(
             "DELETE FROM campaign.documents WHERE id = %s AND campaign_id = %s",
             (DOCUMENT_ID, CAMPAIGN_ID),
