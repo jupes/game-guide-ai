@@ -171,7 +171,35 @@ const AE66_FIXTURE = [
   '<base href="https://example.test/">',
   '<meta http-equiv="refresh" content="0;url=https://example.test/">',
   '<a href="/x" ping="https://example.test/p">ping</a>',
+  '<template><img src="https://example.test/t.png"><span style="background:url(https://example.test/s.png)">t</span></template>',
 ].join('\n\n')
+
+/**
+ * Every element under `root`, INCLUDING those inside every `<template>`'s
+ * `.content` at any depth. `querySelectorAll('*')` alone never enters `.content`
+ * (a separate DocumentFragment), so a sweep built on it alone is blind to
+ * exactly what a template hides (agent-forge-harness-1q7).
+ */
+function everyElement(root: ParentNode): Element[] {
+  return [...root.querySelectorAll('*')].flatMap((element) =>
+    element instanceof HTMLTemplateElement ? [element, ...everyElement(element.content)] : [element],
+  )
+}
+
+/**
+ * Renders `source` and returns every `<template>` the sanitizer removed, in the
+ * order it removed them. `Element.remove` is spied on and still calls through;
+ * its recorded `this` values are the removed nodes (agent-forge-harness-1q7).
+ */
+function droppedTemplates(source: string): HTMLTemplateElement[] {
+  const remove = vi.spyOn(Element.prototype, 'remove')
+  try {
+    restricted(source)
+    return remove.mock.contexts.filter((node): node is HTMLTemplateElement => node instanceof HTMLTemplateElement)
+  } finally {
+    remove.mockRestore()
+  }
+}
 
 describe('Markdown — X-10, no remote subresources', () => {
   it('drops a remote image in the chat channel too — the va8 hole, inverted', () => {
@@ -272,6 +300,61 @@ describe('Markdown — X-10, no remote subresources', () => {
     expect(c.querySelector('img')?.hasAttribute('srcset')).toBe(false)
   })
 
+  // agent-forge-harness-1q7: a <template>'s `.content` is a separate
+  // DocumentFragment — never a descendant in the light DOM the sweeps walk —
+  // yet `Element.innerHTML` re-serializes it verbatim into the string handed to
+  // `dangerouslySetInnerHTML`. Two defences close that, each with its own test
+  // so either can regress on its own and turn red:
+  //   1. the template is REMOVED, wrapper and content, because it is in
+  //      SUBRESOURCE_ELEMENTS — seen in the rendered output below;
+  //   2. before it is removed, every sweep has already run inside its
+  //      `.content`, nested templates included, so the day (1) is relaxed what
+  //      a template wraps is already clean.
+  // (2) cannot be seen in the rendered output: (1) removes the very node that
+  // carries it. It is seen on that removed node instead — `droppedTemplates`
+  // spies on `Element.remove` (calling through) and hands back the templates
+  // the sanitizer dropped. Every assertion reads `.content` directly, never
+  // `querySelectorAll('*')` on the light DOM, which shares the bug's blind spot.
+  it('1q7: removes a <template> wholesale, so nothing it wraps reaches the page', () => {
+    const c = restricted('before <template><img src="https://example.test/a.png"></template> after')
+    expect(c.textContent).toContain('before')
+    expect(c.textContent).toContain('after')
+    expect(c.querySelector('template')).toBeNull()
+  })
+
+  it('1q7: sweeps a template\'s .content before dropping it — a remote image goes, an asset stays', () => {
+    const dropped = droppedTemplates(
+      '<template><img src="https://example.test/a.png"><img src="/campaigns/c/assets/a"></template>',
+    )
+    expect(dropped).toHaveLength(1)
+    const images = dropped[0]!.content.querySelectorAll('img')
+    // The asset image surviving is the positive control: the content was
+    // walked image by image, not emptied.
+    expect([...images].map((image) => image.getAttribute('src'))).toEqual(['/campaigns/c/assets/a'])
+  })
+
+  it('1q7: removes an <svg> from a template\'s .content before dropping it', () => {
+    const dropped = droppedTemplates(
+      '<template><svg><image href="https://example.test/i.png"></image></svg><span>kept</span></template>',
+    )
+    expect(dropped).toHaveLength(1)
+    const content = dropped[0]!.content
+    expect(content.querySelector('span')?.textContent).toBe('kept')
+    expect(content.querySelector('svg')).toBeNull()
+  })
+
+  it('1q7: sweeps a NESTED template\'s .content too — a fetching style goes, the text stays', () => {
+    const dropped = droppedTemplates(
+      '<template><template><p style="background:url(https://example.test/x.png)">boo</p></template></template>',
+    )
+    // Both were dropped: the inner one from inside the outer one's `.content`,
+    // which only a sweep that walks in there can reach.
+    expect(dropped).toHaveLength(2)
+    const p = dropped.map((template) => template.content.querySelector('p')).find((found) => found !== null)
+    expect(p?.textContent).toBe('boo')
+    expect(p?.hasAttribute('style')).toBe(false)
+  })
+
   it('AE-66 sweep: no attribute anywhere can reach the remote host, and the page is not empty', () => {
     const c = md(AE66_FIXTURE) // no props — the ChatPane shape
     // Positive control FIRST. The sweep below is green over a tree that carries
@@ -280,7 +363,7 @@ describe('Markdown — X-10, no remote subresources', () => {
     expect(c.querySelector('img')?.getAttribute('src')).toBe('/campaigns/c/assets/a')
     expect(c.querySelector('a')?.getAttribute('href')).toBe('https://example.com/page')
     expect(c.textContent).toContain('MARKER-KEEP')
-    for (const element of c.querySelectorAll('*')) {
+    for (const element of everyElement(c)) {
       for (const attribute of element.attributes) {
         expect(attribute.value).not.toContain('example.test')
       }
