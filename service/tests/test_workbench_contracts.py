@@ -652,7 +652,7 @@ def test_an_integer_field_refuses_anything_else(value: Any) -> None:
 
 @pytest.mark.parametrize(
     "value",
-    [{}, {"str": 10}, {"str": 10, "dex": 12, "con": 14, "int": 8, "wis": 13, "cha": 16}, {"str": None}, None],
+    [{}, {"str": 10}, {"str": 10, "dex": 12, "con": 14, "int": 8, "wis": 13, "cha": 16}, None],
 )
 def test_an_abilities_field_takes_any_subset_of_the_six_scores(value: Any) -> None:
     """CANVAS-19: the ability-score block is **one** field. ``null`` clears it."""
@@ -668,6 +668,7 @@ def test_an_abilities_field_takes_any_subset_of_the_six_scores(value: Any) -> No
         {"str": True},
         {"str": wc.ABILITY_SCORE_MAX + 1},
         {"str": wc.ABILITY_SCORE_MIN - 1},
+        {"str": None},
         [],
         "10",
     ],
@@ -675,6 +676,21 @@ def test_an_abilities_field_takes_any_subset_of_the_six_scores(value: Any) -> No
 def test_an_abilities_field_refuses_an_unknown_key_or_an_impossible_score(value: Any) -> None:
     with pytest.raises(ValueError, match="not a valid abilities field"):
         _statblock(abilities=value)
+
+
+def test_there_is_one_spelling_of_no_score() -> None:
+    """Requirement 7e / AC 17: a score that is not known is a key left **out**;
+    ``{"str": null}`` would be a second spelling of the same fact, against the
+    fixtures' own principle of one way to say empty per kind. Omitting a key and
+    ``{}`` stay valid, and the whole block still clears to ``null`` — on a write
+    and on a tolerant stored read alike."""
+    with pytest.raises(ValueError, match="not a valid abilities field"):
+        _statblock(abilities={"str": 14, "dex": None})
+    with pytest.raises(ValueError, match="not a valid abilities field"):
+        wc.read_stored_fields(_STATBLOCK, 1, {"name": "Ondrey", "abilities": {"dex": None}})
+    assert _statblock(abilities={"str": 14})["abilities"] == {"str": 14}
+    assert _statblock(abilities={})["abilities"] == {}
+    assert _statblock(abilities=None)["abilities"] is None
 
 
 def _entries(checked: dict[str, Any]) -> list[dict[str, str]]:
@@ -696,6 +712,9 @@ def test_an_entry_list_field_takes_named_entries() -> None:
         [{"text": "no name"}],
         [{"name": "Amphibious", "text": "x", "damage": "1d6"}],
         [{"name": "", "text": "x"}],
+        # Requirement 5 (F-8): blank by the contract's own trim, as a document's name.
+        [{"name": chr(9), "text": "x"}],
+        [{"name": "   ", "text": "x"}],
         [{"name": "two\nlines", "text": "x"}],
         [{"name": "x", "text": "y"}] * (wc.LIST_FIELD_MAX_ITEMS + 1),
         ["Amphibious"],
@@ -1310,7 +1329,11 @@ def test_trimming_is_what_javascript_trims() -> None:
     with pytest.raises(ValidationError) as caught:
         wc.ToolInvocationRequest.model_validate({**_REQUEST, "brief": bom})
     assert wc.validation_error_body(caught.value.errors()).detail.code is wc.ErrorCode.BRIEF_REQUIRED
+    # A name that only the trim empties is blank. A byte order mark alone never
+    # gets that far: stored text refuses it as a character (requirement 6).
     with pytest.raises(ValueError, match="cannot be blank"):
+        wc.check_fields(wc.DocumentTypeId.NPC, 1, {"name": ideographic_space}, whole=True)
+    with pytest.raises(ValueError, match="must not contain a byte order mark"):
         wc.check_fields(wc.DocumentTypeId.NPC, 1, {"name": bom}, whole=True)
 
 
@@ -1473,3 +1496,158 @@ def test_a_stat_block_inside_an_entry_keeps_its_wire_alias() -> None:
     entry = wc.ChatEntry.model_validate(raw)
     dumped = entry.model_dump(mode="json", by_alias=True)
     assert dumped["answer"]["stat_block"]["abilities"]["int"] == 6
+
+
+# ── Plain text: what stored text refuses (1kg.5.7.2, requirement 6) ──────────
+
+#: The lead ruling of 2026-09-21, as literal inclusive ranges, built with ``chr``
+#: so that no invisible character sits in this file. ``contracts.test.ts`` pins
+#: ``REFUSED_TEXT_CODE_POINTS`` to the same list, range for range.
+_REFUSED_RANGES = [
+    (0x0000, 0x0008),
+    (0x000B, 0x000C),
+    (0x000E, 0x001F),
+    (0x007F, 0x009F),
+    (0x061C, 0x061C),
+    (0x200E, 0x200F),
+    (0x202A, 0x202E),
+    (0x2066, 0x2069),
+    (0xFEFF, 0xFEFF),
+]
+_REFUSED = [chr(code) for low, high in _REFUSED_RANGES for code in range(low, high + 1)]
+#: What stays allowed: a tab, real names' joiners and an emoji's presentation.
+_ALLOWED = {
+    "an emoji": chr(0x1F3B2),
+    "an accented letter": chr(0xE9),
+    "a tab": chr(0x09),
+    "a zero width non-joiner": chr(0x200C),
+    "a zero width joiner": chr(0x200D),
+    "a variation selector-16": chr(0xFE0F),
+}
+
+
+def _npc(**fields: Any) -> dict[str, Any]:
+    return wc.check_fields(wc.DocumentTypeId.NPC, 1, {"name": "Sister Ondrey", **fields}, whole=True)
+
+
+def _quest(entry: dict[str, str]) -> dict[str, Any]:
+    return wc.check_fields(wc.DocumentTypeId.QUEST_LOG, 1, {"name": "The Mill Road", "open_threads": [entry]}, whole=True)
+
+
+_DOCUMENT_TEXT_SITES = {
+    "text": lambda s: _npc(voice=f"Low{s}and slow"),
+    "prose": lambda s: _npc(notes=f"Keeps{s}the ledger"),
+    "a text_list item": lambda s: _npc(tags=["abbey", f"mill{s}road"]),
+    "an entry name": lambda s: _quest({"name": f"Find{s}the ledger", "text": "Under the mill."}),
+    "an entry text": lambda s: _quest({"name": "Find the ledger", "text": f"Under{s}the mill."}),
+}
+
+
+def test_the_refused_code_points_are_the_rulings_table() -> None:
+    """One table, both languages: the vitest twin pins the same literal ranges."""
+    assert frozenset(ord(char) for char in _REFUSED) == wc.REFUSED_TEXT_CODE_POINTS
+    assert len(wc.REFUSED_TEXT_CODE_POINTS) == 75
+    assert not {ord(char) for char in _ALLOWED.values()} & wc.REFUSED_TEXT_CODE_POINTS
+    for char in _REFUSED:
+        with pytest.raises(ValueError, match="must not contain"):
+            wc.check_plain_text(f"a{char}b")
+    for char in _ALLOWED.values():
+        assert wc.check_plain_text(f"a{char}b") == f"a{char}b"
+
+
+@pytest.mark.parametrize("site", list(_DOCUMENT_TEXT_SITES))
+def test_every_document_text_kind_refuses_the_whole_table(site: str) -> None:
+    """Requirement 6 / AC 15: text, prose, each list item, an entry's name and its
+    text. PostgreSQL's ``text`` and ``jsonb`` refuse U+0000, so without this a NUL
+    is a 500 at write time rather than a 422 naming the field."""
+    write = _DOCUMENT_TEXT_SITES[site]
+    for char in _REFUSED:
+        with pytest.raises(ValueError, match="must not contain"):
+            write(char)
+    for char in _ALLOWED.values():
+        write(char)
+
+
+def test_a_line_break_stays_allowed_where_it_already_was() -> None:
+    """Line feed and carriage return are not in the table: prose and an entry's
+    text keep their paragraphs, and a one-line value still refuses them, as before."""
+    assert _npc(notes="One.\nTwo.\r\nThree.")["notes"] == "One.\nTwo.\r\nThree."
+    assert _quest({"name": "Find the ledger", "text": "Under\nthe mill."})["open_threads"][0].text == "Under\nthe mill."
+    with pytest.raises(ValueError, match="single line"):
+        _npc(voice="Low\nand slow")
+
+
+@pytest.mark.parametrize(
+    ("char", "what"),
+    [(chr(0x00), "a control character"), (chr(0x202E), "a bidirectional control character"), (chr(0xFEFF), "a byte order mark")],
+    ids=["NUL", "RLO", "BOM"],
+)
+def test_a_plain_text_refusal_names_the_field_and_the_class_and_never_the_value(char: str, what: str) -> None:
+    """X-7: the refusal names the field and the class, never the value. The
+    validation message is where the field and the class are named; the 422 body
+    is the generic envelope every ``check_fields`` refusal already answers with,
+    and it must carry no trace of the value either."""
+    patch = _fixture_value("FieldPatchRequest", "one field, committed on blur")
+    patch["fields"] = {"voice": f"Vashti{char}whispers", "tell": "Hums a hymn off key"}
+    with pytest.raises(ValidationError) as caught:
+        wc.FieldPatchRequest.model_validate(patch)
+    message = str(caught.value)
+    assert "voice is not a valid text field" in message and what in message
+    body = json.dumps(wc.validation_error_body(caught.value.errors()).model_dump(mode="json"))
+    assert wc.validation_error_body(caught.value.errors()).detail.code is wc.ErrorCode.VALIDATION_FAILED
+    for text in (message, body, json.dumps(wc.redacted_errors(caught.value.errors()))):
+        for secret in ("Vashti", "whispers", "Hums a hymn"):
+            assert secret not in text
+
+
+@pytest.mark.parametrize("shape", ["_PresentText", "_PresentProse", "_PresentListItem"])
+def test_a_projection_refuses_what_a_document_refuses(shape: str) -> None:
+    """Requirement 6: a value a document refuses can never ride in a projection
+    instead. ``_PresentEntry`` is a name and a text of these shapes."""
+    adapter: TypeAdapter[str] = TypeAdapter(getattr(wc, shape))
+    for char in _REFUSED:
+        with pytest.raises(ValidationError, match="must not contain"):
+            adapter.validate_python(f"Sister{char}Ondrey")
+    for char in _ALLOWED.values():
+        assert adapter.validate_python(f"Sister{char}Ondrey") == f"Sister{char}Ondrey"
+
+
+def test_the_refusal_stops_at_the_document_kinds_and_the_projection() -> None:
+    """AC 15 and ruling 3: the scope boundary is pinned rather than assumed. A
+    version's summary, a brief, chat text and a cue title are bead ``5mj``'s, and
+    each still accepts a NUL until it lands."""
+    nul = chr(0)
+    version = _fixture_value("DocumentVersion", "an assistant pass")
+    version["summary"] = f"Wants{nul}the signet"
+    assert wc.DocumentVersion.model_validate(version).summary == f"Wants{nul}the signet"
+    assert wc.ToolInvocationRequest.model_validate({**_REQUEST, "brief": f"a{nul}guard"}).brief == f"a{nul}guard"
+    chat = _valid_entry("a chat exchange with its complete outcome")
+    chat["answer"]["text"] = f"A basilisk{nul} petrifies."
+    wc.CONTRACT_SCHEMAS["TimelineEntry"].validate_python(chat)
+    assert wc.CueRenameRequest.model_validate({"schema_version": 1, "title": f"Rain{nul}"}).title == f"Rain{nul}"
+
+
+def _fixture_value(schema: str, name: str) -> dict[str, Any]:
+    fixture = json.loads((FIXTURES / f"{schema}.json").read_text(encoding="utf-8"))
+    value: dict[str, Any] = copy.deepcopy(next(e["value"] for e in fixture["valid"] if e["name"] == name))
+    return value
+
+
+# ── M-2: a stored value that is not an object (1kg.5.7.2) ────────────────────
+
+
+@pytest.mark.parametrize("data", ["x", [], None, 7], ids=["str", "list", "None", "int"])
+def test_a_stored_value_that_is_not_an_object_is_a_typed_refusal(data: Any) -> None:
+    """M-2: ``data`` comes out of ``jsonb``, which holds any JSON value. Before,
+    each of these was an untyped ``AttributeError`` from ``.items()``; now it is
+    the typed refusal, like every other one on this path."""
+    with pytest.raises(PydanticCustomError) as caught:
+        wc.read_stored_fields(wc.DocumentTypeId.NPC, 1, data)
+    assert caught.value.type == "stored_data_not_an_object"
+    assert str(caught.value) == "stored npc document data is not a JSON object"
+
+
+def test_a_stored_value_of_an_unknown_version_is_refused_for_its_version_first() -> None:
+    with pytest.raises(PydanticCustomError) as caught:
+        wc.read_stored_fields(wc.DocumentTypeId.NPC, 2, "x")  # type: ignore[arg-type]
+    assert caught.value.type == "unsupported_type_version"

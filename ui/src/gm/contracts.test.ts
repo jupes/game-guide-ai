@@ -54,6 +54,10 @@ import {
   PROSE_FIELD_MAX_CHARS,
   RESERVED_MASK_KEYS,
   REQUIRED_FIELDS,
+  REFUSED_TEXT_CODE_POINTS,
+  isPlainText,
+  plainText,
+  plainOneLine,
   RESULT_DISCRIMINATORS,
   REVEALABLE_COMMON_FIELDS,
   REVEALABLE_FIELDS,
@@ -829,7 +833,6 @@ describe('the structured field kinds (1kg.5.3)', () => {
     [{}],
     [{ str: 10 }],
     [{ str: 10, dex: 12, con: 14, int: 8, wis: 13, cha: 16 }],
-    [{ str: null }],
     [null],
   ])('an abilities field takes %o — CANVAS-19, one field', (given) => {
     const parsed = read({ abilities: given })
@@ -843,10 +846,24 @@ describe('the structured field kinds (1kg.5.3)', () => {
     [{ str: true }],
     [{ str: ABILITY_SCORE_MAX + 1 }],
     [{ str: ABILITY_SCORE_MIN - 1 }],
+    [{ str: null }],
     [[]],
     ['10'],
   ])('an abilities field refuses %o in a request', (given) => {
     expect(patch({ abilities: given }).success).toBe(false)
+  })
+
+  it('has one spelling of "no score": the key left out — requirement 7e, AC 17', () => {
+    // `{ str: null }` would be a second spelling of the same fact. It is refused
+    // in a request and in a response alike; omitting a key, `{}` and a whole
+    // block of `null` all stay valid.
+    expect(patch({ abilities: { str: 14, dex: null } }).success).toBe(false)
+    expect(read({ abilities: { dex: null } }).success).toBe(false)
+    for (const given of [{ str: 14 }, {}, null]) {
+      const parsed = read({ abilities: given })
+      expect(parsed.success).toBe(true)
+      if (parsed.success) expect(parsed.data.data.abilities).toEqual(given)
+    }
   })
 
   it('an entry list takes named entries and clears to []', () => {
@@ -1137,6 +1154,135 @@ describe('required fields and per-use integer bounds (LIB-12, 1kg.5.7)', () => {
     expect(checked).toBeGreaterThanOrEqual(20)
     expect([...cleared].sort()).toEqual([...structured].sort())
   })
+})
+
+describe('plain text: what stored text refuses (1kg.5.7.2, requirement 6)', () => {
+  // The lead ruling of 2026-09-21, as literal inclusive ranges, built with
+  // String.fromCodePoint so that no invisible character sits in this file.
+  // test_workbench_contracts.py pins the Python table to the same list.
+  const REFUSED_RANGES: [number, number][] = [
+    [0x0000, 0x0008],
+    [0x000b, 0x000c],
+    [0x000e, 0x001f],
+    [0x007f, 0x009f],
+    [0x061c, 0x061c],
+    [0x200e, 0x200f],
+    [0x202a, 0x202e],
+    [0x2066, 0x2069],
+    [0xfeff, 0xfeff],
+  ]
+  const REFUSED = REFUSED_RANGES.flatMap(([low, high]) =>
+    Array.from({ length: high - low + 1 }, (_, offset) => String.fromCodePoint(low + offset)),
+  )
+  const ALLOWED: Record<string, string> = {
+    'an emoji': String.fromCodePoint(0x1f3b2),
+    'an accented letter': String.fromCodePoint(0xe9),
+    'a tab': String.fromCodePoint(0x09),
+    'a zero width non-joiner': String.fromCodePoint(0x200c),
+    'a zero width joiner': String.fromCodePoint(0x200d),
+    'a variation selector-16': String.fromCodePoint(0xfe0f),
+  }
+  const patchOf = (type: string, fields: Record<string, unknown>) =>
+    FieldPatchRequestSchema.safeParse({ schema_version: 1, type, type_version: 1, base_write_revision: 1, fields })
+  const sites: [string, (s: string) => { success: boolean }][] = [
+    ['text', (s) => patchOf('npc', { voice: `Low${s}and slow` })],
+    ['prose', (s) => patchOf('npc', { notes: `Keeps${s}the ledger` })],
+    ['a text_list item', (s) => patchOf('npc', { tags: ['abbey', `mill${s}road`] })],
+    ['an entry name', (s) => patchOf('quest-log', { open_threads: [{ name: `Find${s}the ledger`, text: 'Under the mill.' }] })],
+    ['an entry text', (s) => patchOf('quest-log', { open_threads: [{ name: 'Find the ledger', text: `Under${s}the mill.` }] })],
+  ]
+
+  it('pins the refused code points to the ruling, range for range', () => {
+    expect([...REFUSED_TEXT_CODE_POINTS].sort((a, b) => a - b)).toEqual(REFUSED.map((c) => c.codePointAt(0)))
+    expect(REFUSED_TEXT_CODE_POINTS.size).toBe(75)
+    for (const char of REFUSED) expect([char.codePointAt(0), isPlainText(`a${char}b`)]).toEqual([char.codePointAt(0), false])
+    for (const char of Object.values(ALLOWED)) expect(isPlainText(`a${char}b`)).toBe(true)
+    // The two factories carry the refusal; a line break stays oneLine's to refuse.
+    expect(plainText(0, 10).safeParse(`a${REFUSED[0]}`).success).toBe(false)
+    expect(plainOneLine(0, 10).safeParse(`a${REFUSED[0]}`).success).toBe(false)
+    expect(plainText(0, 10).safeParse('a\nb').success).toBe(true)
+    expect(plainOneLine(0, 10).safeParse('a\nb').success).toBe(false)
+  })
+
+  it.each(sites)('%s refuses every code point in the table and keeps the allowed set — AC 15', (_site, write) => {
+    for (const char of REFUSED) expect([char.codePointAt(0), write(char).success]).toEqual([char.codePointAt(0), false])
+    for (const [name, char] of Object.entries(ALLOWED)) expect([name, write(char).success]).toEqual([name, true])
+  })
+
+  it('keeps a line break where one was already allowed', () => {
+    expect(patchOf('npc', { notes: 'One.\nTwo.\r\nThree.' }).success).toBe(true)
+    expect(patchOf('quest-log', { open_threads: [{ name: 'Find the ledger', text: 'Under\nthe mill.' }] }).success).toBe(true)
+    expect(patchOf('npc', { voice: 'Low\nand slow' }).success).toBe(false)
+  })
+
+  it.each([
+    ['NUL', 0x00, 'a control character'],
+    ['RLO', 0x202e, 'a bidirectional control character'],
+    ['BOM', 0xfeff, 'a byte order mark'],
+  ])('a %s refusal names the field and the class, never the value (X-7)', (_name, code, what) => {
+    const parsed = patchOf('npc', { voice: `Vashti${String.fromCodePoint(code)}whispers`, tell: 'Hums a hymn off key' })
+    expect(parsed.success).toBe(false)
+    if (parsed.success) return
+    const issues = JSON.stringify(parsed.error.issues)
+    expect(parsed.error.issues.some((issue) => issue.path.includes('voice') && issue.message === `must not contain ${what}`)).toBe(true)
+    for (const secret of ['Vashti', 'whispers', 'Hums a hymn']) expect(issues).not.toContain(secret)
+  })
+
+  it.each([
+    ['text', 'npc', 'name', (s: string) => `Sister${s}Ondrey`],
+    ['prose', 'npc', 'notes', (s: string) => `The tunnel${s}is shown in red ink.`],
+    ['a text_list item', 'lore', 'rumours', (s: string) => [`No one born${s}will swim.`]],
+    ['an entry name', 'statblock', 'traits', (s: string) => [{ name: `Amphi${s}bious`, text: 'She breathes water.' }]],
+    ['an entry text', 'statblock', 'traits', (s: string) => [{ name: 'Amphibious', text: `She breathes${s}water.` }]],
+  ])('a projection refuses in %s what a document refuses', (_site, type, key, value) => {
+    // Requirement 6: a value a document refuses can never ride in a projection instead.
+    const project = (s: string) =>
+      CONTRACT_SCHEMAS.TableProjection.safeParse({ content_kind: 'document', type, fields: [{ key, value: value(s) }] }).success
+    for (const char of REFUSED) expect([char.codePointAt(0), project(char)]).toEqual([char.codePointAt(0), false])
+    for (const [name, char] of Object.entries(ALLOWED)) expect([name, project(char)]).toEqual([name, true])
+  })
+
+  it('stops at the document kinds and the projection — AC 15, ruling 3', () => {
+    // A version's summary, a brief, chat text and a cue title are bead 5mj's, and
+    // each still accepts a NUL until it lands: the boundary is pinned, not assumed.
+    const nul = String.fromCodePoint(0)
+    const versions = readJson<Fixture>(join(FIXTURES, 'DocumentVersion.json'))
+    const version = { ...(versions.valid[0].value as Record<string, unknown>), summary: `Wants${nul}the signet` }
+    expect(CONTRACT_SCHEMAS.DocumentVersion.safeParse(version).success).toBe(true)
+    const request = {
+      schema_version: 1,
+      invocation_id: 'inv_9f2c4e1a7b3d4c5e',
+      tool_id: 'npc',
+      brief: `a${nul}guard`,
+      campaign_id: 'cmp_4b1d9e7a',
+      conversation_id: '0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d',
+    }
+    expect(CONTRACT_SCHEMAS.ToolInvocationRequest.safeParse(request).success).toBe(true)
+    const entries = readJson<Fixture>(join(FIXTURES, 'TimelineEntry.json'))
+    const chat = structuredClone(entries.valid.find((e) => e.name === 'a chat exchange with its complete outcome')?.value) as {
+      answer: { text: string }
+    }
+    chat.answer.text = `A basilisk${nul} petrifies.`
+    expect(CONTRACT_SCHEMAS.TimelineEntry.safeParse(chat).success).toBe(true)
+    expect(CONTRACT_SCHEMAS.CueRenameRequest.safeParse({ schema_version: 1, title: `Rain${nul}` }).success).toBe(true)
+  })
+})
+
+describe('a stored value that is not an object (M-2, 1kg.5.7.2)', () => {
+  it.each([['a string', 'x'], ['a list', []], ['null', null]])(
+    'a document and a history snapshot answer an issue at data for %s, never a throw',
+    (_name, data) => {
+      for (const [schema, file] of [
+        [DocumentSchema, 'Document.json'],
+        [DocumentVersionSnapshotSchema, 'DocumentVersionSnapshot.json'],
+      ] as const) {
+        const base = readJson<Fixture>(join(FIXTURES, file)).valid[0].value as Record<string, unknown>
+        const parsed = schema.safeParse({ ...base, data })
+        expect(parsed.success).toBe(false)
+        if (!parsed.success) expect(parsed.error.issues.some((issue) => issue.path[0] === 'data')).toBe(true)
+      }
+    },
+  )
 })
 
 describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
