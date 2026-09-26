@@ -167,3 +167,14 @@ def test_no_database_backed_module_defines_a_top_level_name_twice():
                     f"line {node.lineno}; the second wins and the first is unreachable"
                 )
             seen[node.name] = node.lineno
+
+
+def test_contract_parity_gates_deploy():
+    """agent-forge-harness-oe6: the timeline route serves the Workbench contract,
+    so a Pydantic/Zod disagreement must stop a deploy. A clause demoted into the
+    `||` group would still be "in" the condition and no longer required by it."""
+    deploy_job = WORKFLOW.read_text(encoding="utf-8").split("\n  deploy:\n", 1)[1]
+    needs = re.search(r"^ {4}needs: \[([^\]]*)\]", deploy_job, re.M)
+    assert needs, "the deploy job must keep a one-line `needs:` list"
+    assert "contract-parity" in [name.strip() for name in needs.group(1).split(",")]
+    assert "needs.contract-parity.result == 'success'" in _deploy_gates()
