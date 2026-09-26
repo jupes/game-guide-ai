@@ -291,9 +291,18 @@ def build_rag_graph(svc: RagService) -> Any:
                 model=svc.model, client=svc.factory.client_for(svc.model), config=config,
                 observer=observer,
             )
-        except Exception:
+        except Exception as exc:
             log.warning("spell suggestions failed; answering without them", exc_info=True)
+            # Ours (parse_failure) vs the provider's (none): one classification,
+            # shared by every structuring branch and tested directly.
+            usage_capture.record_structuring_outcome(
+                config, purpose=usage_capture.PURPOSE_SUGGESTIONS,
+                outcome=usage_capture.outcome_for_failure(exc),
+            )
             return {"suggestions": None}
+        usage_capture.record_structuring_outcome(
+            config, purpose=usage_capture.PURPOSE_SUGGESTIONS, outcome=usage_capture.OUTCOME_PRODUCED,
+        )
         return {"suggestions": suggestions}
 
     def structure_node(state: GraphState, config: RunnableConfig) -> GraphState:
@@ -309,9 +318,16 @@ def build_rag_graph(svc: RagService) -> Any:
                     state["answer"], model=svc.model, client=svc.factory.client_for(svc.model), config=config,
                     observer=observer,
                 )
-            except Exception:
+            except Exception as exc:
                 log.warning("spell content structuring failed; answering without it", exc_info=True)
+                usage_capture.record_structuring_outcome(
+                    config, purpose=usage_capture.PURPOSE_SPELL_STRUCTURING,
+                    outcome=usage_capture.outcome_for_failure(exc),
+                )
                 return {"spell_content": None}
+            usage_capture.record_structuring_outcome(
+                config, purpose=usage_capture.PURPOSE_SPELL_STRUCTURING, outcome=usage_capture.OUTCOME_PRODUCED,
+            )
             return {"spell_content": spell_content}
         # sage/gm: cost-gated on a cheap text heuristic (z7fl.1 Checkpoint B)
         # -- most GM/Sage turns are plain narrative, not a creature
@@ -319,6 +335,10 @@ def build_rag_graph(svc: RagService) -> Any:
         # them would waste the majority of calls. Skip entirely when the
         # heuristic doesn't match: no LLM call at all.
         if not _looks_like_statblock(state["answer"]):
+            usage_capture.record_structuring_outcome(
+                config, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING,
+                outcome=usage_capture.OUTCOME_SKIPPED_BY_GATE,
+            )
             return {"stat_block": None}
         # Before the try, for the reason spelled out in suggest_node. Also
         # after the cost guard above, so a skipped structuring call stays a
@@ -331,9 +351,16 @@ def build_rag_graph(svc: RagService) -> Any:
                 state["answer"], model=svc.model, client=svc.factory.client_for(svc.model), config=config,
                 observer=observer,
             )
-        except Exception:
+        except Exception as exc:
             log.warning("stat block structuring failed; answering without it", exc_info=True)
+            usage_capture.record_structuring_outcome(
+                config, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING,
+                outcome=usage_capture.outcome_for_failure(exc),
+            )
             return {"stat_block": None}
+        usage_capture.record_structuring_outcome(
+            config, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING, outcome=usage_capture.OUTCOME_PRODUCED,
+        )
         return {"stat_block": stat_block}
 
     def cite_node(state: GraphState) -> GraphState:

@@ -91,6 +91,70 @@ Emitted by the real emitter (a spell-mode answer), reformatted onto one line:
 
 ---
 
+## 1a. A second event: `structuring_outcome`
+
+**Bead:** `agent-forge-harness-kyr`. Feeds the step-0 waste report
+(`agent-forge-harness-z58`) and D-7 credit-limit sizing.
+
+A `provider_attempt` record answers "was a call made, and did it succeed at the
+network level." It cannot tell you whether a *structuring* call (`suggestions`,
+`spell_structuring`, `statblock_structuring`) actually produced usable content,
+and it cannot see a call the cost gate skipped before any request was sent —
+that call has zero `provider_attempt` records, by design (section 5: "a call
+that never happened must not look like an attempt"). `structuring_outcome`
+closes that gap: **one bounded, content-free record per structuring purpose per
+turn**, classifying what happened to it.
+
+| `outcome` | Meaning |
+| --- | --- |
+| `produced` | The call succeeded and the reply parsed into a usable structure. |
+| `none` | The provider call itself failed (network, rate limit, auth, timeout) — not a parse problem. |
+| `parse_failure` | The provider responded, but the reply was not valid JSON or not the right shape (a `ValueError`, including pydantic's `ValidationError`, which is a `ValueError` subclass). Ours, not the provider's — and it was still billed. |
+| `skipped_by_gate` | The cost heuristic (`_looks_like_statblock`) ruled the turn out before any call was made. `suggestions` and `spell_structuring` have no gate and never produce this outcome. |
+
+It shares `operation_id` with that turn's `provider_attempt` records (both
+come from the same `Operation`) — join on it to see "one call, no record" for
+a skip — but it is a **separate `event`, and therefore a separate filter**:
+querying `jsonPayload.event="provider_attempt"` will never return a
+`structuring_outcome` row, and vice versa.
+
+### The fields
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `event` | str | Always `structuring_outcome`. The filter key for this event, same role as `event` on `provider_attempt`. |
+| `record_version` | int | `1`. |
+| `operation_id` | str | Shared with this turn's `provider_attempt` records. |
+| `operation` | str | `chat_turn`. |
+| `purpose` | str | One of `suggestions`, `spell_structuring`, `statblock_structuring`. |
+| `mode` | str | `sage` \| `spell` \| `rules` \| `gm`. |
+| `outcome` | str | One of `produced`, `none`, `parse_failure`, `skipped_by_gate` — see the table above. |
+| `billed_account_id` | int | The account that pays. |
+| `actor_kind` | str | `account` \| `participant` \| `guest` \| `system`. |
+| `campaign_id` | str \| null | Null today, same as `provider_attempt`. |
+
+The key set is closed and asserted in tests, same discipline as `EXPECTED_KEYS`:
+no `alias`, `status`, token count or any other provider-attempt field, and —
+per X-7 (`docs/adr/gm-workbench-interactions.md:110`) — **no text field of any
+kind, ever.** No prompt, answer, suggestion, spell or stat-block text can
+appear in a `structuring_outcome` record.
+
+### One real record
+
+A gate-skip on a plain-narrative sage turn — no LLM call at all, and this is
+the only record that turn's structuring produces:
+
+```json
+{"severity": "INFO", "message": "structuring outcome", "event": "structuring_outcome",
+ "record_version": 1, "operation_id": "4f1d2c7a9b6e4d1f8a3c5e7b9d0f2a41",
+ "operation": "chat_turn", "purpose": "statblock_structuring", "mode": "sage",
+ "outcome": "skipped_by_gate", "billed_account_id": 1, "actor_kind": "account",
+ "campaign_id": null,
+ "logging.googleapis.com/trace": "0af7651916cd43dd8448eb211c80319c"}
+```
+
+---
+
 ## 2. Reading the records out of Cloud Logging
 
 Logs Explorer filter, ready to paste:
