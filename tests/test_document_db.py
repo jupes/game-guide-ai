@@ -1613,15 +1613,23 @@ def test_the_documents_category_narrows_to_one_type(world: World) -> None:
     ]
 
 
+#: More pages than any test here has rows, so the walk below always ends.
+PAGE_WALK_LIMIT = 10
+
+
 def _every_page(world: World, campaign_id: str, size: int, **kwargs: Any) -> list[list[str]]:
+    """Every page, each anchored on the last id of the one before. BOUNDED: a
+    keyset predicate that lost its tiebreaker hands the anchor back forever,
+    and that regression must fail here, not hang the integration step."""
     pages: list[list[str]] = []
     after: str | None = None
-    while True:
+    for _ in range(PAGE_WALK_LIMIT):
         page = _ids(_library(world, campaign_id, limit=size, after_id=after, **kwargs))
         if not page:
             return pages
         pages.append(page)
         after = page[-1]
+    pytest.fail(f"the pages never ran out after {PAGE_WALK_LIMIT}: the keyset repeats rows")
 
 
 @pytest.mark.parametrize("sort", list(wire.LibrarySort))
