@@ -389,6 +389,12 @@ export const FirstAnswerOfAnAdoptedConversationStaysAnnounced: Story = {
     })
     await canvas.findByText('Shield stops the triggering attack.')
 
+    // The recalled turn's commit is on screen, but work that commit
+    // scheduled (a passive effect, or a microtask queued from one) may not
+    // have run yet. A bare read here races a clear made after the recall
+    // settles and passes against it, so let that work drain first.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
     // Still the same node, still reading the same text — the recall did not
     // clear it.
     await expect(canvasElement.querySelector('.chat-pane__arrival')).toBe(arrival)
