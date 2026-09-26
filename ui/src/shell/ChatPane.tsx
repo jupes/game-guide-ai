@@ -478,6 +478,17 @@ export function ChatPane({
           // remains the source of truth; this only pre-filters the picker).
           accept=".txt,.md,.pdf"
           aria-label="Attach file"
+          // agent-forge-harness-vnx: this input and the visible IconButton
+          // below it used to share the accessible name "Attach file" — a
+          // screen-reader user tabbing the composer met two named controls,
+          // one of which does nothing on its own. `aria-hidden` takes it out
+          // of the accessibility tree and `tabIndex={-1}` takes it out of the
+          // tab order; the IconButton stays the only affordance. The label is
+          // kept (harmlessly unreachable) so existing `getByLabelText`
+          // queries keep working — Testing Library's `getByLabelText` does
+          // not consult the accessibility tree.
+          aria-hidden="true"
+          tabIndex={-1}
           className="chat-pane__file-input"
           onChange={handleFileSelected}
         />

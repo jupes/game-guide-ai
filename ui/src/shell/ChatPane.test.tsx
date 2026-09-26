@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent, isInaccessible } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as React from 'react'
 import { AppNavContext } from './AppNav'
@@ -282,6 +282,32 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
     await userEvent.type(ta, 'line two')
     expect(post).not.toHaveBeenCalled()
     expect(ta.value).toBe('line one\nline two')
+  })
+})
+
+describe('ChatPane — one "Attach file" control (agent-forge-harness-vnx)', () => {
+  // Two controls in the composer used to share the accessible name "Attach
+  // file": the hidden <input type="file"> and the visible IconButton that
+  // clicks it. A screen-reader user tabbing the composer met two named
+  // controls, one of which does nothing on its own.
+
+  it('the hidden file input is out of the accessibility tree and out of the tab order (V1)', () => {
+    render(<Wrapper />)
+    const input = screen.getByLabelText('Attach file', { selector: 'input' })
+    expect(input).toHaveAttribute('aria-hidden', 'true')
+    expect(input.tabIndex).toBe(-1)
+    // isInaccessible is imported from @testing-library/react (never
+    // @testing-library/dom, which is not a declared dependency); it checks
+    // `aria-hidden`/`hidden`/`display: none`, not off-screen clipping, so it
+    // is false before this fix and true after.
+    expect(isInaccessible(input)).toBe(true)
+  })
+
+  it('exactly one element in the accessibility tree is named "Attach file"', () => {
+    render(<Wrapper />)
+    // Testing Library gives a file input no role, so this counts only the
+    // real affordance — the visible IconButton.
+    expect(screen.getAllByRole('button', { name: 'Attach file' })).toHaveLength(1)
   })
 })
 

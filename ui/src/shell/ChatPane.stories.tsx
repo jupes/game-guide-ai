@@ -451,6 +451,23 @@ export const AttachDisabledWithoutConversation: Story = {
   },
 }
 
+/**
+ * agent-forge-harness-vnx (V2) — the next real Tab stop after "Export chat"
+ * is the visible "Attach file" button, not the hidden file input. Uses the
+ * meta's own decorator (a conversation selected — R-11): the button is
+ * `disabled={conversationId === null}`, which itself removes it from the tab
+ * order, so a bare `withShell()` here would prove nothing.
+ */
+export const TabOrderSkipsTheHiddenFileInput: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const exportButton = await canvas.findByRole('button', { name: 'Export chat' })
+    await tabTo(exportButton)
+    await userEvent.tab()
+    await expect(canvas.getByRole('button', { name: 'Attach file' })).toHaveFocus()
+  },
+}
+
 // ── Dark ─────────────────────────────────────────────────────────────────────
 
 export const Dark: Story = {

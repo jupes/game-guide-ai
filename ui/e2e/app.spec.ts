@@ -55,13 +55,23 @@ test('production app preserves a conversation and emits bounded performance evid
   await page.getByRole('button', { name: prompt, exact: true }).click()
   await expect(page.getByText(`E2E spell answer: ${prompt}`)).toBeVisible()
 
-  await page
-    .locator('input[type="file"][aria-label="Attach file"]')
-    .setInputFiles({
-      name: 'session-notes.txt',
-      mimeType: 'text/plain',
-      buffer: Buffer.from('The party carries a silver key.'),
-    })
+  // agent-forge-harness-vnx: the hidden input is now aria-hidden + out of the
+  // tab order, so the picker is reached through the visible button. Assert
+  // the name is unambiguous first (that IS the bead's own defect check), then
+  // wait for the file-chooser event rather than listening for it —
+  // `page.on('filechooser', …)` would put the `setFiles` call inside a
+  // callback that might never run, which is a test that cannot fail (see
+  // ROOT/.tmp/work/agent-forge-harness-ui-a11y-alignment.md §0).
+  const attachButton = page.getByRole('button', { name: 'Attach file', exact: true })
+  await expect(attachButton).toHaveCount(1)
+  const chooserPromise = page.waitForEvent('filechooser')
+  await attachButton.click()
+  const chooser = await chooserPromise
+  await chooser.setFiles({
+    name: 'session-notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('The party carries a silver key.'),
+  })
   await expect(page.getByText('session-notes.txt', { exact: true })).toBeVisible()
 
   // Under `e2e-results/` (gitignored, and what CI uploads as an artifact) —
