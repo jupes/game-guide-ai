@@ -367,12 +367,55 @@ def test_a_failing_structuring_call_records_one_attempt_and_never_retries(
     assert outcomes[0]["outcome"] == "none"
 
 
+def test_a_suggestions_provider_failure_is_none_not_a_parse_failure(
+    records, outcome_records, no_backoff,
+):
+    """Review H-1: the suggestions call is the one structuring purpose that
+    retries (it is not `max_attempts=1`), so it gets its own case. Three
+    RateLimitErrors exhaust it; the answer and the spell card still arrive. A
+    provider outage is `none` — never filed as a parse failure of ours."""
+    llm = _ScriptedLLM([
+        _SPELL_ANSWER, _rate_limit_error(), _rate_limit_error(), _rate_limit_error(), _SPELL_JSON,
+    ])
+    svc = _service(llm)
+
+    resp = _turn(svc, "What does Fireball do?", "spell")
+
+    suggestions = [r for r in records if r["purpose"] == "suggestions"]
+    assert [r["status"] for r in suggestions] == ["error", "error", "error"]
+    assert [r["error_class"] for r in suggestions] == ["RateLimitError"] * 3
+    assert llm.calls == 5
+    assert resp.suggestions is None
+    assert resp.spell_content is not None
+    assert [(r["purpose"], r["outcome"]) for r in outcome_records] == [
+        ("suggestions", "none"), ("spell_structuring", "produced"),
+    ]
+
+
+# Valid JSON of the wrong shape: the parser gets past json.loads and pydantic
+# raises a ValidationError, not a bare ValueError (review H-1, mutant M2).
+_SUGG_WRONG_SHAPE = '[{"style": "practical"}]'
+_OBJECT_WRONG_SHAPE = '{"name": "x"}'
+
+
 @pytest.mark.parametrize(
     ("mode", "replies", "purpose", "field"),
     [
         ("spell", [_SPELL_ANSWER, "not json at all", _SPELL_JSON], "suggestions", "suggestions"),
         ("spell", [_SPELL_ANSWER, _SUGG_JSON, "not json at all"], "spell_structuring", "spell_content"),
         ("gm", [_STATBLOCK_ANSWER, "not json at all"], "statblock_structuring", "stat_block"),
+        pytest.param(
+            "spell", [_SPELL_ANSWER, _SUGG_WRONG_SHAPE, _SPELL_JSON], "suggestions", "suggestions",
+            id="suggestions-wrong-shape",
+        ),
+        pytest.param(
+            "spell", [_SPELL_ANSWER, _SUGG_JSON, _OBJECT_WRONG_SHAPE], "spell_structuring", "spell_content",
+            id="spell-wrong-shape",
+        ),
+        pytest.param(
+            "gm", [_STATBLOCK_ANSWER, _OBJECT_WRONG_SHAPE], "statblock_structuring", "stat_block",
+            id="statblock-wrong-shape",
+        ),
     ],
 )
 def test_a_malformed_structuring_reply_is_an_ok_attempt_not_a_provider_error(
@@ -419,7 +462,7 @@ def test_the_statblock_cost_guard_still_skips_the_call_entirely(records, outcome
 # AC 10 — nothing is recorded outside a live turn, with a positive control
 # ---------------------------------------------------------------------------
 
-def test_positive_control_the_same_service_does_record_inside_a_turn(records):
+def test_positive_control_the_same_service_does_record_inside_a_turn(records, outcome_records):
     """First, prove "zero" carries information: the identical service, driven
     through the identical path WITH an operation, records four attempts."""
     svc = _service(_SeqLLM([_SPELL_ANSWER, _SUGG_JSON, _SPELL_JSON]))
@@ -429,9 +472,18 @@ def test_positive_control_the_same_service_does_record_inside_a_turn(records):
     assert [r["purpose"] for r in records] == [
         "embedding", "answer", "suggestions", "spell_structuring",
     ]
+    assert [r["purpose"] for r in outcome_records] == ["suggestions", "spell_structuring"]
 
 
-def test_a_direct_service_call_outside_a_turn_records_nothing(records):
+def _usage_capture_warnings(caplog) -> list[str]:
+    return [
+        r.getMessage() for r in caplog.records
+        if r.name == "service.usage_capture" and r.levelname == "WARNING"
+    ]
+
+
+def test_a_direct_service_call_outside_a_turn_records_nothing(records, outcome_records, caplog):
+    caplog.set_level("WARNING", logger="service.usage_capture")
     svc = _service(_SeqLLM([_SPELL_ANSWER, _SUGG_JSON, _SPELL_JSON]))
 
     resp = svc.answer("What does Fireball do?", mode="spell")
@@ -439,9 +491,14 @@ def test_a_direct_service_call_outside_a_turn_records_nothing(records):
     assert records == []
     assert resp.answer == _SPELL_ANSWER
     assert resp.spell_content is not None  # the turn still worked in full
+    # Review M-2: no outcome record either — and a silent no-op, not a failure
+    # swallowed by record_structuring_outcome's own `except`.
+    assert outcome_records == []
+    assert _usage_capture_warnings(caplog) == []
 
 
-def test_a_bare_graph_invoke_with_config_none_records_nothing(records):
+def test_a_bare_graph_invoke_with_config_none_records_nothing(records, outcome_records, caplog):
+    caplog.set_level("WARNING", logger="service.usage_capture")
     svc = _service(_SeqLLM([_SPELL_ANSWER, _SUGG_JSON, _SPELL_JSON]))
     graph = build_rag_graph(svc)
 
@@ -449,6 +506,8 @@ def test_a_bare_graph_invoke_with_config_none_records_nothing(records):
 
     assert records == []
     assert out["answer"] == _SPELL_ANSWER
+    assert outcome_records == []
+    assert _usage_capture_warnings(caplog) == []
 
 
 def test_an_embed_query_call_with_no_sink_returns_what_it_returns_today(records):

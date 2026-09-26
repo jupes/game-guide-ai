@@ -293,16 +293,11 @@ def build_rag_graph(svc: RagService) -> Any:
             )
         except Exception as exc:
             log.warning("spell suggestions failed; answering without them", exc_info=True)
-            # A ValueError here is ours — bad JSON or the wrong shape out of a
-            # provider response that arrived fine; anything else (network,
-            # rate limit, auth) is the provider's, not a parse problem
-            # (pydantic's ValidationError IS a ValueError subclass).
-            outcome = (
-                usage_capture.OUTCOME_PARSE_FAILURE if isinstance(exc, ValueError)
-                else usage_capture.OUTCOME_NONE
-            )
+            # Ours (parse_failure) vs the provider's (none): one classification,
+            # shared by every structuring branch and tested directly.
             usage_capture.record_structuring_outcome(
-                config, purpose=usage_capture.PURPOSE_SUGGESTIONS, outcome=outcome,
+                config, purpose=usage_capture.PURPOSE_SUGGESTIONS,
+                outcome=usage_capture.outcome_for_failure(exc),
             )
             return {"suggestions": None}
         usage_capture.record_structuring_outcome(
@@ -325,12 +320,9 @@ def build_rag_graph(svc: RagService) -> Any:
                 )
             except Exception as exc:
                 log.warning("spell content structuring failed; answering without it", exc_info=True)
-                outcome = (
-                    usage_capture.OUTCOME_PARSE_FAILURE if isinstance(exc, ValueError)
-                    else usage_capture.OUTCOME_NONE
-                )
                 usage_capture.record_structuring_outcome(
-                    config, purpose=usage_capture.PURPOSE_SPELL_STRUCTURING, outcome=outcome,
+                    config, purpose=usage_capture.PURPOSE_SPELL_STRUCTURING,
+                    outcome=usage_capture.outcome_for_failure(exc),
                 )
                 return {"spell_content": None}
             usage_capture.record_structuring_outcome(
@@ -361,12 +353,9 @@ def build_rag_graph(svc: RagService) -> Any:
             )
         except Exception as exc:
             log.warning("stat block structuring failed; answering without it", exc_info=True)
-            outcome = (
-                usage_capture.OUTCOME_PARSE_FAILURE if isinstance(exc, ValueError)
-                else usage_capture.OUTCOME_NONE
-            )
             usage_capture.record_structuring_outcome(
-                config, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING, outcome=outcome,
+                config, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING,
+                outcome=usage_capture.outcome_for_failure(exc),
             )
             return {"stat_block": None}
         usage_capture.record_structuring_outcome(

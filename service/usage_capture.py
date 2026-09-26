@@ -135,6 +135,11 @@ OUTCOME_SKIPPED_BY_GATE = "skipped_by_gate"
 OUTCOMES = frozenset({
     OUTCOME_PRODUCED, OUTCOME_NONE, OUTCOME_PARSE_FAILURE, OUTCOME_SKIPPED_BY_GATE,
 })
+#: The only purposes a `structuring_outcome` record may carry — never
+#: `embedding` or `answer`.
+STRUCTURING_PURPOSES = frozenset({
+    PURPOSE_SUGGESTIONS, PURPOSE_SPELL_STRUCTURING, PURPOSE_STATBLOCK_STRUCTURING,
+})
 
 #: A structuring-outcome record has exactly these keys, in every branch,
 #: always. No `alias`, `status`, token counts or any other provider-attempt
@@ -486,13 +491,31 @@ def observer_for(config: Any, *, purpose: str, alias: str) -> AttemptObserver:
         return NullAttemptObserver()
 
 
+def outcome_for_failure(exc: BaseException) -> str:
+    """The one classification of a structuring call that degraded to None. A
+    `ValueError` is ours — bad JSON or the wrong shape out of a provider
+    response that arrived fine (pydantic's `ValidationError` IS a `ValueError`
+    subclass): `parse_failure`, and it was still billed. Anything else
+    (network, rate limit, auth, timeout) is the provider's: `none`. Always an
+    `OUTCOMES` constant, never anything derived from `exc`."""
+    return OUTCOME_PARSE_FAILURE if isinstance(exc, ValueError) else OUTCOME_NONE
+
+
 def record_structuring_outcome(config: Any, *, purpose: str, outcome: str) -> None:
     """Record one bounded, content-free outcome for a structuring purpose:
     `produced`, `none`, `parse_failure` or `skipped_by_gate` (agent-forge-
     harness-kyr). A no-op when there is no turn in flight, same as
     `observer_for`. Never raises — a logging failure must never fail, slow or
-    degrade a turn, mirroring rule 2 in this module's docstring."""
+    degrade a turn, mirroring rule 2 in this module's docstring.
+
+    `purpose` and `outcome` are closed sets enforced HERE, not trusted to the
+    callers: a free string in either is a text field by another name (X-7), so
+    anything outside `STRUCTURING_PURPOSES` / `OUTCOMES` is refused with one
+    bounded warning that never echoes the value."""
     try:
+        if purpose not in STRUCTURING_PURPOSES or outcome not in OUTCOMES:
+            _warn("record_structuring_outcome", ValueError("outside the closed set"))
+            return
         operation = operation_from_config(config)
         if operation is None:
             return
