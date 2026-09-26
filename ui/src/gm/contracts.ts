@@ -118,7 +118,7 @@ export const KNOWN_ERROR_CODES = [
   'validation_failed', 'unsupported_schema_version', 'brief_required', 'brief_too_long', 'unknown_tool',
   'tool_disabled', 'campaign_required', 'nothing_to_recap', 'not_found', 'forbidden', 'conflict',
   'cap_reached', 'throttled_user', 'throttled_daily', 'provider_failed', 'provider_timeout',
-  'attempt_expired', 'backend_unavailable',
+  'attempt_expired', 'backend_unavailable', 'already_linked',
 ] as const
 export type KnownErrorCode = (typeof KNOWN_ERROR_CODES)[number]
 
@@ -2298,6 +2298,104 @@ export const TableSnapshotSchema = z
   }, ROLE_ISSUE)
 export type TableSnapshot = z.infer<typeof TableSnapshotSchema>
 
+// ── The conversation family (1kg.2.4) ────────────────────────────────────────
+// A conversation's identity and metadata: the index a sidebar is built from.
+// The owner, the model-routing strategy, its alias and the catalog revision are
+// never on the wire (owner decision D-9).
+
+export const CONVERSATION_PAGE_MAX_ITEMS = 100
+export const CONVERSATION_TITLE_MAX_CHARS = 200
+
+/** The code points a title may not hold, by code point so that none sits in this
+ * file (ruling A2-9): the C0 and C1 controls, and the bidirectional embeddings,
+ * overrides and isolates. The server refuses exactly this set. */
+export function isRefusedInATitle(code: number): boolean {
+  return (
+    code <= 0x1f ||
+    (code >= 0x7f && code <= 0x9f) ||
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069)
+  )
+}
+
+/** A title as a request sends it: 1 to 200 characters once trimmed as the server
+ * trims, with no refused code point left inside. The server stores it trimmed. */
+const ConversationTitleRequestSchema = z
+  .string()
+  .refine(isWellFormedText, WELL_FORMED)
+  .refine(
+    (value) => {
+      const length = codePointLength(trimWire(value))
+      return length >= 1 && length <= CONVERSATION_TITLE_MAX_CHARS
+    },
+    { message: `a title is 1 to ${CONVERSATION_TITLE_MAX_CHARS} characters after trimming` },
+  )
+  .refine((value) => ![...trimWire(value)].some((character) => isRefusedInATitle(character.codePointAt(0) ?? 0)), {
+    message: 'a title holds no control or bidirectional-formatting characters',
+  })
+
+/** One conversation's metadata. Every key is present; what a row never recorded
+ * is `null`. Read it through `parseConversation`. */
+export const ConversationSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  conversation_id: OpaqueIdSchema,
+  campaign_id: OpaqueIdSchema.nullable(),
+  // A response is read as stored: bounded, with no trim rule (ruling A2-9).
+  title: text(1, CONVERSATION_TITLE_MAX_CHARS).nullable(),
+  started_mode: ChatModeSchema.nullable(),
+  created_at: TimestampSchema,
+  updated_at: TimestampSchema.nullable(),
+  archived_at: TimestampSchema.nullable(),
+})
+export type Conversation = z.infer<typeof ConversationSchema>
+
+/** The owner's index, newest metadata first. No filter is echoed back. */
+export const ConversationPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(ConversationSchema).max(CONVERSATION_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type ConversationPage = z.infer<typeof ConversationPageSchema>
+
+/** `POST /conversations`. The server mints the id; there is no `command_id`
+ * (ruling 2.4#5), so a retried create makes a second conversation. */
+export const ConversationCreateRequestSchema = refusingProtoKeys(
+  z
+    .strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      started_mode: ChatModeSchema,
+      campaign_id: OpaqueIdSchema.nullish(),
+      title: ConversationTitleRequestSchema.nullish(),
+    })
+    .refine((request) => request.campaign_id == null || request.started_mode === 'gm', {
+      path: ['campaign_id'],
+      message: 'a conversation inside a campaign is started in gm',
+    }),
+)
+export type ConversationCreateRequest = z.infer<typeof ConversationCreateRequestSchema>
+
+/** `PATCH /conversations/{id}`. At least one key, and none is nullable: moving a
+ * conversation between campaigns, or unlinking one, is not in v1. */
+export const ConversationPatchRequestSchema = refusingProtoKeys(
+  z
+    .strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      title: ConversationTitleRequestSchema.optional(),
+      archived: z.boolean().optional(),
+      campaign_id: OpaqueIdSchema.optional(),
+      started_mode: ChatModeSchema.optional(),
+    })
+    .refine(
+      (patch) =>
+        patch.title !== undefined ||
+        patch.archived !== undefined ||
+        patch.campaign_id !== undefined ||
+        patch.started_mode !== undefined,
+      { message: 'a patch names at least one of title, archived, campaign_id and started_mode' },
+    ),
+)
+export type ConversationPatchRequest = z.infer<typeof ConversationPatchRequestSchema>
+
 /** Name → schema, in the order `contracts/workbench/v1/schemas.json` lists them. */
 export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   Timestamp: TimestampSchema,
@@ -2350,6 +2448,10 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   TableEvent: TableEventSchema,
   GmSnapshot: GmSnapshotSchema,
   TableSnapshot: TableSnapshotSchema,
+  Conversation: ConversationSchema,
+  ConversationPage: ConversationPageSchema,
+  ConversationCreateRequest: ConversationCreateRequestSchema,
+  ConversationPatchRequest: ConversationPatchRequestSchema,
 }
 
 // ── Forward-version behaviour ────────────────────────────────────────────────
@@ -2688,6 +2790,39 @@ export function parseTimelinePage(raw: unknown): Parsed<ReadTimelinePage> {
   if (!envelope.success) return { kind: 'unknown', reason: 'invalid' }
   const { conversation_id, items, next_cursor } = envelope.data
   return { kind: 'ok', value: { conversation_id, items: items.map(parseTimelineEntry), next_cursor } }
+}
+
+/** How the sidebar reads one conversation: a newer version is the future, never
+ * damage, and what a newer server adds is stripped before a component sees it. */
+export function parseConversation(raw: unknown): Parsed<Conversation> {
+  if (namesNewerVersion(raw)) return { kind: 'unknown', reason: 'newer_schema' }
+  const result = ConversationSchema.safeParse(raw)
+  return result.success ? { kind: 'ok', value: result.data } : { kind: 'unknown', reason: 'invalid' }
+}
+
+export interface ReadConversationPage {
+  /** Newest metadata first, one item per conversation the server sent, none dropped. */
+  items: Parsed<Conversation>[]
+  next_cursor: string | null
+}
+
+const ConversationEnvelopeSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(z.unknown()).max(CONVERSATION_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+
+/** How the sidebar reads a page of the index: the envelope strictly, each
+ * conversation on its own, so one row from a newer server cannot empty the list. */
+export function parseConversationPage(raw: unknown): Parsed<ReadConversationPage> {
+  if (isRecord(raw)) {
+    const version = versionNamed(raw.schema_version)
+    if (version !== null && version > CONTRACT_VERSION) return { kind: 'unknown', reason: 'newer_schema' }
+  }
+  const envelope = ConversationEnvelopeSchema.safeParse(raw)
+  if (!envelope.success) return { kind: 'unknown', reason: 'invalid' }
+  const { items, next_cursor } = envelope.data
+  return { kind: 'ok', value: { items: items.map(parseConversation), next_cursor } }
 }
 
 // ── One reader for every error shape ─────────────────────────────────────────

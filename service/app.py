@@ -32,7 +32,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from . import gcp_logging, timeline, usage_capture
+from . import conversations_api, gcp_logging, timeline, usage_capture
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .db import Database, PoolSettings
@@ -1415,6 +1415,7 @@ def me(
     return AuthUser(email=user.email, role=user.role)
 
 
+app.include_router(conversations_api.build_router(require_session, get_timeline_database))
 # Mount the pre-built UI last, as an ALLOWLIST fallback, not a catch-all
 # (agent-forge-harness-y40) -- see service/spa_fallback.py for what each path
 # answers and why the order matters. Only active when `cd ui && bun run build`

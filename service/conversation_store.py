@@ -227,10 +227,13 @@ def _decode_cursor(cursor: str) -> tuple[datetime, str]:
         raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
         moment, conversation_id = json.loads(raw.decode("utf-8"))
         return aware(datetime.fromisoformat(moment), "a cursor"), str(conversation_id)
-    except InvalidCursor:
-        raise
-    except Exception as exc:
-        raise InvalidCursor("that page cursor did not come from this server") from exc
+    except Exception:
+        # Any failure to read it is the one refusal. Nothing is kept: the
+        # errors above quote the caller's own decoded payload.
+        pass
+    # Raised outside the handler and `from None`, so neither `__cause__` nor
+    # `__context__` carries that payload into a traceback or a log line.
+    raise InvalidCursor("that page cursor did not come from this server") from None
 
 
 # ── The store ────────────────────────────────────────────────────────────────
@@ -377,7 +380,7 @@ def _page(found: list[Conversation], limit: int) -> ConversationPage:
     return ConversationPage(items, _encode_cursor(items[-1]) if more and items else None)
 
 
-class PostgresConversationStore:
+class PostgresConversationStore(ConversationStore):
     """`chat.conversations` — 0001's columns, 0006's metadata, and this bead's
     `started_mode`."""
 
@@ -572,7 +575,7 @@ class PostgresConversationStore:
         return None if row is None else row[0]
 
 
-class InMemoryConversationStore:
+class InMemoryConversationStore(ConversationStore):
     """The twin.
 
     It reads `campaigns` out of the SAME `shared_rows` tables the campaign twin
