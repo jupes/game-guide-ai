@@ -30,6 +30,24 @@ from service.workbench_contracts import DOC_TYPE_VERSION, DocumentTypeId
 #: One step: the ``data`` of a document at version *n*, returned at *n + 1*.
 Adapter = Callable[[Mapping[str, Any]], dict[str, Any]]
 
+#: Requirement 8 (F-11): the range every version this module takes must lie in.
+VERSION_MIN = 1
+VERSION_MAX = 1000
+
+
+def _a_version(value: object, what: str) -> int:
+    """A version is an integer from 1 to 1000: never a bool, a float or a string.
+
+    Checked explicitly, so ``0.5`` or a ``NaN`` is a :class:`ValueError` here
+    rather than a ``TypeError`` out of ``range`` - and in the TypeScript twin,
+    rather than a ``NaN`` that every comparison answers ``false`` to and so walks
+    straight through as "already current". The message names the argument and
+    never the value it was given.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or not VERSION_MIN <= value <= VERSION_MAX:
+        raise ValueError(f"a version starts at 1: {what} must be an integer from {VERSION_MIN} to {VERSION_MAX}")
+    return value
+
 
 class AdapterError(LookupError):
     """No path from the stored version to the current one. The message names the
@@ -56,9 +74,11 @@ class AdapterRegistry:
         covers. The same rule deletes the rows of keys that left the type. The
         eligibility storage itself is ``agent-forge-harness-1ir.2.1``'s — this
         docstring is the contract an adapter author is held to.
+
+        **An adapter must not mutate nested values - it receives a shallow copy**,
+        so a list or a mapping inside ``data`` is still the caller's.
         """
-        if from_version < 1:
-            raise ValueError("a version starts at 1")
+        _a_version(from_version, "from_version")
         key = (doc_type, from_version)
         if key in self._steps:
             raise ValueError(f"{doc_type.value}: a step from version {from_version} is already registered")
@@ -68,8 +88,10 @@ class AdapterRegistry:
         return self._steps.get((doc_type, from_version))
 
     def can_upgrade(self, doc_type: DocumentTypeId, from_version: int, *, to: int | None = None) -> bool:
-        """Whether every step exists, without running any of them."""
-        target = DOC_TYPE_VERSION[doc_type] if to is None else to
+        """Whether every step exists, without running any of them. A version that
+        is not a version is a :class:`ValueError`, not an answer."""
+        _a_version(from_version, "from_version")
+        target = DOC_TYPE_VERSION[doc_type] if to is None else _a_version(to, "to")
         return all(self.step(doc_type, version) is not None for version in range(from_version, target))
 
     def upgrade(
@@ -79,9 +101,16 @@ class AdapterRegistry:
 
         Returns the version reached and the new ``data``. Raises
         :class:`AdapterError` when a step is missing and :class:`ValueError`
-        when asked to go backwards — never a partially-applied result.
+        when asked to go backwards or given a version that is not an integer
+        from 1 to 1000 - never a partially-applied result.
+
+        **The caller validates the adapted result with ``check_fields`` before
+        storing it**: an adapter is code, and what it returns is not trusted to be
+        a valid document of the new version until the contract says so. **An
+        adapter must not mutate nested values - it receives a shallow copy.**
         """
-        target = DOC_TYPE_VERSION[doc_type] if to is None else to
+        _a_version(from_version, "from_version")
+        target = DOC_TYPE_VERSION[doc_type] if to is None else _a_version(to, "to")
         if from_version > target:
             raise ValueError(
                 f"{doc_type.value}: a document at version {from_version} is newer than "

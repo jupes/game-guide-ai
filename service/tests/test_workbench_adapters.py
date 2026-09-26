@@ -116,3 +116,37 @@ def test_one_type_s_steps_are_not_another_s() -> None:
     registry.register(DocumentTypeId.NPC, 1, _rename("a", "b"))
     assert registry.step(DocumentTypeId.NPC, 1) is not None
     assert registry.step(DocumentTypeId.LORE, 1) is None
+
+
+
+# ── Requirement 8 (F-11): a version that is not a version (1kg.5.7.2) ────────
+
+_NOT_VERSIONS = [float("nan"), 0.5, -1, 0, 1001, "1", True]
+
+
+@pytest.mark.parametrize("version", _NOT_VERSIONS, ids=["NaN", "0.5", "-1", "0", "1001", "a string", "True"])
+def test_a_version_that_is_not_a_version_is_refused_wherever_one_is_taken(version: Any) -> None:
+    """AC 19: an integer from 1 to 1000, checked explicitly, and a ``ValueError``
+    rather than a ``TypeError`` out of ``range`` or an :class:`AdapterError`. A
+    bool is refused although ``True == 1``: a flag is not a version."""
+    registry = wa.AdapterRegistry()
+    registry.register(FIXTURE_TYPE, 1, _rename("a", "b"))
+    calls = [
+        lambda: registry.upgrade(FIXTURE_TYPE, version, {"name": "x"}, to=2),
+        lambda: registry.upgrade(FIXTURE_TYPE, 1, {"name": "x"}, to=version),
+        lambda: registry.can_upgrade(FIXTURE_TYPE, version, to=2),
+        lambda: registry.can_upgrade(FIXTURE_TYPE, 1, to=version),
+        lambda: registry.register(DocumentTypeId.LORE, version, _rename("a", "b")),
+    ]
+    for call in calls:
+        with pytest.raises(ValueError, match="must be an integer from 1 to 1000") as caught:
+            call()
+        assert type(caught.value) is ValueError
+
+
+def test_the_upgrade_docstring_says_what_the_caller_and_an_adapter_must_do() -> None:
+    """Requirement 8's two sentences, kept where an adapter author reads them."""
+    doc = " ".join((wa.AdapterRegistry.upgrade.__doc__ or "").split())
+    assert "The caller validates the adapted result with ``check_fields`` before storing it" in doc
+    assert "An adapter must not mutate nested values - it receives a shallow copy." in doc
+    assert "it receives a shallow copy" in (wa.AdapterRegistry.register.__doc__ or "")

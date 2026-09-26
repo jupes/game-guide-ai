@@ -188,6 +188,58 @@ def trim(value: str) -> str:
     """Trim as the client does, so the two never disagree about emptiness or length."""
     return value.strip(_TRIMMED)
 
+
+#: The code points stored text refuses, as inclusive ranges, each with the class
+#: a refusal names. Written as numbers so that no invisible character ever sits
+#: in this file. ``REFUSED_TEXT_CODE_POINTS`` in ``ui/src/gm/contracts.ts`` is the
+#: same table, and both suites pin it to one literal list.
+_REFUSED_TEXT_RANGES: tuple[tuple[int, int, str], ...] = (
+    (0x0000, 0x0008, "a control character"),
+    (0x000B, 0x000C, "a control character"),
+    (0x000E, 0x001F, "a control character"),
+    (0x007F, 0x009F, "a control character"),
+    (0x061C, 0x061C, "a bidirectional control character"),
+    (0x200E, 0x200F, "a bidirectional control character"),
+    (0x202A, 0x202E, "a bidirectional control character"),
+    (0x2066, 0x2069, "a bidirectional control character"),
+    (0xFEFF, 0xFEFF, "a byte order mark"),
+)
+_REFUSED_TEXT_CLASS: dict[int, str] = {
+    code: what for low, high, what in _REFUSED_TEXT_RANGES for code in range(low, high + 1)
+}
+#: Lead ruling of 2026-09-21 on bead ``1kg.5.7.2``: what stored text refuses —
+#: NUL and the other C0 and C1 controls, DEL, the whole Bidi_Control set and the
+#: byte order mark. The refused set is the set that changes what a reader **sees**
+#: relative to what is stored. Tab is allowed; line feed and carriage return are
+#: allowed wherever a line break already is (``_one_line`` still refuses them in
+#: a one-line value); U+200C, U+200D and U+FE0F are allowed, because real names
+#: and emoji sequences need them.
+REFUSED_TEXT_CODE_POINTS: frozenset[int] = frozenset(_REFUSED_TEXT_CLASS)
+
+
+def check_plain_text(value: str) -> str:
+    """Refuse text holding any code point in :data:`REFUSED_TEXT_CODE_POINTS`.
+
+    Why it exists: PostgreSQL's ``text`` and ``jsonb`` refuse U+0000, so an
+    unrefused NUL is a failure to **store** — a 500 — rather than an answer the GM
+    can act on; and a bidirectional override makes displayed text differ from its
+    logical order, a spoofing vector in names a GM trusts. Refused here, it is a
+    422 whose message names the class and never the value (X-7); the caller's
+    location names the field.
+
+    The one shared helper for this rule. It is applied to the document field
+    kinds and to the reveal family's projection text today. Bead ``5mj`` adopts it
+    for the other stored text, and bead ``ysj``'s participant-alias rule calls it;
+    folding characters out of a comparison key is ``ysj``'s, not this function's —
+    this one only accepts or refuses. It never changes ``value``, and a lone
+    surrogate stays the well-formedness checks' to refuse.
+    """
+    for character in value:
+        what = _REFUSED_TEXT_CLASS.get(ord(character))
+        if what is not None:
+            raise ValueError(f"must not contain {what}")
+    return value
+
 #: Opaque to clients and base64url, because a cursor may ride in a query string.
 #: Search text may not (X-7), which is why a cursor never encodes any.
 Cursor = Annotated[str, StringConstraints(strict=True, pattern=r"^[A-Za-z0-9_-]{1,512}$")]
@@ -886,6 +938,14 @@ _ProseValue = Annotated[str, StringConstraints(strict=True, max_length=PROSE_FIE
 _ListItem = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=LIST_ITEM_MAX_CHARS)]
 _TextListValue = Annotated[list[_ListItem], Field(max_length=LIST_FIELD_MAX_ITEMS)]
 _IntegerValue = Annotated[WireInt, Field(ge=INTEGER_FIELD_MIN, le=INTEGER_FIELD_MAX)]
+#: A document field's own text kinds: the shapes above, plus ``check_plain_text``.
+#: New annotations rather than a change to the three above, which also carry a
+#: version's ``summary`` and a library item's ``qualifier`` and ``tags`` — text
+#: bead ``5mj`` owns, and which accepts what it accepted before until it lands.
+_FieldTextValue = Annotated[_TextValue, AfterValidator(check_plain_text)]
+_FieldProseValue = Annotated[_ProseValue, AfterValidator(check_plain_text)]
+_FieldListItem = Annotated[_ListItem, AfterValidator(check_plain_text)]
+_FieldTextListValue = Annotated[list[_FieldListItem], Field(max_length=LIST_FIELD_MAX_ITEMS)]
 
 #: The six 5e ability scores, as a **mapping with a closed key set** rather than a
 #: model: ``Abilities`` in ``models.py`` must spell ``int`` as ``int_`` with an
@@ -895,11 +955,10 @@ AbilityKey = Literal["str", "dex", "con", "int", "wis", "cha"]
 #: Registry order, for a client that lays the block out.
 ABILITY_KEYS: tuple[str, ...] = ("str", "dex", "con", "int", "wis", "cha")
 _AbilityScore = Annotated[WireInt, Field(ge=ABILITY_SCORE_MIN, le=ABILITY_SCORE_MAX)]
-#: DEFERRED, 1kg.5.7 Stage A: "one spelling of no score" (requirement 7e,
-#: AC 17) needs `ui/src/gm/DocumentField.tsx` and its tests, which belong to
-#: `1kg.6.2` and are being edited in parallel — its editor stores an empty
-#: ability cell as `null` and pins that. Reported to the lead.
-_AbilitiesValue = dict[AbilityKey, _AbilityScore | None] | None
+#: One spelling of "no score" (requirement 7e): a score that is not known is a
+#: key left **out**, never ``{"str": null}``. The whole block still clears to
+#: ``None``, and ``{}`` is a block with no score in it yet.
+_AbilitiesValue = dict[AbilityKey, _AbilityScore] | None
 
 
 class _Entry(_Contract):
@@ -907,12 +966,20 @@ class _Entry(_Contract):
     heading, the text is its body. Plain text on both (X-10)."""
 
     name: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=TEXT_FIELD_MAX_CHARS)]
-    text: Annotated[str, StringConstraints(strict=True, max_length=LIST_ITEM_MAX_CHARS)]
+    text: Annotated[
+        str, StringConstraints(strict=True, max_length=LIST_ITEM_MAX_CHARS), AfterValidator(check_plain_text)
+    ]
 
     @field_validator("name")
     @classmethod
     def _name_is_one_line(cls, value: str) -> str:
-        return _one_line(value)
+        """The name is what a renderer shows as its heading, so it cannot be
+        blank — by the contract's own trim, exactly as a document's name."""
+        _one_line(value)
+        check_plain_text(value)
+        if not trim(value):
+            raise ValueError("an entry has a name, and it cannot be blank")
+        return value
 
 
 _EntryListValue = Annotated[list[_Entry], Field(max_length=LIST_FIELD_MAX_ITEMS)]
@@ -920,9 +987,9 @@ _EntryListValue = Annotated[list[_Entry], Field(max_length=LIST_FIELD_MAX_ITEMS)
 #: Text and prose clear to ``""``, a list to ``[]``, and an asset, an integer and
 #: an ability block to ``None``.
 _FIELD_VALUE: dict[FieldKind, TypeAdapter[Any]] = {
-    FieldKind.TEXT: TypeAdapter(_TextValue, config=_HIDE_INPUT),
-    FieldKind.PROSE: TypeAdapter(_ProseValue, config=_HIDE_INPUT),
-    FieldKind.TEXT_LIST: TypeAdapter(_TextListValue, config=_HIDE_INPUT),
+    FieldKind.TEXT: TypeAdapter(_FieldTextValue, config=_HIDE_INPUT),
+    FieldKind.PROSE: TypeAdapter(_FieldProseValue, config=_HIDE_INPUT),
+    FieldKind.TEXT_LIST: TypeAdapter(_FieldTextListValue, config=_HIDE_INPUT),
     FieldKind.ASSET: TypeAdapter(AssetRef | None, config=_HIDE_INPUT),
     FieldKind.INTEGER: TypeAdapter(_IntegerValue | None, config=_HIDE_INPUT),
     FieldKind.ABILITIES: TypeAdapter(_AbilitiesValue, config=_HIDE_INPUT),
@@ -1053,12 +1120,25 @@ def read_stored_fields(doc_type: DocumentTypeId, type_version: int, data: Mappin
 
     Pure: it returns a new dict and never touches ``data``. *The stored row is
     left untouched*, so it renders again after a roll-forward.
+
+    ``data`` comes out of a ``jsonb`` column, which holds any JSON value, so it is
+    ``Any`` to its caller whatever this signature says. Anything but an object —
+    a string, a list, ``null``, a number — is refused with the typed
+    ``stored_data_not_an_object`` error (after the version check, like every other
+    refusal here), never an untyped ``AttributeError`` from reaching for
+    ``.items()``.
     """
     if type_version != DOC_TYPE_VERSION[doc_type]:
         raise PydanticCustomError(
             "unsupported_type_version",
             "{type} field definitions are at version {version}",
             {"type": doc_type.value, "version": DOC_TYPE_VERSION[doc_type]},
+        )
+    if not isinstance(data, Mapping):
+        raise PydanticCustomError(
+            "stored_data_not_an_object",
+            "stored {type} document data is not a JSON object",
+            {"type": doc_type.value},
         )
     declared = {**COMMON_FIELDS, **DOC_TYPE_FIELDS[doc_type]}
     kept: dict[str, Any] = {}
@@ -2324,26 +2404,31 @@ def _not_blank(value: str) -> str:
     return value
 
 
+#: ``check_plain_text`` on all three, so that a value a document refuses can never
+#: ride in a projection instead (requirement 6, 1kg.5.7.2).
 _PresentText = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=TEXT_FIELD_MAX_CHARS),
     AfterValidator(_one_line),
+    AfterValidator(check_plain_text),
     AfterValidator(_not_blank),
 ]
 _PresentProse = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=PROSE_FIELD_MAX_CHARS),
+    AfterValidator(check_plain_text),
     AfterValidator(_not_blank),
 ]
 _PresentListItem = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=LIST_ITEM_MAX_CHARS),
+    AfterValidator(check_plain_text),
     AfterValidator(_not_blank),
 ]
 _PresentList = Annotated[list[_PresentListItem], Field(min_length=1, max_length=LIST_FIELD_MAX_ITEMS)]
 #: Decision ED-9: a block a player is shown carries scores, not gaps. A document
-#: may hold ``{"str": null}`` for a creature that lacks an ability; a projection
-#: of it leaves the key out, so no cell is drawn empty under a masked heading.
+#: spells a score that is not known by leaving its key out (requirement 7e), and
+#: so does a projection of it, so no cell is drawn empty under a masked heading.
 _PresentAbilities = Annotated[dict[AbilityKey, _AbilityScore], Field(min_length=1)]
 
 
