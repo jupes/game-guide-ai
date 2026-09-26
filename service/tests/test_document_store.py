@@ -832,7 +832,8 @@ def test_the_twin_and_the_postgres_store_offer_the_same_methods():
 
     assert surface(docs.InMemoryDocumentStore) == surface(docs.PostgresDocumentStore)
     assert surface(docs.InMemoryDocumentStore) == [
-        "create", "get", "history", "hold", "seal", "snapshot", "write_fields",
+        "create", "delete", "get", "history", "hold", "seal", "set_archived", "snapshot",
+        "write_fields",
     ]
 
 
@@ -869,11 +870,11 @@ def test_the_idle_seal_needs_no_clock_of_its_own():
     """Every mutator takes `now`, so CANVAS-34's ten minutes is deterministic and
     no test sleeps — and no timer, job or background sealer is required or
     permitted."""
-    mutators = ("create", "write_fields", "seal")
+    mutators = ("create", "write_fields", "seal", "set_archived")
     for name in mutators:
         signature = inspect.signature(getattr(docs.PostgresDocumentStore, name))
         assert "now" in signature.parameters, name
-    for name in ("get", "history", "snapshot", "hold"):
+    for name in ("get", "history", "snapshot", "hold", "delete"):
         signature = inspect.signature(getattr(docs.PostgresDocumentStore, name))
         assert "now" not in signature.parameters, f"{name} reads; nothing it does needs a clock"
     assert timedelta(seconds=SEAL_IDLE_S) == timedelta(minutes=10)
@@ -917,3 +918,39 @@ def test_nothing_derived_from_field_text_is_stored_outside_the_document_row():
             for derived in ("name_key", "search_key"):
                 assert derived not in table[1], f"{path.name}: {table[0]} holds {derived}"
     assert "audit." not in _statements_of(SQL), "the document schema touches the ledger"
+
+
+# ── Slice B: the module's statements, read rather than trusted ───────────────
+
+
+def test_the_modules_only_delete_removes_one_document_of_one_campaign():
+    """LIB-18's hard delete, and the only `DELETE` this module runs (B-7). It
+    names the campaign in the same statement (SEC-2), and the versions go by
+    the foreign key's cascade — never by a statement here, which is what keeps
+    history append-only for as long as the document exists."""
+    deletes = [text for text in _statements() if re.search(r"\bDELETE\b", text)]
+    assert deletes == [
+        "DELETE FROM campaign.documents WHERE id = %s AND campaign_id = %s RETURNING id"
+    ]
+
+
+def test_the_twin_reads_its_documents_through_one_accessor_that_hides_tombstones():
+    """B-10: `Staging` has no removal (it is bead `ixa`'s), so the twin's delete
+    leaves a tombstone. That is only safe while EVERY read goes through `_live`
+    — one direct `visible(` elsewhere and a deleted document is back, in the
+    twin alone, which is the divergence this suite exists to prevent."""
+    tree = ast.parse(SOURCE)
+    callers = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr == "visible"
+                and isinstance(inner.func.value, ast.Attribute)
+                and inner.func.value.attr == "_documents"
+            ):
+                callers.append(node.name)
+    assert callers == ["_live"]

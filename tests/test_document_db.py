@@ -1204,3 +1204,130 @@ def test_only_the_stronger_participant_lock_blocks_a_document_that_references_it
         return
 
     assert _while_another_transaction_holds(dsn, world.db, holder, linker) is True
+
+
+# ── Slice B: archive, delete, restore, the library and the sheet link ────────
+#
+# Appended in sections of its own. Nothing above is edited: the U+0000 parity
+# test is `1kg.5.7.2`'s to change, and no test below stores a control character
+# through the store (that bead refuses them).
+
+
+# Archive (LIB-16) ────────────────────────────────────────────────────────────
+
+
+def test_archiving_reports_whether_a_row_changed_so_an_undo_is_idempotent(
+    world: World,
+) -> None:
+    """The shape of `CampaignStore.set_archived`: the Undo toast and the
+    Archived filter's Restore can both be pressed twice. Archiving is not an
+    edit, so it moves neither `updated_at` (the Recent order) nor the write
+    revision nor the history."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign)
+    moment = made.updated_at + timedelta(hours=1)
+
+    with world.db.transaction() as unit:
+        assert world.documents.set_archived(unit, campaign, made.id, archived=True, now=moment)
+        assert not world.documents.set_archived(
+            unit, campaign, made.id, archived=True, now=moment + timedelta(minutes=1)
+        )
+        archived = world.documents.get(unit, campaign, made.id)
+    assert archived is not None
+    assert archived.archived_at == moment, "the second archive did not re-stamp the row"
+    assert archived.updated_at == made.updated_at, "archiving does not move the Recent order"
+    assert archived.write_revision == made.write_revision and archived.version == made.version
+
+    with world.db.transaction() as unit:
+        assert world.documents.set_archived(unit, campaign, made.id, archived=False, now=moment)
+        assert not world.documents.set_archived(unit, campaign, made.id, archived=False)
+        restored = world.documents.get(unit, campaign, made.id)
+    assert restored is not None
+    assert restored.archived_at is None and restored.updated_at == made.updated_at
+
+
+def test_archiving_a_missing_or_foreign_document_reports_that_nothing_changed(
+    world: World,
+) -> None:
+    """`False`, the `CampaignStore.set_archived` precedent, and never a refusal
+    that would tell another GM's document apart from one that is not there."""
+    mine = _a_campaign(world)
+    theirs = _a_campaign(world, name="Someone else's")
+    made = _a_document(world, mine)
+
+    with world.db.transaction() as unit:
+        assert world.documents.set_archived(unit, theirs, made.id, archived=True) is False
+        assert world.documents.set_archived(unit, mine, DOCUMENT, archived=True) is False
+        after = world.documents.get(unit, mine, made.id)
+    assert after is not None and after.archived_at is None
+
+
+def test_an_archive_flag_that_is_not_a_bool_is_refused(world: World) -> None:
+    """`LibraryQuery.archived` is a `StrictBool`; a truthy string must not
+    archive in one world and be refused by a driver in the other."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign)
+    with world.db.transaction() as unit:
+        with pytest.raises(ValueError, match="archived is true or false"):
+            world.documents.set_archived(unit, campaign, made.id, archived="yes")
+
+
+def test_an_archived_document_is_still_writable(world: World) -> None:
+    """Lead ruling 5.1#1: LIB-16 keeps an archived document open under a
+    Restore banner and never calls it read-only. The route decides."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign)
+    with world.db.transaction() as unit:
+        world.documents.set_archived(unit, campaign, made.id, archived=True)
+    written = _write(world, campaign, made.id, fields={"voice": "gravel"},
+                     author=Author.GM, base_write_revision=None)
+    assert written.data["voice"] == "gravel" and written.archived_at is not None
+
+
+# Delete (LIB-18) ─────────────────────────────────────────────────────────────
+
+
+def test_deleting_a_document_takes_its_whole_history_and_reports_whether_it_did(
+    world: World,
+) -> None:
+    """LIB-18: "This permanently deletes `<title>` and its whole history." There
+    is no soft delete; archiving is the reversible state. Afterwards every
+    reader answers as it does for a document that never existed — and the
+    command id went with the row, so a replay cannot hand the deleted document
+    back."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign, command_id="cmd-1")
+    _write(world, campaign, made.id, fields={"voice": "gravel"},
+           author=Author.ASSISTANT, base_write_revision=None)
+    kept = _a_document(world, campaign)
+
+    with world.db.transaction() as unit:
+        assert world.documents.delete(unit, campaign, made.id) is True
+    with world.db.transaction() as unit:
+        assert world.documents.delete(unit, campaign, made.id) is False, "nothing left to delete"
+        assert world.documents.get(unit, campaign, made.id) is None
+        assert world.documents.hold(unit, campaign, made.id) is None
+        assert world.documents.seal(unit, campaign, made.id) is None
+        assert world.documents.snapshot(unit, campaign, made.id, 1) is None
+        assert world.documents.history(unit, campaign, made.id, before_number=None, limit=5) == []
+        assert world.documents.set_archived(unit, campaign, made.id, archived=True) is False
+        with pytest.raises(MissingParent):
+            world.documents.write_fields(unit, campaign, made.id, fields={"voice": "x"},
+                                         author=Author.GM, base_write_revision=None)
+        assert world.documents.get(unit, campaign, kept.id) is not None, "only that one went"
+
+    again = _a_document(world, campaign, command_id="cmd-1")
+    assert again.id != made.id and again.write_revision == 1
+
+
+def test_deleting_another_campaigns_document_changes_nothing(world: World) -> None:
+    """SEC-2: one statement names the document AND the campaign, so another
+    GM's document is as unreachable as one that does not exist."""
+    mine = _a_campaign(world)
+    theirs = _a_campaign(world, name="Someone else's")
+    made = _a_document(world, mine)
+
+    with world.db.transaction() as unit:
+        assert world.documents.delete(unit, theirs, made.id) is False
+        assert world.documents.delete(unit, mine, DOCUMENT) is False
+    assert len(_versions(world, mine, made.id)) == 1

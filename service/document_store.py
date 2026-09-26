@@ -58,8 +58,8 @@ from __future__ import annotations
 import json
 import unicodedata
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from . import campaign_identity as ident
@@ -427,6 +427,15 @@ def next_version_number(current: VersionRecord, opens_new: bool) -> int:
     return number
 
 
+def check_archived(archived: bool) -> bool:
+    """The archive flag, which is a bool and nothing that merely behaves like
+    one: `LibraryQuery.archived` is a `StrictBool`, and a truthy string would
+    otherwise archive in the twin while PostgreSQL's driver refused it."""
+    if not isinstance(archived, bool):
+        raise ValueError("archived is true or false")
+    return archived
+
+
 def check_page(limit: int, cap: int) -> int:
     """A page size the caller chose, bounded by the contract's cap. LIB-23's 25
     and CANVAS-27's 20 are the *client's* page sizes; these are the server's."""
@@ -622,6 +631,51 @@ class DocumentStore(Protocol):
         self, unit: UnitOfWork, campaign_id: str, document_id: str, version_number: int
     ) -> VersionSnapshot | None:
         """One version's metadata, type and content, or None."""
+        ...  # pragma: no cover - structural type
+
+    def set_archived(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        document_id: str,
+        *,
+        archived: bool,
+        now: datetime | None = None,
+    ) -> bool:
+        """Archive a document, or **restore an archived one** (LIB-16: the Undo
+        toast and the Archived filter's Restore) — the un-archive meaning of
+        "restore", which is not `restore`'s. Reports whether a row changed, so
+        an Undo pressed twice is not an error, and a missing or foreign document
+        is `False` (the `CampaignStore.set_archived` precedent).
+
+        It writes `archived_at` and nothing else: archiving is not an edit, so
+        the write revision, the history and `updated_at` — the Recent order —
+        stay where they were. Neither meaning of restore brings back a reveal
+        that LIB-17 stopped.
+
+        **It takes no campaign lock and advances no revision, deliberately.**
+        Archiving changes a fact a display's preconditions read (RQ-4, RQ-10),
+        and RQ-5 puts it in the same two-step shape as an unlink: first
+        `table_session_store.narrow`, then the exclusive campaign lock, the
+        re-scan and the one advancing call. That orchestration is `1kg.5.2`'s
+        (RQ-7 names it among `narrow`'s callers); this primitive holds the one
+        row, changes it, and reports whether it did.
+        """
+        ...  # pragma: no cover - structural type
+
+    def delete(self, unit: UnitOfWork, campaign_id: str, document_id: str) -> bool:
+        """Delete the document **and its whole history**, permanently (LIB-18:
+        "This can't be undone"). There is no soft delete: archiving is the
+        reversible state. The versions go by the foreign key's cascade, and the
+        character-sheet link goes with the row it is a column of. What survives
+        is whatever audit row the route writes, which carries ids and codes only
+        (ED-18(a), ED-26). Reports whether a row went; a missing or foreign
+        document is `False`.
+
+        Like `set_archived` it takes no campaign lock and advances no revision:
+        the two-step orchestration around it is `1kg.5.2`'s. It writes no
+        timestamp, so it takes no `now`.
+        """
         ...  # pragma: no cover - structural type
 
 
@@ -990,6 +1044,34 @@ class PostgresDocumentStore:
         self._seal_open(unit, campaign_id, document_id, now_or(now))
         return self.get(unit, campaign_id, document_id)
 
+    def set_archived(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        document_id: str,
+        *,
+        archived: bool,
+        now: datetime | None = None,
+    ) -> bool:
+        flag, moment = check_archived(archived), now_or(now)
+        if self.hold(unit, campaign_id, document_id) is None:
+            return False
+        changed = pg(unit).conn.execute(
+            "UPDATE campaign.documents SET archived_at = %s "
+            "WHERE id = %s AND campaign_id = %s AND (archived_at IS NULL) = %s RETURNING id",
+            (moment if flag else None, document_id, campaign_id, flag),
+        ).fetchone()
+        return changed is not None
+
+    def delete(self, unit: UnitOfWork, campaign_id: str, document_id: str) -> bool:
+        if self.hold(unit, campaign_id, document_id) is None:
+            return False
+        gone = pg(unit).conn.execute(
+            "DELETE FROM campaign.documents WHERE id = %s AND campaign_id = %s RETURNING id",
+            (document_id, campaign_id),
+        ).fetchone()
+        return gone is not None
+
 
 # ── The rules both worlds obey, spelled once ─────────────────────────────────
 
@@ -1073,6 +1155,38 @@ class _DocumentRow:
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None
+    #: A deleted document (B-10). `Staging` offers no removal, so the twin's
+    #: delete replaces the row with a tombstone that keeps only its id and its
+    #: campaign, and `_live` is the one reader that hides it.
+    gone: bool = False
+
+
+#: The timestamps a tombstone carries: nothing about the deleted row survives.
+_GONE_AT = datetime.fromtimestamp(0, UTC)
+
+
+def _tombstone(row: _DocumentRow) -> _DocumentRow:
+    """What a deleted document leaves in the twin: its id and its campaign, and
+    no field text, folded key, link or command id of any kind. Its version rows
+    stay behind unreachable, because every path to one reads the document
+    through `_live` first."""
+    return _DocumentRow(
+        id=row.id,
+        campaign_id=row.campaign_id,
+        type="",
+        type_version=0,
+        data={},
+        write_revision=0,
+        field_revisions={},
+        name_key="",
+        search_key="",
+        linked_participant_id=None,
+        created_command_id=None,
+        created_at=_GONE_AT,
+        updated_at=_GONE_AT,
+        archived_at=None,
+        gone=True,
+    )
 
 
 @dataclass(frozen=True)
@@ -1117,10 +1231,17 @@ class InMemoryDocumentStore:
         row = self._row(twin, campaign_id, document_id)
         return None if row is None else self._with_current(twin, row)
 
+    def _live(self, twin: InMemoryTransaction) -> dict[str, _DocumentRow]:
+        """Every document this transaction can see, **tombstones hidden**. The
+        one caller of the documents table's `visible(`, pinned by a test that
+        reads this module: a second direct reader would see a deleted document
+        that PostgreSQL no longer has."""
+        return {key: row for key, row in self._documents.visible(twin).items() if not row.gone}
+
     def _row(
         self, twin: InMemoryTransaction, campaign_id: str, document_id: str
     ) -> _DocumentRow | None:
-        found = self._documents.visible(twin).get(document_id)
+        found = self._live(twin).get(document_id)
         return None if found is None or found.campaign_id != campaign_id else found
 
     def _versions_of(self, twin: InMemoryTransaction, document_id: str) -> list[_VersionRow]:
@@ -1220,7 +1341,7 @@ class InMemoryDocumentStore:
         if campaign_id not in self._campaigns.visible(twin):
             raise MissingParent("no such campaign")
         if command_id is not None:
-            for row in self._documents.visible(twin).values():
+            for row in self._live(twin).values():
                 if row.campaign_id == campaign_id and row.created_command_id == command_id:
                     return self._with_current(twin, row)
         row = _DocumentRow(
@@ -1298,7 +1419,7 @@ class InMemoryDocumentStore:
         if plan is None:
             return record
         moment, revision = plan
-        row = self._documents.visible(twin)[document_id]
+        row = self._live(twin)[document_id]
         self._documents.replace(
             twin,
             document_id,
@@ -1357,7 +1478,7 @@ class InMemoryDocumentStore:
                     merged,
                 ),
             )
-        return self._with_current(twin, self._documents.visible(twin)[document_id])
+        return self._with_current(twin, self._live(twin)[document_id])
 
     def _seal_open(
         self, twin: InMemoryTransaction, document_id: str, moment: datetime
@@ -1397,3 +1518,30 @@ class InMemoryDocumentStore:
             return None
         self._seal_open(twin, document_id, now_or(now))
         return self.get(unit, campaign_id, document_id)
+
+    def set_archived(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        document_id: str,
+        *,
+        archived: bool,
+        now: datetime | None = None,
+    ) -> bool:
+        flag, moment = check_archived(archived), now_or(now)
+        record = self.hold(unit, campaign_id, document_id)
+        if record is None or record.is_archived == flag:
+            return False
+        twin = fake(unit)
+        row = self._live(twin)[document_id]
+        self._documents.replace(
+            twin, document_id, replace(row, archived_at=moment if flag else None)
+        )
+        return True
+
+    def delete(self, unit: UnitOfWork, campaign_id: str, document_id: str) -> bool:
+        if self.hold(unit, campaign_id, document_id) is None:
+            return False
+        twin = fake(unit)
+        self._documents.replace(twin, document_id, _tombstone(self._live(twin)[document_id]))
+        return True
