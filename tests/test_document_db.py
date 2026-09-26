@@ -63,10 +63,12 @@ from service.document_store import (
     StaleTypeVersion,
     UnknownCursor,
     UnknownWriteRevision,
+    _library_statement,
     name_key,
     search_key,
 )
 from service.participant_store import InMemoryParticipantStore, PostgresParticipantStore
+from service.tests.test_document_store import VISIBILITY_WORDS
 from service.workbench_contracts import Author, DocumentTypeId
 
 DOCUMENT = "doc_" + "a" * 22
@@ -2105,3 +2107,213 @@ def test_a_rolled_back_mutation_leaves_no_trace_in_either_world(
 
     assert _got(world, campaign, sheet.id) == before
     assert len(_versions(world, campaign, sheet.id)) == 2
+
+
+# ── Slice B: what only the database can say ──────────────────────────────────
+
+#: Every index of the two tables but their primary keys, as `pg_get_indexdef`
+#: renders it: the four library indexes (LIB-20 to LIB-23) and the three unique
+#: ones, each partial so an UPDATE of its columns keeps `FOR NO KEY UPDATE`
+#: (RQ-3). A silently dropped or redefined index turns this red.
+DOCUMENT_INDEXES = {
+    "documents_active_recent_idx": (
+        "CREATE INDEX documents_active_recent_idx ON campaign.documents USING btree "
+        '(campaign_id, updated_at DESC, id COLLATE "C") WHERE (archived_at IS NULL)'
+    ),
+    "documents_archived_recent_idx": (
+        "CREATE INDEX documents_archived_recent_idx ON campaign.documents USING btree "
+        '(campaign_id, updated_at DESC, id COLLATE "C") WHERE (archived_at IS NOT NULL)'
+    ),
+    "documents_active_name_idx": (
+        "CREATE INDEX documents_active_name_idx ON campaign.documents USING btree "
+        '(campaign_id, name_key COLLATE "C", id COLLATE "C") WHERE (archived_at IS NULL)'
+    ),
+    "documents_archived_name_idx": (
+        "CREATE INDEX documents_archived_name_idx ON campaign.documents USING btree "
+        '(campaign_id, name_key COLLATE "C", id COLLATE "C") WHERE (archived_at IS NOT NULL)'
+    ),
+    "document_versions_open_uidx": (
+        "CREATE UNIQUE INDEX document_versions_open_uidx ON campaign.document_versions "
+        "USING btree (document_id) WHERE (sealed_at IS NULL)"
+    ),
+    "documents_command_uidx": (
+        "CREATE UNIQUE INDEX documents_command_uidx ON campaign.documents USING btree "
+        "(campaign_id, created_command_id) WHERE (created_command_id IS NOT NULL)"
+    ),
+    "documents_participant_uidx": (
+        "CREATE UNIQUE INDEX documents_participant_uidx ON campaign.documents USING btree "
+        "(linked_participant_id) WHERE (linked_participant_id IS NOT NULL)"
+    ),
+}
+
+
+def _document_indexes(conn: Any) -> dict[str, str]:
+    return dict(
+        conn.execute(
+            "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'campaign' "
+            "AND tablename IN ('documents', 'document_versions')"
+        ).fetchall()
+    )
+
+
+@needs_db
+def test_the_catalog_holds_every_document_index_exactly_as_defined(dsn: str) -> None:
+    """B-15's catalog layer. The `EXPLAIN` test below proves one index is used;
+    this proves all seven are there, with the columns, collations and partial
+    predicates the store's statements and RQ-3 rely on — and that nothing else
+    is, because a later non-partial unique index over a column the store
+    updates would escalate every such UPDATE's lock."""
+    with connect(dsn) as conn:
+        found = _document_indexes(conn)
+
+    assert {name for name in found if name.endswith("_pkey")} == {
+        "documents_pkey", "document_versions_pkey",
+    }
+    assert {name: text for name, text in found.items() if not name.endswith("_pkey")} == (
+        DOCUMENT_INDEXES
+    )
+
+
+@needs_db
+@pytest.mark.parametrize("table", ["campaign.documents", "campaign.document_versions"])
+def test_no_column_in_the_catalog_is_named_as_though_it_held_visibility(
+    dsn: str, table: str
+) -> None:
+    """A name-based check, and it claims no more than that. It catches the
+    mistake that actually happens (a `revealed` flag beside the content) and it
+    cannot catch a visibility flag hidden behind an innocuous name. What rules
+    that out is the reviewer reading the DDL.
+
+    ED-6: nothing about visibility is stored on a document or a version row. A
+    reveal's pin lives on `1kg.7.1`'s slot row. This reads the columns the
+    database really has, from `pg_attribute`, where the twin of this test in
+    `service/tests/test_document_store.py` reads the migration's text."""
+    with connect(dsn) as conn:
+        columns = [
+            row[0]
+            for row in conn.execute(
+                "SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass "
+                "AND attnum > 0 AND NOT attisdropped",
+                (table,),
+            ).fetchall()
+        ]
+    assert "data" in columns, f"this test found no real column of {table}, so it proves nothing"
+    for column in columns:
+        offending = [word for word in VISIBILITY_WORDS if word in column]
+        assert not offending, f"{table}.{column} reads like it held {offending[0]}"
+
+
+#: B-15: at least 20,000 documents across at least five campaigns. Fewer, and a
+#: sequential scan is genuinely cheaper, so the plan would prove nothing.
+SEEDED_DOCUMENTS = 20_000
+SEEDED_CAMPAIGNS = 5
+
+
+@needs_db
+def test_the_default_library_page_is_read_off_its_index(dsn: str) -> None:
+    """B-15's plan layer, with no escape hatch: if the default page — Active,
+    Recent, the Documents category's five types, LIMIT 25 — is not an ordered
+    scan of `documents_active_recent_idx`, the index or the statement is wrong.
+
+    It EXPLAINs the store's own statement (`_library_statement`), not a copy of
+    it, with the values inlined client-side so the plan is the one those values
+    get. `ANALYZE` runs first: without statistics the planner guesses.
+    `enable_seqscan` is left alone."""
+    campaigns = [f"cmp_{index:022d}" for index in range(SEEDED_CAMPAIGNS)]
+    per_campaign = SEEDED_DOCUMENTS // SEEDED_CAMPAIGNS
+    with connect(dsn) as conn:
+        owner = conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES ('gm@example.com', 'x') "
+            "RETURNING id"
+        ).fetchone()[0]
+        for campaign in campaigns:
+            conn.execute(
+                "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Seeded')",
+                (campaign, owner),
+            )
+        conn.execute(
+            "INSERT INTO campaign.documents (id, campaign_id, type, type_version, data, "
+            "write_revision, field_revisions, name_key, search_key, updated_at, archived_at) "
+            "SELECT 'doc_' || lpad(i::text, 22, '0'), (%s::text[])[1 + (i - 1) / %s], "
+            "(%s::text[])[1 + i %% %s], 1, jsonb_build_object('name', 'seeded ' || i), 1, "
+            "'{}'::jsonb, 'seeded ' || i, 'seeded ' || i, now() - make_interval(secs => i), "
+            "CASE WHEN i %% 10 = 0 THEN now() ELSE NULL END "
+            "FROM generate_series(1, %s) AS i",
+            (campaigns, per_campaign, [kind.value for kind in DocumentTypeId],
+             len(DocumentTypeId), SEEDED_DOCUMENTS),
+        )
+        assert conn.execute("SELECT count(*) FROM campaign.documents").fetchone()[0] == (
+            SEEDED_DOCUMENTS
+        )
+        conn.execute("ANALYZE campaign.documents")
+        statement, params = _library_statement(
+            campaigns[0], types=DOCUMENTS, archived=False, term="",
+            sort=wire.LibrarySort.RECENT, anchor=None, limit=25,
+        )
+        with psycopg.ClientCursor(conn) as cursor:
+            cursor.execute(f"EXPLAIN {statement}", params)
+            plan = "\n".join(row[0] for row in cursor.fetchall())
+
+    assert "Index Scan using documents_active_recent_idx" in plan, plan
+
+
+@needs_db
+def test_two_sheets_linked_to_one_seat_at_once_leave_exactly_one_linked(dsn: str) -> None:
+    """B-14, the first race. The second link waits on the first's uncommitted
+    index entry — the server says so — and once the first commits it meets
+    `documents_participant_uidx`, inside its savepoint: it is refused with
+    `SheetAlreadyLinked` and its transaction goes on to read and commit."""
+    world = _a_seeded_world(dsn, PATIENT)
+    seat = _a_participant(world, CAMPAIGN)
+    first = _a_sheet(world, CAMPAIGN, "Rook")
+    second = _a_sheet(world, CAMPAIGN, "Rook's twin")
+    store = world.documents
+
+    def holder(unit: Any) -> None:
+        assert store.link_character_sheet(unit, CAMPAIGN, first.id, participant_id=seat)
+
+    def waiter(unit: Any) -> tuple[Any, Any]:
+        try:
+            store.link_character_sheet(unit, CAMPAIGN, second.id, participant_id=seat)
+        except SheetAlreadyLinked as refused:
+            return refused, store.get(unit, CAMPAIGN, second.id)
+        return None, None
+
+    refused, after = _while_another_transaction_holds(dsn, world.db, holder, waiter)
+
+    assert isinstance(refused, SheetAlreadyLinked), "the second link was not refused"
+    assert refused.__context__ is None, "the driver's error rides on the refusal"
+    assert after is not None and after.linked_participant_id is None
+    with connect(dsn) as conn:
+        linked = conn.execute(
+            "SELECT id FROM campaign.documents WHERE linked_participant_id = %s", (seat,)
+        ).fetchall()
+    assert linked == [(first.id,)]
+
+
+@needs_db
+def test_one_sheet_linked_to_two_seats_at_once_is_never_re_pointed(dsn: str) -> None:
+    """B-14, the second race. The second link waits on the document row the
+    first holds `FOR NO KEY UPDATE`, then reads what the first committed and
+    refuses: a linked sheet is never re-pointed."""
+    world = _a_seeded_world(dsn, PATIENT)
+    rook = _a_participant(world, CAMPAIGN, alias="Rook")
+    wren = _a_participant(world, CAMPAIGN, alias="Wren")
+    sheet = _a_sheet(world, CAMPAIGN)
+    store = world.documents
+
+    def holder(unit: Any) -> None:
+        assert store.link_character_sheet(unit, CAMPAIGN, sheet.id, participant_id=rook)
+
+    def waiter(unit: Any) -> Any:
+        try:
+            store.link_character_sheet(unit, CAMPAIGN, sheet.id, participant_id=wren)
+        except SheetAlreadyLinked as refused:
+            return refused
+        return None
+
+    refused = _while_another_transaction_holds(dsn, world.db, holder, waiter)
+
+    assert isinstance(refused, SheetAlreadyLinked), "the sheet was re-pointed"
+    assert (refused.document_id, refused.participant_id) == (sheet.id, wren)
+    assert _got(world, CAMPAIGN, sheet.id).linked_participant_id == rook
