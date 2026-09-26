@@ -53,15 +53,15 @@ places, and `docker-compose.yml` mounts both into the init directory:
 - **`02-schema.sql`** — `dnd.chunks` table (see below) + B-tree indexes + HNSW vector index + `search_vector` tsvector + GIN FTS index.
 - **`03-hybrid-search.sql`** — the `dnd.hybrid_search()` function (vector + FTS fused via RRF). Kept separate so the retrieval function can be iterated without touching the table DDL.
 
-**Application schema — `service/sql/`** (canonical; see `service/schema.py`):
+**Application schema — `service/sql/migrations/`** (ordered migrations; see `docs/migrations.md`):
 
-- **`04-chat-schema.sql`** — the `chat` schema: `chat.messages` (persisted conversation turns, incl. spell-mode suggestions as JSONB), `chat.attachments` (uploaded-file extracted text that grounds a conversation's answers), and `chat.conversations` (per-user ownership, with the foreign keys that make content follow its owner).
-- **`05-auth-schema.sql`** — the `auth` schema: `auth.users` and `auth.invites` (one-time invite links). Adds the ownership foreign key onto `chat.conversations`, hence the order.
+- **`0001_chat_schema.sql`** — the `chat` schema: `chat.messages` (persisted conversation turns, incl. spell-mode suggestions as JSONB), `chat.attachments` (uploaded-file extracted text that grounds a conversation's answers), and `chat.conversations` (per-user ownership, with the foreign keys that make content follow its owner).
+- **`0002_auth_schema.sql`** — the `auth` schema: `auth.users` and `auth.invites` (one-time invite links). Adds the ownership foreign key onto `chat.conversations`, hence the order.
 
-These two live in the package rather than here because the **service applies the
-same files at startup** — `history.py` / `auth_store.py` `ensure_schema()`, which
-is the migration path for volumes that predate a schema change (init scripts run
-only on first container init). One definition, both paths. For a managed
+These live in the package rather than here because the **service applies them
+itself**: `service/migrations.py` runs at every startup, applies what a database
+has not seen yet, once, and records it (init scripts run only on first container
+init, and nothing in this directory is application DDL any more). For a managed
 instance with no init directory, `scripts/bootstrap-db.sh` applies all five.
 
 ### `dnd.chunks`

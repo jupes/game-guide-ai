@@ -5,9 +5,9 @@ Server-side message history.
 recent N of a conversation (served oldest-first for display). Two impls:
 
 - `PostgresMessageStore` — the real one, `chat.*` in the same Postgres instance
-  as the RAG corpus. `ensure_schema()` applies the canonical DDL
-  (`service/sql/04-chat-schema.sql`) at startup, which is the migration path for
-  databases that predate a schema change.
+  as the RAG corpus. The schema comes from the ordered migrations
+  (`service/migrations.py`), which the app runs once at startup;
+  `ensure_schema()` only checks that they have been applied.
 - `InMemoryMessageStore` — the test/dev fake with identical ordering + limit
   semantics.
 
@@ -18,13 +18,13 @@ wraps `append` so a history failure can never fail an answer.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
+from .db import Database, default_dsn
+from .migrations import Mode, migrate
 from .models import ChatMode, MessageRole, StoredMessage, Suggestion
-from .schema import CHAT_SCHEMA, load
 
 
 @dataclass
@@ -45,7 +45,7 @@ class MessageStore(Protocol):
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
         suggestions: list[dict[str, Any]] | None = None,
-    ) -> None: ...  # pragma: no cover - structural type
+    ) -> int | None: ...  # pragma: no cover - structural type
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         ...  # pragma: no cover - structural type
@@ -102,12 +102,14 @@ class InMemoryMessageStore:
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
         suggestions: list[dict[str, Any]] | None = None,
-    ) -> None:
-        self._rows.append(_Row(
+    ) -> int | None:
+        row = _Row(
             id=len(self._rows) + 1, conversation_id=conversation_id,
             mode=mode, role=role, content=content, suggestions=suggestions,
             created_at=datetime.now(UTC),
-        ))
+        )
+        self._rows.append(row)
+        return row.id
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         rows = [r for r in self._rows if r.conversation_id == conversation_id]
@@ -172,22 +174,32 @@ def _to_message(r: _Row) -> StoredMessage:
 
 
 class PostgresMessageStore:
-    """`chat.messages` in the corpus Postgres. One connection per operation —
-    no pooling; chat traffic is single-user scale and psycopg connects fast."""
+    """`chat.messages` in the corpus Postgres. One short-lived connection per
+    operation: through the service's bounded gate when it is given one (`db`,
+    1kg.1.5), opened and closed on the spot otherwise (CLIs, tests)."""
 
-    def __init__(self, dsn: str | None = None):
-        self._dsn = dsn or os.environ.get(
-            "DATABASE_URL", "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai"
-        )
+    def __init__(self, dsn: str | None = None, *, db: Database | None = None):
+        self._given_dsn = dsn
+        self._dsn = dsn or default_dsn()
+        self._db = db
 
     def _connect(self):
+        if self._db is not None:
+            return self._db.connection()
         import psycopg
 
         return psycopg.connect(self._dsn)
 
     def ensure_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(load(CHAT_SCHEMA))
+        """Check — never change — that the database is at this build's schema.
+
+        An operator's checkout is not the deployed image: applying whatever
+        migrations it happens to hold, as a side effect of listing invites,
+        would put unreviewed DDL into production. Only the service's startup
+        and an explicit `python -m service.migrations migrate` change a schema;
+        this raises `MigrationsPending` and says so. With no DSN of its own
+        the runner chooses one, preferring the schema owner's."""
+        migrate(self._given_dsn, mode=Mode.VERIFY)
 
     def calls_today(self) -> int:
         """User turns recorded since UTC midnight — the daily cost ceiling (x5bz.3.3).
@@ -216,14 +228,15 @@ class PostgresMessageStore:
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
         suggestions: list[dict[str, Any]] | None = None,
-    ) -> None:
+    ) -> int | None:
         with self._connect() as conn:
-            conn.execute(
+            row = conn.execute(
                 "INSERT INTO chat.messages (conversation_id, mode, role, content, suggestions) "
-                "VALUES (%s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
                 (conversation_id, mode, role, content,
                  json.dumps(suggestions) if suggestions is not None else None),
-            )
+            ).fetchone()
+        return int(row[0])
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         with self._connect() as conn:

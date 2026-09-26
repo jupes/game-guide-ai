@@ -11,7 +11,9 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "openai",
-    "psycopg[binary]",
+    # [pool]: the bounded connection pools of service/db.py (1kg.1.5). Per-operation
+    # connections cannot be bounded, and db-f1-micro allows 22 of them in all.
+    "psycopg[binary,pool]",
     "pydantic",
     # Observability migration (ziw.2 / Phase 1). All declared explicitly so a clean
     # `pip install .` can actually trace (env-gated via RAG_TRACING, off by default):
@@ -96,10 +98,10 @@ packages = ["service", "ingestion"]
 py-modules = ["config"]
 
 [tool.setuptools.package-data]
-# The canonical schema DDL (service/schema.py). `ensure_schema()` reads these at
-# startup, so an image without them cannot migrate a database — it must ship in
-# the wheel, not just exist in the source tree.
-service = ["sql/*.sql"]
+# The ordered migrations and their manifest (service/migrations.py). The runner
+# reads them at startup, so an image without them cannot bring a database up to
+# its own schema — they must ship in the wheel, not just exist in the source tree.
+service = ["sql/migrations/*.sql", "sql/migrations/manifest.txt"]
 
 # ── Lint ─────────────────────────────────────────────────────────────────────
 # Deliberately mainstream rather than maximal: ruff's wider families (PL*, FURB,
@@ -156,6 +158,16 @@ ignore = [
 python_version = "3.12"
 files = ["service", "config.py"]
 ignore_missing_imports = true
+# A statement after a `return` is what a validator looks like when it was edited
+# without being re-read; ruff and mypy's defaults both pass over one. This is the
+# gate that sees it, and the tree is clean under it.
+#
+# Scope: `files` above, so this is the PYTHON gate over `service/` and
+# `config.py` — every module in them, not only the ones whose author turned it
+# on — and it is not repository-wide. Policy, and how to silence a false
+# positive, are in `docs/ci.md`; the short version is `# type: ignore[unreachable]`
+# on the line, never by removing this flag.
+warn_unreachable = true
 
 [tool.pytest.ini_options]
 # Puts the repo root on sys.path so `import service` / `import ingestion` resolve

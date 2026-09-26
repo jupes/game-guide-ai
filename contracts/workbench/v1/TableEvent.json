@@ -76,6 +76,128 @@
         "event": "inactive",
         "since": "2026-09-16T19:31:24Z"
       }
+    },
+    {
+      "name": "the table slot is now showing a dossier",
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "slot": "table",
+        "seq": 12,
+        "content": {
+          "content_kind": "document",
+          "type": "npc",
+          "fields": [
+            {
+              "key": "name",
+              "value": "Sister Ondrey Vashe"
+            },
+            {
+              "key": "portrait",
+              "value": {
+                "handle": "hdl_5e6f7a8b9c0d1e2f",
+                "kind": "image",
+                "media_type": "image/webp",
+                "width": 1024,
+                "height": 1280,
+                "duration_ms": null
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "this device's own slot was stopped",
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "slot": "mine",
+        "seq": 4,
+        "content": null
+      }
+    },
+    {
+      "name": "a guest's opening picture: the table slot alone",
+      "value": {
+        "schema_version": 1,
+        "event": "snapshot",
+        "slots": [
+          {
+            "slot": "table",
+            "seq": 12,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "portrait",
+                  "value": {
+                    "handle": "hdl_5e6f7a8b9c0d1e2f",
+                    "kind": "image",
+                    "media_type": "image/webp",
+                    "width": 1024,
+                    "height": 1280,
+                    "duration_ms": null
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a participant's opening picture: the table slot and their own",
+      "value": {
+        "schema_version": 1,
+        "event": "snapshot",
+        "slots": [
+          {
+            "slot": "table",
+            "seq": 12,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "portrait",
+                  "value": {
+                    "handle": "hdl_5e6f7a8b9c0d1e2f",
+                    "kind": "image",
+                    "media_type": "image/webp",
+                    "width": 1024,
+                    "height": 1280,
+                    "duration_ms": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "slot": "mine",
+            "seq": 4,
+            "content": {
+              "content_kind": "document",
+              "type": "handout",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "The Writ of Passage"
+                }
+              ]
+            }
+          }
+        ]
+      }
     }
   ],
   "invalid": [
@@ -245,6 +367,416 @@
         "schema_version": 1,
         "event": "session",
         "audio": true
+      }
+    },
+    {
+      "name": "a slot named by participant id",
+      "why": "SEC-15, AUD-11: a table client is told `table` or `mine` and never an identifier it has no use for; which participant `mine` is, the server resolves from the credential pair, never from a field",
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "slot": "pt_4c1b9e7a",
+        "seq": 4,
+        "content": null
+      }
+    },
+    {
+      "name": "a slot named by an audience object",
+      "why": "the GM's RevealAudience carries an id; copying it to the table channel would put that id on a player's phone (SEC-15)",
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "slot": {
+          "kind": "participant",
+          "participant_id": "pt_4c1b9e7a"
+        },
+        "seq": 4,
+        "content": null
+      }
+    },
+    {
+      "name": "a slot frame carrying the reveal epoch",
+      "why": "REVEAL-24: the epoch never leaves the GM's channel, or a guest could count narrowings it cannot see",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "slot": "table",
+        "seq": 12,
+        "content": {
+          "content_kind": "document",
+          "type": "npc",
+          "fields": [
+            {
+              "key": "name",
+              "value": "Sister Ondrey Vashe"
+            },
+            {
+              "key": "portrait",
+              "value": {
+                "handle": "hdl_5e6f7a8b9c0d1e2f",
+                "kind": "image",
+                "media_type": "image/webp",
+                "width": 1024,
+                "height": 1280,
+                "duration_ms": null
+              }
+            }
+          ]
+        },
+        "reveal_epoch": 4
+      }
+    },
+    {
+      "name": "a slot frame carrying the disclosure id",
+      "why": "REVEAL-24, owner decision O-3: a private reveal may be one copy of several, and nothing a player's client receives may say so — a disclosure id is shared by every copy, so it is a handle on the other recipients — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "slot": "table",
+        "seq": 12,
+        "content": {
+          "content_kind": "document",
+          "type": "npc",
+          "fields": [
+            {
+              "key": "name",
+              "value": "Sister Ondrey Vashe"
+            },
+            {
+              "key": "portrait",
+              "value": {
+                "handle": "hdl_5e6f7a8b9c0d1e2f",
+                "kind": "image",
+                "media_type": "image/webp",
+                "width": 1024,
+                "height": 1280,
+                "duration_ms": null
+              }
+            }
+          ]
+        },
+        "disclosure_id": "dsc_9a8b7c6d5e4f"
+      }
+    },
+    {
+      "name": "a slot frame carrying the link generation",
+      "why": "SEC-15, RT-2: the server writes a frame only to a stream of the same generation, so the number is nothing a table client needs",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "slot": "table",
+        "seq": 12,
+        "content": {
+          "content_kind": "document",
+          "type": "npc",
+          "fields": [
+            {
+              "key": "name",
+              "value": "Sister Ondrey Vashe"
+            },
+            {
+              "key": "portrait",
+              "value": {
+                "handle": "hdl_5e6f7a8b9c0d1e2f",
+                "kind": "image",
+                "media_type": "image/webp",
+                "width": 1024,
+                "height": 1280,
+                "duration_ms": null
+              }
+            }
+          ]
+        },
+        "gen": 1
+      }
+    },
+    {
+      "name": "a slot frame carrying the session id",
+      "why": "SEC-15: no id a table client has no use for; the session comes from the credential",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "slot": "table",
+        "seq": 12,
+        "content": {
+          "content_kind": "document",
+          "type": "npc",
+          "fields": [
+            {
+              "key": "name",
+              "value": "Sister Ondrey Vashe"
+            },
+            {
+              "key": "portrait",
+              "value": {
+                "handle": "hdl_5e6f7a8b9c0d1e2f",
+                "kind": "image",
+                "media_type": "image/webp",
+                "width": 1024,
+                "height": 1280,
+                "duration_ms": null
+              }
+            }
+          ]
+        },
+        "session_id": "ses_7d3e1f0a"
+      }
+    },
+    {
+      "name": "a table frame carrying GM-side reveal state",
+      "why": "threat model 8.3: reveal state, with the epoch, every slot, version numbers and mask keys, is GM yes / participant never / guest never",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "slot": "table",
+        "seq": 12,
+        "content": {
+          "content_kind": "document",
+          "type": "npc",
+          "fields": [
+            {
+              "key": "name",
+              "value": "Sister Ondrey Vashe"
+            },
+            {
+              "key": "portrait",
+              "value": {
+                "handle": "hdl_5e6f7a8b9c0d1e2f",
+                "kind": "image",
+                "media_type": "image/webp",
+                "width": 1024,
+                "height": 1280,
+                "duration_ms": null
+              }
+            }
+          ]
+        },
+        "live": {
+          "disclosure_id": "dsc_0001b7e2c1a9",
+          "document_id": "doc_9k2f7a1c",
+          "type": "npc",
+          "version": 3,
+          "mask": [
+            "name"
+          ],
+          "stale_text": false,
+          "pending_delivery": false
+        }
+      }
+    },
+    {
+      "name": "a snapshot with no table slot",
+      "why": "every table client is entitled to the table slot, so its absence would be a shape no device can be in",
+      "value": {
+        "schema_version": 1,
+        "event": "snapshot",
+        "slots": [
+          {
+            "slot": "mine",
+            "seq": 4,
+            "content": {
+              "content_kind": "document",
+              "type": "handout",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "The Writ of Passage"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a snapshot with no table slot, only two of this device's own",
+      "why": "every table client is entitled to the table slot, so its absence is a shape no device can be in — which is what this trips first; the one-of-each rule is exercised by the two-table-slots example below",
+      "value": {
+        "schema_version": 1,
+        "event": "snapshot",
+        "slots": [
+          {
+            "slot": "mine",
+            "seq": 4,
+            "content": {
+              "content_kind": "document",
+              "type": "handout",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "The Writ of Passage"
+                }
+              ]
+            }
+          },
+          {
+            "slot": "mine",
+            "seq": 5,
+            "content": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "a snapshot with three slots",
+      "why": "threat model 8.2: a table client sees the table slot and its own slot, and nothing else exists for it",
+      "value": {
+        "schema_version": 1,
+        "event": "snapshot",
+        "slots": [
+          {
+            "slot": "table",
+            "seq": 12,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "portrait",
+                  "value": {
+                    "handle": "hdl_5e6f7a8b9c0d1e2f",
+                    "kind": "image",
+                    "media_type": "image/webp",
+                    "width": 1024,
+                    "height": 1280,
+                    "duration_ms": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "slot": "mine",
+            "seq": 4,
+            "content": {
+              "content_kind": "document",
+              "type": "handout",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "The Writ of Passage"
+                }
+              ]
+            }
+          },
+          {
+            "slot": "table",
+            "seq": 13,
+            "content": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "an empty snapshot",
+      "why": "the table slot is always present, empty or not, so an empty list is never the whole picture",
+      "value": {
+        "schema_version": 1,
+        "event": "snapshot",
+        "slots": []
+      }
+    },
+    {
+      "name": "a slot marked as withheld",
+      "why": "WT-7, threat model 8.2: a slot this device is not entitled to is absent, never marked — a marker would confirm it exists and a private reveal is happening",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "event": "snapshot",
+        "slots": [
+          {
+            "slot": "table",
+            "seq": 12,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "portrait",
+                  "value": {
+                    "handle": "hdl_5e6f7a8b9c0d1e2f",
+                    "kind": "image",
+                    "media_type": "image/webp",
+                    "width": 1024,
+                    "height": 1280,
+                    "duration_ms": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "slot": "mine",
+            "seq": 0,
+            "content": null,
+            "entitled": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "a snapshot with the table slot twice",
+      "why": "AUD-8: one table slot and one private slot per participant, and a device holds one participant's credential — this is the only shape that reaches the one-of-each rule, since a missing table slot and a third entry both fail earlier",
+      "value": {
+        "schema_version": 1,
+        "event": "snapshot",
+        "slots": [
+          {
+            "slot": "table",
+            "seq": 12,
+            "content": {
+              "content_kind": "document",
+              "type": "npc",
+              "fields": [
+                {
+                  "key": "name",
+                  "value": "Sister Ondrey Vashe"
+                },
+                {
+                  "key": "portrait",
+                  "value": {
+                    "handle": "hdl_5e6f7a8b9c0d1e2f",
+                    "kind": "image",
+                    "media_type": "image/webp",
+                    "width": 1024,
+                    "height": 1280,
+                    "duration_ms": null
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "slot": "table",
+            "seq": 13,
+            "content": null
+          }
+        ]
       }
     }
   ]

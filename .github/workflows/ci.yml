@@ -20,7 +20,11 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
+    # INTEGRATION BRANCH ONLY - this line never reaches master. The stacked
+    # Workbench branches are merged into integration/1kg-workbench so that work
+    # built on them gets this pipeline, PostgreSQL job included, from a pull
+    # request into that branch. A pull request never deploys (see `deploy`).
+    branches: [master, "integration/**"]
   workflow_dispatch:
     inputs:
       force_deploy:
@@ -37,8 +41,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # A real PostgreSQL, for the tests whose whole subject is behaviour no fake
-    # reproduces: the atomic single-use invite guarantee (row locks) and what the
-    # canonical schema actually enforces (cascades, SET NULL, NOT VALID).
+    # reproduces: the atomic single-use invite guarantee (row locks), what the
+    # schema actually enforces (cascades, SET NULL, NOT VALID), the migration
+    # runner (adoption, drift, concurrent startups), and the bounded pools, the
+    # transaction boundary and the job outbox (1kg.1.5).
     #
     # It is an EMPTY database: no corpus, no book text. The corpus is deliberately
     # not in git (licensing), and none of these tests need it.
@@ -84,7 +90,11 @@ jobs:
           DATABASE_URL: postgresql://rag:ci_throwaway_not_a_secret@localhost:5432/game_guide_ai
         run: |
           uv run --frozen --no-sync python -m pytest -q --no-cov \
-            service/tests/test_invite_atomic.py tests/test_schema.py
+            service/tests/test_invite_atomic.py tests/test_schema.py \
+            tests/test_migrations_db.py tests/test_db_postgres.py \
+            tests/test_campaign_db.py tests/test_conversation_db.py \
+            tests/test_timeline_db.py \
+            tests/test_document_db.py
 
   ui-tests:
     runs-on: ubuntu-latest

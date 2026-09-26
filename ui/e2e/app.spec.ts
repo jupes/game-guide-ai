@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import {
   collectPerformanceMetrics,
   installPerformanceObservers,
@@ -10,19 +11,20 @@ import {
 
 test('production app preserves a conversation and emits bounded performance evidence', async ({
   page,
-}, testInfo) => {
-  // Invites are single-use and emails unique, so each attempt needs its own —
-  // otherwise a retry fails at account creation instead of retrying the test.
-  // Tokens are seeded by service/e2e_app.py (E2E_INVITE_TOKENS).
-  const invite = `e2e-invite-token-${testInfo.retry}`
-  const testerEmail = `e2e-tester-${testInfo.retry}@example.com`
-  const externalFontRequests: string[] = []
+}) => {
+  // Invites are single-use and emails unique, so each ATTEMPT needs its own —
+  // otherwise a retry fails at account creation instead of retrying the test —
+  // and so does each RUN, or a second `bun run test:e2e` against a stack that
+  // is already up fails on the identity the first one registered. `retry`
+  // supplies neither; a nonce supplies both. service/e2e_app.py mints any
+  // `e2e-invite-…` token on first sight, so it does not have to be seeded by
+  // name (it is still single-use once redeemed).
+  const nonce = randomUUID().slice(0, 8)
+  const invite = `e2e-invite-token-${nonce}`
+  const testerEmail = `e2e-tester-${nonce}@example.com`
   await page.emulateMedia({ reducedMotion: 'reduce' })
-  page.on('request', (request) => {
-    if (/fonts\.(googleapis|gstatic)\.com/.test(request.url())) {
-      externalFontRequests.push(request.url())
-    }
-  })
+  // The font guard that used to live here is now the `guards` fixture, which
+  // watches EVERY origin (not just Google Fonts) on every spec in this suite.
   await installPerformanceObservers(page)
   // Access is invite-gated (x5bz.2): land on the invite deep-link and create the
   // account, exactly as a real tester does. The token is seeded by
@@ -53,23 +55,33 @@ test('production app preserves a conversation and emits bounded performance evid
   await page.getByRole('button', { name: prompt, exact: true }).click()
   await expect(page.getByText(`E2E spell answer: ${prompt}`)).toBeVisible()
 
-  await page
-    .locator('input[type="file"][aria-label="Attach file"]')
-    .setInputFiles({
-      name: 'session-notes.txt',
-      mimeType: 'text/plain',
-      buffer: Buffer.from('The party carries a silver key.'),
-    })
+  // agent-forge-harness-vnx: the hidden input is now aria-hidden + out of the
+  // tab order, so the picker is reached through the visible button. Assert
+  // the name is unambiguous first (that IS the bead's own defect check), then
+  // wait for the file-chooser event rather than listening for it —
+  // `page.on('filechooser', …)` would put the `setFiles` call inside a
+  // callback that might never run, which is a test that cannot fail (see
+  // ROOT/.tmp/work/agent-forge-harness-ui-a11y-alignment.md §0).
+  const attachButton = page.getByRole('button', { name: 'Attach file', exact: true })
+  await expect(attachButton).toHaveCount(1)
+  const chooserPromise = page.waitForEvent('filechooser')
+  await attachButton.click()
+  const chooser = await chooserPromise
+  await chooser.setFiles({
+    name: 'session-notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('The party carries a silver key.'),
+  })
   await expect(page.getByText('session-notes.txt', { exact: true })).toBeVisible()
-  expect(externalFontRequests).toEqual([])
 
-  const screenshotDirectory = path.resolve(
-    '..',
-    'docs',
-    'forge',
-    'reports',
-    'assets',
-  )
+  // Under `e2e-results/` (gitignored, and what CI uploads as an artifact) —
+  // NOT under `docs/forge/reports/assets/`, where these two names are TRACKED
+  // files referenced by a shipped report. Running the suite used to rewrite
+  // them every time, so `git status` was dirty after a test run and the report
+  // silently re-pointed at whatever the last local run happened to render.
+  // Promoting a run's screenshots into a report is a deliberate copy, not a
+  // side effect of `bun run test:e2e`.
+  const screenshotDirectory = path.resolve('e2e-results', 'screenshots')
   await fs.mkdir(screenshotDirectory, { recursive: true })
   await page.screenshot({
     path: path.join(screenshotDirectory, 'eiio-e2e-light.png'),
@@ -95,9 +107,18 @@ test('production app preserves a conversation and emits bounded performance evid
     budgets,
     path.resolve('e2e-results'),
   )
+  // The reported set is pinned to the budget file FIRST. `every()` is vacuously
+  // true over an empty object, so a metric quietly dropped from
+  // performance.ts's report would shrink the gate while leaving it green —
+  // the same "assertion that cannot fail" shape as the dialog handler in
+  // workspace.spec.ts. Naming the over-budget metrics rather than asserting
+  // `true` also means a failure says which one blew the budget.
+  expect(Object.keys(report.metrics).sort()).toEqual(Object.keys(budgets).sort())
   expect(
-    Object.values(report.metrics).every((metric) => metric.passed),
-  ).toBe(true)
+    Object.entries(report.metrics)
+      .filter(([, metric]) => !metric.passed)
+      .map(([name]) => name),
+  ).toEqual([])
   await expect(
     fs.access(path.resolve('e2e-results', 'performance.json')),
   ).resolves.toBeUndefined()

@@ -1,0 +1,149 @@
+{
+  "schema": "ConversationPage",
+  "direction": "response",
+  "note": "The owner's index, newest metadata first. next_cursor is always present; a short page is not the end of the list, only a null cursor is. No filter is echoed back.",
+  "valid": [
+    {
+      "name": "two conversations, more to come",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "schema_version": 1,
+            "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+            "campaign_id": "cmp_4b1d9e7a",
+            "title": "Session zero: the harbour job",
+            "started_mode": "gm",
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": "2026-09-16T19:31:24Z",
+            "archived_at": null
+          },
+          {
+            "schema_version": 1,
+            "conversation_id": "3f9a1b2c-7d4e-4f5a-9b8c-1d2e3f4a5b6c",
+            "campaign_id": null,
+            "title": null,
+            "started_mode": null,
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": null,
+            "archived_at": null
+          }
+        ],
+        "next_cursor": "WyIyMDI2LTA5LTE2VDE5OjIwOjExKzAwOjAwIiwiM2Y5YTFiMmMiXQ"
+      }
+    },
+    {
+      "name": "a short page that is not the end",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "schema_version": 1,
+            "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+            "campaign_id": "cmp_4b1d9e7a",
+            "title": "Session zero: the harbour job",
+            "started_mode": "gm",
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": "2026-09-16T19:31:24Z",
+            "archived_at": null
+          }
+        ],
+        "next_cursor": "WyIyMDI2LTA5LTE2VDE5OjIwOjExKzAwOjAwIiwiY252XzEiXQ"
+      }
+    },
+    {
+      "name": "an empty last page",
+      "value": {
+        "schema_version": 1,
+        "items": [],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "a page of 100",
+      "value": {
+        "schema_version": 1,
+        "items": {
+          "@repeat_value": {
+            "schema_version": 1,
+            "conversation_id": "3f9a1b2c-7d4e-4f5a-9b8c-1d2e3f4a5b6c",
+            "campaign_id": null,
+            "title": null,
+            "started_mode": null,
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": null,
+            "archived_at": null
+          },
+          "@count": 100
+        },
+        "next_cursor": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "101 conversations",
+      "why": "a page holds at most 100",
+      "value": {
+        "schema_version": 1,
+        "items": {
+          "@repeat_value": {
+            "schema_version": 1,
+            "conversation_id": "3f9a1b2c-7d4e-4f5a-9b8c-1d2e3f4a5b6c",
+            "campaign_id": null,
+            "title": null,
+            "started_mode": null,
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": null,
+            "archived_at": null
+          },
+          "@count": 101
+        },
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "no cursor key",
+      "why": "the end of a list is null, never a missing key",
+      "value": {
+        "schema_version": 1,
+        "items": []
+      }
+    },
+    {
+      "name": "a cursor that is not base64url",
+      "why": "a cursor is [A-Za-z0-9_-]{1,512}, so it may ride in a query string",
+      "value": {
+        "schema_version": 1,
+        "items": [],
+        "next_cursor": "not/a+cursor="
+      }
+    },
+    {
+      "name": "a filter echoed back",
+      "why": "a page carries no filter; the server refuses to emit one and a client strips it",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "items": [],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "an item that is not a conversation",
+      "why": "every item is a Conversation",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A"
+          }
+        ],
+        "next_cursor": null
+      }
+    }
+  ]
+}

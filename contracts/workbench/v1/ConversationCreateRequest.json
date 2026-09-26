@@ -1,0 +1,171 @@
+{
+  "schema": "ConversationCreateRequest",
+  "direction": "request",
+  "note": "POST /conversations. The server mints the id and the owner is the session: there is no claim (threat model 8.1) and no command_id (ruling 2.4#5), so a retried create makes a second conversation, which archive recovers.",
+  "valid": [
+    {
+      "name": "a plain sage conversation",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "sage"
+      }
+    },
+    {
+      "name": "a GM thread inside a campaign, titled",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "gm",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Session zero"
+      }
+    },
+    {
+      "name": "explicit nulls for the optional keys",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "rules",
+        "campaign_id": null,
+        "title": null
+      }
+    },
+    {
+      "name": "a title with whitespace at its edges, which is stored trimmed",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "spell",
+        "title": "  Harbour at night \t"
+      }
+    },
+    {
+      "name": "a title of 200 characters",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "gm",
+        "title": "@repeat:a:200"
+      }
+    },
+    {
+      "name": "an uncampaigned GM thread, which RAIL-13 keeps as plain chat",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "gm"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no channel",
+      "why": "started_mode is required: the index is per channel",
+      "value": {
+        "schema_version": 1
+      }
+    },
+    {
+      "name": "a campaign conversation that is not a GM thread",
+      "why": "ruling A2-10: a conversation inside a campaign is started in gm",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "sage",
+        "campaign_id": "cmp_4b1d9e7a"
+      }
+    },
+    {
+      "name": "a channel the service does not have",
+      "why": "started_mode is one of ChatMode",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "combat"
+      }
+    },
+    {
+      "name": "a title that trims to nothing",
+      "why": "ruling A2-9: 1 to 200 characters after trimming",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "sage",
+        "title": " \t "
+      }
+    },
+    {
+      "name": "a title of 201 characters",
+      "why": "ruling A2-9: 1 to 200 characters after trimming",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "sage",
+        "title": "@repeat:a:201"
+      }
+    },
+    {
+      "name": "a line break inside a title",
+      "why": "ruling A2-9: U+0000 to U+001F are refused",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "sage",
+        "title": "Harbour\nat night"
+      }
+    },
+    {
+      "name": "a C1 control inside a title",
+      "why": "ruling A2-9: U+007F to U+009F are refused; NEL is one, and no side trims it",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "sage",
+        "title": "Harbour\u0085"
+      }
+    },
+    {
+      "name": "a bidirectional override inside a title",
+      "why": "ruling A2-9: U+202A to U+202E are refused",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "sage",
+        "title": "Harbour \u202ethgin"
+      }
+    },
+    {
+      "name": "a bidirectional isolate inside a title",
+      "why": "ruling A2-9: U+2066 to U+2069 are refused",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "sage",
+        "title": "\u2067Harbour"
+      }
+    },
+    {
+      "name": "a title that is not text",
+      "why": "no coercion between JSON types",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "sage",
+        "title": 42
+      }
+    },
+    {
+      "name": "a client-chosen id",
+      "why": "the server mints the id (SEC-4); a request is strict",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "sage",
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A"
+      }
+    },
+    {
+      "name": "an idempotency key",
+      "why": "ruling 2.4#5: create takes no command_id; a request is strict",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "sage",
+        "command_id": "cmd_0123456789abcdef"
+      }
+    },
+    {
+      "name": "a campaign id outside the opaque grammar",
+      "why": "identifiers are [A-Za-z0-9_-]{1,64}",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "gm",
+        "campaign_id": "cmp 4b1d"
+      }
+    }
+  ]
+}

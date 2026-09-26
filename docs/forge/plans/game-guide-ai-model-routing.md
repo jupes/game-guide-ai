@@ -9,6 +9,14 @@ open findings; do not treat this header as a substitute for reading them. Prices
 documentation verified 2026-07-24. Design decisions D1–D7 below were added in response to the
 second review.
 
+> **Amended 2026-09-24 — owner decisions D-8 and D-9** (billing plan, section "Owner decisions 2026-09-21", rows D-8 and D-9).
+> The answering model now follows the account's **tier**: the free tier gets the small model and the
+> paid tiers get OpenAI's GPT-6 Luna, once `agent-forge-harness-5v3` has qualified it under this plan's
+> evaluation matrix (`b8o.3`) and `agent-forge-harness-iov` has built the tier mapping. **Users no longer
+> see which model answers** (`agent-forge-harness-au3`): this reverses D3's client-facing disclosure —
+> aliases and providers stay in server logs, traces and usage records only. Everything else here stands,
+> including "Do not pay another LLM to choose an LLM".
+
 ## Executive decision
 
 Build the model picker and a hybrid `Auto` mode, but do not equate “Chinese/open-weight” with

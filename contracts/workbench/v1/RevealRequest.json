@@ -1,0 +1,410 @@
+{
+  "schema": "RevealRequest",
+  "direction": "request",
+  "note": "Confirm (REVEAL-5, ED-9): one atomic mutation covering reveal, update, replace and move — the server derives which, the request never says. It names the sealed version the sheet displayed (CANVAS-34), an explicit non-empty list of field keys, the audience — the table, or a list of participant ids (owner decision O-3: a group display is per-recipient copies of ONE disclosure, and a named group is expanded into its member ids by the client, so no group id and no wildcard is ever sent or stored) — and BOTH the session it was composed for and that session's reveal epoch, so a number from last night can never match tonight (ED-9). No campaign id: the session names the campaign, and ownership is the route's (SEC-3), as with CuePlayRequest.",
+  "valid": [
+    {
+      "name": "reveal two fields to the table",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [
+          "name",
+          "portrait"
+        ],
+        "audience": {
+          "kind": "table"
+        }
+      }
+    },
+    {
+      "name": "reveal one field to a participant",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f91",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 0,
+        "version": 1,
+        "mask": [
+          "notes"
+        ],
+        "audience": {
+          "kind": "participants",
+          "participant_ids": [
+            "pt_4c1b9e7a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "reveal one field to three players at once",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_7b8c9d0e1f2a3b4c",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 0,
+        "version": 1,
+        "mask": [
+          "notes"
+        ],
+        "audience": {
+          "kind": "participants",
+          "participant_ids": [
+            "pt_4c1b9e7a",
+            "pt_11aa22bb",
+            "pt_33cc44dd"
+          ]
+        }
+      }
+    },
+    {
+      "name": "a mask at the bound",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f92",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 12,
+        "version": 2,
+        "mask": [
+          "f0",
+          "f1",
+          "f2",
+          "f3",
+          "f4",
+          "f5",
+          "f6",
+          "f7",
+          "f8",
+          "f9",
+          "g0",
+          "g1",
+          "g2",
+          "g3",
+          "g4",
+          "g5",
+          "g6",
+          "g7",
+          "g8",
+          "g9",
+          "h0",
+          "h1",
+          "h2",
+          "h3",
+          "h4",
+          "h5",
+          "h6",
+          "h7",
+          "h8",
+          "h9",
+          "i0",
+          "i1",
+          "i2",
+          "i3",
+          "i4",
+          "i5",
+          "i6",
+          "i7",
+          "i8",
+          "i9",
+          "j0",
+          "j1",
+          "j2",
+          "j3",
+          "j4",
+          "j5",
+          "j6",
+          "j7",
+          "j8",
+          "j9",
+          "k0",
+          "k1",
+          "k2",
+          "k3",
+          "k4",
+          "k5",
+          "k6",
+          "k7",
+          "k8",
+          "k9",
+          "l0",
+          "l1",
+          "l2",
+          "l3"
+        ],
+        "audience": {
+          "kind": "table"
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a wildcard mask",
+      "why": "REVEAL-9, ED-8: `all` is never stored and never sent — the client expands it into the keys that exist now, so a field added later is never revealed by a wildcard",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [
+          "all"
+        ],
+        "audience": {
+          "kind": "table"
+        }
+      }
+    },
+    {
+      "name": "a glob in the mask",
+      "why": "REVEAL-9: a mask lists individual field keys; a pattern is not a key",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [
+          "*"
+        ],
+        "audience": {
+          "kind": "table"
+        }
+      }
+    },
+    {
+      "name": "an empty mask",
+      "why": "REVEAL-5: an empty draft on a live document is a Stop, which is a different request and carries no epoch",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [],
+        "audience": {
+          "kind": "table"
+        }
+      }
+    },
+    {
+      "name": "the same key twice",
+      "why": "a mask is a set of keys; a repeat would make the ledger's one-row-per-field ambiguous (ED-17)",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [
+          "name",
+          "name"
+        ],
+        "audience": {
+          "kind": "table"
+        }
+      }
+    },
+    {
+      "name": "a Confirm that names no session",
+      "why": "ED-9: a Confirm names the session it was composed for as well as the epoch, so a number from an earlier session can never match",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [
+          "name"
+        ],
+        "audience": {
+          "kind": "table"
+        }
+      }
+    },
+    {
+      "name": "a Confirm that names no epoch",
+      "why": "REVEAL-22: a widening carries the epoch it was issued under, so a Stop defeats it in either arrival order",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "version": 3,
+        "mask": [
+          "name"
+        ],
+        "audience": {
+          "kind": "table"
+        }
+      }
+    },
+    {
+      "name": "a write revision instead of a version number",
+      "why": "REVEAL-8, CANVAS-34: the table sees a pinned version; a write revision is the concurrency token and is never a base for a reveal",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "write_revision": 12,
+        "mask": [
+          "name"
+        ],
+        "audience": {
+          "kind": "table"
+        }
+      }
+    },
+    {
+      "name": "an audience named by a bare string",
+      "why": "an audience is a discriminated object (AUD-2), so a participant can never be implied by a string",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [
+          "name"
+        ],
+        "audience": "table"
+      }
+    },
+    {
+      "name": "an eligibility class riding along",
+      "why": "ED-11: Workbench v1 ships mask-only; eligibility binds reveal from 1ir.11.1 and is never a request field",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [
+          "name"
+        ],
+        "audience": {
+          "kind": "table"
+        },
+        "eligibility": "public"
+      }
+    },
+    {
+      "name": "field text alongside the mask",
+      "why": "X-7: a request names keys; the server reads the text from the sealed version it already holds",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [
+          "name"
+        ],
+        "audience": {
+          "kind": "table"
+        },
+        "values": {
+          "name": "Sister Ondrey Vashe"
+        }
+      }
+    },
+    {
+      "name": "a mask one key over the bound",
+      "why": "bounded like a changed-field list (64), so one request cannot be unbounded work; the keys here are distinct, so the bound is the only reason it fails",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [
+          "f0",
+          "f1",
+          "f2",
+          "f3",
+          "f4",
+          "f5",
+          "f6",
+          "f7",
+          "f8",
+          "f9",
+          "g0",
+          "g1",
+          "g2",
+          "g3",
+          "g4",
+          "g5",
+          "g6",
+          "g7",
+          "g8",
+          "g9",
+          "h0",
+          "h1",
+          "h2",
+          "h3",
+          "h4",
+          "h5",
+          "h6",
+          "h7",
+          "h8",
+          "h9",
+          "i0",
+          "i1",
+          "i2",
+          "i3",
+          "i4",
+          "i5",
+          "i6",
+          "i7",
+          "i8",
+          "i9",
+          "j0",
+          "j1",
+          "j2",
+          "j3",
+          "j4",
+          "j5",
+          "j6",
+          "j7",
+          "j8",
+          "j9",
+          "k0",
+          "k1",
+          "k2",
+          "k3",
+          "k4",
+          "k5",
+          "k6",
+          "k7",
+          "k8",
+          "k9",
+          "l0",
+          "l1",
+          "l2",
+          "l3",
+          "l4"
+        ],
+        "audience": {
+          "kind": "table"
+        }
+      }
+    }
+  ]
+}

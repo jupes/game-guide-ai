@@ -1,0 +1,783 @@
+{
+  "schema": "TableProjection",
+  "direction": "response",
+  "note": "What a table client is given, and the whole of it (SEC-14, SEC-15). It is BUILT from a sealed version, a mask and an audience — never derived by deleting keys from a GM payload — so the schema forbids everything outside the type's revealable ALLOWLIST (1kg.5.3's per-field `revealable` rule), and the invalid examples below are the canary suite in shape form. content_kind is a discriminator whose only v1 member is `document` (ADR 7.4): adding a member later IS a version bump, and what the reservation buys is that a v1 table client shows its neutral placeholder instead of failing to parse. A field carries its KEY and its VALUE and nothing else: the heading is the registry's label for (type, key), which the table bundle already holds, so there is no free-text member on the wire for a title, an alias, a filename or an id to ride in (TABLE-3). The page title is still built from the projection, so the document's name appears only if `name` is masked. An asset is a per-slot TableAssetRef handle, never the GM-side asset_id (SEC-15, REVEAL-21). The examples marked `applies_to: [\"server\"]` are refused by the server and STRIPPED by the client, and both halves are pinned: the emitter is the confidentiality boundary, because by the time a table client parses, the bytes are on the device. 1kg.7.2 therefore validates every frame it emits against the Pydantic model, and T-1's canaries assert on the RAW response bytes, never on a parsed result.",
+  "valid": [
+    {
+      "name": "a name and a portrait on the table",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          },
+          {
+            "key": "portrait",
+            "value": {
+              "handle": "hdl_5e6f7a8b9c0d1e2f",
+              "kind": "image",
+              "media_type": "image/webp",
+              "width": 1024,
+              "height": 1280,
+              "duration_ms": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "one prose section and nothing else",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "if_attacked",
+            "value": "She walks into the water and is gone."
+          }
+        ]
+      }
+    },
+    {
+      "name": "the common fields alone, on a type that declares more",
+      "value": {
+        "content_kind": "document",
+        "type": "handout",
+        "fields": [
+          {
+            "key": "name",
+            "value": "The Writ of Passage"
+          },
+          {
+            "key": "qualifier",
+            "value": "sealed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "the stat cells a party may read",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "ac",
+            "value": 15
+          },
+          {
+            "key": "hp",
+            "value": 82
+          },
+          {
+            "key": "abilities",
+            "value": {
+              "str": 11,
+              "dex": 16,
+              "con": 14,
+              "int": 18,
+              "wis": 15,
+              "cha": 13
+            }
+          },
+          {
+            "key": "actions",
+            "value": [
+              {
+                "name": "Chill Touch",
+                "text": "Melee spell attack, reach 5 ft., one target. Hit: 10 necrotic damage."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "an ability block with a score the creature lacks left out",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "abilities",
+            "value": {
+              "str": 20,
+              "dex": 8,
+              "con": 20
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a list of rumours, the text_list branch",
+      "value": {
+        "content_kind": "document",
+        "type": "lore",
+        "fields": [
+          {
+            "key": "rumours",
+            "value": [
+              "The bell still rings under the water.",
+              "No one born in the village will swim."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a count that is legitimately zero",
+      "value": {
+        "content_kind": "document",
+        "type": "encounter",
+        "fields": [
+          {
+            "key": "xp_budget",
+            "value": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "a client strips a field a newer server added",
+      "applies_to": [
+        "client"
+      ],
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          }
+        ],
+        "layout": "portrait_left"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "the GM-side asset reference",
+      "why": "SEC-15, REVEAL-21: a table client gets a per-slot handle that dies with its slot, never the asset_id — two slots showing one portrait must not be correlatable",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "portrait",
+            "value": {
+              "asset_id": "ast_77c1d0e2",
+              "kind": "image",
+              "alt": "a pale cleric"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "the pinned version number",
+      "why": "SEC-15: version numbers, authorship, change lists and write revisions never reach a table client — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "version": 3,
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "the reveal epoch",
+      "why": "REVEAL-24: the epoch never leaves the GM's channel, or a guest could count narrowings it cannot see — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "reveal_epoch": 4,
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "the audio epoch",
+      "why": "SEC-15: neither epoch is a table client's, and audio state travels in its own frame — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "audio_epoch": 9,
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "another slot's sequence",
+      "why": "REVEAL-24, WT-7: per-slot sequences go only to clients entitled to that slot; a sequence here is an inference channel — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "seq": 12,
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "the document's title outside the mask",
+      "why": "TABLE-3: every label, the page title included, is built from the projection, so a name appears only when `name` is masked — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "title": "Sister Ondrey Vashe",
+        "fields": [
+          {
+            "key": "portrait",
+            "value": {
+              "handle": "hdl_5e6f7a8b9c0d1e2f",
+              "kind": "image",
+              "media_type": "image/webp",
+              "width": 1024,
+              "height": 1280,
+              "duration_ms": null
+            }
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "an asset's filename",
+      "why": "AUDIO-29, SEC-15: a filename can be a spoiler, and nothing names an asset to a player — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "portrait",
+            "value": {
+              "handle": "hdl_5e6f7a8b9c0d1e2f",
+              "kind": "image",
+              "media_type": "image/webp",
+              "width": 1024,
+              "height": 1280,
+              "duration_ms": null,
+              "filename": "ondrey-true-face.webp"
+            }
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "a key that is never revealable",
+      "why": "REVEAL-10, ED-5: tags are gm_only by construction, so a mask can never name them and a projection can never carry them",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "tags",
+            "value": [
+              "undead",
+              "twist"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "an identity link in a projection",
+      "why": "ED-20, ED-5: `true_identity` is a field npc declares and the registry does not mark revealable, so it is gm_only by construction — the allowlist is the one thing that can say a field may reach a player",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "true_identity",
+            "value": "She is the lich Vashe the Drowned."
+          }
+        ]
+      }
+    },
+    {
+      "name": "an ability block with no scores in it",
+      "why": "ED-9: a masked key is present and non-empty in the pinned version, so an ability heading a table is shown always has a cell under it",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "abilities",
+            "value": {}
+          }
+        ]
+      }
+    },
+    {
+      "name": "an ability score the rules cannot produce",
+      "why": "a projection carries document values and is bounded exactly as the document is (0 to 99 for an ability score)",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "abilities",
+            "value": {
+              "str": 100
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an ability key this contract does not define",
+      "why": "CANVAS-19: the block is one field with a closed key set, so a seventh score is a shape the builder never produces — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "abilities",
+            "value": {
+              "str": 11,
+              "luck": 13
+            }
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "a stat cell cleared to null",
+      "why": "ED-9: a document may hold null for a stat the GM has not filled in; a projection of it would draw an empty cell under a masked heading, so the reveal is refused instead",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "ac",
+            "value": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "an entry with a heading and no body",
+      "why": "REVEAL-5: every masked key is present and non-empty, so a named block reaches a table with its text or not at all",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "traits",
+            "value": [
+              {
+                "name": "Amphibious",
+                "text": ""
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "an entry carrying more than a heading and its text",
+      "why": "X-10: an entry is plain text on both members; a note, a source or a marker beside them is a channel the builder never opens — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "quest-log",
+        "fields": [
+          {
+            "key": "open_threads",
+            "value": [
+              {
+                "name": "The drowned bell",
+                "text": "Someone is ringing it.",
+                "gm_note": "Vashe rings it herself."
+              }
+            ]
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "an empty list where a list of rumours belongs",
+      "why": "ED-9: a masked key is present and non-empty in the pinned version, so a list that has been cleared is not a live slot",
+      "value": {
+        "content_kind": "document",
+        "type": "lore",
+        "fields": [
+          {
+            "key": "rumours",
+            "value": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "corpus sources beside the text",
+      "why": "SEC-15: sources and citation text never reach a table client — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          }
+        ],
+        "sources": [
+          {
+            "book": "mm-5e",
+            "page": 12
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "authorship and a changed-field list",
+      "why": "SEC-15: who wrote it and what moved are GM-side facts; a player sees text, not history — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "author": "assistant",
+        "changed": [
+          "notes"
+        ],
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "the recipient's alias",
+      "why": "AUD-11: an alias travels only on the GM's channel, and a table payload never names anyone — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "alias": "Bex",
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "an eligibility class on a field",
+      "why": "ED-25, REVEAL-24: a table read checks entitlement, never eligibility, and a classification made for one audience is invisible to every other — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe",
+            "eligibility": "public"
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "the authorisation revision",
+      "why": "ED-25: slot frames are served from slot state and are never gated on a revision, so a table client has no use for one — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "authz_revision": 7,
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "a content kind this contract does not define",
+      "why": "ADR 7.4: `document` is the only v1 member; a reference excerpt is an amendment and a version bump, which is why a v1 client shows a placeholder rather than parsing it",
+      "value": {
+        "content_kind": "excerpt",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an empty projection",
+      "why": "ED-9: every masked key is present and non-empty in the pinned version, so a live slot always shows something",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": []
+      }
+    },
+    {
+      "name": "an empty value",
+      "why": "REVEAL-5: the server refuses a mask key that is empty in the named version, so an empty heading can never reach the table",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "notes",
+            "value": ""
+          }
+        ]
+      }
+    },
+    {
+      "name": "a value that is only whitespace",
+      "why": "REVEAL-5, ED-9: a value that trimming empties is a blank heading on a table, and `present and non-empty` has to mean a player sees something — the contract's own trim decides, so both sides agree on what blank is",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "voice",
+            "value": "   "
+          }
+        ]
+      }
+    },
+    {
+      "name": "a list item that is only whitespace",
+      "why": "REVEAL-5: the same inside a list — one blank bullet under a masked heading is what `present and non-empty` rules out",
+      "value": {
+        "content_kind": "document",
+        "type": "lore",
+        "fields": [
+          {
+            "key": "rumours",
+            "value": [
+              "The bell still rings under the water.",
+              " "
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "the same key twice",
+      "why": "a projection is built from a mask, which names each field once (ED-17)",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister Ondrey Vashe"
+          },
+          {
+            "key": "name",
+            "value": "The Hooded Stranger"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a value of the wrong kind for its field",
+      "why": "the builder emits the type's declared kind; a list where prose belongs means the projection was assembled by hand",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "notes",
+            "value": [
+              "she lies"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a text field over its bound",
+      "why": "a projection carries document text and is bounded exactly as the document is (200 for text)",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "voice",
+            "value": "@repeat:a:201"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a projection field carrying a label",
+      "why": "TABLE-3, SEC-15: a projection carries a key and a value, and the table client renders the registry's label for (type, key) — a heading on the wire would be a free-text channel through which a title, an alias or a filename fits — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "name",
+            "label": "Sister Ondrey Vashe - v3 - epoch 4 - pt_4c1b9e7a",
+            "value": "Sister Ondrey Vashe"
+          }
+        ]
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "a masked key a wildcard could have produced",
+      "why": "REVEAL-9, ED-8: `all` is refused wherever a field key is named, so a wildcard cannot survive as far as a projection",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "all",
+            "value": "Sister Ondrey Vashe"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a revealed name holding a NUL",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: a projection's text refuses exactly what a document's text refuses, so a value a document refuses can never ride in a projection instead. NUL is a C0 control",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister\u0000 Ondrey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "revealed prose holding an ESC",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: a projection's text refuses exactly what a document's text refuses, so a value a document refuses can never ride in a projection instead. ESC (U+001B) is a C0 control",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "notes",
+            "value": "The tunnel\u001b is shown in red ink."
+          }
+        ]
+      }
+    },
+    {
+      "name": "a revealed list item holding a right-to-left override",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: a projection's text refuses exactly what a document's text refuses, so a value a document refuses can never ride in a projection instead. U+202E is a bidirectional control",
+      "value": {
+        "content_kind": "document",
+        "type": "lore",
+        "fields": [
+          {
+            "key": "rumours",
+            "value": [
+              "The bell still rings under the water.",
+              "No one born\u202e in the village will swim."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a revealed entry name holding a byte order mark",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: a projection's text refuses exactly what a document's text refuses, so a value a document refuses can never ride in a projection instead. U+FEFF inside a value is an invisible byte order mark",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "traits",
+            "value": [
+              {
+                "name": "Amphi\ufeffbious",
+                "text": "She breathes water."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a revealed entry text holding a left-to-right mark",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: a projection's text refuses exactly what a document's text refuses, so a value a document refuses can never ride in a projection instead. U+200E is in the Bidi_Control set, which is refused whole",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "traits",
+            "value": [
+              {
+                "name": "Amphibious",
+                "text": "She breathes\u200e water."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

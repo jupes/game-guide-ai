@@ -79,7 +79,7 @@
 .chat-pane__suggestion-list {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-3, 0.75rem);
+  gap: var(--aether-space-3);
   list-style: none;
   margin: 0;
   padding: 0;
@@ -88,7 +88,7 @@
 .chat-pane__suggestion {
   display: flex;
   align-items: center;
-  gap: var(--spacing-3, 0.75rem);
+  gap: var(--aether-space-3);
 }
 
 /* File attachments (swe1.6) */
@@ -100,8 +100,12 @@
 }
 
 /* The real control is the attach IconButton; the input is triggered
-   programmatically and stays visually + AT hidden via off-screen clipping
-   (not display:none, so it remains focusable/operable for automation). */
+   programmatically. AT-hiding comes from `aria-hidden` + `tabIndex={-1}`
+   on the element (agent-forge-harness-vnx) — clipping alone is NOT AT
+   hiding, as `.chat-pane__sr-only` below proves: it uses this exact
+   clipping technique and its entire job is to stay announced. This stays
+   visually off-screen (not display:none, so a programmatic `.click()` still
+   opens the picker). */
 .chat-pane__file-input {
   position: absolute;
   width: 1px;

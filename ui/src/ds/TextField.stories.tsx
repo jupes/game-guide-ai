@@ -120,3 +120,14 @@ export const RefAndAriaForwarding: Story = {
     await expect(field).toHaveFocus()
   },
 }
+
+// ── Dark Tavern ──────────────────────────────────────────────────────────────
+// agent-forge-harness-27h, rework 1. This file had NO dark story, so strict axe
+// had never rendered a TextField against the dark palette. `DarkErrorState` is
+// the one that earns its keep: the branch's AuthScreen fix was a sign-in error
+// message reading 2.62:1 in dark, and an error message is the one piece of text
+// a stuck user most needs. Error text is theme-sensitive by construction.
+
+export const Dark: Story = { ...Variants, globals: { theme: 'dark' } }
+
+export const DarkErrorState: Story = { ...ErrorState, globals: { theme: 'dark' } }

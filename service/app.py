@@ -6,7 +6,7 @@ The `RagService` (vocabulary loaded once) is built at startup and supplied via a
 dependency so tests can override it without a DB or LLM.
 
 Run:
-    uv run --with fastapi --with uvicorn --with openai --with "psycopg[binary]" \
+    uv run --with fastapi --with uvicorn --with openai --with "psycopg[binary,pool]" \
         uvicorn service.app:app --port 8000
 """
 
@@ -15,9 +15,12 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+import os
+import threading
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from enum import Enum
 from importlib.util import find_spec
 from pathlib import Path
@@ -25,14 +28,14 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.staticfiles import StaticFiles
 
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from . import gcp_logging, usage_capture
+from . import conversations_api, gcp_logging, timeline, usage_capture
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
+from .db import Database, PoolSettings
 from .hashing import (
     DUMMY_PASSWORD_HASH,
     HashingCapacityError,
@@ -52,6 +55,7 @@ from .metrics import (
     build_metrics_sink,
     record_safely,
 )
+from .migrations import MigrationError, Mode, migrate
 from .model_catalog import CATALOG_REVISION, DEFAULT_ALIAS, enabled_profiles, get_profile, public_model_entry
 from .models import (
     Attachment,
@@ -76,6 +80,9 @@ from .ratelimit import (
 )
 from .security_headers import CONTENT_SECURITY_POLICY
 from .session import SessionData, decode_session, encode_session
+from .spa_fallback import install_spa
+from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
+from .workbench_contracts import CONTRACT_VERSION, ErrorBody, ErrorCode, TimelinePage
 
 log = logging.getLogger(__name__)
 
@@ -185,39 +192,141 @@ def build_reranker(enabled: bool | None = None) -> Any | None:
     return CrossEncoderReranker()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.metrics_sink = build_metrics_sink()
+#: One refused connection at a cold start must not decide the instance's whole
+#: life: a Cloud SQL blip or a full server (53300) is over in seconds. Three tries
+#: cost at most ~35 s, well inside the startup window.
+STARTUP_CONNECT_ATTEMPTS = 3
+STARTUP_CONNECT_PAUSE_S = 2.0
+_pause = time.sleep
+
+
+def prepare_database() -> Database:
+    """The schema first (1kg.1.5): ordered migrations, before anything is served.
+
+    Two kinds of failure, deliberately treated differently. A `MigrationError`
+    is a verdict — drift, a migration that failed, a broken package — and so is
+    a bad setting. Retrying cannot change either, so both may stop startup:
+    on Cloud Run that fails the new revision and keeps traffic on the old one.
+    An unreachable database is an outage: after a few tries it degrades exactly
+    as it always has — history off, auth endpoints 503, `/healthz` answering —
+    and `_state["migrations"]` says `unavailable`.
+
+    The `Database` is returned either way. It connects to nothing until it is
+    used, and retrieval must stay inside the connection budget even on an
+    instance that started during an outage.
+    """
+    db = Database(settings=PoolSettings.from_env())
+    mode = Mode(os.environ.get("MIGRATIONS_MODE") or Mode.APPLY.value)
+    for attempt in range(1, STARTUP_CONNECT_ATTEMPTS + 1):
+        try:
+            _state["migrations"] = migrate(mode=mode).state
+            return db
+        except MigrationError:
+            raise
+        except _AUTH_BACKEND_ERRORS as exc:  # psycopg's hierarchy and socket errors; defined below
+            # The class and SQLSTATE only: the driver's text names hosts and users,
+            # and libpq quotes whatever it could not parse (SEC-21).
+            sqlstate = getattr(exc, "sqlstate", None)
+            log.warning(
+                "startup: database unreachable, attempt %d of %d (%s%s)",
+                attempt,
+                STARTUP_CONNECT_ATTEMPTS,
+                type(exc).__name__,
+                f", SQLSTATE {sqlstate}" if sqlstate else "",
+            )
+        if attempt < STARTUP_CONNECT_ATTEMPTS:
+            _pause(STARTUP_CONNECT_PAUSE_S)
+    _state["migrations"] = "unavailable"
+    log.warning("startup: database unavailable; history is disabled and auth endpoints will 503")
+    return db
+
+
+#: A degraded instance looks for its database again this often and no more: the
+#: look is a connection attempt on a request's own thread, so it is rationed,
+#: short, and made by one request at a time.
+RECOVERY_INTERVAL_S = 15.0
+RECOVERY_CONNECT_TIMEOUT_S = 3
+_recovery_lock = threading.Lock()
+_clock = time.monotonic
+
+
+def _build_stores(db: Database) -> None:
+    """Message history (best-effort: chat answers work without it) and the auth
+    store — invite-gated accounts (x5bz.2). Both go through the one bounded gate.
+    Only ever called once the schema has been checked."""
+    _state["store"] = PostgresMessageStore(db=db)
+    _state["auth"] = PostgresAuthStore(db=db)
+    _state["timeline"] = PostgresTimelineStore()
+
+
+def _build_rag(db: Database) -> None:
     # Build the service once (loads corpus vocabulary). Guarded so the app can
     # still start for endpoint tests that override the dependency without a DB.
     try:
-        _state["rag"] = RagService(reranker=build_reranker())
+        _state["rag"] = RagService(reranker=build_reranker(), connect=db.connection)
     except Exception:  # pragma: no cover - depends on live DB
         log.warning(
             "startup: RagService unavailable; /chat will 503 until ready", exc_info=True
         )
-    # Message history store — best-effort: chat answers work without it.
-    # ensure_schema() is the migration path for volumes that predate chat.*.
+
+
+def recover_database() -> None:
+    """An instance that started while the database was away gets it back without
+    a restart (1kg.9.8).
+
+    Until now nothing ever looked again: every login answered 503 until Cloud Run
+    recycled the instance, which it does not do while the instance keeps receiving
+    traffic. The dependencies below call this when they find nothing to hand out.
+    A healthy instance pays one dictionary lookup; a degraded one makes at most one
+    short attempt every RECOVERY_INTERVAL_S, by one request at a time — the others
+    answer 503 at once, as before, instead of queueing behind it.
+
+    The schema is checked (or applied, per MIGRATIONS_MODE) before any store
+    exists, exactly as at startup. A verdict ends the looking: it is logged as
+    an error, `/healthz` says `failed`, and the instance stays as it was — it
+    cannot be stopped from here the way a starting one can, but it must not
+    serve a schema it does not understand, and it must not loop."""
+    if _state.get("migrations") != "unavailable":
+        return
+    db = _state.get("db")
+    if db is None:
+        return
+    if _clock() < _state.get("recover_after", 0.0) or not _recovery_lock.acquire(blocking=False):
+        return
     try:
-        store = PostgresMessageStore()
-        store.ensure_schema()
-        _state["store"] = store
-    except Exception:  # pragma: no cover - depends on live DB
-        log.warning(
-            "startup: message store unavailable; history is disabled", exc_info=True
-        )
-    # Auth store — invite-gated accounts (x5bz.2). Same best-effort startup +
-    # ensure_schema() migration path as the message store.
-    try:
-        auth = PostgresAuthStore()
-        auth.ensure_schema()
-        _state["auth"] = auth
-    except Exception:  # pragma: no cover - depends on live DB
-        log.warning(
-            "startup: auth store unavailable; auth endpoints will 503", exc_info=True
-        )
+        _state["recover_after"] = _clock() + RECOVERY_INTERVAL_S
+        mode = Mode(os.environ.get("MIGRATIONS_MODE") or Mode.APPLY.value)
+        try:
+            report = migrate(mode=mode, connect_timeout_s=RECOVERY_CONNECT_TIMEOUT_S)
+        except MigrationError as exc:
+            _state["migrations"] = "failed"
+            log.error("recovery: the database is back but its schema is refused; not retrying (%s)", exc)
+            return
+        except _AUTH_BACKEND_ERRORS as exc:
+            log.warning("recovery: database still unreachable (%s)", type(exc).__name__)
+            return
+        _build_stores(db)
+        if "rag" not in _state:
+            _build_rag(db)
+        _state["migrations"] = report.state  # last: this is what every reader keys off
+        log.info("recovery: database reachable again; stores built")
+    finally:
+        _recovery_lock.release()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.metrics_sink = build_metrics_sink()
+    db = prepare_database()
+    _state["db"] = db
+    _build_rag(db)
+    # With no database at startup no store exists yet — the schema was never
+    # checked, so nothing may write to it. `recover_database` looks again later.
+    if _state["migrations"] != "unavailable":
+        _build_stores(db)
     yield
     _state.clear()
+    await db.aclose()
     del app.state.metrics_sink
 
 
@@ -225,6 +334,8 @@ app = FastAPI(title="D&D 5e RAG — Agent Service", version="1.0", lifespan=life
 
 
 def get_service() -> RagService:
+    if "rag" not in _state:
+        recover_database()
     svc = _state.get("rag")
     if svc is None:
         raise HTTPException(status_code=503, detail="service not ready")
@@ -234,7 +345,25 @@ def get_service() -> RagService:
 def get_message_store() -> MessageStore | None:
     # None is a valid state (history disabled) — /chat degrades gracefully;
     # only the history endpoint itself hard-fails without a store.
+    if "store" not in _state:
+        recover_database()
     return _state.get("store")
+
+
+def get_timeline_store() -> TimelineStore | None:
+    # Same posture as `get_message_store`: None is a valid state. Without one
+    # the timeline route answers 503 and no other path is affected.
+    if "timeline" not in _state:
+        recover_database()
+    return _state.get("timeline")
+
+
+def get_timeline_database() -> Database | None:
+    # The database only when a store exists, so a degraded instance whose schema
+    # was never checked cannot be read through.
+    if "timeline" not in _state:
+        recover_database()
+    return _state.get("db") if "timeline" in _state else None
 
 
 def get_metrics_sink(request: Request) -> MetricsSink:
@@ -244,6 +373,8 @@ def get_metrics_sink(request: Request) -> MetricsSink:
 # ── Auth (x5bz.2) ─────────────────────────────────────────────────────────────
 
 def get_auth_store() -> AuthStore:
+    if "auth" not in _state:
+        recover_database()
     store = _state.get("auth")
     if store is None:
         raise HTTPException(status_code=503, detail="auth backend unavailable")
@@ -517,18 +648,70 @@ def _persist_turn(
     store: MessageStore | None, conversation_id: str | None,
     mode: str, role: str, content: str,
     suggestions: list[dict[str, Any]] | None = None,
-) -> None:
+) -> int | None:
     """Best-effort history write: a failure is logged, never raised — a chat
     answer must not fail because persistence did (deliberately outside the
-    _DB_ERRORS → 503 taxonomy, which is reserved for retrieval)."""
+    _DB_ERRORS → 503 taxonomy, which is reserved for retrieval).
+
+    Answers the new row's id, or `None` when nothing was written: the turn's
+    timeline entry links the rows it carries (1kg.4.2, ruling R-1)."""
     if store is None or conversation_id is None:
-        return
+        return None
     try:
-        store.append(conversation_id, mode, role, content, suggestions=suggestions)
+        return store.append(conversation_id, mode, role, content, suggestions=suggestions)
     except Exception:
         log.warning(
             "history write failed (mode=%s, conversation_id=%s, role=%s)",
             mode, conversation_id, role, exc_info=True,
+        )
+        return None
+
+
+#: What `/chat` answered, under the names `ChatAnswer` keeps it by. `text` is
+#: `resp.answer` and `created_at` is minted: `ChatResponse` has no time.
+_ANSWER_FIELDS = {
+    "answerable", "sources", "suggestions", "routing", "suggestions_routing", "spell_content", "stat_block",
+}
+
+
+def _record_timeline_entry(
+    timeline: TimelineStore | None, tdb: Database | None, *,
+    conversation_id: str, owner_id: int, req: ChatRequest, resp: ChatResponse,
+    user_message_id: int | None, assistant_message_id: int | None,
+) -> None:
+    """Best-effort: the answered turn as one typed timeline entry (1kg.4.2).
+
+    The posture of `_persist_turn`, and for the same reason: an answer must
+    never fail because a record of it did. The call sits inside `chat()`'s
+    `try:`, so this catch-all is load-bearing — without it a failure here
+    would be answered as a 500. It runs only once `svc.answer` has returned
+    and both message rows are written, on one short transaction of its own,
+    and makes no provider call. A turn it cannot write — the contract bounds
+    what `/chat`'s own models do not — is served by the legacy adapter from its
+    rows instead.
+
+    The log line is content-free: the exception's TYPE, never its message,
+    which can quote a statement and with it the prompt or the answer (X-7).
+    """
+    if timeline is None or tdb is None:
+        return
+    try:
+        created_at = datetime.now(UTC)
+        answer = resp.model_dump(mode="json", include=_ANSWER_FIELDS)
+        entry = {
+            "schema_version": CONTRACT_VERSION, "entry_kind": "chat", "entry_id": new_entry_id(),
+            "created_at": created_at, "mode": req.mode.value, "prompt": req.prompt,
+            "answer": {**answer, "text": resp.answer, "created_at": created_at},
+        }
+        with tdb.transaction() as unit:
+            timeline.append(
+                unit, conversation_id, entry, created_at, owner_id=owner_id,
+                user_message_id=user_message_id, assistant_message_id=assistant_message_id,
+            )
+    except Exception as exc:
+        log.warning(
+            "timeline entry write failed (mode=%s, conversation_id=%s): %s",
+            req.mode.value, conversation_id, type(exc).__name__,
         )
 
 
@@ -652,7 +835,18 @@ def _authorize_conversation(
 
 @app.get("/healthz")
 def healthz() -> dict[str, str | bool]:
-    return {"status": "ok", "ready": "rag" in _state}
+    # `migrations` (1kg.1.5) is a field of its own: `status` and `ready` are what
+    # both Compose health checks assert, and neither changes meaning. It says
+    # `current`, `ahead` (an older build on a newer schema, mid-rollout),
+    # `unavailable` (no database yet; the instance keeps looking), `failed` (the
+    # database came back with a schema this build refuses) or `unchecked` (a
+    # process that never ran the startup path, like the E2E stub) — and never a
+    # version.
+    return {
+        "status": "ok",
+        "ready": "rag" in _state,
+        "migrations": str(_state.get("migrations", "unchecked")),
+    }
 
 
 @app.get("/models")
@@ -746,6 +940,8 @@ def chat(
     store: MessageStore | None = Depends(get_message_store),
     metrics: MetricsSink = Depends(get_metrics_sink),
     session: SessionData = Depends(require_session),
+    timeline: TimelineStore | None = Depends(get_timeline_store),
+    tdb: Database | None = Depends(get_timeline_database),
 ) -> ChatResponse:
     # Cost guard (x5bz.3): spend one of this tester's chat budget before any
     # work happens. Before the try for the same reason as the gates below — a
@@ -850,13 +1046,17 @@ def chat(
                 labels=MetricLabels(mode=req.mode.value, route_template="/chat"),
             ),
         )
-        _persist_turn(store, conversation_id, req.mode.value, "user", req.prompt)
-        _persist_turn(
+        user_message_id = _persist_turn(store, conversation_id, req.mode.value, "user", req.prompt)
+        assistant_message_id = _persist_turn(
             store, conversation_id, req.mode.value, "assistant", resp.answer,
             suggestions=(
                 [s.model_dump(mode="json") for s in resp.suggestions]
                 if resp.suggestions else None
             ),
+        )
+        _record_timeline_entry(
+            timeline, tdb, conversation_id=conversation_id, owner_id=session.user_id, req=req, resp=resp,
+            user_message_id=user_message_id, assistant_message_id=assistant_message_id,
         )
         return resp
     except _LLM_ERRORS as exc:
@@ -944,6 +1144,86 @@ def conversation_messages(
         )
         raise HTTPException(status_code=503, detail="message history unavailable") from exc
     return MessagesResponse(conversation_id=conversation_id, messages=messages)
+
+
+def _timeline_refusal(status: int, body: ErrorBody) -> HTTPException:
+    """A Workbench refusal as FastAPI raises one: `detail` holds the object, so
+    the wire body is exactly `ErrorBody`. `exclude_none` keeps the optional keys
+    out, as the contract's own examples do."""
+    return HTTPException(status_code=status, detail=body.detail.model_dump(mode="json", exclude_none=True))
+
+
+@app.get("/conversations/{conversation_id}/timeline", response_model=TimelinePage)
+def conversation_timeline(
+    conversation_id: str,
+    # Declared `str | None` so FastAPI never validates them: its default 422
+    # body repeats the request's own input (SEC-23, R-12). This route validates
+    # both itself and answers with `validation_error_body`.
+    limit: str | None = None,
+    cursor: str | None = None,
+    store: TimelineStore | None = Depends(get_timeline_store),
+    db: Database | None = Depends(get_timeline_database),
+    # Authentication only. `require_session` answers three 401 bodies today;
+    # SEC-2's single body belongs to `agent-forge-harness-oe6`, which will also
+    # move this route onto its scaffolding (R-4, R-5).
+    session: SessionData = Depends(require_session),
+) -> TimelinePage:
+    """The conversation as typed entries, newest first (1kg.4.2).
+
+    Ownership is resolved through `owner_of` in one read-only statement and a
+    conversation that is missing, unowned or another user's answers the same
+    404 from one code path (§8.1, SEC-2, SEC-3). This route **never claims**;
+    `GET …/messages` still does, and is deliberately unchanged.
+    """
+    try:
+        size, page_cursor = timeline.parse_page_query(limit, cursor)
+    except timeline.ParameterRefused as refused:
+        raise _timeline_refusal(422, timeline.parameter_error_body(refused.field)) from refused
+    if session.role != "dm":
+        raise _timeline_refusal(
+            403, timeline.error_body(ErrorCode.FORBIDDEN, timeline.FORBIDDEN_MESSAGE, retryable=False)
+        )
+    unavailable = _timeline_refusal(
+        503, timeline.error_body(ErrorCode.BACKEND_UNAVAILABLE, timeline.UNAVAILABLE_MESSAGE, retryable=True)
+    )
+    if store is None or db is None:
+        raise unavailable
+    try:
+        # The path id's shape, before any statement runs. An id outside
+        # `OpaqueId` is one the contract's `TimelinePage` cannot carry, and
+        # reaching the page build with one used to raise a `ValidationError`
+        # inside the transaction — neither `ConversationNotFound` nor a
+        # database error — so an owner got a bare 500 from their own
+        # conversation. It is `ConversationNotFound` here, which is to say the
+        # identical 404 a missing or a foreign conversation gets, from this
+        # handler's one refusal path: malformed and missing are
+        # indistinguishable (SEC-3), and no new refusal shape is added.
+        #
+        # Checked *after* the 503 gate above for the same reason: with the
+        # store absent both malformed and missing answer 503, with it present
+        # both answer 404, so the two never diverge in any reachable state.
+        #
+        # Acceptable for real users: the shipped UI mints UUIDs, which fit the
+        # shape. `/chat` and `GET …/messages` are deliberately untouched, so a
+        # legacy conversation with an id outside it stays readable there.
+        timeline.require_readable_id(conversation_id)
+        # One transaction covers the ownership check and the read, so the whole
+        # request takes one connection.
+        with db.transaction() as unit:
+            timeline.authorize(store, unit, conversation_id, user_id=session.user_id)
+            return timeline.read_page(store, unit, conversation_id, limit=size, cursor=page_cursor)
+    except timeline.ConversationNotFound as missing:
+        raise _timeline_refusal(
+            404, timeline.error_body(ErrorCode.NOT_FOUND, timeline.NOT_FOUND_MESSAGE, retryable=False)
+        ) from missing
+    except _DB_ERRORS as exc:
+        # Content-free: the exception TYPE, never its message, which can carry
+        # a statement and therefore a prompt (SEC-20) — and never the path
+        # parameter either, which is caller-controlled and whose `%0A` would
+        # forge a log line. The fact, not the value: the route and the status
+        # are already in the access log, so nothing diagnostic is lost.
+        log.warning("timeline read failed: %s", type(exc).__name__)
+        raise unavailable from exc
 
 
 def _to_attachment(sa: StoredAttachment) -> Attachment:
@@ -1135,8 +1415,10 @@ def me(
     return AuthUser(email=user.email, role=user.role)
 
 
-# Mount the pre-built UI at "/" — after route decorators so API routes always win.
-# Only active when `cd ui && bun run build` has been run (ui/dist/ must exist).
+app.include_router(conversations_api.build_router(require_session, get_timeline_database))
+# Mount the pre-built UI last, as an ALLOWLIST fallback, not a catch-all
+# (agent-forge-harness-y40) -- see service/spa_fallback.py for what each path
+# answers and why the order matters. Only active when `cd ui && bun run build`
+# has been run (ui/dist/ must exist).
 _UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
-if _UI_DIST.is_dir():
-    app.mount("/", StaticFiles(directory=_UI_DIST, html=True), name="ui")
+install_spa(app, _UI_DIST)

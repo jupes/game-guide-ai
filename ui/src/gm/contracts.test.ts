@@ -15,8 +15,10 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
-import type { ZodType } from 'zod'
+import { z, type ZodType } from 'zod'
 import {
+  ABILITY_SCORE_MAX,
+  ABILITY_SCORE_MIN,
   ASSET_KINDS,
   AUDIO_SLOTS,
   BRIEF_POLICY,
@@ -24,6 +26,10 @@ import {
   COMMON_FIELDS,
   CONTRACT_SCHEMAS,
   CONTRACT_VERSION,
+  CONVERSATION_PAGE_MAX_ITEMS,
+  CONVERSATION_TITLE_MAX_CHARS,
+  ConversationCreateRequestSchema,
+  ConversationPatchRequestSchema,
   CUE_KINDS,
   DOCUMENT_TYPE_IDS,
   DOC_TYPE_FIELDS,
@@ -31,25 +37,50 @@ import {
   DOC_TYPE_VERSION,
   DocumentCreateRequestSchema,
   DocumentSchema,
+  DocumentVersionSnapshotSchema,
   EditRequestSchema,
   FIELD_KINDS,
+  CONTENT_KINDS,
   FieldPatchRequestSchema,
   GM_EVENT_KINDS,
   GmEventSchema,
+  INTEGER_FIELD_BOUNDS,
+  INTEGER_FIELD_MAX,
+  INTEGER_FIELD_MIN,
   LIBRARY_CATEGORIES,
+  LIST_FIELD_MAX_ITEMS,
+  LIST_ITEM_MAX_CHARS,
   LibraryQuerySchema,
+  MaskKeySchema,
   MEDIA_TYPES,
+  ENTRY_DISCRIMINATORS,
+  GM_EVENT_DISCRIMINATORS,
+  PROSE_FIELD_MAX_CHARS,
+  RESERVED_MASK_KEYS,
+  REQUIRED_FIELDS,
+  REFUSED_TEXT_CODE_POINTS,
+  isPlainText,
+  plainText,
+  plainOneLine,
+  RESULT_DISCRIMINATORS,
+  REVEALABLE_COMMON_FIELDS,
+  REVEALABLE_FIELDS,
   RESULT_KINDS,
+  TEXT_FIELD_MAX_CHARS,
   TABLE_EVENT_KINDS,
   TOOL_CARD_KIND,
   TOOL_CREATES_DOC_TYPE,
   TOOL_IDS,
   TOOL_RESULT_KIND,
   TableEventSchema,
+  TableProjectionSchema,
   ToolInvocationRequestSchema,
   codePointLength,
   isKnownErrorCode,
+  isRefusedInATitle,
   isWellFormedText,
+  parseConversation,
+  parseConversationPage,
   parseDocument,
   parseGmEvent,
   parseGmSnapshot,
@@ -60,8 +91,10 @@ import {
   parseToolInvocation,
   parseToolResult,
   readErrorBody,
+  revealableFields,
   trimWire,
 } from './contracts'
+import type { DocumentTypeId, FieldKind } from './contracts'
 import { ChatResponseSchema, MessagesResponseSchema } from '../schemas'
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'contracts', 'workbench', 'v1')
@@ -81,6 +114,10 @@ interface Example {
 }
 interface Fixture {
   schema: string
+  /** `request`, `response` or `both`; it documents, it does not change a check. */
+  direction?: string
+  /** `table` marks a shape a table device sends or receives (threat model 8.2). */
+  channel?: string
   valid: Example[]
   invalid: Example[]
 }
@@ -164,6 +201,66 @@ describe('shared fixtures', () => {
   })
 })
 
+describe('what v1 deliberately has no shape for', () => {
+  it('names no participant in anything a table client sends or receives (threat model 8.2, SEC-15)', () => {
+    // The table client is not a restricted view of the GM API, it is a separate,
+    // smaller API with its own principal. A guest asking beyond the table slot
+    // gets what an empty table gives, never a refusal — which is only possible
+    // if there is no shape in which it can ask.
+    //
+    // The *word* is not the test: `TableRole` is the enum `participant | guest`
+    // and belongs on the table channel (TABLE-13). The identifier is. And what
+    // no textual guard can catch is an id under another name — this is a
+    // tripwire against the shape drifting, not a proof; the fixtures pin the
+    // actual content of each frame.
+    const namesAParticipant = (schema: ZodType) => {
+      const json = JSON.stringify(z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }))
+      return json.includes('participant_id') || json.includes('participant_ids')
+    }
+    // The list is read from the fixtures, not written here: a fixture file marks
+    // itself `"channel": "table"` and `"direction": "request"`, so a table-side
+    // request someone adds later joins this test by existing. A hard-coded pair
+    // would go on passing while the new shape carried an id.
+    const tableRequests = fixtureFiles()
+      .map((file) => readJson<Fixture>(file))
+      .filter((doc) => doc.channel === 'table' && doc.direction === 'request')
+      .map((doc) => doc.schema)
+    expect(tableRequests.length).toBeGreaterThan(0)
+    for (const name of tableRequests) {
+      expect([name, namesAParticipant(CONTRACT_SCHEMAS[name])]).toEqual([name, false])
+    }
+    // The frames a table client receives name their slot `table` or `mine`,
+    // never a slot reference, so no id travels that way either.
+    for (const option of TableEventSchema.options) {
+      expect([option.shape.event.value, namesAParticipant(option)]).toEqual([option.shape.event.value, false])
+    }
+  })
+
+  it('keeps content_kind at exactly one member in v1 (ADR 7.4)', () => {
+    // What reserving the discriminator buys is that a v1 table client meets a
+    // future member as its neutral placeholder; adding one IS a version bump.
+    // The cardinality is the claim, so it is the assertion — and the literal is
+    // read from the schema, so the constant beside it cannot drift.
+    expect([...CONTENT_KINDS]).toEqual(['document'])
+    const projection = z.toJSONSchema(TableProjectionSchema, { io: 'input', unrepresentable: 'any' }) as unknown as {
+      properties: Record<string, { const?: unknown }>
+    }
+    expect(projection.properties.content_kind.const).toBe('document')
+  })
+
+  it('declares no eligibility field anywhere (ED-11, ED-25)', () => {
+    // v1 ships mask-only: eligibility binds reveal from 1ir.11.1, and the refusal
+    // it needs is an additive error code. Nothing about classes or revisions ever
+    // reaches a table client (REVEAL-24).
+    for (const [name, schema] of Object.entries(CONTRACT_SCHEMAS)) {
+      const json = JSON.stringify(z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }))
+      for (const word of ['eligibility', 'classification', 'authz_revision', 'projection_revision']) {
+        expect([name, json.includes(`"${word}"`)]).toEqual([name, false])
+      }
+    }
+  })
+})
+
 describe('registry facts', () => {
   interface Registry {
     contract_version: number
@@ -172,8 +269,16 @@ describe('registry facts', () => {
     library_categories: string[]
     tools: Array<{ id: string; result_kind: string; creates_doc_type: string | null; card_kind: string | null; brief: string }>
     field_kinds: string[]
+    field_bounds: Record<string, number>
     common_fields: Record<string, string>
-    document_types: Array<{ id: string; library_category: string; type_version: number; fields: Record<string, string> }>
+    common_field_rules: Record<string, { revealable: boolean }>
+    document_types: Array<{
+      id: string
+      library_category: string
+      type_version: number
+      fields: Record<string, string>
+      field_rules: Record<string, { revealable: boolean }>
+    }>
     asset_kinds: string[]
     media_types: Record<string, string[]>
     cue_kinds: string[]
@@ -209,6 +314,52 @@ describe('registry facts', () => {
     }
   })
 
+  it('pin the revealable allowlist to the registry, for every type', () => {
+    // REVEAL-10, ED-5, ED-20: ONE answer to "may this field reach a player", and
+    // it is an allowlist. `1kg.5.3`'s per-field rule is the source; this module
+    // holds a copy only because registry.ts imports it. Pinning the copy for
+    // EVERY type is what stops a field marked `revealable: false` on a type
+    // nobody wrote an assertion for from reaching a table.
+    const allowed = (rules: Record<string, { revealable: boolean }>): string[] =>
+      Object.entries(rules)
+        .filter(([, rule]) => rule.revealable)
+        .map(([key]) => key)
+        .sort()
+
+    expect([...REVEALABLE_COMMON_FIELDS].sort()).toEqual(allowed(registry.common_field_rules))
+    expect(Object.keys(REVEALABLE_FIELDS).sort()).toEqual(registry.document_types.map((d) => d.id).sort())
+    for (const row of registry.document_types) {
+      const type = row.id as DocumentTypeId
+      expect([type, [...REVEALABLE_FIELDS[type]].sort()]).toEqual([type, allowed(row.field_rules)])
+      // And the derived set — what a mask and a projection are checked against —
+      // never names a key the registry withholds, on any type.
+      const withheld = Object.keys(row.field_rules)
+        .concat(Object.keys(registry.common_field_rules))
+        .filter((key) => !allowed(row.field_rules).includes(key) && !allowed(registry.common_field_rules).includes(key))
+      for (const key of withheld) {
+        expect([type, key, Object.hasOwn(revealableFields(type), key)]).toEqual([type, key, false])
+      }
+    }
+
+    // ED-20's worked case, spelled out: the link between a face and what wears it.
+    expect(Object.hasOwn(DOC_TYPE_FIELDS.npc, 'true_identity')).toBe(true)
+    expect(Object.hasOwn(revealableFields('npc'), 'true_identity')).toBe(false)
+    for (const type of DOCUMENT_TYPE_IDS) {
+      expect(Object.hasOwn(revealableFields(type), 'tags')).toBe(false)
+      expect(Object.hasOwn(revealableFields(type), 'all')).toBe(false)
+    }
+  })
+
+  it('refuse a wildcard where a mask key is expected', () => {
+    // REVEAL-9, ED-8: `all` matches the field-key shape, so it is refused by name;
+    // `*` and `%` never matched it in the first place.
+    expect(MaskKeySchema.safeParse('notes').success).toBe(true)
+    for (const wildcard of ['all', '*', '**', '%', 'ALL']) {
+      expect(MaskKeySchema.safeParse(wildcard).success).toBe(false)
+    }
+    expect([...RESERVED_MASK_KEYS]).toEqual(['all'])
+  })
+
   it('declare the same fields for every document type', () => {
     expect([...FIELD_KINDS]).toEqual(registry.field_kinds)
     expect(COMMON_FIELDS).toEqual(registry.common_fields)
@@ -217,6 +368,23 @@ describe('registry facts', () => {
       expect(DOC_TYPE_FIELDS[type]).toEqual(row?.fields)
       expect(DOC_TYPE_VERSION[type]).toBe(row?.type_version)
     }
+  })
+
+  it("take every field kind's bounds from the shared registry, not from a second copy", () => {
+    // A bound kept as two independent constants can drift: each suite goes on
+    // testing against its own, and the differential fuzz never reaches the
+    // values in between. registry.json holds the number, and the boundary
+    // examples in Document.json exercise it on both sides.
+    expect(registry.field_bounds).toEqual({
+      text_field_max_chars: TEXT_FIELD_MAX_CHARS,
+      prose_field_max_chars: PROSE_FIELD_MAX_CHARS,
+      list_field_max_items: LIST_FIELD_MAX_ITEMS,
+      list_item_max_chars: LIST_ITEM_MAX_CHARS,
+      integer_field_min: INTEGER_FIELD_MIN,
+      integer_field_max: INTEGER_FIELD_MAX,
+      ability_score_min: ABILITY_SCORE_MIN,
+      ability_score_max: ABILITY_SCORE_MAX,
+    })
   })
 })
 
@@ -558,6 +726,572 @@ describe('reading a document (X-8, CANVAS-19)', () => {
   })
 })
 
+describe('the extra-field policy, per type (1kg.5.3)', () => {
+  const document = (type: DocumentTypeId, data: Record<string, unknown>) => ({
+    schema_version: 1,
+    document_id: 'doc_9k2f7a1c',
+    campaign_id: 'cmp_4b1d9e7a',
+    type,
+    type_version: 1,
+    data,
+    write_revision: 1,
+    version: {
+      number: 1,
+      author: 'gm',
+      summary: '',
+      created_at: '2026-09-16T20:00:00Z',
+      sealed: false,
+      changed_fields: ['name'],
+      restored_from: null,
+    },
+    archived: false,
+    created_at: '2026-09-16T20:00:00Z',
+    updated_at: '2026-09-16T20:00:00Z',
+  })
+
+  it.each(DOCUMENT_TYPE_IDS.map((id) => [id] as const))(
+    '%s: strips a key the type does not declare, and still yields the document',
+    (type) => {
+      // The other half of the asymmetry the server enforces: a newer server may
+      // add a field, and a client that has not learned it drops the key rather
+      // than refusing the whole document (wire contract, "Versioning").
+      const parsed = parseDocument(document(type, { name: 'A document', smuggled_key: 'Drown the harbourmaster.' }))
+      expect(parsed.kind).toBe('ok')
+      if (parsed.kind === 'ok') {
+        expect(Object.keys(parsed.value.data)).toEqual(['name'])
+        expect(JSON.stringify(parsed.value)).not.toContain('harbourmaster')
+      }
+    },
+  )
+
+  it.each(DOCUMENT_TYPE_IDS.map((id) => [id] as const))('%s: refuses the same key in a request', (type) => {
+    const patch = { schema_version: 1, type, type_version: 1, base_write_revision: 1, fields: { smuggled_key: 'x' } }
+    const result = FieldPatchRequestSchema.safeParse(patch)
+    expect(result.success).toBe(false)
+    if (!result.success) expect(result.error.issues[0].path).toEqual(['fields', 'smuggled_key'])
+  })
+
+  it.each(DOCUMENT_TYPE_IDS.map((id) => [id] as const))('%s: takes the common fields', (type) => {
+    const parsed = parseDocument(document(type, { name: 'A document', qualifier: '', tags: [] }))
+    expect(parsed.kind).toBe('ok')
+  })
+})
+
+describe('the structured field kinds (1kg.5.3)', () => {
+  const block = (data: Record<string, unknown>) => ({
+    schema_version: 1,
+    document_id: 'doc_5b1a2c3d',
+    campaign_id: 'cmp_4b1d9e7a',
+    type: 'statblock',
+    type_version: 1,
+    // A whole stat block, so it carries the three LIB-12 requires. A case that
+    // is exercising `ac` or `hp` overrides the value here.
+    data: { name: 'Ondrey', ac: 16, hp: 104, ...data },
+    write_revision: 1,
+    version: {
+      number: 1,
+      author: 'gm',
+      summary: '',
+      created_at: '2026-09-16T20:00:00Z',
+      sealed: false,
+      changed_fields: ['name'],
+      restored_from: null,
+    },
+    archived: false,
+    created_at: '2026-09-16T20:00:00Z',
+    updated_at: '2026-09-16T20:00:00Z',
+  })
+  const read = (data: Record<string, unknown>) => DocumentSchema.safeParse(block(data))
+  const patch = (fields: Record<string, unknown>) =>
+    FieldPatchRequestSchema.safeParse({ schema_version: 1, type: 'statblock', type_version: 1, base_write_revision: 1, fields })
+
+  it.each([
+    ['a whole number', 7, 7],
+    ['a whole number written as a float, because JavaScript cannot tell them apart', 7.0, 7],
+    ['zero', 0, 0],
+    ['the ceiling', INTEGER_FIELD_MAX, INTEGER_FIELD_MAX],
+  ])('an integer field takes %s', (_name, given, stored) => {
+    const parsed = read({ ac: given })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.ac).toEqual(stored)
+  })
+
+  it.each([
+    ['a negative', -1],
+    ['the floor of the kind itself', INTEGER_FIELD_MIN],
+    ['null, which clears it', null],
+  ])('the one unbounded integer field still takes %s', (_name, given) => {
+    // `statblock.xp` is the one declared integer field with no per-use bounds,
+    // which is what keeps INTEGER_FIELD_MIN reachable through a declared field —
+    // and so keeps the shared floor fixtures honest.
+    const parsed = read({ xp: given })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.xp).toEqual(given)
+  })
+
+  it.each([[true], ['7'], [1.5], [[]], [{}], [INTEGER_FIELD_MAX + 1], [INTEGER_FIELD_MIN - 1]])(
+    'an integer field refuses %o in a request',
+    (given) => {
+      expect(patch({ ac: given }).success).toBe(false)
+    },
+  )
+
+  it.each([
+    [{}],
+    [{ str: 10 }],
+    [{ str: 10, dex: 12, con: 14, int: 8, wis: 13, cha: 16 }],
+    [null],
+  ])('an abilities field takes %o — CANVAS-19, one field', (given) => {
+    const parsed = read({ abilities: given })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.abilities).toEqual(given)
+  })
+
+  it.each([
+    [{ strength: 10 }],
+    [{ str: '10' }],
+    [{ str: true }],
+    [{ str: ABILITY_SCORE_MAX + 1 }],
+    [{ str: ABILITY_SCORE_MIN - 1 }],
+    [{ str: null }],
+    [[]],
+    ['10'],
+  ])('an abilities field refuses %o in a request', (given) => {
+    expect(patch({ abilities: given }).success).toBe(false)
+  })
+
+  it('has one spelling of "no score": the key left out — requirement 7e, AC 17', () => {
+    // `{ str: null }` would be a second spelling of the same fact. It is refused
+    // in a request and in a response alike; omitting a key, `{}` and a whole
+    // block of `null` all stay valid.
+    expect(patch({ abilities: { str: 14, dex: null } }).success).toBe(false)
+    expect(read({ abilities: { dex: null } }).success).toBe(false)
+    for (const given of [{ str: 14 }, {}, null]) {
+      const parsed = read({ abilities: given })
+      expect(parsed.success).toBe(true)
+      if (parsed.success) expect(parsed.data.data.abilities).toEqual(given)
+    }
+  })
+
+  it('an entry list takes named entries and clears to []', () => {
+    const entries = [
+      { name: 'Amphibious', text: 'She breathes water.' },
+      { name: 'Silent', text: '' },
+    ]
+    const parsed = read({ traits: entries })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.traits).toEqual(entries)
+    const cleared = read({ traits: [] })
+    expect(cleared.success).toBe(true)
+    if (cleared.success) expect(cleared.data.data.traits).toEqual([])
+  })
+
+  it.each([
+    [[{ name: 'Amphibious' }]],
+    [[{ text: 'no name' }]],
+    [[{ name: '', text: 'x' }]],
+    [[{ name: 'two\nlines', text: 'x' }]],
+    [['Amphibious']],
+    [{}],
+    [null],
+  ])('an entry list refuses %o in a request', (given) => {
+    expect(patch({ traits: given }).success).toBe(false)
+  })
+
+  it('a request rejects an unknown sub-key; a response strips it (the AssetRef precedent)', () => {
+    expect(patch({ traits: [{ name: 'Amphibious', text: 'x', damage: '1d6' }] }).success).toBe(false)
+    expect(patch({ abilities: { str: 10, luck: 3 } }).success).toBe(false)
+    const parsed = read({ traits: [{ name: 'Amphibious', text: 'x', damage: '1d6' }], abilities: { str: 10, luck: 3 } })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) {
+      expect(parsed.data.data.traits).toEqual([{ name: 'Amphibious', text: 'x' }])
+      expect(parsed.data.data.abilities).toEqual({ str: 10 })
+    }
+  })
+
+  it('refuses a prototype key smuggled into an ability block in a request', () => {
+    const fields = JSON.parse('{"abilities": {"str": 10, "__proto__": {"polluted": true}}}') as Record<string, unknown>
+    const result = patch(fields)
+    expect(result.success).toBe(false)
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
+  it('bounds an entry list at its edges', () => {
+    const one = { name: 'n', text: 't' }
+    expect(read({ traits: Array.from({ length: LIST_FIELD_MAX_ITEMS }, () => one) }).success).toBe(true)
+    expect(patch({ traits: Array.from({ length: LIST_FIELD_MAX_ITEMS + 1 }, () => one) }).success).toBe(false)
+    expect(patch({ traits: [{ name: 'a'.repeat(TEXT_FIELD_MAX_CHARS + 1), text: 't' }] }).success).toBe(false)
+    expect(patch({ traits: [{ name: 'n', text: 't'.repeat(LIST_ITEM_MAX_CHARS + 1) }] }).success).toBe(false)
+  })
+})
+
+describe('required fields and per-use integer bounds (LIB-12, 1kg.5.7)', () => {
+  interface RuleJson {
+    required: boolean
+    bounds: [number, number] | null
+  }
+  const registry = readJson<{
+    common_field_rules: Record<string, RuleJson>
+    document_types: Array<{ id: DocumentTypeId; field_rules: Record<string, RuleJson> }>
+  }>(join(FIXTURES, 'registry.json'))
+
+  /** EMPTY per kind, written out here rather than imported: the sweep below is
+   * about FIXTURE hygiene, and the validator's own rule is what the create and
+   * patch cases in this block prove. It is the kinds table of the wire contract
+   * read the other way round — what a field clears TO. */
+  const isEmpty = (kind: FieldKind, value: unknown): boolean => {
+    if (kind === 'text' || kind === 'prose') return trimWire(value as string) === ''
+    if (kind === 'text_list' || kind === 'entry_list') return (value as unknown[]).length === 0
+    return value === null
+  }
+
+  const responseBody = (type: DocumentTypeId, data: Record<string, unknown>) => ({
+    schema_version: 1,
+    document_id: 'doc_9k2f7a1c',
+    campaign_id: 'cmp_4b1d9e7a',
+    type,
+    type_version: 1,
+    data,
+    write_revision: 1,
+    version: {
+      number: 1,
+      author: 'gm',
+      summary: '',
+      created_at: '2026-09-16T20:00:00Z',
+      sealed: false,
+      changed_fields: ['name'],
+      restored_from: null,
+    },
+    archived: false,
+    created_at: '2026-09-16T20:00:00Z',
+    updated_at: '2026-09-16T20:00:00Z',
+  })
+  const response = (type: DocumentTypeId, data: Record<string, unknown>) => DocumentSchema.safeParse(responseBody(type, data))
+  const create = (type: DocumentTypeId, data: Record<string, unknown>) =>
+    DocumentCreateRequestSchema.safeParse({
+      schema_version: 1,
+      command_id: 'cmd_4d1c2b3a9f8e7d6c',
+      campaign_id: 'cmp_4b1d9e7a',
+      type,
+      type_version: 1,
+      data,
+    })
+  const patchOf = (type: DocumentTypeId, fields: Record<string, unknown>) =>
+    FieldPatchRequestSchema.safeParse({ schema_version: 1, type, type_version: 1, base_write_revision: 1, fields })
+
+  it('spells the required set exactly as the registry does, for every type', () => {
+    // The fact lives in three places — registry.json, contracts.ts and
+    // registry.ts — and is pinned across them, because two independent
+    // definitions of one safety fact is the defect that shipped once before.
+    // Asserted for EVERY type: a type nobody wrote an assertion for is where a
+    // drift would sit unseen.
+    expect(Object.keys(REQUIRED_FIELDS).sort()).toEqual(registry.document_types.map((d) => d.id).sort())
+    for (const d of registry.document_types) {
+      const expected = Object.entries({ ...registry.common_field_rules, ...d.field_rules })
+        .filter(([, rule]) => rule.required)
+        .map(([key]) => key)
+        .sort()
+      expect([...REQUIRED_FIELDS[d.id]].sort()).toEqual(expected)
+    }
+    expect([...REQUIRED_FIELDS.statblock].sort()).toEqual(['ac', 'hp', 'name'])
+  })
+
+  it('spells the integer bounds exactly as the registry does, for every type', () => {
+    expect(Object.keys(INTEGER_FIELD_BOUNDS).sort()).toEqual(registry.document_types.map((d) => d.id).sort())
+    for (const d of registry.document_types) {
+      const expected = Object.fromEntries(
+        Object.entries(d.field_rules)
+          .filter(([, rule]) => rule.bounds !== null)
+          .map(([key, rule]) => [key, rule.bounds]),
+      )
+      expect(INTEGER_FIELD_BOUNDS[d.id]).toEqual(expected)
+      // Only an integer field may carry them.
+      for (const key of Object.keys(INTEGER_FIELD_BOUNDS[d.id])) expect(DOC_TYPE_FIELDS[d.id][key]).toBe('integer')
+    }
+  })
+
+  it.each([
+    ['statblock', 'ac', 0],
+    ['statblock', 'hp', 0],
+    ['character-sheet', 'ac', 0],
+    ['character-sheet', 'hp', 0],
+    ['session-notes', 'session', 1],
+    ['encounter', 'party_level', 1],
+    ['encounter', 'xp_budget', 0],
+  ] as const)('%s.%s stops at its own floor', (type, key, lowest) => {
+    // One case per bounded field, so no field is bounded in the data and
+    // unchecked in the validator. The ceiling is the kind's, and the two floor
+    // fixtures in Document.json pin the kind's own.
+    const base: Record<string, unknown> =
+      type === 'statblock' ? { name: 'A document', ac: 16, hp: 104 } : { name: 'A document' }
+    expect(create(type, { ...base, [key]: lowest }).success).toBe(true)
+    expect(create(type, { ...base, [key]: INTEGER_FIELD_MAX }).success).toBe(true)
+    expect(create(type, { ...base, [key]: lowest - 1 }).success).toBe(false)
+    // …and a read of an already-stored document is bounded the same way: making
+    // a bound narrower is a type_version bump, so the adapter walk has the past.
+    expect(response(type, { ...base, [key]: lowest - 1 }).success).toBe(false)
+  })
+
+  it('names the field and the type in a bounds refusal, and quotes no value', () => {
+    const result = create('statblock', { name: 'Ondrey', ac: -424242, hp: 104 })
+    expect(result.success).toBe(false)
+    if (result.success) return
+    const issues = JSON.stringify(result.error.issues)
+    expect(issues).not.toContain('424242')
+    expect(issues).toContain('statblock')
+    expect(issues).toContain('ac')
+  })
+
+  it.each([
+    ['absent', {}],
+    ['cleared to null', { ac: null, hp: null }],
+  ])('refuses a create whose required integers are %s', (_name, over) => {
+    // LIB-12: required means PRESENT AND NOT EMPTY, so a cleared cell is the same
+    // defect as an absent key.
+    const result = create('statblock', { name: 'Ondrey', ...over })
+    expect(result.success).toBe(false)
+    if (!result.success) expect(JSON.stringify(result.error.issues)).toContain('requires ac')
+  })
+
+  it('takes 0 as a real armour class, which is the one place empty and falsy differ', () => {
+    expect(create('statblock', { name: 'Ondrey', ac: 0, hp: 0 }).success).toBe(true)
+    expect(create('statblock', { name: '  \t ', ac: 12, hp: 33 }).success).toBe(false)
+  })
+
+  it.each([['ac'], ['hp']])('refuses a patch that clears the required %s', (key) => {
+    const result = patchOf('statblock', { [key]: null })
+    expect(result.success).toBe(false)
+    if (!result.success) expect(JSON.stringify(result.error.issues)).toContain(`requires ${key}`)
+  })
+
+  it('takes a patch that does not mention a required field', () => {
+    // A patch touches any subset (CANVAS-10). Only a key it actually SETS is
+    // checked, so an autosave of one cell is never refused for a field it left alone.
+    expect(patchOf('statblock', { speed: '20 ft.' }).success).toBe(true)
+    expect(patchOf('statblock', { ac: 12 }).success).toBe(true)
+  })
+
+  it('never quotes a value in a required-field refusal', () => {
+    // X-7, over every other field's text in the same payload. There is no
+    // ValidationError object on this side, so the assertion is on the issues.
+    const secret = 'She is the drowned saint.'
+    const result = create('statblock', {
+      name: 'Ondrey',
+      ac: 12,
+      ac_note: secret,
+      languages: 'Aquan, and one older tongue',
+      traits: [{ name: 'Salt-bound', text: secret }],
+    })
+    expect(result.success).toBe(false)
+    if (result.success) return
+    const issues = JSON.stringify(result.error.issues)
+    expect(issues).toContain('requires hp')
+    expect(issues).not.toContain('drowned saint')
+    expect(issues).not.toContain('Aquan')
+  })
+
+  it('keeps a response and a history snapshot tolerant of a missing required field', () => {
+    // Lead ruling 5.7#1. LIB-12's own words are "is not valid; nothing is STORED
+    // until they are given", so the rule binds a WRITE. A response that refused a
+    // stat block whose `hp` a data defect lost would render the "made by a newer
+    // version of Aetheril" placeholder for the GM's own document — the precise
+    // hazard the tolerant-read work exists to remove.
+    const data = { name: 'Ondrey', ac: 16 }
+    const parsed = response('statblock', data)
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.data.hp).toBeUndefined()
+    expect(parseDocument(responseBody('statblock', data)).kind).toBe('ok')
+
+    const snapshot = DocumentVersionSnapshotSchema.safeParse({
+      schema_version: 1,
+      document_id: 'doc_9k2f7a1c',
+      type: 'statblock',
+      type_version: 1,
+      version: {
+        number: 1,
+        author: 'gm',
+        summary: '',
+        created_at: '2026-09-16T20:00:00Z',
+        sealed: true,
+        changed_fields: ['name'],
+        restored_from: null,
+      },
+      data,
+    })
+    expect(snapshot.success).toBe(true)
+
+    // …and the same document is refused the moment it is WRITTEN.
+    expect(create('statblock', data).success).toBe(false)
+  })
+
+  it('still refuses a nameless or blank-named document on every path, read included', () => {
+    // The dedicated name check is NOT part of the required switch: every document
+    // has a name from the moment it exists (LIB-12), so it is checked on a read too.
+    expect(response('npc', {}).success).toBe(false)
+    expect(response('npc', { name: '  ' }).success).toBe(false)
+    expect(create('npc', {}).success).toBe(false)
+  })
+
+  it('clears a required field nowhere in a valid fixture, and still shows every structured kind cleared', () => {
+    // Both halves of the sweep, over every fixture file rather than the three
+    // this bead edited, so a fixture added later joins the check by existing.
+    const wholeDocuments = ['Document', 'DocumentCreateRequest', 'DocumentVersionSnapshot']
+    const structured: FieldKind[] = ['asset', 'integer', 'abilities', 'text_list', 'entry_list']
+    const cleared = new Set<FieldKind>()
+    let checked = 0
+    for (const path of fixtureFiles()) {
+      const doc = readJson<Fixture>(path)
+      if (!wholeDocuments.includes(doc.schema)) continue
+      for (const example of doc.valid) {
+        const raw = expand(example.value) as { type: DocumentTypeId; data: Record<string, unknown> }
+        const declared: Record<string, FieldKind> = { ...COMMON_FIELDS, ...DOC_TYPE_FIELDS[raw.type] }
+        checked += 1
+        for (const key of REQUIRED_FIELDS[raw.type]) {
+          expect(Object.hasOwn(raw.data, key), `${doc.schema}: ${example.name} omits ${key}`).toBe(true)
+          expect(isEmpty(declared[key], raw.data[key]), `${doc.schema}: ${example.name} clears ${key}`).toBe(false)
+        }
+        for (const [key, value] of Object.entries(raw.data)) {
+          // A client-only example may carry a key the type does not declare —
+          // that is the tolerance it exists to show, and it is not a kind.
+          const kind = Object.hasOwn(declared, key) ? declared[key] : undefined
+          if (kind !== undefined && structured.includes(kind) && isEmpty(kind, value)) cleared.add(kind)
+        }
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(20)
+    expect([...cleared].sort()).toEqual([...structured].sort())
+  })
+})
+
+describe('plain text: what stored text refuses (1kg.5.7.2, requirement 6)', () => {
+  // The lead ruling of 2026-09-21, as literal inclusive ranges, built with
+  // String.fromCodePoint so that no invisible character sits in this file.
+  // test_workbench_contracts.py pins the Python table to the same list.
+  const REFUSED_RANGES: [number, number][] = [
+    [0x0000, 0x0008],
+    [0x000b, 0x000c],
+    [0x000e, 0x001f],
+    [0x007f, 0x009f],
+    [0x061c, 0x061c],
+    [0x200e, 0x200f],
+    [0x202a, 0x202e],
+    [0x2066, 0x2069],
+    [0xfeff, 0xfeff],
+  ]
+  const REFUSED = REFUSED_RANGES.flatMap(([low, high]) =>
+    Array.from({ length: high - low + 1 }, (_, offset) => String.fromCodePoint(low + offset)),
+  )
+  const ALLOWED: Record<string, string> = {
+    'an emoji': String.fromCodePoint(0x1f3b2),
+    'an accented letter': String.fromCodePoint(0xe9),
+    'a tab': String.fromCodePoint(0x09),
+    'a zero width non-joiner': String.fromCodePoint(0x200c),
+    'a zero width joiner': String.fromCodePoint(0x200d),
+    'a variation selector-16': String.fromCodePoint(0xfe0f),
+  }
+  const patchOf = (type: string, fields: Record<string, unknown>) =>
+    FieldPatchRequestSchema.safeParse({ schema_version: 1, type, type_version: 1, base_write_revision: 1, fields })
+  const sites: [string, (s: string) => { success: boolean }][] = [
+    ['text', (s) => patchOf('npc', { voice: `Low${s}and slow` })],
+    ['prose', (s) => patchOf('npc', { notes: `Keeps${s}the ledger` })],
+    ['a text_list item', (s) => patchOf('npc', { tags: ['abbey', `mill${s}road`] })],
+    ['an entry name', (s) => patchOf('quest-log', { open_threads: [{ name: `Find${s}the ledger`, text: 'Under the mill.' }] })],
+    ['an entry text', (s) => patchOf('quest-log', { open_threads: [{ name: 'Find the ledger', text: `Under${s}the mill.` }] })],
+  ]
+
+  it('pins the refused code points to the ruling, range for range', () => {
+    expect([...REFUSED_TEXT_CODE_POINTS].sort((a, b) => a - b)).toEqual(REFUSED.map((c) => c.codePointAt(0)))
+    expect(REFUSED_TEXT_CODE_POINTS.size).toBe(75)
+    for (const char of REFUSED) expect([char.codePointAt(0), isPlainText(`a${char}b`)]).toEqual([char.codePointAt(0), false])
+    for (const char of Object.values(ALLOWED)) expect(isPlainText(`a${char}b`)).toBe(true)
+    // The two factories carry the refusal; a line break stays oneLine's to refuse.
+    expect(plainText(0, 10).safeParse(`a${REFUSED[0]}`).success).toBe(false)
+    expect(plainOneLine(0, 10).safeParse(`a${REFUSED[0]}`).success).toBe(false)
+    expect(plainText(0, 10).safeParse('a\nb').success).toBe(true)
+    expect(plainOneLine(0, 10).safeParse('a\nb').success).toBe(false)
+  })
+
+  it.each(sites)('%s refuses every code point in the table and keeps the allowed set — AC 15', (_site, write) => {
+    for (const char of REFUSED) expect([char.codePointAt(0), write(char).success]).toEqual([char.codePointAt(0), false])
+    for (const [name, char] of Object.entries(ALLOWED)) expect([name, write(char).success]).toEqual([name, true])
+  })
+
+  it('keeps a line break where one was already allowed', () => {
+    expect(patchOf('npc', { notes: 'One.\nTwo.\r\nThree.' }).success).toBe(true)
+    expect(patchOf('quest-log', { open_threads: [{ name: 'Find the ledger', text: 'Under\nthe mill.' }] }).success).toBe(true)
+    expect(patchOf('npc', { voice: 'Low\nand slow' }).success).toBe(false)
+  })
+
+  it.each([
+    ['NUL', 0x00, 'a control character'],
+    ['RLO', 0x202e, 'a bidirectional control character'],
+    ['BOM', 0xfeff, 'a byte order mark'],
+  ])('a %s refusal names the field and the class, never the value (X-7)', (_name, code, what) => {
+    const parsed = patchOf('npc', { voice: `Vashti${String.fromCodePoint(code)}whispers`, tell: 'Hums a hymn off key' })
+    expect(parsed.success).toBe(false)
+    if (parsed.success) return
+    const issues = JSON.stringify(parsed.error.issues)
+    expect(parsed.error.issues.some((issue) => issue.path.includes('voice') && issue.message === `must not contain ${what}`)).toBe(true)
+    for (const secret of ['Vashti', 'whispers', 'Hums a hymn']) expect(issues).not.toContain(secret)
+  })
+
+  it.each([
+    ['text', 'npc', 'name', (s: string) => `Sister${s}Ondrey`],
+    ['prose', 'npc', 'notes', (s: string) => `The tunnel${s}is shown in red ink.`],
+    ['a text_list item', 'lore', 'rumours', (s: string) => [`No one born${s}will swim.`]],
+    ['an entry name', 'statblock', 'traits', (s: string) => [{ name: `Amphi${s}bious`, text: 'She breathes water.' }]],
+    ['an entry text', 'statblock', 'traits', (s: string) => [{ name: 'Amphibious', text: `She breathes${s}water.` }]],
+  ])('a projection refuses in %s what a document refuses', (_site, type, key, value) => {
+    // Requirement 6: a value a document refuses can never ride in a projection instead.
+    const project = (s: string) =>
+      CONTRACT_SCHEMAS.TableProjection.safeParse({ content_kind: 'document', type, fields: [{ key, value: value(s) }] }).success
+    for (const char of REFUSED) expect([char.codePointAt(0), project(char)]).toEqual([char.codePointAt(0), false])
+    for (const [name, char] of Object.entries(ALLOWED)) expect([name, project(char)]).toEqual([name, true])
+  })
+
+  it('stops at the document kinds and the projection — AC 15, ruling 3', () => {
+    // A version's summary, a brief, chat text and a cue title are bead 5mj's, and
+    // each still accepts a NUL until it lands: the boundary is pinned, not assumed.
+    const nul = String.fromCodePoint(0)
+    const versions = readJson<Fixture>(join(FIXTURES, 'DocumentVersion.json'))
+    const version = { ...(versions.valid[0].value as Record<string, unknown>), summary: `Wants${nul}the signet` }
+    expect(CONTRACT_SCHEMAS.DocumentVersion.safeParse(version).success).toBe(true)
+    const request = {
+      schema_version: 1,
+      invocation_id: 'inv_9f2c4e1a7b3d4c5e',
+      tool_id: 'npc',
+      brief: `a${nul}guard`,
+      campaign_id: 'cmp_4b1d9e7a',
+      conversation_id: '0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d',
+    }
+    expect(CONTRACT_SCHEMAS.ToolInvocationRequest.safeParse(request).success).toBe(true)
+    const entries = readJson<Fixture>(join(FIXTURES, 'TimelineEntry.json'))
+    const chat = structuredClone(entries.valid.find((e) => e.name === 'a chat exchange with its complete outcome')?.value) as {
+      answer: { text: string }
+    }
+    chat.answer.text = `A basilisk${nul} petrifies.`
+    expect(CONTRACT_SCHEMAS.TimelineEntry.safeParse(chat).success).toBe(true)
+    expect(CONTRACT_SCHEMAS.CueRenameRequest.safeParse({ schema_version: 1, title: `Rain${nul}` }).success).toBe(true)
+  })
+})
+
+describe('a stored value that is not an object (M-2, 1kg.5.7.2)', () => {
+  it.each([['a string', 'x'], ['a list', []], ['null', null]])(
+    'a document and a history snapshot answer an issue at data for %s, never a throw',
+    (_name, data) => {
+      for (const [schema, file] of [
+        [DocumentSchema, 'Document.json'],
+        [DocumentVersionSnapshotSchema, 'DocumentVersionSnapshot.json'],
+      ] as const) {
+        const base = readJson<Fixture>(join(FIXTURES, file)).valid[0].value as Record<string, unknown>
+        const parsed = schema.safeParse({ ...base, data })
+        expect(parsed.success).toBe(false)
+        if (!parsed.success) expect(parsed.error.issues.some((issue) => issue.path[0] === 'data')).toBe(true)
+      }
+    },
+  )
+})
+
 describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
   const gm = readJson<Fixture>(join(FIXTURES, 'GmEvent.json'))
   const table = readJson<Fixture>(join(FIXTURES, 'TableEvent.json'))
@@ -577,11 +1311,131 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
     for (const example of table.valid) expect(parseTableEvent(expand(example.value)).kind).toBe('ok')
   })
 
-  it('turns a kind it does not know — snapshot and slot until the reveal family lands — into a placeholder', () => {
-    expect(parseGmEvent({ schema_version: 1, event: 'snapshot', slots: [] })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
-    expect(parseTableEvent({ schema_version: 1, event: 'slot', slot: 'table', seq: 1 })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+  it('turns a kind it does not know into a placeholder', () => {
+    // `snapshot` and `slot` were the stand-ins here until the reveal family landed;
+    // both are known kinds now, so the probe moves to one this contract does not define.
+    expect(parseGmEvent({ schema_version: 1, event: 'excerpt', span: {} })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(parseTableEvent({ schema_version: 1, event: 'excerpt', span: {} })).toEqual({
+      kind: 'unknown',
+      reason: 'unknown_kind',
+      slot: null,
+      seq: null,
+      slots: null,
+    })
     // Presence never travels on the table channel; to a table client the kind is simply unknown.
-    expect(parseTableEvent(first(gm, 'who is listening'))).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(parseTableEvent(first(gm, 'who is listening'))).toMatchObject({ kind: 'unknown', reason: 'unknown_kind' })
+  })
+
+  it('strips what a table client may never see, however deep it rides (SEC-15)', () => {
+    // The client is deliberately tolerant of a field a newer server added, so it
+    // cannot *refuse* these — but it must not pass them on either. A value typed
+    // `unknown` would survive verbatim, which is how a GM-side asset id, a
+    // filename and a GM note reached a component in an earlier revision.
+    const slot = first(table, 'the table slot is now showing') as { content: { fields: Array<Record<string, unknown>> } }
+    const portrait = slot.content.fields.find((field) => field.key === 'portrait')
+    if (!portrait) throw new Error('the fixture needs an asset field')
+    const smuggled = {
+      ...slot,
+      content: {
+        ...slot.content,
+        fields: [
+          {
+            ...portrait,
+            value: { ...(portrait.value as object), asset_id: 'ast_77c1d0e2', filename: 'ondrey-true-face.webp', gm_note: 'she is the lich' },
+          },
+        ],
+      },
+    }
+    const read = parseTableEvent(smuggled)
+    expect(read.kind).toBe('ok')
+    const rendered = JSON.stringify(read)
+    for (const secret of ['ast_77c1d0e2', 'ondrey-true-face.webp', 'she is the lich', 'asset_id', 'filename', 'gm_note']) {
+      expect([secret, rendered.includes(secret)]).toEqual([secret, false])
+    }
+  })
+
+  it('strips every key the server is forbidden to emit, at every depth of a projection (SEC-15)', () => {
+    // The eleven `applies_to: ["server"]` examples in TableProjection.json are
+    // skipped by this suite by design — the server refuses them, a client
+    // tolerates and strips. "Tolerates" was never pinned: with a loose object
+    // they would have travelled to a player's device intact. This is that pin,
+    // read from the same fixtures so it cannot fall behind them.
+    const projection = readJson<Fixture>(join(FIXTURES, 'TableProjection.json'))
+    const serverOnly = projection.invalid.filter((example) => example.applies_to?.length === 1 && example.applies_to[0] === 'server')
+    expect(serverOnly.length).toBeGreaterThanOrEqual(11)
+
+    // The whole vocabulary a projection may use, at every level — read from the
+    // schema itself, so it cannot drift from what the shapes declare. Two of the
+    // eleven examples smuggle their key *inside* a field object rather than at
+    // the top, so a top-level check alone would assert nothing about them.
+    const declaredBy = (node: unknown): string[] =>
+      node !== null && typeof node === 'object'
+        ? Object.entries(node).flatMap(([key, child]) =>
+            key === 'properties' && child !== null && typeof child === 'object'
+              ? [...Object.keys(child), ...declaredBy(child)]
+              : declaredBy(child),
+          )
+        : []
+    const declared = new Set(declaredBy(z.toJSONSchema(TableProjectionSchema, { io: 'output' })))
+    expect(declared.size).toBeGreaterThan(0)
+
+    const keysAtEveryDepth = (node: unknown): string[] =>
+      Array.isArray(node)
+        ? node.flatMap(keysAtEveryDepth)
+        : node !== null && typeof node === 'object'
+          ? Object.entries(node).flatMap(([key, child]) => [key, ...keysAtEveryDepth(child)])
+          : []
+
+    for (const example of serverOnly) {
+      const parsed = TableProjectionSchema.safeParse(expand(example.value))
+      expect([example.name, parsed.success]).toEqual([example.name, true])
+      if (!parsed.success) continue
+      const survived = [...new Set(keysAtEveryDepth(parsed.data))].filter((key) => !declared.has(key))
+      expect([example.name, survived]).toEqual([example.name, []])
+      // And the example really did carry something to strip, wherever it sat —
+      // otherwise this would pass by asserting nothing.
+      const sent = [...new Set(keysAtEveryDepth(expand(example.value)))].filter((key) => !declared.has(key))
+      expect([example.name, sent]).not.toEqual([example.name, []])
+    }
+  })
+
+  it('reads a content kind it does not know as a placeholder, in both frames that carry one (ADR 7.4)', () => {
+    // Reserving `content_kind` is only worth something if a v1 client meets a
+    // future member as a placeholder rather than as a parse failure. The snapshot
+    // frame matters most: every stream opens with one and every reconnect takes a
+    // fresh one, so `slots[].content.content_kind` is the path a future kind
+    // actually arrives on (RT-4).
+    const slot = first(table, 'the table slot is now showing') as { slot: string; seq: number; content: Record<string, unknown> }
+    const future = { ...slot.content, content_kind: 'excerpt' }
+    // X-4: the placeholder still says which region to blank and which mark to advance.
+    expect(parseTableEvent({ ...slot, content: future })).toEqual({
+      kind: 'unknown',
+      reason: 'unknown_kind',
+      slot: slot.slot,
+      seq: slot.seq,
+      slots: null,
+    })
+
+    const snapshot = first(table, "a participant's opening picture") as { slots: Array<Record<string, unknown>> }
+    const [tableSlot, mine] = snapshot.slots
+    // …and one unreadable entry does not discard the readable table slot beside it.
+    expect(parseTableEvent({ ...snapshot, slots: [tableSlot, { ...mine, content: future }] })).toEqual({
+      kind: 'unknown',
+      reason: 'unknown_kind',
+      slot: null,
+      seq: null,
+      slots: [
+        { kind: 'ok', value: tableSlot },
+        { kind: 'unknown', reason: 'unknown_kind', slot: mine.slot, seq: mine.seq },
+      ],
+    })
+    // …and the object-only paths are untouched: a known kind still reads as itself,
+    // which holds by construction because none of them names the array segment.
+    expect(parseTableEvent(snapshot).kind).toBe('ok')
+    for (const example of gm.valid) expect(parseGmEvent(expand(example.value)).kind).toBe('ok')
+    for (const paths of [RESULT_DISCRIMINATORS, ENTRY_DISCRIMINATORS, GM_EVENT_DISCRIMINATORS]) {
+      for (const [path] of paths) expect(path).not.toContain('[]')
+    }
   })
 
   it('reads a newer version, or a newer result kind inside a lane frame, as the future', () => {
@@ -597,24 +1451,143 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
 
   it('reads a snapshot frame by frame, so one unknown kind is one placeholder (ADR RT-4)', () => {
     const snapshot = readJson<Fixture>(join(FIXTURES, 'TableSnapshot.json')).valid[0].value as { frames: unknown[] }
-    const withUnknown = { schema_version: 1, frames: [...snapshot.frames.slice(0, -1), { schema_version: 1, event: 'slot', slot: 'table', seq: 1 }, { schema_version: 1, event: 'ready' }] }
+    // `slot` was the unknown kind here until the reveal family landed; the probe
+    // moves to one this contract does not define. The expectation is computed
+    // from the fixture, so growing it cannot make this assertion quietly wrong.
+    const known = snapshot.frames.slice(0, -1)
+    const withUnknown = { schema_version: 1, frames: [...known, { schema_version: 1, event: 'excerpt', span: {} }, { schema_version: 1, event: 'ready' }] }
     const read = parseTableSnapshot(withUnknown)
     expect(read.kind).toBe('ok')
     if (read.kind !== 'ok') return
-    expect(read.value.frames.map((frame) => frame.kind)).toEqual(['ok', 'ok', 'ok', 'unknown', 'ok'])
-    expect(read.value.frames[3]).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(read.value.frames.map((frame) => frame.kind)).toEqual([...known.map(() => 'ok'), 'unknown', 'ok'])
+    expect(read.value.frames[known.length]).toEqual({ kind: 'unknown', reason: 'unknown_kind', slot: null, seq: null, slots: null })
     // Without its ready boundary a snapshot is not one (TABLE-7).
     expect(parseTableSnapshot({ schema_version: 1, frames: snapshot.frames.slice(0, -1) })).toEqual({ kind: 'unknown', reason: 'invalid' })
     expect(parseGmSnapshot({ schema_version: 2, frames: [] })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
     for (const junk of [null, 42, {}, { schema_version: 1, frames: [] }]) expect(parseGmSnapshot(junk).kind).toBe('unknown')
   })
 
+  it('applies the one-reveal-picture rule where the readers are, not only where the emitter is (REVEAL-13)', () => {
+    // A GM tab in RT-9's polling mode gets a GmSnapshot whose picture failed to
+    // build; if parseGmSnapshot answered `ok`, the indicator would find no
+    // `snapshot` frame and render "nothing revealed" while the table shows a
+    // dossier — the one state REVEAL-13 forbids. Every invalid example that
+    // breaks the rule is refused by the reader as well as by the schema.
+    const byName = (doc: Fixture, name: string): unknown => {
+      const found = doc.invalid.find((example) => example.name === name)
+      if (!found) throw new Error(`no invalid example named ${name}`)
+      return expand(found.value)
+    }
+    const gmSnapshots = readJson<Fixture>(join(FIXTURES, 'GmSnapshot.json'))
+    const tableSnapshots = readJson<Fixture>(join(FIXTURES, 'TableSnapshot.json'))
+
+    for (const name of ['a live session whose snapshot carries no reveal picture', 'two snapshot frames', 'a reveal picture with no session running']) {
+      expect([name, parseGmSnapshot(byName(gmSnapshots, name))]).toEqual([name, { kind: 'unknown', reason: 'invalid' }])
+    }
+    for (const name of ['a live table whose snapshot carries no reveal picture', 'two snapshot frames', 'an inactive table carrying a reveal picture']) {
+      expect([name, parseTableSnapshot(byName(tableSnapshots, name))]).toEqual([name, { kind: 'unknown', reason: 'invalid' }])
+    }
+    // Counted on the RAW event values: a picture this bundle cannot parse is
+    // still a picture, so a live snapshot whose one picture is unreadable stays
+    // `ok` with one placeholder in it, rather than reading as "no picture".
+    const live = tableSnapshots.valid[0].value as { frames: Array<Record<string, unknown>> }
+    const unreadable = live.frames.map((frame) => (frame.event === 'snapshot' ? { ...frame, slots: 'not a list' } : frame))
+    const read = parseTableSnapshot({ schema_version: 1, frames: unreadable })
+    expect(read.kind).toBe('ok')
+    if (read.kind !== 'ok') return
+    expect(read.value.frames.some((frame) => frame.kind === 'unknown')).toBe(true)
+    // And every valid example still reads.
+    for (const example of gmSnapshots.valid) expect([example.name, parseGmSnapshot(expand(example.value)).kind]).toEqual([example.name, 'ok'])
+    for (const example of tableSnapshots.valid) expect([example.name, parseTableSnapshot(expand(example.value)).kind]).toEqual([example.name, 'ok'])
+  })
+
+  it('applies the liveness rule where the readers are, so a dead table has nothing left to show (REVEAL-17, AE-51)', () => {
+    // One rule, three places that agree: the Pydantic model, the Zod schema and
+    // the reader. `docs/workbench-wire-contract.md` tells a table client to
+    // blank a slot it cannot read; a reader that answered `ok` with the
+    // projection intact would hand it nothing to blank. Every shipped fixture
+    // the liveness rule refuses is refused here too, on the raw values.
+    const byName = (doc: Fixture, kind: 'valid' | 'invalid', name: string): unknown => {
+      const found = doc[kind].find((example) => example.name === name)
+      if (!found) throw new Error(`no ${kind} example named ${name}`)
+      return expand(found.value)
+    }
+    const tableSnapshots = readJson<Fixture>(join(FIXTURES, 'TableSnapshot.json'))
+    for (const name of [
+      'an inactive table carrying a reveal picture',
+      'an inactive table carrying a mine slot frame',
+      'an inactive table carrying a slot frame with content',
+      'an inactive table whose picture still holds a private projection',
+      'an inactive frame after the session frame',
+      'three inactive frames beside a session and a buffered projection',
+      'an inactive table whose guest session still shows the table slot',
+      'an inactive table that also carries a session frame',
+      // Bead 929: the session arm of the predicate, which the fixtures above
+      // never reached — each is a resource with no session frame at all.
+      'a session-less resource whose picture shows the table a projection',
+      'a session-less resource whose picture holds a private projection',
+    ]) {
+      expect([name, parseTableSnapshot(byName(tableSnapshots, 'invalid', name))]).toEqual([name, { kind: 'unknown', reason: 'invalid' }])
+    }
+    // The permitted half still reads: a cleared region reports that it holds
+    // nothing, which is not the same as showing something.
+    const empty = byName(tableSnapshots, 'valid', 'an inactive table reporting an empty table slot')
+    expect(parseTableSnapshot(empty).kind).toBe('ok')
+    // `inactive` is decisive wherever it sits, so appending it to a resource the
+    // reader would otherwise accept turns that resource dead — order is not a
+    // fact the reader reads differently from the schema.
+    const stillLive = tableSnapshots.valid[1].value as { frames: Array<Record<string, unknown>> }
+    expect(parseTableSnapshot(stillLive).kind).toBe('ok')
+    const soured = [...stillLive.frames.slice(0, -1), { schema_version: 1, event: 'inactive' }, { schema_version: 1, event: 'ready' }]
+    expect(parseTableSnapshot({ schema_version: 1, frames: soured })).toEqual({ kind: 'unknown', reason: 'invalid' })
+  })
+
   it('reports a broken frame as invalid and never throws', () => {
-    expect(parseTableEvent({ ...first(table, 'ambience is playing'), slot: 'one_shot' })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    // An audio slot name is not a reveal slot name, so only the sequence reads.
+    const audio = first(table, 'ambience is playing')
+    expect(parseTableEvent({ ...audio, slot: 'one_shot' })).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+      slot: null,
+      seq: audio.seq,
+      slots: null,
+    })
     for (const junk of [null, undefined, 42, 'x', [], {}, { event: 7 }]) {
       expect(parseGmEvent(junk).kind).toBe('unknown')
       expect(parseTableEvent(junk).kind).toBe('unknown')
     }
+  })
+
+  it('keeps the slot and the sequence when a stale bundle cannot read the frame (X-4)', () => {
+    // Not a future-version problem: the client checks a projection key against
+    // its OWN copy of the field definitions, so a server one deploy ahead of a
+    // table bundle — a type gained a revealable field, "no bump" by the
+    // versioning table — makes the frame unreadable today. If the placeholder
+    // lost the slot, the page would have nothing to blank, the natural
+    // implementation would skip the frame, and document A would stay on the
+    // player's screen while the GM's indicator says B.
+    const ahead = { content_kind: 'document', type: 'lore', fields: [{ key: 'a_field_this_bundle_has_never_heard_of', value: 'x' }] }
+    expect(parseTableEvent({ schema_version: 1, event: 'slot', slot: 'table', seq: 31, content: ahead })).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+      slot: 'table',
+      seq: 31,
+      slots: null,
+    })
+    // …and in a picture, the readable table slot survives its unreadable neighbour.
+    const readable = { slot: 'table', seq: 12, content: null }
+    expect(
+      parseTableEvent({ schema_version: 1, event: 'snapshot', slots: [readable, { slot: 'mine', seq: 3, content: ahead }] }),
+    ).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+      slot: null,
+      seq: null,
+      slots: [
+        { kind: 'ok', value: readable },
+        { kind: 'unknown', reason: 'invalid', slot: 'mine', seq: 3 },
+      ],
+    })
   })
 })
 
@@ -652,5 +1625,108 @@ describe('readErrorBody — one reader for every error shape', () => {
     for (const junk of [null, 'oops', 7, {}, { detail: 9 }, { detail: [{ loc: 'nope' }] }]) {
       expect(readErrorBody(junk)).toEqual({ kind: 'unreadable' })
     }
+  })
+})
+
+describe('the conversation family (1kg.2.4)', () => {
+  const conversation = readJson<Fixture>(join(FIXTURES, 'Conversation.json'))
+  const campaignThread = conversation.valid[0].value as Record<string, unknown>
+  const legacy = conversation.valid[1].value as Record<string, unknown>
+
+  it('reads a conversation, and a legacy one with nothing recorded', () => {
+    expect(parseConversation(campaignThread)).toEqual({ kind: 'ok', value: campaignThread })
+    const read = parseConversation(legacy)
+    expect(read.kind).toBe('ok')
+    if (read.kind === 'ok') {
+      expect([read.value.campaign_id, read.value.title, read.value.started_mode, read.value.updated_at]).toEqual([
+        null,
+        null,
+        null,
+        null,
+      ])
+    }
+  })
+
+  it('strips what a newer server adds, the owner and the model included, before a component sees it', () => {
+    const read = parseConversation({ ...campaignThread, owner_id: 7, manual_alias: 'gpt-4o-mini', pinned: true })
+    expect(read).toEqual({ kind: 'ok', value: campaignThread })
+  })
+
+  it('reads a newer version as the future and anything else broken as invalid, never throwing', () => {
+    expect(parseConversation({ ...campaignThread, schema_version: 2 })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+    expect(parseConversation({ ...campaignThread, started_mode: 'combat' })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    expect(parseConversation({ ...campaignThread, schema_version: 1.5 })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    for (const junk of [null, undefined, 42, 'x', [], {}]) expect(parseConversation(junk).kind).toBe('unknown')
+  })
+
+  const page = (items: unknown[], extra: Record<string, unknown> = {}) => ({
+    schema_version: 1,
+    items,
+    next_cursor: null,
+    ...extra,
+  })
+
+  it('reads a page conversation by conversation, so one row from a newer server empties nothing', () => {
+    const parsed = parseConversationPage(page([campaignThread, { ...legacy, started_mode: 'combat' }, legacy]))
+    expect(parsed.kind).toBe('ok')
+    if (parsed.kind !== 'ok') return
+    expect(parsed.value.items.map((item) => item.kind)).toEqual(['ok', 'unknown', 'ok'])
+    expect(parsed.value.next_cursor).toBeNull()
+  })
+
+  it('keeps the cursor, because a short page is not the last one', () => {
+    expect(parseConversationPage(page([], { next_cursor: 'WyIyMDI2Il0' }))).toEqual({
+      kind: 'ok',
+      value: { items: [], next_cursor: 'WyIyMDI2Il0' },
+    })
+  })
+
+  it('refuses an envelope it cannot trust', () => {
+    expect(parseConversationPage(page([], { schema_version: 2 }))).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+    expect(parseConversationPage(page(Array.from({ length: 101 }, () => legacy)))).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+    })
+    expect(parseConversationPage({ schema_version: 1, items: [] })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    for (const junk of [null, undefined, 42, 'x', []]) expect(parseConversationPage(junk).kind).toBe('unknown')
+  })
+
+  it('refuses in a title exactly the code points the server refuses (ruling A2-9)', () => {
+    const spelled = new Set<number>()
+    for (const [low, high] of [[0x00, 0x1f], [0x7f, 0x9f], [0x202a, 0x202e], [0x2066, 0x2069]]) {
+      for (let code = low; code <= high; code += 1) spelled.add(code)
+    }
+    for (let code = 0; code <= 0x3000; code += 1) expect(isRefusedInATitle(code)).toBe(spelled.has(code))
+  })
+
+  it('bounds a title after trimming, as the server stores it', () => {
+    const create = (title: unknown) => ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title })
+    expect(create(' '.repeat(3) + 'a'.repeat(200) + '\t').success).toBe(true)
+    expect(create('a'.repeat(201)).success).toBe(false)
+    expect(create(' \t ').success).toBe(false)
+    expect(create('Harbour' + String.fromCharCode(0x85)).success).toBe(false)
+  })
+
+  it('refuses a campaign conversation outside gm at the campaign field', () => {
+    const refused = ConversationCreateRequestSchema.safeParse({
+      schema_version: 1,
+      started_mode: 'sage',
+      campaign_id: 'cmp_4b1d9e7a',
+    })
+    expect(refused.success).toBe(false)
+    if (!refused.success) expect(refused.error.issues.map((issue) => issue.path)).toEqual([['campaign_id']])
+  })
+
+  it('refuses an empty patch and a null in any key of one', () => {
+    for (const body of [{}, { title: null }, { archived: null }, { campaign_id: null }, { started_mode: null }]) {
+      expect(ConversationPatchRequestSchema.safeParse({ schema_version: 1, ...body }).success).toBe(false)
+    }
+    expect(ConversationPatchRequestSchema.safeParse({ schema_version: 1, archived: false }).success).toBe(true)
+  })
+
+  it('knows already_linked, so a link refusal reads as a known code', () => {
+    expect(isKnownErrorCode('already_linked')).toBe(true)
+    expect(CONVERSATION_PAGE_MAX_ITEMS).toBe(100)
+    expect(CONVERSATION_TITLE_MAX_CHARS).toBe(200)
   })
 })

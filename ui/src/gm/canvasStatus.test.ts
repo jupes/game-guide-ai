@@ -136,9 +136,14 @@ describe('changed-field labels', () => {
     expect(fieldLabel('name')).toBe('Name')
   })
 
-  it('humanises a key whose labels have not landed yet, rather than showing it raw', () => {
-    expect(fieldLabel('xp_budget', 'encounter')).toBe('Xp budget')
+  it('humanises a key the type does not declare, rather than showing it raw', () => {
+    // 1kg.5.3 declared all eight types, so the fallback is no longer "a type
+    // whose labels have not landed" but a key from a newer server, which the
+    // client strips from the data yet may still meet in `changed_fields`.
+    expect(fieldLabel('morale_rating', 'encounter')).toBe('Morale rating')
     expect(fieldLabel('beats', 'quest-log')).toBe('Beats')
+    // The same key on the type that DOES declare it comes from the registry.
+    expect(fieldLabel('xp_budget', 'encounter')).toBe('XP budget')
   })
 
   it('leaves a key it cannot humanise alone', () => {

@@ -13,11 +13,16 @@
  * (X-8), which is what the handoff's `documentType(id) || DOCUMENT_TYPES.npc`
  * got wrong.
  *
- * Not here yet, on purpose: which fields a table may see, reveal groups and
- * warnings, audiences and per-audience default masks — those are
- * agent-forge-harness-1ir.1.2's decision and arrive with the reveal family
- * (1kg.1.6). Field labels exist only for declared fields; the other seven types'
- * labels land with their declarations (1kg.5.3).
+ * Since 1kg.5.3 it also carries, per field, the RULE that says how the field is
+ * presented and who may ever see it — its label, whether it is editable, whether
+ * a document of the type is REQUIRED to carry it (LIB-12), the BOUNDS an integer
+ * field narrows its kind to, whether it is on the type's revealable allowlist
+ * (REVEAL-10, and by ED-5 the same list that can ever be classified), and the
+ * warning a reveal sheet shows above it (REVEAL-11) — and, per type, the audience
+ * whose default reveal it seeds (REVEAL-4, ED-14), its accent, its reveal groups,
+ * its per-audience default reveal and the keys it has retired (ED-24). Not here:
+ * a reveal mask, a projection or an eligibility row. Those are state, not
+ * registry, and belong to 1kg.1.6 and agent-forge-harness-1ir.2.1.
  */
 
 import {
@@ -27,6 +32,8 @@ import {
   DOC_TYPE_LIBRARY_CATEGORY,
   DOC_TYPE_VERSION,
   DOCUMENT_TYPE_IDS,
+  INTEGER_FIELD_MAX,
+  INTEGER_FIELD_MIN,
   TOOL_CARD_KIND,
   TOOL_CREATES_DOC_TYPE,
   TOOL_IDS,
@@ -66,6 +73,59 @@ export interface Tool {
   capability: CapabilityId | null
 }
 
+/**
+ * The audience a TYPE has. After owner decision O-2 (records ED-14 and A-19,
+ * which amend AUD-9) the flag no longer says which types may use a participant
+ * slot — ANY type may. It says only WHOSE DEFAULT REVEAL A TYPE SEEDS
+ * (REVEAL-4): an owner-audience type seeds its linked owner's mask, and any
+ * other audience — or any other type revealed to a participant — seeds empty.
+ * The audience PICKER itself belongs to 1kg.7.3 (shared ADR §7.1).
+ */
+export const AUDIENCES = ['table', 'owner'] as const
+export type Audience = (typeof AUDIENCES)[number]
+
+/** A closed token the client maps to a custom property. The handoff stored raw
+ * CSS; a stylesheet is the client's business, not the contract's. */
+export const ACCENTS = ['arcane'] as const
+export type Accent = (typeof ACCENTS)[number]
+
+/**
+ * How one field is presented, and whether it may ever be shown.
+ *
+ * `revealable` IS the type's allowlist (REVEAL-10), and by ED-5 it is also the
+ * list of keys that can ever be classified: everything off it — `tags`, sources
+ * and citation text, ids, authorship, asset metadata, and any identity link
+ * (ED-20) — is `gm_only` by construction. `warning` is the sub-line a reveal
+ * sheet shows above the toggle, in the type's own words (REVEAL-11).
+ *
+ * `required` is decision LIB-12 as data: a document of this type is not valid
+ * without the field, so a create and a patch that would clear it are refused.
+ * The rule the VALIDATOR enforces lives in `contracts.ts`'s `REQUIRED_FIELDS`,
+ * which this module cannot reach — the import runs the other way — and a test
+ * pins the two to `registry.json`.
+ *
+ * `bounds` narrows an `integer` field's kind range for this one use: a
+ * `[lowest, highest]` pair, or `null` for the kind's full range.
+ * `validateRegistry` allows it only on an `integer` field, only with
+ * `lowest <= highest`, and only inside the kind's own range.
+ */
+export interface FieldRule {
+  label: string
+  editable: boolean
+  required: boolean
+  revealable: boolean
+  warning: string | null
+  bounds: readonly [number, number] | null
+}
+
+/** REVEAL-11: one labelled row that toggles a fixed set of keys. The stored
+ * mask still lists the individual keys. */
+export interface RevealGroup {
+  id: string
+  label: string
+  keys: readonly string[]
+}
+
 export interface DocumentType {
   id: DocumentTypeId
   label: string
@@ -74,9 +134,21 @@ export interface DocumentType {
   library_category: LibraryCategory
   type_version: number
   fields: Readonly<Record<string, FieldKind>>
+  /** One rule per OWN field; the common fields' rules are the registry's. */
+  field_rules: Readonly<Record<string, FieldRule>>
+  /** Derived from `field_rules`, so a label is never stored twice. */
   field_labels: Readonly<Record<string, string>>
   printable: boolean
   cites_corpus: boolean
+  audience: Audience
+  accent: Accent | null
+  reveal_groups: readonly RevealGroup[]
+  /** Per audience, and only ever the type's own one (REVEAL-4). Read it through
+   * `defaultRevealFor`, which answers `[]` for any other. */
+  default_reveal: Readonly<Record<string, readonly string[]>>
+  /** ED-24: keys this type has retired, which may never return with another
+   * meaning. A test pins the list, so adding to it is deliberate. */
+  reserved_keys: readonly string[]
 }
 
 /** RAIL-10: a disabled tool stays visible, with its reason. */
@@ -91,7 +163,12 @@ export interface Registry {
   capabilities: readonly Capability[]
   default_pinned: readonly ToolId[]
   renderers: readonly Renderer[]
+  /** Shared by every type. `tags` is never revealable, on any type (REVEAL-10, ED-5). */
+  common_field_rules: Readonly<Record<string, FieldRule>>
+  /** Derived from `common_field_rules`, like a type's own. */
   common_field_labels: Readonly<Record<string, string>>
+  accents: readonly Accent[]
+  audiences: readonly Audience[]
   rail_limit: number
 }
 
@@ -120,12 +197,61 @@ function tool(
   }
 }
 
+/** The common fields' rules, shared by every type (REVEAL-10, ED-5). `name` is
+ * the one common field a document cannot be without (LIB-12). */
+const COMMON_FIELD_RULES: Readonly<Record<string, FieldRule>> = {
+  name: { label: 'Name', editable: true, required: true, revealable: true, warning: null, bounds: null },
+  qualifier: { label: 'Qualifier', editable: true, required: false, revealable: true, warning: null, bounds: null },
+  tags: { label: 'Tags', editable: true, required: false, revealable: false, warning: null, bounds: null },
+}
+
+/** A rule, with the defaults spelled once: editable, NOT revealable, not
+ * required, no warning, no per-use bounds. `revealable` defaults to false
+ * (F-12 c): default-deny is the record's posture (ED-4, ED-5), so a new field is
+ * off the allowlist unless its author puts it there, and every revealable rule
+ * below says so explicitly. */
+export function rule(
+  label: string,
+  extra: {
+    editable?: boolean
+    required?: boolean
+    revealable?: boolean
+    warning?: string
+    bounds?: readonly [number, number]
+  } = {},
+): FieldRule {
+  return {
+    label,
+    editable: extra.editable ?? true,
+    required: extra.required ?? false,
+    revealable: extra.revealable ?? false,
+    warning: extra.warning ?? null,
+    bounds: extra.bounds ?? null,
+  }
+}
+
+/** The labels alone, derived — never stored twice, so they cannot drift. */
+function labelsOf(rules: Readonly<Record<string, FieldRule>>): Readonly<Record<string, string>> {
+  return Object.fromEntries(Object.entries(rules).map(([key, value]) => [key, value.label]))
+}
+
 function documentType(
   id: DocumentTypeId,
   label: string,
   icon: string,
-  extra: { renderer?: Renderer; field_labels?: Readonly<Record<string, string>>; printable?: boolean; cites_corpus?: boolean } = {},
+  extra: {
+    renderer?: Renderer
+    rules?: Readonly<Record<string, FieldRule>>
+    printable?: boolean
+    cites_corpus?: boolean
+    audience?: Audience
+    accent?: Accent
+    reveal_groups?: readonly RevealGroup[]
+    default_reveal?: Readonly<Record<string, readonly string[]>>
+    reserved_keys?: readonly string[]
+  } = {},
 ): DocumentType {
+  const rules = extra.rules ?? {}
   return {
     id,
     label,
@@ -133,17 +259,34 @@ function documentType(
     renderer: extra.renderer ?? 'game_document',
     library_category: DOC_TYPE_LIBRARY_CATEGORY[id],
     type_version: DOC_TYPE_VERSION[id],
-    fields: DOC_TYPE_FIELDS[id],
-    field_labels: extra.field_labels ?? {},
+    // A copy, so that freezing the registry never freezes the contract's own table.
+    fields: { ...DOC_TYPE_FIELDS[id] },
+    field_rules: rules,
+    field_labels: labelsOf(rules),
     printable: extra.printable ?? false,
     cites_corpus: extra.cites_corpus ?? false,
+    audience: extra.audience ?? 'table',
+    accent: extra.accent ?? null,
+    reveal_groups: extra.reveal_groups ?? [],
+    default_reveal: extra.default_reveal ?? {},
+    reserved_keys: extra.reserved_keys ?? [],
   }
+}
+
+/** F-12 (h): the registry is deeply frozen at module load, as Python's is a frozen
+ * dataclass behind a MappingProxyType, so `ruleFor(d, 'true_identity')!.revealable
+ * = true` throws in module strict mode instead of widening an allowlist at run
+ * time. `Readonly<>` alone is a compile-time promise a cast walks past. */
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value
+  for (const child of Object.values(value)) deepFreeze(child)
+  return Object.freeze(value)
 }
 
 /** Commands, labels, icons, blurbs and the default pins are the handoff's
  * (tools/toolRegistry.js); working labels, the /hooks alias and the capabilities
  * are the record's (3.3). Registry order is menu order (SLASH-9). */
-export const REGISTRY: Registry = {
+export const REGISTRY: Registry = deepFreeze({
   tools: [
     tool('npc', '/npc', 'NPC', 'person_add', 'Generate an NPC dossier', 'Writing the dossier…'),
     tool('monster', '/monster', 'Monster', 'shield', 'Generate a stat block', 'Building the stat block…'),
@@ -158,24 +301,126 @@ export const REGISTRY: Registry = {
   ],
   document_types: [
     documentType('npc', 'NPC Dossier', 'person', {
-      field_labels: {
-        portrait: 'Portrait',
-        voice: 'Voice',
-        tell: 'Tell',
-        attitude: 'Attitude',
-        wants: 'Wants',
-        leverage: 'Leverage',
-        if_attacked: 'If the party attacks',
-        notes: 'Notes',
+      rules: {
+        portrait: rule('Portrait', { revealable: true }),
+        voice: rule('Voice', { revealable: true }),
+        tell: rule('Tell', { revealable: true }),
+        attitude: rule('Attitude', { revealable: true }),
+        wants: rule('Wants', { revealable: true, warning: 'Would spoil the lie' }),
+        leverage: rule('Leverage', { revealable: true, warning: 'Would spoil the lie' }),
+        if_attacked: rule('If the party attacks', { revealable: true }),
+        notes: rule('Notes', { revealable: true }),
+        true_identity: rule('True identity', { revealable: false }),
       },
+      reveal_groups: [
+        { id: 'name_and_voice', label: 'Name & voice', keys: ['name', 'voice'] },
+        { id: 'wants_and_leverage', label: 'Wants & leverage', keys: ['wants', 'leverage'] },
+      ],
+      default_reveal: { table: ['portrait', 'name', 'voice'] },
     }),
-    documentType('statblock', 'Stat Block', 'shield', { renderer: 'stat_block_card' }),
-    documentType('handout', 'Player Handout', 'mail', { printable: true }),
-    documentType('session-notes', 'Session Notes', 'history_edu'),
-    documentType('quest-log', 'Quest Log', 'flag'),
-    documentType('character-sheet', 'Character Sheet', 'contact_page'),
-    documentType('lore', 'Lore Entry', 'local_library', { cites_corpus: true }),
-    documentType('encounter', 'Encounter', 'swords'),
+    documentType('statblock', 'Stat Block', 'shield', {
+      renderer: 'stat_block_card',
+      rules: {
+        // LIB-12: a stat block without its AC and HP is not valid.
+        ac: rule('Armor Class', { revealable: true, required: true, bounds: [0, INTEGER_FIELD_MAX] }),
+        ac_note: rule('Armor Class note', { revealable: true }),
+        hp: rule('Hit Points', { revealable: true, required: true, bounds: [0, INTEGER_FIELD_MAX] }),
+        hit_dice: rule('Hit dice', { revealable: true }),
+        speed: rule('Speed', { revealable: true }),
+        size: rule('Size', { revealable: true }),
+        creature_type: rule('Creature type', { revealable: true }),
+        alignment: rule('Alignment', { revealable: true }),
+        abilities: rule('Ability scores', { revealable: true }),
+        saving_throws: rule('Saving throws', { revealable: true }),
+        skills: rule('Skills', { revealable: true }),
+        damage_immunities: rule('Damage immunities', { revealable: true }),
+        condition_immunities: rule('Condition immunities', { revealable: true }),
+        senses: rule('Senses', { revealable: true }),
+        languages: rule('Languages', { revealable: true }),
+        challenge_rating: rule('Challenge rating', { revealable: true }),
+        // The one integer field with no per-use bounds, deliberately: it is what
+        // keeps the kind's own floor reachable through a declared field, and so
+        // keeps the shared boundary fixtures honest.
+        xp: rule('XP', { revealable: true }),
+        traits: rule('Traits', { revealable: true }),
+        actions: rule('Actions', { revealable: true }),
+        bonus_actions: rule('Bonus actions', { revealable: true }),
+        reactions: rule('Reactions', { revealable: true }),
+        legendary_actions: rule('Legendary actions', { revealable: true }),
+      },
+      default_reveal: { table: [] },
+    }),
+    documentType('handout', 'Player Handout', 'mail', {
+      printable: true,
+      rules: {
+        portrait: rule('Illustration', { revealable: true }),
+        body: rule('Text', { revealable: true }),
+      },
+      default_reveal: { table: ['portrait', 'name', 'body'] },
+    }),
+    documentType('session-notes', 'Session Notes', 'history_edu', {
+      rules: {
+        // There is no session 0.
+        session: rule('Session number', { revealable: true, bounds: [1, INTEGER_FIELD_MAX] }),
+        date: rule('Date', { revealable: true }),
+        present: rule('Present', { revealable: true }),
+        recap: rule('Recap', { revealable: true, warning: 'Summarises your private GM thread' }),
+        beats: rule('Beats', { revealable: true }),
+        loose_threads: rule('Loose threads', { revealable: true }),
+      },
+      default_reveal: { table: [] },
+    }),
+    documentType('quest-log', 'Quest Log', 'flag', {
+      rules: {
+        open_threads: rule('Open threads', { revealable: true }),
+        cold_threads: rule('Cold threads', { revealable: true }),
+        resolved_threads: rule('Resolved threads', { revealable: true }),
+      },
+      default_reveal: { table: ['name', 'open_threads', 'resolved_threads'] },
+    }),
+    documentType('character-sheet', 'Character Sheet', 'contact_page', {
+      audience: 'owner',
+      rules: {
+        portrait: rule('Portrait', { revealable: true }),
+        // The same field and the same meaning as a stat block's, so the same
+        // range — but NOT required (ruling 5.7#2): LIB-12 speaks of stat blocks,
+        // and you name a character before you know its hit points.
+        ac: rule('Armor Class', { revealable: true, bounds: [0, INTEGER_FIELD_MAX] }),
+        hp: rule('Hit Points', { revealable: true, bounds: [0, INTEGER_FIELD_MAX] }),
+        speed: rule('Speed', { revealable: true }),
+        abilities: rule('Ability scores', { revealable: true }),
+        features: rule('Features', { revealable: true }),
+        equipment: rule('Equipment', { revealable: true }),
+        notes: rule('Notes', { revealable: true }),
+      },
+      default_reveal: { owner: ['name', 'qualifier', 'portrait', 'ac', 'hp', 'speed', 'abilities', 'features', 'equipment', 'notes'] },
+    }),
+    documentType('lore', 'Lore Entry', 'local_library', {
+      cites_corpus: true,
+      accent: 'arcane',
+      rules: {
+        region: rule('Region', { revealable: true }),
+        era: rule('Era', { revealable: true }),
+        status: rule('Status', { revealable: true }),
+        summary: rule('Summary', { revealable: true }),
+        history: rule('History', { revealable: true }),
+        rumours: rule('Rumours', { revealable: true }),
+      },
+      default_reveal: { table: ['name', 'summary'] },
+    }),
+    documentType('encounter', 'Encounter', 'swords', {
+      rules: {
+        difficulty: rule('Difficulty', { revealable: true }),
+        xp_budget: rule('XP budget', { revealable: true, bounds: [0, INTEGER_FIELD_MAX] }),
+        // There is no level 0.
+        party_level: rule('Party level', { revealable: true, bounds: [1, INTEGER_FIELD_MAX] }),
+        setup: rule('Setup', { revealable: true }),
+        combatants: rule('Combatants', { revealable: true }),
+        terrain: rule('Terrain & hazards', { revealable: true }),
+        outcome: rule('If it goes wrong', { revealable: true, warning: 'Would spoil the surprise' }),
+      },
+      default_reveal: { table: [] },
+    }),
   ],
   capabilities: [
     { id: 'image_generation', label: 'Image generation', disabled_reason: "Image generation isn't set up yet.", off_by_default: true },
@@ -183,15 +428,295 @@ export const REGISTRY: Registry = {
   ],
   default_pinned: ['npc', 'monster', 'loot', 'names', 'rules'],
   renderers: RENDERERS,
-  common_field_labels: { name: 'Name', qualifier: 'Qualifier', tags: 'Tags' },
+  common_field_rules: COMMON_FIELD_RULES,
+  common_field_labels: labelsOf(COMMON_FIELD_RULES),
+  accents: ACCENTS,
+  audiences: AUDIENCES,
   rail_limit: RAIL_LIMIT,
-}
+})
 
 /** A slash command as the parser matches it (SLASH-2): lower-case, after one `/`. */
 const COMMAND = /^\/[a-z][a-z0-9-]{0,23}$/
 /** A Material Symbols Rounded ligature name. */
 const ICON = /^[a-z0-9_]{1,40}$/
 const hasEntity = (text: string) => text.includes('&') && text.includes(';')
+
+/** A field key, as ED-2 / CANVAS-19 defines it — here applied to a DECLARATION,
+ * which nothing checked before 1kg.5.3. */
+const FIELD_KEY = /^[a-z][a-z0-9_]{0,39}$/
+/** A label is for a person: never a key that escaped (`xp_budget`, `ifAttacked`). */
+const CAMEL_CASE = /[a-z][A-Z]/
+/** F-12 (a): an HTML entity is `&` then `#` and digits, `#x` and hex digits, or
+ * one to ten letters or digits - with or without its `;`, so `&amp` is one and
+ * `Terrain & hazards` is not. The labels' rule only: a tool's label, blurb and
+ * working label keep `hasEntity`. */
+const LABEL_ENTITY = /&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z0-9]{1,10})/
+/** A lower-case letter in any script, as Python's `unicodedata.category(c) == "Ll"` reads it. */
+const LOWER_CASE_FIRST = /^\p{Ll}/u
+/** REVEAL-10: keys that are never revealable, whatever a registry says. Only
+ * `tags` is a DECLARED field today; the rest of REVEAL-10's list — sources,
+ * version history, authorship, changed-field lists, asset metadata, ids — never
+ * becomes one, and a type that needs an identity link gives it its own key off
+ * the allowlist (ED-20). */
+export const NEVER_REVEALABLE: readonly string[] = ['tags']
+
+/** The one rule, used for field labels, common labels, group labels and warning
+ * copy. F-12 (a): a raw key cannot pass as a label - a label starts with anything
+ * but a lower-case letter (`voice`, `xp`, `ac` are keys that escaped; `XP`, `Name`
+ * and `Terrain & hazards` are words) and carries no HTML entity, with or without
+ * its `;`. */
+function labelProblems(label: string, what = 'label', limit = 60): string[] {
+  const problems: string[] = []
+  if (label.trim() === '') problems.push(`the ${what} is empty`)
+  if (label.length > limit) problems.push(`the ${what} is longer than ${limit} characters`)
+  if (LOWER_CASE_FIRST.test(label.trim())) problems.push(`the ${what} ${JSON.stringify(label)} starts in lower case, like a key`)
+  if (LABEL_ENTITY.test(label)) problems.push(`the ${what} carries an HTML entity`)
+  if (label.includes('_')) problems.push(`the ${what} ${JSON.stringify(label)} is snake_case, not words`)
+  if (CAMEL_CASE.test(label)) problems.push(`the ${what} ${JSON.stringify(label)} is camelCase, not words`)
+  return problems
+}
+
+/** Everything one type must satisfy. The caller prefixes its id. */
+function documentTypeProblems(registry: Registry, d: DocumentType): string[] {
+  const problems: string[] = []
+  if (!registry.renderers.includes(d.renderer)) problems.push(`unknown renderer ${d.renderer}`)
+  if (!ICON.test(d.icon)) problems.push(`icon ${JSON.stringify(d.icon)} is not a ligature name`)
+  if (!registry.audiences.includes(d.audience)) problems.push(`unknown audience ${JSON.stringify(d.audience)}`)
+  if (d.accent !== null && !registry.accents.includes(d.accent)) problems.push(`unknown accent ${JSON.stringify(d.accent)}`)
+
+  for (const key of [...Object.keys(d.fields), ...d.reserved_keys]) {
+    if (!FIELD_KEY.test(key)) problems.push(`${JSON.stringify(key)} is not a flat field key`)
+  }
+  // F-12 (d): a retired key cannot come back as a common field either.
+  if (d.reserved_keys.some((key) => Object.hasOwn(d.fields, key) || Object.hasOwn(COMMON_FIELDS, key))) {
+    problems.push('a reserved key cannot be declared as a field again (ED-24)')
+  }
+  if (new Set(d.reserved_keys).size !== d.reserved_keys.length) problems.push('a reserved key is listed twice')
+  if (Object.values(d.fields).filter((kind) => kind === 'abilities').length > 1) {
+    problems.push('a type has at most one ability block, because the ability row is derived from it')
+  }
+
+  for (const [key, r] of Object.entries(d.field_rules)) {
+    problems.push(...labelProblems(r.label))
+    if (r.bounds !== null) {
+      const [lowest, highest] = r.bounds
+      // A range on anything else would be data no validator reads, which is the
+      // defect FIELD_FLAG_SELECTORS exists to catch one level up.
+      if (!Object.hasOwn(d.fields, key) || d.fields[key] !== 'integer') {
+        problems.push(`${key} carries integer bounds but is not an integer field`)
+      }
+      if (lowest > highest) problems.push(`${key} has bounds whose lowest is above its highest`)
+      if (lowest < INTEGER_FIELD_MIN || highest > INTEGER_FIELD_MAX) {
+        problems.push(`${key} has bounds outside the integer kind's own range`)
+      }
+    }
+    if (r.warning !== null) {
+      problems.push(...labelProblems(r.warning, 'warning', 80))
+      if (!r.revealable) problems.push(`${key} carries a reveal warning but can never be revealed`)
+    }
+    // The same rule as for a common field, and it has to be here too: a type
+    // that declared its own `tags` rule would otherwise put it on the
+    // allowlist, and a group or a default reveal could then name it.
+    if (NEVER_REVEALABLE.includes(key) && r.revealable) {
+      problems.push(`${key} is never revealable, on any type (REVEAL-10, ED-5)`)
+    }
+    // A type's own key may not shadow a common one: two rules for one key
+    // would make "which rule applies" a lookup-order accident.
+    if (Object.hasOwn(COMMON_FIELDS, key)) {
+      problems.push(`${key} is a common field, and a type cannot redeclare it`)
+    }
+  }
+  if (Object.keys(d.field_rules).sort().join(',') !== Object.keys(d.fields).sort().join(',')) {
+    problems.push('every declared field has a rule, and nothing else does')
+  }
+
+  const allowlist = new Set(revealableKeys(d, registry))
+  const declared = new Set([...Object.keys(COMMON_FIELDS), ...Object.keys(d.fields)])
+  const grouped = new Set<string>()
+  for (const group of d.reveal_groups) {
+    problems.push(...labelProblems(group.label, 'group label'))
+    if (!FIELD_KEY.test(group.id)) problems.push(`group id ${JSON.stringify(group.id)} is not a flat key`)
+    if (group.keys.length < 2) problems.push(`group ${group.id} toggles fewer than two keys, so it is not a group`)
+    for (const key of group.keys) {
+      if (!declared.has(key)) problems.push(`group ${group.id} names an undeclared field ${key}`)
+      else if (!allowlist.has(key)) problems.push(`group ${group.id} names ${key}, which can never be revealed`)
+      if (grouped.has(key)) problems.push(`${key} is in more than one reveal group`)
+      grouped.add(key)
+    }
+  }
+  if (new Set(d.reveal_groups.map((g) => g.id)).size !== d.reveal_groups.length) {
+    problems.push('two reveal groups share an id')
+  }
+
+  // REVEAL-4 and AUD-12 as a rule rather than a convention: a default seeds the
+  // type's OWN audience, so a registry edit can never seed the table with an
+  // owner type's fields.
+  for (const [audience, keys] of Object.entries(d.default_reveal)) {
+    if (audience !== d.audience) {
+      problems.push(`a default reveal for ${JSON.stringify(audience)}, but the type's audience is ${JSON.stringify(d.audience)}`)
+    }
+    for (const key of keys) {
+      if (!declared.has(key)) problems.push(`the default reveal names an undeclared field ${key}`)
+      else if (!allowlist.has(key)) problems.push(`the default reveal names ${key}, which can never be revealed`)
+    }
+    if (new Set(keys).size !== keys.length) problems.push(`the default reveal for ${audience} names a key twice`)
+  }
+  return problems
+}
+
+/** "Real semantics": every per-type flag is read by a selector, and this table
+ * is what a test compares against registry.json's own keys. A flag may have
+ * more than one reader; a flag with none cannot be added. */
+export const TYPE_FLAG_SELECTORS: Readonly<Record<string, readonly string[]>> = {
+  renderer: ['rendererFor'],
+  printable: ['isPrintable'],
+  cites_corpus: ['citesCorpus'],
+  audience: ['audienceOf', 'seedsOwnerDefault'],
+  accent: ['accentToken'],
+}
+
+/** The same rule one level down: every key of a FIELD RULE is read by a
+ * selector too. Without this table `editable` was declared on every field and
+ * read by nothing — exactly the defect TYPE_FLAG_SELECTORS exists to catch, one
+ * level below where it was looking. */
+export const FIELD_FLAG_SELECTORS: Readonly<Record<string, readonly string[]>> = {
+  label: ['labelFor'],
+  editable: ['isEditable'],
+  required: ['isRequired'],
+  revealable: ['isRevealable', 'revealableKeys'],
+  warning: ['warningFor'],
+  bounds: ['boundsFor'],
+}
+
+/** The keys that ARE the type rather than a flag about it. Pinned by a test, so
+ * moving a flag in here is as deliberate as retiring a field key. */
+export const TYPE_STRUCTURE_KEYS: readonly string[] = [
+  'id',
+  'label',
+  'icon',
+  'library_category',
+  'type_version',
+  'fields',
+  'field_rules',
+  'reveal_groups',
+  'default_reveal',
+  'reserved_keys',
+]
+
+// ── Selectors over a document type ───────────────────────────────────────────
+
+export function rendererFor(d: DocumentType): Renderer {
+  return d.renderer
+}
+
+export function isPrintable(d: DocumentType): boolean {
+  return d.printable
+}
+
+/** Whether the renderer shows a corpus citation footer. Where citations are
+ * STORED is 1kg.5.6's. */
+export function citesCorpus(d: DocumentType): boolean {
+  return d.cites_corpus
+}
+
+export function audienceOf(d: DocumentType): Audience {
+  return d.audience
+}
+
+/**
+ * Whether this type seeds its LINKED OWNER'S mask rather than empty.
+ *
+ * Records ED-14 and A-19 (owner decision O-2), which amend AUD-9: the flag says
+ * nothing about who may RECEIVE a reveal — any type may go to a participant —
+ * only whose default reveal the type seeds (REVEAL-4). An owner-audience type
+ * still seeds nothing for the table (AUD-12).
+ */
+export function seedsOwnerDefault(d: DocumentType): boolean {
+  return d.audience === 'owner'
+}
+
+export function accentToken(d: DocumentType): Accent | null {
+  return d.accent
+}
+
+/**
+ * The key holding the ability block, or `undefined`.
+ *
+ * Derived, not declared: the handoff carried a `hasAbilityRow` flag that
+ * nothing read and that could disagree with the fields. A lookup cannot, and
+ * `validateRegistry` allows at most one `abilities` field.
+ */
+export function abilityRowKey(d: DocumentType): string | undefined {
+  return Object.entries(d.fields).find(([, kind]) => kind === 'abilities')?.[0]
+}
+
+/**
+ * A field's rule, common or the type's own. `undefined` for a key the type does
+ * not declare — never a default, because a default visibility is a decision
+ * made by accident. `Object.hasOwn`, so `constructor` reads as "not declared".
+ *
+ * `registry` defaults to the shipped one, but `validateRegistry` passes the
+ * candidate it is checking: reading the module constant instead would let a
+ * registry under validation be judged against the shipped common rules, and
+ * the two languages' validators would then disagree.
+ */
+export function ruleFor(d: DocumentType, key: string, registry: Registry = REGISTRY): FieldRule | undefined {
+  if (Object.hasOwn(d.field_rules, key)) return d.field_rules[key]
+  if (Object.hasOwn(registry.common_field_rules, key)) return registry.common_field_rules[key]
+  return undefined
+}
+
+/** The type's allowlist (REVEAL-10), commons first, in registry order. */
+export function revealableKeys(d: DocumentType, registry: Registry = REGISTRY): string[] {
+  const common = Object.entries(registry.common_field_rules).filter(([, r]) => r.revealable).map(([key]) => key)
+  const own = Object.entries(d.field_rules).filter(([, r]) => r.revealable).map(([key]) => key)
+  return [...common, ...own]
+}
+
+/** Whether the GM may type into this field. `false` for a key the type does not
+ * declare — unknown is never editable (X-8). */
+export function isEditable(d: DocumentType, key: string, registry: Registry = REGISTRY): boolean {
+  return ruleFor(d, key, registry)?.editable ?? false
+}
+
+export function labelFor(d: DocumentType, key: string, registry: Registry = REGISTRY): string | undefined {
+  return ruleFor(d, key, registry)?.label
+}
+
+/** LIB-12: whether a document of this type must carry the field, present and not
+ * empty. `false` for a key the type does not declare — unknown is never required
+ * (X-8), the same posture as `isEditable`. */
+export function isRequired(d: DocumentType, key: string, registry: Registry = REGISTRY): boolean {
+  return ruleFor(d, key, registry)?.required ?? false
+}
+
+/** The range this one use of an `integer` field narrows its kind to, or `null`
+ * for the kind's own range — and `null` for an undeclared key. */
+export function boundsFor(d: DocumentType, key: string, registry: Registry = REGISTRY): readonly [number, number] | null {
+  return ruleFor(d, key, registry)?.bounds ?? null
+}
+
+/** The allowlist, per key (REVEAL-10). `false` for an undeclared key: by ED-5
+ * anything off the list is `gm_only` by construction. */
+export function isRevealable(d: DocumentType, key: string, registry: Registry = REGISTRY): boolean {
+  return ruleFor(d, key, registry)?.revealable ?? false
+}
+
+export function warningFor(d: DocumentType, key: string, registry: Registry = REGISTRY): string | null {
+  return ruleFor(d, key, registry)?.warning ?? null
+}
+
+/** The group a key is toggled by, or `undefined` if it has a row of its own. */
+export function revealGroupFor(d: DocumentType, key: string): RevealGroup | undefined {
+  return d.reveal_groups.find((group) => group.keys.includes(key))
+}
+
+/** REVEAL-4: a default seeds the type's OWN audience and is empty for every
+ * other — so the table of an owner-audience type gets `[]`, not `undefined`
+ * and not an error (AUD-12). */
+export function defaultRevealFor(d: DocumentType, audience: string): readonly string[] {
+  return Object.hasOwn(d.default_reveal, audience) ? d.default_reveal[audience] : []
+}
 
 export class RegistryError extends Error {}
 
@@ -228,16 +753,22 @@ export function validateRegistry(registry: Registry): void {
   if (new Set(typeIds).size !== typeIds.length || typeIds.length !== DOCUMENT_TYPE_IDS.length || !DOCUMENT_TYPE_IDS.every((id) => typeIds.includes(id))) {
     problems.push('the registry must list every document type of the contract exactly once')
   }
-  for (const d of registry.document_types) {
-    if (!registry.renderers.includes(d.renderer)) problems.push(`${d.id}: unknown renderer ${d.renderer}`)
-    if (!ICON.test(d.icon)) problems.push(`${d.id}: icon ${JSON.stringify(d.icon)} is not a ligature name`)
-    const declared = new Set([...Object.keys(COMMON_FIELDS), ...Object.keys(d.fields)])
-    for (const [key, label] of Object.entries(d.field_labels)) {
-      if (!declared.has(key)) problems.push(`${d.id}: a label for an undeclared field ${key}`)
-      if (hasEntity(label)) problems.push(`${d.id}: the label for ${key} carries an HTML entity`)
+  for (const [key, r] of Object.entries(registry.common_field_rules)) {
+    problems.push(...labelProblems(r.label).map((p) => `a common field: ${p}`))
+    if (!Object.hasOwn(COMMON_FIELDS, key)) problems.push(`a rule for ${key}, which is not a common field`)
+    // REVEAL-10 names `tags` among the keys that are never revealable, and ED-5
+    // makes everything off an allowlist gm_only by construction. A rule rather
+    // than only a pinned list, because a registry that made it revealable would
+    // otherwise be internally consistent and would happily seed it.
+    if (NEVER_REVEALABLE.includes(key) && r.revealable) {
+      problems.push(`${key} is never revealable, on any type (REVEAL-10, ED-5)`)
     }
-    const labelled = Object.keys(d.field_labels).sort().join(',')
-    if (labelled !== Object.keys(d.fields).sort().join(',')) problems.push(`${d.id}: every declared field has a label, and nothing else does`)
+  }
+  if (Object.keys(registry.common_field_rules).sort().join(',') !== Object.keys(COMMON_FIELDS).sort().join(',')) {
+    problems.push('every common field has a rule, and nothing else does')
+  }
+  for (const d of registry.document_types) {
+    problems.push(...documentTypeProblems(registry, d).map((p) => `${d.id}: ${p}`))
   }
   const pins = registry.default_pinned
   if (pins.length > registry.rail_limit || new Set(pins).size !== pins.length) problems.push(`default pins: at most ${registry.rail_limit}, each once`)

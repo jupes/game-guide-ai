@@ -61,11 +61,17 @@ PROTECTED_ROUTES: list[Route] = [
     ("GET", "/auth/me", "/auth/me", None),
     ("GET", "/conversations/{conversation_id}/messages",
      "/conversations/abc/messages", None),
+    ("GET", "/conversations/{conversation_id}/timeline",
+     "/conversations/abc/timeline", None),
     ("GET", "/conversations/{conversation_id}/attachments",
      "/conversations/abc/attachments", None),
     ("POST", "/conversations/{conversation_id}/attachments",
      "/conversations/abc/attachments",
      {"filename": "x.txt", "content_type": "text/plain", "data": "aGk="}),
+    ("GET", "/conversations", "/conversations", None),
+    ("POST", "/conversations", "/conversations", {"schema_version": 1, "started_mode": "sage"}),
+    ("GET", "/conversations/{conversation_id}", "/conversations/abc", None),
+    ("PATCH", "/conversations/{conversation_id}", "/conversations/abc", {"schema_version": 1, "archived": True}),
 ]
 
 #: Deliberately unguarded, and asserted so that a blanket "guard everything"

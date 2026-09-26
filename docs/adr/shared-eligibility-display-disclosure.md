@@ -1,7 +1,7 @@
 # Shared field eligibility, display and disclosure
 
 - **Status:** Accepted. The owner decided O-1 to O-7 on 2026-09-20 (section 12): O-1 and O-7 as proposed; O-2, O-3, O-4 and O-6 changed to their alternatives; O-5 approved in principle and gated on the licensing review (`agent-forge-harness-yje.6.1`)
-- **Date:** 2026-09-19, revised the same day after two independent reviews (section 15); amended 2026-09-20 for the owner's decisions (section 15.1)
+- **Date:** 2026-09-19, revised the same day after two independent reviews (section 15); amended 2026-09-20 for the owner's decisions (section 15.1); **amended 2026-09-24 for the owner's decisions of 2026-09-21 — players hold accounts and there are no guests (section 15.2; read it before section 4)**
 - **Bead:** `agent-forge-harness-1ir.1.2` (`LSA-1.2`)
 - **Binds:** the GM Workbench (epic `1kg`) and the Live Session Assistant (epic `1ir`)
 - **Unblocks:** `1kg.2.1`, `1kg.5.1`, `1kg.5.3`, `1kg.1.6`, `1kg.7.1`, `1ir.2.1`, `1ir.1.12`, `1ir.1.13`
@@ -577,3 +577,23 @@ fallbacks); M-1 and M-4; RQ-4 and RC-16; sections 10 to 14. **New bead:**
 A-18 — amend the rows they name, by the owner's decision. **Not changed:**
 mask-only v1 (O-1), the enforcement switch (O-7), the lock protocol, the two
 stores, and every earlier race case.
+
+### 15.2 The owner's decisions of 2026-09-21
+
+**Players hold accounts (D-1) and there are no guests (D-4).** This section
+amends the rows it names; the rows themselves are kept as the record and are
+read through it. Workbench record A-23 to A-25 and threat model TA-2 carry the
+same decisions.
+
+| Row | Amendment |
+| --- | --- |
+| ED-14 | Its first half stands (a participant audience is open to every document type, O-2). Its **device-approval consequence is withdrawn**: there is no device to approve. `1kg.2.9` and its children are superseded. |
+| ED-25, section 4 `entitled` | The requester is resolved from the **account session**, never from request fields: `requester := (account, its seat at this campaign)`. A participant slot is entitled when the account **is** the seated participant `<id>` and `<id>` is still active; "a pending device" and "exactly like a guest" have no case. The live-session and link-generation conditions stay until the threat model's table-access rewrite (TA-2) replaces the link generation with whatever grant revokes at End and Rotate. *Entitlement is not eligibility* is unchanged. |
+| Section 4 `eligible_for_audience`, ED-10, ED-12 | **Unchanged for now, deliberately.** "a guest can see the table" is no longer literally true: the table's audience is signed-in accounts. Whether the table slot may therefore show `campaign`-class keys, and not only `public` ones, is a **widening** and is not made here; the table-access rewrite proposes it and the lead signs it. Until then the stricter rule holds. |
+| AUD-1/E-6, AUD-3 to AUD-5/E-1, AUD-6/AUD-7/E-10 (section 11) | Principals are the GM and **seated accounts**. "If accounts arrive they bind to participants and no class changes" is now the case: a participant *is* an account's seat, so every `participants[ids]` class keeps its meaning. A ledger's recipients snapshot records accounts by participant id, as it already does for participants. |
+| RC-12, RC-13, TT-10, TT-14, TT-26 | Superseded with the enrolment code and the device credential. TT-14's rule survives in account form: a seated account's second browser is the same account and sees the same slots. |
+| Section 10 (`1kg.2.9`, `1kg.2.2`) | `1kg.2.9` is superseded. `1kg.2.2`'s enrolment half is replaced by an account accepting a seat (bead `agent-forge-harness-fma`); its lock rules for participant add, unlink and relink are unchanged. |
+
+**Not changed:** mask-only v1, the enforcement switch, the classes, the lock
+protocol, disclosures and per-recipient copies (O-3), re-display rules (O-4),
+the gated excerpt kind (O-5), and every race case not named above.

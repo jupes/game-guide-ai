@@ -169,12 +169,18 @@ export function ChatPane({
 }): React.JSX.Element {
   const { mode, conversationId, setConversationId } = useAppNav()
   const conversationStore = useConversationStore()
+  // agent-forge-harness-ekf: the announcer's text. Set once per turn THIS
+  // pane sent, at the settle (via useChat's onTurnSettled seam — never from
+  // a recall, a conversation switch or a re-render); cleared when the next
+  // turn is sent (handleSend, below).
+  const [arrival, setArrival] = React.useState('')
   const { exchanges, send, pending, historyError, loadingHistory } = useChat({
     post,
     loadHistory,
     mode,
     conversationId,
     onConversationAdopted: setConversationId,
+    onTurnSettled: (outcome) => setArrival(outcome === 'done' ? 'Answer received' : 'Answer failed'),
   })
   const [draft, setDraft] = React.useState('')
   // Scoped like useChat's history state: derive "this scope's attachments" from
@@ -225,6 +231,9 @@ export function ChatPane({
     if (conversationId !== null) {
       conversationStore.recordFirstPrompt(conversationId, trimmed)
     }
+    // agent-forge-harness-ekf: nothing else ever clears the announcer — not a
+    // recall, not a conversation switch — only sending the NEXT turn.
+    setArrival('')
     send(trimmed)
     setDraft('')
   }, [conversationId, conversationStore, draft, pending, send])
@@ -295,10 +304,41 @@ export function ChatPane({
           .aether-parchment and its own ChatView mock applies it to the feed);
           the inner __column is the centered reading measure, so prose does not
           run the full width of a wide viewport. */}
+      {/* agent-forge-harness-27h: the feed is the scroller, and until the
+          shell got stories nothing in it was focusable — so a keyboard-only
+          reader could not scroll back through their own conversation at all
+          (axe `scrollable-region-focusable`, WCAG 2.1.1). It only escaped
+          notice because an answer WITH citations happens to contain a
+          focusable <summary>; a recalled history has none.
+
+          `tabIndex={0}` puts the transcript in the tab order, where PageUp,
+          PageDown and the arrow keys scroll it, and `role="region"` +
+          `aria-label` give that new stop the name a focusable region needs, so
+          assistive tech announces it as something rather than as a bare group.
+
+          Rework 1 — this was briefly `role="log"`, and that was broader than
+          the defect. `log` carries an implicit `aria-live="polite"` over
+          EVERYTHING inside it, the user's own prompts included; and
+          WorkspaceShell mounts ChatPane with no `key` while useChat replaces
+          `exchanges` in place (its effect keys on `conversationId`), so
+          switching conversations mutates the live region rather than
+          remounting it — a recalled 40-turn history arriving as "new" content.
+          The pending state is already announced by the `role="status"` node
+          below, which is the narrow form of the same idea. The RESOLUTION of a
+          turn is now announced too (agent-forge-harness-ekf) — by the
+          separate, persistent `role="status"` node BELOW this transcript
+          (`.chat-pane__arrival`), never by this region itself.
+
+          Axe has no rule for any of this, in either direction, so
+          ChatPane.stories.tsx > TranscriptIsANamedRegionNotALiveRegion pins
+          the role by name. */}
       <div
         className="chat-pane__exchanges aether-parchment"
         ref={feedRef}
         onScroll={handleFeedScroll}
+        role="region"
+        aria-label="Conversation"
+        tabIndex={0}
       >
         <div className="chat-pane__column">
         {/* History recall failed — recoverable: the thread starts empty. */}
@@ -402,6 +442,23 @@ export function ChatPane({
         </div>
       </div>
 
+      {/* agent-forge-harness-ekf — the arrival announcer. A SIBLING of the
+          transcript above, never inside `region "Conversation"`: the
+          transcript stays a named, focusable region and NOT a live region
+          (see the comment on it above). This node is mounted for the whole
+          life of the pane — it is never conditionally rendered, because a
+          live region that appears together with its text is the defect this
+          bead exists to fix (a removal from a live region is not announced).
+          Its text changes exactly once per turn THIS pane sent, at the
+          moment that turn settles (`onTurnSettled`, above), and is cleared
+          when the next turn is sent (`handleSend`, above) — nothing else
+          ever changes it: not a history recall, not a conversation switch,
+          not the pending announcement below. Shape copied from
+          `gm/ToolComposer.tsx`'s own persistent `role="status"` node. */}
+      <p role="status" className="chat-pane__sr-only chat-pane__arrival">
+        {arrival}
+      </p>
+
       {/* Jump-to-latest — only while the reader has scrolled away (pp6q.1.3).
           A real <button> rather than a floating decoration so it is keyboard
           reachable and announced, like the ChatGPT/Claude equivalent. */}
@@ -446,6 +503,17 @@ export function ChatPane({
           // remains the source of truth; this only pre-filters the picker).
           accept=".txt,.md,.pdf"
           aria-label="Attach file"
+          // agent-forge-harness-vnx: this input and the visible IconButton
+          // below it used to share the accessible name "Attach file" — a
+          // screen-reader user tabbing the composer met two named controls,
+          // one of which does nothing on its own. `aria-hidden` takes it out
+          // of the accessibility tree and `tabIndex={-1}` takes it out of the
+          // tab order; the IconButton stays the only affordance. The label is
+          // kept (harmlessly unreachable) so existing `getByLabelText`
+          // queries keep working — Testing Library's `getByLabelText` does
+          // not consult the accessibility tree.
+          aria-hidden="true"
+          tabIndex={-1}
           className="chat-pane__file-input"
           onChange={handleFileSelected}
         />

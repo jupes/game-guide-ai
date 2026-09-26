@@ -33,6 +33,26 @@ and `ui-tests`; this covers the cases nobody thought to write. It does not gate
 `needs` when the first Workbench route ships. See
 [`workbench-wire-contract.md`](workbench-wire-contract.md).
 
+## Static analysis gates
+
+`python-tests` runs `ruff` and `mypy` before pytest; both are configured in
+[`pyproject.toml`](../pyproject.toml).
+
+`mypy` runs with **`warn_unreachable = true`**. Its scope is mypy's own
+`files = ["service", "config.py"]` — it is the **Python** gate over those two
+paths, every module in them and whoever wrote them, not a repository-wide
+setting. It went on because a statement after a `return` is what a validator
+looks like when it was edited without being re-read, and neither `ruff` nor
+mypy's defaults see one. Tightening a gate that already passes can only add a
+refusal class, never turn a currently-green tree red; the tree was verified
+clean under it at the point it was turned on.
+
+`warn_unreachable` has a known class of false positives: `if TYPE_CHECKING:`
+bodies, `sys.version_info` guards, `assert_never` exhaustiveness arms, and
+narrowing on a value typed `Any`. Silence one **per line**, with
+`# type: ignore[unreachable]` and a comment naming which of those it is — never
+by removing the flag, because the next genuinely dead branch then ships unseen.
+
 ## Browser release tracer and UI performance gate
 
 `ui-e2e` uses Playwright against the same production Nginx UI image used for
