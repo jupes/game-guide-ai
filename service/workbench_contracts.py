@@ -40,12 +40,15 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     StrictBool,
     StrictStr,
     StringConstraints,
     TypeAdapter,
     ValidationError,
+    ValidationInfo,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic_core import PydanticCustomError
@@ -350,6 +353,10 @@ class ErrorCode(str, Enum):
     PROVIDER_TIMEOUT = "provider_timeout"
     ATTEMPT_EXPIRED = "attempt_expired"
     BACKEND_UNAVAILABLE = "backend_unavailable"
+    #: A link to a campaign for a conversation that is already in one (1kg.2.4).
+    #: A new code rather than ``conflict`` with a widened meaning: a new code is
+    #: no version bump, a changed meaning is one.
+    ALREADY_LINKED = "already_linked"
 
 
 # ── Registry facts the validators need (pinned by registry.json) ─────────────
@@ -3040,6 +3047,135 @@ class TableSnapshot(_Contract):
         return self
 
 
+# ── The conversation family (1kg.2.4) ────────────────────────────────────────
+#
+# A conversation's identity and metadata, served by ``service/conversations_api.py``.
+# What a conversation says and when is the timeline family's; this family is the
+# index a sidebar is built from. The owner, the model-routing strategy, its alias
+# and the catalog revision are never on the wire (owner decision D-9): the owner
+# is the session, and the strategy is ``/chat``'s own, bound first-writer-wins.
+
+#: A page of the owner's index. The store clamps to the same number
+#: (``service.conversation_store.LIMIT_MAX``); a test holds the two together.
+CONVERSATION_PAGE_MAX_ITEMS = 100
+#: 0006's CHECK, in code points on both sides (``service.conversation_store.TITLE_MAX_CHARS``).
+CONVERSATION_TITLE_MAX_CHARS = 200
+
+#: The code points a title may not hold, spelled out by code point (ruling A2-9):
+#: the C0 and C1 controls, and the bidirectional embeddings, overrides and
+#: isolates, which can make a title read as something else. The client refuses
+#: exactly this set (``contracts.ts``).
+REFUSED_IN_A_TITLE: frozenset[int] = frozenset(
+    (*range(0x00, 0x20), *range(0x7F, 0xA0), *range(0x202A, 0x202F), *range(0x2066, 0x206A))
+)
+
+
+def _a_conversation_title(value: str) -> str:
+    """A title as a request sends it: trimmed as the client trims, then 1 to 200
+    code points, with none of ``REFUSED_IN_A_TITLE`` left inside. The trimmed
+    value is what is stored. The refusal names the field, never the title."""
+    trimmed = trim(value)
+    if not 1 <= len(trimmed) <= CONVERSATION_TITLE_MAX_CHARS:
+        raise ValueError(f"a title is 1 to {CONVERSATION_TITLE_MAX_CHARS} characters after trimming")
+    if any(ord(character) in REFUSED_IN_A_TITLE for character in trimmed):
+        raise ValueError("a title holds no control or bidirectional-formatting characters")
+    return trimmed
+
+
+#: What a client may send as a title.
+ConversationTitleRequest = Annotated[WireText, AfterValidator(_a_conversation_title)]
+#: What the server answers with: the stored value, read tolerantly — bounded, but
+#: with no trim rule, because a response carries what is stored (ruling A2-9).
+ConversationTitle = Annotated[
+    str, StringConstraints(strict=True, min_length=1, max_length=CONVERSATION_TITLE_MAX_CHARS)
+]
+
+
+class Conversation(_Contract):
+    """One conversation's metadata. Every key is present; what a row never
+    recorded is ``null`` (*Not recorded*) — which is every one of these for a
+    conversation that existed before this family did."""
+
+    schema_version: SchemaVersion
+    conversation_id: OpaqueId
+    campaign_id: OpaqueId | None
+    title: ConversationTitle | None
+    #: The channel the conversation was started in, bound once. ``None`` for a
+    #: conversation whose channel was never recorded.
+    started_mode: ChatMode | None
+    created_at: Timestamp
+    #: Moves on a metadata change, never on a chat turn (ruling R-2).
+    updated_at: Timestamp | None
+    archived_at: Timestamp | None
+
+
+class ConversationPage(_Contract):
+    """The owner's index, newest metadata first. No filter is echoed back."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[Conversation], Field(max_length=CONVERSATION_PAGE_MAX_ITEMS)]
+    #: Required: the end of the list is ``None``, never a missing key.
+    next_cursor: Cursor | None
+
+
+class ConversationCreateRequest(_Contract):
+    """``POST /conversations``. The server mints the id and the owner is the
+    session: there is no claim (threat model §8.1) and no ``command_id``
+    (ruling 2.4#5)."""
+
+    schema_version: SchemaVersion
+    started_mode: ChatMode
+    campaign_id: OpaqueId | None = None
+    title: ConversationTitleRequest | None = None
+
+    @field_validator("campaign_id")
+    @classmethod
+    def _a_campaign_thread_is_a_gm_thread(cls, value: str | None, info: ValidationInfo) -> str | None:
+        """Ruling A2-10. It depends on nothing but the body, so it is a body
+        validation and answers before any resource is looked at."""
+        mode = info.data.get("started_mode")
+        if value is not None and mode is not None and mode is not ChatMode.gm:
+            raise ValueError("a conversation inside a campaign is started in gm")
+        return value
+
+
+class ConversationPatchRequest(_Contract):
+    """``PATCH /conversations/{id}``: rename, archive, unarchive, link an
+    uncampaigned conversation to a campaign, bind the channel. At least one key,
+    and **none is nullable**: moving a conversation between campaigns, or
+    unlinking one, is not in v1 (requirement 6)."""
+
+    schema_version: SchemaVersion
+    title: ConversationTitleRequest | None = None
+    archived: StrictBool | None = None
+    campaign_id: OpaqueId | None = None
+    started_mode: ChatMode | None = None
+
+    @field_validator("title", "archived", "campaign_id", "started_mode", mode="before")
+    @classmethod
+    def _sent_means_a_value(cls, value: object) -> object:
+        # A "before" validator runs only for a key that was sent, so a key left
+        # out keeps its ``None`` default while a ``null`` that was sent is refused.
+        if value is None:
+            raise ValueError("send a value, or leave the key out")
+        return value
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> Self:
+        if not self.model_fields_set - {"schema_version"}:
+            raise ValueError("a patch names at least one of title, archived, campaign_id and started_mode")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _only_what_was_sent(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """A patch is emitted as it was sent. The defaults are ``None`` only so
+        that a key can be left out; written back as ``null`` they would be the
+        very nulls this model refuses, and the client refuses them too (the
+        differential fuzz's emission check found it)."""
+        emitted: dict[str, Any] = handler(self)
+        return {key: value for key, value in emitted.items() if key in self.model_fields_set}
+
+
 #: Name → validator, in the order ``contracts/workbench/v1/schemas.json`` lists them.
 CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "Timestamp": TypeAdapter(Timestamp, config=_HIDE_INPUT),
@@ -3092,4 +3228,8 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "TableEvent": TypeAdapter(TableEvent, config=_HIDE_INPUT),
     "GmSnapshot": TypeAdapter(GmSnapshot),
     "TableSnapshot": TypeAdapter(TableSnapshot),
+    "Conversation": TypeAdapter(Conversation),
+    "ConversationPage": TypeAdapter(ConversationPage),
+    "ConversationCreateRequest": TypeAdapter(ConversationCreateRequest),
+    "ConversationPatchRequest": TypeAdapter(ConversationPatchRequest),
 }

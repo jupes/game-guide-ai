@@ -26,6 +26,10 @@ import {
   COMMON_FIELDS,
   CONTRACT_SCHEMAS,
   CONTRACT_VERSION,
+  CONVERSATION_PAGE_MAX_ITEMS,
+  CONVERSATION_TITLE_MAX_CHARS,
+  ConversationCreateRequestSchema,
+  ConversationPatchRequestSchema,
   CUE_KINDS,
   DOCUMENT_TYPE_IDS,
   DOC_TYPE_FIELDS,
@@ -69,7 +73,10 @@ import {
   ToolInvocationRequestSchema,
   codePointLength,
   isKnownErrorCode,
+  isRefusedInATitle,
   isWellFormedText,
+  parseConversation,
+  parseConversationPage,
   parseDocument,
   parseGmEvent,
   parseGmSnapshot,
@@ -1468,5 +1475,108 @@ describe('readErrorBody — one reader for every error shape', () => {
     for (const junk of [null, 'oops', 7, {}, { detail: 9 }, { detail: [{ loc: 'nope' }] }]) {
       expect(readErrorBody(junk)).toEqual({ kind: 'unreadable' })
     }
+  })
+})
+
+describe('the conversation family (1kg.2.4)', () => {
+  const conversation = readJson<Fixture>(join(FIXTURES, 'Conversation.json'))
+  const campaignThread = conversation.valid[0].value as Record<string, unknown>
+  const legacy = conversation.valid[1].value as Record<string, unknown>
+
+  it('reads a conversation, and a legacy one with nothing recorded', () => {
+    expect(parseConversation(campaignThread)).toEqual({ kind: 'ok', value: campaignThread })
+    const read = parseConversation(legacy)
+    expect(read.kind).toBe('ok')
+    if (read.kind === 'ok') {
+      expect([read.value.campaign_id, read.value.title, read.value.started_mode, read.value.updated_at]).toEqual([
+        null,
+        null,
+        null,
+        null,
+      ])
+    }
+  })
+
+  it('strips what a newer server adds, the owner and the model included, before a component sees it', () => {
+    const read = parseConversation({ ...campaignThread, owner_id: 7, manual_alias: 'gpt-4o-mini', pinned: true })
+    expect(read).toEqual({ kind: 'ok', value: campaignThread })
+  })
+
+  it('reads a newer version as the future and anything else broken as invalid, never throwing', () => {
+    expect(parseConversation({ ...campaignThread, schema_version: 2 })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+    expect(parseConversation({ ...campaignThread, started_mode: 'combat' })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    expect(parseConversation({ ...campaignThread, schema_version: 1.5 })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    for (const junk of [null, undefined, 42, 'x', [], {}]) expect(parseConversation(junk).kind).toBe('unknown')
+  })
+
+  const page = (items: unknown[], extra: Record<string, unknown> = {}) => ({
+    schema_version: 1,
+    items,
+    next_cursor: null,
+    ...extra,
+  })
+
+  it('reads a page conversation by conversation, so one row from a newer server empties nothing', () => {
+    const parsed = parseConversationPage(page([campaignThread, { ...legacy, started_mode: 'combat' }, legacy]))
+    expect(parsed.kind).toBe('ok')
+    if (parsed.kind !== 'ok') return
+    expect(parsed.value.items.map((item) => item.kind)).toEqual(['ok', 'unknown', 'ok'])
+    expect(parsed.value.next_cursor).toBeNull()
+  })
+
+  it('keeps the cursor, because a short page is not the last one', () => {
+    expect(parseConversationPage(page([], { next_cursor: 'WyIyMDI2Il0' }))).toEqual({
+      kind: 'ok',
+      value: { items: [], next_cursor: 'WyIyMDI2Il0' },
+    })
+  })
+
+  it('refuses an envelope it cannot trust', () => {
+    expect(parseConversationPage(page([], { schema_version: 2 }))).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+    expect(parseConversationPage(page(Array.from({ length: 101 }, () => legacy)))).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+    })
+    expect(parseConversationPage({ schema_version: 1, items: [] })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    for (const junk of [null, undefined, 42, 'x', []]) expect(parseConversationPage(junk).kind).toBe('unknown')
+  })
+
+  it('refuses in a title exactly the code points the server refuses (ruling A2-9)', () => {
+    const spelled = new Set<number>()
+    for (const [low, high] of [[0x00, 0x1f], [0x7f, 0x9f], [0x202a, 0x202e], [0x2066, 0x2069]]) {
+      for (let code = low; code <= high; code += 1) spelled.add(code)
+    }
+    for (let code = 0; code <= 0x3000; code += 1) expect(isRefusedInATitle(code)).toBe(spelled.has(code))
+  })
+
+  it('bounds a title after trimming, as the server stores it', () => {
+    const create = (title: unknown) => ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title })
+    expect(create(' '.repeat(3) + 'a'.repeat(200) + '\t').success).toBe(true)
+    expect(create('a'.repeat(201)).success).toBe(false)
+    expect(create(' \t ').success).toBe(false)
+    expect(create('Harbour' + String.fromCharCode(0x85)).success).toBe(false)
+  })
+
+  it('refuses a campaign conversation outside gm at the campaign field', () => {
+    const refused = ConversationCreateRequestSchema.safeParse({
+      schema_version: 1,
+      started_mode: 'sage',
+      campaign_id: 'cmp_4b1d9e7a',
+    })
+    expect(refused.success).toBe(false)
+    if (!refused.success) expect(refused.error.issues.map((issue) => issue.path)).toEqual([['campaign_id']])
+  })
+
+  it('refuses an empty patch and a null in any key of one', () => {
+    for (const body of [{}, { title: null }, { archived: null }, { campaign_id: null }, { started_mode: null }]) {
+      expect(ConversationPatchRequestSchema.safeParse({ schema_version: 1, ...body }).success).toBe(false)
+    }
+    expect(ConversationPatchRequestSchema.safeParse({ schema_version: 1, archived: false }).success).toBe(true)
+  })
+
+  it('knows already_linked, so a link refusal reads as a known code', () => {
+    expect(isKnownErrorCode('already_linked')).toBe(true)
+    expect(CONVERSATION_PAGE_MAX_ITEMS).toBe(100)
+    expect(CONVERSATION_TITLE_MAX_CHARS).toBe(200)
   })
 })
