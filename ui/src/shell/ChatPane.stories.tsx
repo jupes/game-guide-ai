@@ -6,13 +6,13 @@
  * `loadHistory`, `getAttachments` and `uploadAttachment` are all injected.
  */
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, fn, userEvent, within } from 'storybook/test'
+import { expect, fn, userEvent, waitFor, within } from 'storybook/test'
 
 import { tabTo } from '../../.storybook/keyboard'
 import { withShell } from '../../.storybook/shellHarness'
 import { ChatPane } from './ChatPane'
 import type { GetAttachmentsFn } from './ChatPane'
-import type { Attachment, ChatResponse, ChatResult, Source, StoredMessage } from '../api'
+import type { Attachment, ChatResponse, ChatResult, MessagesResult, Source, StoredMessage } from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -132,12 +132,27 @@ export const EmptyGmChannel: Story = {
   },
 }
 
-/** Recalling stored history. A status, not a spinner with no words. */
+/**
+ * Recalling stored history. A status, not a spinner with no words.
+ *
+ * agent-forge-harness-ekf (E1b) — amended to also show the SEPARATE arrival
+ * announcer: present for the pane's whole life, and empty while history is
+ * recalling (a recall announces nothing — only a settled turn does).
+ */
 export const LoadingHistory: Story = {
   args: { loadHistory: neverHistory },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(await canvas.findByRole('status')).toHaveTextContent('Recalling the conversation…')
+    // `role="status"` does not take its name from content (ARIA in HTML),
+    // so a second status node (the arrival announcer) can't be told apart
+    // by name — scope to the transcript, where only the recall status lives.
+    const transcript = canvas.getByRole('region', { name: 'Conversation' })
+    await expect(await within(transcript).findByRole('status')).toHaveTextContent(
+      'Recalling the conversation…',
+    )
+    const arrival = canvasElement.querySelector('.chat-pane__arrival')
+    await expect(arrival).toHaveAttribute('role', 'status')
+    await expect(arrival).toHaveTextContent('')
   },
 }
 
@@ -291,6 +306,93 @@ export const AnswerFailed: Story = {
     await expect(
       await canvas.findByText('The service is busy right now — try again in a moment.'),
     ).toBeInTheDocument()
+  },
+}
+
+/**
+ * agent-forge-harness-ekf (E2, E3) — the arrival announcer. A SEPARATE,
+ * persistent `role="status"` node outside the transcript changes to the
+ * fixed phrase "Answer received" the moment the turn settles — never the
+ * answer's own text (E3: the answer already appears once, in the
+ * transcript; echoing it in the announcer would be a SECOND match for
+ * every Playwright `getByText` locator that asserts it, in CI, where that
+ * cannot be reproduced).
+ */
+export const AnswerArrivalIsAnnounced: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const field = await canvas.findByRole('textbox')
+    field.focus()
+
+    const arrival = canvasElement.querySelector('.chat-pane__arrival')
+    await expect(arrival).toHaveTextContent('')
+
+    await userEvent.keyboard('Does shield stop magic missile?{Enter}')
+    // Never a bare synchronous read (§8.6): the resolved promise's settle
+    // and re-render land in a microtask.
+    await waitFor(() => expect(arrival).toHaveTextContent('Answer received'))
+    // Same element throughout — this node is never remounted.
+    await expect(canvasElement.querySelector('.chat-pane__arrival')).toBe(arrival)
+    // The answer's own text still appears exactly once (E3) — a plain
+    // substring outside the markdown-rendered bold/italic spans.
+    await expect(
+      canvas.getAllByText(/It gives \+5 AC, including against the triggering attack\./),
+    ).toHaveLength(1)
+  },
+}
+
+/**
+ * agent-forge-harness-ekf (E7) — the hardest case (§8.1 of the alignment
+ * doc). Sending with NO conversation open: the server mints one, this pane
+ * adopts it (`onConversationAdopted`), and falls into `loadingHistory` while
+ * the recall re-seeds the thread with NEW exchange ids the pane cannot
+ * compare against the pending one it sent. The announcement must survive
+ * that recall — it fired at the SETTLE, not from a same-id comparison this
+ * pane cannot make.
+ *
+ * Uses `withShell()` with NO selected conversation — the real, STATEFUL
+ * adoption path (never a frozen `vi.fn()` `setConversationId`, which proves
+ * nothing about production, §8.1) — and a DEFERRED `loadHistory` this play
+ * function releases itself, so the adoption, the settle and the recall do
+ * NOT land in the same microtask (§8.6): the announcement is asserted
+ * BEFORE the recall resolves, and again AFTER, on the SAME element.
+ */
+const adoptedConversationHistory = (() => {
+  let release!: (result: MessagesResult) => void
+  const loadHistory: LoadHistoryFn = () => new Promise((res) => { release = res })
+  return { loadHistory, release: (result: MessagesResult) => release(result) }
+})()
+
+export const FirstAnswerOfAnAdoptedConversationStaysAnnounced: Story = {
+  decorators: [withShell()],
+  args: {
+    post: answers({
+      kind: 'ok',
+      response: answer({ conversation_id: 'srv-minted-9f2' }),
+    }),
+    loadHistory: adoptedConversationHistory.loadHistory,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const field = await canvas.findByRole('textbox')
+    field.focus()
+    await userEvent.keyboard('Does shield stop magic missile?{Enter}')
+
+    const arrival = canvasElement.querySelector('.chat-pane__arrival')
+    await waitFor(() => expect(arrival).toHaveTextContent('Answer received'))
+
+    // Release the recall the settle set off. It re-seeds the thread with a
+    // DIFFERENT exchange id than the one this pane sent under.
+    adoptedConversationHistory.release({
+      kind: 'ok',
+      messages: turn(1, 'Does shield stop magic missile?', 'Shield stops the triggering attack.'),
+    })
+    await canvas.findByText('Shield stops the triggering attack.')
+
+    // Still the same node, still reading the same text — the recall did not
+    // clear it.
+    await expect(canvasElement.querySelector('.chat-pane__arrival')).toBe(arrival)
+    await expect(arrival).toHaveTextContent('Answer received')
   },
 }
 

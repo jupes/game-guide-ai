@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor, act, fireEvent, isInaccessible } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent, within, isInaccessible } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as React from 'react'
 import { AppNavContext } from './AppNav'
@@ -10,7 +10,7 @@ import { ConversationStoreProvider } from './ConversationStoreContext'
 import { MemoryConversationStore } from './conversationStore'
 import { ThemeProvider } from '../ds/theme'
 import { ChatPane } from './ChatPane'
-import type { Attachment, AttachmentsResult, ChatResult, MessagesResult, UploadAttachmentResult } from '../api'
+import type { Attachment, AttachmentsResult, ChatResult, MessagesResult, StoredMessage, UploadAttachmentResult } from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
 import type { GetAttachmentsFn, UploadAttachmentFn } from './ChatPane'
 
@@ -333,7 +333,11 @@ describe('ChatPane — typing indicator (pp6q.1.5)', () => {
     render(<Wrapper post={pendingForever()} />)
     await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
     await userEvent.keyboard('{Enter}')
-    const status = await screen.findByRole('status')
+    // Scoped to the transcript (agent-forge-harness-ekf added a second,
+    // persistent `status` node OUTSIDE it): this asserts the PENDING
+    // announcement specifically, same meaning as before.
+    const transcript = screen.getByRole('region', { name: 'Conversation' })
+    const status = await within(transcript).findByRole('status')
     expect(status.textContent?.trim()).not.toBe('')
   })
 
@@ -346,6 +350,124 @@ describe('ChatPane — typing indicator (pp6q.1.5)', () => {
       expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
     )
     expect(container.querySelectorAll('.chat-pane__dot')).toHaveLength(0)
+  })
+})
+
+function storedTurn(id: number, prompt: string, reply: string): StoredMessage[] {
+  return [
+    { id, role: 'user', content: prompt, mode: 'sage', created_at: '2026-09-18T19:02:00Z' },
+    { id: id + 1, role: 'assistant', content: reply, mode: 'sage', created_at: '2026-09-18T19:02:04Z' },
+  ]
+}
+
+function StatefulNavWrapper({ loadHistory }: { loadHistory: LoadHistoryFn }): React.JSX.Element {
+  const [conversationId, setConversationId] = React.useState<string | null>('conv-a')
+  return (
+    <ThemeProvider>
+      <AppNavContext.Provider value={{ ...makeNavState(), conversationId, setConversationId }}>
+        <CurrentUserContext.Provider value={makeUserState()}>
+          <ConversationStoreProvider store={new MemoryConversationStore()}>
+            <ChatPane loadHistory={loadHistory} />
+          </ConversationStoreProvider>
+        </CurrentUserContext.Provider>
+      </AppNavContext.Provider>
+      <button type="button" onClick={() => setConversationId('conv-b')}>
+        switch to B (test only)
+      </button>
+    </ThemeProvider>
+  )
+}
+
+describe('ChatPane — arrival announcer (agent-forge-harness-ekf)', () => {
+  function arrivalOf(container: HTMLElement): string | undefined {
+    return container.querySelector('.chat-pane__arrival')?.textContent
+  }
+
+  it('E1a: exists as a status node outside the transcript, empty at first render with an empty thread', () => {
+    const { container } = render(<Wrapper />)
+    const announcer = container.querySelector('.chat-pane__arrival')
+    expect(announcer).not.toBeNull()
+    expect(announcer).toHaveAttribute('role', 'status')
+    const transcript = screen.getByRole('region', { name: 'Conversation' })
+    expect(transcript.contains(announcer)).toBe(false)
+    expect(announcer?.textContent).toBe('')
+  })
+
+  it('E1c: stays empty after a history recall, with the recalled turn on screen', async () => {
+    const loadHistory: LoadHistoryFn = async () => ({
+      kind: 'ok',
+      messages: storedTurn(1, 'Recalled question', 'Recalled answer'),
+    })
+    const { container } = render(
+      <Wrapper navState={{ conversationId: 'conv-1' }} loadHistory={loadHistory} />,
+    )
+    await screen.findByText('Recalled question')
+    expect(arrivalOf(container)).toBe('')
+  })
+
+  it('E2/E3/E5: announces "Answer received" once per turn, a fixed phrase, and clears on the next send', async () => {
+    const resolvers: Array<(r: ChatResult) => void> = []
+    const post: PostFn = () => new Promise((res) => { resolvers.push(res) })
+    const { container } = render(<Wrapper post={post} />)
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'first question')
+    await userEvent.keyboard('{Enter}')
+    expect(arrivalOf(container)).toBe('')
+
+    act(() => resolvers[0](GROUNDED))
+    await waitFor(() => expect(arrivalOf(container)).toBe('Answer received'))
+    // E3 — a fixed phrase, never the answer's own text (which appears once,
+    // in the transcript, not twice).
+    expect(screen.getAllByText('A basilisk petrifies with its gaze.')).toHaveLength(1)
+
+    // E5 — a second arrival is a second announcement: cleared while the
+    // second turn is pending, not left standing from the first.
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'second question')
+    await userEvent.keyboard('{Enter}')
+    expect(arrivalOf(container)).toBe('')
+
+    act(() => resolvers[1](GROUNDED))
+    await waitFor(() => expect(arrivalOf(container)).toBe('Answer received'))
+  })
+
+  it('E4: announces "Answer failed" once, without repeating the error text, on a failed result', async () => {
+    const post: PostFn = async () => ({
+      kind: 'error',
+      message: 'The service is busy right now — try again in a moment.',
+    })
+    const { container } = render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(arrivalOf(container)).toBe('Answer failed'))
+    expect(
+      screen.getAllByText('The service is busy right now — try again in a moment.'),
+    ).toHaveLength(1)
+  })
+
+  it('E4: announces "Answer failed" when post() rejects', async () => {
+    const post: PostFn = () => Promise.reject(new Error('network snapped'))
+    const { container } = render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(arrivalOf(container)).toBe('Answer failed'))
+  })
+
+  it('E6: a conversation switch and the recall that follows announce nothing', async () => {
+    const loadHistory: LoadHistoryFn = async (conversationId) =>
+      conversationId === 'conv-a'
+        ? { kind: 'ok', messages: storedTurn(1, 'Question A', 'Answer A') }
+        : { kind: 'ok', messages: storedTurn(1, 'Question B', 'Answer B') }
+
+    const { container } = render(<StatefulNavWrapper loadHistory={loadHistory} />)
+    await screen.findByText('Question A')
+    expect(arrivalOf(container)).toBe('')
+
+    await userEvent.click(screen.getByRole('button', { name: /switch to b/i }))
+    // Anchor on B's recalled turn being on screen before asserting the
+    // absence (§8.5) — an absence asserted before the thing that could
+    // break it has happened cannot fail.
+    await screen.findByText('Question B')
+    expect(arrivalOf(container)).toBe('')
   })
 })
 
@@ -377,7 +499,11 @@ describe('ChatPane (#21)', () => {
 
     // Resolve the post so the test can clean up
     act(() => resolvePost(GROUNDED))
-    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
+    // Scoped to the transcript: the PENDING status is gone. (The separate
+    // arrival announcer outside the transcript now reads "Answer received" —
+    // a different node, and not this assertion's concern.)
+    const transcript = screen.getByRole('region', { name: 'Conversation' })
+    await waitFor(() => expect(within(transcript).queryByRole('status')).not.toBeInTheDocument())
   })
 
   it('records the first submitted prompt as the active conversation title fallback', async () => {
@@ -428,10 +554,11 @@ describe('ChatPane (#21)', () => {
     await userEvent.type(textarea, 'Q')
     await userEvent.keyboard('{Enter}')
 
-    expect(screen.getByRole('status')).toHaveTextContent(/consulting the tomes/i)
+    const transcript = screen.getByRole('region', { name: 'Conversation' })
+    expect(within(transcript).getByRole('status')).toHaveTextContent(/consulting the tomes/i)
 
     act(() => resolvePost(GROUNDED))
-    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
+    await waitFor(() => expect(within(transcript).queryByRole('status')).not.toBeInTheDocument())
   })
 
   it('renders sources in a Card after the answer', async () => {

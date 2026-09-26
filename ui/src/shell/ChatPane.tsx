@@ -169,12 +169,18 @@ export function ChatPane({
 }): React.JSX.Element {
   const { mode, conversationId, setConversationId } = useAppNav()
   const conversationStore = useConversationStore()
+  // agent-forge-harness-ekf: the announcer's text. Set once per turn THIS
+  // pane sent, at the settle (via useChat's onTurnSettled seam — never from
+  // a recall, a conversation switch or a re-render); cleared when the next
+  // turn is sent (handleSend, below).
+  const [arrival, setArrival] = React.useState('')
   const { exchanges, send, pending, historyError, loadingHistory } = useChat({
     post,
     loadHistory,
     mode,
     conversationId,
     onConversationAdopted: setConversationId,
+    onTurnSettled: (outcome) => setArrival(outcome === 'done' ? 'Answer received' : 'Answer failed'),
   })
   const [draft, setDraft] = React.useState('')
   // Scoped like useChat's history state: derive "this scope's attachments" from
@@ -225,6 +231,9 @@ export function ChatPane({
     if (conversationId !== null) {
       conversationStore.recordFirstPrompt(conversationId, trimmed)
     }
+    // agent-forge-harness-ekf: nothing else ever clears the announcer — not a
+    // recall, not a conversation switch — only sending the NEXT turn.
+    setArrival('')
     send(trimmed)
     setDraft('')
   }, [conversationId, conversationStore, draft, pending, send])
@@ -316,10 +325,9 @@ export function ChatPane({
           remounting it — a recalled 40-turn history arriving as "new" content.
           The pending state is already announced by the `role="status"` node
           below, which is the narrow form of the same idea. The RESOLUTION of a
-          turn is still not announced; that is a real gap, but it is a new
-          announcement rather than one of the accessibility defects this bead
-          measured, so it is filed (agent-forge-harness-ekf) rather than
-          smuggled in as a whole-transcript live region.
+          turn is now announced too (agent-forge-harness-ekf) — by the
+          separate, persistent `role="status"` node BELOW this transcript
+          (`.chat-pane__arrival`), never by this region itself.
 
           Axe has no rule for any of this, in either direction, so
           ChatPane.stories.tsx > TranscriptIsANamedRegionNotALiveRegion pins
@@ -433,6 +441,23 @@ export function ChatPane({
         )}
         </div>
       </div>
+
+      {/* agent-forge-harness-ekf — the arrival announcer. A SIBLING of the
+          transcript above, never inside `region "Conversation"`: the
+          transcript stays a named, focusable region and NOT a live region
+          (see the comment on it above). This node is mounted for the whole
+          life of the pane — it is never conditionally rendered, because a
+          live region that appears together with its text is the defect this
+          bead exists to fix (a removal from a live region is not announced).
+          Its text changes exactly once per turn THIS pane sent, at the
+          moment that turn settles (`onTurnSettled`, above), and is cleared
+          when the next turn is sent (`handleSend`, above) — nothing else
+          ever changes it: not a history recall, not a conversation switch,
+          not the pending announcement below. Shape copied from
+          `gm/ToolComposer.tsx`'s own persistent `role="status"` node. */}
+      <p role="status" className="chat-pane__sr-only chat-pane__arrival">
+        {arrival}
+      </p>
 
       {/* Jump-to-latest — only while the reader has scrolled away (pp6q.1.3).
           A real <button> rather than a floating decoration so it is keyboard
