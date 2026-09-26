@@ -633,6 +633,41 @@ class DocumentStore(Protocol):
         """One version's metadata, type and content, or None."""
         ...  # pragma: no cover - structural type
 
+    def restore(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        document_id: str,
+        *,
+        version_number: int,
+        now: datetime | None = None,
+    ) -> DocumentRecord:
+        """Restore a **version** (CANVAS-26) — not an archived document, which
+        is `set_archived(archived=False)`.
+
+        **Additive**: it seals the open version, then appends a new version,
+        sealed as it is written, whose content equals the chosen one, with
+        `restored_from` naming it — nothing is moved or deleted. It advances the
+        write revision and the field revision of every key whose value changed,
+        a key the chosen version lacks included, because to a browser holding
+        an older base that key did move. It needs no base revision.
+
+        **An equal-content restore is a no-op** (B-5): when, under the row lock,
+        the live content already equals the chosen version's, nothing is
+        sealed, advanced or appended and the record comes back unchanged — so
+        Restore pressed twice appends once. The comparison comes after the
+        stale-type check and the read of the chosen version, and before that
+        version is validated: a restore that stores nothing refuses nothing.
+
+        In order: hold the row; refuse a stale stored type (`StaleTypeVersion`);
+        read the chosen version in a statement that names the campaign
+        (`MissingParent` when it, or the document, is not there); validate it
+        as a whole document with required keys enforced; seal; append; rewrite
+        the document. There is no `author` parameter: a restore is the GM's.
+        Neither kind of restore brings back a reveal (LIB-16).
+        """
+        ...  # pragma: no cover - structural type
+
     def set_archived(
         self,
         unit: UnitOfWork,
@@ -1044,6 +1079,65 @@ class PostgresDocumentStore:
         self._seal_open(unit, campaign_id, document_id, now_or(now))
         return self.get(unit, campaign_id, document_id)
 
+    def restore(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        document_id: str,
+        *,
+        version_number: int,
+        now: datetime | None = None,
+    ) -> DocumentRecord:
+        record = self.hold(unit, campaign_id, document_id)
+        if record is None:
+            raise MissingParent("no such document in that campaign")
+        kind = _writable_kind(record)
+        chosen = self.snapshot(unit, campaign_id, document_id, version_number)
+        plan = _restoring(record, kind, chosen, now)
+        if plan is None:
+            return record
+        content, changed, moment, revision = plan
+        number = next_version_number(record.version, True)
+        self._seal_open(unit, campaign_id, document_id, moment)
+        pg(unit).conn.execute(
+            "INSERT INTO campaign.document_versions "
+            "(document_id, number, author, summary, changed_fields, restored_from, data, "
+            "created_at, updated_at, sealed_at) "
+            "SELECT d.id, %s, %s, '', %s::jsonb, %s, %s::jsonb, %s, %s, %s "
+            "FROM campaign.documents d WHERE d.id = %s AND d.campaign_id = %s",
+            (
+                number,
+                Author.GM.value,
+                json.dumps(list(changed)),
+                version_number,
+                json.dumps(content),
+                moment,
+                moment,
+                moment,
+                document_id,
+                campaign_id,
+            ),
+        )
+        pg(unit).conn.execute(
+            "UPDATE campaign.documents SET data = %s::jsonb, write_revision = %s, "
+            "field_revisions = %s::jsonb, name_key = %s, search_key = %s, updated_at = %s "
+            "WHERE id = %s AND campaign_id = %s",
+            (
+                json.dumps(content),
+                revision,
+                json.dumps({**record.field_revisions, **{key: revision for key in changed}}),
+                name_key(str(content.get("name", ""))),
+                search_key(content),
+                moment,
+                document_id,
+                campaign_id,
+            ),
+        )
+        found = self.get(unit, campaign_id, document_id)
+        if found is None:  # pragma: no cover - the row is held by this transaction
+            raise MissingParent("no such document in that campaign")
+        return found
+
     def set_archived(
         self,
         unit: UnitOfWork,
@@ -1130,6 +1224,40 @@ def _planned(
     _validated(kind, record.type_version, merged)
     name_key(str(merged.get("name", "")))
     return writer, merged, (now_or(now), next_write_revision(record.write_revision))
+
+
+def _writable_kind(record: DocumentRecord) -> DocumentTypeId:
+    """The document's type, refused when its stored type version is not this
+    build's — B-6's step 2, taken before `restore` reads the chosen version so
+    that a missing number cannot mask a stale type."""
+    kind = check_type(record.type)
+    _require_current_type_version(kind, record.type_version)
+    return kind
+
+
+def _restoring(
+    record: DocumentRecord,
+    kind: DocumentTypeId,
+    chosen: VersionSnapshot | None,
+    now: datetime | None,
+) -> tuple[dict[str, Any], tuple[str, ...], datetime, int] | None:
+    """Everything `restore` decides between reading the chosen version and
+    writing a row, spelled once for both worlds: the refusal of a missing
+    version, B-5's equal-content no-op (`None`), the whole-document validation,
+    and the content, changed keys, clock and revision of the new version."""
+    if chosen is None:
+        raise MissingParent("no such version of that document")
+    content = dict(chosen.data)
+    if content == record.data:
+        return None
+    _validated(kind, record.type_version, content)
+    name_key(str(content.get("name", "")))
+    return (
+        content,
+        _changed(record.data, content),
+        now_or(now),
+        next_write_revision(record.write_revision),
+    )
 
 
 # ── The in-memory twin ───────────────────────────────────────────────────────
@@ -1384,15 +1512,18 @@ class InMemoryDocumentStore:
         changed: tuple[str, ...],
         data: dict[str, Any],
         moment: datetime,
+        restored_from: int | None = None,
     ) -> None:
+        """Append a version. Only a GM's ordinary write opens one: an
+        assistant's version, and a restore's, are sealed as they are written."""
         version = VersionRecord(
             document_id=document_id,
             number=number,
             author=writer.value,
             summary=summary,
             changed_fields=changed,
-            restored_from=None,
-            sealed_at=None if writer is Author.GM else moment,
+            restored_from=restored_from,
+            sealed_at=None if writer is Author.GM and restored_from is None else moment,
             created_at=moment,
             updated_at=moment,
         )
@@ -1538,6 +1669,54 @@ class InMemoryDocumentStore:
             twin, document_id, replace(row, archived_at=moment if flag else None)
         )
         return True
+
+    def restore(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        document_id: str,
+        *,
+        version_number: int,
+        now: datetime | None = None,
+    ) -> DocumentRecord:
+        twin = fake(unit)
+        record = self.hold(unit, campaign_id, document_id)
+        if record is None:
+            raise MissingParent("no such document in that campaign")
+        kind = _writable_kind(record)
+        chosen = self.snapshot(unit, campaign_id, document_id, version_number)
+        plan = _restoring(record, kind, chosen, now)
+        if plan is None:
+            return record
+        content, changed, moment, revision = plan
+        number = next_version_number(record.version, True)
+        self._seal_open(twin, document_id, moment)
+        self._append(
+            twin,
+            document_id,
+            number=number,
+            writer=Author.GM,
+            summary="",
+            changed=changed,
+            data=content,
+            moment=moment,
+            restored_from=version_number,
+        )
+        row = self._live(twin)[document_id]
+        self._documents.replace(
+            twin,
+            document_id,
+            replace(
+                row,
+                data=content,
+                write_revision=revision,
+                field_revisions={**row.field_revisions, **{key: revision for key in changed}},
+                name_key=name_key(str(content.get("name", ""))),
+                search_key=search_key(content),
+                updated_at=moment,
+            ),
+        )
+        return self._with_current(twin, self._live(twin)[document_id])
 
     def delete(self, unit: UnitOfWork, campaign_id: str, document_id: str) -> bool:
         if self.hold(unit, campaign_id, document_id) is None:

@@ -832,7 +832,8 @@ def test_the_twin_and_the_postgres_store_offer_the_same_methods():
 
     assert surface(docs.InMemoryDocumentStore) == surface(docs.PostgresDocumentStore)
     assert surface(docs.InMemoryDocumentStore) == [
-        "create", "delete", "get", "history", "hold", "seal", "set_archived", "snapshot",
+        "create", "delete", "get", "history", "hold", "restore", "seal", "set_archived",
+        "snapshot",
         "write_fields",
     ]
 
@@ -870,7 +871,7 @@ def test_the_idle_seal_needs_no_clock_of_its_own():
     """Every mutator takes `now`, so CANVAS-34's ten minutes is deterministic and
     no test sleeps — and no timer, job or background sealer is required or
     permitted."""
-    mutators = ("create", "write_fields", "seal", "set_archived")
+    mutators = ("create", "write_fields", "seal", "set_archived", "restore")
     for name in mutators:
         signature = inspect.signature(getattr(docs.PostgresDocumentStore, name))
         assert "now" in signature.parameters, name
@@ -954,3 +955,25 @@ def test_the_twin_reads_its_documents_through_one_accessor_that_hides_tombstones
             ):
                 callers.append(node.name)
     assert callers == ["_live"]
+
+
+def test_a_restore_is_the_gms_and_takes_no_author():
+    """B-6: the appended version's author is always `gm`. A parameter would be
+    a way to write an assistant version that no AI edit produced."""
+    for store in (docs.PostgresDocumentStore, docs.InMemoryDocumentStore):
+        assert "author" not in inspect.signature(store.restore).parameters
+
+
+@pytest.mark.parametrize("owner", ["PostgresDocumentStore", "InMemoryDocumentStore"])
+@pytest.mark.parametrize("guard", ["_writable_kind", "_restoring", "next_version_number"])
+def test_both_worlds_restore_through_the_same_decisions(owner: str, guard: str):
+    """The refusals, the equal-content no-op and the new version's number are
+    decided once, in module functions both worlds call — read out of each
+    world's `restore`, so a lost call in one cannot hide behind the other."""
+    node = _definition("restore", owner)
+    called = {
+        inner.func.id
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+    }
+    assert guard in called, f"{owner}.restore no longer routes through {guard}"

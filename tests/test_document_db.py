@@ -1331,3 +1331,155 @@ def test_deleting_another_campaigns_document_changes_nothing(world: World) -> No
         assert world.documents.delete(unit, theirs, made.id) is False
         assert world.documents.delete(unit, mine, DOCUMENT) is False
     assert len(_versions(world, mine, made.id)) == 1
+
+
+# Restore a VERSION (CANVAS-26, B-5, B-6) — not to be confused with LIB-16's
+# un-archive, which is `set_archived(archived=False)` above ─────────────────────
+
+
+def _restore(world: World, campaign_id: str, document_id: str, **kwargs: Any) -> DocumentRecord:
+    with world.db.transaction() as unit:
+        return world.documents.restore(unit, campaign_id, document_id, **kwargs)
+
+
+def _three_versions(world: World, campaign_id: str) -> DocumentRecord:
+    """Version 1 is AN_NPC, sealed by an assistant write that is version 2, and
+    version 3 is the GM's open working version — so a restore has something to
+    seal first and a key (`tell`) the chosen version does not have."""
+    made = _a_document(world, campaign_id)
+    _write(world, campaign_id, made.id, fields={"voice": "gravel", "tell": "taps"},
+           author=Author.ASSISTANT, base_write_revision=None)
+    return _write(world, campaign_id, made.id, fields={"name": "Vashti the Broker"},
+                  author=Author.GM, base_write_revision=None)
+
+
+def test_a_restore_appends_a_new_sealed_version_equal_to_the_chosen_one(world: World) -> None:
+    """CANVAS-26: "Restore is additive: it appends a new version whose content
+    equals the chosen one." It seals the open version first, deletes nothing,
+    and advances the write revision and the field revision of every key it
+    changed — including a key the chosen version does not have, which is a
+    change like any other to a browser holding an older base."""
+    campaign = _a_campaign(world)
+    before = _three_versions(world, campaign)
+    moment = before.updated_at + timedelta(minutes=3)
+
+    restored = _restore(world, campaign, before.id, version_number=1, now=moment)
+
+    assert restored.data == AN_NPC
+    assert restored.write_revision == before.write_revision + 1
+    revision = restored.write_revision
+    assert restored.field_revisions == {
+        **before.field_revisions, "name": revision, "voice": revision, "tell": revision,
+    }
+    assert restored.updated_at == moment
+    version = restored.version
+    assert (version.number, version.restored_from, version.author) == (4, 1, Author.GM.value)
+    assert version.summary == "" and version.sealed_at == moment, "sealed as it is written"
+    assert version.changed_fields == ("name", "tell", "voice")
+
+    history = _versions(world, campaign, before.id)
+    assert [v.number for v in history] == [1, 2, 3, 4], "nothing is moved or deleted"
+    assert history[2].sealed_at == moment, "the open version was sealed first"
+    assert all(v.sealed_at is not None for v in history)
+    with world.db.transaction() as unit:
+        appended = world.documents.snapshot(unit, campaign, before.id, 4)
+    assert appended is not None and appended.data == AN_NPC
+    assert _folded_keys(world, before.id) == (name_key(AN_NPC["name"]), search_key(AN_NPC))
+
+
+def test_restoring_content_the_document_already_has_changes_nothing(world: World) -> None:
+    """B-5 (the lead's ruling of 2026-09-26, over ruling 5.1#3): a restore whose
+    chosen content equals the live content, compared under the row lock, is a
+    no-op — no seal, no revision advance, no version — and hands the record back
+    unchanged. So Restore pressed twice appends once, and restoring the current
+    version appends nothing. `RestoreRequest` says the same: "restoring what the
+    document already equals changes nothing"."""
+    campaign = _a_campaign(world)
+    before = _three_versions(world, campaign)
+
+    assert _restore(world, campaign, before.id, version_number=3) == before, "the current one"
+    once = _restore(world, campaign, before.id, version_number=1)
+    twice = _restore(world, campaign, before.id, version_number=1,
+                     now=once.updated_at + timedelta(hours=1))
+
+    assert twice == once
+    assert [v.number for v in _versions(world, campaign, before.id)] == [1, 2, 3, 4]
+
+
+def test_an_equal_content_restore_leaves_the_open_version_open(world: World) -> None:
+    """"No seal" is observable: the GM's working version stays the one their
+    next autosave joins."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign)
+    _write(world, campaign, made.id, fields={"voice": "gravel"},
+           author=Author.ASSISTANT, base_write_revision=None)
+    back = _write(world, campaign, made.id, fields={"voice": AN_NPC["voice"]},
+                  author=Author.GM, base_write_revision=None)
+    assert back.data == AN_NPC and back.version.sealed_at is None
+
+    unchanged = _restore(world, campaign, made.id, version_number=1)
+
+    assert unchanged == back
+    assert unchanged.version.number == 3 and unchanged.version.sealed_at is None
+
+
+def test_restoring_a_version_that_is_not_there_is_refused_and_writes_nothing(
+    world: World,
+) -> None:
+    """A number that names no version, a document of another campaign, and one
+    that does not exist are one refusal (SEC-2) — and the target is read before
+    anything is sealed, so a refused restore leaves the open version open.
+
+    The refusals are caught INSIDE a transaction that then commits: the
+    refusal is raised in Python, with no failed statement, so the caller's
+    transaction stays usable — and a seal taken before the read would commit
+    with it, which is what this test would see."""
+    mine = _a_campaign(world)
+    theirs = _a_campaign(world, name="Someone else's")
+    before = _three_versions(world, mine)
+
+    with world.db.transaction() as unit:
+        for campaign, document, number in (
+            (mine, before.id, 99), (theirs, before.id, 1), (mine, DOCUMENT, 1),
+        ):
+            with pytest.raises(MissingParent):
+                world.documents.restore(unit, campaign, document, version_number=number)
+
+    with world.db.transaction() as unit:
+        after = world.documents.get(unit, mine, before.id)
+    assert after == before
+    assert after.version.sealed_at is None
+
+
+def test_a_restore_to_a_document_stored_at_an_older_type_version_is_refused(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail closed, and first (B-6 step 2): the stale type is refused before the
+    chosen version is even read, so a missing number cannot mask it."""
+    campaign = _a_campaign(world)
+    before = _three_versions(world, campaign)
+    monkeypatch.setitem(wire.DOC_TYPE_VERSION, DocumentTypeId.NPC, 2)
+
+    for number in (1, 99):
+        with pytest.raises(StaleTypeVersion):
+            _restore(world, campaign, before.id, version_number=number)
+
+
+def test_a_restore_whose_chosen_content_no_longer_validates_is_refused(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B-6 step 4: the chosen content is validated as a whole document, required
+    keys enforced, before anything is sealed or stored — a version written under
+    an older rule is not a way around the current one."""
+    campaign = _a_campaign(world)
+    before = _three_versions(world, campaign)
+    required = wire.REQUIRED_FIELDS[DocumentTypeId.NPC] | {"tell"}
+    monkeypatch.setitem(wire.REQUIRED_FIELDS, DocumentTypeId.NPC, required)
+
+    with world.db.transaction() as unit:
+        with pytest.raises(ValueError, match="require tell"):
+            world.documents.restore(unit, campaign, before.id, version_number=1)
+
+    with world.db.transaction() as unit:
+        after = world.documents.get(unit, campaign, before.id)
+    assert after == before and after.version.sealed_at is None
