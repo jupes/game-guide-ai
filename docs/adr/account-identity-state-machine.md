@@ -70,10 +70,10 @@ become after erasure (`zkc`); the grounds for suspension (the published terms, `
 
 | State | Meaning | Entered by | Left by |
 |---|---|---|---|
-| **Unverified** | An account exists; control of its email address is not proven | Signup (T-1); operator re-verification (T-7); the legacy migration (T-15) | Verification or a completed reset (T-4); suspension (T-8); closure (T-11, T-12, T-13) |
-| **Verified** | Control of the address is proven. The only state from which any surface, free or paid, can be used | T-4; lift of a suspension of a verified account (T-9) | Re-verification (T-7); suspension (T-8); closure (T-11, T-12) |
-| **Suspended** | An operator has stopped the account, for abuse or for an under-age review. Reversible | T-8; an under-13 attestation by a legacy account (T-16) | Lift (T-9); operator closure (T-12) |
-| **Deleted** | The identity is closed: nothing signs in, nothing is served, the address is free to register again. Terminal | Self-service closure (T-11); operator closure (T-12); closure of a never-verified account (T-13) | Nothing. Erasure (T-14) removes data; it is not a transition |
+| **Unverified** | An account exists; control of its email address is not proven | Signup (IDT-1); operator re-verification (IDT-7); the legacy migration (IDT-15) | Verification or a completed reset (IDT-4); suspension (IDT-8); closure (IDT-11, IDT-12, IDT-13) |
+| **Verified** | Control of the address is proven. The only state from which any surface, free or paid, can be used | IDT-4; lift of a suspension of a verified account (IDT-9) | Re-verification (IDT-7); suspension (IDT-8); closure (IDT-11, IDT-12) |
+| **Suspended** | An operator has stopped the account, for abuse or for an under-age review. Reversible | IDT-8; an under-13 attestation by a legacy account (IDT-16) | Lift (IDT-9); operator closure (IDT-12) |
+| **Deleted** | The identity is closed: nothing signs in, nothing is served, the address is free to register again. Terminal | Self-service closure (IDT-11); operator closure (IDT-12); closure of a never-verified account (IDT-13) | Nothing. Erasure (IDT-14) removes data; it is not a transition |
 
 A visitor refused by the age gate is **not** a state: no account exists, and nothing
 on the server records the visitor (section 4).
@@ -84,10 +84,12 @@ on the server records the visitor (section 4).
 
 | Column (indicative) | Set by | Cleared by |
 |---|---|---|
-| `email_verified_at` | T-4 | T-7 (and an email change never clears it: T-6) |
-| `suspended_at` with `suspension_reason` in (`abuse`, `age`) | T-8, T-16 | T-9 |
-| `deleted_at` | T-11, T-12, T-13 | never |
-| `age_attested_at` with `age_gate_version` | T-1, or T-15's attestation step | never; erased with the account |
+| `email_verified_at` | IDT-4 | IDT-7 (and an email change never clears it: IDT-6) |
+| `suspended_at` with `suspension_reason` in (`abuse`, `age`) | IDT-8, IDT-16 | IDT-9 |
+| `deleted_at` | IDT-11, IDT-12, IDT-13 | never |
+| `first_verified_at` | IDT-4, the first time only | never: re-verification (IDT-7) leaves it set, so the unattended closure (IDT-13) never reaches a re-marked account |
+| `origin` in (`signup`, `legacy`) | IDT-1 (`signup`); IDT-15 (`legacy`, every account that exists when the migration runs) | never |
+| `age_attested_at` with `age_gate_version` | IDT-1, or IDT-15's attestation step | never; erased with the account |
 
 ```
 identity_state(row) =
@@ -100,10 +102,12 @@ identity_state(row) =
 **Why derived by precedence rather than one status column.** Lifting a suspension
 must return an account to exactly the verification state it had, and a verification
 link consumed while an account is suspended must still count once the suspension is
-lifted (race RC-9). A single status column would have to remember the prior state
+lifted (race IDRC-9). A single status column would have to remember the prior state
 somewhere else anyway; three facts and one precedence cannot disagree with each other.
 Two constraints keep the facts well formed: `suspension_reason` is set exactly when
-`suspended_at` is, and `deleted_at` once set is never cleared (no path writes it back).
+`suspended_at` is, and `deleted_at`, `first_verified_at` and `origin` once set are never
+cleared (no path writes them back). The last two take no part in the precedence; they
+exist so that a terminal, unattended transition (IDT-13) reads only facts nothing clears.
 
 **The email's uniqueness covers live accounts only.** The case-folded unique index on
 the address (migration 0002) becomes partial, over rows whose `deleted_at` is null,
@@ -138,7 +142,7 @@ going back and entering a different age. Counsel confirms both (OQ-1).
 
 | Item | Where | Contents | Lifetime | Why |
 |---|---|---|---|---|
-| Refusal marker | The refusing browser only, in two copies: a local-storage entry the UI reads, and a first-party cookie scoped to the signup endpoint's path (today `/auth/signup`), `Secure`, `SameSite=Strict`, `HttpOnly` | A constant value meaning "refused"; the local-storage copy also holds its own expiry date, because local storage has none. No birth date, no age, no identifier, no signature | 365 days from the refusal (the cookie's `Max-Age`), **never renewed** by later visits | D-6's memory, with nothing on the server. The UI reads its copy to show the refusal instead of the form; the server reads the cookie on a signup (next paragraph). The cookie is scoped to signup so that it rides on nothing else: a parent signing in on a shared computer must not send the server a sign that a child uses it. A year matches the granularity of the question (a year of age) and is not renewed, so it cannot become permanent |
+| Refusal marker | The refusing browser only, in two copies: a local-storage entry the UI reads, and a first-party cookie scoped to the signup endpoint's path (today `/auth/signup`). Script writes both, because the refusal sends no request, so the cookie is `Secure; SameSite=Strict; Path=/auth/signup; Max-Age=31536000` and deliberately **not** `HttpOnly`: a browser drops an `HttpOnly` cookie that script writes (RFC 6265, section 5.3, step 10), and a constant value is no secret to hide from script | A constant value meaning "refused"; the local-storage copy also holds its own expiry date, because local storage has none. No birth date, no age, no identifier, no signature | 365 days from the refusal (the cookie's `Max-Age`), **never renewed** by later visits | D-6's memory, with nothing on the server. The UI reads its copy to show the refusal instead of the form; the server reads the cookie on a signup (next paragraph). The cookie is scoped to signup so that it rides on nothing else: a parent signing in on a shared computer must not send the server a sign that a child uses it. A year matches the granularity of the question (a year of age) and is not renewed, so it cannot become permanent |
 | Refusal on the server | **Nothing** | No row, no counter, no IP address, no request | — | The refusal is decided in the browser and **sends no request**, so not even Cloud Run's request log records an address next to the fact "under 13" |
 | Attestation on an account | The account row | `age_attested_at` and `age_gate_version` (which wording and threshold were shown) | The account's life; erased with it | Evidence that the gate was passed, without keeping a birth date |
 | Birth date | **Nowhere** | — | — | Nothing downstream needs it; a stored birth date is personal data held for no purpose |
@@ -153,7 +157,7 @@ status and body.
 - **Same browser, same sitting, or any later visit within 365 days:** the marker is
   set before the refusal renders, so the back button, a reload or a different date
   shows the refusal again, and a request crafted around the UI is refused by the server.
-- **A second tab opened before the refusal** (race RC-4): the UI re-reads its copy of
+- **A second tab opened before the refusal** (race IDRC-4): the UI re-reads its copy of
   the marker when the age step is answered and again when the form is submitted, not
   only on load, and the submission carries the cookie the first tab set, so it is
   refused either way.
@@ -172,7 +176,7 @@ status and body.
 
 **Actual knowledge after signup** — a parent's report, an operator's finding, or a
 legacy account answering under 13 — is handled by the operator's under-age path:
-suspend with reason `age` at once (T-8 or T-16), then close (T-12). The address is
+suspend with reason `age` at once (IDT-8 or IDT-16), then close (IDT-12). The address is
 **never** kept to block a new signup, whatever OQ-3 decides for other closures:
 keeping a child's address to refuse them would itself retain the child's personal data.
 There is no guardian path (D-6).
@@ -184,27 +188,27 @@ holds, and writes an account-level audit record (section 7.3).
 
 | # | From | Trigger | Guard | To | Effects |
 |---|---|---|---|---|---|
-| T-1 | (no account) | Signup submitted | Attestation present; no refusal marker; the address matches no live account | Unverified | Row with the password hash and the attestation; a verification link mailed. **If the address is taken, nothing is created and the response is byte-identical** (`yje.2.2`); the address's owner is told by email |
-| T-2 | (no account) | Age step answered under 13 | — | (no account) | Refusal marker set in the browser; no request (section 4) |
-| T-3 | (no account) | Signup attempted with the marker present | — | (no account) | Refused, identically to T-2's screen; nothing stored or logged |
-| T-4 | Unverified; also Suspended with no `email_verified_at` | A verification link consumed, **or a password reset completed** | Token unconsumed, unexpired, bound to the account's current address; account not Deleted | Verified (or stays Suspended, now with the fact recorded) | `email_verified_at` set; the token consumed by a guarded update, as invites are today. A completed reset proves control of the same mailbox, so it verifies too |
-| T-5 | Unverified | Resend, or change of address | Rate limits (`yje.2.2`) | Unverified | A new token; **every earlier verification token of the account is invalidated**, so at most one is live. A changed address replaces the old one at once (nothing was proven about it); an address that is taken gets the same answer as a free one, as in T-1 |
-| T-6 | Verified | Change of address confirmed from the new address | Token bound to the pending address | Verified | The address is replaced only when the new one is proven; until then the old one stays in force. Other sessions revoked (`yje.2.3`) |
-| T-7 | Verified | **Operator requires re-verification** (the mailbox is reported compromised or recycled) | — | Unverified | `email_verified_at` cleared; every session revoked; outstanding verification tokens invalidated; live table sessions the account runs ended |
-| T-8 | Unverified or Verified | **Operator suspends**, reason `abuse` or `age` | — | Suspended | Every session revoked; the account's table grants revoked as an End revokes them (SEC-9); live table sessions it runs ended; seats and campaigns kept (section 8) |
-| T-9 | Suspended | **Operator lifts** (appeal upheld, review cleared) | Not Deleted | Unverified or Verified, by `email_verified_at` | `suspended_at` cleared. Nothing restarts: the holder signs in again; ended table sessions stay ended |
-| T-10 | Suspended | Appeal rejected | — | Suspended | Audit record; the outcome mailed to the account's address |
-| T-11 | Unverified or Verified | **Self-service closure** | The password re-entered in the same request | Deleted | `deleted_at` set; every session revoked; outstanding tokens deleted; the address leaves the unique index; live table sessions it runs ended; its campaigns unavailable; its seats left as they are and unusable by section 8.1 (their afterlife is Z-1); erasure queued (T-14) |
-| T-12 | Unverified, Verified or Suspended | **Operator closes** (upheld abuse, under-age, the holder's request while suspended, a legal request) | — | Deleted | As T-11. For reason `age`, OQ-3's retention window never applies |
-| T-13 | Unverified, never verified | 30 days since signup (OQ-8) with `email_verified_at` never set | Not a legacy account (T-15) | Deleted | As T-11 |
-| T-14 | Deleted | Erasure | `zkc`'s rules and any legal hold | Deleted (row scrubbed or gone) | What each row becomes is `zkc`'s (section 8.4). The answer table is the same before and after |
-| T-15 | (legacy invite account) | The identity migration (`yje.2.4`) | — | Unverified | Every existing account enters Unverified: none was ever verified. Its first verification step also asks the age question if `age_attested_at` is empty (OQ-7). T-13 never applies to it |
-| T-16 | Unverified (legacy) | The legacy attestation answered under 13 | — | Suspended, reason `age` | As T-8, plus the refusal marker in that browser. An operator closes (T-12); nothing is erased automatically on one entered date |
+| IDT-1 | (no account) | Signup submitted | Attestation present; no refusal marker; the address matches no live account | Unverified | Row with the password hash and the attestation; a verification link mailed. **If the address is taken, nothing is created and the response is byte-identical** (`yje.2.2`); the address's owner is told by email |
+| IDT-2 | (no account) | Age step answered under 13 | — | (no account) | Refusal marker set in the browser; no request (section 4) |
+| IDT-3 | (no account) | Signup attempted with the marker present | — | (no account) | Refused, identically to IDT-2's screen; nothing stored or logged |
+| IDT-4 | Unverified; also Suspended with no `email_verified_at` | A verification link consumed, **or a password reset completed** | Token unconsumed, unexpired, bound to the account's current address; account not Deleted | Verified (or stays Suspended, now with the fact recorded) | `email_verified_at` set, and `first_verified_at` if it is null; the token consumed by a guarded update, as invites are today. A completed reset proves control of the same mailbox, so it verifies too. **Every completed reset revokes every session and deletes every outstanding token of the account**, in the same transaction and whatever state it leaves (from Verified, or from Suspended already verified, it changes no state), so whoever signed up with the address before its owner proved it keeps nothing (IDRC-10) |
+| IDT-5 | Unverified | Resend, or change of address | Rate limits (`yje.2.2`) | Unverified | A new token; **every earlier verification token of the account is invalidated**, so at most one is live. A changed address replaces the old one at once (nothing was proven about it); an address that is taken gets the same answer as a free one, as in IDT-1 |
+| IDT-6 | Verified | Change of address confirmed from the new address | Token bound to the pending address | Verified | The address is replaced only when the new one is proven; until then the old one stays in force. Other sessions revoked (`yje.2.3`) |
+| IDT-7 | Verified | **Operator requires re-verification** (the mailbox is reported compromised or recycled) | — | Unverified | `email_verified_at` cleared; every session revoked; outstanding verification tokens invalidated; live table sessions the account runs ended |
+| IDT-8 | Unverified or Verified | **Operator suspends**, reason `abuse` or `age` | — | Suspended | Every session revoked; the account's table grants revoked as an End revokes them (SEC-9); live table sessions it runs ended; seats and campaigns kept (section 8) |
+| IDT-9 | Suspended | **Operator lifts** (appeal upheld, review cleared) | Not Deleted | Unverified or Verified, by `email_verified_at` | `suspended_at` cleared. Nothing restarts: the holder signs in again; ended table sessions stay ended, and one the account runs that is still live (started in IDRC-3's gap) is ended by the lift, so none serves again |
+| IDT-10 | Suspended | Appeal rejected | — | Suspended | Audit record; the outcome mailed to the account's address |
+| IDT-11 | Unverified or Verified | **Self-service closure** | The password re-entered in the same request | Deleted | `deleted_at` set; every session revoked; outstanding tokens deleted; the address leaves the unique index; live table sessions it runs ended; its campaigns unavailable; its seats left as they are and unusable by section 8.1 (their afterlife is Z-1); erasure queued (IDT-14) |
+| IDT-12 | Unverified, Verified or Suspended | **Operator closes** (upheld abuse, under-age, the holder's request while suspended, a legal request) | — | Deleted | As IDT-11. For reason `age`, OQ-3's retention window never applies, and the same transaction scrubs the address and the password hash from the row: nothing after closure reads them, and erasure finds the row by id |
+| IDT-13 | Unverified, never verified | 30 days since signup (OQ-8) | `first_verified_at` is null and `origin` is `signup`: never after a re-verification (IDT-7), never a legacy account (IDT-15) | Deleted | As IDT-11 |
+| IDT-14 | Deleted | Erasure | `zkc`'s rules and any legal hold | Deleted (row scrubbed or gone) | What each row becomes is `zkc`'s (section 8.4). The answer table is the same before and after |
+| IDT-15 | (legacy invite account) | The identity migration (`yje.2.4`) | — | Unverified | Every existing account enters Unverified with `origin` `legacy`: none was ever verified. Its first verification step also asks the age question if `age_attested_at` is empty (OQ-7). IDT-13 never applies to it |
+| IDT-16 | Unverified (legacy) | The legacy attestation answered under 13 | — | Suspended, reason `age` | As IDT-8, plus the refusal marker in that browser. An operator closes (IDT-12); nothing is erased automatically on one entered date |
 
 **No other transition exists.** In particular: an operator cannot mark an address
 verified (verification is the free tier's abuse control, and a manual override is the
 bypass a social engineer asks for; a mailbox problem is fixed by changing the address,
-T-6 or T-5); nothing leaves Deleted (an operator suspends while unsure and closes only
+IDT-6 or IDT-5); nothing leaves Deleted (an operator suspends while unsure and closes only
 after review, so there is no mistaken closure to undo); an age attestation is never
 edited.
 
@@ -212,16 +216,20 @@ edited.
 
 ### 6.1 Two rules that decide every race
 
-**R-1: every transition takes the account row with `FOR NO KEY UPDATE` before deciding.**
+**IDR-1: every transition takes the account row with `FOR NO KEY UPDATE` before deciding.**
 Under READ COMMITTED a waiter re-reads the row the lock was for, so the second of two
 transitions decides on what the first committed — it is the row lock that orders them,
 never an `EXISTS` in the statement. `FOR NO KEY UPDATE`, not `FOR UPDATE`, for the
 reason `service/participant_store.py` gives: a foreign-key check from a campaign, a
 seat or a session row takes `FOR KEY SHARE` on the account, which conflicts only with
 `FOR UPDATE`; an operator's transaction must not stall every write that merely
-references the account.
+references the account. After the account row, a transition takes what it changes
+campaign by campaign in ascending campaign id, owned and seated campaigns alike, under
+the rows A-17 names for an End (the session row and the participant row, never a
+campaign's authorisation row before the narrowing has taken effect), so two transitions
+over accounts seated at each other's tables cannot wait on each other in a cycle.
 
-**R-2: the per-request identity read is the guarantee; revocation is hygiene.** Every
+**IDR-2: the per-request identity read is the guarantee; revocation is hygiene.** Every
 authenticated request already re-reads the account (`require_session`); it now derives
 `identity_state` from the same row and refuses per section 9. So a session issued, a
 seat accepted or a campaign created concurrently with a transition is **inert** from
@@ -233,15 +241,16 @@ provider's token.
 
 | # | Race | Order A | Order B | What the holder sees |
 |---|---|---|---|---|
-| RC-1 | **Verification against closure** | Closure commits first: its tokens are deleted, and the verification's guarded update matches no live account | Verification commits first: the account is Verified, then closure makes it Deleted | Either "this link is invalid or has expired" (the same words as any stale link) or a confirmation followed by a closed account. Both orders end Deleted; neither enumerates |
-| RC-2 | **Suspension against sign-in** | Suspension commits first: the credential check succeeds, the state read says Suspended, no session is issued, the suspension notice is shown | Sign-in reads Verified, suspension commits and revokes sessions, then the new session is written: the session exists, but R-2 refuses its first use and revokes it | The suspension notice, at once or on the next request |
-| RC-3 | **Suspension or closure against an in-flight write** (a campaign created, a seat accepted, a table session started) | The transition commits first: the write's own state check refuses it | The write commits first, or lands after the transition's revocation step: it exists and is inert, because the campaign is unavailable or the seat unusable (section 8). A table session started in the gap serves nothing, since every table grant re-checks section 8.1, and is retired by its own `expires_at` (migration 0004) | Nothing that works; no partial state is visible to anyone else |
-| RC-4 | **Age refusal against a second tab** opened before the refusal | — | — | The second tab re-reads the marker at its age step and at submission, and its submission carries the cookie: refused either way (T-3) |
-| RC-5 | **A seat offer against the offered account's closure** | Closure commits first: the offer's existence check treats the Deleted row as no row and the offer is refused (`SeatUnavailable`, as for a missing account) | The offer's check passes, closure commits, the offer commits: an offered seat on a Deleted account, which can never be accepted (no session) and which erasure finds by its account at erasure time. The GM removes it as any unanswered offer | The GM sees no answer different from an account that never existed |
-| RC-6 | **Lift against close** by two operators | Close first: the lift's guard (not Deleted) matches nothing and reports "already closed" | Lift first, then close: the account ends Deleted | — |
-| RC-7 | **Address change against a stale verification link** | — | — | A token is bound to the address it was sent to; once the address or the pending address changes, the old token fails as any stale link |
-| RC-8 | **One link consumed twice** | — | — | A guarded update, as invite redemption does today: the second consumer matches zero rows and sees the stale-link answer |
-| RC-9 | **Re-verification or suspension against a verification in flight** | The operator's transition commits first: re-verification (T-7) invalidates outstanding tokens, so the in-flight link fails; a suspension leaves the token valid and T-4 records the fact without leaving Suspended | The verification commits first, then the operator's transition applies | Deterministic by R-1; no order leaves an account Verified that an operator has just re-marked |
+| IDRC-1 | **Verification against closure** | Closure commits first: its tokens are deleted, and the verification's guarded update matches no live account | Verification commits first: the account is Verified, then closure makes it Deleted | Either "this link is invalid or has expired" (the same words as any stale link) or a confirmation followed by a closed account. Both orders end Deleted; neither enumerates |
+| IDRC-2 | **Suspension against sign-in** | Suspension commits first: the credential check succeeds, the state read says Suspended, no session is issued, the suspension notice is shown | Sign-in reads Verified, suspension commits and revokes sessions, then the new session is written: the session exists, but IDR-2 refuses its first use and revokes it | The suspension notice, at once or on the next request |
+| IDRC-3 | **Suspension or closure against an in-flight write** (a campaign created, a seat accepted, a table session started) | The transition commits first: the write's own state check refuses it | The write commits first, or lands after the transition's revocation step: it exists and is inert, because the campaign is unavailable or the seat unusable (section 8). A table session started in the gap serves nothing, since every table grant re-checks section 8.1, and is retired by its own `expires_at` (migration 0004) | Nothing that works; no partial state is visible to anyone else |
+| IDRC-4 | **Age refusal against a second tab** opened before the refusal | — | — | The second tab re-reads the marker at its age step and at submission, and its submission carries the cookie: refused either way (IDT-3) |
+| IDRC-5 | **A seat offer against the offered account's closure** | Closure commits first: the offer's existence check treats the Deleted row as no row and the offer is refused (`SeatUnavailable`, as for a missing account) | The offer's check passes, closure commits, the offer commits: an offered seat on a Deleted account, which can never be accepted (no session) and which erasure finds by its account at erasure time. The GM removes it as any unanswered offer | The GM sees no answer different from an account that never existed |
+| IDRC-6 | **Lift against close** by two operators | Close first: the lift's guard (not Deleted) matches nothing and reports "already closed" | Lift first, then close: the account ends Deleted | — |
+| IDRC-7 | **Address change against a stale verification link** | — | — | A token is bound to the address it was sent to; once the address or the pending address changes, the old token fails as any stale link |
+| IDRC-8 | **One link consumed twice** | — | — | A guarded update, as invite redemption does today: the second consumer matches zero rows and sees the stale-link answer |
+| IDRC-9 | **Re-verification or suspension against a verification in flight** | The operator's transition commits first: re-verification (IDT-7) invalidates outstanding tokens, so the in-flight link fails; a suspension leaves the token valid and IDT-4 records the fact without leaving Suspended | The verification commits first, then the operator's transition applies | Deterministic by IDR-1; no order leaves an account Verified that an operator has just re-marked |
+| IDRC-10 | **A pre-registered address**: someone signs up with another person's address and stays signed in, as Unverified may | The owner, told by IDT-1's taken-address mail, completes a reset first: IDT-4 verifies, replaces the password and revokes every session in one transaction, so the registrant's next request is refused (IDR-2) | The registrant's own transition (a change of address, a closure) takes the row first: the owner's link is then stale or the account closed, and the owner signs up afresh. Or it waits on the reset's row lock, decides on the committed row, whose sessions are revoked, and is refused | The owner holds the only session, on a password only the owner knows. A verification link consumed without a reset leaves the registrant's password in place, so the owner takes the account only by a reset, which revokes as in order A |
 
 ## 7. Operator actions and appeal
 
@@ -249,11 +258,11 @@ provider's token.
 
 | Action | From | To | Reason codes | Effects |
 |---|---|---|---|---|
-| Suspend | Unverified, Verified | Suspended | `abuse`, `age` | T-8 |
-| Lift | Suspended | Unverified or Verified | `appeal_upheld`, `review_cleared` | T-9 |
-| Reject appeal | Suspended | Suspended | `appeal_rejected` | T-10 |
-| Require re-verification | Verified | Unverified | `mailbox_compromised`, `mailbox_recycled` | T-7 |
-| Close | Unverified, Verified, Suspended | Deleted | `abuse_upheld`, `age`, `holder_request`, `legal_request` | T-12 |
+| Suspend | Unverified, Verified | Suspended | `abuse`, `age` | IDT-8 |
+| Lift | Suspended | Unverified or Verified | `appeal_upheld`, `review_cleared` | IDT-9 |
+| Reject appeal | Suspended | Suspended | `appeal_rejected` | IDT-10 |
+| Require re-verification | Verified | Unverified | `mailbox_compromised`, `mailbox_recycled` | IDT-7 |
+| Close | Unverified, Verified, Suspended | Deleted | `abuse_upheld`, `age`, `holder_request`, `legal_request` | IDT-12 |
 | Revoke every session | any but Deleted | unchanged | `security` | The recovery for a compromised password once reset exists (`yje.2.3`); it replaces today's delete-and-re-invite runbook (`docs/deploy-gcp.md` section 10) |
 
 An operator may **not**: mark an address verified, reopen a Deleted account, edit an
@@ -279,7 +288,7 @@ the account is one of `zkc`'s questions (Z-4).
 A suspended holder who signs in with the correct password sees a notice naming the
 **category** (`abuse` or `age`) and the appeal route; a wrong password gets the same
 answer as for any account, so the notice enumerates nothing. The appeal goes to the
-operator, who lifts (T-9) or rejects (T-10); the outcome is mailed to the account's
+operator, who lifts (IDT-9) or rejects (IDT-10); the outcome is mailed to the account's
 address. **A suspension has no automatic expiry**: an automatic lift re-admits abuse
 nobody reviewed, and an automatic closure destroys data nobody reviewed. The channel,
 the response time and the fate of a suspension never appealed are the owner's (OQ-4).
@@ -307,10 +316,10 @@ requires the `dm` role keeps that check until entitlement replaces it in its own
 
 | State | Campaigns it owns | Its seats at other GMs' campaigns | What others see |
 |---|---|---|---|
-| Unverified | Cannot create any. One that re-verification (T-7) or the legacy migration left it owning is unavailable until it verifies | May be offered one; cannot accept; an accepted seat it already holds is unusable until it verifies | Its players see the table as unavailable; its GM sees it as absent |
+| Unverified | Cannot create any. One that re-verification (IDT-7) or the legacy migration left it owning is unavailable until it verifies | May be offered one; cannot accept; an accepted seat it already holds is unusable until it verifies | Its players see the table as unavailable; its GM sees it as absent |
 | Verified | Available | Usable | Normal |
-| Suspended | **Kept, untouched, unavailable.** Its live table sessions are ended at T-8 (an End, so SEC-9's revocation applies). Nothing is erased | **Kept, not removed**, so a lift restores the table without a new offer. Unusable; open streams stop receiving as SEC-9's revocation stops them | Seated players see neutral "This table is unavailable" — **never** that the GM was suspended. A GM sees a suspended player exactly as an absent one and may remove the seat as always |
-| Deleted | Unavailable from T-11/T-12/T-13 on; erased with the account at T-14 (the existing cascade) | **Left as they are**, and unusable from the moment of closure by section 8.1, so nothing more reaches the account. Whether closure marks them removed, and what the row becomes, is `zkc`'s (Z-1) | Seated players of a deleted GM lose the table and, with it, the documents linked to their seats (OQ-6). Until Z-1 is decided, a GM sees a deleted player's seat exactly as an absent one and may remove it as always |
+| Suspended | **Kept, untouched, unavailable.** Its live table sessions are ended at IDT-8 (an End, so SEC-9's revocation applies). Nothing is erased | **Kept, not removed**, so a lift restores the table without a new offer. Unusable; open streams stop receiving as SEC-9's revocation stops them | Seated players see neutral "This table is unavailable" — **never** that the GM was suspended. A GM sees a suspended player exactly as an absent one and may remove the seat as always |
+| Deleted | Unavailable from IDT-11/IDT-12/IDT-13 on; erased with the account at IDT-14 (the existing cascade) | **Left as they are**, and unusable from the moment of closure by section 8.1, so nothing more reaches the account. Whether closure marks them removed, and what the row becomes, is `zkc`'s (Z-1) | Seated players of a deleted GM lose the table and, with it, the documents linked to their seats (OQ-6). Until Z-1 is decided, a GM sees a deleted player's seat exactly as an absent one and may remove it as always |
 
 ### 8.3 Why these choices
 
@@ -344,7 +353,7 @@ requires the `dm` role keeps that check until entitlement replaces it in its own
   (`1ir.1.7`) and the legal review (`1ir.1.4`).
 - **Z-6 The 13+ refusal marker.** Answered here: nothing server-side exists, so
   deletion has nothing to erase; the attestation columns go with the account row.
-- **Z-7 Re-test RC-5 against the real deletion path,** as `zkc`'s own note from the
+- **Z-7 Re-test IDRC-5 against the real deletion path,** as `zkc`'s own note from the
   seat review asks.
 
 ## 9. The answer table
@@ -357,7 +366,7 @@ necessary, not sufficient, because entitlement (`yje.4.1`) and the existing `dm`
 |---|---|---|---|---|---|---|
 | Unverified | **Yes**, into the account page only | **No** | **No** | **No** | Verify or resend, change the address, reset the password, close the account, sign out | 403 `email_unverified` on anything but the account page |
 | Verified | **Yes** | **Yes** | **Yes**, a seat offered to this account | **Yes** | All | As entitlement decides |
-| Suspended | **No**: a correct password gets the suspension notice and no session; a wrong one gets the common failure | **No** | **No** | **No** | None in the product; the appeal and any data request go to the operator | 403 `account_suspended`, and the session is revoked |
+| Suspended | **No**: a correct password gets the suspension notice and no session; a wrong one gets the common failure | **No** | **No** | **No** | None in the product, except completing a verification link or a password reset, mailed as for any account (IDT-4): it is recorded, revokes as any reset does and never lifts the suspension. The appeal and any data request go to the operator | 403 `account_suspended`, and the session is revoked |
 | Deleted | **No**: identical to an address with no account | **No** | **No** | **No** | None | 401, exactly as for an account that does not exist |
 
 And before any account exists:
@@ -375,7 +384,7 @@ Free surface (D-3), and Free presupposes a verified address (bead `idm`).
 ## 10. Interface to the billing machines
 
 - **Identity exports one function, `identity_state(account)`, and the transitions
-  T-8, T-9, T-11, T-12 and T-13 as events.** The billing machines (`yje.1.3`) read the
+  IDT-8, IDT-9, IDT-11, IDT-12 and IDT-13 as events.** The billing machines (`yje.1.3`) read the
   state and react to the events. Identity reads **no** billing column, tier,
   subscription, promotion, sponsorship or entitlement, and waits on none: a payment
   provider outage never delays a suspension or a closure.
@@ -395,16 +404,16 @@ Free surface (D-3), and Free presupposes a verified address (bead `idm`).
 
 | Bead | Obligation |
 |---|---|
-| `yje.2.1` | The columns and precedence of section 3.2; the partial unique index on the address over live accounts; the constraint pairing `suspension_reason` with `suspended_at`; an account-level audit record (section 7.3) |
-| `yje.2.2` | The age step first and alone; the date computed in the browser and never sent; the marker set in both copies before the refusal renders, the cookie scoped to the signup path and the local copy re-read at the age step and at submission; the server refusing a signup without an attestation or with the marker, before storing or logging the body; resend invalidating earlier tokens (T-5); the byte-identical taken-address response |
-| `yje.2.3` | A completed reset also verifies (T-4); revocation on T-7, T-8 and T-11 to T-13; the per-request identity read kept whatever session model is chosen (R-2) |
-| `yje.2.4` | T-15 and T-16; the legacy accounts' communication; OQ-7's answer |
+| `yje.2.1` | The columns and precedence of section 3.2, including the never-cleared `first_verified_at` and `origin` that alone decide IDT-13; the partial unique index on the address over live accounts; the constraint pairing `suspension_reason` with `suspended_at`; an account-level audit record (section 7.3) |
+| `yje.2.2` | The age step first and alone; the date computed in the browser and never sent; the marker written by script in both copies before the refusal renders, the cookie scoped to the signup path and never `HttpOnly` (section 4.2), and the local copy re-read at the age step and at submission; the server refusing a signup without an attestation or with the marker, before storing or logging the body; resend invalidating earlier tokens (IDT-5); the byte-identical taken-address response |
+| `yje.2.3` | A completed reset also verifies (IDT-4); revocation on IDT-4 (every completed reset revokes every session and deletes every outstanding token, IDRC-10), IDT-7, IDT-8 and IDT-11 to IDT-13; the per-request identity read kept whatever session model is chosen (IDR-2) |
+| `yje.2.4` | IDT-15 and IDT-16; the legacy accounts' communication; OQ-7's answer |
 | `yje.2.6` | The neutral age screen, the refusal screen, the unverified account page, the suspension notice and the unavailable-table copy |
 | `1kg.2.2` | The offer route answers identically whatever the offered account's state; `offer`'s existence check in `service/participant_store.py` treats a Deleted row as no row once `yje.2.1` adds `deleted_at` |
-| `hgm`, `1kg.7.1`, `1kg.7.2` | The table grant includes both conjuncts of section 8.1 — the seat's account Verified and the campaign's owner Verified — in the same query that resolves the seat; T-7, T-8 and T-11 to T-13 revoke table grants as an End does (SEC-9) |
+| `hgm`, `1kg.7.1`, `1kg.7.2` | The table grant includes both conjuncts of section 8.1 — the seat's account Verified and the campaign's owner Verified — in the same query that resolves the seat; IDT-7, IDT-8 and IDT-11 to IDT-13 revoke table grants as an End does (SEC-9) |
 | `yje.4.1` | Section 9 is evaluated first and a "No" is final |
 | `yje.1.3` | Section 10 |
-| `zkc` | Section 8.4; erasure (T-14) never gates closure |
+| `zkc` | Section 8.4; erasure (IDT-14) never gates closure |
 
 ## 12. Questions for the owner
 
@@ -419,8 +428,8 @@ Each has a default that holds until answered, so section 9 stays deterministic.
 | OQ-5 | **A suspended holder's own data**: whether they may export it or close the account during suspension | Through the operator; a closure request is honoured unless the operator records a hold for the abuse evidence under the retention policy |
 | OQ-6 | **Campaign continuity when a GM leaves**: transferring ownership, and whether seated players keep a copy of documents linked to their seats | No transfer; the documents go with the campaign |
 | OQ-7 | **Legacy pilot accounts**: whether they attest their age, and whether they get a grace period before verification is enforced | They attest at their first verification step; no grace (verification is one click, and there are a handful of known testers) |
-| OQ-8 | **How long a never-verified account lives** (T-13) | 30 days: long enough for a delayed message and a resend, short enough not to hold addresses nobody proved |
-| OQ-9 | **What counts as abuse** — the grounds for T-8 | The published terms (`yje.6.1`); this record defines the state, not the grounds |
+| OQ-8 | **How long a never-verified account lives** (IDT-13) | 30 days: long enough for a delayed message and a resend, short enough not to hold addresses nobody proved |
+| OQ-9 | **What counts as abuse** — the grounds for IDT-8 | The published terms (`yje.6.1`); this record defines the state, not the grounds |
 
 ## 13. Alternatives rejected
 
@@ -432,7 +441,7 @@ Each has a default that holds until answered, so section 9 stays deterministic.
 - **A "Free" identity state, or a role.** Free is a billing fact (D-3), and the role is
   retired (D-5); either here would make identity read billing or restore what D-5 removed.
 - **Locking the account row `FOR SHARE` on every write so no write can slip past a
-  transition.** It costs a lock on every request to prevent writes that R-2 already
+  transition.** It costs a lock on every request to prevent writes that IDR-2 already
   makes inert.
 - **Marking, cascading or nulling a deleted account's seats now.** All are `zkc`'s
   options (Z-1) with known costs, and section 8.1 already makes the seats unusable, so
