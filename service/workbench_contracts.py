@@ -966,7 +966,9 @@ class _Entry(_Contract):
     heading, the text is its body. Plain text on both (X-10)."""
 
     name: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=TEXT_FIELD_MAX_CHARS)]
-    text: Annotated[str, StringConstraints(strict=True, max_length=LIST_ITEM_MAX_CHARS), AfterValidator(check_plain_text)]
+    text: Annotated[
+        str, StringConstraints(strict=True, max_length=LIST_ITEM_MAX_CHARS), AfterValidator(check_plain_text)
+    ]
 
     @field_validator("name")
     @classmethod

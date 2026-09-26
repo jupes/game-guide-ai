@@ -1531,7 +1531,8 @@ def _npc(**fields: Any) -> dict[str, Any]:
 
 
 def _quest(entry: dict[str, str]) -> dict[str, Any]:
-    return wc.check_fields(wc.DocumentTypeId.QUEST_LOG, 1, {"name": "The Mill Road", "open_threads": [entry]}, whole=True)
+    data = {"name": "The Mill Road", "open_threads": [entry]}
+    return wc.check_fields(wc.DocumentTypeId.QUEST_LOG, 1, data, whole=True)
 
 
 _DOCUMENT_TEXT_SITES = {
@@ -1579,7 +1580,11 @@ def test_a_line_break_stays_allowed_where_it_already_was() -> None:
 
 @pytest.mark.parametrize(
     ("char", "what"),
-    [(chr(0x00), "a control character"), (chr(0x202E), "a bidirectional control character"), (chr(0xFEFF), "a byte order mark")],
+    [
+        (chr(0x00), "a control character"),
+        (chr(0x202E), "a bidirectional control character"),
+        (chr(0xFEFF), "a byte order mark"),
+    ],
     ids=["NUL", "RLO", "BOM"],
 )
 def test_a_plain_text_refusal_names_the_field_and_the_class_and_never_the_value(char: str, what: str) -> None:
