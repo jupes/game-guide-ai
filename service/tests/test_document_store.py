@@ -33,7 +33,8 @@ from pathlib import Path
 import pytest
 
 from service import document_store as docs
-from service.campaign_identity import DOCUMENT, id_check_regex
+from service.audit_log import ACTION_DETAIL, AuditAction, MintedId, accepts
+from service.campaign_identity import DOCUMENT, PARTICIPANT, id_check_regex
 from service.campaign_store import InMemoryCampaignStore, MissingParent
 from service.db import InMemoryDatabase
 from service.document_store import (
@@ -876,3 +877,43 @@ def test_the_idle_seal_needs_no_clock_of_its_own():
         signature = inspect.signature(getattr(docs.PostgresDocumentStore, name))
         assert "now" not in signature.parameters, f"{name} reads; nothing it does needs a clock"
     assert timedelta(seconds=SEAL_IDLE_S) == timedelta(minutes=10)
+
+
+# ── Slice B: the audit vocabulary this bead adds (requirement 9) ─────────────
+
+
+def test_the_link_rows_name_the_sheet_by_its_minted_id_and_nothing_else():
+    """SEC-38 audits "participant add, remove, link and unlink", and until this
+    bead a link row could not say WHICH sheet. The vocabulary is added here and
+    the row is written by the route (`1kg.2.2`, `1kg.5.2`), the precedent
+    `1kg.2.1` set. Both kinds are minted ids: an id is what a ledger row may
+    carry, and a name, a fold or a count of field text is not (ED-26)."""
+    for action in (AuditAction.PARTICIPANT_LINKED, AuditAction.PARTICIPANT_UNLINKED):
+        assert ACTION_DETAIL[action] == {
+            "participant_id": MintedId(PARTICIPANT),
+            "document_id": MintedId(DOCUMENT),
+        }, action
+        assert accepts(ACTION_DETAIL[action]["document_id"], "doc_" + "a" * 22)
+        assert not accepts(ACTION_DETAIL[action]["document_id"], "prt_" + "a" * 22)
+
+
+def _statements_of(sql: str) -> str:
+    return "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
+
+
+def test_nothing_derived_from_field_text_is_stored_outside_the_document_row():
+    """ED-26: no value derived from field text may outlive the text. The two
+    folded keys live on `campaign.documents` and are deleted with it; no other
+    table of any migration declares either, and the document migration writes
+    nothing into `audit.events`, which survives campaign deletion by design."""
+    migrations = Path(__file__).resolve().parents[1] / "sql" / "migrations"
+    files = sorted(migrations.glob("*.sql"))
+    assert DOCUMENT_MIGRATION in [path.name for path in files]
+    for path in files:
+        body = _statements_of(path.read_text(encoding="utf-8"))
+        for table in re.findall(r"CREATE TABLE (\S+) \((.*?)\n\);", body, flags=re.S):
+            if table[0] == "campaign.documents":
+                continue
+            for derived in ("name_key", "search_key"):
+                assert derived not in table[1], f"{path.name}: {table[0]} holds {derived}"
+    assert "audit." not in _statements_of(SQL), "the document schema touches the ledger"
