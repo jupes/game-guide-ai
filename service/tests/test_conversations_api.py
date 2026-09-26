@@ -692,10 +692,17 @@ def test_linking_to_a_campaign_that_is_not_a_live_one_of_the_callers_is_the_one_
     assert stored is not None and stored.campaign_id is None
 
 
-def test_a_conversation_started_outside_gm_cannot_be_linked(client: TestClient, world: _World) -> None:
+@pytest.mark.parametrize("campaign", ["mine", "foreign"])
+def test_a_conversation_started_outside_gm_cannot_be_linked(client: TestClient, world: _World, campaign: str) -> None:
+    """Ruling A2-10, checked on the conversation before any link is tried — so
+    the answer is the same 422 whether or not the campaign is the caller's, and
+    it says nothing about the campaign."""
     mine = world.conversation(started_mode="rules").id
-    answer = _patch(client, mine, campaign_id=world.campaign())
+    named = world.campaign(OWNER if campaign == "mine" else STRANGER)
+    answer = _patch(client, mine, campaign_id=named)
     assert (answer.status_code, answer.json()["detail"]["field"]) == (422, "campaign_id")
+    stored = world.stored(mine)
+    assert stored is not None and stored.campaign_id is None
 
 
 def test_the_channel_is_bound_once_and_a_later_different_one_is_answered_not_refused(
