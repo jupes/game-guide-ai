@@ -40,12 +40,15 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     StrictBool,
     StrictStr,
     StringConstraints,
     TypeAdapter,
     ValidationError,
+    ValidationInfo,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic_core import PydanticCustomError
@@ -187,6 +190,58 @@ _TRIMMED = "".join(
 def trim(value: str) -> str:
     """Trim as the client does, so the two never disagree about emptiness or length."""
     return value.strip(_TRIMMED)
+
+
+#: The code points stored text refuses, as inclusive ranges, each with the class
+#: a refusal names. Written as numbers so that no invisible character ever sits
+#: in this file. ``REFUSED_TEXT_CODE_POINTS`` in ``ui/src/gm/contracts.ts`` is the
+#: same table, and both suites pin it to one literal list.
+_REFUSED_TEXT_RANGES: tuple[tuple[int, int, str], ...] = (
+    (0x0000, 0x0008, "a control character"),
+    (0x000B, 0x000C, "a control character"),
+    (0x000E, 0x001F, "a control character"),
+    (0x007F, 0x009F, "a control character"),
+    (0x061C, 0x061C, "a bidirectional control character"),
+    (0x200E, 0x200F, "a bidirectional control character"),
+    (0x202A, 0x202E, "a bidirectional control character"),
+    (0x2066, 0x2069, "a bidirectional control character"),
+    (0xFEFF, 0xFEFF, "a byte order mark"),
+)
+_REFUSED_TEXT_CLASS: dict[int, str] = {
+    code: what for low, high, what in _REFUSED_TEXT_RANGES for code in range(low, high + 1)
+}
+#: Lead ruling of 2026-09-21 on bead ``1kg.5.7.2``: what stored text refuses —
+#: NUL and the other C0 and C1 controls, DEL, the whole Bidi_Control set and the
+#: byte order mark. The refused set is the set that changes what a reader **sees**
+#: relative to what is stored. Tab is allowed; line feed and carriage return are
+#: allowed wherever a line break already is (``_one_line`` still refuses them in
+#: a one-line value); U+200C, U+200D and U+FE0F are allowed, because real names
+#: and emoji sequences need them.
+REFUSED_TEXT_CODE_POINTS: frozenset[int] = frozenset(_REFUSED_TEXT_CLASS)
+
+
+def check_plain_text(value: str) -> str:
+    """Refuse text holding any code point in :data:`REFUSED_TEXT_CODE_POINTS`.
+
+    Why it exists: PostgreSQL's ``text`` and ``jsonb`` refuse U+0000, so an
+    unrefused NUL is a failure to **store** — a 500 — rather than an answer the GM
+    can act on; and a bidirectional override makes displayed text differ from its
+    logical order, a spoofing vector in names a GM trusts. Refused here, it is a
+    422 whose message names the class and never the value (X-7); the caller's
+    location names the field.
+
+    The one shared helper for this rule. It is applied to the document field
+    kinds and to the reveal family's projection text today. Bead ``5mj`` adopts it
+    for the other stored text, and bead ``ysj``'s participant-alias rule calls it;
+    folding characters out of a comparison key is ``ysj``'s, not this function's —
+    this one only accepts or refuses. It never changes ``value``, and a lone
+    surrogate stays the well-formedness checks' to refuse.
+    """
+    for character in value:
+        what = _REFUSED_TEXT_CLASS.get(ord(character))
+        if what is not None:
+            raise ValueError(f"must not contain {what}")
+    return value
 
 #: Opaque to clients and base64url, because a cursor may ride in a query string.
 #: Search text may not (X-7), which is why a cursor never encodes any.
@@ -350,6 +405,10 @@ class ErrorCode(str, Enum):
     PROVIDER_TIMEOUT = "provider_timeout"
     ATTEMPT_EXPIRED = "attempt_expired"
     BACKEND_UNAVAILABLE = "backend_unavailable"
+    #: A link to a campaign for a conversation that is already in one (1kg.2.4).
+    #: A new code rather than ``conflict`` with a widened meaning: a new code is
+    #: no version bump, a changed meaning is one.
+    ALREADY_LINKED = "already_linked"
 
 
 # ── Registry facts the validators need (pinned by registry.json) ─────────────
@@ -886,6 +945,14 @@ _ProseValue = Annotated[str, StringConstraints(strict=True, max_length=PROSE_FIE
 _ListItem = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=LIST_ITEM_MAX_CHARS)]
 _TextListValue = Annotated[list[_ListItem], Field(max_length=LIST_FIELD_MAX_ITEMS)]
 _IntegerValue = Annotated[WireInt, Field(ge=INTEGER_FIELD_MIN, le=INTEGER_FIELD_MAX)]
+#: A document field's own text kinds: the shapes above, plus ``check_plain_text``.
+#: New annotations rather than a change to the three above, which also carry a
+#: version's ``summary`` and a library item's ``qualifier`` and ``tags`` — text
+#: bead ``5mj`` owns, and which accepts what it accepted before until it lands.
+_FieldTextValue = Annotated[_TextValue, AfterValidator(check_plain_text)]
+_FieldProseValue = Annotated[_ProseValue, AfterValidator(check_plain_text)]
+_FieldListItem = Annotated[_ListItem, AfterValidator(check_plain_text)]
+_FieldTextListValue = Annotated[list[_FieldListItem], Field(max_length=LIST_FIELD_MAX_ITEMS)]
 
 #: The six 5e ability scores, as a **mapping with a closed key set** rather than a
 #: model: ``Abilities`` in ``models.py`` must spell ``int`` as ``int_`` with an
@@ -895,11 +962,10 @@ AbilityKey = Literal["str", "dex", "con", "int", "wis", "cha"]
 #: Registry order, for a client that lays the block out.
 ABILITY_KEYS: tuple[str, ...] = ("str", "dex", "con", "int", "wis", "cha")
 _AbilityScore = Annotated[WireInt, Field(ge=ABILITY_SCORE_MIN, le=ABILITY_SCORE_MAX)]
-#: DEFERRED, 1kg.5.7 Stage A: "one spelling of no score" (requirement 7e,
-#: AC 17) needs `ui/src/gm/DocumentField.tsx` and its tests, which belong to
-#: `1kg.6.2` and are being edited in parallel — its editor stores an empty
-#: ability cell as `null` and pins that. Reported to the lead.
-_AbilitiesValue = dict[AbilityKey, _AbilityScore | None] | None
+#: One spelling of "no score" (requirement 7e): a score that is not known is a
+#: key left **out**, never ``{"str": null}``. The whole block still clears to
+#: ``None``, and ``{}`` is a block with no score in it yet.
+_AbilitiesValue = dict[AbilityKey, _AbilityScore] | None
 
 
 class _Entry(_Contract):
@@ -907,12 +973,20 @@ class _Entry(_Contract):
     heading, the text is its body. Plain text on both (X-10)."""
 
     name: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=TEXT_FIELD_MAX_CHARS)]
-    text: Annotated[str, StringConstraints(strict=True, max_length=LIST_ITEM_MAX_CHARS)]
+    text: Annotated[
+        str, StringConstraints(strict=True, max_length=LIST_ITEM_MAX_CHARS), AfterValidator(check_plain_text)
+    ]
 
     @field_validator("name")
     @classmethod
     def _name_is_one_line(cls, value: str) -> str:
-        return _one_line(value)
+        """The name is what a renderer shows as its heading, so it cannot be
+        blank — by the contract's own trim, exactly as a document's name."""
+        _one_line(value)
+        check_plain_text(value)
+        if not trim(value):
+            raise ValueError("an entry has a name, and it cannot be blank")
+        return value
 
 
 _EntryListValue = Annotated[list[_Entry], Field(max_length=LIST_FIELD_MAX_ITEMS)]
@@ -920,9 +994,9 @@ _EntryListValue = Annotated[list[_Entry], Field(max_length=LIST_FIELD_MAX_ITEMS)
 #: Text and prose clear to ``""``, a list to ``[]``, and an asset, an integer and
 #: an ability block to ``None``.
 _FIELD_VALUE: dict[FieldKind, TypeAdapter[Any]] = {
-    FieldKind.TEXT: TypeAdapter(_TextValue, config=_HIDE_INPUT),
-    FieldKind.PROSE: TypeAdapter(_ProseValue, config=_HIDE_INPUT),
-    FieldKind.TEXT_LIST: TypeAdapter(_TextListValue, config=_HIDE_INPUT),
+    FieldKind.TEXT: TypeAdapter(_FieldTextValue, config=_HIDE_INPUT),
+    FieldKind.PROSE: TypeAdapter(_FieldProseValue, config=_HIDE_INPUT),
+    FieldKind.TEXT_LIST: TypeAdapter(_FieldTextListValue, config=_HIDE_INPUT),
     FieldKind.ASSET: TypeAdapter(AssetRef | None, config=_HIDE_INPUT),
     FieldKind.INTEGER: TypeAdapter(_IntegerValue | None, config=_HIDE_INPUT),
     FieldKind.ABILITIES: TypeAdapter(_AbilitiesValue, config=_HIDE_INPUT),
@@ -1053,12 +1127,25 @@ def read_stored_fields(doc_type: DocumentTypeId, type_version: int, data: Mappin
 
     Pure: it returns a new dict and never touches ``data``. *The stored row is
     left untouched*, so it renders again after a roll-forward.
+
+    ``data`` comes out of a ``jsonb`` column, which holds any JSON value, so it is
+    ``Any`` to its caller whatever this signature says. Anything but an object —
+    a string, a list, ``null``, a number — is refused with the typed
+    ``stored_data_not_an_object`` error (after the version check, like every other
+    refusal here), never an untyped ``AttributeError`` from reaching for
+    ``.items()``.
     """
     if type_version != DOC_TYPE_VERSION[doc_type]:
         raise PydanticCustomError(
             "unsupported_type_version",
             "{type} field definitions are at version {version}",
             {"type": doc_type.value, "version": DOC_TYPE_VERSION[doc_type]},
+        )
+    if not isinstance(data, Mapping):
+        raise PydanticCustomError(
+            "stored_data_not_an_object",
+            "stored {type} document data is not a JSON object",
+            {"type": doc_type.value},
         )
     declared = {**COMMON_FIELDS, **DOC_TYPE_FIELDS[doc_type]}
     kept: dict[str, Any] = {}
@@ -2324,26 +2411,31 @@ def _not_blank(value: str) -> str:
     return value
 
 
+#: ``check_plain_text`` on all three, so that a value a document refuses can never
+#: ride in a projection instead (requirement 6, 1kg.5.7.2).
 _PresentText = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=TEXT_FIELD_MAX_CHARS),
     AfterValidator(_one_line),
+    AfterValidator(check_plain_text),
     AfterValidator(_not_blank),
 ]
 _PresentProse = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=PROSE_FIELD_MAX_CHARS),
+    AfterValidator(check_plain_text),
     AfterValidator(_not_blank),
 ]
 _PresentListItem = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=LIST_ITEM_MAX_CHARS),
+    AfterValidator(check_plain_text),
     AfterValidator(_not_blank),
 ]
 _PresentList = Annotated[list[_PresentListItem], Field(min_length=1, max_length=LIST_FIELD_MAX_ITEMS)]
 #: Decision ED-9: a block a player is shown carries scores, not gaps. A document
-#: may hold ``{"str": null}`` for a creature that lacks an ability; a projection
-#: of it leaves the key out, so no cell is drawn empty under a masked heading.
+#: spells a score that is not known by leaving its key out (requirement 7e), and
+#: so does a projection of it, so no cell is drawn empty under a masked heading.
 _PresentAbilities = Annotated[dict[AbilityKey, _AbilityScore], Field(min_length=1)]
 
 
@@ -3040,6 +3132,135 @@ class TableSnapshot(_Contract):
         return self
 
 
+# ── The conversation family (1kg.2.4) ────────────────────────────────────────
+#
+# A conversation's identity and metadata, served by ``service/conversations_api.py``.
+# What a conversation says and when is the timeline family's; this family is the
+# index a sidebar is built from. The owner, the model-routing strategy, its alias
+# and the catalog revision are never on the wire (owner decision D-9): the owner
+# is the session, and the strategy is ``/chat``'s own, bound first-writer-wins.
+
+#: A page of the owner's index. The store clamps to the same number
+#: (``service.conversation_store.LIMIT_MAX``); a test holds the two together.
+CONVERSATION_PAGE_MAX_ITEMS = 100
+#: 0006's CHECK, in code points on both sides (``service.conversation_store.TITLE_MAX_CHARS``).
+CONVERSATION_TITLE_MAX_CHARS = 200
+
+#: The code points a title may not hold, spelled out by code point (ruling A2-9):
+#: the C0 and C1 controls, and the bidirectional embeddings, overrides and
+#: isolates, which can make a title read as something else. The client refuses
+#: exactly this set (``contracts.ts``).
+REFUSED_IN_A_TITLE: frozenset[int] = frozenset(
+    (*range(0x00, 0x20), *range(0x7F, 0xA0), *range(0x202A, 0x202F), *range(0x2066, 0x206A))
+)
+
+
+def _a_conversation_title(value: str) -> str:
+    """A title as a request sends it: trimmed as the client trims, then 1 to 200
+    code points, with none of ``REFUSED_IN_A_TITLE`` left inside. The trimmed
+    value is what is stored. The refusal names the field, never the title."""
+    trimmed = trim(value)
+    if not 1 <= len(trimmed) <= CONVERSATION_TITLE_MAX_CHARS:
+        raise ValueError(f"a title is 1 to {CONVERSATION_TITLE_MAX_CHARS} characters after trimming")
+    if any(ord(character) in REFUSED_IN_A_TITLE for character in trimmed):
+        raise ValueError("a title holds no control or bidirectional-formatting characters")
+    return trimmed
+
+
+#: What a client may send as a title.
+ConversationTitleRequest = Annotated[WireText, AfterValidator(_a_conversation_title)]
+#: What the server answers with: the stored value, read tolerantly — bounded, but
+#: with no trim rule, because a response carries what is stored (ruling A2-9).
+ConversationTitle = Annotated[
+    str, StringConstraints(strict=True, min_length=1, max_length=CONVERSATION_TITLE_MAX_CHARS)
+]
+
+
+class Conversation(_Contract):
+    """One conversation's metadata. Every key is present; what a row never
+    recorded is ``null`` (*Not recorded*) — which is every one of these for a
+    conversation that existed before this family did."""
+
+    schema_version: SchemaVersion
+    conversation_id: OpaqueId
+    campaign_id: OpaqueId | None
+    title: ConversationTitle | None
+    #: The channel the conversation was started in, bound once. ``None`` for a
+    #: conversation whose channel was never recorded.
+    started_mode: ChatMode | None
+    created_at: Timestamp
+    #: Moves on a metadata change, never on a chat turn (ruling R-2).
+    updated_at: Timestamp | None
+    archived_at: Timestamp | None
+
+
+class ConversationPage(_Contract):
+    """The owner's index, newest metadata first. No filter is echoed back."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[Conversation], Field(max_length=CONVERSATION_PAGE_MAX_ITEMS)]
+    #: Required: the end of the list is ``None``, never a missing key.
+    next_cursor: Cursor | None
+
+
+class ConversationCreateRequest(_Contract):
+    """``POST /conversations``. The server mints the id and the owner is the
+    session: there is no claim (threat model §8.1) and no ``command_id``
+    (ruling 2.4#5)."""
+
+    schema_version: SchemaVersion
+    started_mode: ChatMode
+    campaign_id: OpaqueId | None = None
+    title: ConversationTitleRequest | None = None
+
+    @field_validator("campaign_id")
+    @classmethod
+    def _a_campaign_thread_is_a_gm_thread(cls, value: str | None, info: ValidationInfo) -> str | None:
+        """Ruling A2-10. It depends on nothing but the body, so it is a body
+        validation and answers before any resource is looked at."""
+        mode = info.data.get("started_mode")
+        if value is not None and mode is not None and mode is not ChatMode.gm:
+            raise ValueError("a conversation inside a campaign is started in gm")
+        return value
+
+
+class ConversationPatchRequest(_Contract):
+    """``PATCH /conversations/{id}``: rename, archive, unarchive, link an
+    uncampaigned conversation to a campaign, bind the channel. At least one key,
+    and **none is nullable**: moving a conversation between campaigns, or
+    unlinking one, is not in v1 (requirement 6)."""
+
+    schema_version: SchemaVersion
+    title: ConversationTitleRequest | None = None
+    archived: StrictBool | None = None
+    campaign_id: OpaqueId | None = None
+    started_mode: ChatMode | None = None
+
+    @field_validator("title", "archived", "campaign_id", "started_mode", mode="before")
+    @classmethod
+    def _sent_means_a_value(cls, value: object) -> object:
+        # A "before" validator runs only for a key that was sent, so a key left
+        # out keeps its ``None`` default while a ``null`` that was sent is refused.
+        if value is None:
+            raise ValueError("send a value, or leave the key out")
+        return value
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> Self:
+        if not self.model_fields_set - {"schema_version"}:
+            raise ValueError("a patch names at least one of title, archived, campaign_id and started_mode")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _only_what_was_sent(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """A patch is emitted as it was sent. The defaults are ``None`` only so
+        that a key can be left out; written back as ``null`` they would be the
+        very nulls this model refuses, and the client refuses them too (the
+        differential fuzz's emission check found it)."""
+        emitted: dict[str, Any] = handler(self)
+        return {key: value for key, value in emitted.items() if key in self.model_fields_set}
+
+
 #: Name → validator, in the order ``contracts/workbench/v1/schemas.json`` lists them.
 CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "Timestamp": TypeAdapter(Timestamp, config=_HIDE_INPUT),
@@ -3092,4 +3313,8 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "TableEvent": TypeAdapter(TableEvent, config=_HIDE_INPUT),
     "GmSnapshot": TypeAdapter(GmSnapshot),
     "TableSnapshot": TypeAdapter(TableSnapshot),
+    "Conversation": TypeAdapter(Conversation),
+    "ConversationPage": TypeAdapter(ConversationPage),
+    "ConversationCreateRequest": TypeAdapter(ConversationCreateRequest),
+    "ConversationPatchRequest": TypeAdapter(ConversationPatchRequest),
 }

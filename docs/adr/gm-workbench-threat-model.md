@@ -410,6 +410,8 @@ Stated plainly, so that accepting them is a decision and not an accident.
 | Deleted data stays in backups for the backup window (WT-18) | Standard; must be documented for users | Owner |
 | The legacy routes' 422 bodies still echo request input (R-12) | Their shape is part of the legacy contract and this model does not change legacy behaviour | Owner; a bead of its own, after the Workbench handler exists |
 | A GM's own browser on a shared or kiosk computer keeps what it downloaded (exports) and what it showed (a screenshot, a locked but open tab) | No software control beyond `no-store` and `Clear-Site-Data` on sign-out (SEC-19); the export banner says so once | Owner |
+| The legacy `GET /conversations/{id}/messages` and attachment routes still answer `403` for a conversation that exists and is someone else's, beside the conversation family's generic `404` on the same prefix, so a prober can ask the old route what the new one will not say (R-5, SEC-3) | Changing a live route's status is a behaviour change the owner's standing constraint protects, and R-4 grandfathers it; conversation ids are unguessable (SEC-4) | Lead, for the pilot (`1kg.2.4` ruling 4) |
+| A campaign deleted between a conversation's INSERT or link and its COMMIT still raises the deferred foreign key at COMMIT, outside any `try` (`1kg.2.4` F-7) | The campaign is validated in the writing statement, which takes no lock, and no route can delete a campaign yet | `agent-forge-harness-1kg.2.6`, which owns closing it when campaign deletion ships (`1kg.2.4` ruling 8) |
 
 ## 11. Decisions for the owner
 

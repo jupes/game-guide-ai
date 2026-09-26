@@ -139,6 +139,7 @@ a generic failure.
 | `provider_failed`, `provider_timeout` | 502, 504 | yes | the model provider |
 | `attempt_expired` | — | yes | the server expired a stuck attempt (RAIL-27); seen on an invocation, never as a response status |
 | `backend_unavailable` | 503 | yes | the service fails closed |
+| `already_linked` | 409 | no | a link to a campaign for a conversation that is already in one (`1kg.2.4`). A new code rather than `conflict` with a wider meaning |
 
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
@@ -173,6 +174,8 @@ names it starts fresh rather than reading another caller's status or result
 | Confirm a reveal | `command_id`, and the **session** and reveal epoch it was composed under (REVEAL-5, ED-9) | replays the first outcome; a stale epoch, or an epoch from another session, is `409 conflict` and is never retried automatically — the sheet reloads live state, keeps the GM's draft and asks for a fresh Confirm (REVEAL-15) |
 | Stop a reveal, Stop all reveals | `command_id`, no epoch (X-3) | is idempotent by nature: a document that is no longer live is left alone, and a Stop succeeds on an empty slot (REVEAL-22) |
 | Start, End, Rotate a session | `command_id` | a retried Start opens the session already started rather than a second one; End and Rotate are idempotent on an ended or rotated session |
+| Create a conversation | none (`1kg.2.4`) | makes a second conversation, which archive recovers. There is no key store for an uncampaigned conversation to be matched in; a `command_id` can arrive later as an optional field, which is no version bump |
+| Rename, archive, unarchive or link a conversation; bind its channel | none needed | is a no-op: the same title, the same state and the same campaign change nothing, and a channel already bound answers the one that won |
 
 ### Pagination
 
@@ -235,6 +238,7 @@ on both sides.
 | Table sessions | **done** | `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest`, `EnrolResponse`, `TableSession`, `TableSessionRequest`, `TableSessionAnswer` |
 | Realtime events | **done** | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect`), `TableEvent` (`session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect`), and the two snapshot resources `GmSnapshot` and `TableSnapshot`. `slot` and `snapshot` are the reveal family's; the transport is the media ADR's |
 | Tool and document-type registry | `1kg.3.1` | extends `registry.json` |
+| Conversations | **done** | `Conversation`, `ConversationPage`, `ConversationCreateRequest`, `ConversationPatchRequest`, and `already_linked` on the error envelope. See *The conversation family* below |
 
 ## The tool-invocation family
 
@@ -308,8 +312,24 @@ place rather than kept twice.
 | `text_list` | at most 100 items of 1 to 2,000 characters | `[]` |
 | `asset` | an `AssetRef` (an id, never a URL) | `null` |
 | `integer` | a JSON integer, -1,000,000 to 1,000,000; a **field** may narrow that, and most do — see *Per-field integer bounds* | `null` |
-| `abilities` | the six 5e scores as one object (`str`, `dex`, `con`, `int`, `wis`, `cha`), each 0–99; any subset | `null` |
-| `entry_list` | at most 100 `{name, text}` entries; the name one line of 1 to 200 characters, the text at most 2,000 | `[]` |
+| `abilities` | the six 5e scores as one object (`str`, `dex`, `con`, `int`, `wis`, `cha`), each 0–99; any subset — a score that is not known is a key left **out**, never `null` | `null` |
+| `entry_list` | at most 100 `{name, text}` entries; the name one line of 1 to 200 characters and not blank after the contract's trim, the text at most 2,000 | `[]` |
+
+**Stored text is plain text.** Every text a document holds — a `text` or `prose`
+value, each item of a `text_list`, and an entry's name and text — refuses NUL and
+the other C0 and C1 controls, DEL, the whole Bidi_Control set (U+061C, U+200E,
+U+200F, U+202A–U+202E, U+2066–U+2069) and U+FEFF, with a 422 whose message names
+the field and the class of character and never the value. A tab is allowed, a
+line feed or carriage return wherever a line break already is, and U+200C,
+U+200D and U+FE0F everywhere, because real names and emoji sequences need them.
+PostgreSQL's `text` and `jsonb` refuse U+0000, so without the rule a NUL would be
+a failure to store rather than an answer; a bidirectional override makes what a
+GM sees differ from what is stored. One helper per side is the rule —
+`check_plain_text` and `REFUSED_TEXT_CODE_POINTS` in `workbench_contracts.py`,
+`isPlainText`, `plainText` and `plainOneLine` in `contracts.ts` — and a version's
+summary, a brief, chat text, cue titles and aliases do not call it yet (bead
+`5mj`). A score of `{"str": null}` is refused for the same reason every kind has
+one way to say empty: leaving the key out already says it.
 
 Every type has `name`, `qualifier` and `tags`. `name` is the title everywhere and
 cannot be blank on any type (LIB-12); `tags` is **never revealable**, on any type
@@ -346,13 +366,19 @@ stored row; **what the server stores and emits stays strict**. It is the same
 rule the *Versioning and forward compatibility* table already carries for a
 stored timeline entry, and it exists because *adding a field is not a bump*: a
 strict stored read plus that rule would make every dossier that used a new field
-unreadable after a rollback.
+unreadable after a rollback. The tolerance has two deliberate limits: a stored
+value that is not a JSON object is the typed refusal `stored_data_not_an_object`,
+never an untyped crash, and a stored row that lost its name is unreadable,
+deliberately — `read_stored_fields` reads a whole document, and every document
+has a name from the moment it exists.
 
-The largest valid document is a stat block, at **1,316,510** JSON characters:
+The largest valid document is a stat block, at **1,316,498** JSON characters:
 five `entry_list` fields × 100 entries × 2,200 characters of name and text
 (1,100,000), a 100-item `tags` list at 2,000 each (200,000), fifteen `text`
 fields at 200 (3,000), and about 13,500 characters of keys, punctuation and the
-envelope. Narrowing `ac` and `hp` to 0–1,000,000 took two characters off it. A
+envelope. Narrowing `ac` and `hp` to 0–1,000,000 took two characters off it, and
+one spelling of "no score" took twelve more: each of the six scores' widest
+value is now two digits rather than `null`. A
 cap on the **whole** document is `1kg.5.5`'s (RAIL-6); this is the number it has
 to sit above.
 
@@ -558,6 +584,11 @@ floor honest. An armour class is not negative, and there is no session 0 or
 party level 0; experience points nothing consumes yet are not worth making the
 kind's floor untestable for.
 
+Bounds bind reads as well as writes: `Document`, `DocumentVersionSnapshot` and
+`read_stored_fields` all apply them, which is safe only because writes enforce
+them from the first document stored, so no stored row can violate one. It also
+means **tightening a bound later is a `type_version` bump**, with its adapter.
+
 Narrowing a field's bounds is an **incompatible change**: see *Schema
 revisions* below.
 
@@ -640,6 +671,98 @@ An `EditInvocation` finishes as `changed` (a version number for the lane's
 invocation, not an outcome.** The result never carries the document: documents
 travel through the document endpoints only, so neither the thread nor its export
 can hold a body (EXPORT-12).
+
+## The conversation family
+
+A conversation's identity and metadata: the index a sidebar is built from
+(`1kg.2.4`). What a conversation *says*, and when, is the timeline family's.
+The routes are `service/conversations_api.py`.
+
+| Route | Answers |
+| --- | --- |
+| `GET /conversations` | `ConversationPage`: the caller's own conversations, newest metadata first |
+| `POST /conversations` | `201` and the new `Conversation`. The body is a `ConversationCreateRequest` |
+| `GET /conversations/{id}` | the `Conversation`, archived or not |
+| `PATCH /conversations/{id}` | the `Conversation` after the change. The body is a `ConversationPatchRequest` |
+
+**`Conversation`.** Every key is present. `campaign_id`, `title`,
+`started_mode`, `updated_at` and `archived_at` are `null` where the row never
+recorded them (*Not recorded*), which is every one of them for a conversation
+that existed before this family. The owner's id, `selection_strategy`,
+`manual_alias` and `catalog_revision` are **never** on the wire: the owner is
+the session, and the model-routing columns are `/chat`'s own (owner decision
+D-9).
+
+- **`started_mode`** is the channel the conversation was started in, bound
+  first-writer-wins. It is not the mode of a turn — that stays per turn — and no
+  chat turn ever sets it.
+- **`updated_at`** moves on a metadata change and never on a chat turn, so the
+  index is ordered by metadata changes, not by recent activity (ruling R-2).
+- **Ids.** A conversation created here gets a server-minted id, `cnv_` and 22
+  more characters. Every client-minted UUID stays a valid conversation id on
+  every route, with no deprecation. An id outside the *Identifiers* grammar
+  cannot be carried: `GET` and `PATCH` answer the one `404`, and the index
+  leaves such a row out rather than failing, logging only how many it left out.
+  The legacy routes still read it.
+
+**Titles.** A title a request sends is trimmed the way a brief is (see
+*Trimming*), is 1 to 200 code points after trimming, and is stored trimmed. It
+may not hold, anywhere, U+0000 to U+001F, U+007F to U+009F, U+202A to U+202E or
+U+2066 to U+2069 — the controls, and the bidirectional embeddings, overrides and
+isolates that can make a title read as something else. The refusal names the
+field `title` and never the value. A title a **response** carries is read as
+stored: bounded at 1 to 200, with no trim rule.
+
+**Create.** `started_mode` is required. `campaign_id` is optional, and a
+conversation inside a campaign is started in `gm` — otherwise `422` naming
+`campaign_id`, a body rule that runs before anything is looked up. A campaign
+that is missing, archived or someone else's is the same `404` as a missing
+conversation ("404 by campaign", threat model §8.1). There is no claim: the
+server mints the id and the owner is the session. There is no `command_id`
+either, so a retried create makes a second conversation, which archive recovers
+(see *Idempotency*).
+
+**Patch.** At least one of `title`, `archived`, `campaign_id` and
+`started_mode`, and none of them may be `null`: moving a conversation between
+campaigns, or taking one out of its campaign, is not in v1. One transaction,
+all or nothing, in this order:
+
+1. ownership — the one `404` for a conversation that is missing, foreign,
+   never owned or unreadable;
+2. the `422`s that depend on the conversation: linking needs a conversation
+   started in `gm` or never recorded (field `campaign_id`), and a conversation
+   that is in a campaign, or is being linked to one, binds no channel but `gm`
+   (field `started_mode`);
+3. the link: the campaign it is already in is a no-op, another campaign is
+   `409 already_linked`, and a campaign that is not a live one of the caller's is
+   the `404`;
+4. the channel, first writer wins — a different winner is the answer, not an
+   error;
+5. the title — the one it already has is a no-op;
+6. the archive flag — the state it is already in is a no-op.
+
+**The index.** Query parameters, each refused with a `422` naming it and never
+its value: `limit`, an integer from 1 to 100, default 100 (a refusal, not a
+clamp); `cursor`, of the *Pagination* grammar; `include_archived`, exactly
+`true` or `false`; `started_mode`, a channel; `campaign_id`, an identifier. A
+campaign the caller does not own matches nothing, so the page is empty — no
+`404`, no oracle. A parameter the route does not know is ignored. There is no
+title and no search parameter, and the cursor encodes the two ordering values
+only. A page may be short, or empty, with a non-null cursor.
+
+**The order of checks** is the threat model's (SEC-3), with the origin check in
+front of a write: SEC-7 (`403 forbidden`, *That request didn't come from this
+application.*) → the session (`401`) → the body or the query (`422`) → the
+`dm` role (`403 forbidden`) → the store (`503 backend_unavailable`) → the path
+id → ownership (`404`) → validation that depends on the conversation (`422`)
+→ its state (`409`). SEC-7 compares the `Origin` host with the `Host` header's
+host, the port only when `Host` carries one and the scheme never; a
+`Sec-Fetch-Site` that is present must be `same-origin`; a body must be
+`application/json`; a request with neither browser header is not a browser's
+and is allowed. A body is at most 8,192 bytes.
+
+Deletion is not in this family: archive is reversible and destroys nothing, and
+deletion follows `agent-forge-harness-1ka.5`.
 
 ## The timeline family
 
@@ -960,7 +1083,8 @@ the strict server model. Two requirements follow for `1kg.7.2`:
   canary that reads one proves nothing.
 
 A masked key is present and non-empty in the pinned version (REVEAL-5, ED-9), so
-nothing arrives as a blank heading: text and prose are non-blank after trimming,
+nothing arrives as a blank heading: text and prose are non-blank after trimming
+and refuse exactly the characters stored text refuses (*Fields*, above),
 a list has at least one item, an `integer` is a number rather than `null`, an
 ability block holds at least one score and no `null`s, and an entry carries both
 its name and its text. An `asset` value is a **`TableAssetRef`** — a per-slot
@@ -1071,6 +1195,13 @@ differs from the session frame beside it. The reveal epoch is per session
 (ED-9), so a picture from another session — or from a generation before a
 Rotate — is exactly the "number from last night" a Confirm must never be able to
 match.
+
+AE-51's clearing is a table-client rule. **`GmSnapshot` is exempt**: `RevealLive`
+is GM-only by the threat model's section 8.3 row and carries ids, a version and
+mask key names — never field values — so a slot frame that outlives its session
+is a staleness defect, carried to `1kg.7.2` with V-4, and not a disclosure. The
+table resource's liveness is two facts, both pinned by fixtures: a `session`
+frame is present, and no `inactive` frame is.
 
 The **readers apply the reveal-picture rule too**, not only the emitter:
 `parseGmSnapshot` and `parseTableSnapshot` answer

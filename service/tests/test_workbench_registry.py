@@ -274,7 +274,7 @@ def _character_sheet(**changes: object) -> tuple[reg.DocumentType, ...]:
             _broken(common_field_rules={**_COMMON_RULES, "tags": reg.FieldRule("Tags", revealable=True)}),
             "never revealable",
         ),
-        (_broken(document_types=_with_npc_rules(tags=reg.FieldRule("Tags"))), "never revealable"),
+        (_broken(document_types=_with_npc_rules(tags=reg.FieldRule("Tags", revealable=True))), "never revealable"),
         (_broken(document_types=_with_npc_rules(name=reg.FieldRule("Name"))), "cannot redeclare it"),
     ],
 )
@@ -658,3 +658,83 @@ def test_every_problem_is_reported_at_once() -> None:
     with pytest.raises(reg.RegistryError) as caught:
         reg.validate(broken)
     assert str(caught.value).count(";") >= 2
+
+
+# ── 1kg.5.7.2: tests a constant cannot satisfy, and the validator's gaps ─────
+
+
+def test_no_per_type_selector_can_be_a_constant() -> None:
+    """F-7 / AC 12: a second, **different** answer for each per-type selector, so
+    a selector that returns one constant fails. The character sheet is the one
+    other type with an ability block, and the ability-row test never read it."""
+    assert reg.REGISTRY.renderer_for(_doc("npc")) == "game_document"
+    assert reg.REGISTRY.audience_of(_doc("npc")) == "table"
+    assert reg.REGISTRY.ability_row_key(_doc("character-sheet")) == "abilities"
+
+
+def test_the_type_entry_key_split_is_pinned_to_literal_lists() -> None:
+    """F-7 / AC 13: pinned to literals, not to the module's own constants. Before
+    this, moving ``printable`` out of ``TYPE_FLAG_SELECTORS`` and into
+    ``TYPE_STRUCTURE_KEYS`` (review mutation M6) left every suite green, and the
+    rule "every flag has a selector" became vacuous for that flag."""
+    assert sorted(reg.TYPE_STRUCTURE_KEYS) == [
+        "default_reveal",
+        "field_rules",
+        "fields",
+        "icon",
+        "id",
+        "label",
+        "library_category",
+        "reserved_keys",
+        "reveal_groups",
+        "type_version",
+    ]
+    assert sorted(reg.TYPE_FLAG_SELECTORS) == ["accent", "audience", "cites_corpus", "printable", "renderer"]
+    assert sorted(reg.FIELD_FLAG_SELECTORS) == ["bounds", "editable", "label", "required", "revealable", "warning"]
+
+
+def test_a_rule_built_with_a_label_alone_is_not_revealable() -> None:
+    """F-12 (c) / AC 21: default-deny (ED-4, ED-5). A new field is off the
+    allowlist unless its author puts it there."""
+    assert reg.FieldRule("Voice").revealable is False
+    assert reg.FieldRule("Voice", revealable=True).revealable is True
+
+
+@pytest.mark.parametrize("label", ["voice", "xp", "ac", "&amp", "&#39;", "Terrain &amp hazards", "&#x27; quote"])
+def test_a_raw_key_or_an_entity_cannot_pass_as_a_label(label: str) -> None:
+    """F-12 (a) / AC 20: a label that starts in lower case is a key that escaped,
+    and an entity is refused with or without its ``;``."""
+    with pytest.raises(reg.RegistryError, match="lower case, like a key|HTML entity"):
+        reg.validate(_broken(document_types=_with_npc_rules(notes=reg.FieldRule(label, revealable=True))))
+
+
+@pytest.mark.parametrize("label", ["Terrain & hazards", "XP", "XP budget", "Name"])
+def test_the_words_a_label_is_made_of_still_pass(label: str) -> None:
+    reg.validate(_broken(document_types=_with_npc_rules(notes=reg.FieldRule(label, revealable=True))))
+
+
+def test_the_new_label_rules_reach_common_labels_group_labels_and_warnings() -> None:
+    common = {**_COMMON_RULES, "qualifier": reg.FieldRule("qualifier", revealable=True)}
+    with pytest.raises(reg.RegistryError, match="lower case, like a key"):
+        reg.validate(_broken(common_field_rules=common))
+    with pytest.raises(reg.RegistryError, match="HTML entity"):
+        wants = reg.FieldRule("Wants", revealable=True, warning="&amp spoils")
+        reg.validate(_broken(document_types=_with_npc_rules(wants=wants)))
+    group = reg.RevealGroup("lies", "voice", ("wants", "leverage"))
+    with pytest.raises(reg.RegistryError, match="lower case, like a key"):
+        reg.validate(_broken(document_types=_with_first_type(reveal_groups=(group,))))
+
+
+def test_a_tools_copy_keeps_its_own_unchanged_entity_check() -> None:
+    """AC 20: the tightened rule lives in the label helper only. A tool's blurb is
+    still refused for ``&`` with ``;`` and still passes without the ``;`` or in
+    lower case, exactly as before this bead."""
+    reg.validate(_broken(tools=_with_tool(replace(_tool("loot"), blurb="roll &amp hoards"))))
+    with pytest.raises(reg.RegistryError, match="HTML entity"):
+        reg.validate(_broken(tools=_with_tool(replace(_tool("loot"), blurb="Treasure &amp; hoards"))))
+
+
+def test_a_retired_key_cannot_return_as_a_common_field() -> None:
+    """F-12 (d) / AC 22: the reserved-key check reads the common fields too."""
+    with pytest.raises(reg.RegistryError, match="cannot be declared as a field again"):
+        reg.validate(_broken(document_types=_with_first_type(reserved_keys=("qualifier",))))

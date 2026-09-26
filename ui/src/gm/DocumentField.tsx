@@ -152,6 +152,23 @@ function asAbilities(value: FieldValue | undefined): Abilities | null {
   return Object.hasOwn(value, 'asset_id') ? null : (value as Abilities)
 }
 
+/** `block` with `key` set to `score` — or LEFT OUT when there is no score. The
+ * contract has one spelling of "no score" (requirement 7e): an omitted key, never
+ * `null`, which it refuses. */
+function withScore(block: Abilities | null, key: AbilityKey, score: number | null): Abilities {
+  const next: Abilities = {}
+  for (const other of ABILITY_KEYS) {
+    const value = other === key ? score : abilityScore(block, other)
+    if (value !== null) next[other] = value
+  }
+  return next
+}
+
+/** A block with no score left clears the field, as every kind clears, to null. */
+function blockOrNull(block: Abilities): Abilities | null {
+  return Object.keys(block).length > 0 ? block : null
+}
+
 // ── The read presentation, shared with both sides of a conflict ──────────────
 
 interface ValueViewProps {
@@ -512,10 +529,11 @@ export function DocumentField({
       const score = abilityScore(current, key)
       const read = readIntegerInput(typedIn(key, score === null ? '' : String(score)), ABILITY_BOUNDS)
       if (!read.ok) return refuse(read.message, key)
-      next[key] = read.value
+      if (read.value !== null) next[key] = read.value
     }
-    settle({ value: next })
-    onCommit?.(field.key, next)
+    const value = blockOrNull(next)
+    settle({ value })
+    onCommit?.(field.key, value)
     return true
   }
 
@@ -708,8 +726,7 @@ export function DocumentField({
                 onChange={(event) => {
                   const raw = event.target.value
                   const read = readIntegerInput(raw, ABILITY_BOUNDS)
-                  const next: Abilities = { ...(current ?? {}) }
-                  if (read.ok) next[key] = read.value
+                  const next = read.ok ? blockOrNull(withScore(current, key, read.value)) : null
                   settle({ typed: { ...typed, [key]: raw }, ...(read.ok ? { value: next } : {}) })
                   if (read.ok) onDraft?.(field.key, next)
                 }}

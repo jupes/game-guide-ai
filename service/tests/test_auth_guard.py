@@ -71,6 +71,10 @@ PROTECTED_ROUTES: list[Route] = [
     ("POST", "/conversations/{conversation_id}/attachments",
      "/conversations/abc/attachments",
      {"filename": "x.txt", "content_type": "text/plain", "data": "aGk="}),
+    ("GET", "/conversations", "/conversations", None),
+    ("POST", "/conversations", "/conversations", {"schema_version": 1, "started_mode": "sage"}),
+    ("GET", "/conversations/{conversation_id}", "/conversations/abc", None),
+    ("PATCH", "/conversations/{conversation_id}", "/conversations/abc", {"schema_version": 1, "archived": True}),
 ]
 
 #: Deliberately unguarded, and asserted so that a blanket "guard everything"

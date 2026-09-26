@@ -26,6 +26,10 @@ import {
   COMMON_FIELDS,
   CONTRACT_SCHEMAS,
   CONTRACT_VERSION,
+  CONVERSATION_PAGE_MAX_ITEMS,
+  CONVERSATION_TITLE_MAX_CHARS,
+  ConversationCreateRequestSchema,
+  ConversationPatchRequestSchema,
   CUE_KINDS,
   DOCUMENT_TYPE_IDS,
   DOC_TYPE_FIELDS,
@@ -54,6 +58,10 @@ import {
   PROSE_FIELD_MAX_CHARS,
   RESERVED_MASK_KEYS,
   REQUIRED_FIELDS,
+  REFUSED_TEXT_CODE_POINTS,
+  isPlainText,
+  plainText,
+  plainOneLine,
   RESULT_DISCRIMINATORS,
   REVEALABLE_COMMON_FIELDS,
   REVEALABLE_FIELDS,
@@ -69,7 +77,10 @@ import {
   ToolInvocationRequestSchema,
   codePointLength,
   isKnownErrorCode,
+  isRefusedInATitle,
   isWellFormedText,
+  parseConversation,
+  parseConversationPage,
   parseDocument,
   parseGmEvent,
   parseGmSnapshot,
@@ -829,7 +840,6 @@ describe('the structured field kinds (1kg.5.3)', () => {
     [{}],
     [{ str: 10 }],
     [{ str: 10, dex: 12, con: 14, int: 8, wis: 13, cha: 16 }],
-    [{ str: null }],
     [null],
   ])('an abilities field takes %o — CANVAS-19, one field', (given) => {
     const parsed = read({ abilities: given })
@@ -843,10 +853,24 @@ describe('the structured field kinds (1kg.5.3)', () => {
     [{ str: true }],
     [{ str: ABILITY_SCORE_MAX + 1 }],
     [{ str: ABILITY_SCORE_MIN - 1 }],
+    [{ str: null }],
     [[]],
     ['10'],
   ])('an abilities field refuses %o in a request', (given) => {
     expect(patch({ abilities: given }).success).toBe(false)
+  })
+
+  it('has one spelling of "no score": the key left out — requirement 7e, AC 17', () => {
+    // `{ str: null }` would be a second spelling of the same fact. It is refused
+    // in a request and in a response alike; omitting a key, `{}` and a whole
+    // block of `null` all stay valid.
+    expect(patch({ abilities: { str: 14, dex: null } }).success).toBe(false)
+    expect(read({ abilities: { dex: null } }).success).toBe(false)
+    for (const given of [{ str: 14 }, {}, null]) {
+      const parsed = read({ abilities: given })
+      expect(parsed.success).toBe(true)
+      if (parsed.success) expect(parsed.data.data.abilities).toEqual(given)
+    }
   })
 
   it('an entry list takes named entries and clears to []', () => {
@@ -1139,6 +1163,135 @@ describe('required fields and per-use integer bounds (LIB-12, 1kg.5.7)', () => {
   })
 })
 
+describe('plain text: what stored text refuses (1kg.5.7.2, requirement 6)', () => {
+  // The lead ruling of 2026-09-21, as literal inclusive ranges, built with
+  // String.fromCodePoint so that no invisible character sits in this file.
+  // test_workbench_contracts.py pins the Python table to the same list.
+  const REFUSED_RANGES: [number, number][] = [
+    [0x0000, 0x0008],
+    [0x000b, 0x000c],
+    [0x000e, 0x001f],
+    [0x007f, 0x009f],
+    [0x061c, 0x061c],
+    [0x200e, 0x200f],
+    [0x202a, 0x202e],
+    [0x2066, 0x2069],
+    [0xfeff, 0xfeff],
+  ]
+  const REFUSED = REFUSED_RANGES.flatMap(([low, high]) =>
+    Array.from({ length: high - low + 1 }, (_, offset) => String.fromCodePoint(low + offset)),
+  )
+  const ALLOWED: Record<string, string> = {
+    'an emoji': String.fromCodePoint(0x1f3b2),
+    'an accented letter': String.fromCodePoint(0xe9),
+    'a tab': String.fromCodePoint(0x09),
+    'a zero width non-joiner': String.fromCodePoint(0x200c),
+    'a zero width joiner': String.fromCodePoint(0x200d),
+    'a variation selector-16': String.fromCodePoint(0xfe0f),
+  }
+  const patchOf = (type: string, fields: Record<string, unknown>) =>
+    FieldPatchRequestSchema.safeParse({ schema_version: 1, type, type_version: 1, base_write_revision: 1, fields })
+  const sites: [string, (s: string) => { success: boolean }][] = [
+    ['text', (s) => patchOf('npc', { voice: `Low${s}and slow` })],
+    ['prose', (s) => patchOf('npc', { notes: `Keeps${s}the ledger` })],
+    ['a text_list item', (s) => patchOf('npc', { tags: ['abbey', `mill${s}road`] })],
+    ['an entry name', (s) => patchOf('quest-log', { open_threads: [{ name: `Find${s}the ledger`, text: 'Under the mill.' }] })],
+    ['an entry text', (s) => patchOf('quest-log', { open_threads: [{ name: 'Find the ledger', text: `Under${s}the mill.` }] })],
+  ]
+
+  it('pins the refused code points to the ruling, range for range', () => {
+    expect([...REFUSED_TEXT_CODE_POINTS].sort((a, b) => a - b)).toEqual(REFUSED.map((c) => c.codePointAt(0)))
+    expect(REFUSED_TEXT_CODE_POINTS.size).toBe(75)
+    for (const char of REFUSED) expect([char.codePointAt(0), isPlainText(`a${char}b`)]).toEqual([char.codePointAt(0), false])
+    for (const char of Object.values(ALLOWED)) expect(isPlainText(`a${char}b`)).toBe(true)
+    // The two factories carry the refusal; a line break stays oneLine's to refuse.
+    expect(plainText(0, 10).safeParse(`a${REFUSED[0]}`).success).toBe(false)
+    expect(plainOneLine(0, 10).safeParse(`a${REFUSED[0]}`).success).toBe(false)
+    expect(plainText(0, 10).safeParse('a\nb').success).toBe(true)
+    expect(plainOneLine(0, 10).safeParse('a\nb').success).toBe(false)
+  })
+
+  it.each(sites)('%s refuses every code point in the table and keeps the allowed set — AC 15', (_site, write) => {
+    for (const char of REFUSED) expect([char.codePointAt(0), write(char).success]).toEqual([char.codePointAt(0), false])
+    for (const [name, char] of Object.entries(ALLOWED)) expect([name, write(char).success]).toEqual([name, true])
+  })
+
+  it('keeps a line break where one was already allowed', () => {
+    expect(patchOf('npc', { notes: 'One.\nTwo.\r\nThree.' }).success).toBe(true)
+    expect(patchOf('quest-log', { open_threads: [{ name: 'Find the ledger', text: 'Under\nthe mill.' }] }).success).toBe(true)
+    expect(patchOf('npc', { voice: 'Low\nand slow' }).success).toBe(false)
+  })
+
+  it.each([
+    ['NUL', 0x00, 'a control character'],
+    ['RLO', 0x202e, 'a bidirectional control character'],
+    ['BOM', 0xfeff, 'a byte order mark'],
+  ])('a %s refusal names the field and the class, never the value (X-7)', (_name, code, what) => {
+    const parsed = patchOf('npc', { voice: `Vashti${String.fromCodePoint(code)}whispers`, tell: 'Hums a hymn off key' })
+    expect(parsed.success).toBe(false)
+    if (parsed.success) return
+    const issues = JSON.stringify(parsed.error.issues)
+    expect(parsed.error.issues.some((issue) => issue.path.includes('voice') && issue.message === `must not contain ${what}`)).toBe(true)
+    for (const secret of ['Vashti', 'whispers', 'Hums a hymn']) expect(issues).not.toContain(secret)
+  })
+
+  it.each([
+    ['text', 'npc', 'name', (s: string) => `Sister${s}Ondrey`],
+    ['prose', 'npc', 'notes', (s: string) => `The tunnel${s}is shown in red ink.`],
+    ['a text_list item', 'lore', 'rumours', (s: string) => [`No one born${s}will swim.`]],
+    ['an entry name', 'statblock', 'traits', (s: string) => [{ name: `Amphi${s}bious`, text: 'She breathes water.' }]],
+    ['an entry text', 'statblock', 'traits', (s: string) => [{ name: 'Amphibious', text: `She breathes${s}water.` }]],
+  ])('a projection refuses in %s what a document refuses', (_site, type, key, value) => {
+    // Requirement 6: a value a document refuses can never ride in a projection instead.
+    const project = (s: string) =>
+      CONTRACT_SCHEMAS.TableProjection.safeParse({ content_kind: 'document', type, fields: [{ key, value: value(s) }] }).success
+    for (const char of REFUSED) expect([char.codePointAt(0), project(char)]).toEqual([char.codePointAt(0), false])
+    for (const [name, char] of Object.entries(ALLOWED)) expect([name, project(char)]).toEqual([name, true])
+  })
+
+  it('stops at the document kinds and the projection — AC 15, ruling 3', () => {
+    // A version's summary, a brief, chat text and a cue title are bead 5mj's, and
+    // each still accepts a NUL until it lands: the boundary is pinned, not assumed.
+    const nul = String.fromCodePoint(0)
+    const versions = readJson<Fixture>(join(FIXTURES, 'DocumentVersion.json'))
+    const version = { ...(versions.valid[0].value as Record<string, unknown>), summary: `Wants${nul}the signet` }
+    expect(CONTRACT_SCHEMAS.DocumentVersion.safeParse(version).success).toBe(true)
+    const request = {
+      schema_version: 1,
+      invocation_id: 'inv_9f2c4e1a7b3d4c5e',
+      tool_id: 'npc',
+      brief: `a${nul}guard`,
+      campaign_id: 'cmp_4b1d9e7a',
+      conversation_id: '0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d',
+    }
+    expect(CONTRACT_SCHEMAS.ToolInvocationRequest.safeParse(request).success).toBe(true)
+    const entries = readJson<Fixture>(join(FIXTURES, 'TimelineEntry.json'))
+    const chat = structuredClone(entries.valid.find((e) => e.name === 'a chat exchange with its complete outcome')?.value) as {
+      answer: { text: string }
+    }
+    chat.answer.text = `A basilisk${nul} petrifies.`
+    expect(CONTRACT_SCHEMAS.TimelineEntry.safeParse(chat).success).toBe(true)
+    expect(CONTRACT_SCHEMAS.CueRenameRequest.safeParse({ schema_version: 1, title: `Rain${nul}` }).success).toBe(true)
+  })
+})
+
+describe('a stored value that is not an object (M-2, 1kg.5.7.2)', () => {
+  it.each([['a string', 'x'], ['a list', []], ['null', null]])(
+    'a document and a history snapshot answer an issue at data for %s, never a throw',
+    (_name, data) => {
+      for (const [schema, file] of [
+        [DocumentSchema, 'Document.json'],
+        [DocumentVersionSnapshotSchema, 'DocumentVersionSnapshot.json'],
+      ] as const) {
+        const base = readJson<Fixture>(join(FIXTURES, file)).valid[0].value as Record<string, unknown>
+        const parsed = schema.safeParse({ ...base, data })
+        expect(parsed.success).toBe(false)
+        if (!parsed.success) expect(parsed.error.issues.some((issue) => issue.path[0] === 'data')).toBe(true)
+      }
+    },
+  )
+})
+
 describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
   const gm = readJson<Fixture>(join(FIXTURES, 'GmEvent.json'))
   const table = readJson<Fixture>(join(FIXTURES, 'TableEvent.json'))
@@ -1369,6 +1522,10 @@ describe('reading a realtime frame (ADR RT-1, threat model 8.3)', () => {
       'three inactive frames beside a session and a buffered projection',
       'an inactive table whose guest session still shows the table slot',
       'an inactive table that also carries a session frame',
+      // Bead 929: the session arm of the predicate, which the fixtures above
+      // never reached — each is a resource with no session frame at all.
+      'a session-less resource whose picture shows the table a projection',
+      'a session-less resource whose picture holds a private projection',
     ]) {
       expect([name, parseTableSnapshot(byName(tableSnapshots, 'invalid', name))]).toEqual([name, { kind: 'unknown', reason: 'invalid' }])
     }
@@ -1468,5 +1625,108 @@ describe('readErrorBody — one reader for every error shape', () => {
     for (const junk of [null, 'oops', 7, {}, { detail: 9 }, { detail: [{ loc: 'nope' }] }]) {
       expect(readErrorBody(junk)).toEqual({ kind: 'unreadable' })
     }
+  })
+})
+
+describe('the conversation family (1kg.2.4)', () => {
+  const conversation = readJson<Fixture>(join(FIXTURES, 'Conversation.json'))
+  const campaignThread = conversation.valid[0].value as Record<string, unknown>
+  const legacy = conversation.valid[1].value as Record<string, unknown>
+
+  it('reads a conversation, and a legacy one with nothing recorded', () => {
+    expect(parseConversation(campaignThread)).toEqual({ kind: 'ok', value: campaignThread })
+    const read = parseConversation(legacy)
+    expect(read.kind).toBe('ok')
+    if (read.kind === 'ok') {
+      expect([read.value.campaign_id, read.value.title, read.value.started_mode, read.value.updated_at]).toEqual([
+        null,
+        null,
+        null,
+        null,
+      ])
+    }
+  })
+
+  it('strips what a newer server adds, the owner and the model included, before a component sees it', () => {
+    const read = parseConversation({ ...campaignThread, owner_id: 7, manual_alias: 'gpt-4o-mini', pinned: true })
+    expect(read).toEqual({ kind: 'ok', value: campaignThread })
+  })
+
+  it('reads a newer version as the future and anything else broken as invalid, never throwing', () => {
+    expect(parseConversation({ ...campaignThread, schema_version: 2 })).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+    expect(parseConversation({ ...campaignThread, started_mode: 'combat' })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    expect(parseConversation({ ...campaignThread, schema_version: 1.5 })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    for (const junk of [null, undefined, 42, 'x', [], {}]) expect(parseConversation(junk).kind).toBe('unknown')
+  })
+
+  const page = (items: unknown[], extra: Record<string, unknown> = {}) => ({
+    schema_version: 1,
+    items,
+    next_cursor: null,
+    ...extra,
+  })
+
+  it('reads a page conversation by conversation, so one row from a newer server empties nothing', () => {
+    const parsed = parseConversationPage(page([campaignThread, { ...legacy, started_mode: 'combat' }, legacy]))
+    expect(parsed.kind).toBe('ok')
+    if (parsed.kind !== 'ok') return
+    expect(parsed.value.items.map((item) => item.kind)).toEqual(['ok', 'unknown', 'ok'])
+    expect(parsed.value.next_cursor).toBeNull()
+  })
+
+  it('keeps the cursor, because a short page is not the last one', () => {
+    expect(parseConversationPage(page([], { next_cursor: 'WyIyMDI2Il0' }))).toEqual({
+      kind: 'ok',
+      value: { items: [], next_cursor: 'WyIyMDI2Il0' },
+    })
+  })
+
+  it('refuses an envelope it cannot trust', () => {
+    expect(parseConversationPage(page([], { schema_version: 2 }))).toEqual({ kind: 'unknown', reason: 'newer_schema' })
+    expect(parseConversationPage(page(Array.from({ length: 101 }, () => legacy)))).toEqual({
+      kind: 'unknown',
+      reason: 'invalid',
+    })
+    expect(parseConversationPage({ schema_version: 1, items: [] })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    for (const junk of [null, undefined, 42, 'x', []]) expect(parseConversationPage(junk).kind).toBe('unknown')
+  })
+
+  it('refuses in a title exactly the code points the server refuses (ruling A2-9)', () => {
+    const spelled = new Set<number>()
+    for (const [low, high] of [[0x00, 0x1f], [0x7f, 0x9f], [0x202a, 0x202e], [0x2066, 0x2069]]) {
+      for (let code = low; code <= high; code += 1) spelled.add(code)
+    }
+    for (let code = 0; code <= 0x3000; code += 1) expect(isRefusedInATitle(code)).toBe(spelled.has(code))
+  })
+
+  it('bounds a title after trimming, as the server stores it', () => {
+    const create = (title: unknown) => ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title })
+    expect(create(' '.repeat(3) + 'a'.repeat(200) + '\t').success).toBe(true)
+    expect(create('a'.repeat(201)).success).toBe(false)
+    expect(create(' \t ').success).toBe(false)
+    expect(create('Harbour' + String.fromCharCode(0x85)).success).toBe(false)
+  })
+
+  it('refuses a campaign conversation outside gm at the campaign field', () => {
+    const refused = ConversationCreateRequestSchema.safeParse({
+      schema_version: 1,
+      started_mode: 'sage',
+      campaign_id: 'cmp_4b1d9e7a',
+    })
+    expect(refused.success).toBe(false)
+    if (!refused.success) expect(refused.error.issues.map((issue) => issue.path)).toEqual([['campaign_id']])
+  })
+
+  it('refuses an empty patch and a null in any key of one', () => {
+    for (const body of [{}, { title: null }, { archived: null }, { campaign_id: null }, { started_mode: null }]) {
+      expect(ConversationPatchRequestSchema.safeParse({ schema_version: 1, ...body }).success).toBe(false)
+    }
+    expect(ConversationPatchRequestSchema.safeParse({ schema_version: 1, archived: false }).success).toBe(true)
+  })
+
+  it('knows already_linked, so a link refusal reads as a known code', () => {
+    expect(isKnownErrorCode('already_linked')).toBe(true)
+    expect(CONVERSATION_PAGE_MAX_ITEMS).toBe(100)
+    expect(CONVERSATION_TITLE_MAX_CHARS).toBe(200)
   })
 })

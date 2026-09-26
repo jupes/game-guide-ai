@@ -12,6 +12,7 @@ Requires DATABASE_URL (CI always sets it). Run from the repo root:
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -263,7 +264,8 @@ def test_the_database_refuses_a_campaign_row_the_application_would_never_mint(ds
 
 
 #: Every table 0004 hangs off a campaign that 0009 kept, with the column that
-#: reaches a user.
+#: reaches a user, and 0008's two document tables (1kg.5.1): a document hangs
+#: off its campaign and a version off its document, both ON DELETE CASCADE.
 CAMPAIGN_TABLES = (
     "campaign.campaigns",
     "campaign.authz_state",
@@ -271,7 +273,13 @@ CAMPAIGN_TABLES = (
     "campaign.table_sessions",
     "campaign.table_credentials",
     "campaign.session_join_counters",
+    "campaign.documents",
+    "campaign.document_versions",
 )
+
+#: A character sheet linked to the whole campaign's one participant.
+DOCUMENT_ID = "doc_" + "a" * 22
+PARTICIPANT_ID = "prt_" + "a" * 22
 
 
 def _a_whole_campaign(conn, owner: int) -> None:
@@ -300,6 +308,18 @@ def _a_whole_campaign(conn, owner: int) -> None:
         "INSERT INTO campaign.session_join_counters (session_id, link_generation, joins) "
         "VALUES (%s, 1, 3)",
         ("ses_" + "a" * 22,),
+    )
+    conn.execute(
+        "INSERT INTO campaign.documents (id, campaign_id, type, type_version, data, "
+        "write_revision, field_revisions, name_key, search_key, linked_participant_id) "
+        "VALUES (%s, %s, 'character-sheet', 1, %s::jsonb, 1, %s::jsonb, 'rook', 'rook', %s)",
+        (DOCUMENT_ID, CAMPAIGN_ID, '{"name": "Rook"}', '{"name": 1}', PARTICIPANT_ID),
+    )
+    conn.execute(
+        "INSERT INTO campaign.document_versions (document_id, number, author, summary, "
+        "changed_fields, data, created_at, updated_at) "
+        "VALUES (%s, 1, 'gm', '', %s::jsonb, %s::jsonb, now(), now())",
+        (DOCUMENT_ID, '["name"]', '{"name": "Rook"}'),
     )
 
 
@@ -361,6 +381,43 @@ def test_the_audit_table_is_reachable_from_no_foreign_key(dsn):
             "WHERE n.nspname = 'audit' AND c.contype = 'f'"
         ).fetchall()
         assert edges == []
+
+
+def test_deleting_one_document_takes_its_versions_and_its_link_and_leaves_the_ledger(dsn):
+    """LIB-18's hard delete, at the database: the versions go by the foreign
+    key's cascade, the character-sheet link goes with the row it is a column
+    of, the participant it pointed at stays (AUD-16), and every audit row stays
+    — including the one that names the deleted sheet, because the ledger is
+    reachable from no foreign key and carries ids and codes only (ED-18(a),
+    ED-26). That row is the only tombstone there is."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        _a_whole_campaign(conn, owner)
+        detail = {"participant_id": PARTICIPANT_ID, "document_id": DOCUMENT_ID}
+        conn.execute(
+            "INSERT INTO audit.events "
+            "(campaign_id_tombstone, actor_kind, action, object_kind, decision, detail) "
+            "VALUES (%s, 'gm', 'participant.linked', 'participant', 'allowed', %s::jsonb)",
+            (CAMPAIGN_ID, json.dumps(detail)),
+        )
+
+        conn.execute(
+            "DELETE FROM campaign.documents WHERE id = %s AND campaign_id = %s",
+            (DOCUMENT_ID, CAMPAIGN_ID),
+        )
+
+        for table in ("campaign.documents", "campaign.document_versions"):
+            assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0, table
+        assert conn.execute(
+            "SELECT count(*) FROM campaign.documents WHERE linked_participant_id = %s",
+            (PARTICIPANT_ID,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT removed_at FROM campaign.participants WHERE id = %s", (PARTICIPANT_ID,)
+        ).fetchall() == [(None,)], "the seat the sheet was linked to is untouched"
+        kept = conn.execute("SELECT action, detail FROM audit.events").fetchall()
+    assert kept == [("participant.linked", detail)]
 
 
 # ── Conversation metadata, and the uncampaigned state (0006) ─────────────────
