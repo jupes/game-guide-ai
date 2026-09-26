@@ -59,8 +59,15 @@ export interface MarkdownProps {
   noRemoteSubresources?: true
 }
 
-/** Elements that fetch something of their own accord. */
-const SUBRESOURCE_ELEMENTS = 'iframe, frame, frameset, object, embed, video, audio, source, track, link, style, svg, portal'
+/**
+ * Elements that fetch something of their own accord — plus `template`, which
+ * fetches nothing itself but hides what it wraps from every sweep below (its
+ * `.content` is a separate DocumentFragment) while `innerHTML` still serializes
+ * it. `marked` never emits one, so only raw HTML in model output loses anything
+ * (agent-forge-harness-1q7).
+ */
+const SUBRESOURCE_ELEMENTS =
+  'iframe, frame, frameset, object, embed, video, audio, source, track, link, style, svg, portal, template'
 
 /** Attributes that name a subresource. `src` is handled separately: an `img` may keep one. */
 const SUBRESOURCE_ATTRIBUTES = ['srcset', 'poster', 'background', 'data', 'lowsrc']
@@ -134,6 +141,17 @@ function styleMayFetch(value: string): boolean {
  * `HTMLElement` — see the recursion below.
  */
 function stripRemoteSubresources(host: ParentNode): void {
+  // A <template>'s `.content` is a SEPARATE DocumentFragment, not a descendant
+  // in the tree the sweeps below walk — that is exactly why none of them ever
+  // see what a template wraps, while `Element.innerHTML` still re-serializes it
+  // into the STRING handed to `dangerouslySetInnerHTML`. The template itself is
+  // removed by the first sweep (it is in SUBRESOURCE_ELEMENTS). This runs FIRST,
+  // before that removal, so every sweep has already cleaned what the template
+  // wraps: defence in depth, so the day the removal is relaxed nothing it
+  // wrapped is live. Recursion reaches nested templates without a separate loop.
+  for (const template of host.querySelectorAll('template')) {
+    stripRemoteSubresources(template.content)
+  }
   for (const element of host.querySelectorAll(SUBRESOURCE_ELEMENTS)) element.remove()
   for (const element of host.querySelectorAll('*')) {
     for (const name of SUBRESOURCE_ATTRIBUTES) element.removeAttribute(name)
@@ -156,19 +174,6 @@ function stripRemoteSubresources(host: ParentNode): void {
     // thing, and a portrait the GM asked for is not destroyed for lack of a
     // caption.
     if (!image.hasAttribute('alt')) image.setAttribute('alt', '')
-  }
-  // A <template>'s `.content` is a SEPARATE DocumentFragment, not a descendant
-  // in the tree the three sweeps above walk — that is exactly why none of them
-  // ever see what a template wraps. `Element.innerHTML` still re-serializes
-  // `.content` verbatim when this function's caller reads `inert.body.innerHTML`
-  // below, so a remote reference parked in there reaches the sanitized STRING
-  // handed to `dangerouslySetInnerHTML` exactly as if it had never been
-  // wrapped. Recursing repeats every sweep above inside `.content` instead of
-  // only deleting the wrapper, and — because this same call finds and descends
-  // into any `<template>` nested inside THAT content — it reaches arbitrarily
-  // deep nesting without a separate loop.
-  for (const template of host.querySelectorAll('template')) {
-    stripRemoteSubresources(template.content)
   }
 }
 
