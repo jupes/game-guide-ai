@@ -1009,8 +1009,19 @@ def test_the_contract_document_states_the_rules_this_bead_adds() -> None:
     assert "what the server stores and emits stays strict" in text
     # Requirement 3: the rule that makes requirement 1 and the tolerant read safe.
     assert "making a declared field required" in text
-    # F-10: the number ``1kg.5.5`` needs for its whole-document cap (RAIL-6).
-    assert "1,316,510" in text
+    # F-10: the number ``1kg.5.5`` needs for its whole-document cap (RAIL-6),
+    # twelve characters under Stage A's now that a score is never ``null`` (7e).
+    assert "1,316,498" in text
+    # 1kg.5.7.2, M-1: bounds bind the read paths, so tightening one is a bump.
+    assert "tightening a bound later is a `type_version` bump" in text
+    # 1kg.5.7.2, L-1: the tolerant read's deliberate limit.
+    assert "a stored row that lost its name is unreadable, deliberately" in " ".join(text.split())
+    # 1kg.5.7.2, requirement 6: the rule, its helper, and where it stops.
+    assert "**Stored text is plain text.**" in text
+    assert "`check_plain_text` and `REFUSED_TEXT_CODE_POINTS`" in text
+    # Bead 929: the GM channel's exemption from AE-51, stated rather than implied.
+    assert "AE-51's clearing is a table-client rule. **`GmSnapshot` is exempt**" in text
+    assert "is a staleness defect, carried to `1kg.7.2` with V-4, and not a disclosure" in text
     # …and the per-field bounds have a home of their own.
     assert "#### Per-field integer bounds" in text
 
