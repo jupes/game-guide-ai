@@ -409,8 +409,8 @@ class PostgresConversationStore(ConversationStore):
             # case that has to prove itself.
             row = pg(unit).conn.execute(
                 f"INSERT INTO chat.conversations "
-                f"(conversation_id, user_id, campaign_id, title, started_mode, created_at) "
-                f"VALUES (%(id)s, %(owner)s, NULL, %(title)s, %(mode)s, %(now)s) "
+                f"(conversation_id, user_id, campaign_id, title, started_mode, created_at, selection_strategy) "
+                f"VALUES (%(id)s, %(owner)s, NULL, %(title)s, %(mode)s, %(now)s, 'auto') "
                 f"RETURNING {_COLUMNS}",
                 values,
             ).fetchone()
