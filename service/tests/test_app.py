@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from service.app import app, get_service
 from service.models import Abilities, ChatMode, ChatResponse, Source, StatBlockContent
+from service.workbench_contracts import CHAT_TEXT_MAX_CHARS
 
 
 class _FakeService:
@@ -411,5 +412,50 @@ def test_chat_error_is_logged_with_context_no_prompt_leak():
         blob = "\n".join(r.getMessage() for r in cap.records)
         assert "spell" in blob, "expected mode in log context"
         assert secret_prompt not in blob, "raw prompt must not be logged"
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# agent-forge-harness-764 — bound ChatRequest.prompt server-side, before any
+# provider work, without echoing the oversized prompt back in the 422 body.
+# ---------------------------------------------------------------------------
+
+
+def test_chat_prompt_over_limit_is_422_before_provider_call():
+    """An over-limit prompt is rejected before svc.answer() ever runs. The fake
+    service raises RuntimeError (not one of _LLM_ERRORS) if it is called, which
+    _client_raising's `raise_server_exceptions=False` turns into a 500 -- so a
+    422 here proves the gate ran first."""
+    c = _client_raising(RuntimeError("svc.answer() should never be reached"))
+    try:
+        oversized = "a" * (CHAT_TEXT_MAX_CHARS + 1)
+        r = c.post("/chat", json={"prompt": oversized})
+        assert r.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_chat_prompt_over_limit_does_not_echo_prompt():
+    """The 422 body never contains the oversized prompt (X-7 / R-12): a plain
+    HTTPException goes through FastAPI's ordinary handling, not the default
+    RequestValidationError handler that echoes each error's `input`."""
+    c = _client(_GROUNDED)
+    try:
+        oversized = "z" * (CHAT_TEXT_MAX_CHARS + 1)
+        r = c.post("/chat", json={"prompt": oversized})
+        assert r.status_code == 422
+        assert "z" * 100 not in r.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_chat_prompt_at_limit_is_not_rejected():
+    """A prompt of exactly CHAT_TEXT_MAX_CHARS chars is unaffected by the gate."""
+    c = _client(_GROUNDED)
+    try:
+        at_limit = "a" * CHAT_TEXT_MAX_CHARS
+        r = c.post("/chat", json={"prompt": at_limit})
+        assert r.status_code == 200
     finally:
         app.dependency_overrides.clear()
