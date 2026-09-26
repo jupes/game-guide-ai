@@ -151,6 +151,18 @@ def records(monkeypatch):
 
 
 @pytest.fixture
+def outcome_records(monkeypatch):
+    """Collect every emitted structuring_outcome record — a separate list from
+    `records` (which patches `_emit_record`), so a graph wired through the
+    wrong emitter shows up as a mismatch here rather than being masked."""
+    collected: list[dict] = []
+    monkeypatch.setattr(
+        usage_capture, "_emit_outcome_record", lambda operation, fields: collected.append(dict(fields)),
+    )
+    return collected
+
+
+@pytest.fixture
 def no_backoff(monkeypatch):
     """Keep the retry COUNT (and therefore the record count) exactly as it is,
     while not spending the real backoff seconds in a unit test."""
@@ -219,6 +231,33 @@ def test_every_provider_attempt_of_a_turn_is_recorded_in_order(mode, replies, ex
     assert [r["status"] for r in records] == ["ok"] * len(expected)
     assert svc.retriever.embed_client.calls == 1
     assert llm.calls == len(expected) - 1  # every purpose but the embedding
+
+
+# ---------------------------------------------------------------------------
+# agent-forge-harness-kyr — structuring_outcome: a second, content-free event
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("mode", "replies", "outcome_purposes"),
+    [
+        (
+            "spell",
+            [_SPELL_ANSWER, _SUGG_JSON, _SPELL_JSON],
+            ["suggestions", "spell_structuring"],
+        ),
+        ("gm", [_STATBLOCK_ANSWER, _STATBLOCK_JSON], ["statblock_structuring"]),
+        ("sage", [_STATBLOCK_ANSWER, _STATBLOCK_JSON], ["statblock_structuring"]),
+    ],
+)
+def test_a_successful_structuring_call_records_one_outcome_produced_each(
+    mode, replies, outcome_purposes, outcome_records,
+):
+    svc = _service(_SeqLLM(replies))
+
+    _turn(svc, "What does Fireball do?", mode)
+
+    assert [r["purpose"] for r in outcome_records] == outcome_purposes
+    assert [r["outcome"] for r in outcome_records] == ["produced"] * len(outcome_purposes)
 
 
 def test_the_embedding_record_carries_the_embed_alias_and_the_reported_tokens(records):
@@ -305,7 +344,7 @@ def test_a_provider_failure_records_every_attempt_and_propagates_unchanged(recor
     ],
 )
 def test_a_failing_structuring_call_records_one_attempt_and_never_retries(
-    mode, replies, purpose, field, records, no_backoff,
+    mode, replies, purpose, field, records, outcome_records, no_backoff,
 ):
     llm = _ScriptedLLM([*replies, _rate_limit_error()])
     svc = _service(llm)
@@ -321,16 +360,23 @@ def test_a_failing_structuring_call_records_one_attempt_and_never_retries(
     assert getattr(resp, field) is None
     assert resp.answer == replies[0]
 
+    # A provider error (not ours) is not a parse failure: it is a call that
+    # produced nothing usable.
+    outcomes = [r for r in outcome_records if r["purpose"] == purpose]
+    assert len(outcomes) == 1
+    assert outcomes[0]["outcome"] == "none"
+
 
 @pytest.mark.parametrize(
     ("mode", "replies", "purpose", "field"),
     [
+        ("spell", [_SPELL_ANSWER, "not json at all", _SPELL_JSON], "suggestions", "suggestions"),
         ("spell", [_SPELL_ANSWER, _SUGG_JSON, "not json at all"], "spell_structuring", "spell_content"),
         ("gm", [_STATBLOCK_ANSWER, "not json at all"], "statblock_structuring", "stat_block"),
     ],
 )
 def test_a_malformed_structuring_reply_is_an_ok_attempt_not_a_provider_error(
-    mode, replies, purpose, field, records,
+    mode, replies, purpose, field, records, outcome_records,
 ):
     """A parse failure is ours, not the provider's — and it was still billed."""
     svc = _service(_SeqLLM(replies))
@@ -343,8 +389,13 @@ def test_a_malformed_structuring_reply_is_an_ok_attempt_not_a_provider_error(
     assert structuring[0]["error_class"] is None
     assert getattr(resp, field) is None
 
+    # Ours, not the provider's: the outcome is a parse failure, not "none".
+    outcomes = [r for r in outcome_records if r["purpose"] == purpose]
+    assert len(outcomes) == 1
+    assert outcomes[0]["outcome"] == "parse_failure"
 
-def test_the_statblock_cost_guard_still_skips_the_call_entirely(records):
+
+def test_the_statblock_cost_guard_still_skips_the_call_entirely(records, outcome_records):
     """No markers -> no structuring call at all, and therefore no record: a
     call that never happened must not look like an attempt."""
     llm = _SeqLLM([_NO_MARKERS_ANSWER])
@@ -354,6 +405,14 @@ def test_the_statblock_cost_guard_still_skips_the_call_entirely(records):
 
     assert [r["purpose"] for r in records] == ["embedding", "answer"]
     assert llm.calls == 1
+
+    # Zero provider_attempt records for this purpose, but exactly one
+    # structuring_outcome record — a call that never happened must still be
+    # countable as a skip, not silently invisible.
+    assert [r for r in records if r["purpose"] == "statblock_structuring"] == []
+    statblock_outcomes = [r for r in outcome_records if r["purpose"] == "statblock_structuring"]
+    assert len(statblock_outcomes) == 1
+    assert statblock_outcomes[0]["outcome"] == "skipped_by_gate"
 
 
 # ---------------------------------------------------------------------------
