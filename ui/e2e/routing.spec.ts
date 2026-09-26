@@ -13,9 +13,6 @@
  * (docs/adr/client-routing.md has the fact table). This spec instead proves
  * the CLIENT half: the right screen renders on a cold load, and Back behaves
  * like an ordinary in-app navigation rather than leaving the app.
- *
- * NOTE: `ui/e2e/*.ts` is in no tsconfig project today, so `bun run typecheck`
- * does not cover this file (only `bun run lint` does) until `m6j` lands.
  */
 
 import { expect, test, signIn } from './fixtures'

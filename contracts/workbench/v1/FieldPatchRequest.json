@@ -267,6 +267,42 @@
       }
     },
     {
+      "name": "a trait whose name is a tab",
+      "why": "Requirement 5 (1kg.5.7.2, F-8): the name is what a renderer shows as its heading, so it cannot be blank, and blank is decided by the contract's own trim, exactly as for a document's name. A tab is allowed inside text, but trimming empties this name",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": {
+          "traits": [
+            {
+              "name": "\t",
+              "text": "She breathes water."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "a trait whose name is spaces",
+      "why": "Requirement 5 (1kg.5.7.2, F-8): the name is what a renderer shows as its heading, so it cannot be blank, and blank is decided by the contract's own trim, exactly as for a document's name. Trimming empties this name",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": {
+          "traits": [
+            {
+              "name": "   ",
+              "text": "She breathes water."
+            }
+          ]
+        }
+      }
+    },
+    {
       "name": "a trait carrying a key the entry does not declare",
       "why": "1kg.5.3, ED-2: an entry_list is ONE field and nothing addresses inside it, so its entries are closed too. In a request both sides refuse the key",
       "value": {

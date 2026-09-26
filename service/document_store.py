@@ -267,12 +267,14 @@ def _fold(value: str) -> str:
     4. surrounding whitespace trimmed and inner runs collapsed to one space.
 
     **Step 1 is not validation and must not become validation.** Refusing NUL,
-    ESC and bidi-override characters in text fields is `1kg.5.7`'s (F-9), and
-    this module must keep reading documents that already hold them. It is
-    needed because they legitimately occur today: `_ListItem` — the type behind
-    `tags` — carries neither `_one_line` nor `_well_formed`, and `_TextValue` —
-    behind `name` and `qualifier` — refuses only the four line breaks. Any
-    separator `search_key` picked could otherwise occur inside a value.
+    ESC and the bidirectional controls is `check_fields`'s: since F-9
+    (`1kg.5.7.2`) every document field kind refuses them on write, through
+    `check_plain_text`, before this module composes any SQL. The sweep stays,
+    because category C is wider than that refusal — U+200C and U+200D are
+    allowed in real names, and format, private-use and unassigned code points
+    are all stored — and because this module must keep reading whatever a row
+    already holds. Any separator `search_key` picked could otherwise occur
+    inside a value.
     """
     swept = "".join(" " if unicodedata.category(ch)[0] == "C" else ch for ch in value)
     return " ".join(unicodedata.normalize("NFKC", swept).casefold().split())

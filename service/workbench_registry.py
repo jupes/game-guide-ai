@@ -30,6 +30,7 @@ are state, not registry, and belong to `1kg.1.6` and `1ir.2.1`.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -125,7 +126,9 @@ class FieldRule:
     link (ED-20) — is ``gm_only`` by construction and cannot be widened by any
     action. ``warning`` is the sub-line a reveal sheet shows above the toggle,
     in the type's own words (REVEAL-11); a field that cannot be revealed cannot
-    carry one.
+    carry one. ``revealable`` **defaults to False** (F-12 c): default-deny is the
+    record's posture (ED-4, ED-5), so a new field is off the allowlist unless its
+    author puts it there, and every revealable rule below says so explicitly.
 
     ``required`` is decision LIB-12 as data: a document of this type is not
     valid without the field, so a create and a patch that would clear it are
@@ -141,7 +144,7 @@ class FieldRule:
 
     label: str
     editable: bool = True
-    revealable: bool = True
+    revealable: bool = False
     warning: str | None = None
     required: bool = False
     bounds: tuple[int, int] | None = None
@@ -207,8 +210,8 @@ class Registry:
     common_field_rules: Mapping[str, FieldRule] = field(
         default_factory=lambda: MappingProxyType(
             {
-                "name": FieldRule("Name", required=True),
-                "qualifier": FieldRule("Qualifier"),
+                "name": FieldRule("Name", required=True, revealable=True),
+                "qualifier": FieldRule("Qualifier", revealable=True),
                 "tags": FieldRule("Tags", revealable=False),
             }
         )
@@ -440,14 +443,14 @@ REGISTRY = Registry(
         _document_type(
             DocumentTypeId.NPC, "NPC Dossier", "person",
             rules={
-                "portrait": FieldRule("Portrait"),
-                "voice": FieldRule("Voice"),
-                "tell": FieldRule("Tell"),
-                "attitude": FieldRule("Attitude"),
-                "wants": FieldRule("Wants", warning="Would spoil the lie"),
-                "leverage": FieldRule("Leverage", warning="Would spoil the lie"),
-                "if_attacked": FieldRule("If the party attacks"),
-                "notes": FieldRule("Notes"),
+                "portrait": FieldRule("Portrait", revealable=True),
+                "voice": FieldRule("Voice", revealable=True),
+                "tell": FieldRule("Tell", revealable=True),
+                "attitude": FieldRule("Attitude", revealable=True),
+                "wants": FieldRule("Wants", warning="Would spoil the lie", revealable=True),
+                "leverage": FieldRule("Leverage", warning="Would spoil the lie", revealable=True),
+                "if_attacked": FieldRule("If the party attacks", revealable=True),
+                "notes": FieldRule("Notes", revealable=True),
                 "true_identity": FieldRule("True identity", revealable=False),
             },
             reveal_groups=(
@@ -460,39 +463,39 @@ REGISTRY = Registry(
             DocumentTypeId.STATBLOCK, "Stat Block", "shield", renderer="stat_block_card",
             rules={
                 # LIB-12: a stat block without its AC and HP is not valid.
-                "ac": FieldRule("Armor Class", required=True, bounds=(0, INTEGER_FIELD_MAX)),
-                "ac_note": FieldRule("Armor Class note"),
-                "hp": FieldRule("Hit Points", required=True, bounds=(0, INTEGER_FIELD_MAX)),
-                "hit_dice": FieldRule("Hit dice"),
-                "speed": FieldRule("Speed"),
-                "size": FieldRule("Size"),
-                "creature_type": FieldRule("Creature type"),
-                "alignment": FieldRule("Alignment"),
-                "abilities": FieldRule("Ability scores"),
-                "saving_throws": FieldRule("Saving throws"),
-                "skills": FieldRule("Skills"),
-                "damage_immunities": FieldRule("Damage immunities"),
-                "condition_immunities": FieldRule("Condition immunities"),
-                "senses": FieldRule("Senses"),
-                "languages": FieldRule("Languages"),
-                "challenge_rating": FieldRule("Challenge rating"),
+                "ac": FieldRule("Armor Class", required=True, bounds=(0, INTEGER_FIELD_MAX), revealable=True),
+                "ac_note": FieldRule("Armor Class note", revealable=True),
+                "hp": FieldRule("Hit Points", required=True, bounds=(0, INTEGER_FIELD_MAX), revealable=True),
+                "hit_dice": FieldRule("Hit dice", revealable=True),
+                "speed": FieldRule("Speed", revealable=True),
+                "size": FieldRule("Size", revealable=True),
+                "creature_type": FieldRule("Creature type", revealable=True),
+                "alignment": FieldRule("Alignment", revealable=True),
+                "abilities": FieldRule("Ability scores", revealable=True),
+                "saving_throws": FieldRule("Saving throws", revealable=True),
+                "skills": FieldRule("Skills", revealable=True),
+                "damage_immunities": FieldRule("Damage immunities", revealable=True),
+                "condition_immunities": FieldRule("Condition immunities", revealable=True),
+                "senses": FieldRule("Senses", revealable=True),
+                "languages": FieldRule("Languages", revealable=True),
+                "challenge_rating": FieldRule("Challenge rating", revealable=True),
                 # The one integer field with no per-use bounds, deliberately: it
                 # is what keeps the kind's own floor reachable through a declared
                 # field, and so keeps the shared boundary fixtures honest.
-                "xp": FieldRule("XP"),
-                "traits": FieldRule("Traits"),
-                "actions": FieldRule("Actions"),
-                "bonus_actions": FieldRule("Bonus actions"),
-                "reactions": FieldRule("Reactions"),
-                "legendary_actions": FieldRule("Legendary actions"),
+                "xp": FieldRule("XP", revealable=True),
+                "traits": FieldRule("Traits", revealable=True),
+                "actions": FieldRule("Actions", revealable=True),
+                "bonus_actions": FieldRule("Bonus actions", revealable=True),
+                "reactions": FieldRule("Reactions", revealable=True),
+                "legendary_actions": FieldRule("Legendary actions", revealable=True),
             },
             default_reveal={"table": ()},
         ),
         _document_type(
             DocumentTypeId.HANDOUT, "Player Handout", "mail", printable=True,
             rules={
-                "portrait": FieldRule("Illustration"),
-                "body": FieldRule("Text"),
+                "portrait": FieldRule("Illustration", revealable=True),
+                "body": FieldRule("Text", revealable=True),
             },
             default_reveal={"table": ("portrait", "name", "body")},
         ),
@@ -500,38 +503,38 @@ REGISTRY = Registry(
             DocumentTypeId.SESSION_NOTES, "Session Notes", "history_edu",
             rules={
                 # There is no session 0.
-                "session": FieldRule("Session number", bounds=(1, INTEGER_FIELD_MAX)),
-                "date": FieldRule("Date"),
-                "present": FieldRule("Present"),
-                "recap": FieldRule("Recap", warning="Summarises your private GM thread"),
-                "beats": FieldRule("Beats"),
-                "loose_threads": FieldRule("Loose threads"),
+                "session": FieldRule("Session number", bounds=(1, INTEGER_FIELD_MAX), revealable=True),
+                "date": FieldRule("Date", revealable=True),
+                "present": FieldRule("Present", revealable=True),
+                "recap": FieldRule("Recap", warning="Summarises your private GM thread", revealable=True),
+                "beats": FieldRule("Beats", revealable=True),
+                "loose_threads": FieldRule("Loose threads", revealable=True),
             },
             default_reveal={"table": ()},
         ),
         _document_type(
             DocumentTypeId.QUEST_LOG, "Quest Log", "flag",
             rules={
-                "open_threads": FieldRule("Open threads"),
-                "cold_threads": FieldRule("Cold threads"),
-                "resolved_threads": FieldRule("Resolved threads"),
+                "open_threads": FieldRule("Open threads", revealable=True),
+                "cold_threads": FieldRule("Cold threads", revealable=True),
+                "resolved_threads": FieldRule("Resolved threads", revealable=True),
             },
             default_reveal={"table": ("name", "open_threads", "resolved_threads")},
         ),
         _document_type(
             DocumentTypeId.CHARACTER_SHEET, "Character Sheet", "contact_page", audience="owner",
             rules={
-                "portrait": FieldRule("Portrait"),
+                "portrait": FieldRule("Portrait", revealable=True),
                 # The same field and the same meaning as a stat block's, so the
                 # same range — but **not** required (ruling 5.7#2): LIB-12 speaks
                 # of stat blocks, and you name a character before you know its HP.
-                "ac": FieldRule("Armor Class", bounds=(0, INTEGER_FIELD_MAX)),
-                "hp": FieldRule("Hit Points", bounds=(0, INTEGER_FIELD_MAX)),
-                "speed": FieldRule("Speed"),
-                "abilities": FieldRule("Ability scores"),
-                "features": FieldRule("Features"),
-                "equipment": FieldRule("Equipment"),
-                "notes": FieldRule("Notes"),
+                "ac": FieldRule("Armor Class", bounds=(0, INTEGER_FIELD_MAX), revealable=True),
+                "hp": FieldRule("Hit Points", bounds=(0, INTEGER_FIELD_MAX), revealable=True),
+                "speed": FieldRule("Speed", revealable=True),
+                "abilities": FieldRule("Ability scores", revealable=True),
+                "features": FieldRule("Features", revealable=True),
+                "equipment": FieldRule("Equipment", revealable=True),
+                "notes": FieldRule("Notes", revealable=True),
             },
             # AUD-12: the handoff's ``['all']``, expanded to explicit keys
             # (REVEAL-9) and seeding the OWNER alone — never the table.
@@ -545,26 +548,26 @@ REGISTRY = Registry(
         _document_type(
             DocumentTypeId.LORE, "Lore Entry", "local_library", cites_corpus=True, accent="arcane",
             rules={
-                "region": FieldRule("Region"),
-                "era": FieldRule("Era"),
-                "status": FieldRule("Status"),
-                "summary": FieldRule("Summary"),
-                "history": FieldRule("History"),
-                "rumours": FieldRule("Rumours"),
+                "region": FieldRule("Region", revealable=True),
+                "era": FieldRule("Era", revealable=True),
+                "status": FieldRule("Status", revealable=True),
+                "summary": FieldRule("Summary", revealable=True),
+                "history": FieldRule("History", revealable=True),
+                "rumours": FieldRule("Rumours", revealable=True),
             },
             default_reveal={"table": ("name", "summary")},
         ),
         _document_type(
             DocumentTypeId.ENCOUNTER, "Encounter", "swords",
             rules={
-                "difficulty": FieldRule("Difficulty"),
-                "xp_budget": FieldRule("XP budget", bounds=(0, INTEGER_FIELD_MAX)),
+                "difficulty": FieldRule("Difficulty", revealable=True),
+                "xp_budget": FieldRule("XP budget", bounds=(0, INTEGER_FIELD_MAX), revealable=True),
                 # There is no level 0.
-                "party_level": FieldRule("Party level", bounds=(1, INTEGER_FIELD_MAX)),
-                "setup": FieldRule("Setup"),
-                "combatants": FieldRule("Combatants"),
-                "terrain": FieldRule("Terrain & hazards"),
-                "outcome": FieldRule("If it goes wrong", warning="Would spoil the surprise"),
+                "party_level": FieldRule("Party level", bounds=(1, INTEGER_FIELD_MAX), revealable=True),
+                "setup": FieldRule("Setup", revealable=True),
+                "combatants": FieldRule("Combatants", revealable=True),
+                "terrain": FieldRule("Terrain & hazards", revealable=True),
+                "outcome": FieldRule("If it goes wrong", warning="Would spoil the surprise", revealable=True),
             },
             default_reveal={"table": ()},
         ),
@@ -584,16 +587,30 @@ _FIELD_KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 #: A label is for a person: it cannot be empty, cannot be a key that escaped
 #: (``xp_budget``, ``ifAttacked``), and cannot smuggle markup.
 _CAMEL_CASE = re.compile(r"[a-z][A-Z]")
+#: F-12 (a): an HTML entity is ``&`` then ``#`` and digits, ``#x`` and hex digits,
+#: or one to ten letters or digits - with or without its ``;``, so ``&amp`` is
+#: one and ``Terrain & hazards`` is not. The labels' rule only: a tool's label,
+#: blurb and working label keep their own check in :func:`validate`.
+_LABEL_ENTITY = re.compile(r"&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z0-9]{1,10})")
 
 
 def _label_problems(label: str, *, what: str = "label", limit: int = 60) -> list[str]:
-    """The one rule, used for field labels, group labels and warning copy."""
+    """The one rule, used for field labels, common labels, group labels and
+    warning copy.
+
+    F-12 (a): a raw key cannot pass as a label. A label starts with anything but a
+    lower-case letter (``voice``, ``xp`` and ``ac`` are keys that escaped, while
+    ``XP``, ``Name`` and ``Terrain & hazards`` are words), and it carries no HTML
+    entity, spelled with its ``;`` or without.
+    """
     problems: list[str] = []
     if not label.strip():
         problems.append(f"the {what} is empty")
     if len(label) > limit:
         problems.append(f"the {what} is longer than {limit} characters")
-    if "&" in label and ";" in label:
+    if label.strip() and unicodedata.category(label.strip()[0]) == "Ll":
+        problems.append(f"the {what} {label!r} starts in lower case, like a key")
+    if _LABEL_ENTITY.search(label):
         problems.append(f"the {what} carries an HTML entity")
     if "_" in label:
         problems.append(f"the {what} {label!r} is snake_case, not words")
@@ -617,7 +634,8 @@ def _document_type_problems(registry: Registry, doc: DocumentType) -> list[str]:
     for key in (*doc.fields, *doc.reserved_keys):
         if not _FIELD_KEY.fullmatch(key):
             problems.append(f"{key!r} is not a flat field key")
-    if set(doc.reserved_keys) & set(doc.fields):
+    # F-12 (d): a retired key cannot come back as a common field either.
+    if set(doc.reserved_keys) & (set(doc.fields) | set(COMMON_FIELDS)):
         problems.append("a reserved key cannot be declared as a field again (ED-24)")
     if len(set(doc.reserved_keys)) != len(doc.reserved_keys):
         problems.append("a reserved key is listed twice")

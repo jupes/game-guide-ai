@@ -874,6 +874,85 @@
           }
         ]
       }
+    },
+    {
+      "name": "a session-less resource whose picture shows the table a projection",
+      "why": "Bead 929; TABLE-9, REVEAL-17, AE-51: a table resource is live only while it carries a session frame (TableSessionEvent exists only while live) and no inactive frame. This one has no session frame, so it is not live, and a dead resource shows nothing. It pins the session arm of the liveness predicate: without that arm, Pydantic would read this resource as live and index a session that is not there, and Zod would accept the projection in the table slot",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": "Sister Ondrey Vashe"
+                    },
+                    {
+                      "key": "notes",
+                      "value": "The tunnel under the mill is shown in red ink."
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a session-less resource whose picture holds a private projection",
+      "why": "Bead 929; TABLE-9, REVEAL-17, AE-51: a table resource is live only while it carries a session frame (TableSessionEvent exists only while live) and no inactive frame. This one has no session frame, so it is not live, and a dead resource shows nothing. It pins the session arm of the liveness predicate: without that arm, Pydantic would read this resource as live and index a session that is not there, and Zod would accept the private projection in the mine slot",
+      "value": {
+        "schema_version": 1,
+        "frames": [
+          {
+            "schema_version": 1,
+            "event": "snapshot",
+            "slots": [
+              {
+                "slot": "table",
+                "seq": 12,
+                "content": null
+              },
+              {
+                "slot": "mine",
+                "seq": 3,
+                "content": {
+                  "content_kind": "document",
+                  "type": "npc",
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": "Sister Ondrey Vashe"
+                    },
+                    {
+                      "key": "notes",
+                      "value": "The tunnel under the mill is shown in red ink."
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "schema_version": 1,
+            "event": "ready"
+          }
+        ]
+      }
     }
   ]
 }

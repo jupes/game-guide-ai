@@ -83,14 +83,6 @@ PATIENT = CampaignLockSettings(lock_timeout_s=1, transaction_timeout_s=30)
 #: How long a test waits for another thread before calling it a hang.
 PATIENCE = 15
 
-#: The SQLSTATE PostgreSQL answers with when a JSON string carries U+0000, which
-#: `jsonb` cannot represent. See `test_the_one_known_parity_gap_is_pinned`: this
-#: is the ONE behaviour the twin and the database are allowed to disagree about
-#: in this bead, and F-9 (`1kg.5.7`) closes it. Pinned by SQLSTATE and exception
-#: class and never by the driver's message, which quotes the row (SEC-20).
-PG_NUL_IN_JSONB = "22P05"
-
-
 @pytest.fixture
 def dsn() -> Iterator[str]:
     with throwaway_database("documents") as target:
@@ -983,32 +975,34 @@ def test_a_participant_deleted_by_raw_sql_clears_the_link_and_keeps_the_document
     assert row is not None and row[0] is None, "the link went; the document stayed"
 
 
-@needs_db
-def test_the_one_known_parity_gap_is_pinned(dsn: str) -> None:
-    """The twin stores a U+0000 in a field value; PostgreSQL refuses it from
-    `data JSONB`, because `jsonb` cannot represent it.
+def _document_count(world: World) -> int:
+    with world.db.transaction() as unit:
+        if world.kind == "postgres":
+            return int(unit.conn.execute("SELECT count(*) FROM campaign.documents").fetchone()[0])
+        return len(world.documents._documents.visible(fake(unit)))
 
-    `check_fields` accepts it today: `_well_formed` only tries
-    `value.encode("utf-8")`, which U+0000 passes, and `_ListItem` has no
-    `_well_formed` at all. **This is the ONE divergence this bead is allowed to
-    have, and it is pinned rather than hidden.** F-9 closes it in `1kg.5.7`, and
-    both halves of this test change together when it does. A refusal is
-    deliberately NOT added to the store here.
 
-    Pinned by exception class and SQLSTATE, never by the driver's message —
-    that message's DETAIL quotes the failing row (SEC-20).
+def test_a_nul_in_a_field_is_refused_before_any_sql_in_both_worlds(world: World) -> None:
+    """F-9 (`1kg.5.7.2`) closed the one parity gap this file used to pin.
+
+    Before it, the twin stored a U+0000 in a field value and PostgreSQL refused it
+    from `data JSONB` with SQLSTATE 22P05 - a 500, and a divergence between the
+    two worlds. Now `check_fields` refuses it in both, inside the store's own
+    `_validated` call and so before any SQL is composed: a `ValueError` that names
+    the field and the class of character and never the value (X-7, SEC-20), and
+    no document is written.
     """
-    twin = InMemoryDatabase()
-    fake_campaign = _a_fake_world(twin)
-    stored = _a_document(fake_campaign, _a_campaign(fake_campaign),
-                         data={"name": "Vashti\x00", "qualifier": "", "tags": ["x\x00y"]})
-    assert stored.data["name"] == "Vashti\x00", "the twin keeps it"
-
-    world = _a_seeded_world(dsn)
-    with pytest.raises(psycopg.errors.DataError) as refused:
-        _a_document(world, CAMPAIGN,
-                    data={"name": "Vashti\x00", "qualifier": "", "tags": ["x\x00y"]})
-    assert refused.value.sqlstate == PG_NUL_IN_JSONB
+    campaign = _a_campaign(world)
+    before = _document_count(world)
+    nul = chr(0)
+    with pytest.raises(ValueError, match="name is not a valid text field") as refused:
+        _a_document(world, campaign, data={"name": f"Vashti{nul}", "qualifier": "", "tags": [f"x{nul}y"]})
+    assert "a control character" in str(refused.value)
+    assert "Vashti" not in str(refused.value)
+    frames = [entry.name for entry in refused.traceback]
+    assert "_validated" in frames and frames[-1] == "check_fields", frames
+    assert not any("psycopg" in str(entry.path) for entry in refused.traceback), "no SQL was reached"
+    assert _document_count(world) == before
 
 
 def _a_fake_world(db: InMemoryDatabase) -> World:
