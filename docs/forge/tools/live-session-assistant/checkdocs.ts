@@ -20,6 +20,9 @@ const DOCS = [
   'docs/forge/plans/live-session-assistant-delivery.md',
   'docs/forge/reports/live-session-assistant-plan-review.md',
   'docs/forge/reports/live-session-assistant-plan-review-2.md',
+  // Not a plan document: the account identity record (yje.1.6), whose answer table the billing machines consume, so
+  // its tables, cited paths and bead IDs get the same mechanical checks. Appended so DOCS[2] stays the threat model.
+  'docs/adr/account-identity-state-machine.md',
 ]
 // Paths cited on purpose that are not on master yet: the design archive (never in the repo), the Workbench decision
 // record and plans (PR #58) and wire contract (PR #59), and the billing and retrieval plans (committed separately).
