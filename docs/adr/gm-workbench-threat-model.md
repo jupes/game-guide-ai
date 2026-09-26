@@ -2,7 +2,9 @@
 
 Status: **proposed** · Bead: `agent-forge-harness-1kg.1.3` · Date: 2026-09-17 ·
 **Amended 2026-09-24 — read section 14 first: players hold accounts, there are no
-guests, and the four bearer secrets of §6.2 are superseded.**
+guests, and the four bearer secrets of §6.2 are superseded.** **Table access for
+signed-in accounts is section 15 (2026-09-26, TA-4), which replaces the table half
+of §6.2, §8.2 and §8.3.**
 Implements and constrains: [`gm-workbench-interactions.md`](gm-workbench-interactions.md)
 (`1kg.1.1`) · Sibling model: the Live Session Assistant's privacy and threat
 model (`agent-forge-harness-1ir.1.3`, PR #60) · Master plan:
@@ -157,6 +159,8 @@ flowchart LR
 | SEC-40 | **Irreversible and exfiltrating GM operations ask for the password again** (*suggested*: given within the last 10 minutes): deleting a campaign, removing a participant or resetting a personal link, and exporting a GM copy. The confirmation is the existing login check under the existing throttle (R-8), and it is never asked for a narrowing — a Stop, a Stop all, an End or a Rotate never waits for a password (X-3). Until `yje.2.3` makes sessions revocable, this is what keeps a stolen GM cookie from deleting, exporting or resetting (WT-16). | I · **E** (S-6) |
 
 ### 6.2 Table link, table credential, personal link, device credential
+
+> **Superseded for table access by §15 (TA-2, TA-4)** — kept as the record; build SEC-41 to SEC-49 instead.
 
 Four bearer secrets, each with one job. None is ever placed in a path or a query
 string (REVEAL-19, X-7), so none reaches a request log.
@@ -329,6 +333,8 @@ thing offered after signing in (REVEAL-16).
 
 ### 8.2 Table operations (everything under `/table/`; the GM cookie is ignored)
 
+> **Superseded by §15.6 (TA-2, TA-4)** — kept as the record; the table matrix in force is §15.6.
+
 | Operation | Participant | Guest | GM cookie only | Nobody |
 | --- | --- | --- | --- | --- |
 | Join: exchange a table token (SEC-8) | yes, or `This table is full` (SEC-10) | the same | as Nobody | yes if the token is live, else inactive |
@@ -348,6 +354,8 @@ listed**: the table client is not a restricted view of the GM API, it is a
 separate, smaller API with its own principal (SEC-1, SEC-18).
 
 ### 8.3 Realtime events
+
+> **Superseded for the table channel by §15.7 (TA-2, TA-4)** — kept as the record; the GM column is unchanged.
 
 An event is a read, and obeys the row of the state it reports. Event names are
 `1kg.1.2`'s and `1kg.1.4`'s; the entitlements are fixed here.
@@ -374,6 +382,11 @@ is not entitled to**: no gap, no counter, no forced re-snapshot (WT-7, T-8).
 `1kg.9.1` owns the adversarial suite; each route bead owns the rows that name it.
 A control without a test here is not done.
 
+> **Amended by §15.8 (2026-09-26, TA-4).** T-6 and T-8 are rewritten in place for
+> account-based table access. T-3 is superseded by T-22 and T-23. T-4, T-5, T-17 and
+> T-18 apply to the screen grant (SEC-48) wherever they name a table credential, and
+> their join and enrolment halves are superseded. T-19 to T-23 are added at the end.
+
 | # | Test | Proves | Owners |
 | --- | --- | --- | --- |
 | T-1 | **Canary leak suite**: unique canaries in every field of every type; search every table payload, event, error envelope, cache header, export, print view, asset name and header through reveal, update, replace, move, Stop, Rotate and End | WT-1, SEC-14, SEC-15 | `1kg.7.2`, `1kg.7.4`, `1kg.9.1` |
@@ -381,9 +394,9 @@ A control without a test here is not done.
 | T-3 | **Credential family isolation**: a table route given only a GM cookie; a GM route given only table cookies | SEC-1 | `1kg.2.3`, `1kg.9.1` |
 | T-4 | **Token hygiene**: 32 random bytes; digests only at rest; never in a log, a URL or an error; generic failure; the exact `Set-Cookie` attributes of join, enrol and the GM cookie; failed joins throttled tightly and successful ones loosely and per generation; a join loop with a valid token evicts nobody connected within 30 minutes and leaves one audit row | WT-4, WT-16, WT-19, SEC-5, SEC-6, SEC-8, SEC-10, SEC-21 | `1kg.2.3` |
 | T-5 | **Revocation**: after Rotate, End and expiry every old credential, stream and asset handle is inactive, across two instances, and no frame of the new generation reaches a stream opened under the old one | WT-3, SEC-9 | `1kg.2.3`, `1kg.7.5`, `1kg.9.3` |
-| T-6 | **Enrolment**: single use; generic failure; a second enrolment revokes the first; a device credential without a live table credential opens nothing; an unknown one joins as a guest | WT-5, SEC-11 | `1kg.2.2`, `1kg.2.3` |
+| T-6 | **Table grant matrix** (rewritten 2026-09-26 by §15; the enrolment test it replaced went with SEC-11): every table route × {owner, seated account, offered-but-unaccepted seat, removed seat, seat in another campaign, other account, GM of another campaign, nobody, screen grant, revoked screen grant} × {session live, ended, expired, none} answers exactly §15.6's cell; every not-entitled case is identical in status, body and headers, with comparable timing (SEC-46); no stream is ever opened for a not-entitled caller; the owner's player view never carries a participant slot | WT-24, WT-27, SEC-41, SEC-44, SEC-46 | `1kg.7.2`, `1kg.7.5`, `1kg.9.1` |
 | T-7 | **Forged requests**: a foreign `Origin`, `Origin: null`, `Sec-Fetch-Site: cross-site`, a form content type, and a cross-origin upgrade, per route family | WT-6, SEC-7 | every route bead, `1kg.1.4` |
-| T-8 | **Slot isolation transcript**: a guest's complete frame transcript is identical with and without a concurrent private reveal | WT-7, REVEAL-24 | `1kg.7.5` |
+| T-8 | **Slot isolation transcript** (rewritten 2026-09-26 by §15; it named a guest): the complete frame transcripts of a seated account B, of the owner's player view and of a screen grant are each byte-identical with and without, meanwhile, a private reveal to seated account A, an update and a Stop of it, A's seat being removed, and another account accepting a seat | WT-7, REVEAL-24, SEC-44 | `1kg.7.5` |
 | T-9 | **Hostile media corpus**: polyglots, bombs, oversize, mistyped, SVG, metadata-bearing images, audio with an ID3 title, a Vorbis comment, chapters and cover art; assert served bytes, type, headers and the absence of metadata, pictures and filenames | WT-8, SEC-19, SEC-25 to SEC-28 | `1kg.8.1`, `1kg.8.2` |
 | T-10 | **Injection corpus** over every tool and edit scope: no remote reference survives rendering or any export, GM copy included; no field outside the scope changes; no suggestion names an unregistered tool | WT-9, SEC-32, SEC-33 | `1kg.4.4`, `1kg.5.5`, `1kg.4.6` |
 | T-11 | **SSRF corpus** (before import is enabled): refused ranges in both address families, mapped addresses, redirects, rebinding, slow and oversize responses | WT-10, SEC-30 | `1kg.8.1` |
@@ -394,6 +407,11 @@ A control without a test here is not done.
 | T-16 | **Fail closed in the browser**: hide, freeze, back-forward cache, offline, silent stream | WT-15, X-4 | `1kg.7.4`, `1kg.9.3` |
 | T-17 | **Headers from the production image**: a CI job that builds `Dockerfile.cloud`, starts it and asserts the headers and cookie attributes of the table page, the enrolment page, a join and an asset (today's E2E stack runs `service.e2e_app` on `Dockerfile.service`, R-6); the same assertion after every deploy in `verify_deploy.py`; and zero CSP violations reported through join, snapshot, replace, Stop and a cue | SEC-6, SEC-17, SEC-19 | `1kg.9.5` |
 | T-18 | **Deletion**: storage is listed after a campaign delete; every handle of a closed slot fails; sweeps remove expired codes and credentials | WT-18, SEC-36, SEC-37 | `1kg.2.6`, `1kg.8.1` |
+| T-19 | **Fetch Metadata on table routes** (§15): every table API, stream and asset route refuses `Sec-Fetch-Site: cross-site` and `same-site`, and `Sec-Fetch-Mode: navigate`, before any row is read (a query counter asserts none ran); the table page shell answers a cross-site navigation and carries no data; a request with no Fetch Metadata is judged as SEC-7 says | WT-25, SEC-45 | every table route bead, `1kg.9.1` |
+| T-20 | **Revocation of accounts, per frame** (§15): for End, Rotate and Remove, across two instances, no frame produced from state committed after the revocation reaches the principal it revoked; after Rotate a seated account reconnects and sees the cleared table, and a screen grant of the old generation gets the inactive event and cannot reconnect | WT-27, SEC-42 | `1kg.7.5`, `1kg.9.3` |
+| T-21 | **Rate-limit keys** (§15): two accounts behind one `client_source` are budgeted separately; refusals from many accounts on one source, and from one account on many sources, are each throttled; the connection and screen bounds hold across two instances and after a restart | WT-24, SEC-47 | `1kg.1.4`, `1kg.7.5` |
+| T-22 | **Screen mode**, if built (§15): minting deletes the account cookie in the same response; the grant's `Set-Cookie` attributes are exactly SEC-48's; only the owner can mint; the grant reads the table slot and never a participant slot, and a later sign-in on the same browser does not change that; every GM route, and every account route, treats it as no session; End, Rotate, expiry and Leave each revoke it; Leave answers `Clear-Site-Data`; the per-session bound holds | WT-21, WT-23, SEC-48, SEC-49 | `1kg.2.3`, `1kg.7.4` |
+| T-23 | **The owner on a table route** (§15): with the owner's own account cookie, every table payload is the table projection and nothing else — T-1's canaries run over the owner's player view as well as a seated account's — and no GM-channel frame, epoch, generation or alias reaches it; an import test finds no GM route module or document, history or asset store imported by the table router | WT-26, SEC-44 | `1kg.7.2`, `1kg.9.1` |
 
 ## 10. Risks that remain
 
@@ -401,10 +419,15 @@ Stated plainly, so that accepting them is a decision and not an accident.
 
 | Risk | Why it remains | Who accepts it |
 | --- | --- | --- |
-| A guest with a leaked link sees whatever is revealed until the GM rotates (WT-3) | It is what "players need no account" means (AUD-1, E-6) | Owner, under E-6 |
+| **Superseded (TA-2, TA-4):** a guest with a leaked link sees whatever is revealed until the GM rotates (WT-3) | There are no guests and no bearer link (D-4, SEC-43) | — |
 | A stolen GM cookie works for up to 14 days (WT-16) | The session is stateless by an earlier decision (R-1) | Owner; `yje.2.3` removes it |
 | Documents are readable by anyone with database access (WT-17) | No application-level encryption in v1 | Owner |
-| A personal link can be intercepted before first use (WT-5) | Accepted **only** while participant slots hold a player's own sheet | Owner, under E-1; see section 12, item 3 |
+| **Superseded (TA-2, TA-4):** a personal link can be intercepted before first use (WT-5) | There is no personal link: a seat is offered to one account and accepted by it (R-15) | — |
+| A seated account can watch the table slot of any live session of its campaign, at the table that night or not (§15.3) | A seat is a standing membership (D-1), and a per-session link as a second factor was declined (SEC-43); the GM's remedy is Remove (SEC-42) | Owner, under D-1 |
+| A GM or a player signed in on a shared screen leaves their whole account there for up to 14 days, revocable from nowhere (WT-21) | D-4 puts sign-ins on shared screens; sessions are stateless (R-1). Screen mode (SEC-48) or `yje.2.3` removes it | Owner, under S-7 |
+| A password typed on a shared machine can be captured or saved there (WT-22) | D-4: someone signs in on the screen; pairing was retired with the enrolment code | Owner, under D-4 and S-8 |
+| A player signed in as themself on a room's screen shows their own slot to the room (WT-23) | A browser cannot know it is a projector; screen mode is the remedy | Owner; design lane |
+| A seated player can hand their login to someone else, who then sees what they see | It is the account holder's own disclosure, like repeating what they saw; presence shows the GM a seat with two connections | Owner |
 | Players can photograph a screen (WT-15) | No software control exists | — ; the reveal sheet should say so once |
 | Tool spend is bounded by today's coarse guards until budgets exist (WT-12) | E-8 has no default by design | Owner, under E-8 |
 | Deleted data stays in backups for the backup window (WT-18) | Standard; must be documented for users | Owner |
@@ -423,6 +446,8 @@ Nothing here blocks the work. Each has a default in force.
 | S-4 | Is "no Workbench tool is enabled in production before `va8` is fixed" acceptable as a hard gate? | **Yes.** | WT-9 is an exfiltration path for exactly the text this product exists to protect |
 | S-5 | Which model providers may see GM-private documents (SEC-39)? | **Only the primary provider, under its API terms as recorded; every other routing profile is off for Workbench operations until its terms are reviewed.** | WT-20: routing added to `/chat` for cost or quality must not silently widen who holds campaign secrets |
 | S-6 | Should the operations of SEC-40 ask for the GM's password again? | **Yes**, at ten minutes' freshness. | It is the one control on a stolen cookie the pilot can have before `yje.2.3` |
+| S-7 | Must screen mode (SEC-48) or revocable sessions (`yje.2.3`) exist before any table route leaves the invite-only pilot? (§15.5) | **Yes, at least one** — recommended: screen mode ships with the first table route that leaves the pilot; until then the pilot's GMs are told not to sign in on a shared machine. | D-4 makes a sign-in on a projector a normal way to run a table, and WT-21's residual for a GM account is High |
+| S-8 | Should a screen be signed in by pairing — a code shown on the screen, approved from the GM's signed-in phone — rather than by typing a password on it? (§15.5) | **No**; not proposed. It is a claim-by-possession code, which D-4 retired and `fma` declined to rebuild under a new name. The owner may reopen it. | WT-22: the password is the one secret typed on a machine nobody trusts |
 
 ## 12. What this changes elsewhere
 
@@ -576,3 +601,373 @@ record of what was decided and why, and must not be built.
 | TA-1 | R-6, SEC-17 (GM pages), SEC-33, WT-9, S-4 | **`va8` shipped** (PR #89, deployed 2026-09-24). Every channel's Markdown now drops remote subresources unconditionally, not only the Workbench's, and every image that survives carries an `alt` (`fu9`). The application and `ui/nginx.conf` serve one byte-identical policy, `img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`, verified live on the production origin. R-6's "no security headers are set anywhere" is no longer true. **S-4's gate is met**: no Workbench tool is blocked by `va8` any longer. SEC-17's stricter table-page policy (and `nosniff`, `Referrer-Policy`, the COOP/CORP and `Permissions-Policy` headers) is **not** shipped and still binds the first table route. | lead, from PR #89's review |
 | TA-2 | SEC-1, SEC-5, SEC-6, SEC-8 to SEC-13, §6.2, the residue after §6.2, WT-3, WT-5, WT-7, §8 principals, §8.2, §8.3, T-6, §10 rows 1 and 4, S-3, §12.1 items 3, 6, 7 | **Owner decisions D-1 and D-4 (2026-09-21): every player holds an account and there are no guests** — a shared screen or projector is signed in by someone. **Superseded:** the enrolment code, the device credential and every rule that exists to protect them (single use, interception residue, device replacement, device approval, the 180-day idle expiry); the **Guest** principal and its matrix column; WT-5's accepted residue and the §10 row that accepts it; S-3's device-approval consequence. **What replaces them, at the level of rule:** a table route authenticates by the **account session**, and authorises by the caller's **seat at the campaign** (a participant is an account seated there, bead `fma`), resolved in the same query as the resource, exactly as SEC-2 does for the GM. **Still in force:** SEC-3 (no enumeration), SEC-4, SEC-7 (origin check), SEC-9's rule that End and Rotate revoke at once *for whatever table-access grant replaces the link generation*, SEC-12 and SEC-13's "no revealed content in browser storage", §6.3 in full, and the reveal model (slots, disclosures, one live disclosure per document). **Open, for the rewrite bead (`agent-forge-harness-hgm`, which blocks `1kg.7.1` and `1kg.7.2`):** whether a table link survives as an invitation that a signed-in, seated account must still present; how one cookie serves both the GM and the table route families now that SEC-1's two-credential split is gone (the session cookie is `SameSite=Lax`, `Path=/`, R-1); and the rate-limit key for table routes. | owner, 2026-09-21; recorded by the lead |
 | TA-3 | SEC-2 (the `dm` role), R-3, §8 principal **Other account** | **Owner decision D-5: creating a campaign makes you its GM**, and what an account may use is set by its tier (Free, Player, GM), not by a role. Ownership-in-the-query (SEC-2) is the whole GM authorisation for a Workbench route. **Nothing is loosened by this row**: a route that also requires the `dm` role today keeps that check until entitlement (`yje.4.1`) replaces it in a bead of its own, with a test that a non-`dm` owner is refused before and admitted after. | owner, 2026-09-21; interactions ADR A-25 |
+| TA-4 | SEC-1, SEC-5, SEC-6, SEC-8, SEC-10, SEC-13, WT-3, WT-4, WT-6, WT-7, WT-14, WT-16, WT-19, §4, §5 (B2, B3), §8.1 (one column, three rows), §8.2, §8.3, T-3 to T-6, T-8, T-17, T-18, §10, §11, §12.1 items 1, 5 and 6, §12.2 (the join and enrolment answers), §12.3 (`1kg.2.3`) | **Section 15 answers TA-2's three open questions.** No table link survives as a credential: a table read is authorised by the account session and the caller's seat or ownership, in the query that finds the resource (SEC-41, SEC-43). End, Rotate and Remove revoke the session, the admission generation and the seat, per frame (SEC-42, carrying SEC-9). One `SameSite=Lax` cookie serves both route families; a table route acts with table authority only (SEC-44) and gets `Strict` semantics from Fetch Metadata (SEC-45); it does not enumerate (SEC-46). Entitled table traffic is limited per principal, refusals per account and per source (SEC-47). A shared screen is recommended to hold a view-only screen grant instead of an account (SEC-48; product parts to the design lane). **TP-1** — whether the table slot may show `campaign`-class keys — is a proposal awaiting the lead's signature and changes nothing until signed. | `agent-forge-harness-hgm`, 2026-09-26; for the lead to accept |
+
+## 15. Table access for signed-in accounts
+
+Date: 2026-09-26 · Bead: `agent-forge-harness-hgm` · Status: **proposed** — it binds
+`1kg.7.1` and `1kg.7.2` once the lead accepts it; TP-1 (§15.10) is a separate
+proposal that needs the lead's signature.
+
+Owner decisions D-1, D-4 and D-5 (2026-09-21) removed guests, the enrolment code and
+the device credential, and TA-2 left three questions open: whether a table link
+survives, how one cookie serves both route families, and what table routes are
+throttled by. This section answers them and **replaces the table half of §6.2, §8.2
+and §8.3**, which stay above as the record. Read a rule here in place of the rule it
+names; a rule this section does not name stands.
+
+**Kept unchanged:** SEC-2's form (authorise in the query that finds the resource),
+SEC-3, SEC-4, SEC-7, SEC-9's property (End and Rotate revoke at once, per frame),
+SEC-12, §6.3 in full (SEC-14 to SEC-16), SEC-17 to SEC-19, SEC-35, and the reveal
+model — slots, disclosures, one live disclosure per document. **Superseded for table
+access:** SEC-1 (by SEC-44), SEC-5 and SEC-6 (except for the screen grant, SEC-48),
+SEC-8 (there is no join exchange), SEC-10 (by SEC-47 and SEC-48), SEC-13 (by SEC-49),
+WT-3 and WT-19. WT-4, WT-6, WT-7, WT-14 and WT-16 are amended in §15.5.
+
+### 15.1 What is true now
+
+Verified in the worktree on 2026-09-26, on `integration/1kg-workbench`.
+
+| # | Fact | Where | Consequence |
+| --- | --- | --- | --- |
+| R-14 | The account session is one cookie, `gga_session`: a signed (not encrypted) user id and role, `HttpOnly`, `Secure` under `SESSION_COOKIE_SECURE`, `SameSite` from `SESSION_COOKIE_SAMESITE` (default `lax`), `Path=/`, `Max-Age` 14 days. Sign-out deletes it in that browser only; there is no server-side session list, so nothing can sign a browser out from elsewhere (R-1). Sign-out sends no `Clear-Site-Data` yet. | `service/session.py`, `config.py`, `service/app.py` (`require_session`, `_set_session_cookie`, `_clear_session_cookie`, the logout route) | Every table viewer now holds this cookie, and a browser holding it **is** the whole account for 14 days — the fact behind §15.5 |
+| R-15 | A participant is an account's seat: `campaign.participants` gained `user_id` and `accepted_at` (0009). `seat_for(campaign, user)` answers only an **accepted, not removed** seat — an offered seat is not a seat yet. An account holds at most one live seat per campaign (a partial unique index); the owner is never offered a seat in their own campaign; every mutator takes the row through `hold`, which requires the campaign. | `service/participant_store.py`, `service/sql/migrations/0009_participant_accounts.sql` | The seat is a per-person, GM-granted, instantly revocable fact a table grant can rest on |
+| R-16 | `campaign.table_sessions` still carries `link_generation`, `link_digest` and both epochs; `campaign.table_credentials` (session, generation, digest, `revoked_at`, `last_connected_at`) and `campaign.session_join_counters` are still present (0004); `enrolment_codes` and `device_credentials` were dropped (0009). `table_session_store` still mints a link token at `start` and `rotate_link` and still offers `find_by_link_digest` and `issue_credential`; `end` and `rotate_link` revoke credentials in the transaction that advances the epochs. No table route exists. | `service/table_session_store.py`, `service/sql/migrations/0004_campaign_schema.sql` | The generation and the revocation machinery survive; the link and the join are what this section retires (§15.11) |
+| R-17 | Throttles are in-memory sliding windows, per instance: the auth routes by `client_source` **and** account, chat by user id alone — on the stated ground that an authenticated caller cannot rotate identities. | `service/ratelimit.py` | That ground weakens once free signup opens (D-2, D-3, `yje.2.2`): anyone may hold many accounts |
+| R-18 | One Content-Security-Policy ships from the application and `ui/nginx.conf` (TA-1). No `X-Content-Type-Options`, `Referrer-Policy`, COOP, CORP or `Permissions-Policy` yet, and nothing reads `Sec-Fetch-Site`. | `service/security_headers.py`, `service/app.py` | SEC-17's table-page policy and SEC-45's check are both new work for the first table route |
+| R-19 | The router reserves `/table`, `/table-sessions` and `/t/` for the table client's own entry point, and its fragment scrub runs only in the main bundle. | `docs/adr/client-routing.md` | The table address of SEC-43 lives under `/table`; it carries no credential, so the table bundle needs no scrub for it |
+
+### 15.2 Parties, the shared screen and the table grant
+
+Parties at the table now (replacing the table rows of §4):
+
+- **Owner** — the campaign's GM, by ownership (TA-3).
+- **Seated account** — an account holding an accepted, not-removed seat there (R-15).
+- **Other account** — every other signed-in account: no seat, an offered seat, a
+  removed seat, a seat elsewhere, a GM of another campaign. **With free signup this
+  is anyone**; a stranger costs one sign-up.
+- **Whoever reaches a signed-in screen** — a projector, a venue computer, a TV. D-4
+  says someone signs in on it; whoever walks up to it later holds what that sign-in
+  left behind.
+- **Nobody** — no valid session.
+
+B2 becomes *table browser → table routes, carrying the account session* (or a screen
+grant, SEC-48); B3 is gone. A new boundary, **B9 — the shared screen**, is physical:
+whoever can touch a signed-in browser is its principal.
+
+**The table grant**, which every rule below uses, is one predicate evaluated by the
+server from the request's cookies, never from request fields:
+
+```text
+table_principal(request, campaign)
+  a screen grant the server knows by its digest decides alone: the account session is not consulted
+  otherwise a valid account session whose account exists (R-1, R-2); otherwise 401
+  the campaign's table session is live and unexpired                               else inactive
+  owner:  the account owns the campaign                                          -> the table slot
+  seated: the account holds an accepted, not-removed seat in it                  -> the table slot and its own slot
+  screen: the grant is unrevoked, of this session and of its current generation  -> the table slot
+  anything else                                                                  -> inactive
+  a stream also holds the admission generation it opened under; a frame is written to it only while
+  that generation is current and its principal passes against the state read that produced the frame
+```
+
+### 15.3 Decision 1 — the table link, and what End and Rotate revoke
+
+| ID | Rule | Basis |
+| --- | --- | --- |
+| SEC-41 | **The table grant is the caller's standing at the campaign, not a secret it holds.** A table route authenticates by the account session (R-14) through the same dependency as a GM route, wrapped so that every authentication failure is one 401 body (SEC-2), and authorises by `table_principal` (§15.2) **in the same query that finds the session, the slot or the asset** — for example `WHERE s.campaign_id = :c AND s.state = 'live' AND s.expires_at > now() AND (c.owner_id = :u OR (p.user_id = :u AND p.accepted_at IS NOT NULL AND p.removed_at IS NULL))` — exactly as SEC-2 does for the GM. There is no fetch-then-check, no join exchange and no table credential for an account. A table route asks for no role and no tier: joining a table is free (D-3). An offered seat is not a seat (R-15). | owner D-1, D-4 + R + I |
+| SEC-42 | **End, Rotate and Remove revoke at once, per frame** (SEC-9's property, carried). Three grants can be withdrawn, each by one row write every reader sees. **End** (and expiry) ends the *session*: every table read of the campaign answers inactive from that commit. **Rotate** advances the session's **admission generation** — the column `link_generation` (R-16), renamed here in prose only — and revokes every screen grant of the old generation, in the transaction that advances the reveal and audio epochs (REVEAL-17, REVEAL-22): every open table stream closes, seated accounts reconnect and re-authorise from their seats, and a screen of the old generation does not come back. **Remove** marks the *seat* removed, never deleting it (R-15): that account's reads answer inactive from that commit, and RQ-5's first step clears its slot. Streams are authorised per frame as RT-7 requires, without a round trip per frame: the state read that produces a frame (RT-5) carries the session's state, its admission generation, the accounts holding active seats and the unrevoked screen grants, and a frame is written to a stream only if its principal passes against **that** read. A frame produced from state committed after a revocation therefore never reaches the principal it revoked, on any instance; RT-7's notification only closes the idle connection sooner. SEC-35's per-campaign bound on End and Rotate stands; a Stop is still never bounded. | P (SEC-9) + R (RT-5, RT-7) + I |
+| SEC-43 | **The table address is not a credential.** A table is opened at a plain, non-secret address under `/table` (R-19) that names at most the campaign, by its id (SEC-4) — never a secret, a session, a generation, a seat or a participant id, and never the campaign's name or a slug of it, which is private text a path would put in request logs (SEC-20; the supplied `/t/<campaign-slug>` form stays rejected, now for that reason). It may be shown on a stream, printed or drawn as a QR code; the QR is still drawn in the browser and the table page still answers `Referrer-Policy: no-referrer` (SEC-12). Holding the address grants nothing: a table route applies SEC-41 to whoever opens it. **The invitation to a table is the seat offer** (R-15), made once per campaign, not a link made once per session. A player may also reach a live table from their own seat list, which the account app builds from `seats_for_user`, never from a campaign id the caller supplies. The address's form is `1kg.7.4`'s. | owner D-1 + I |
+
+**Why no link survives, not even as an invitation a seated account must present.**
+A link as a second factor would stop exactly one principal: a seated account without
+tonight's link — someone the GM has already chosen to seat. Every attacker the link
+once answered (the outsider with a leaked link, WT-3) is now answered by the seat.
+Against that near-zero benefit it would bring back the largest part of §6.2's
+surface: an unauthenticated exchange route (the one route on which anyone on the
+internet holds a secret to guess), digest lookups, a second cookie in every browser
+and with it SEC-1's two-principal problem, throttles for failed and for successful
+joins, a device bound and its eviction rule, join churn (WT-19) and a durable join
+counter. A group secret shown to the whole table on a QR is a weak factor besides:
+any seated player can forward it, and it protects nothing a seat does not. What the
+link gave in convenience — something to scan that opens the table — survives in the
+non-secret address (SEC-43).
+
+**Attendance is not access control.** A seated player who is not at the table
+tonight can still watch the table slot of a live session. That is D-1's model — a
+seat is a standing membership — and the GM's remedy is Remove; it is recorded as a
+risk in §10.
+
+**Rotate, without a link.** Its old purpose — cut off everyone holding a leaked link
+— is gone. What remains: it revokes every screen grant (the one principal it removes
+outright), and it clears every projection and makes every client re-snapshot without
+moving the session's divider or recap boundary (REVEAL-17). **Rotate removes no
+seated account**: a seated account reconnects at once. The per-person control is
+Remove; the everyone control is End. If screen mode (SEC-48) is not built, Rotate has
+no security effect left and the design lane may drop or rename it.
+
+### 15.4 Decisions 2 and 3 — one cookie for both route families; rate limits
+
+| ID | Rule | Basis |
+| --- | --- | --- |
+| SEC-44 | **One cookie, two route families, one principal per request — and a table route acts with table authority only.** GM and table routes both authenticate by the account session (R-14); SEC-1's two-credential split is gone and no second account cookie replaces it. What SEC-1 guarded against — a table handler acting with GM authority — is guarded by construction instead. (1) A table route resolves `table_principal` for the one campaign it names and grants that principal's slots and nothing more: **the owner on a table route is a viewer of the table slot, never the GM** — it receives the projection a seated account receives and nothing from the GM channel, so a GM who opens the table view on a projector while signed in shows the room the table and nothing else. (2) Table handlers live in their own router module, which reads content only through the projection builder and the slot resolver (SEC-14, SEC-16) and imports no GM route module and no document, history or asset store directly; an import test enforces it (T-23). (3) A request resolves **one** principal, never the union of two. On a table route a screen grant the server knows decides alone — live, it is the screen; revoked or of an old generation, it is inactive — and an account session in the same browser is not consulted: the owner declared that browser a room's screen, and a later sign-in on it must not turn the room's view into one account's (WT-23). Leave is how a browser stops being a screen. (4) GM routes read the account session alone: a screen grant's `Path=/table` keeps it off every GM path, and no GM route reads it. The table client stays its own bundle (SEC-18). | R (R-14) + I |
+| SEC-45 | **Table routes get `SameSite=Strict` semantics per route, from Fetch Metadata, not from the cookie.** The one account cookie stays `SameSite=Lax`, `Path=/` (R-1, R-14). Making it `Strict` is an account-wide change that reaches every cross-site arrival at the app — verification and reset links, the billing return (`docs/adr/client-routing.md`) — and is `yje`'s decision, not this record's. What `Strict` gave the old table cookie was that no cross-site request could carry it; this rule gives the same to every table route that reads a principal. Every `/table/` API, stream and asset route **refuses, before it reads a cookie or touches a row,** a request whose `Sec-Fetch-Site` is present and not `same-origin`, or whose `Sec-Fetch-Mode` is `navigate` — nothing legitimately navigates to an API, a stream or an asset — with one generic `403` that depends on nothing but those headers (SEC-3 allows a check that reveals nothing about any resource to run first). The **table page**, the HTML shell, is the only table path a cross-site navigation may reach: it reads no principal and carries no data, and everything it shows arrives by same-origin fetches it starts. No table `GET` has a side effect beyond registering its own connection (RT-8). A request with no Fetch Metadata is judged by SEC-7's reasoning — it is not a current browser — and `Lax` still keeps the cookie off every cross-site subresource request and every cross-site `POST`; the residue is a cross-site top-level `GET` on an old browser, whose response the attacker cannot read and which costs at most one connection of the victim's own bound (SEC-47). SEC-7's origin check applies unchanged to every state-changing request of both families, and no CORS headers are emitted. | R (R-14, R-18) + I |
+| SEC-46 | **Table routes do not enumerate** (SEC-3, carried). Every case in which the caller is signed in but not entitled — no such campaign, no live session, an ended or expired one, no seat, an offered seat, a removed seat, a seat in another campaign, a revoked screen grant — gets **one** `inactive` answer (TABLE-9), identical in status, body and headers, from one code path and one query, so that its timing does not depend on the case. With free signup "signed in" means anyone (R-17), so this is what keeps *is this GM running a session right now* from every stranger. `401` is only for *no valid account session and no screen grant the server knows*, which names no resource. The order is: Fetch Metadata (SEC-45) → authentication (401) → table grant (inactive) → validation that depends on a slot or a handle → state. Before the grant a table route does constant, small work: one signature check, one account read (R-2) and one indexed query — no password hash, and no digest lookup for an account (SEC-35's bound, restated). | P (non-enumerating) + I |
+| SEC-47 | **Entitled table traffic is limited by who is asking; refusals by who and where.** (1) Every *entitled* request — a snapshot, a stream open, an asset range, a heartbeat, an audio tap — is keyed by its **principal**: the account id, or the screen grant's id (the `check_chat_request` pattern, R-17). `client_source` would put a whole in-person table behind one venue's NAT, or a household, under one budget (TABLE-10's concern), and an entitled principal cannot multiply itself: seats are granted one at a time by the GM (R-15) and screen grants are bounded per session (SEC-48). (2) Every *refused* request — an inactive answer, a 401, a Fetch Metadata refusal — is counted, tightly, **both** by account where there is one **and** by `client_source` (R-8): free signup lets one source hold many accounts and one account come from many sources, and a refusal must stay cheap against both. TABLE-10's line is the answer. (3) **Bounds that are a security property are rows, not memory**, because in-memory limiters are per instance and start empty after scale-to-zero (R-7, R-8): connections per principal (REVEAL-25's per-device bound, now per principal, *suggested* 3), per session and service-wide are RT-8's `connections` rows; screen grants per session are counted in `table_credentials`. (4) A burst of refusals from one source or one account is audited (SEC-38). `session_join_counters` has no job left (§15.11). | R (R-7, R-8, R-17) + I |
+
+**Why account and not source, for entitled traffic.** The attacker a source key
+answers is one who can mint identities, and an entitled table identity cannot be
+minted: it takes the GM's offer. The attacker an account key answers on the refusal
+path is the stranger with many free accounts, and the source key beside it is what
+stops them spreading a probe across accounts (WT-24).
+
+### 15.5 Decision 4 — shared screens
+
+**Who signs in on a projector** (D-4 says only *someone*), and what a forgotten
+signed-in screen then exposes:
+
+| Who signed in | What the next person at that browser holds | For how long |
+| --- | --- | --- |
+| The **GM**, as themself | The whole GM account: every campaign's GM-private documents and history, reveals to any live table, paid tools on the GM's budget, the GM's chat. SEC-40's fresh password keeps delete, export and reset off it; reads are not stepped up | Up to 14 days, revocable from nowhere until `yje.2.3` (R-1, R-14) |
+| A **player**, as themself | That player's account — chats, seats, Player-tier credit — and, on the table page, **that player's own slot, shown to the room** | The same |
+| A **dedicated account** made for the screen and seated by the GM | Only that account: the table slot and a participant slot nobody uses. Works with no new code; the GM removes the seat to cut it off (SEC-42) | The same, but it holds little |
+| **Screen mode** (SEC-48) | One table slot of one campaign's current session — never an account | Until End, Rotate, Leave or the session's expiry (12 h *suggested*, REVEAL-2) |
+
+| ID | Rule | Basis |
+| --- | --- | --- |
+| SEC-48 | **Screen mode: a browser in a room holds a view-only table grant, not an account.** *Recommended; every product-facing part needs the design lane.* The owner of a campaign with a live session may turn the browser they are signed in on into a **table screen**: one same-origin `POST` under `/table/` (SEC-7, SEC-45) mints a **screen grant** and, **in the same response, deletes the account session cookie** — the browser is signed out of the account and holds only the grant. The grant is 32 CSPRNG bytes stored as a SHA-256 digest only (SEC-5), in `campaign.table_credentials` with its session and admission generation (R-16; the table fits as it is); its cookie is `HttpOnly; SameSite=Strict; Path=/table`, host-only, `Secure` under `SESSION_COOKIE_SECURE` (SEC-6's attributes, which survive for this cookie alone), with no `Max-Age`: the server's revocation, not the browser, ends it. It is entitled to the **table slot only** — never a participant slot — plus audio tap and mute and its presence heartbeat, and can call nothing else. It dies at End, expiry, Rotate (every grant of the old generation) and **Leave** on the screen, which revokes it and answers `Clear-Site-Data: "cache", "storage"` (SEC-19). *Suggested* at most 4 per session; at the bound the owner revokes one (by Rotate, or a per-screen revoke on the GM side, owner-scoped by SEC-2). The GM sees how many screens hold a grant and when each was last seen. **Only the owner may mint one**: a seated player's grant would hand a table view to someone the GM never seated. Minting is audited with the minting account (SEC-38). *Design lane:* how a GM finds it, what the screen shows while idle and after Leave, and whether a player may ask the GM for one. | owner D-4 + I · **E** (S-7) |
+| SEC-49 | **A table browser keeps one thing** (replaces SEC-13). An owner's or a seated account's browser keeps the account session cookie (R-14) and nothing revealed; a screen keeps its screen grant alone (SEC-48). No service worker, no Cache Storage, and no `localStorage`, `sessionStorage` or IndexedDB entry for anything revealed or for any campaign, seat or alias; projection, snapshot and table-asset responses are `Cache-Control: no-store` (REVEAL-21). Sign-out and Leave answer `Clear-Site-Data: "cache", "storage"` (SEC-19; not yet sent by the logout route, R-14). *Design lane:* the table client offers sign-out, or Leave on a screen, from every state. | P (X-4, REVEAL-21) + I |
+
+**Session length and sign-out.** The account session is 14 days and cannot be ended
+from elsewhere until `yje.2.3` (R-1); a shorter session for a sign-in the user marks
+as *a shared computer* is a `yje` and design-lane choice, recorded here as a
+mitigation, not decided. Screen mode sidesteps the question: the account session on
+the screen is deleted the moment the screen is made. S-7 asks the owner to make one
+of screen mode or `yje.2.3` a gate before table routes leave the pilot; S-8 records
+why pairing a screen from a phone is not proposed.
+
+| ID | Threat | Boundary | STRIDE | L/I | Controls | Verified by | Owners | Residual |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| WT-21 | **A forgotten signed-in shared screen** — a projector at a venue, a library computer, a friend's TV, left signed in after the game — exposes the signer's whole account (see the table above) | B9 | S, I, E | M/H | Screen mode deletes the account cookie when the grant is minted, and the grant sees one table slot until End, Rotate or expiry (SEC-48); SEC-40 keeps delete, export and reset off a forgotten GM screen; `Clear-Site-Data` on sign-out (SEC-49); remote sign-out (`yje.2.3`, S-1, S-7); a short *shared computer* session (design lane, `yje`) | T-22 | `1kg.2.3`, `1kg.7.4`, `yje.2.3`, design lane | **High** for a GM account signed in on a shared screen, until screen mode or `yje.2.3` ships; Low with screen mode |
+| WT-22 | **A password typed on a shared machine** — a keylogger on a venue computer, a browser that offers to save it, autofill for the next person | B9 | S | M/H | Screen mode shortens what the sign-in leaves behind but not the typing; the product tells the signer plainly to decline saving the password (design lane); a pairing flow is not proposed (S-8) | Review of the screen sign-in flow by the design lane | design lane, `yje` | **Medium**, accepted under D-4 unless S-8 is reopened |
+| WT-23 | **A player signed in as themself on a room's screen shows their private slot to the room** — reveals made to that player, of any document type (O-2), appear on the projector | B9, B5 | I | M/M | A screen grant is entitled to the table slot only (SEC-48); the table client marks the own slot as private (TABLE-14, design lane) | T-22: a screen never receives a participant slot | `1kg.7.4`, `1kg.7.5`, design lane | Low with screen mode; **Medium** when a player signs in as themself on a room screen |
+| WT-24 | **A stranger probes the table routes** — with a free account, tries campaign ids to learn which GM is live, to reach a slot, or to hold connections | B2 | I, D | H/L | One inactive answer, one query, constant work (SEC-46); a stream opens only after the grant, so an unentitled caller holds no connection (SEC-41); refusals throttled by account and by source (SEC-47); random ids (SEC-4) | T-6, T-21 | `1kg.7.2`, `1kg.7.5`, `1kg.9.1` | Low |
+| WT-25 | **A cross-site request rides the `Lax` cookie to a table route** — a hostile page navigates the victim's window to a table stream or asset, or forges a table write | B2 | T, D | M/L | The Fetch Metadata refusal before any cookie is read (SEC-45); SEC-7; no side-effecting table `GET`; no CORS | T-7, T-19 | every table route bead | Low |
+| WT-26 | **A table handler acts with the owner's GM authority** — one cookie reaches both families, so a table route that reused a GM store or payload would hand GM-private fields to the owner's player view, which the GM may be projecting | B2, B5 | E, I | M/H | The owner is a table-slot viewer on a table route (SEC-44); content only through the projection builder (SEC-14); the import boundary | T-23, T-1 | `1kg.7.2`, `1kg.9.1` | Low |
+| WT-27 | **A removed or unaccepted seat keeps watching** — a stream open when the GM removes the seat; a seat offered and never accepted; a second browser of a removed account | B2 | E, I | M/M | The seat predicate in every read (SEC-41); the per-frame check against the state read (SEC-42); RQ-5's slot clear on removal | T-6, T-20 | `1kg.2.2`, `1kg.7.5` | Low |
+
+**Threats above, amended.** WT-3 and WT-19 are superseded: there is no bearer link
+and no join. WT-4 concerns the screen grant alone, with the same controls (256-bit,
+digest only). WT-6's table half is WT-25. WT-7 reads *any principal not entitled to
+the slot — another seated account, the owner's player view, a screen* for *a guest*.
+WT-14 reads *a seated account or a screen grant and a script* for *a leaked link and
+a script*, bounded per principal (SEC-47); an unentitled caller holds no stream
+(SEC-41). WT-16 now covers **every** account's cookie, a player's included, since
+each is also that player's table credential.
+
+### 15.6 Authorization matrix — table operations (replaces §8.2)
+
+Principals as in §15.2. Cells: **yes**; **inactive** — SEC-46's one answer;
+**401** — no valid account session and no screen grant the server knows, which names
+no resource;
+**own** — the caller's own seat's slot only; **no such route**.
+
+| Operation | Owner | Seated account | Other account | Nobody | Screen grant (if SEC-48 is built) |
+| --- | --- | --- | --- | --- | --- |
+| Open the table page — the HTML shell (SEC-45) | yes | yes | yes; it shows nothing until a table route answers | yes; it offers sign-in | yes |
+| List the caller's own live tables (the account app: owned campaigns and `seats_for_user`) | owned campaigns with a live session | seated campaigns with a live session | an empty list, the same as having none | 401 | no such route |
+| Snapshot of the **table** slot | yes | yes | inactive | 401 | yes |
+| Snapshot of a **participant** slot | never: the owner holds no seat, so the slot does not exist for them here (the GM channel shows it) | own; any other slot does not exist for them — exactly an empty table | inactive | 401 | never; indistinguishable from an empty table |
+| The table realtime channel | the table slot only | the table slot and its own slot (REVEAL-24) | inactive; no stream is opened | 401 | the table slot only |
+| Read a slot's asset by handle (SEC-16) | table-slot assets, while shown | table-slot and own-slot assets, while shown | inactive | 401 | table-slot assets, while shown |
+| Audio: tap to allow, mute, presence heartbeat | yes | yes | inactive | 401 | yes |
+| Make this browser a table screen (SEC-48) | yes, while a session is live | inactive | inactive | 401 | no such route |
+| Leave | closes this browser's streams; there is nothing to revoke | the same | no effect | no effect | revokes the grant if it is live, and deletes its cookie in every case (SEC-48) |
+| Anything else — export, history, documents, library, other participants, aliases | no such route | no such route | no such route | no such route | no such route |
+
+Three rows deserve their reasons. **The owner is a table-slot viewer here**, because
+a table route never acts with GM authority (SEC-44) and the GM may be projecting it.
+**A participant slot the caller is not entitled to is absent, not refused**: a
+refusal would confirm that the slot exists and is in use (WT-7). **A seated account
+asking to make a screen gets inactive**, because minting is an ownership check and
+SEC-3 answers every ownership failure alike.
+
+**§8.1, read through this section.** Its *Table credential* column reads *Screen
+grant*: never reaches a GM path (SEC-44). A seated account on any GM route is an
+*Other account* (404): a seat confers no GM access. *Issue or reset a personal link;
+read enrolment status* is superseded by *offer a seat; read seat status* (owner yes,
+other account 404, R-15). *Start, end, rotate a table session; read the link, the
+device count and presence* reads *…; read the table address, the screens and
+presence*, and gains *revoke one screen* if SEC-48 is built.
+
+### 15.7 Realtime events on the table channel (replaces the table half of §8.3)
+
+| Event | GM channel (Owner) | Table channel: seated account | Table channel: owner's player view, screen grant |
+| --- | --- | --- | --- |
+| Invocation and edit status | yes | never | never |
+| Reveal state, with the epoch, every slot, version numbers and mask keys | yes | never | never |
+| A slot's content: snapshot, replace, clear, with that slot's own sequence | yes, all slots | the table slot and its own slot | the table slot only |
+| Another participant's slot: content, sequence, or the fact that it changed | yes | **never, and not inferable** (REVEAL-24) | **never, and not inferable** |
+| Cue play and stop: opaque handle, kind, loop, timing | yes, with title | yes, never the title or filename (AUDIO-29) | the same |
+| Presence: seated accounts by alias, and a count of screens | yes (AUDIO-21) | never | never |
+| Session ended, this seat removed, or this screen revoked | yes, as a session or participant status change | one generic inactive event, then the connection closes | the same |
+| Rotate | yes | a `reconnect` frame; the client reopens, re-authorises from its seat and takes a fresh snapshot, which shows the cleared table (REVEAL-17) | the owner: as a seated account; a screen: the generic inactive event, its grant being revoked |
+| Table audio switched on or off for the session | yes | a boolean | a boolean |
+| Heartbeat | yes | yes | yes |
+| Capture state (the sibling plan's) | per `agent-forge-harness-1ir.1.11` | a boolean only | a boolean only |
+
+A table channel still carries **no event that exists only because of a slot the
+client is not entitled to**, and none because of another account's seat: no gap, no
+counter, no forced re-snapshot (WT-7, T-8). The GM channel is per campaign, not per
+generation, and a Rotate does not close it (RT-7).
+
+### 15.8 Tests
+
+§9 carries them, so that each test id is defined once. **Rewritten in place:** T-6
+(the table grant matrix, replacing the enrolment test) and T-8 (the slot isolation
+transcript, for a seated account, the owner's player view and a screen). **Added:**
+T-19 (Fetch Metadata), T-20 (per-frame revocation of accounts), T-21 (rate-limit
+keys), T-22 (screen mode), T-23 (the owner on a table route). **Amended by pointer:**
+T-3 is superseded by T-22 and T-23; T-4, T-5, T-17 and T-18 apply to the screen
+grant wherever they name a table credential, and their join and enrolment halves are
+superseded.
+
+### 15.9 Risks and owner decisions
+
+§10 marks its rows 1 and 4 superseded and adds five rows for this section (a seated
+account watching when absent; a forgotten signed-in screen; a password typed on a
+shared machine; a player's own slot on a room screen; a shared login). §11 adds S-7
+(screen mode or revocable sessions before table routes leave the pilot) and S-8
+(pairing a screen from a phone — not proposed).
+
+### 15.10 TP-1 — the table slot and `campaign`-class keys
+
+> **PROPOSED — needs the lead's signature.** Until it is signed, shared eligibility
+> ADR §15.2 holds: the table slot takes `public` keys only.
+
+**The question.** Section 4's `eligible_for_audience` refuses every class but
+`public` for the table audience, because *a guest can see the table*. There are no
+guests now (D-4). May the table slot show `campaign`-class keys? This is a
+**widening**. It binds nothing before the enforcement release: v1 is mask-only
+(A-15, ED-11), and eligibility binds only from `1ir.11.1`, per campaign, when its GM
+switches enforcement on. So `1kg.7.1` and `1kg.7.2` wait on none of it.
+
+**For the widening.**
+
+1. Every *principal* entitled to the table slot is the owner, a seated account or a
+   screen the owner minted (SEC-41, SEC-48), and every seated account is eligible for
+   a `campaign` key (§4: `campaign -> yes` for an active participant). No principal
+   would receive a key it could not already be shown privately.
+2. `public`-only pushes GMs to over-classify. To show on the projector a piece of
+   lore the whole party knows, a GM marks it `public`, and `public` also governs the
+   player-safe export (§4: audience = table) and any later public surface. A rule
+   stricter than the audience manufactures `public` classes, which leak further later.
+3. It would lift TT-2's and TT-13's refusals for content the whole party already
+   knows, which is most of what a table shows.
+
+**Against the widening.**
+
+1. **The table slot's audience is a room, not a set of accounts.** D-4 signed in
+   every *browser*, not every *eye*: a projector at a venue, a streamed session, a
+   friend on the couch. A screen grant is by design the view shown to people who hold
+   no seat. `public` means *fit for anyone*, which is what a room is.
+2. **Exports would widen with it.** The player-safe export and print are evaluated
+   for `audience = table` (§4). Widening the table widens a file that leaves the
+   platform, unless exports are first moved to an explicit `public` audience — a
+   second change to the same function.
+3. **It changes the meaning of rules already written against `public`**: TT-2 and
+   TT-13, and ED-12's *`public` to `campaign` stops a table display*, which would lose
+   its case and need a new one — a principal leaving the table's set.
+4. **The need is already met another way.** A participant audience of every seated
+   account exists in the model (O-3's per-recipient copies, ED-15): a `campaign` key
+   displayed to all of them reaches each seated account's own view, and never a
+   screen, a stream or an export.
+
+**Recommendation: do not widen.** Keep `public`-only for the table slot. Add an
+*Everyone seated* choice to the audience picker that expands at Confirm to every
+active, accepted seat, exactly as a named group is expanded (ED-8), so a `campaign`
+key reaches every seated account's own view and no room. Its cost: under the
+one-live-disclosure rule a document cannot at once show its `public` fields on the
+table and its `campaign` fields to everyone seated, so the GM picks one. *Design
+lane:* the picker entry, and how the `For you` slot (TABLE-14) presents a display
+made to the whole party.
+
+**If the lead signs the widening anyway**, it must come with: (a) exports evaluated
+for an explicit `public` audience, not `table`; (b) screen grants excluded from the
+table slot whenever it holds a `campaign` key — in effect a second table slot, which
+is the clearest sign the widening has the wrong shape; (c) ED-12's new narrowing, a
+principal leaving the table's set; (d) TT-2 and TT-13 rewritten. It would be recorded
+in shared ADR §4, ED-10, ED-12 and a new row under §15.2 there.
+
+### 15.11 What this changes elsewhere
+
+None of these files is edited by this bead. Each row names what a later bead must
+amend; the lead propagates the decision records, and `1kg.1.2` the wire contract.
+
+**Wire contract** (`docs/workbench-wire-contract.md`):
+
+| Where | Amendment |
+| --- | --- |
+| *Schema families*, the *Table sessions* row (`done`) | Back to open: `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest` and `EnrolResponse` are retired; screen shapes are added if SEC-48 is built |
+| *The table-session family*, its opening paragraph | No bearer secret is on the wire for an account; the table token, the enrolment code and the pinned 43-character length go (SEC-41, SEC-43) |
+| `TableJoinRequest` / `TableJoinResponse` | Retired: there is no join. `full` moves to the stream and snapshot refusal (SEC-47); `inactive` stays as SEC-46's one answer |
+| `EnrolRequest` / `EnrolResponse` | Retired (TA-2) |
+| `TableSessionRequest` / `TableSessionAnswer` | Start and Rotate return no token; Rotate resets no personal link (REVEAL-17 as amended) |
+| `TableSession` | Carries the admission generation and, if SEC-48 is built, the screen count and last-seen times — not a count of devices holding credentials |
+| New, if SEC-48 is built | A screen request and answer, a Leave, and the GM's list entry for a screen: an id, created and last seen — never the grant |
+| `TableRole` (`participant`, `guest`) | Becomes the principal's role: *seated* (the table slot and `mine`) or *table only* (the owner's player view, a screen); names are `1kg.1.2`'s |
+| *Idempotency*, the *Start, End, Rotate a session* row | Unchanged except that no answer carries a token |
+| *The realtime family*, the channel table | GM `presence`: seated accounts by alias and a screen count, not guest counts; Table `session`: the principal's role, not the device's; `inactive` also closes a removed seat's or a revoked screen's stream; after Rotate an account principal gets `reconnect` (§15.7) |
+| *The realtime family*, the paragraph on generations | *Link generation* reads *admission generation*; a table stream holds its principal as well as its generation (SEC-42) |
+| *The reveal family*, *What the GM sees* | `pending_delivery`: *no accepted seat yet, or seated and not connected*, for *not enrolled, or enrolled and not connected* |
+| *The frames*, the Table `snapshot` row | *For a seated account, its own slot*, for *with the enrolled device credential this device's own* |
+| *The frames*, *A table client is never told a participant id* | The server resolves `mine` from the account session and its seat, not from *the credential pair*; the `TableJoinResponse` and `EnrolResponse` examples go |
+| *The frames*, *The role decides the slots* | *Guest* reads *table-only principal*; a removed seat is **inactive**, never downgraded to table-only (TABLE-13 is gone) |
+| *The frames*, the liveness paragraph | Its example — a snapshot route answering *a link the GM has just rotated (SEC-9, TABLE-13)* — reads *a revoked screen, or a seat removed mid-snapshot* |
+
+**Interaction record** (`docs/adr/gm-workbench-interactions.md`):
+
+| Row | Amendment |
+| --- | --- |
+| X-4 | A table browser keeps the account session, or on a screen the screen grant alone (SEC-49) — not a table credential and an enrolment credential |
+| X-7 | The three client-side credential places become one: the account session cookie (or a screen grant); no table token in a fragment |
+| REVEAL-17, AE-51 | Rotate advances the admission generation: every stream closes, seated accounts reconnect to a cleared table, every screen is revoked and shows the generic inactive screen; no token is replaced and `Also reset personal links` goes |
+| REVEAL-19, A-1 | No table credential for an account and no token in a fragment; the screen grant keeps A-1's cookie attributes; `/t/<campaign-slug>` stays rejected because a slug is private text (SEC-43) |
+| REVEAL-20 | The sheet shows the non-secret table address; the QR is still drawn in the browser |
+| REVEAL-25, A-5, A-6 | Connection bounds per principal, not per device; the per-generation credential bound and both join throttles are retired; screens bounded per session (SEC-47, SEC-48) |
+| TABLE-1 | *Joining the table…* becomes an opening state; wording is the design lane's |
+| TABLE-9, AE-33 | The one generic screen answers every not-entitled case (SEC-46), and its copy no longer speaks of a *table link* |
+| TABLE-10 | Refusals are throttled by account and by source (SEC-47) |
+| TABLE-12 | *Full* means a per-principal, per-session or service-wide connection bound |
+| TABLE-13, TABLE-15, TABLE-16, AUD-6, AUD-17, A-3, A-7 | Superseded (A-23, A-24); recorded as closed |
+| AUDIO-21, AE-41 | The GM sees seated accounts by alias and screens as a count; there are no guests to count |
+| AE-32, AE-69 | *A guest* reads *another seated account, the owner's player view or a screen* |
+| AE-83 | A reload rejoins because the account session is the credential |
+| NG-22 | *Player accounts for the table* is no longer a non-goal (D-1) |
+| New row | The shared-screen sign-in, screen mode and the *Everyone seated* audience (TP-1) are handed to the design lane (D-4's open item) |
+
+**Shared eligibility ADR** (`docs/adr/shared-eligibility-display-disclosure.md`):
+section 4's `entitled` and ED-25 — the requester is the principal of §15.2 (owner,
+seat or screen grant), and a stream's admission generation replaces *the credential's
+link generation*; RQ-5 and section 4's narrowing — a revocation advances the
+admission generation and revokes screen grants, Remove marks the seat, and *Reset
+personal link* and *the codes* go; RQ-11 — *the admission generation and the seat or
+screen grant* for *the link generation, the credential*; ED-10, ED-12 and section 4's
+`eligible_for_audience` — the reason *a guest can see the table* becomes *a room can
+see the table*, the rule unchanged unless TP-1 is signed.
+
+**Media and realtime ADR** (`docs/adr/gm-workbench-media-and-realtime.md`): RT-7 —
+a table stream holds its principal and generation, and the state read carries the
+active seats and unrevoked screen grants (SEC-42); RT-8 — the `connections` row names
+a principal, and the per-device bound is per principal.
+
+**Beads.** `1kg.2.3` is re-scoped: no join token, no join route; the admission
+generation; screen grants if the design lane adopts SEC-48; `start` and
+`rotate_link` stop minting a link token, and `find_by_link_digest` and
+`issue_credential` lose their join callers. A later migration — never an edit of
+0004 — drops `table_sessions.link_digest` with its index and
+`session_join_counters`, and may rename `link_generation`. `1kg.7.1` and `1kg.7.2`
+build on SEC-41 to SEC-46 and are unblocked by this section once accepted. `1kg.7.4`
+takes SEC-43, SEC-45's page rule, SEC-49 and the screen UI; `1kg.7.5` takes SEC-42 in
+the state read, SEC-47's bounds and T-8, T-20 and T-21; `1kg.9.1` owns T-6, T-8 and
+T-19 to T-23; `1kg.9.5` amends T-17; `yje.2.3` carries S-7.
