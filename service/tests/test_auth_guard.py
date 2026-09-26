@@ -11,12 +11,15 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi.dependencies.models import Dependant
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import config
 from service.app import app, get_auth_store, get_service, require_session
 from service.auth_store import InMemoryAuthStore
 from service.models import ChatMode, ChatResponse
+from service.workbench_api import api_routes
 
 pytestmark = pytest.mark.real_auth
 
@@ -108,25 +111,46 @@ def test_open_route_stays_open(store, method, path, body):
     assert _request(TestClient(app), method, path, body).status_code != 401
 
 
+def _depends_on(dependant: Dependant, target: object) -> bool:
+    """Whether `target` is anywhere in the dependency tree: directly, or through
+    a wrapper such as `workbench_api.gm_session`'s, where it is a sub-dependency."""
+    return any(d.call is target or _depends_on(d, target) for d in dependant.dependencies)
+
+
+def _session_guarded_routes(rows: list[tuple[str, APIRoute]]) -> list[tuple[str, str]]:
+    """(method, effective path) of every route in `rows` behind `require_session`."""
+    return [
+        (method, path)
+        for path, route in rows
+        if _depends_on(route.dependant, require_session)
+        for method in (route.methods or set()) - {"HEAD", "OPTIONS"}
+    ]
+
+
 def test_every_session_guarded_route_is_in_the_matrix(store):
     """The matrix cannot silently fall behind the app.
 
     Walk the real routing table for anything depending on `require_session` and
     require it to be listed above. A new guarded endpoint that nobody adds here
     would otherwise ship with no test that it is guarded at all.
+
+    The walk goes through `workbench_api.api_routes()`, not `app.routes`, for two
+    reasons (agent-forge-harness-oe6). A router-mounted route is not in
+    `app.routes` at all: `include_router` appends one private object there. And
+    a Workbench route reaches `require_session` through `gm_session`'s wrapper,
+    so it is a SUB-dependency; a check of the direct dependencies alone would
+    pass over it. Either way the old walk found nothing and passed.
     """
     listed = {(method, template) for method, template, _, _ in PROTECTED_ROUTES}
-    for route in app.routes:
-        dependant = getattr(route, "dependant", None)
-        if dependant is None:
-            continue
-        if not any(d.call is require_session for d in dependant.dependencies):
-            continue
-        for method in getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}:
-            assert (method, route.path) in listed, (
-                f"{method} {route.path} is behind require_session but is missing "
-                f"from PROTECTED_ROUTES — add it, so the guard is actually tested"
-            )
+    rows = api_routes(app)
+    assert rows, "api_routes() is empty; this walk would pass over nothing"
+    guarded = _session_guarded_routes(rows)
+    assert guarded, "found no route behind require_session; the walk is not seeing the app"
+    for method, path in guarded:
+        assert (method, path) in listed, (
+            f"{method} {path} is behind require_session but is missing "
+            f"from PROTECTED_ROUTES — add it, so the guard is actually tested"
+        )
 
 
 def test_chat_with_session_is_200(store):

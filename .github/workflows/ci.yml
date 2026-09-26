@@ -3,8 +3,8 @@
 #
 # Activation state (jobs light up as infrastructure lands, nothing is faked):
 #   tests            — always run.
-#   contract-parity  — always runs. Informational: it does not gate deploy,
-#                       because no route serves the Workbench contract yet.
+#   contract-parity  — always runs, and gates deploy: the timeline route serves
+#                       the Workbench contract (agent-forge-harness-oe6).
 #   ui-e2e           — always runs against the production Compose stack.
 #   retrieval-metrics — needs secrets EVAL_DATABASE_URL + OPENAI_API_KEY
 #                       (a reachable corpus DB; the corpus is deliberately not
@@ -226,7 +226,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [python-tests, ui-tests, ui-e2e, retrieval-metrics]
+    needs: [python-tests, ui-tests, ui-e2e, contract-parity, retrieval-metrics]
     # DEPLOY_TARGET gates the JOB, not a step inside it. Previously an
     # unconfigured repo ran the job, printed a "No-op" summary and exited 0 — a
     # green check for deploying nothing, which is exactly how a merge came to be
@@ -253,6 +253,7 @@ jobs:
       && needs.python-tests.result == 'success'
       && needs.ui-tests.result == 'success'
       && needs.ui-e2e.result == 'success'
+      && needs.contract-parity.result == 'success'
       && (needs.retrieval-metrics.result == 'success'
           || needs.retrieval-metrics.result == 'skipped'
           || (github.event_name == 'workflow_dispatch' && inputs.force_deploy))

@@ -20,22 +20,55 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from fastapi import APIRouter, FastAPI
+from fastapi.routing import APIRoute
+
+import service.app as service_app
+from service.spa_fallback import SPA_MOUNT_NAME, SPA_ROUTE_PREFIX, install_spa
+from service.workbench_api import api_routes
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-APP_PY = REPO_ROOT / "service" / "app.py"
 NGINX_CONF = REPO_ROOT / "ui" / "nginx.conf"
 VITE_CONFIG = REPO_ROOT / "ui" / "vite.config.ts"
 
 # `/` is the SPA mount itself, not an API prefix to proxy.
 _NOT_AN_API_PREFIX = {""}
 
+#: Served by the app and deliberately NOT proxied by either front end, so that
+#: no browser can reach it. `/internal/jobs` (`1kg.2.7`) is the job runner's
+#: endpoint, invoked from inside the platform only; nginx and Vite must never
+#: forward it. Excluded here explicitly — it used to be merely invisible to a
+#: regex over decorator syntax, which is not a rule anybody could check.
+_DELIBERATELY_UNPROXIED = frozenset({"internal"})
+
+
+def _is_spa(route: APIRoute) -> bool:
+    """The SPA fallback's routes, by NAME (lead ruling Q-13): a locally built
+    `ui/dist` must not add `/workspace` or `/profile` as API prefixes."""
+    return route.name == SPA_MOUNT_NAME or route.name.startswith(SPA_ROUTE_PREFIX)
+
+
+def _all_prefixes_of(app: FastAPI) -> set[str]:
+    """Top-level path segment of every API route `app` serves, however it was
+    declared — `@app.<method>`, `add_api_route` or a mounted router.
+
+    Through `api_routes()`, not `app.routes` (which does not hold router-mounted
+    routes) and not `app.openapi()["paths"]` (which omits a route declared with
+    `include_in_schema=False`: the guard would go blind the same way).
+    """
+    paths = [path for path, route in api_routes(app) if not _is_spa(route)]
+    assert paths, "found no API routes on the app — did the route model change?"
+    return {p.strip("/").split("/")[0] for p in paths} - _NOT_AN_API_PREFIX
+
+
+def _prefixes_of(app: FastAPI) -> set[str]:
+    """The prefixes both front ends must proxy."""
+    return _all_prefixes_of(app) - _DELIBERATELY_UNPROXIED
+
 
 def _route_prefixes() -> set[str]:
-    """Top-level path segment of every @app.<method>("/...") route."""
-    text = APP_PY.read_text(encoding="utf-8")
-    paths = re.findall(r"""@app\.(?:get|post|put|patch|delete)\(\s*["'](/[^"']*)["']""", text)
-    assert paths, "found no @app routes in service/app.py — did the decorator style change?"
-    prefixes = {p.strip("/").split("/")[0] for p in paths}
-    return prefixes - _NOT_AN_API_PREFIX
+    """The prefixes of the real service app."""
+    return _prefixes_of(service_app.app)
 
 
 def test_every_api_prefix_is_proxied_by_nginx_and_vite() -> None:
@@ -62,3 +95,51 @@ def test_auth_prefix_is_proxied() -> None:
     assert "auth" in _route_prefixes(), "expected /auth/* routes on the service app"
     assert re.search(r"location\s+/auth\b", NGINX_CONF.read_text(encoding="utf-8"))
     assert re.search(r"['\"]/auth['\"]\s*:", VITE_CONFIG.read_text(encoding="utf-8"))
+
+
+def test_a_router_mounted_route_is_visible_to_the_proxy_guard() -> None:
+    """The guard used to read `service/app.py` as text and see only
+    `@app.<method>` decorators: a route on a router was invisible to it, and it
+    kept passing while covering less (agent-forge-harness-oe6)."""
+    app = FastAPI()
+    router = APIRouter()
+
+    @router.get("/campaigns/{campaign_id}/assets")
+    def list_assets(campaign_id: str) -> list[str]:
+        return []
+
+    app.include_router(router)
+    assert "campaigns" in _prefixes_of(app)
+
+
+def test_deliberately_unproxied_prefixes_are_excluded_and_never_proxied() -> None:
+    """Exercised on an app that HAS such a route: on the real app the set is
+    empty today, and the exclusion would be a no-op nothing checks."""
+    assert _DELIBERATELY_UNPROXIED == frozenset({"internal"})
+    app = FastAPI()
+
+    @app.post("/internal/jobs")
+    def run_jobs() -> dict[str, str]:
+        return {}
+
+    assert "internal" in _all_prefixes_of(app)  # the route is really there
+    assert "internal" not in _prefixes_of(app)  # and the exclusion removed it
+    nginx = NGINX_CONF.read_text(encoding="utf-8")
+    vite = VITE_CONFIG.read_text(encoding="utf-8")
+    for prefix in sorted(_DELIBERATELY_UNPROXIED):
+        assert not re.search(rf"location\s+/{prefix}\b", nginx), f"ui/nginx.conf proxies /{prefix}"
+        assert not re.search(rf"['\"]/{prefix}['\"]\s*:", vite), f"ui/vite.config.ts proxies /{prefix}"
+
+
+def test_the_spa_fallback_is_not_an_api_prefix(tmp_path: Path) -> None:
+    (tmp_path / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    app = FastAPI()
+
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        return {}
+
+    install_spa(app, tmp_path)
+    served = {path for path, _ in api_routes(app)}
+    assert served == {"/healthz", "/", "/workspace", "/profile"}  # the SPA routes are really there
+    assert _prefixes_of(app) == {"healthz"}

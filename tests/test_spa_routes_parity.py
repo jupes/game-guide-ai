@@ -16,10 +16,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from starlette.routing import Mount
+from fastapi import FastAPI
 
 import service.app as service_app
 from service.spa_fallback import CLIENT_ROUTES, SPA_MOUNT_NAME, SPA_ROUTE_PREFIX
+from service.workbench_api import api_routes
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ROUTES_TS = REPO_ROOT / "ui" / "src" / "shell" / "routes.ts"
@@ -60,18 +61,20 @@ def _is_spa_route(route: object) -> bool:
     return name == SPA_MOUNT_NAME or name.startswith(SPA_ROUTE_PREFIX)
 
 
-def _live_api_prefixes() -> set[str]:
+def _live_api_prefixes(app: FastAPI = service_app.app) -> set[str]:
     """Top-level path segment of every live, non-SPA route on the real app --
-    mirrors `tests/test_proxy_contract.py`'s `_route_prefixes()`, but reads
-    the live route table instead of scanning decorator syntax, so it also
-    sees routes added via `add_api_route`/`include_router`. Filtered the same
-    way `service/tests/test_spa_fallback.py` filters, so a locally built
-    `ui/dist` cannot change the answer."""
+    mirrors `tests/test_proxy_contract.py`'s `_route_prefixes()`, and like it
+    reads the live route table through `service.workbench_api.api_routes()`,
+    which sees routes added with `add_api_route` and routers mounted with
+    `include_router` (`app.routes` does not hold the latter at all). Filtered
+    by name the same way `service/tests/test_spa_fallback.py` filters, so a
+    locally built `ui/dist` cannot change the answer. FastAPI's own
+    documentation routes are not API routes, so `api_routes()` does not report
+    them; they are read from the app's settings instead and stay reserved."""
     prefixes: set[str] = set()
-    for route in service_app.app.routes:
-        if _is_spa_route(route) or isinstance(route, Mount):
-            continue
-        path = getattr(route, "path", None)
+    documentation = (app.openapi_url, app.docs_url, app.redoc_url)
+    paths = [path for path, route in api_routes(app) if not _is_spa_route(route)]
+    for path in [*paths, *(url for url in documentation if url)]:
         if not path or path == "/":
             continue
         prefixes.add("/" + path.strip("/").split("/")[0])
