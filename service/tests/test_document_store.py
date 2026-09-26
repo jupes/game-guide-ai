@@ -46,6 +46,7 @@ from service.document_store import (
     DocumentRecord,
     FieldConflict,
     InMemoryDocumentStore,
+    LibraryRow,
     StaleTypeVersion,
     UnknownCursor,
     UnknownWriteRevision,
@@ -61,6 +62,7 @@ from service.document_store import (
 )
 from service.workbench_contracts import (
     HISTORY_PAGE_MAX_ITEMS,
+    LIBRARY_PAGE_MAX_ITEMS,
     LIST_FIELD_MAX_ITEMS,
     LIST_ITEM_MAX_CHARS,
     MAX_CHANGED_FIELDS,
@@ -69,6 +71,7 @@ from service.workbench_contracts import (
     WRITE_REVISION_MAX,
     Author,
     DocumentTypeId,
+    LibrarySort,
 )
 
 #: The ONE place this bead's migration number appears in Python (lead ruling
@@ -235,7 +238,9 @@ def test_no_column_of_the_document_schema_is_named_as_though_it_held_visibility(
         assert not offending, f"{table}.{column} reads like it held {offending[0]}"
 
 
-@pytest.mark.parametrize("record", [DocumentRecord, VersionRecord, VersionSnapshot])
+@pytest.mark.parametrize(
+    "record", [DocumentRecord, VersionRecord, VersionSnapshot, LibraryRow]
+)
 def test_no_field_of_a_document_record_is_named_as_though_it_held_visibility(record: type):
     """The same claim, and the same limit, on the records the store hands
     downstream — because a field the store invented would reach `1kg.5.2`
@@ -788,7 +793,7 @@ def test_the_two_lifecycle_properties_read_their_own_timestamps():
     assert replace(made.version, sealed_at=moment).is_sealed is True
 
 
-@pytest.mark.parametrize("record", ["document", "version", "snapshot"])
+@pytest.mark.parametrize("record", ["document", "version", "snapshot", "library"])
 def test_no_private_text_reaches_a_repr(record: str):
     """`field(repr=False)`, following `Participant.alias`'s precedent: a
     traceback prints every `repr()` on the way out."""
@@ -797,8 +802,16 @@ def test_no_private_text_reaches_a_repr(record: str):
         "document": repr(made),
         "version": repr(made.version),
         "snapshot": repr(VersionSnapshot(made.version, made.type, 1, made.data)),
+        "library": repr(
+            LibraryRow(
+                id=made.id, type=made.type, type_version=1, name=PRIVATE["name"],
+                qualifier=PRIVATE["qualifier"], tags=(PRIVATE["tag"],),
+                archived_at=None, updated_at=made.updated_at,
+            )
+        ),
     }[record]
-    for canary in (PRIVATE["name"], PRIVATE["prose"], PRIVATE["summary"]):
+    for canary in (PRIVATE["name"], PRIVATE["prose"], PRIVATE["summary"],
+                   PRIVATE["qualifier"], PRIVATE["tag"]):
         assert canary not in shown, shown
     assert "doc_" in shown, "the opaque id is exactly what a log line may carry"
 
@@ -832,9 +845,8 @@ def test_the_twin_and_the_postgres_store_offer_the_same_methods():
 
     assert surface(docs.InMemoryDocumentStore) == surface(docs.PostgresDocumentStore)
     assert surface(docs.InMemoryDocumentStore) == [
-        "create", "delete", "get", "history", "hold", "restore", "seal", "set_archived",
-        "snapshot",
-        "write_fields",
+        "create", "delete", "get", "history", "hold", "list_documents", "restore", "seal",
+        "set_archived", "snapshot", "write_fields",
     ]
 
 
@@ -875,7 +887,7 @@ def test_the_idle_seal_needs_no_clock_of_its_own():
     for name in mutators:
         signature = inspect.signature(getattr(docs.PostgresDocumentStore, name))
         assert "now" in signature.parameters, name
-    for name in ("get", "history", "snapshot", "hold", "delete"):
+    for name in ("get", "history", "snapshot", "hold", "delete", "list_documents"):
         signature = inspect.signature(getattr(docs.PostgresDocumentStore, name))
         assert "now" not in signature.parameters, f"{name} reads; nothing it does needs a clock"
     assert timedelta(seconds=SEAL_IDLE_S) == timedelta(minutes=10)
@@ -977,3 +989,73 @@ def test_both_worlds_restore_through_the_same_decisions(owner: str, guard: str):
         if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
     }
     assert guard in called, f"{owner}.restore no longer routes through {guard}"
+
+
+#: The two orders, spelled here rather than read from the module, so a change to
+#: `_LIBRARY_ORDER` turns this red instead of agreeing with itself.
+ORDER_BY = {
+    LibrarySort.RECENT: 'ORDER BY updated_at DESC, id COLLATE "C" LIMIT %s',
+    LibrarySort.NAME: 'ORDER BY name_key COLLATE "C", id COLLATE "C" LIMIT %s',
+}
+AFTER = {
+    LibrarySort.RECENT: '(updated_at < %s OR (updated_at = %s AND id COLLATE "C" > %s))',
+    LibrarySort.NAME: (
+        '(name_key COLLATE "C" > %s OR (name_key COLLATE "C" = %s AND id COLLATE "C" > %s))'
+    ),
+}
+
+
+@pytest.mark.parametrize("sort", list(LibrarySort))
+@pytest.mark.parametrize("archived", [False, True])
+@pytest.mark.parametrize("term", ["", "vashti"])
+@pytest.mark.parametrize("anchored", [False, True])
+def test_every_library_statement_orders_as_its_index_keys_and_matches_no_pattern(
+    sort: LibrarySort, archived: bool, term: str, anchored: bool
+):
+    """B-12: the ORDER BY is exactly the library indexes' keys, `COLLATE "C"`
+    included, and the keyset predicate uses the same collations; the archive
+    filter is literal so the partial index is provable at plan time; the search
+    is `strpos` and never a pattern or a database fold. Every variant, because
+    the statement is composed and `_statements()` sees only literals."""
+    anchor = (datetime.now(UTC), "doc_" + "a" * 22) if anchored else None
+    text, params = docs._library_statement(
+        CAMPAIGN, types=["npc"], archived=archived, term=term, sort=sort,
+        anchor=anchor, limit=25,
+    )
+
+    assert text.startswith(
+        "SELECT id, type, type_version, data->>'name', data->>'qualifier', data->'tags', "
+        "archived_at, updated_at FROM campaign.documents "
+        "WHERE campaign_id = %s AND type = ANY(%s) "
+    ), "three keys of the JSON and never the body, one campaign, a set of types"
+    assert text.endswith(ORDER_BY[sort])
+    assert ("AND archived_at IS NOT NULL" if archived else "AND archived_at IS NULL") in text
+    assert ("AND strpos(search_key, %s) > 0" in text) == bool(term)
+    assert (f"AND {AFTER[sort]}" in text) == anchored
+    for forbidden in ("ILIKE", "LIKE", "lower(", "citext", "FOR UPDATE", "FOR SHARE"):
+        assert forbidden not in text
+    assert text.count("%s") == len(params)
+    assert params[0] == CAMPAIGN and params[-1] == 25
+
+
+@pytest.mark.parametrize("owner", ["PostgresDocumentStore", "InMemoryDocumentStore"])
+def test_both_worlds_refuse_the_same_library_queries(owner: str):
+    """The type set, the archive flag, the search bound and fold, the sort and
+    the page cap are checked in one function both worlds call, so they cannot
+    disagree about which queries are refused or what a term matches."""
+    node = _definition("list_documents", owner)
+    called = {
+        inner.func.id
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+    }
+    assert "_library_terms" in called
+    assert ("_library_statement" in called) == (owner == "PostgresDocumentStore")
+
+
+def test_the_library_cap_is_the_contracts():
+    """LIB-23's 25 is the client's page size; the server's cap is the
+    contract's, and a bool is not a page size."""
+    for bad in (0, LIBRARY_PAGE_MAX_ITEMS + 1, True):
+        with pytest.raises(ValueError, match=f"1 to {LIBRARY_PAGE_MAX_ITEMS}"):
+            docs._library_terms(["npc"], False, "", LibrarySort.RECENT, bad)

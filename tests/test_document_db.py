@@ -53,6 +53,7 @@ from service.db import (
 )
 from service.document_store import (
     SEAL_IDLE_S,
+    SEARCH_KEY_MAX,
     DocumentRecord,
     FieldConflict,
     InMemoryDocumentStore,
@@ -1483,3 +1484,318 @@ def test_a_restore_whose_chosen_content_no_longer_validates_is_refused(
     with world.db.transaction() as unit:
         after = world.documents.get(unit, campaign, before.id)
     assert after == before and after.version.sealed_at is None
+
+
+# The library (LIB-20 to LIB-23, B-11, B-12, B-13) ────────────────────────────
+
+
+def _category(category: wire.LibraryCategory) -> list[str]:
+    """A library category is a SET of types, read from the registry (LIB-3)."""
+    return sorted(
+        kind.value for kind, owner in wire.DOC_TYPE_LIBRARY_CATEGORY.items() if owner is category
+    )
+
+
+NPCS = _category(wire.LibraryCategory.NPCS)
+DOCUMENTS = _category(wire.LibraryCategory.DOCUMENTS)
+
+
+def _library(world: World, campaign_id: str, **kwargs: Any) -> list[Any]:
+    kwargs.setdefault("types", NPCS)
+    kwargs.setdefault("archived", False)
+    kwargs.setdefault("limit", wire.LIBRARY_PAGE_MAX_ITEMS)
+    with world.db.transaction() as unit:
+        return world.documents.list_documents(unit, campaign_id, **kwargs)
+
+
+def _ids(rows: list[Any]) -> list[str]:
+    return [row.id for row in rows]
+
+
+def _named(world: World, campaign_id: str, name: str, **kwargs: Any) -> DocumentRecord:
+    data = {"name": name, "qualifier": "", "tags": []} | kwargs.pop("extra", {})
+    return _a_document(world, campaign_id, data=data, **kwargs)
+
+
+def _recent_order(records: list[DocumentRecord]) -> list[str]:
+    """Newest first, the id breaking a tie in code-point order: what
+    `ORDER BY updated_at DESC, id COLLATE "C"` means, computed independently."""
+    by_id = sorted(records, key=lambda record: record.id)
+    return [record.id for record in sorted(by_id, key=lambda r: r.updated_at, reverse=True)]
+
+
+#: Non-ASCII spelled by code point, so that no test source carries a character
+#: an editor might silently normalise.
+E_ACUTE_CAPITAL = chr(0xC9)
+OMEGA_CAPITAL = chr(0x3A9)
+FULLWIDTH_ANA = "".join(chr(code) for code in (0xFF21, 0xFF4E, 0xFF41))
+ODYSSEUS_CAPITALS = "".join(chr(code) for code in (0x39F, 0x394, 0x3A5, 0x3A3, 0x3A3, 0x395, 0x3A5, 0x3A3))
+ODYSSEUS_FINAL_SIGMA = "".join(
+    chr(code) for code in (0x3BF, 0x3B4, 0x3C5, 0x3C3, 0x3C3, 0x3B5, 0x3C5, 0x3C2)
+)
+DOTTED_CAPITAL_I = chr(0x130)
+COMBINING_DOT_ABOVE = chr(0x307)
+ZERO_WIDTH_SPACE = chr(0x200B)
+
+
+def test_the_library_lists_one_category_newest_first_with_the_id_breaking_ties(
+    world: World,
+) -> None:
+    """LIB-22's default sort, and a stable TOTAL order: documents written in the
+    same instant are told apart by id, identically in both worlds."""
+    campaign = _a_campaign(world)
+    other = _a_campaign(world, name="Someone else's")
+    start = datetime.now(UTC)
+    moments = [start, start + timedelta(seconds=1), start + timedelta(seconds=1),
+               start + timedelta(seconds=1), start + timedelta(seconds=2)]
+    listed = [_named(world, campaign, f"npc {index}", now=moment)
+              for index, moment in enumerate(moments)]
+    _a_document(world, campaign, data=A_STATBLOCK, doc_type=DocumentTypeId.STATBLOCK,
+                now=start + timedelta(seconds=9))
+    _named(world, other, "not mine", now=start + timedelta(seconds=9))
+
+    assert _ids(_library(world, campaign)) == _recent_order(listed)
+
+
+def test_the_name_sort_is_the_folded_name_in_code_point_order(world: World) -> None:
+    """LIB-22's `Name A-Z` over `name_key`, collated "C" in PostgreSQL and
+    compared by code point in Python, so the worlds agree by construction. A
+    capital E with an acute sorts after `zeta` here, where a linguistic
+    collation would put it before: exactly the disagreement "C" rules out."""
+    campaign = _a_campaign(world)
+    emile, omega = E_ACUTE_CAPITAL + "mile", OMEGA_CAPITAL + "mega"
+    names = ["beta", "Alpha", "ALPHA", emile, "zeta", omega]
+    made = {name: _named(world, campaign, name) for name in names}
+    alphas = sorted([made["Alpha"].id, made["ALPHA"].id])
+
+    shown = _library(world, campaign, sort=wire.LibrarySort.NAME)
+
+    assert _ids(shown) == [
+        *alphas, made["beta"].id, made["zeta"].id, made[emile].id, made[omega].id,
+    ]
+
+
+def test_active_or_archived_is_a_filter_and_never_both(world: World) -> None:
+    """LIB-22: "Active or Archived everywhere". There is no query for both."""
+    campaign = _a_campaign(world)
+    kept = _named(world, campaign, "kept")
+    shelved = _named(world, campaign, "shelved")
+    with world.db.transaction() as unit:
+        world.documents.set_archived(unit, campaign, shelved.id, archived=True)
+
+    assert _ids(_library(world, campaign)) == [kept.id]
+    archived = _library(world, campaign, archived=True)
+    assert _ids(archived) == [shelved.id] and archived[0].archived_at is not None
+    assert _ids(_library(world, campaign, archived=True, sort=wire.LibrarySort.NAME)) == [
+        shelved.id
+    ]
+
+
+def test_the_documents_category_narrows_to_one_type(world: World) -> None:
+    """LIB-3 puts five types in Documents and LIB-22 lets that one category be
+    narrowed to a single type; `type` is a filter, never an index key."""
+    campaign = _a_campaign(world)
+    made = {
+        kind: _named(world, campaign, kind.value, doc_type=kind)
+        for kind in (DocumentTypeId.HANDOUT, DocumentTypeId.LORE, DocumentTypeId.QUEST_LOG)
+    }
+    _named(world, campaign, "an npc")
+
+    assert sorted(_ids(_library(world, campaign, types=DOCUMENTS))) == sorted(
+        record.id for record in made.values()
+    )
+    assert _ids(_library(world, campaign, types=[DocumentTypeId.LORE])) == [
+        made[DocumentTypeId.LORE].id
+    ]
+
+
+def _every_page(world: World, campaign_id: str, size: int, **kwargs: Any) -> list[list[str]]:
+    pages: list[list[str]] = []
+    after: str | None = None
+    while True:
+        page = _ids(_library(world, campaign_id, limit=size, after_id=after, **kwargs))
+        if not page:
+            return pages
+        pages.append(page)
+        after = page[-1]
+
+
+@pytest.mark.parametrize("sort", list(wire.LibrarySort))
+def test_keyset_paging_crosses_a_page_boundary_without_a_gap_or_a_repeat(
+    world: World, sort: wire.LibrarySort
+) -> None:
+    """B-12. The anchor is a document id and nothing else (inferred decision
+    13: a name in a cursor would carry private text to the client), and its
+    sort key is looked up server-side. Three rows tie on the sort key and
+    straddle the first page boundary, which is where a keyset predicate that
+    forgot the tiebreaker would skip or repeat one."""
+    campaign = _a_campaign(world)
+    start = datetime.now(UTC)
+    tied = start + timedelta(seconds=1)
+    specs = [("a", start), ("same", tied), ("same", tied), ("same", tied), ("z", start)]
+    made = [_named(world, campaign, name, now=moment) for name, moment in specs]
+
+    whole = _ids(_library(world, campaign, sort=sort))
+    pages = _every_page(world, campaign, 2, sort=sort)
+
+    if sort is wire.LibrarySort.RECENT:
+        assert whole == _recent_order(made)
+    else:
+        assert whole == [made[0].id, *sorted(r.id for r in made[1:4]), made[4].id]
+    assert [len(page) for page in pages] == [2, 2, 1]
+    assert [row for page in pages for row in page] == whole
+
+
+def test_a_library_cursor_that_names_no_row_of_that_campaign_is_refused(
+    world: World,
+) -> None:
+    """Never a silent restart at page one, which would loop for ever. A
+    document of another campaign is refused exactly as a missing one is, and so
+    is a deleted one: in the twin, too, where it lingers as a tombstone."""
+    campaign = _a_campaign(world)
+    other = _a_campaign(world, name="Someone else's")
+    _named(world, campaign, "listed")
+    theirs = _named(world, other, "theirs")
+    gone = _named(world, campaign, "gone")
+    with world.db.transaction() as unit:
+        world.documents.delete(unit, campaign, gone.id)
+
+    for anchor in (DOCUMENT, theirs.id, gone.id):
+        with pytest.raises(UnknownCursor) as refused:
+            _library(world, campaign, after_id=anchor)
+        assert refused.value.kind == "library"
+
+
+def test_a_library_row_carries_the_listed_keys_and_no_body(world: World) -> None:
+    """Three keys read out of the JSON (`data->>'name'`, `data->>'qualifier'`,
+    `data->'tags'`), so a list page never loads a 1.3 MB body (F-10). The row
+    is the store's, not the wire's `LibraryItem`: the store validates none of
+    it, and a missing qualifier is None rather than a guess."""
+    campaign = _a_campaign(world)
+    npc = _a_document(world, campaign)
+    lore = _a_document(world, campaign, data={"name": "The Drowned Bell"},
+                       doc_type=DocumentTypeId.LORE)
+
+    [row] = _library(world, campaign)
+    assert (row.id, row.type, row.type_version) == (npc.id, "npc", 1)
+    assert (row.name, row.qualifier, row.tags) == ("Vashti", "Harbourmistress", ("harbour",))
+    assert (row.archived_at, row.updated_at) == (None, npc.updated_at)
+    assert not hasattr(row, "data") and not hasattr(row, "voice")
+    [bare] = _library(world, campaign, types=[DocumentTypeId.LORE])
+    assert (bare.id, bare.name, bare.qualifier, bare.tags) == (
+        lore.id, "The Drowned Bell", None, (),
+    )
+
+
+# Search (LIB-20, requirement 8, B-13) ─────────────────────────────────────────
+
+
+def _found(world: World, campaign_id: str, term: str, **kwargs: Any) -> list[str]:
+    return _ids(_library(world, campaign_id, search=term, **kwargs))
+
+
+def test_a_search_matches_across_a_fold_only_difference_in_both_worlds(
+    world: World,
+) -> None:
+    """Folded by the application on both sides (the term with the same `_fold`
+    as the stored key) and compared case-SENSITIVELY with `strpos`, because
+    both sides are already folded. `lower()` would answer by the database's
+    collation provider and disagree with Python about a final sigma and a
+    dotted capital I, silently."""
+    campaign = _a_campaign(world)
+    wide = _named(world, campaign, FULLWIDTH_ANA + " the Lamplighter")
+    sigma = _named(world, campaign, ODYSSEUS_CAPITALS)
+    dotted = _named(world, campaign, DOTTED_CAPITAL_I + "zmir Docks")
+
+    assert _found(world, campaign, "ana") == [wide.id]
+    assert _found(world, campaign, ODYSSEUS_FINAL_SIGMA) == [sigma.id]
+    assert _found(world, campaign, "i" + COMBINING_DOT_ABOVE + "zmir") == [dotted.id]
+
+
+def test_a_search_matches_name_qualifier_and_tags_and_never_the_body(world: World) -> None:
+    """LIB-20 names three keys. Never the body, never `notes`, and never
+    `npc.true_identity`: an identity link is a GM-only relation and never
+    enters any index (ED-20)."""
+    campaign = _a_campaign(world)
+    made = _a_document(
+        world, campaign,
+        data={"name": "Vashti", "qualifier": "Broker", "tags": ["harbour"],
+              "notes": "keeps the ledger", "true_identity": "the Archivist"},
+    )
+
+    for term in ("vashti", "broker", "harbour"):
+        assert _found(world, campaign, term) == [made.id], term
+    for term in ("ledger", "archivist"):
+        assert _found(world, campaign, term) == [], term
+
+
+def test_a_search_term_cannot_match_across_a_field_boundary(world: World) -> None:
+    """The separator U+001F is what keeps the tags `alpha` and `beta` from
+    reading as `alpha beta`. A term that CONTAINS U+001F cannot reach it: the
+    fold turns it into a space before matching, in both worlds — otherwise the
+    term would find the two separate tags, whose stored key holds exactly
+    `alpha`, U+001F, `beta`. Nothing here stores a control character;
+    `1kg.5.7.2` refuses them in field text."""
+    campaign = _a_campaign(world)
+    apart = _named(world, campaign, "x", extra={"tags": ["alpha", "beta"]})
+    together = _named(world, campaign, "y", extra={"tags": ["alpha beta"]})
+    assert "alpha" + chr(0x1F) + "beta" in _folded_keys(world, apart.id)[1]
+
+    assert _found(world, campaign, "alpha" + chr(0x1F) + "beta") == [together.id]
+    assert _found(world, campaign, "alpha beta") == [together.id]
+    assert sorted(_found(world, campaign, "alpha")) == sorted([apart.id, together.id])
+
+
+def test_a_search_term_is_matched_literally_and_never_as_a_pattern(world: World) -> None:
+    """`strpos` is not a pattern, so nothing needs escaping. With `LIKE`, a GM
+    searching `50%` would match every document starting `50`, `a_b` would match
+    `axb`, and a backslash would escape whatever followed it."""
+    campaign = _a_campaign(world)
+    backslash = "back" + chr(0x5C) + "slash"
+    made = {name: _named(world, campaign, name)
+            for name in ("50% off", "5000 crowns", "a_b", "axb", backslash, "backslash")}
+
+    assert _found(world, campaign, "50%") == [made["50% off"].id]
+    assert _found(world, campaign, "a_b") == [made["a_b"].id]
+    assert _found(world, campaign, "k" + chr(0x5C) + "s") == [made[backslash].id]
+
+
+def test_a_document_with_the_most_tags_saves_and_is_found_by_its_name(world: World) -> None:
+    """`tags` admits 100 items of 2,000 characters, so `search_key` is
+    TRUNCATED at `SEARCH_KEY_MAX` rather than refused: refusing would make a
+    legal document unsaveable. Truncation loses tags first and never the name.
+    The cost is the known limit of lead ruling 5.1#4, pinned here so that it
+    cannot change unnoticed: a tag past the bound is not found."""
+    campaign = _a_campaign(world)
+    tags = ["t" * wire.LIST_ITEM_MAX_CHARS] * (wire.LIST_FIELD_MAX_ITEMS - 1) + ["zeppelin"]
+    made = _named(world, campaign, "Vashti", extra={"tags": tags})
+
+    assert len(_folded_keys(world, made.id)[1]) == SEARCH_KEY_MAX
+    assert _found(world, campaign, "vashti") == [made.id]
+    assert _found(world, campaign, "zeppelin") == [], "the known limit, and only that"
+
+
+def test_a_search_that_folds_to_nothing_adds_no_clause(world: World) -> None:
+    """The caller rejects a search under `SEARCH_MIN_CHARS`; the store treats a
+    term with nothing left after folding as no search at all."""
+    campaign = _a_campaign(world)
+    made = _named(world, campaign, "Vashti")
+    for term in ("", "   ", ZERO_WIDTH_SPACE):
+        assert _found(world, campaign, term) == [made.id], repr(term)
+
+
+def test_a_library_query_it_cannot_honour_is_refused_without_quoting_it(
+    world: World,
+) -> None:
+    """Refused before any statement runs, identically in both worlds, naming
+    the field and never the value: a search string is private text (SEC-20)."""
+    campaign = _a_campaign(world)
+    private = "vashtizzle" * 11
+    with pytest.raises(ValueError, match="search is at most") as refused:
+        _library(world, campaign, search=private)
+    assert private not in f"{refused.value!s}{refused.value!r}"
+    for bad in ({"types": []}, {"types": ["nonesuch"]}, {"sort": "oldest"},
+                {"limit": 0}, {"limit": wire.LIBRARY_PAGE_MAX_ITEMS + 1},
+                {"archived": "no"}):
+        with pytest.raises(ValueError):
+            _library(world, campaign, **bad)

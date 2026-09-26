@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import json
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -76,11 +76,14 @@ from .db import InMemoryDatabase, InMemoryTransaction, UnitOfWork
 from .workbench_contracts import (
     DOC_TYPE_VERSION,
     HISTORY_PAGE_MAX_ITEMS,
+    LIBRARY_PAGE_MAX_ITEMS,
+    SEARCH_MAX_CHARS,
     TEXT_FIELD_MAX_CHARS,
     VERSION_NUMBER_MAX,
     WRITE_REVISION_MAX,
     Author,
     DocumentTypeId,
+    LibrarySort,
     check_fields,
 )
 
@@ -357,6 +360,50 @@ class DocumentRecord:
         return self.archived_at is not None
 
 
+@dataclass(frozen=True)
+class LibraryRow:
+    """One row of a library page: enough to list, match and open a document,
+    and nothing of its body.
+
+    Read with `data->>'name'`, `data->>'qualifier'` and `data->'tags'`, so a
+    list page never loads a 1.3 MB document (F-10). It is not a wire model and
+    the store validates none of it (requirement 3): `1kg.5.2` builds the wire's
+    `LibraryItem` from it. A qualifier the document does not have is None
+    rather than a guess. The three listed keys are private text (SEC-20).
+    """
+
+    id: str
+    type: str
+    type_version: int
+    name: str = field(repr=False)
+    qualifier: str | None = field(repr=False)
+    tags: tuple[str, ...] = field(repr=False)
+    archived_at: datetime | None
+    updated_at: datetime
+
+
+def _library_row(
+    identity: tuple[str, str, int],
+    listed: tuple[Any, Any, Any],
+    archived_at: datetime | None,
+    updated_at: datetime,
+) -> LibraryRow:
+    """One conversion for both worlds, from `(id, type, type_version)` and the
+    three listed values as JSON gives them — so a missing name, qualifier or tag
+    list reads back the same whichever world stored it."""
+    name, qualifier, tags = listed
+    return LibraryRow(
+        id=identity[0],
+        type=identity[1],
+        type_version=int(identity[2]),
+        name="" if name is None else name,
+        qualifier=qualifier,
+        tags=tuple(tags or ()),
+        archived_at=archived_at,
+        updated_at=updated_at,
+    )
+
+
 # ── Guards the store applies before any statement runs ───────────────────────
 
 
@@ -434,6 +481,99 @@ def check_archived(archived: bool) -> bool:
     if not isinstance(archived, bool):
         raise ValueError("archived is true or false")
     return archived
+
+
+def _library_terms(
+    types: Sequence[DocumentTypeId | str],
+    archived: bool,
+    search: str,
+    sort: LibrarySort | str,
+    limit: int,
+) -> tuple[list[str], bool, str, LibrarySort, int]:
+    """Everything `list_documents` checks before either world reads a row, so
+    the two cannot disagree about which queries are refused (B-11). The search
+    comes back FOLDED with the one rule the stored key was folded with; an
+    empty result means no search clause at all. Every refusal names the field
+    and never the value: a search string is private text (SEC-20)."""
+    kinds = sorted({check_type(kind).value for kind in types})
+    if not kinds:
+        raise ValueError("a library page lists at least one document type")
+    if len(search) > SEARCH_MAX_CHARS:
+        raise ValueError(f"a search is at most {SEARCH_MAX_CHARS} characters")
+    try:
+        order = LibrarySort(sort)
+    except ValueError:
+        raise ValueError("a library sorts by recent or by name") from None
+    return (
+        kinds,
+        check_archived(archived),
+        _fold(search),
+        order,
+        check_page(limit, LIBRARY_PAGE_MAX_ITEMS),
+    )
+
+
+#: The three keys a library row reads out of the JSON, and nothing of the body.
+_LIBRARY_COLUMNS = (
+    "id, type, type_version, data->>'name', data->>'qualifier', data->'tags', "
+    "archived_at, updated_at"
+)
+#: The two total orders of LIB-22, spelled exactly as the four library indexes
+#: of `0008` key them, `COLLATE "C"` included: code-point order is what the twin
+#: produces in Python, and an ORDER BY that differed from the index's would sort
+#: every page instead of reading it off the index.
+_LIBRARY_ORDER: dict[LibrarySort, str] = {
+    LibrarySort.RECENT: 'updated_at DESC, id COLLATE "C"',
+    LibrarySort.NAME: 'name_key COLLATE "C", id COLLATE "C"',
+}
+#: "Strictly after the anchor" in each order, with the same collations. The
+#: recent order mixes directions, so it cannot be one row comparison.
+_LIBRARY_AFTER: dict[LibrarySort, str] = {
+    LibrarySort.RECENT: '(updated_at < %s OR (updated_at = %s AND id COLLATE "C" > %s))',
+    LibrarySort.NAME: (
+        '(name_key COLLATE "C" > %s OR (name_key COLLATE "C" = %s AND id COLLATE "C" > %s))'
+    ),
+}
+
+
+def _library_statement(
+    campaign_id: str,
+    *,
+    types: list[str],
+    archived: bool,
+    term: str,
+    sort: LibrarySort,
+    anchor: tuple[Any, str] | None,
+    limit: int,
+) -> tuple[str, tuple[Any, ...]]:
+    """The one statement `PostgresDocumentStore.list_documents` runs, built from
+    fixed fragments only. Pure, so a test can read every variant's text and
+    `EXPLAIN` the default one against a seeded database.
+
+    **The archive filter is literal SQL, never a parameter**: the four library
+    indexes are partial on `archived_at`, and the planner can use a partial
+    index only when it can prove, while planning, that the query's WHERE
+    implies the index's — which a `(archived_at IS NULL) = $n` in a generic
+    plan never lets it do. `type = ANY(%s)` is a filter, not a key (LIB-3).
+    The search is `strpos` over the already-folded key — case-SENSITIVE,
+    because both sides are folded, and not a pattern, so a `%`, `_` or
+    backslash in the term needs no escaping.
+    """
+    clauses = [
+        f"SELECT {_LIBRARY_COLUMNS} FROM campaign.documents "
+        f"WHERE campaign_id = %s AND type = ANY(%s)",
+        "AND archived_at IS NOT NULL" if archived else "AND archived_at IS NULL",
+    ]
+    params: list[Any] = [campaign_id, types]
+    if term:
+        clauses.append("AND strpos(search_key, %s) > 0")
+        params.append(term)
+    if anchor is not None:
+        clauses.append(f"AND {_LIBRARY_AFTER[sort]}")
+        params.extend((anchor[0], anchor[0], anchor[1]))
+    clauses.append(f"ORDER BY {_LIBRARY_ORDER[sort]} LIMIT %s")
+    params.append(limit)
+    return " ".join(clauses), tuple(params)
 
 
 def check_page(limit: int, cap: int) -> int:
@@ -631,6 +771,45 @@ class DocumentStore(Protocol):
         self, unit: UnitOfWork, campaign_id: str, document_id: str, version_number: int
     ) -> VersionSnapshot | None:
         """One version's metadata, type and content, or None."""
+        ...  # pragma: no cover - structural type
+
+    def list_documents(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        types: Sequence[DocumentTypeId | str],
+        archived: bool,
+        search: str = "",
+        sort: LibrarySort | str = LibrarySort.RECENT,
+        after_id: str | None = None,
+        limit: int,
+    ) -> list[LibraryRow]:
+        """A page of one campaign's library (LIB-20 to LIB-23).
+
+        **One scoping rule and three shapes.** Every page is one campaign's.
+        `types` is a library category — a SET of types (LIB-3) — or the one
+        type the Documents category narrows to (LIB-22); it is a filter and
+        never an index key. `sort` is Recent (`updated_at` newest first) or
+        Name A-Z (`name_key`), each with the id as the tiebreaker so the order
+        is total. `archived` is Active or Archived and never both (LIB-22):
+        there is deliberately no query for every document of a campaign.
+
+        **Search** (LIB-20) matches `name`, `qualifier` and `tags` only — never
+        the body, never `notes`, never `npc.true_identity` (ED-20) — by folding
+        the term with the same `_fold` as the stored `search_key` and comparing
+        case-sensitively. A term with nothing left after folding adds no
+        clause; one longer than `SEARCH_MAX_CHARS` is refused naming the field.
+        It is not full text (LIB-21), and past `SEARCH_KEY_MAX` folded
+        characters a document's later tags stop matching (lead ruling 5.1#4).
+
+        **Paging** is keyset, and the anchor is a document id and nothing else
+        (inferred decision 13): its sort key is looked up server-side by id and
+        campaign alone, and an anchor that names no document of that campaign
+        is `UnknownCursor("library")` — never a silent restart at page one.
+        `limit` is bounded by `LIBRARY_PAGE_MAX_ITEMS`; LIB-23's 25 is the
+        client's page size. It takes no lock and no `now`.
+        """
         ...  # pragma: no cover - structural type
 
     def restore(
@@ -870,6 +1049,39 @@ class PostgresDocumentStore:
         if row is None:
             return None
         return VersionSnapshot(_version(row), row[10], int(row[11]), row[9])
+
+    def list_documents(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        types: Sequence[DocumentTypeId | str],
+        archived: bool,
+        search: str = "",
+        sort: LibrarySort | str = LibrarySort.RECENT,
+        after_id: str | None = None,
+        limit: int,
+    ) -> list[LibraryRow]:
+        kinds, flag, term, order, page = _library_terms(types, archived, search, sort, limit)
+        anchor: tuple[Any, str] | None = None
+        if after_id is not None:
+            found = pg(unit).conn.execute(
+                "SELECT updated_at, name_key, id FROM campaign.documents "
+                "WHERE id = %s AND campaign_id = %s",
+                (after_id, campaign_id),
+            ).fetchone()
+            if found is None:
+                raise UnknownCursor("library")
+            anchor = (found[0] if order is LibrarySort.RECENT else found[1], found[2])
+        statement, params = _library_statement(
+            campaign_id, types=kinds, archived=flag, term=term, sort=order,
+            anchor=anchor, limit=page,
+        )
+        rows = pg(unit).conn.execute(statement, params).fetchall()
+        return [
+            _library_row((row[0], row[1], row[2]), (row[3], row[4], row[5]), row[6], row[7])
+            for row in rows
+        ]
 
     # ── Mutators ─────────────────────────────────────────────────────────────
 
@@ -1317,6 +1529,27 @@ def _tombstone(row: _DocumentRow) -> _DocumentRow:
     )
 
 
+def _in_library_order(rows: list[_DocumentRow], order: LibrarySort) -> list[_DocumentRow]:
+    """The twin's half of `_LIBRARY_ORDER`, by code point as `COLLATE "C"`
+    orders. Recent is newest first with the id ascending among equals: a sort
+    by id, then a stable sort by time reversed, which keeps equals in id order
+    (`seats_for_user` does the same)."""
+    if order is LibrarySort.NAME:
+        return sorted(rows, key=lambda row: (row.name_key, row.id))
+    by_id = sorted(rows, key=lambda row: row.id)
+    return sorted(by_id, key=lambda row: row.updated_at, reverse=True)
+
+
+def _comes_after(row: _DocumentRow, anchor: _DocumentRow, order: LibrarySort) -> bool:
+    """The twin's half of `_LIBRARY_AFTER`: strictly after the anchor in that
+    total order."""
+    if order is LibrarySort.NAME:
+        return (row.name_key, row.id) > (anchor.name_key, anchor.id)
+    return row.updated_at < anchor.updated_at or (
+        row.updated_at == anchor.updated_at and row.id > anchor.id
+    )
+
+
 @dataclass(frozen=True)
 class _VersionRow:
     version: VersionRecord
@@ -1435,6 +1668,43 @@ class InMemoryDocumentStore:
             if found.version.number == version_number:
                 return VersionSnapshot(found.version, row.type, row.type_version, found.data)
         return None
+
+    def list_documents(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        types: Sequence[DocumentTypeId | str],
+        archived: bool,
+        search: str = "",
+        sort: LibrarySort | str = LibrarySort.RECENT,
+        after_id: str | None = None,
+        limit: int,
+    ) -> list[LibraryRow]:
+        kinds, flag, term, order, page = _library_terms(types, archived, search, sort, limit)
+        live = self._live(fake(unit))
+        rows = [
+            row
+            for row in live.values()
+            if row.campaign_id == campaign_id
+            and row.type in kinds
+            and (row.archived_at is not None) == flag
+            and term in row.search_key
+        ]
+        if after_id is not None:
+            anchor = live.get(after_id)
+            if anchor is None or anchor.campaign_id != campaign_id:
+                raise UnknownCursor("library")
+            rows = [row for row in rows if _comes_after(row, anchor, order)]
+        return [
+            _library_row(
+                (row.id, row.type, row.type_version),
+                (row.data.get("name"), row.data.get("qualifier"), row.data.get("tags")),
+                row.archived_at,
+                row.updated_at,
+            )
+            for row in _in_library_order(rows, order)[:page]
+        ]
 
     # ── Mutators ─────────────────────────────────────────────────────────────
 
