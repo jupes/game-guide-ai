@@ -16,8 +16,10 @@ enumerate, and a catch-all would swallow a mistyped API path into `text/html`
 where a caller expected JSON (and would shadow `/assets/...`, MS-7).
 `CLIENT_ROUTES` is the ONLY set of paths this answers for; everything else
 keeps answering exactly what a service-only image answers today -- a JSON 404
-produced by FastAPI's own default handler (this module registers none of its
-own, and neither does `service/app.py`).
+produced by FastAPI's own default handler. This module registers no handler;
+`service/app.py` installs `service.workbench_api`'s two application-wide ones
+(`install_workbench`), and for anything that is not a Workbench route they
+delegate to that same default, so the answer is unchanged.
 
 `install_spa` must be the LAST thing `service/app.py` calls: the `StaticFiles`
 mount it registers is a `Mount("/")`, which matches every path, so anything

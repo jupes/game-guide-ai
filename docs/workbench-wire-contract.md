@@ -144,6 +144,13 @@ Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
 client has one error path.
 
+One Workbench failure is outside the envelope on purpose: **a 401**. Every
+authentication failure on a Workbench route — no cookie, an expired or
+tampered one, an account that no longer exists — answers the single string body
+`{"detail": "not signed in"}`, so a stolen cookie cannot learn that its account
+was deleted. The client keys on the status (it signs out on any 401) and reads
+this body as a legacy one, which is why the code table has no 401 row.
+
 ### Idempotency
 
 Every Workbench mutation can be retried safely. A key is **scoped to the

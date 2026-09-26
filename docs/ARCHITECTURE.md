@@ -594,3 +594,134 @@ row is taken from either source, because an older exchange may still wait
 below it. A page may therefore hold fewer entries than asked for — even none —
 with a non-null `next_cursor`; the walk still ends, and it never loses, repeats
 or reorders an entry.
+
+## Workbench routes: the posture every new route inherits
+
+`service/workbench_api.py` (agent-forge-harness-oe6) is the seam every Workbench
+GM route attaches to. It holds no route of its own, and on this branch **no
+Workbench route exists yet**: the conversation timeline is still a
+legacy-shaped `@app.get` with its own hand-validation, until the follow-up bead
+moves it onto the router.
+
+**What makes a route a Workbench route.** It is declared on a router made by
+`workbench_router(...)`, so its route object is a `WorkbenchRoute`. Membership
+is by class and never by path: `/conversations` is served by legacy routes and
+will be served by Workbench ones, and at request time `scope["route"].path`
+does not carry an `include_router` prefix. SEC-23 and S-A say the validation
+handler "branches by path"; branching by route membership is the same rule
+with a key that can be implemented.
+
+**Wiring a route module.** A route module cannot import `service.app`, which
+imports it, so it takes the application's GM dependency as a parameter:
+
+```python
+# in service/app.py, after require_session is defined:
+WORKBENCH_GM = workbench_api.gm_session(require_session)
+app.include_router(conversations_api.build_router(WORKBENCH_GM))
+
+# in service/conversations_api.py, which imports nothing from service.app:
+def build_router(gm: SessionDependency) -> APIRouter:
+    router = workbench_api.workbench_router(gm)
+
+    @router.get("/conversations")
+    def index(session: SessionData = Depends(gm)) -> ConversationPage: ...
+
+    return router
+```
+
+`gm_session` declares `Depends(require_session)` rather than calling it, so the
+test suite's default-session override and E2E's overrides reach through it. It
+is also the one place the `dm` rule lives: when `yje.4.1` replaces roles with
+tiers, it is what changes.
+
+**GM routes only.** `workbench_router` applies the `dm` gate, so it is for GM
+routes and nothing else. Table routes wait on `hgm` (TA-2) and must reuse
+`origin_check` in a factory of their own. A legacy route moved onto a router
+(`iu6`) goes on a plain `APIRouter`, never this one, or its 401 and 422 bodies
+change.
+
+**The order of checks, as a client observes it.**
+
+1. Malformed JSON under a JSON content type (`application/json` or `+json`),
+   on a route that declares a body model, is a 422 with the Workbench
+   validation body *before* the origin check and before authentication:
+   FastAPI parses the body before it solves any dependency. Nothing has run
+   and no resource is named, which SEC-3 permits in its own words. Any other
+   content type reaches the origin check and is refused there. A route that
+   reads its body by hand has no such case.
+2. The origin check (state-changing methods only) → 403. This runs ahead of
+   authentication by inference, not because SEC-3 lists it: an origin refusal
+   names no resource and no account, and running it first refuses a forged
+   request before an attacker-supplied cookie is looked up. It is structural
+   (`workbench_router`'s dependency list); reversing it swaps two entries.
+3. Authentication → the one 401 body.
+4. Role → 403, naming no resource.
+5. Ownership, in the statement → `not_found()`.
+6. Validation that depends on the resource, then state (409) — so neither is
+   reachable for a resource the caller does not own.
+
+**The answers.**
+
+| Case | Status | Body |
+| --- | --- | --- |
+| any authentication failure | 401 | `{"detail": "not signed in"}` — outside the envelope, see `workbench-wire-contract.md` |
+| missing, someone else's, deleted | 404 | `not_found` / "That isn't available." |
+| not a GM | 403 | `forbidden` / "This is a Game Master feature." |
+| origin, fetch-site or content type | 403 | `forbidden` / "That request didn't come from this application." |
+| validation | 422 | `validation_error_body(...)`, which echoes nothing; the log line carries `redacted_errors(...)`, the method and the route template |
+
+`install_workbench(app)` registers the two application-wide handlers that make
+this so. Every answer that is not a Workbench 401 or 422 — every legacy route,
+every unknown path, every 405 — is produced by FastAPI's own default handler,
+byte for byte; a golden-bytes test pins the legacy answers, and two identity
+tests pin that the real app has both handlers installed.
+
+**The origin rule.** For `POST`, `PUT`, `PATCH` and `DELETE`: an `Origin`, if
+sent, must name the host the request was sent to (`Origin: null` is refused);
+a `Sec-Fetch-Site`, if sent, must be `same-origin`; and a request that carries
+a body must declare `application/json`. A request with neither header is not a
+browser and is allowed. There is no CORS: no `Access-Control-*` header, and
+`OPTIONS` is 405.
+
+The host of `Origin` is compared with the `Host` header; the port only when
+`Host` carries one, and the scheme never. The service cannot see its own
+scheme (Cloud Run forwards HTTP) and nginx forwards `Host` without the
+browser's port, so a stricter comparison would refuse every production and
+every E2E request. The allow table, each row tested as a real 200:
+
+| `Host` | `Origin` | Where it comes from |
+| --- | --- | --- |
+| `127.0.0.1` | `http://127.0.0.1:4173` | E2E through nginx (`proxy_set_header Host $host` drops the port) |
+| `localhost:5173` | `http://localhost:5173` | the Vite dev proxy (string target, no `changeOrigin`) |
+| `svc-xyz.a.run.app` | `https://svc-xyz.a.run.app` | Cloud Run (TLS ends at the edge) |
+| `testserver` | none | not a browser |
+
+*Residual:* where a proxy strips the port, a page on the same host at another
+port or scheme passes the `Origin` comparison. That is unreachable in
+production (one host, one port) and irrelevant in the E2E stack, and
+`Sec-Fetch-Site`, which does compare scheme and port, is enforced whenever a
+browser sends it. The reversal is a `WORKBENCH_ALLOWED_ORIGINS` setting.
+
+**Enumerating routes.** `api_routes(app)` is the one way anything here reads
+what the app serves. `app.routes` no longer is the route table —
+`include_router` appends one private object and the included routes are not in
+it — and `fastapi.routing.iter_route_contexts` yields route *contexts*, which
+proxy `.path` and `.dependant` but are never an instance of `APIRoute`; the
+route object is `ctx.original_route`. `app.openapi()["paths"]` is not used
+either, because a route declared with `include_in_schema=False` is missing from
+it. The route census, the auth-matrix walk, the proxy guard and the SPA-parity
+walk all read the table this way, so a router-mounted route cannot land
+unseen; the census fails until a new route's author declares it legacy or
+Workbench.
+
+**A route never builds its own 401, 403 or 404.** A structural check in
+`service/tests/test_workbench_api.py` reads the source file of every Workbench
+route's endpoint and refuses a literal 401/403/404. The one exemption is a line
+carrying `# workbench-api: deliberate-status` with a reason on the same
+comment, for a switched-off capability that must answer exactly like a path
+that does not exist (`1kg.8.1`'s dark routes). The repository's Python holds
+none today, and the test asserts that count.
+
+**Contract parity gates deploy.** The timeline route serves the Workbench
+contract, so `contract-parity` is now one of `deploy`'s `needs` and a
+top-level clause of its `if:` (see `docs/ci.md`).
