@@ -272,6 +272,39 @@ describe('Markdown — X-10, no remote subresources', () => {
     expect(c.querySelector('img')?.hasAttribute('srcset')).toBe(false)
   })
 
+  // agent-forge-harness-1q7: a <template>'s `.content` is a separate
+  // DocumentFragment — never a descendant in the light DOM the three sweeps
+  // above walk — so it was a blind spot for BOTH the element-removal sweep
+  // (an <img> inside it) and the attribute sweep (a `style` inside it), and
+  // each is asserted here as its own test so either regressing independently
+  // turns red. Both assert through `.content`, not `querySelectorAll('*')` on
+  // the light DOM: that call has the identical blind spot as the bug (it
+  // never reaches into `.content` either) and would report success either
+  // way, proving nothing.
+  it('1q7: drops a remote image parked inside a <template>', () => {
+    const c = restricted('<template><img src="https://example.test/a.png"></template>')
+    const template = c.querySelector('template')
+    expect(template).not.toBeNull()
+    expect(template?.content.querySelector('img') ?? null).toBeNull()
+  })
+
+  it('1q7: strips a fetching style parked inside a nested <template>', () => {
+    const c = restricted(
+      '<template><template><p style="background:url(https://example.test/x.png)">boo</p></template></template>',
+    )
+    const outer = c.querySelector('template')
+    expect(outer).not.toBeNull()
+    const inner = outer?.content.querySelector('template')
+    expect(inner).not.toBeNull()
+    const p = inner?.content.querySelector('p')
+    expect(p).not.toBeNull()
+    expect(p?.getAttribute('style') ?? null).toBeNull()
+    // The element itself — not merely its dangerous attribute — must survive:
+    // this proves the fix walks in and strips the style, rather than nuking
+    // every nested template's content wholesale.
+    expect(p?.textContent).toBe('boo')
+  })
+
   it('AE-66 sweep: no attribute anywhere can reach the remote host, and the page is not empty', () => {
     const c = md(AE66_FIXTURE) // no props — the ChatPane shape
     // Positive control FIRST. The sweep below is green over a tree that carries

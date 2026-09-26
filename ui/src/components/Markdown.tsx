@@ -125,8 +125,15 @@ function styleMayFetch(value: string): boolean {
   return lowered.includes('\\') || FETCHING_CSS_FUNCTIONS.some((name) => lowered.includes(name))
 }
 
-/** X-10, applied to already-sanitized DOM — in a document that cannot fetch (see `renderMarkdown`). */
-function stripRemoteSubresources(host: HTMLElement): void {
+/**
+ * X-10, applied to already-sanitized DOM — in a document that cannot fetch
+ * (see `renderMarkdown`).
+ *
+ * `host` is `ParentNode` rather than `HTMLElement` because this function calls
+ * itself on a `<template>`'s `.content` — a `DocumentFragment`, never an
+ * `HTMLElement` — see the recursion below.
+ */
+function stripRemoteSubresources(host: ParentNode): void {
   for (const element of host.querySelectorAll(SUBRESOURCE_ELEMENTS)) element.remove()
   for (const element of host.querySelectorAll('*')) {
     for (const name of SUBRESOURCE_ATTRIBUTES) element.removeAttribute(name)
@@ -149,6 +156,19 @@ function stripRemoteSubresources(host: HTMLElement): void {
     // thing, and a portrait the GM asked for is not destroyed for lack of a
     // caption.
     if (!image.hasAttribute('alt')) image.setAttribute('alt', '')
+  }
+  // A <template>'s `.content` is a SEPARATE DocumentFragment, not a descendant
+  // in the tree the three sweeps above walk — that is exactly why none of them
+  // ever see what a template wraps. `Element.innerHTML` still re-serializes
+  // `.content` verbatim when this function's caller reads `inert.body.innerHTML`
+  // below, so a remote reference parked in there reaches the sanitized STRING
+  // handed to `dangerouslySetInnerHTML` exactly as if it had never been
+  // wrapped. Recursing repeats every sweep above inside `.content` instead of
+  // only deleting the wrapper, and — because this same call finds and descends
+  // into any `<template>` nested inside THAT content — it reaches arbitrarily
+  // deep nesting without a separate loop.
+  for (const template of host.querySelectorAll('template')) {
+    stripRemoteSubresources(template.content)
   }
 }
 
