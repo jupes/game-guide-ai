@@ -463,7 +463,7 @@ class PostgresConversationStore(ConversationStore):
             f"   AND (%(after_at)s::timestamptz IS NULL "
             f"        OR {_SORT_KEY} < %(after_at)s::timestamptz "
             f"        OR ({_SORT_KEY} = %(after_at)s::timestamptz "
-            f"            AND conversation_id < %(after_id)s)) "
+            f"            AND conversation_id <= %(after_id)s)) "
             f"{_ORDER_BY} LIMIT %(limit)s",
             {
                 "owner": owner_id,
