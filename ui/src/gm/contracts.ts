@@ -347,6 +347,82 @@ function oneLine(min: number, max: number) {
   })
 }
 
+/** The code points stored text refuses, as inclusive ranges, each with the class
+ * a refusal names. Numbers, so that no invisible character ever sits in this
+ * file. `REFUSED_TEXT_CODE_POINTS` in `service/workbench_contracts.py` is the same
+ * table, and both suites pin it to one literal list. */
+const REFUSED_TEXT_RANGES: readonly (readonly [number, number, string])[] = [
+  [0x0000, 0x0008, 'a control character'],
+  [0x000b, 0x000c, 'a control character'],
+  [0x000e, 0x001f, 'a control character'],
+  [0x007f, 0x009f, 'a control character'],
+  [0x061c, 0x061c, 'a bidirectional control character'],
+  [0x200e, 0x200f, 'a bidirectional control character'],
+  [0x202a, 0x202e, 'a bidirectional control character'],
+  [0x2066, 0x2069, 'a bidirectional control character'],
+  [0xfeff, 0xfeff, 'a byte order mark'],
+]
+const REFUSED_TEXT_CLASS = new Map<number, string>(
+  REFUSED_TEXT_RANGES.flatMap(([low, high, what]) =>
+    Array.from({ length: high - low + 1 }, (_, offset): [number, string] => [low + offset, what]),
+  ),
+)
+
+/** Lead ruling of 2026-09-21 on bead 1kg.5.7.2: what stored text refuses — NUL
+ * and the other C0 and C1 controls, DEL, the whole Bidi_Control set and the byte
+ * order mark. The refused set is the set that changes what a reader SEES relative
+ * to what is stored. Tab is allowed; line feed and carriage return are allowed
+ * wherever a line break already is (`oneLine` still refuses them); U+200C, U+200D
+ * and U+FE0F are allowed, because real names and emoji sequences need them. */
+export const REFUSED_TEXT_CODE_POINTS: ReadonlySet<number> = new Set(REFUSED_TEXT_CLASS.keys())
+
+/** The class of the first refused code point in `value`, or null. */
+function refusedTextClass(value: string): string | null {
+  for (const character of value) {
+    const what = REFUSED_TEXT_CLASS.get(character.codePointAt(0) ?? 0)
+    if (what !== undefined) return what
+  }
+  return null
+}
+
+/**
+ * Whether `value` holds no code point in `REFUSED_TEXT_CODE_POINTS` — the twin of
+ * `check_plain_text` in `service/workbench_contracts.py`.
+ *
+ * Why it exists: PostgreSQL's `text` and `jsonb` refuse U+0000, so an unrefused
+ * NUL is a failure to STORE — a 500 — rather than an answer the GM can act on;
+ * and a bidirectional override makes displayed text differ from its logical
+ * order, a spoofing vector in names a GM trusts. The refusal names the class,
+ * never the value (X-7); the issue's path names the field.
+ *
+ * The one shared rule. It covers the document field kinds and the reveal family's
+ * projection text today; bead `5mj` adopts it for the other stored text and bead
+ * `ysj`'s participant-alias rule calls it. Folding characters out of a comparison
+ * key is `ysj`'s, not this function's — this one only accepts or refuses. A lone
+ * surrogate stays `isWellFormedText`'s to refuse.
+ */
+export function isPlainText(value: string): boolean {
+  return refusedTextClass(value) === null
+}
+
+function refusePlainText(value: string, ctx: z.RefinementCtx): void {
+  const what = refusedTextClass(value)
+  if (what !== null) ctx.addIssue({ code: 'custom', message: `must not contain ${what}` })
+}
+
+/** `text(min, max)` with `isPlainText`: a document field's own text. `text()`
+ * itself is shared with chat, a brief, alt text, cue titles, aliases and the
+ * library, which this rule does not reach yet (bead `5mj`), so it is wrapped,
+ * never changed. */
+export function plainText(min: number, max: number) {
+  return text(min, max).superRefine(refusePlainText)
+}
+
+/** `oneLine(min, max)` with `isPlainText`. */
+export function plainOneLine(min: number, max: number) {
+  return oneLine(min, max).superRefine(refusePlainText)
+}
+
 const ToolIdSchema = z.enum(TOOL_IDS)
 
 // ── Errors ───────────────────────────────────────────────────────────────────
@@ -540,18 +616,24 @@ export type ToolInvocation = z.infer<typeof ToolInvocationSchema>
 /** The six 5e ability scores. Decision CANVAS-19: the block is ONE field, so
  * the structure lives inside one flat key and nothing addresses into it. */
 export const ABILITY_KEYS = ['str', 'dex', 'con', 'int', 'wis', 'cha'] as const
-/* DEFERRED, 1kg.5.7 Stage A: "one spelling of no score" (requirement 7e, AC 17)
- * needs `DocumentField.tsx` and its tests, which belong to 1kg.6.2 and are being
- * edited in parallel — its editor stores an empty ability cell as `null` and pins
- * that. Reported to the lead. */
-const abilityScore = z.number().int().min(ABILITY_SCORE_MIN).max(ABILITY_SCORE_MAX).nullable()
+/** One spelling of "no score" (requirement 7e): a score that is not known is a
+ * key left OUT, never `{ str: null }`. The whole block still clears to `null`,
+ * and `{}` is a block with no score in it yet. */
+const abilityScore = z.number().int().min(ABILITY_SCORE_MIN).max(ABILITY_SCORE_MAX)
 const abilitiesShape = Object.fromEntries(ABILITY_KEYS.map((key) => [key, abilityScore.optional()]))
 const AbilitiesSchema = z.object(abilitiesShape)
 const StrictAbilitiesSchema = z.strictObject(abilitiesShape)
 export type Abilities = z.infer<typeof AbilitiesSchema>
 
-/** One named block of a stat block or a quest log. Plain text on both (X-10). */
-const entryShape = { name: oneLine(1, TEXT_FIELD_MAX_CHARS), text: text(0, LIST_ITEM_MAX_CHARS) }
+/** One named block of a stat block or a quest log. Plain text on both (X-10).
+ * The name is what a renderer shows as its heading, so it cannot be blank — by
+ * the contract's own trim, exactly as a document's name. */
+const entryShape = {
+  name: plainOneLine(1, TEXT_FIELD_MAX_CHARS).refine((value) => trimWire(value) !== '', {
+    message: 'an entry has a name, and it cannot be blank',
+  }),
+  text: plainText(0, LIST_ITEM_MAX_CHARS),
+}
 const EntrySchema = z.object(entryShape)
 const StrictEntrySchema = z.strictObject(entryShape)
 export type Entry = z.infer<typeof EntrySchema>
@@ -568,11 +650,11 @@ export type DocumentFields = Record<string, FieldValue>
 function fieldValueSchema(kind: FieldKind, strict: boolean): ZodType<FieldValue> {
   switch (kind) {
     case 'text':
-      return oneLine(0, TEXT_FIELD_MAX_CHARS)
+      return plainOneLine(0, TEXT_FIELD_MAX_CHARS)
     case 'prose':
-      return text(0, PROSE_FIELD_MAX_CHARS)
+      return plainText(0, PROSE_FIELD_MAX_CHARS)
     case 'text_list':
-      return z.array(text(1, LIST_ITEM_MAX_CHARS)).max(LIST_FIELD_MAX_ITEMS)
+      return z.array(plainText(1, LIST_ITEM_MAX_CHARS)).max(LIST_FIELD_MAX_ITEMS)
     case 'asset':
       return (strict ? StrictAssetRefSchema : AssetRefSchema).nullable()
     case 'integer':
@@ -1678,9 +1760,9 @@ export type ContentKind = (typeof CONTENT_KINDS)[number]
 const notBlank = <T extends ZodType<string>>(schema: T) =>
   schema.refine((value) => trimWire(value) !== '', { message: 'a revealed value is blank if trimming empties it' })
 
-/** ED-9: a block a player is shown carries scores, not gaps. A document may hold
- * `{ str: null }` for a creature that lacks an ability; a projection of it leaves
- * the key out, so no cell is drawn empty under a masked heading. */
+/** ED-9: a block a player is shown carries scores, not gaps. A document spells a
+ * score that is not known by leaving its key out (requirement 7e), and so does a
+ * projection of it, so no cell is drawn empty under a masked heading. */
 const presentAbilitiesShape = Object.fromEntries(
   ABILITY_KEYS.map((key) => [key, z.number().int().min(ABILITY_SCORE_MIN).max(ABILITY_SCORE_MAX).optional()]),
 )
@@ -1692,8 +1774,8 @@ const PresentAbilitiesSchema = z
  * A document may hold a trait whose text is still empty; projecting it would put a
  * lone heading on a table, which REVEAL-5's *present and non-empty* rules out. */
 const PresentEntrySchema = z.object({
-  name: notBlank(oneLine(1, TEXT_FIELD_MAX_CHARS)),
-  text: notBlank(text(1, LIST_ITEM_MAX_CHARS)),
+  name: notBlank(plainOneLine(1, TEXT_FIELD_MAX_CHARS)),
+  text: notBlank(plainText(1, LIST_ITEM_MAX_CHARS)),
 })
 
 /** The same kinds a document declares, but a masked key is **present and
@@ -1706,11 +1788,11 @@ const PresentEntrySchema = z.object({
 function projectionValueSchema(kind: FieldKind): ZodType<unknown> {
   switch (kind) {
     case 'text':
-      return notBlank(oneLine(1, TEXT_FIELD_MAX_CHARS))
+      return notBlank(plainOneLine(1, TEXT_FIELD_MAX_CHARS))
     case 'prose':
-      return notBlank(text(1, PROSE_FIELD_MAX_CHARS))
+      return notBlank(plainText(1, PROSE_FIELD_MAX_CHARS))
     case 'text_list':
-      return z.array(notBlank(text(1, LIST_ITEM_MAX_CHARS))).min(1).max(LIST_FIELD_MAX_ITEMS)
+      return z.array(notBlank(plainText(1, LIST_ITEM_MAX_CHARS))).min(1).max(LIST_FIELD_MAX_ITEMS)
     case 'asset':
       return TableAssetRefSchema
     case 'integer':

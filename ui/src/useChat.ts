@@ -50,6 +50,13 @@ export interface UseChatOptions {
    * the user could never return to. Adopting it is what makes the id the server
    * chose the one the next turn continues. */
   onConversationAdopted?: (conversationId: string) => void
+  /** Called exactly once per turn THIS hook sent, at the moment it settles
+   * (agent-forge-harness-ekf) — 'done' for an answer, 'error' for a failed
+   * result or a rejection. Additive and optional: every existing caller is
+   * unaffected. This is the seam a consumer uses to announce arrival without
+   * re-deriving it from `exchanges` (a recalled turn and a settled turn both
+   * end up `status: 'done'` with ids the consumer cannot tell apart). */
+  onTurnSettled?: (outcome: 'done' | 'error') => void
 }
 
 interface ChatState {
@@ -101,6 +108,7 @@ export function useChat({
   conversationId,
   modelPreference = 'auto',
   onConversationAdopted,
+  onTurnSettled,
   now = monotonicNow,
   recordMetric = recordBrowserMetric,
 }: UseChatOptions) {
@@ -218,6 +226,10 @@ export function useChat({
           scopeId: conversationId,
           exchanges: prev.exchanges.map((e) => (e.id === id ? { ...e, ...update } : e)),
         }))
+        // agent-forge-harness-ekf: fires once, here, at the settle — never
+        // from a recall or a re-render. `update.status` is always 'done' or
+        // 'error' at this call site (never 'pending').
+        onTurnSettled?.(update.status === 'done' ? 'done' : 'error')
       }
 
       void post(trimmed, mode, conversationId, modelPreference).then(
@@ -255,7 +267,7 @@ export function useChat({
         },
       )
     },
-    [post, mode, conversationId, modelPreference, now, recordMetric, onConversationAdopted],
+    [post, mode, conversationId, modelPreference, now, recordMetric, onConversationAdopted, onTurnSettled],
   )
 
   return { exchanges, send, pending, historyError, loadingHistory }

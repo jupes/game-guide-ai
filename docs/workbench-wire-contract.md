@@ -305,8 +305,24 @@ place rather than kept twice.
 | `text_list` | at most 100 items of 1 to 2,000 characters | `[]` |
 | `asset` | an `AssetRef` (an id, never a URL) | `null` |
 | `integer` | a JSON integer, -1,000,000 to 1,000,000; a **field** may narrow that, and most do — see *Per-field integer bounds* | `null` |
-| `abilities` | the six 5e scores as one object (`str`, `dex`, `con`, `int`, `wis`, `cha`), each 0–99; any subset | `null` |
-| `entry_list` | at most 100 `{name, text}` entries; the name one line of 1 to 200 characters, the text at most 2,000 | `[]` |
+| `abilities` | the six 5e scores as one object (`str`, `dex`, `con`, `int`, `wis`, `cha`), each 0–99; any subset — a score that is not known is a key left **out**, never `null` | `null` |
+| `entry_list` | at most 100 `{name, text}` entries; the name one line of 1 to 200 characters and not blank after the contract's trim, the text at most 2,000 | `[]` |
+
+**Stored text is plain text.** Every text a document holds — a `text` or `prose`
+value, each item of a `text_list`, and an entry's name and text — refuses NUL and
+the other C0 and C1 controls, DEL, the whole Bidi_Control set (U+061C, U+200E,
+U+200F, U+202A–U+202E, U+2066–U+2069) and U+FEFF, with a 422 whose message names
+the field and the class of character and never the value. A tab is allowed, a
+line feed or carriage return wherever a line break already is, and U+200C,
+U+200D and U+FE0F everywhere, because real names and emoji sequences need them.
+PostgreSQL's `text` and `jsonb` refuse U+0000, so without the rule a NUL would be
+a failure to store rather than an answer; a bidirectional override makes what a
+GM sees differ from what is stored. One helper per side is the rule —
+`check_plain_text` and `REFUSED_TEXT_CODE_POINTS` in `workbench_contracts.py`,
+`isPlainText`, `plainText` and `plainOneLine` in `contracts.ts` — and a version's
+summary, a brief, chat text, cue titles and aliases do not call it yet (bead
+`5mj`). A score of `{"str": null}` is refused for the same reason every kind has
+one way to say empty: leaving the key out already says it.
 
 Every type has `name`, `qualifier` and `tags`. `name` is the title everywhere and
 cannot be blank on any type (LIB-12); `tags` is **never revealable**, on any type
@@ -343,13 +359,19 @@ stored row; **what the server stores and emits stays strict**. It is the same
 rule the *Versioning and forward compatibility* table already carries for a
 stored timeline entry, and it exists because *adding a field is not a bump*: a
 strict stored read plus that rule would make every dossier that used a new field
-unreadable after a rollback.
+unreadable after a rollback. The tolerance has two deliberate limits: a stored
+value that is not a JSON object is the typed refusal `stored_data_not_an_object`,
+never an untyped crash, and a stored row that lost its name is unreadable,
+deliberately — `read_stored_fields` reads a whole document, and every document
+has a name from the moment it exists.
 
-The largest valid document is a stat block, at **1,316,510** JSON characters:
+The largest valid document is a stat block, at **1,316,498** JSON characters:
 five `entry_list` fields × 100 entries × 2,200 characters of name and text
 (1,100,000), a 100-item `tags` list at 2,000 each (200,000), fifteen `text`
 fields at 200 (3,000), and about 13,500 characters of keys, punctuation and the
-envelope. Narrowing `ac` and `hp` to 0–1,000,000 took two characters off it. A
+envelope. Narrowing `ac` and `hp` to 0–1,000,000 took two characters off it, and
+one spelling of "no score" took twelve more: each of the six scores' widest
+value is now two digits rather than `null`. A
 cap on the **whole** document is `1kg.5.5`'s (RAIL-6); this is the number it has
 to sit above.
 
@@ -554,6 +576,11 @@ and so keeps the two boundary examples in `Document.json` that pin the kind's
 floor honest. An armour class is not negative, and there is no session 0 or
 party level 0; experience points nothing consumes yet are not worth making the
 kind's floor untestable for.
+
+Bounds bind reads as well as writes: `Document`, `DocumentVersionSnapshot` and
+`read_stored_fields` all apply them, which is safe only because writes enforce
+them from the first document stored, so no stored row can violate one. It also
+means **tightening a bound later is a `type_version` bump**, with its adapter.
 
 Narrowing a field's bounds is an **incompatible change**: see *Schema
 revisions* below.
@@ -1049,7 +1076,8 @@ the strict server model. Two requirements follow for `1kg.7.2`:
   canary that reads one proves nothing.
 
 A masked key is present and non-empty in the pinned version (REVEAL-5, ED-9), so
-nothing arrives as a blank heading: text and prose are non-blank after trimming,
+nothing arrives as a blank heading: text and prose are non-blank after trimming
+and refuse exactly the characters stored text refuses (*Fields*, above),
 a list has at least one item, an `integer` is a number rather than `null`, an
 ability block holds at least one score and no `null`s, and an entry carries both
 its name and its text. An `asset` value is a **`TableAssetRef`** — a per-slot
@@ -1160,6 +1188,13 @@ differs from the session frame beside it. The reveal epoch is per session
 (ED-9), so a picture from another session — or from a generation before a
 Rotate — is exactly the "number from last night" a Confirm must never be able to
 match.
+
+AE-51's clearing is a table-client rule. **`GmSnapshot` is exempt**: `RevealLive`
+is GM-only by the threat model's section 8.3 row and carries ids, a version and
+mask key names — never field values — so a slot frame that outlives its session
+is a staleness defect, carried to `1kg.7.2` with V-4, and not a disclosure. The
+table resource's liveness is two facts, both pinned by fixtures: a `session`
+frame is present, and no `inactive` frame is.
 
 The **readers apply the reveal-picture rule too**, not only the emitter:
 `parseGmSnapshot` and `parseTableSnapshot` answer

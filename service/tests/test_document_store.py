@@ -33,7 +33,8 @@ from pathlib import Path
 import pytest
 
 from service import document_store as docs
-from service.campaign_identity import DOCUMENT, id_check_regex
+from service.audit_log import ACTION_DETAIL, AuditAction, MintedId, accepts
+from service.campaign_identity import DOCUMENT, PARTICIPANT, id_check_regex
 from service.campaign_store import InMemoryCampaignStore, MissingParent
 from service.db import InMemoryDatabase
 from service.document_store import (
@@ -45,6 +46,7 @@ from service.document_store import (
     DocumentRecord,
     FieldConflict,
     InMemoryDocumentStore,
+    LibraryRow,
     StaleTypeVersion,
     UnknownCursor,
     UnknownWriteRevision,
@@ -58,8 +60,10 @@ from service.document_store import (
     search_key,
     stale_fields,
 )
+from service.participant_store import InMemoryParticipantStore
 from service.workbench_contracts import (
     HISTORY_PAGE_MAX_ITEMS,
+    LIBRARY_PAGE_MAX_ITEMS,
     LIST_FIELD_MAX_ITEMS,
     LIST_ITEM_MAX_CHARS,
     MAX_CHANGED_FIELDS,
@@ -68,6 +72,7 @@ from service.workbench_contracts import (
     WRITE_REVISION_MAX,
     Author,
     DocumentTypeId,
+    LibrarySort,
 )
 
 #: The ONE place this bead's migration number appears in Python (lead ruling
@@ -234,7 +239,9 @@ def test_no_column_of_the_document_schema_is_named_as_though_it_held_visibility(
         assert not offending, f"{table}.{column} reads like it held {offending[0]}"
 
 
-@pytest.mark.parametrize("record", [DocumentRecord, VersionRecord, VersionSnapshot])
+@pytest.mark.parametrize(
+    "record", [DocumentRecord, VersionRecord, VersionSnapshot, LibraryRow]
+)
 def test_no_field_of_a_document_record_is_named_as_though_it_held_visibility(record: type):
     """The same claim, and the same limit, on the records the store hands
     downstream — because a field the store invented would reach `1kg.5.2`
@@ -419,14 +426,15 @@ def test_the_fold_is_the_comparison_both_worlds_make():
 
 
 def test_the_fold_sweeps_control_characters_out_before_anything_else():
-    """`tags` accepts control characters today and `name` accepts NUL: `_ListItem`
-    carries neither `_one_line` nor `_well_formed`, and `_TextValue`'s
-    `_one_line` refuses only the four line breaks. Any separator `search_key`
-    picked could otherwise occur inside a value.
+    """Since F-9 (1kg.5.7.2) `check_fields` refuses NUL, ESC and the bidirectional
+    controls in every document field kind on write, but category C is wider than
+    that refusal — U+200C and U+200D are allowed in real names, and format,
+    private-use and unassigned code points are stored. Any separator
+    `search_key` picked could otherwise occur inside a value.
 
-    This is NOT validation and must not become validation: refusing those
-    characters is 1kg.5.7's (F-9), and this module must keep reading documents
-    that already hold them."""
+    This is NOT validation and must not become validation: refusing characters
+    is `check_plain_text`'s, and this module must keep reading whatever a stored
+    row already holds."""
     assert docs._fold("a\x00b\x1fc\x1bd") == "a b c d"
     assert docs._fold(f"  a {chr(0x200B)} b  ") == "a b"
     assert docs._fold("\ud800lone") == "lone", "a lone surrogate is swept, not raised on"
@@ -550,6 +558,7 @@ PRIVATE = {
     "prose": "she keeps the ledger of every debt-CANARY",
     "summary": "tidied her wants-CANARY",
     "search": "vashtizzle-CANARY",
+    "alias": "Rookish-CANARY",
 }
 
 
@@ -634,9 +643,41 @@ def test_no_private_text_reaches_a_log_line(caplog):
             store.history(unit, campaign, made.id, before_number=None, limit=10)
             store.snapshot(unit, campaign, made.id, 1)
             search_key({"name": PRIVATE["search"]})
+            _every_slice_b_path(db, unit, store, campaign, made.id)
 
     for canary in PRIVATE.values():
         assert canary not in caplog.text
+
+
+def _every_slice_b_path(
+    db: InMemoryDatabase, unit, store: InMemoryDocumentStore, campaign: str, document_id: str
+) -> None:
+    """Search, page, restore, archive, link, unlink and delete, over
+    canary-filled documents and a canary search string and alias."""
+    seat = InMemoryParticipantStore(db).add(unit, campaign, alias=PRIVATE["alias"]).id
+    sheet = store.create(
+        unit, campaign, doc_type=DocumentTypeId.CHARACTER_SHEET, type_version=1,
+        data={"name": PRIVATE["name"], "qualifier": PRIVATE["qualifier"],
+              "tags": [PRIVATE["tag"]], "notes": PRIVATE["prose"]},
+        author=Author.GM,
+    )
+    for sort in LibrarySort:
+        found = store.list_documents(
+            unit, campaign, types=["npc", "character-sheet"], archived=False,
+            search=PRIVATE["search"], sort=sort, limit=10,
+        )
+        assert found, "the canary search found the canary documents, so it really ran"
+        store.list_documents(unit, campaign, types=["npc"], archived=False, sort=sort,
+                             after_id=document_id, limit=10)
+    store.write_fields(unit, campaign, document_id, fields={"voice": PRIVATE["prose"]},
+                       author=Author.GM, base_write_revision=None)
+    assert store.restore(unit, campaign, document_id, version_number=1).version.restored_from
+    store.set_archived(unit, campaign, document_id, archived=True)
+    store.set_archived(unit, campaign, document_id, archived=False)
+    assert store.link_character_sheet(unit, campaign, sheet.id, participant_id=seat)
+    store.sheet_for_participant(unit, campaign, seat)
+    store.unlink_character_sheet(unit, campaign, sheet.id)
+    assert store.delete(unit, campaign, sheet.id)
 
 
 def test_no_private_text_reaches_an_exception():
@@ -689,11 +730,54 @@ def test_no_private_text_reaches_an_exception():
                              base_write_revision=made.write_revision + 99))
         said.append(_refusal(docs._planned, _a_record(type_version=2), {"name": "x"},
                              Author.GM, None, None))
+        said.extend(_every_slice_b_refusal(db, unit, store, campaign, made.id))
     assert moved.write_revision == 2
 
     spoken = "\n".join(said)
     for canary in PRIVATE.values():
         assert canary not in spoken, spoken
+
+
+def _every_slice_b_refusal(
+    db: InMemoryDatabase, unit, store: InMemoryDocumentStore, campaign: str, document_id: str
+) -> list[str]:
+    """Every refusal slice B added, provoked with canaries in reach: the
+    document's name and tag, the seat's alias, and a search string."""
+    seats = InMemoryParticipantStore(db)
+    seat = seats.add(unit, campaign, alias=PRIVATE["alias"]).id
+    other = seats.add(unit, campaign, alias="Wren").id
+    gone = seats.add(unit, campaign, alias="Gone").id
+    seats.remove(unit, campaign, gone)
+    sheet = store.create(
+        unit, campaign, doc_type=DocumentTypeId.CHARACTER_SHEET, type_version=1,
+        data={"name": PRIVATE["name"], "tags": [PRIVATE["tag"]]}, author=Author.GM,
+    ).id
+    spare = store.create(
+        unit, campaign, doc_type=DocumentTypeId.CHARACTER_SHEET, type_version=1,
+        data={"name": PRIVATE["name"] + "2"}, author=Author.GM,
+    ).id
+    assert store.link_character_sheet(unit, campaign, sheet, participant_id=seat)
+    link = store.link_character_sheet
+    unlink = store.unlink_character_sheet
+    elsewhere = "cmp_" + "z" * 22
+    return [
+        _refusal(link, unit, campaign, sheet, participant_id=other),
+        _refusal(link, unit, campaign, spare, participant_id=seat),
+        _refusal(link, unit, campaign, document_id, participant_id=other),
+        _refusal(link, unit, campaign, spare, participant_id=gone),
+        _refusal(link, unit, elsewhere, sheet, participant_id=seat),
+        _refusal(unlink, unit, elsewhere, sheet),
+        _refusal(store.restore, unit, campaign, document_id, version_number=99),
+        _refusal(store.restore, unit, elsewhere, document_id, version_number=1),
+        _refusal(store.list_documents, unit, campaign, types=["npc"], archived=False,
+                 search=PRIVATE["search"] * 10, limit=10),
+        _refusal(store.list_documents, unit, campaign, types=["npc"], archived=False,
+                 after_id="doc_" + "z" * 22, limit=10),
+        _refusal(store.list_documents, unit, campaign, types=[], archived=False, limit=10),
+        _refusal(store.list_documents, unit, campaign, types=["npc"], archived=False,
+                 sort=PRIVATE["search"], limit=10),
+        _refusal(store.set_archived, unit, campaign, document_id, archived=PRIVATE["name"]),
+    ]
 
 
 def _refusal(call, *args, expect: object = ..., **kwargs) -> str:
@@ -787,7 +871,7 @@ def test_the_two_lifecycle_properties_read_their_own_timestamps():
     assert replace(made.version, sealed_at=moment).is_sealed is True
 
 
-@pytest.mark.parametrize("record", ["document", "version", "snapshot"])
+@pytest.mark.parametrize("record", ["document", "version", "snapshot", "library"])
 def test_no_private_text_reaches_a_repr(record: str):
     """`field(repr=False)`, following `Participant.alias`'s precedent: a
     traceback prints every `repr()` on the way out."""
@@ -796,8 +880,16 @@ def test_no_private_text_reaches_a_repr(record: str):
         "document": repr(made),
         "version": repr(made.version),
         "snapshot": repr(VersionSnapshot(made.version, made.type, 1, made.data)),
+        "library": repr(
+            LibraryRow(
+                id=made.id, type=made.type, type_version=1, name=PRIVATE["name"],
+                qualifier=PRIVATE["qualifier"], tags=(PRIVATE["tag"],),
+                archived_at=None, updated_at=made.updated_at,
+            )
+        ),
     }[record]
-    for canary in (PRIVATE["name"], PRIVATE["prose"], PRIVATE["summary"]):
+    for canary in (PRIVATE["name"], PRIVATE["prose"], PRIVATE["summary"],
+                   PRIVATE["qualifier"], PRIVATE["tag"]):
         assert canary not in shown, shown
     assert "doc_" in shown, "the opaque id is exactly what a log line may carry"
 
@@ -831,7 +923,9 @@ def test_the_twin_and_the_postgres_store_offer_the_same_methods():
 
     assert surface(docs.InMemoryDocumentStore) == surface(docs.PostgresDocumentStore)
     assert surface(docs.InMemoryDocumentStore) == [
-        "create", "get", "history", "hold", "seal", "snapshot", "write_fields",
+        "create", "delete", "get", "history", "hold", "link_character_sheet", "list_documents",
+        "restore", "seal", "set_archived", "sheet_for_participant", "snapshot",
+        "unlink_character_sheet", "write_fields",
     ]
 
 
@@ -868,11 +962,318 @@ def test_the_idle_seal_needs_no_clock_of_its_own():
     """Every mutator takes `now`, so CANVAS-34's ten minutes is deterministic and
     no test sleeps — and no timer, job or background sealer is required or
     permitted."""
-    mutators = ("create", "write_fields", "seal")
+    mutators = ("create", "write_fields", "seal", "set_archived", "restore")
     for name in mutators:
         signature = inspect.signature(getattr(docs.PostgresDocumentStore, name))
         assert "now" in signature.parameters, name
-    for name in ("get", "history", "snapshot", "hold"):
+    for name in (
+        "get", "history", "snapshot", "hold", "delete", "list_documents",
+        "sheet_for_participant", "link_character_sheet", "unlink_character_sheet",
+    ):
         signature = inspect.signature(getattr(docs.PostgresDocumentStore, name))
         assert "now" not in signature.parameters, f"{name} reads; nothing it does needs a clock"
     assert timedelta(seconds=SEAL_IDLE_S) == timedelta(minutes=10)
+
+
+# ── Slice B: the audit vocabulary this bead adds (requirement 9) ─────────────
+
+
+def test_the_link_rows_name_the_sheet_by_its_minted_id_and_nothing_else():
+    """SEC-38 audits "participant add, remove, link and unlink", and until this
+    bead a link row could not say WHICH sheet. The vocabulary is added here and
+    the row is written by the route (`1kg.2.2`, `1kg.5.2`), the precedent
+    `1kg.2.1` set. Both kinds are minted ids: an id is what a ledger row may
+    carry, and a name, a fold or a count of field text is not (ED-26)."""
+    for action in (AuditAction.PARTICIPANT_LINKED, AuditAction.PARTICIPANT_UNLINKED):
+        assert ACTION_DETAIL[action] == {
+            "participant_id": MintedId(PARTICIPANT),
+            "document_id": MintedId(DOCUMENT),
+        }, action
+        assert accepts(ACTION_DETAIL[action]["document_id"], "doc_" + "a" * 22)
+        assert not accepts(ACTION_DETAIL[action]["document_id"], "prt_" + "a" * 22)
+
+
+def _statements_of(sql: str) -> str:
+    return "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
+
+
+def test_nothing_derived_from_field_text_is_stored_outside_the_document_row():
+    """ED-26: no value derived from field text may outlive the text. The two
+    folded keys live on `campaign.documents` and are deleted with it; no other
+    table of any migration declares either, and the document migration writes
+    nothing into `audit.events`, which survives campaign deletion by design."""
+    migrations = Path(__file__).resolve().parents[1] / "sql" / "migrations"
+    files = sorted(migrations.glob("*.sql"))
+    assert DOCUMENT_MIGRATION in [path.name for path in files]
+    for path in files:
+        body = _statements_of(path.read_text(encoding="utf-8"))
+        for table in re.findall(r"CREATE TABLE (\S+) \((.*?)\n\);", body, flags=re.S):
+            if table[0] == "campaign.documents":
+                continue
+            for derived in ("name_key", "search_key"):
+                assert derived not in table[1], f"{path.name}: {table[0]} holds {derived}"
+    assert "audit." not in _statements_of(SQL), "the document schema touches the ledger"
+
+
+# ── Slice B: the module's statements, read rather than trusted ───────────────
+
+
+def test_the_modules_only_delete_removes_one_document_of_one_campaign():
+    """LIB-18's hard delete, and the only `DELETE` this module runs (B-7). It
+    names the campaign in the same statement (SEC-2), and the versions go by
+    the foreign key's cascade — never by a statement here, which is what keeps
+    history append-only for as long as the document exists."""
+    deletes = [text for text in _statements() if re.search(r"\bDELETE\b", text)]
+    assert deletes == [
+        "DELETE FROM campaign.documents WHERE id = %s AND campaign_id = %s RETURNING id"
+    ]
+
+
+def test_the_twin_reads_its_documents_through_one_accessor_that_hides_tombstones():
+    """B-10: `Staging` has no removal (it is bead `ixa`'s), so the twin's delete
+    leaves a tombstone. That is only safe while EVERY read goes through `_live`
+    — one direct `visible(` elsewhere and a deleted document is back, in the
+    twin alone, which is the divergence this suite exists to prevent."""
+    tree = ast.parse(SOURCE)
+    callers = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr == "visible"
+                and isinstance(inner.func.value, ast.Attribute)
+                and inner.func.value.attr == "_documents"
+            ):
+                callers.append(node.name)
+    assert callers == ["_live"]
+
+
+def test_a_restore_is_the_gms_and_takes_no_author():
+    """B-6: the appended version's author is always `gm`. A parameter would be
+    a way to write an assistant version that no AI edit produced."""
+    for store in (docs.PostgresDocumentStore, docs.InMemoryDocumentStore):
+        assert "author" not in inspect.signature(store.restore).parameters
+
+
+@pytest.mark.parametrize("owner", ["PostgresDocumentStore", "InMemoryDocumentStore"])
+@pytest.mark.parametrize("guard", ["_writable_kind", "_restoring", "next_version_number"])
+def test_both_worlds_restore_through_the_same_decisions(owner: str, guard: str):
+    """The refusals, the equal-content no-op and the new version's number are
+    decided once, in module functions both worlds call — read out of each
+    world's `restore`, so a lost call in one cannot hide behind the other."""
+    node = _definition("restore", owner)
+    called = {
+        inner.func.id
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+    }
+    assert guard in called, f"{owner}.restore no longer routes through {guard}"
+
+
+#: The two orders, spelled here rather than read from the module, so a change to
+#: `_LIBRARY_ORDER` turns this red instead of agreeing with itself.
+ORDER_BY = {
+    LibrarySort.RECENT: 'ORDER BY updated_at DESC, id COLLATE "C" LIMIT %s',
+    LibrarySort.NAME: 'ORDER BY name_key COLLATE "C", id COLLATE "C" LIMIT %s',
+}
+AFTER = {
+    LibrarySort.RECENT: '(updated_at < %s OR (updated_at = %s AND id COLLATE "C" > %s))',
+    LibrarySort.NAME: (
+        '(name_key COLLATE "C" > %s OR (name_key COLLATE "C" = %s AND id COLLATE "C" > %s))'
+    ),
+}
+
+
+@pytest.mark.parametrize("sort", list(LibrarySort))
+@pytest.mark.parametrize("archived", [False, True])
+@pytest.mark.parametrize("term", ["", "vashti"])
+@pytest.mark.parametrize("anchored", [False, True])
+def test_every_library_statement_orders_as_its_index_keys_and_matches_no_pattern(
+    sort: LibrarySort, archived: bool, term: str, anchored: bool
+):
+    """B-12: the ORDER BY is exactly the library indexes' keys, `COLLATE "C"`
+    included, and the keyset predicate uses the same collations; the archive
+    filter is literal so the partial index is provable at plan time; the search
+    is `strpos` and never a pattern or a database fold. Every variant, because
+    the statement is composed and `_statements()` sees only literals."""
+    anchor = (datetime.now(UTC), "doc_" + "a" * 22) if anchored else None
+    text, params = docs._library_statement(
+        CAMPAIGN, types=["npc"], archived=archived, term=term, sort=sort,
+        anchor=anchor, limit=25,
+    )
+
+    assert text.startswith(
+        "SELECT id, type, type_version, data->>'name', data->>'qualifier', data->'tags', "
+        "archived_at, updated_at FROM campaign.documents "
+        "WHERE campaign_id = %s AND type = ANY(%s) "
+    ), "three keys of the JSON and never the body, one campaign, a set of types"
+    assert text.endswith(ORDER_BY[sort])
+    assert ("AND archived_at IS NOT NULL" if archived else "AND archived_at IS NULL") in text
+    assert ("AND strpos(search_key, %s) > 0" in text) == bool(term)
+    assert (f"AND {AFTER[sort]}" in text) == anchored
+    for forbidden in ("ILIKE", "LIKE", "lower(", "citext", "FOR UPDATE", "FOR SHARE"):
+        assert forbidden not in text
+    assert text.count("%s") == len(params)
+    assert params[0] == CAMPAIGN and params[-1] == 25
+
+
+@pytest.mark.parametrize("owner", ["PostgresDocumentStore", "InMemoryDocumentStore"])
+def test_both_worlds_refuse_the_same_library_queries(owner: str):
+    """The type set, the archive flag, the search bound and fold, the sort and
+    the page cap are checked in one function both worlds call, so they cannot
+    disagree about which queries are refused or what a term matches."""
+    node = _definition("list_documents", owner)
+    called = {
+        inner.func.id
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+    }
+    assert "_library_terms" in called
+    assert ("_library_statement" in called) == (owner == "PostgresDocumentStore")
+
+
+def test_the_library_cap_is_the_contracts():
+    """LIB-23's 25 is the client's page size; the server's cap is the
+    contract's, and a bool is not a page size."""
+    for bad in (0, LIBRARY_PAGE_MAX_ITEMS + 1, True):
+        with pytest.raises(ValueError, match=f"1 to {LIBRARY_PAGE_MAX_ITEMS}"):
+            docs._library_terms(["npc"], False, "", LibrarySort.RECENT, bad)
+
+
+# ── Slice B: the character-sheet link ────────────────────────────────────────
+
+
+def _code_names(tree: ast.AST) -> set[str]:
+    """Every identifier and attribute the module's CODE uses — docstrings and
+    comments are not code, so a sentence explaining a rule cannot satisfy or
+    break a check about the code."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.alias):
+            names.add(node.name)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module)
+    return names
+
+
+def test_the_link_is_decided_by_type_and_never_by_the_registrys_audience_flag():
+    """AUD-15 names a character sheet. Owner decision O-2 narrowed the
+    registry's `audience` flag to reveal seeding (ED-14 as amended), and
+    `1kg.7.1`'s owner comment says nothing ties an audience to a type: the two
+    rules coincide today and part the moment another type seeds its owner."""
+    used = _code_names(ast.parse(SOURCE))
+    assert "audience" not in used
+    assert not any("workbench_registry" in name for name in used)
+    checks = {
+        inner.attr
+        for inner in ast.walk(_definition("_linkable"))
+        if isinstance(inner, ast.Attribute)
+    }
+    assert "CHARACTER_SHEET" in checks
+
+
+def test_no_link_primitive_locks_a_participant_row():
+    """RQ-3 puts participant and document rows at one level of the lock order
+    with no order between them, so no primitive here may hold both (inferred
+    decision 9): the document row is held, the seat is only read. The module
+    imports the seat's record and no participant store at all."""
+    seat_reads = [text for text in _statements() if "campaign.participants" in text]
+    assert seat_reads, "this test found no read of a seat, so it proves nothing"
+    for text in seat_reads:
+        assert " FOR " not in text, text
+    imported = [
+        alias.name
+        for node in ast.walk(ast.parse(SOURCE))
+        if isinstance(node, ast.ImportFrom) and node.module == "participant_store"
+        for alias in node.names
+    ]
+    assert imported == ["Participant"]
+
+
+def test_the_postgres_link_meets_a_taken_seat_inside_a_savepoint():
+    """B-4: the `UPDATE` runs inside `with conn.transaction():`, so the
+    `UniqueViolation` a taken seat raises rolls back a savepoint and not the
+    caller's transaction; and `SheetAlreadyLinked` is raised OUTSIDE the
+    handler, so the driver's error — whose DETAIL quotes the seat's id — is not
+    on its `__context__` (the `participant_store.offer` precedent)."""
+    node = _definition("link_character_sheet", "PostgresDocumentStore")
+    savepoints = [
+        inner
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Attribute)
+            and item.context_expr.func.attr == "transaction"
+            for item in inner.items
+        )
+    ]
+    assert len(savepoints) == 1
+    assert any(
+        isinstance(inner, ast.Call)
+        and isinstance(inner.func, ast.Attribute)
+        and inner.func.attr == "execute"
+        for inner in ast.walk(savepoints[0])
+    ), "the UPDATE is inside the savepoint"
+    handlers = [inner for inner in ast.walk(node) if isinstance(inner, ast.ExceptHandler)]
+    assert [ast.unparse(handler.type) for handler in handlers if handler.type] == [
+        "psycopg.errors.UniqueViolation"
+    ]
+    for handler in handlers:
+        assert not any(isinstance(inner, ast.Raise) for inner in ast.walk(handler))
+
+
+@pytest.mark.parametrize("owner", ["PostgresDocumentStore", "InMemoryDocumentStore"])
+@pytest.mark.parametrize("guard", ["_linkable", "_needs_link"])
+def test_both_worlds_link_through_the_same_decisions(owner: str, guard: str):
+    """B-4's first five decisions are module functions both worlds call, so the
+    order of the refusals cannot differ between them."""
+    node = _definition("link_character_sheet", owner)
+    called = {
+        inner.func.id
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+    }
+    assert guard in called
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["set_archived", "delete", "restore", "link_character_sheet", "unlink_character_sheet"],
+)
+@pytest.mark.parametrize("owner", ["PostgresDocumentStore", "InMemoryDocumentStore"])
+def test_every_slice_b_mutator_holds_the_document_row_first(owner: str, method: str):
+    """B-7: each begins with `self.hold(...)`, for RQ-8's transaction bound and
+    RQ-3's `note_row_lock` — so taking the campaign lock after one of these is
+    refused, as it is after a write."""
+    node = _definition(method, owner)
+    first_call = next(
+        inner
+        for statement in node.body
+        for inner in ast.walk(statement)
+        if isinstance(inner, ast.Call)
+        and isinstance(inner.func, ast.Attribute)
+        and isinstance(inner.func.value, ast.Name)
+        and inner.func.value.id == "self"
+    )
+    assert isinstance(first_call.func, ast.Attribute) and first_call.func.attr == "hold"
+
+
+def test_the_link_refusals_carry_ids_and_codes_and_say_neither():
+    """SEC-20: an alias is private text and which seat holds a sheet is the
+    route's to tell the GM, so the messages are fixed; the ids ride on the
+    exception for the route, which is where `1kg.5.2` reads them."""
+    taken = docs.SheetAlreadyLinked("doc_" + "a" * 22, "prt_" + "b" * 22)
+    assert (taken.document_id, taken.participant_id) == ("doc_" + "a" * 22, "prt_" + "b" * 22)
+    assert "doc_" not in str(taken) and "prt_" not in str(taken)
+    wrong = docs.NotLinkable("npc")
+    assert wrong.type == "npc"
+    for refusal in (docs.SheetAlreadyLinked, docs.NotLinkable):
+        assert issubclass(refusal, docs.CampaignStoreError)
