@@ -295,8 +295,14 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
     fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
     expect(screen.getByText(`${CHAT_TEXT_MAX_CHARS + 1} of ${CHAT_TEXT_MAX_CHARS} characters`, { exact: false })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    // fireEvent.change doesn't focus the textarea; without the click, {Enter}
+    // would land on document.body and never reach the composer's key handler.
+    await userEvent.click(ta)
+    expect(ta).toHaveFocus()
     await userEvent.keyboard('{Enter}')
     expect(post).not.toHaveBeenCalled()
+    // A send would also clear the draft: the user's over-long text must survive.
+    expect(ta.value.length).toBe(CHAT_TEXT_MAX_CHARS + 1)
   })
 })
 
