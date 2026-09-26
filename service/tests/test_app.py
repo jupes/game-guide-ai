@@ -12,7 +12,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from service.app import app, get_service
+from service import usage_capture
+from service.app import app, get_message_store, get_service
+from service.history import InMemoryMessageStore
 from service.models import Abilities, ChatMode, ChatResponse, Source, StatBlockContent
 from service.workbench_contracts import CHAT_TEXT_MAX_CHARS
 
@@ -439,12 +441,21 @@ def test_chat_prompt_over_limit_is_422_before_provider_call():
 def test_chat_prompt_over_limit_does_not_echo_prompt():
     """The 422 body never contains the oversized prompt (X-7 / R-12): a plain
     HTTPException goes through FastAPI's ordinary handling, not the default
-    RequestValidationError handler that echoes each error's `input`."""
+    RequestValidationError handler that echoes each error's `input`.
+
+    The whole body is pinned, not just "no long run of the filler": a partial
+    echo (say the first 80 characters) would slip past a substring check. The
+    canary prefix is what any truncated echo would start with."""
     c = _client(_GROUNDED)
     try:
-        oversized = "z" * (CHAT_TEXT_MAX_CHARS + 1)
+        canary = "ECHO-CANARY-764-"
+        oversized = canary + "z" * (CHAT_TEXT_MAX_CHARS + 1 - len(canary))
         r = c.post("/chat", json={"prompt": oversized})
         assert r.status_code == 422
+        assert r.json() == {
+            "detail": f"prompt exceeds the {CHAT_TEXT_MAX_CHARS}-character limit",
+        }
+        assert canary not in r.text
         assert "z" * 100 not in r.text
     finally:
         app.dependency_overrides.clear()
@@ -457,5 +468,63 @@ def test_chat_prompt_at_limit_is_not_rejected():
         at_limit = "a" * CHAT_TEXT_MAX_CHARS
         r = c.post("/chat", json={"prompt": at_limit})
         assert r.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+
+class _RecordingStore:
+    """An InMemoryMessageStore that records the name of every store method a
+    /chat turn calls, in order -- reads and writes alike."""
+
+    def __init__(self) -> None:
+        self._inner = InMemoryMessageStore()
+        self.calls: list[str] = []
+
+    def __getattr__(self, name: str) -> object:
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        def _recorded(*args: object, **kwargs: object) -> object:
+            self.calls.append(name)
+            return attr(*args, **kwargs)
+
+        return _recorded
+
+
+def test_chat_prompt_over_limit_touches_no_store_write_and_opens_no_usage_operation(
+    monkeypatch,
+):
+    """The gate runs before the conversation claim, the strategy bind and the
+    usage-capture operation: an over-limit turn writes nothing and records
+    nothing. The one store call it may make is the daily-cap read, which runs
+    ahead of the gate by design."""
+    store = _RecordingStore()
+    begun: list[str] = []
+    real_begin = usage_capture.begin_operation
+
+    def _recording_begin(**kwargs):
+        begun.append(kwargs["mode"])
+        return real_begin(**kwargs)
+
+    monkeypatch.setattr(usage_capture, "begin_operation", _recording_begin)
+    app.dependency_overrides[get_service] = lambda: _FakeService(_GROUNDED)
+    app.dependency_overrides[get_message_store] = lambda: store
+    c = TestClient(app)
+    try:
+        # Control: a within-limit turn reaches every recorder, so the empty
+        # lists asserted below can't be an artefact of recorders never wired.
+        ok = c.post("/chat", json={"prompt": "What is a Basilisk?"})
+        assert ok.status_code == 200
+        assert "claim_conversation" in store.calls
+        assert "claim_conversation_strategy" in store.calls
+        assert begun == ["sage"]
+
+        store.calls.clear()
+        begun.clear()
+        r = c.post("/chat", json={"prompt": "a" * (CHAT_TEXT_MAX_CHARS + 1)})
+        assert r.status_code == 422
+        assert store.calls == ["calls_today"]
+        assert begun == []
     finally:
         app.dependency_overrides.clear()
