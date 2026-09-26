@@ -20,7 +20,7 @@ still applied by the container's init directory or `scripts/bootstrap-db.sh`.
 ## 1. How the schema is applied
 
 `service/sql/migrations/NNNN_snake_case.sql` is the one definition of the `chat`,
-`auth`, `app`, `campaign` and `audit` schemas. At startup — before anything is served — the service calls
+`auth`, `app`, `campaign`, `audit` and `metering` schemas. At startup — before anything is served — the service calls
 `migrate()`, which applies whatever the database has not seen yet: once, in order,
 each file in its own transaction together with its row in `app.schema_migrations`
 (version, name, SHA-256 of the LF-normalised file, when, how long, which revision).
@@ -141,6 +141,7 @@ Rules the runner or CI enforce:
 | `0008_document_schema.sql` | `campaign` | documents and their versions: the live `data`, the `write_revision` and per-field revisions, the one open working version, the folded `name_key` / `search_key`, the character-sheet link, and the four library indexes (`1kg.5.1`) |
 | `0009_participant_accounts.sql` | `campaign` | a participant becomes an account's seat (`agent-forge-harness-fma`): `user_id` (`REFERENCES auth.users`, `ON DELETE NO ACTION`) and `accepted_at` on `participants`, the CHECK that an accepted seat has an account (safe because both columns are new), one live seat per account per campaign and the account's own index (both partial); and it **drops** `enrolment_codes` and `device_credentials`. A drop is a contraction (section 3), shipped here because no build that reads those tables has ever been deployed — master's production build has no campaign schema — so there is no rollback to a build that needs them |
 | `0010_timeline_entries.sql` | `chat` | the conversation timeline's typed entries (`1kg.4.2`): one row per exchange `POST /chat` answered, written best-effort after the answer — a minted `entry_id` whose CHECK `service.timeline_store.entry_id_check_regex()` generates, `entry_kind` against the kinds of this migration, `schema_version`, `created_at`, `seq` (the tiebreak), the validated `payload`, and `user_message_id` / `assistant_message_id`, the `chat.messages` rows it carries (each carried by at most one entry; both cascade). Cascades with its conversation; no campaign column |
+| `0011_usage_ledger.sql` | `metering` | the provider-attempt cost ledger and its price table (`yje.5.1.2`): `provider_attempts`, one append-only row per provider attempt keyed by `(operation_id, attempt_index)`, with `occurred_at`, the closed-shape codes, the four token counts, `billed_account_id` and `campaign_id` as plain values (no foreign key out of the schema: a cost row outlives the account and the campaign it names), and `price_revision_id`, the revision in force when the row was written; `price_revisions`, one immutable row per `(provider, alias, effective_from)` with three `NUMERIC(12,6)` rates, seeded with `gpt-4o-mini`; `provider_attempts_account_time_idx` and `price_revisions_lookup_idx`. No update or delete path (`docs/runbooks/usage-capture.md` section 7) |
 
 ## 3. Roll forward, never back
 

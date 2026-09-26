@@ -98,7 +98,7 @@ INSERT INTO chat.messages (conversation_id, mode, role, content) VALUES
 #: Every schema the migrations own. `campaign` and `audit` arrive with 0004 and
 #: 0005; naming them here before they exist costs nothing and means a later file
 #: cannot quietly leave one out of the convergence comparison.
-SCHEMAS = "('chat', 'auth', 'app', 'campaign', 'audit')"
+SCHEMAS = "('chat', 'auth', 'app', 'campaign', 'audit', 'metering')"
 
 COLUMNS = f"""
 SELECT table_schema, table_name, column_name, data_type, is_nullable, column_default

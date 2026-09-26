@@ -11,8 +11,15 @@ provider — purpose, the alias actually called, provider, tokens, status, retry
 index, latency — from which `scripts/usage_cost_report.py` computes cost by
 mode per day and per account per month. See docs/runbooks/usage-capture.md.
 
-Deliberately NOT here (slice b, agent-forge-harness-yje.5.1.2): any table,
-migration, store or price table. The sink is Cloud Logging and nothing else.
+Two sinks, written independently (slice b, agent-forge-harness-yje.5.1.2). The
+log record above is kept exactly as slice a shipped it, and each attempt is ALSO
+captured as one ledger row (`AttemptRow`) on the turn's `Operation`; the turn's
+rows are written to `metering.provider_attempts` in one short transaction by
+`end_operation`, which already runs in `chat()`'s `finally`. No provider call
+ever waits on that write, a failed write never touches the answer, and the log
+line stays the independent witness of what a lost write lost. The table, the
+store and the price table live in `service/usage_ledger.py`, which imports this
+module and never the reverse; this module sees the ledger only as `LedgerSink`.
 
 THREE RULES THIS MODULE EXISTS TO ENFORCE
 
@@ -40,14 +47,17 @@ THREE RULES THIS MODULE EXISTS TO ENFORCE
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
+import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, Protocol
 
 from ingestion import retrieval
 from ingestion.retrieval import EMBED_MODEL
@@ -111,6 +121,99 @@ EXPECTED_KEYS = frozenset({
 
 
 # ---------------------------------------------------------------------------
+# The ledger row (slice b) — what the second sink receives
+# ---------------------------------------------------------------------------
+
+#: The largest count an INTEGER column holds. A count outside [0, this] — or
+#: anything that is not an int, a bool included — is unknown, never clamped
+#: and never zero, so a provider oddity cannot make the store refuse a turn.
+MAX_TOKEN_COUNT = 2**31 - 1
+
+
+@dataclass(frozen=True)
+class AttemptRow:
+    """One provider attempt as the ledger stores it: 15 of the log record's
+    keys, plus `attempt_index` (an operation-wide sequence, because
+    `retry_index` repeats within a turn) and `occurred_at`. The operational
+    keys (`error_class`, `finish_reason`, `latency_ms`, `provider_request_id`)
+    stay in the log line and nowhere else."""
+
+    operation_id: str
+    attempt_index: int
+    occurred_at: datetime
+    operation: str
+    purpose: str
+    mode: str | None
+    alias: str
+    provider: str | None
+    retry_index: int
+    status: str
+    input_tokens: int | None
+    cached_input_tokens: int | None
+    output_tokens: int | None
+    reasoning_tokens: int | None
+    billed_account_id: int
+    actor_kind: str
+    campaign_id: str | None
+
+
+class LedgerSink(Protocol):
+    """Where a turn's rows go: one call per turn, one transaction per call.
+    `service.usage_ledger.LedgerWriter` is the one implementation."""
+
+    def write(self, rows: Sequence[AttemptRow]) -> int: ...  # pragma: no cover - structural type
+
+
+#: The sink `begin_operation` snapshots into each new operation. Installed by
+#: `service.app._build_stores` and cleared at shutdown; None until then, which
+#: is what every unit test, eval script and the E2E app sees.
+_LEDGER: LedgerSink | None = None
+
+
+def install_ledger(sink: LedgerSink | None) -> None:
+    """Install (or, with None, remove) the ledger sink for turns begun from now
+    on. A turn already in flight keeps the sink it began with."""
+    global _LEDGER
+    _LEDGER = sink
+
+
+def ledger_clock() -> datetime:
+    """When an attempt was recorded: the application's UTC wall clock. The one
+    place `occurred_at` comes from, so a test can move it."""
+    return datetime.now(UTC)
+
+
+def _count(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_TOKEN_COUNT:
+        return value
+    return None
+
+
+def ledger_row(fields: Mapping[str, Any], *, attempt_index: int, occurred_at: datetime) -> AttemptRow:
+    """The log record's values as a ledger row — the same values, never a
+    second reading of the attempt, so the two sinks cannot disagree."""
+    return AttemptRow(
+        operation_id=fields["operation_id"],
+        attempt_index=attempt_index,
+        occurred_at=occurred_at,
+        operation=fields["operation"],
+        purpose=fields["purpose"],
+        mode=fields["mode"],
+        alias=fields["alias"],
+        provider=fields["provider"],
+        retry_index=fields["retry_index"],
+        status=fields["status"],
+        input_tokens=_count(fields["input_tokens"]),
+        cached_input_tokens=_count(fields["cached_input_tokens"]),
+        output_tokens=_count(fields["output_tokens"]),
+        reasoning_tokens=_count(fields["reasoning_tokens"]),
+        billed_account_id=fields["billed_account_id"],
+        actor_kind=fields["actor_kind"],
+        campaign_id=fields["campaign_id"],
+    )
+
+
+# ---------------------------------------------------------------------------
 # The operation context — one per /chat turn
 # ---------------------------------------------------------------------------
 
@@ -137,6 +240,18 @@ class Operation:
     # emitter reads nothing else off it and typing it as Request would force
     # every test to build one.
     request: Any
+    #: The ledger sink this turn writes to, snapshotted by `begin_operation` so
+    #: that a recovery installing a new one mid-turn cannot split a turn's rows.
+    #: None: the turn buffers nothing.
+    ledger: LedgerSink | None = None
+    # The turn's rows, the operation-wide attempt sequence and the lock both are
+    # taken under. On the operation rather than in a context variable because
+    # the graph nodes reach the operation through the run config (slice a D-2).
+    _batch: list[AttemptRow] = field(init=False, repr=False, compare=False, default_factory=list)
+    _sequence: itertools.count[int] = field(
+        init=False, repr=False, compare=False, default_factory=itertools.count,
+    )
+    _lock: threading.Lock = field(init=False, repr=False, compare=False, default_factory=threading.Lock)
 
 
 _CURRENT: ContextVar[Operation | None] = ContextVar("usage_capture_operation", default=None)
@@ -173,6 +288,7 @@ def begin_operation(
             actor_kind=actor_kind,
             campaign_id=campaign_id,
             request=request if request is not None else _NoHeaders(),
+            ledger=_LEDGER,
         )
         return _CURRENT.set(operation)
     except Exception as exc:
@@ -181,15 +297,44 @@ def begin_operation(
 
 
 def end_operation(token: Token[Operation | None] | None) -> None:
-    """Tear the context down. Tolerates a None token (begin_operation failed)
-    and a token from another context (it is still better to leave the variable
-    alone than to fail a request that has already been answered)."""
+    """Write the turn's ledger rows, then tear the context down. Tolerates a
+    None token (begin_operation failed) and a token from another context (it is
+    still better to leave the variable alone than to fail a request that has
+    already been answered).
+
+    This runs in `chat()`'s `finally`, after the last provider call of the turn
+    on every path — 200, 429, 503 and 500 alike — so the one ledger write never
+    holds a connection across a provider call, and it can raise nothing."""
     if token is None:
         return
     try:
-        _CURRENT.reset(token)
+        _flush(current_operation())
+    finally:
+        try:
+            _CURRENT.reset(token)
+        except Exception as exc:
+            _warn("end_operation", exc)
+
+
+def _flush(operation: Operation | None) -> None:
+    """The turn's rows, in one transaction through the operation's sink.
+
+    An empty batch opens nothing. A failed write drops the turn's rows and logs
+    one line naming the row count and the exception's CLASS — no id, no prompt,
+    no exception text, which can quote a statement and with it a row's values.
+    The log record of every one of those attempts was already written, and is
+    the witness of what was lost."""
+    rows: list[AttemptRow] = []
+    try:
+        if operation is None or operation.ledger is None:
+            return
+        with operation._lock:
+            rows = list(operation._batch)
+            operation._batch.clear()
+        if rows:
+            operation.ledger.write(rows)
     except Exception as exc:
-        _warn("end_operation", exc)
+        log.warning("usage ledger write failed (rows=%d, error=%s)", len(rows), type(exc).__name__)
 
 
 def current_operation() -> Operation | None:
@@ -394,8 +539,27 @@ class AttemptRecorder:
             provider_request_id=provider_request_id,
         )
         self._retry_index += 1
+        # The ledger row first, in its own guard, and never inside the emitter:
+        # the two sinks are independent, so an emitter that raises still leaves
+        # the row, and a row that cannot be captured still lets the line out.
+        _append_row(self._operation, fields)
         emitter = self._emit if self._emit is not None else _emit_record
         emitter(self._operation, fields)
+
+
+def _append_row(operation: Operation, fields: Mapping[str, Any]) -> None:
+    """Capture one attempt on its operation's batch. The next `attempt_index`
+    is taken under the operation's lock, in recording order; nothing is written
+    here — `end_operation` writes the batch once the turn is over."""
+    if operation.ledger is None:
+        return
+    try:
+        with operation._lock:
+            operation._batch.append(ledger_row(
+                fields, attempt_index=next(operation._sequence), occurred_at=ledger_clock(),
+            ))
+    except Exception as exc:
+        _warn("ledger_append", exc)
 
 
 # ---------------------------------------------------------------------------
