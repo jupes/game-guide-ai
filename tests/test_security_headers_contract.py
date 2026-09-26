@@ -141,6 +141,21 @@ def test_an_add_header_sharing_a_line_with_its_location_is_still_caught() -> Non
     assert locations_with_their_own_add_header(synthetic) != []
 
 
+def test_a_non_csp_add_header_sharing_a_line_with_its_location_is_still_caught() -> None:
+    # The realistic way the CSP goes missing is not a second CSP but ANY
+    # add_header in a location: nginx then drops every server-level add_header,
+    # the CSP included. A CSP-only guard would pass this, so the fixture plants
+    # a harmless-looking Cache-Control, on one line (agent-forge-harness-1q7).
+    synthetic = (
+        "server {\n"
+        "    add_header Content-Security-Policy \"img-src 'self'\" always;\n"
+        "\n"
+        '    location /assets { add_header Cache-Control "public"; }\n'
+        "}\n"
+    )
+    assert locations_with_their_own_add_header(synthetic) == [synthetic.index("add_header Cache-Control")]
+
+
 def test_add_header_mentioned_only_in_a_comment_is_not_flagged() -> None:
     # The anti-goal this guards against (lines 32-34's reasoning, applied to
     # the new bare-word match): a comment that merely talks about add_header —
