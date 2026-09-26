@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint . --max-warnings=0",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run --project=jsdom && vitest run --project=storybook",
     "test:coverage": "vitest run --project=jsdom --coverage",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
