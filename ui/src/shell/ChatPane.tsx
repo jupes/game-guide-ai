@@ -18,6 +18,7 @@ import { StatBlockCard } from '../ds/StatBlockCard'
 import type { StatBlockCardProps } from '../ds/StatBlockCard'
 import { SourceList } from '../components/SourceList'
 import { Markdown } from '../components/Markdown'
+import { CHAT_TEXT_MAX_CHARS, codePointLength } from '../gm/contracts'
 import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { useAppNav } from './AppNav'
@@ -154,6 +155,16 @@ function SuggestionCards({ suggestions }: { suggestions: Suggestion[] }): React.
   )
 }
 
+// agent-forge-harness-764: the composer's own bound, mirroring the server's
+// CHAT_TEXT_MAX_CHARS gate in service/app.py::chat() (same constant, same
+// ceiling, checked before any provider work happens). Counted in code points
+// like ToolComposer's BRIEF_MAX_CHARS counter (`briefCounterMessage`) — not
+// `.length`, which counts UTF-16 units and would undercount astral characters
+// (see ui/src/gm/documentFields.ts and DocumentField.test.tsx).
+function chatPromptCounterMessage(length: number): string {
+  return `${length} of ${CHAT_TEXT_MAX_CHARS} characters — shorten your message to send it.`
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function ChatPane({
@@ -177,6 +188,10 @@ export function ChatPane({
     onConversationAdopted: setConversationId,
   })
   const [draft, setDraft] = React.useState('')
+  // agent-forge-harness-764: block a submit before it ever reaches the wire,
+  // mirroring the server-side gate in service/app.py::chat().
+  const draftLength = codePointLength(draft)
+  const overLength = draftLength > CHAT_TEXT_MAX_CHARS
   // Scoped like useChat's history state: derive "this scope's attachments" from
   // scopeId===conversationId rather than resetting via setState-in-effect (a
   // synchronous setState in an effect body triggers cascading renders).
@@ -221,13 +236,13 @@ export function ChatPane({
 
   const handleSend = React.useCallback(() => {
     const trimmed = draft.trim()
-    if (!trimmed || pending) return
+    if (!trimmed || pending || overLength) return
     if (conversationId !== null) {
       conversationStore.recordFirstPrompt(conversationId, trimmed)
     }
     send(trimmed)
     setDraft('')
-  }, [conversationId, conversationStore, draft, pending, send])
+  }, [conversationId, conversationStore, draft, overLength, pending, send])
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -438,6 +453,11 @@ export function ChatPane({
       </div>
 
       {/* Composer */}
+      {overLength && (
+        <p className="chat-pane__composer-message" role="status">
+          {chatPromptCounterMessage(draftLength)}
+        </p>
+      )}
       <div className="chat-pane__composer">
         <input
           ref={fileInputRef}
@@ -464,13 +484,14 @@ export function ChatPane({
           onKeyDown={handleKeyDown}
           placeholder="Ask…"
           disabled={pending}
+          aria-invalid={overLength || undefined}
           fullWidth
         />
         <IconButton
           icon="send"
           ariaLabel="Send message"
           onClick={handleSend}
-          disabled={pending || draft.trim() === ''}
+          disabled={pending || draft.trim() === '' || overLength}
         />
       </div>
     </div>
