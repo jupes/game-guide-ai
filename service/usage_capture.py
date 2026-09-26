@@ -14,6 +14,15 @@ mode per day and per account per month. See docs/runbooks/usage-capture.md.
 Deliberately NOT here (slice b, agent-forge-harness-yje.5.1.2): any table,
 migration, store or price table. The sink is Cloud Logging and nothing else.
 
+`record_structuring_outcome` (agent-forge-harness-kyr) adds a second, sibling
+event, `structuring_outcome`: a bounded, content-free counter of what happened
+to a structuring purpose (`suggestions`, `spell_structuring`,
+`statblock_structuring`) — `produced` / `none` / `parse_failure` /
+`skipped_by_gate` — one per purpose per turn, sharing `operation_id` with that
+turn's `provider_attempt` records but filtered as its own `event`. It feeds a
+step-0 waste report and credit-limit sizing; it is not a price and carries no
+token counts.
+
 THREE RULES THIS MODULE EXISTS TO ENFORCE
 
 1. *No content, ever.* A record's key set is closed (`EXPECTED_KEYS`) and every
@@ -107,6 +116,33 @@ EXPECTED_KEYS = frozenset({
     "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens",
     "latency_ms", "provider_request_id", "billed_account_id", "actor_kind",
     "campaign_id",
+})
+
+#: A second, independent filter key for a second, independent event
+#: (agent-forge-harness-kyr). A `structuring_outcome` record answers "what
+#: happened to this structuring purpose" — produced / none / parse failure /
+#: skipped by the cost gate — for `suggestions`, `spell_structuring` and
+#: `statblock_structuring`. It shares `operation_id` with a turn's
+#: `provider_attempt` records (same Operation) but is filtered separately: a
+#: gate-skip has zero `provider_attempt` records and exactly one of these.
+EVENT_STRUCTURING_OUTCOME = "structuring_outcome"
+RECORD_MESSAGE_OUTCOME = "structuring outcome"
+
+OUTCOME_PRODUCED = "produced"
+OUTCOME_NONE = "none"
+OUTCOME_PARSE_FAILURE = "parse_failure"
+OUTCOME_SKIPPED_BY_GATE = "skipped_by_gate"
+OUTCOMES = frozenset({
+    OUTCOME_PRODUCED, OUTCOME_NONE, OUTCOME_PARSE_FAILURE, OUTCOME_SKIPPED_BY_GATE,
+})
+
+#: A structuring-outcome record has exactly these keys, in every branch,
+#: always. No `alias`, `status`, token counts or any other provider-attempt
+#: field — and, per X-7, no text field of any kind
+#: (docs/adr/gm-workbench-interactions.md:110).
+EXPECTED_OUTCOME_KEYS = frozenset({
+    "event", "record_version", "operation_id", "operation", "purpose", "mode",
+    "outcome", "billed_account_id", "actor_kind", "campaign_id",
 })
 
 
@@ -296,6 +332,39 @@ def _emit_record(operation: Operation, fields: dict[str, Any]) -> None:
         log.info("usage capture record: %s", json.dumps(fields, sort_keys=True, default=str))
 
 
+def build_outcome_record(*, operation: Operation, purpose: str, outcome: str) -> dict[str, Any]:
+    """The one place a `structuring_outcome` record is shaped. Every key of
+    `EXPECTED_OUTCOME_KEYS` is written here literally, every branch, always —
+    same discipline as `build_record`, deliberately not reused: this record
+    carries no `alias`, `status` or token fields, and no text field of any
+    kind (X-7)."""
+    return {
+        "event": EVENT_STRUCTURING_OUTCOME,
+        "record_version": RECORD_VERSION,
+        "operation_id": operation.operation_id,
+        "operation": operation.operation,
+        "purpose": purpose,
+        "mode": operation.mode,
+        "outcome": outcome,
+        "billed_account_id": operation.billed_account_id,
+        "actor_kind": operation.actor_kind,
+        "campaign_id": operation.campaign_id,
+    }
+
+
+def _emit_outcome_record(operation: Operation, fields: dict[str, Any]) -> None:
+    """One synchronous in-process write for a `structuring_outcome` record.
+
+    Deliberately NOT `_emit_record`: `test_usage_capture_graph.py`'s `records`
+    fixture monkeypatches `_emit_record` by name and asserts exact
+    purpose-count lists for `provider_attempt` records. Routing outcome
+    records through the same emitter would silently inflate every one of
+    those existing assertions.
+    """
+    if not gcp_logging.emit(RECORD_SEVERITY, RECORD_MESSAGE_OUTCOME, operation.request, **fields):
+        log.info("usage capture outcome record: %s", json.dumps(fields, sort_keys=True, default=str))
+
+
 # ---------------------------------------------------------------------------
 # The per-call-site recorder
 # ---------------------------------------------------------------------------
@@ -415,6 +484,22 @@ def observer_for(config: Any, *, purpose: str, alias: str) -> AttemptObserver:
     except Exception as exc:
         _warn("observer_for", exc)
         return NullAttemptObserver()
+
+
+def record_structuring_outcome(config: Any, *, purpose: str, outcome: str) -> None:
+    """Record one bounded, content-free outcome for a structuring purpose:
+    `produced`, `none`, `parse_failure` or `skipped_by_gate` (agent-forge-
+    harness-kyr). A no-op when there is no turn in flight, same as
+    `observer_for`. Never raises — a logging failure must never fail, slow or
+    degrade a turn, mirroring rule 2 in this module's docstring."""
+    try:
+        operation = operation_from_config(config)
+        if operation is None:
+            return
+        fields = build_outcome_record(operation=operation, purpose=purpose, outcome=outcome)
+        _emit_outcome_record(operation, fields)
+    except Exception as exc:
+        _warn("record_structuring_outcome", exc)
 
 
 def begin_embedding_scope(config: Any) -> Any:

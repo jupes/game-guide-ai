@@ -171,6 +171,46 @@ def test_builder_dict_key_set_is_exactly_expected_keys_on_success_and_on_error()
     assert ok["record_version"] == 1
 
 
+# ---------------------------------------------------------------------------
+# The outcome record: a second, independent closed key set (agent-forge-
+# harness-kyr) — no alias, status or token field, and no text field of any
+# kind (X-7).
+# ---------------------------------------------------------------------------
+
+def test_expected_outcome_keys_is_the_documented_closed_set():
+    assert usage_capture.EXPECTED_OUTCOME_KEYS == frozenset({
+        "event", "record_version", "operation_id", "operation", "purpose", "mode",
+        "outcome", "billed_account_id", "actor_kind", "campaign_id",
+    })
+
+
+def test_outcomes_is_the_documented_closed_set():
+    assert usage_capture.OUTCOMES == frozenset({"produced", "none", "parse_failure", "skipped_by_gate"})
+
+
+def test_reserved_cloud_run_field_names_are_not_in_the_outcome_record():
+    reserved = {"severity", "message", "timestamp", "time", "httpRequest"}
+    assert not (usage_capture.EXPECTED_OUTCOME_KEYS & reserved)
+    assert not any(k.startswith("logging.googleapis.com/") for k in usage_capture.EXPECTED_OUTCOME_KEYS)
+
+
+def test_outcome_builder_dict_key_set_is_exactly_expected_outcome_keys():
+    produced = usage_capture.build_outcome_record(
+        operation=_operation(), purpose=usage_capture.PURPOSE_SUGGESTIONS,
+        outcome=usage_capture.OUTCOME_PRODUCED,
+    )
+    skipped = usage_capture.build_outcome_record(
+        operation=_operation(), purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING,
+        outcome=usage_capture.OUTCOME_SKIPPED_BY_GATE,
+    )
+    assert set(produced) == usage_capture.EXPECTED_OUTCOME_KEYS
+    assert set(skipped) == usage_capture.EXPECTED_OUTCOME_KEYS
+    assert produced["event"] == "structuring_outcome"
+    assert produced["record_version"] == 1
+    assert produced["outcome"] == "produced"
+    assert skipped["outcome"] == "skipped_by_gate"
+
+
 def test_provider_is_the_catalog_provider_or_null_never_a_guess():
     known = usage_capture.build_record(
         operation=_operation(), purpose="answer", alias="gpt-4o-mini", retry_index=0,
@@ -484,6 +524,39 @@ def test_embedding_scope_is_a_no_op_without_an_operation():
     token = usage_capture.begin_embedding_scope(None)
     assert token is None
     usage_capture.end_embedding_scope(token)
+
+
+def test_record_structuring_outcome_is_a_no_op_without_an_operation(monkeypatch):
+    """No operation -> no emitter call. Proven directly: an emitter that would
+    raise if called still lets this return cleanly."""
+    monkeypatch.setattr(usage_capture, "_emit_outcome_record", _boom)
+    usage_capture.record_structuring_outcome(
+        None, purpose=usage_capture.PURPOSE_SUGGESTIONS, outcome=usage_capture.OUTCOME_PRODUCED,
+    )
+
+
+def test_record_structuring_outcome_never_raises_on_a_malformed_config():
+    class _Hostile(dict):
+        def get(self, *args, **kwargs):
+            raise RuntimeError("hostile config")
+
+    # Must not raise. `operation_from_config` isolates the hostile lookup
+    # itself and returns None, so record_structuring_outcome simply no-ops.
+    usage_capture.record_structuring_outcome(
+        _Hostile(), purpose=usage_capture.PURPOSE_SUGGESTIONS, outcome=usage_capture.OUTCOME_PRODUCED,
+    )
+
+
+def test_record_structuring_outcome_never_raises_when_the_emitter_does(monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="service.usage_capture")
+    monkeypatch.setattr(usage_capture, "operation_from_config", lambda config: _operation())
+    monkeypatch.setattr(usage_capture, "_emit_outcome_record", _boom)
+
+    usage_capture.record_structuring_outcome(
+        {}, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING, outcome=usage_capture.OUTCOME_SKIPPED_BY_GATE,
+    )
+
+    assert any("record_structuring_outcome" in r.getMessage() for r in caplog.records)
 
 
 def test_observer_for_never_raises_when_the_recorder_cannot_be_built(monkeypatch, caplog):
