@@ -236,11 +236,15 @@ def check_plain_text(value: str) -> str:
     pre-flight check.
 
     The one shared helper for this rule. It is applied to the document field
-    kinds and to the reveal family's projection text today. Bead ``5mj`` adopts it
-    for the other stored text, and bead ``ysj``'s participant-alias rule calls it;
-    folding characters out of a comparison key is ``ysj``'s, not this function's —
-    this one only accepts or refuses. It never changes ``value``, and a lone
-    surrogate stays the well-formedness checks' to refuse.
+    kinds and to the reveal family's projection text (``1kg.5.7.2``), and — bead
+    ``5mj`` — to every other stored text: a brief, an edit instruction, a search,
+    alt text, a cue's title and a version's summary here, ``/chat``'s prompt in
+    ``models.ChatRequest``, and, through :func:`check_stored_text`, a participant's
+    alias (``participant_store.check_alias``, bead ``ysj``) and a summary a store
+    is handed. Folding characters out of a comparison key is ``ysj``'s
+    ``alias_key``, not this function's — this one only accepts or refuses. It
+    never changes ``value``, and a lone surrogate stays the well-formedness
+    checks' to refuse.
     """
     for character in value:
         what = _REFUSED_TEXT_CLASS.get(ord(character))
@@ -777,7 +781,9 @@ class ToolInvocationRequest(_Contract):
     @field_validator("brief")
     @classmethod
     def _trim(cls, value: str) -> str:
-        return trim(value)
+        # Stored trimmed, so the one rule reads what is stored (bead 5mj): a
+        # mark the trim removes is never stored, and one inside is refused.
+        return check_plain_text(trim(value))
 
     @model_validator(mode="after")
     def _brief_fits_its_tool(self) -> Self:
@@ -963,8 +969,9 @@ _TextListValue = Annotated[list[_ListItem], Field(max_length=LIST_FIELD_MAX_ITEM
 _IntegerValue = Annotated[WireInt, Field(ge=INTEGER_FIELD_MIN, le=INTEGER_FIELD_MAX)]
 #: A document field's own text kinds: the shapes above, plus ``check_plain_text``.
 #: New annotations rather than a change to the three above, which also carry a
-#: version's ``summary`` and a library item's ``qualifier`` and ``tags`` — text
-#: bead ``5mj`` owns, and which accepts what it accepted before until it lands.
+#: library item's ``qualifier`` and ``tags`` — read back out of a document's own
+#: fields, which these already refused on the way in. A version's ``summary`` is
+#: stored text of its own and takes ``_FieldTextValue`` (bead ``5mj``).
 _FieldTextValue = Annotated[_TextValue, AfterValidator(check_plain_text)]
 _FieldProseValue = Annotated[_ProseValue, AfterValidator(check_plain_text)]
 _FieldListItem = Annotated[_ListItem, AfterValidator(check_plain_text)]
@@ -1202,8 +1209,9 @@ class DocumentVersion(_Contract):
 
     number: VersionNumber
     author: Author
-    #: One line. May be empty: a burst of GM autosaves needs no summary.
-    summary: _TextValue
+    #: One line. May be empty: a burst of GM autosaves needs no summary. Stored
+    #: text, so under the one rule, as ``document_store.check_summary`` is (5mj).
+    summary: _FieldTextValue
     created_at: Timestamp
     #: Decision CANVAS-34: the GM's open working version is not sealed, and only
     #: a sealed version may be pinned by a reveal or exported (REVEAL-8).
@@ -1377,7 +1385,7 @@ class TextInstruction(_Contract):
         trimmed = trim(value)
         if not 1 <= len(trimmed) <= BRIEF_MAX_CHARS:
             raise ValueError(f"an instruction is 1 to {BRIEF_MAX_CHARS} characters")
-        return trimmed
+        return check_plain_text(trimmed)
 
 
 class ActionInstruction(_Contract):
@@ -1489,7 +1497,7 @@ class LibraryQuery(_Contract):
         trimmed = trim(value)
         if trimmed and not SEARCH_MIN_CHARS <= len(trimmed) <= SEARCH_MAX_CHARS:
             raise ValueError(f"a search is {SEARCH_MIN_CHARS} to {SEARCH_MAX_CHARS} characters")
-        return trimmed
+        return check_plain_text(trimmed)
 
     @model_validator(mode="after")
     def _filters_fit_the_category(self) -> Self:
@@ -1780,8 +1788,12 @@ MEDIA_TYPES: dict[AssetKind, tuple[str, ...]] = {
 ASSET_MAX_BYTES: dict[AssetKind, int] = {AssetKind.IMAGE: IMAGE_MAX_BYTES, AssetKind.AUDIO: AUDIO_MAX_BYTES}
 
 MediaType = Annotated[str, StringConstraints(strict=True, pattern=r"^(image|audio)/[a-z0-9.+-]{1,32}$")]
+#: Stored text, so under the one rule (bead ``5mj``), as a cue's title is.
 AltText = Annotated[
-    str, StringConstraints(strict=True, min_length=1, max_length=ALT_MAX_CHARS), AfterValidator(_one_line)
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=ALT_MAX_CHARS),
+    AfterValidator(_one_line),
+    AfterValidator(check_plain_text),
 ]
 Pixels = Annotated[WireInt, Field(ge=1, le=IMAGE_MAX_SIDE)]
 DurationMs = Annotated[WireInt, Field(ge=1, le=AMBIENCE_MAX_MS)]
@@ -1893,7 +1905,10 @@ class CueKind(str, Enum):
 
 CUE_MAX_MS: dict[CueKind, int] = {CueKind.AMBIENCE: AMBIENCE_MAX_MS, CueKind.ONE_SHOT: ONE_SHOT_MAX_MS}
 CueTitle = Annotated[
-    str, StringConstraints(strict=True, min_length=1, max_length=CUE_TITLE_MAX_CHARS), AfterValidator(_one_line)
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=CUE_TITLE_MAX_CHARS),
+    AfterValidator(_one_line),
+    AfterValidator(check_plain_text),
 ]
 
 
@@ -1956,7 +1971,7 @@ class CueListQuery(_Contract):
         trimmed = trim(value)
         if trimmed and not SEARCH_MIN_CHARS <= len(trimmed) <= SEARCH_MAX_CHARS:
             raise ValueError(f"a search is {SEARCH_MIN_CHARS} to {SEARCH_MAX_CHARS} characters")
-        return trimmed
+        return check_plain_text(trimmed)
 
 
 class CuePage(_Contract):
