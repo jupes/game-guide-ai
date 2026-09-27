@@ -78,7 +78,13 @@ from .ratelimit import (
     check_chat_request,
     client_source,
 )
-from .security_headers import CONTENT_SECURITY_POLICY
+from .security_headers import (
+    CONTENT_SECURITY_POLICY,
+    CROSS_ORIGIN_OPENER_POLICY,
+    PERMISSIONS_POLICY,
+    REFERRER_POLICY,
+    X_CONTENT_TYPE_OPTIONS,
+)
 from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
@@ -616,7 +622,8 @@ async def capture_chat_metrics(request: Request, call_next):
 
 @app.middleware("http")
 async def set_security_headers(request: Request, call_next):
-    """Send the Content-Security-Policy on every response this app produces (va8).
+    """Send the security headers this app owns on every response it produces
+    (va8, and agent-forge-harness-y58 for the four added after it).
 
     A separate middleware rather than two lines inside `capture_chat_metrics`:
     that one returns early for every path that is not `/chat`, so folding the
@@ -630,9 +637,10 @@ async def set_security_headers(request: Request, call_next):
     middleware wraps the router, and the router is what holds the `StaticFiles`
     mount at the bottom of this file.
 
-    `setdefault`, not assignment: a route may answer with a stricter policy of
-    its own — SEC-19 requires `default-src 'none'; sandbox` on asset responses —
-    and must not have to unpick this middleware to keep it.
+    `setdefault`, not assignment, for every header here: a route may answer
+    with a stricter policy of its own — SEC-19 requires `default-src 'none';
+    sandbox` on asset responses — and must not have to unpick this middleware
+    to keep it.
 
     Known and accepted: a 500 raised by an UNHANDLED exception is produced by
     Starlette's `ServerErrorMiddleware`, which sits outside all user middleware,
@@ -641,6 +649,10 @@ async def set_security_headers(request: Request, call_next):
     """
     response = await call_next(request)
     response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+    response.headers.setdefault("X-Content-Type-Options", X_CONTENT_TYPE_OPTIONS)
+    response.headers.setdefault("Referrer-Policy", REFERRER_POLICY)
+    response.headers.setdefault("Cross-Origin-Opener-Policy", CROSS_ORIGIN_OPENER_POLICY)
+    response.headers.setdefault("Permissions-Policy", PERMISSIONS_POLICY)
     return response
 
 
