@@ -553,7 +553,6 @@ def test_a_price_revision_a_row_names_cannot_be_deleted(dsn: str) -> None:
 def test_account_cost_reads_the_account_time_index(dsn: str) -> None:
     with connect(dsn, autocommit=False) as conn:
         conn.execute("SET LOCAL enable_seqscan = off")
-        conn.execute("DROP INDEX metering.provider_attempts_account_time_idx")
         plan = "\n".join(r[0] for r in conn.execute(
             "EXPLAIN " + ACCOUNT_COST_SQL, {"account": ACCOUNT, "since": SINCE, "until": UNTIL},
         ).fetchall())
