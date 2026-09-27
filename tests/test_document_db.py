@@ -68,7 +68,7 @@ from service.document_store import (
     search_key,
 )
 from service.participant_store import InMemoryParticipantStore, PostgresParticipantStore
-from service.tests.test_document_store import VISIBILITY_WORDS
+from service.tests.test_document_store import PRIVATE, VISIBILITY_WORDS
 from service.workbench_contracts import Author, DocumentTypeId
 
 DOCUMENT = "doc_" + "a" * 22
@@ -2324,3 +2324,106 @@ def test_one_sheet_linked_to_two_seats_at_once_is_never_re_pointed(dsn: str) -> 
 
     assert refused == (sheet.id, wren), "the sheet was re-pointed"
     assert _got(world, CAMPAIGN, sheet.id).linked_participant_id == rook
+
+
+# ── No refusal names private text or an id, in either world (SEC-20) ─────────
+#
+# `service/tests/test_document_store.py` sweeps the twin's refusals. This is the
+# same sweep over the `world` fixture, so that the [postgres] run reaches
+# `PostgresDocumentStore`'s own raise sites, which the twin shares none of.
+
+#: The prefix of every id a refusal could be tempted to name.
+ID_SHAPES = ("doc_", "prt_", "cmp_")
+
+
+def _what_it_says(world: World, call: Callable[[Any], object]) -> str:
+    """`str()` and `repr()` of what `call` refuses with, in a transaction of its
+    own. A call that does not refuse fails the test: a path never provoked
+    proves nothing about what its refusal would say."""
+    with world.db.transaction() as unit:
+        try:
+            call(unit)
+        except Exception as exc:  # noqa: BLE001 - the outcome under test
+            return f"{exc!s}\n{exc!r}"
+    pytest.fail("that call did not refuse")
+
+
+def test_no_refusal_in_either_world_names_private_text_or_an_id(world: World) -> None:
+    """Every refusal a caller can provoke from the store, with canaries in
+    reach: none repeats a document's field text, a seat's alias or a search
+    string, and none names the id of a document, a participant or a campaign.
+    Every refusal is heard before anything is asserted, so a failure lists
+    every path that leaks, not only the first."""
+    campaign = _a_campaign(world)
+    elsewhere = "cmp_" + "z" * 22
+    seat = _a_participant(world, campaign, alias=PRIVATE["alias"])
+    other = _a_participant(world, campaign, alias="Wren")
+    gone = _a_participant(world, campaign, alias="Gone")
+    with world.db.transaction() as unit:
+        world.participants.remove(unit, campaign, gone)
+    npc = _a_document(world, campaign, data=AN_NPC | {
+        "name": PRIVATE["name"], "qualifier": PRIVATE["qualifier"],
+        "tags": [PRIVATE["tag"]], "voice": PRIVATE["prose"],
+    })
+    moved = _write(world, campaign, npc.id, fields={"name": PRIVATE["name"] + "!"},
+                   author=Author.GM, base_write_revision=npc.write_revision)
+    sheet = _a_sheet(world, campaign, PRIVATE["name"])
+    spare = _a_sheet(world, campaign, PRIVATE["name"] + "2")
+    assert _link(world, campaign, sheet.id, seat)
+    store = world.documents
+
+    def create(owner: str, type_version: int) -> Callable[[Any], object]:
+        return lambda unit: store.create(unit, owner, doc_type=DocumentTypeId.NPC,
+                                         type_version=type_version,
+                                         data=AN_NPC | {"name": PRIVATE["name"]}, author=Author.GM)
+
+    def write(owner: str, document: str, **kwargs: Any) -> Callable[[Any], object]:
+        given = {"fields": {"name": "x"}, "author": Author.GM, "base_write_revision": None} | kwargs
+        return lambda unit: store.write_fields(unit, owner, document, **given)
+
+    def page(**kwargs: Any) -> Callable[[Any], object]:
+        return lambda unit: store.list_documents(unit, campaign, types=["npc"], archived=False,
+                                                 limit=10, **kwargs)
+
+    def link(owner: str, document: str, participant: str) -> Callable[[Any], object]:
+        return lambda unit: store.link_character_sheet(unit, owner, document,
+                                                       participant_id=participant)
+
+    paths: dict[str, Callable[[Any], object]] = {
+        "create in a missing campaign": create(elsewhere, 1),
+        "create at a type version this build does not write": create(campaign, 2),
+        "write to another campaign's document": write(elsewhere, npc.id),
+        "write to a missing document": write(campaign, DOCUMENT),
+        "write on a stale base": write(campaign, npc.id, fields={"name": PRIVATE["name"] + "?"},
+                                       base_write_revision=npc.write_revision),
+        "write from a base the document never reached": write(
+            campaign, npc.id, base_write_revision=moved.write_revision + 99),
+        "write a key the type does not declare": write(campaign, npc.id,
+                                                       fields={"nonesuch": PRIVATE["prose"]}),
+        "write an over-long summary": write(campaign, npc.id, summary=PRIVATE["summary"] * 40),
+        "history before a missing version": lambda unit: store.history(
+            unit, campaign, npc.id, before_number=99, limit=10),
+        "library after a missing row": page(after_id=DOCUMENT),
+        "library with an over-long search": page(search=PRIVATE["search"] * 10),
+        "library sorted by private text": page(sort=PRIVATE["search"]),
+        "restore a missing version": lambda unit: store.restore(
+            unit, campaign, npc.id, version_number=99),
+        "restore in another campaign": lambda unit: store.restore(
+            unit, elsewhere, npc.id, version_number=1),
+        "archive with a flag that is not a bool": lambda unit: store.set_archived(
+            unit, campaign, npc.id, archived=PRIVATE["name"]),
+        "link a sheet already linked to another seat": link(campaign, sheet.id, other),
+        "link a second sheet to a seat that holds one": link(campaign, spare.id, seat),
+        "link a document that is not a sheet": link(campaign, npc.id, other),
+        "link to a removed seat": link(campaign, spare.id, gone),
+        "link in another campaign": link(elsewhere, sheet.id, seat),
+        "unlink in another campaign": lambda unit: store.unlink_character_sheet(
+            unit, elsewhere, sheet.id),
+    }
+    heard = {path: _what_it_says(world, call) for path, call in paths.items()}
+
+    leaks = {
+        path: said for path, said in heard.items()
+        if any(secret in said for secret in (*PRIVATE.values(), *ID_SHAPES))
+    }
+    assert not leaks, leaks

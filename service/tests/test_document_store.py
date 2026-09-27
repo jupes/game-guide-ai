@@ -730,22 +730,28 @@ def test_no_private_text_reaches_an_exception():
                              base_write_revision=made.write_revision + 99))
         said.append(_refusal(docs._planned, _a_record(type_version=2), {"name": "x"},
                              Author.GM, None, None))
+        said.append(_refusal(store.create, unit, "cmp_" + "z" * 22,
+                             doc_type=DocumentTypeId.NPC, type_version=1,
+                             data={"name": PRIVATE["name"]}, author=Author.GM))
         said.extend(_every_slice_b_refusal(db, unit, store, campaign, made.id))
     assert moved.write_revision == 2
 
     spoken = "\n".join(said)
     for canary in PRIVATE.values():
         assert canary not in spoken, spoken
+    # SEC-20's rule generally, not only for `SheetAlreadyLinked`: no refusal
+    # collected above, slice A's or slice B's, names the id of a document, a
+    # participant or a campaign, however it is spelled.
+    for shape in ("doc_", "prt_", "cmp_"):
+        assert shape not in spoken, spoken
 
 
 def _every_slice_b_refusal(
     db: InMemoryDatabase, unit, store: InMemoryDocumentStore, campaign: str, document_id: str
 ) -> list[str]:
     """Every refusal slice B added, provoked with canaries in reach: the
-    document's name and tag, the seat's alias, and a search string. Also
-    proves SEC-20's rule generally, not only for `SheetAlreadyLinked`: no
-    collected message names the id of a document, a participant or a
-    campaign, however the refusal is spelled."""
+    document's name and tag, the seat's alias, and a search string. The
+    caller sweeps what they say for canaries and for ids alike."""
     seats = InMemoryParticipantStore(db)
     seat = seats.add(unit, campaign, alias=PRIVATE["alias"]).id
     other = seats.add(unit, campaign, alias="Wren").id
@@ -763,7 +769,7 @@ def _every_slice_b_refusal(
     link = store.link_character_sheet
     unlink = store.unlink_character_sheet
     elsewhere = "cmp_" + "z" * 22
-    refusals = [
+    return [
         _refusal(link, unit, campaign, sheet, participant_id=other),
         _refusal(link, unit, campaign, spare, participant_id=seat),
         _refusal(link, unit, campaign, document_id, participant_id=other),
@@ -781,10 +787,6 @@ def _every_slice_b_refusal(
                  sort=PRIVATE["search"], limit=10),
         _refusal(store.set_archived, unit, campaign, document_id, archived=PRIVATE["name"]),
     ]
-    spoken = "\n".join(refusals)
-    for shape in ("doc_", "prt_", "cmp_"):
-        assert shape not in spoken, spoken
-    return refusals
 
 
 def _refusal(call, *args, expect: object = ..., **kwargs) -> str:
@@ -1074,9 +1076,12 @@ def test_a_deleted_documents_tombstone_keeps_only_its_id_and_campaign():
             author=Author.GM, command_id="cmd-canary",
         )
         assert store.link_character_sheet(unit, campaign, made.id, participant_id=seat)
+        assert store.set_archived(unit, campaign, made.id, archived=True)
         assert store.delete(unit, campaign, made.id)
         row = shared_rows(db, "documents").visible(unit)[made.id]
     assert row.gone is True
+    assert row.created_at == row.updated_at == docs._GONE_AT
+    assert row.archived_at is None, "archived before the delete, and not after it"
     assert row.data == {}
     assert row.name_key == "" and row.search_key == ""
     assert row.linked_participant_id is None
