@@ -24,9 +24,10 @@ test('the model picker is bound to a conversation, and changing it after the fir
   await expect(model).toHaveValue('auto')
 
   // Before the first prompt the server has committed to nothing, so the
-  // preference changes in place.
-  await model.selectOption({ label: 'GPT-4o mini' })
-  await expect(model).toHaveValue('gpt-4o-mini')
+  // preference changes in place. D-9 (au3): the option is a tier label with a
+  // public id; no model or provider name reaches the page.
+  await model.selectOption({ label: 'Traveller' })
+  await expect(model).toHaveValue('traveller')
 
   await page.getByPlaceholder('Ask…').fill(prompt)
   await page.getByRole('button', { name: 'Send message' }).click()
