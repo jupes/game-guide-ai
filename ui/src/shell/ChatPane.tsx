@@ -19,7 +19,7 @@ import { Markdown } from '../components/Markdown'
 import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { toSpellCardProps, toStatBlockCardProps } from '../gm/adapters'
-import { GmThread } from '../gm/GmThread'
+import { GmThread, PENDING_LABEL } from '../gm/GmThread'
 import { exchangesForExport, turnFromExchange, turnsFromTimeline, useGmTimeline } from '../gm/gmTimeline'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { useAppNav } from './AppNav'
@@ -220,11 +220,15 @@ function ChatPaneBody({
       conversationStore.recordFirstPrompt(conversationId, trimmed)
     }
     // agent-forge-harness-ekf: nothing else ever clears the announcer — not a
-    // recall, not a conversation switch — only sending the NEXT turn.
-    setArrival('')
+    // recall, not a conversation switch — only sending the NEXT turn. In the
+    // GM channel sending also announces the turn's start, here: the lane draws
+    // its working line with no live region of its own, and this node is the
+    // pane's one live region (the model agent-forge-harness-4oz adopts for
+    // every channel).
+    setArrival(gm ? PENDING_LABEL : '')
     send(trimmed)
     setDraft('')
-  }, [conversationId, conversationStore, draft, pending, send])
+  }, [conversationId, conversationStore, draft, gm, pending, send])
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -434,9 +438,10 @@ function ChatPaneBody({
           bead exists to fix (a removal from a live region is not announced).
           Its text changes exactly once per turn THIS pane sent, at the
           moment that turn settles (`onTurnSettled`, above), and is cleared
-          when the next turn is sent (`handleSend`, above) — nothing else
-          ever changes it: not a history recall, not a conversation switch,
-          not the pending announcement below. Shape copied from
+          when the next turn is sent (`handleSend`, above; in the GM channel,
+          set to the pending phrase instead) — nothing else ever changes it:
+          not a history recall, not a conversation switch, not the pending
+          announcement below. Shape copied from
           `gm/ToolComposer.tsx`'s own persistent `role="status"` node. */}
       <p role="status" className="chat-pane__sr-only chat-pane__arrival">
         {arrival}

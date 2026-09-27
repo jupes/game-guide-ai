@@ -15,7 +15,8 @@
  * Each exchange is one element, turn first and outcome second, and nothing is
  * reordered by CSS — so the reading order a screen reader follows is the order
  * on screen. The lanes carry no live region of their own for a plain turn: the
- * pane announces a turn's arrival once (agent-forge-harness-ekf).
+ * pane announces a turn's start and its arrival on its one live region
+ * (agent-forge-harness-ekf).
  *
  * It renders a `GmTurn[]` and nothing else, so a live turn and its reload are
  * drawn by the same code (`gmTimeline.ts`).
@@ -42,8 +43,9 @@ import './GmThread.css'
 const GM_AUTHOR = 'You'
 /** Today's wording, unchanged: a creative answer is labelled, never passed off as grounded. */
 const CREATIVE_NOTICE = '✦ Creative — may include invented content not drawn from the sources.'
-/** A plain turn's working line, in the pane's words. */
-const PENDING_LABEL = 'Consulting the tomes…'
+/** A plain turn's working line, in the pane's words — and what the pane
+ * announces when a GM turn starts, since this lane carries no live region. */
+export const PENDING_LABEL = 'Consulting the tomes…'
 
 /** No canvas is mounted in the shell yet (1kg.6.3), and no tool can return a
  * document before the invocation API (1kg.4.1), so nothing reaches this. */

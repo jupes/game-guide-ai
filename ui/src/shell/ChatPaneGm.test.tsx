@@ -214,6 +214,27 @@ describe('ChatPane (GM) — stored history and turns sent since', () => {
   })
 })
 
+describe('ChatPane (GM) — announcing a turn (review M-2)', () => {
+  it('announces the start of a GM turn, then its arrival, on the one live region the pane already had', async () => {
+    let answer: (result: { kind: 'ok'; response: ChatResponse }) => void = () => {}
+    const post: PostFn = () => new Promise((resolve) => { answer = resolve })
+    render(<Pane nav={{}} post={post} />)
+    // Captured BEFORE the send (agent-forge-harness-4oz): the assertion is on a
+    // node that was already mounted, never on one the pending render created.
+    const announcer = screen.getByRole('status')
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), PROMPT)
+    await userEvent.keyboard('{Enter}')
+    expect(document.querySelector('.assistant-lane[data-state="working"]')).not.toBeNull()
+    expect(announcer).toHaveTextContent('Consulting the tomes…')
+    expect(screen.getAllByRole('status')).toEqual([announcer])
+
+    await act(async () => answer({ kind: 'ok', response: LIVE }))
+    expect(announcer).toHaveTextContent('Answer received')
+    expect(screen.getAllByRole('status')).toEqual([announcer])
+  })
+})
+
 /**
  * The service stores a turn, both halves, only once its answer is back
  * (`_persist_turn`), and every channel's history reads the same conversation.

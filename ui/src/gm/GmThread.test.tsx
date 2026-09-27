@@ -156,7 +156,8 @@ describe('GmThread — a turn in flight', () => {
     const lane = container.querySelector('.assistant-lane') as HTMLElement
     expect(within(lane).getByText('Consulting the tomes…')).toBeInTheDocument()
     expect(lane.querySelector('.assistant-lane__dots')).toHaveAttribute('aria-hidden', 'true')
-    // The pane announces arrival once (ekf); a second live region here would double it.
+    // The pane announces the start and the arrival on its one live region
+    // (ekf); a second live region here would double the start.
     expect(within(lane).queryByRole('status')).toBeNull()
   })
 
