@@ -23,6 +23,7 @@ an empty set is a test that cannot fail.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import inspect
 import json
@@ -966,25 +967,66 @@ def test_api_routes_is_loud_when_it_finds_nothing() -> None:
 #: and the repository count below stays meaningful.
 _DELIBERATE = "# workbench-api: " + "deliberate-status"
 _DELIBERATE_WITH_REASON = re.compile(re.escape(_DELIBERATE) + r"\s*[-:—]*\s*\S")
-_OWN_STATUS = re.compile(
-    r"status_code\s*=\s*(?:40[134]\b|status\.HTTP_40[134]_)"
-    r"|HTTPException\(\s*(?:40[134]\b|status\.HTTP_40[134]_)"
-    r"|Response\([^)]*,\s*40[134]\b"
-    r"|\bstatus\.HTTP_40[134]_\w+"
-)
+_REFUSING_CODES = frozenset({401, 403, 404})
+_STATUS_CONSTANT = re.compile(r"HTTP_40[134]_\w+")  # starlette/fastapi `status.HTTP_404_NOT_FOUND`
+_HTTP_STATUS_MEMBERS = frozenset({"UNAUTHORIZED", "FORBIDDEN", "NOT_FOUND"})
+
+
+def _terminal_name(node: ast.expr) -> str:
+    """`HTTPException` for `HTTPException`, `fastapi.HTTPException`, …"""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _is_refusing_status(node: ast.expr) -> bool:
+    """A 401, 403 or 404 however it is spelled: a literal, a `status` constant,
+    an `HTTPStatus` member, or `HTTPStatus(404)`. Not an `ErrorCode` member."""
+    if isinstance(node, ast.Constant):
+        return type(node.value) is int and node.value in _REFUSING_CODES
+    if isinstance(node, ast.Name):
+        return bool(_STATUS_CONSTANT.fullmatch(node.id))
+    if isinstance(node, ast.Attribute):
+        return bool(_STATUS_CONSTANT.fullmatch(node.attr)) or (
+            node.attr in _HTTP_STATUS_MEMBERS and _terminal_name(node.value) == "HTTPStatus")
+    if isinstance(node, ast.Call) and _terminal_name(node.func) == "HTTPStatus":
+        return any(_is_refusing_status(arg) for arg in node.args)
+    return False
+
+
+def _builds_a_refusal(node: ast.AST) -> bool:
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        # A status constant or member read anywhere, e.g. into a variable.
+        return not isinstance(node.ctx, ast.Store) and _is_refusing_status(node)
+    if not isinstance(node, ast.Call):
+        return False
+    callee = _terminal_name(node.func)
+    if any(k.arg in {"status_code", "status"} and _is_refusing_status(k.value) for k in node.keywords):
+        return True
+    if callee == "HTTPException" or callee.endswith("Response"):
+        return any(_is_refusing_status(arg) for arg in node.args)
+    # A helper of the module's own, handed the status first (`_refusal(404, …)`).
+    return bool(node.args) and _is_refusing_status(node.args[0])
 
 
 def _own_refusals(path: Path) -> list[tuple[int, str]]:
-    """Lines of `path` that build a 401, 403 or 404 themselves. A line is
-    exempt only when it, or the line above it, carries the deliberate-status
-    token followed by a reason."""
-    lines = path.read_text(encoding="utf-8").splitlines()
-    return [
-        (number, line.strip())
-        for number, line in enumerate(lines, start=1)
-        if _OWN_STATUS.search(line)
-        and not any(_DELIBERATE_WITH_REASON.search(text) for text in (line, lines[number - 2] if number > 1 else ""))
-    ]
+    """(line, text) of every place in `path` that builds a 401, 403 or 404
+    itself, read from the syntax tree — so a call a formatter split across
+    lines is one finding, reported at its first line. It is exempt only when
+    the deliberate-status token, followed by a reason, is on one of its lines
+    or on the line above it."""
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    found: set[int] = set()
+    for node in ast.walk(ast.parse(path.read_bytes(), filename=str(path))):
+        if not isinstance(node, (ast.Call, ast.Name, ast.Attribute)) or not _builds_a_refusal(node):
+            continue
+        first, last = node.lineno, node.end_lineno or node.lineno
+        span = lines[max(first - 2, 0):last]
+        if not any(_DELIBERATE_WITH_REASON.search(text) for text in span):
+            found.add(first)
+    return [(number, lines[number - 1].strip()) for number in sorted(found)]
 
 
 def _workbench_route_modules(target: FastAPI) -> set[Path]:
@@ -1042,6 +1084,36 @@ def test_the_structural_checker_refuses_a_module_that_builds_its_own_status(tmp_
         "X = status.HTTP_403_FORBIDDEN",
         "Y = HTTPException(401)",
     ]
+
+
+def test_the_structural_checker_reads_the_code_not_the_lines(tmp_path: Path) -> None:
+    """A formatter splits a long call across lines, a status can be spelled
+    through `HTTPStatus`, and a module can hand a literal status to a helper of
+    its own, as the hand-built conversation routes did. Each is still its own
+    401/403/404 (review M-3). The positive controls — a 409, a 503 through the
+    same helper, an error CODE named like a status — are not refusals."""
+    cases = {
+        "split positional": 'raise HTTPException(\n    404,\n    detail="gone",\n)\n',
+        "split keyword": "raise HTTPException(\n    status_code=403,\n)\n",
+        "HTTPStatus keyword": "raise HTTPException(status_code=HTTPStatus.NOT_FOUND)\n",
+        "HTTPStatus positional": "raise HTTPException(http.HTTPStatus.FORBIDDEN)\n",
+        "split response": 'return JSONResponse(\n    {"detail": "x"},\n    401,\n)\n',
+        "a helper handed the status": "raise _refusal(404, body)\n",
+        "an imported status name": "code = HTTP_401_UNAUTHORIZED\n",
+        "a 409": "raise HTTPException(status_code=409)\n",
+        "a 503 through a helper": "raise _refusal(503, body)\n",
+        "an error code": "code = ErrorCode.NOT_FOUND\n",
+    }
+    verdicts: dict[str, list[int]] = {}
+    for label, text in cases.items():
+        path = tmp_path / f"case_{len(verdicts)}.py"
+        path.write_text(text, encoding="utf-8")
+        verdicts[label] = [number for number, _ in _own_refusals(path)]
+    assert verdicts == {
+        "split positional": [1], "split keyword": [1], "HTTPStatus keyword": [1], "HTTPStatus positional": [1],
+        "split response": [1], "a helper handed the status": [1], "an imported status name": [1],
+        "a 409": [], "a 503 through a helper": [], "an error code": [],
+    }
 
 
 def test_the_deliberate_status_token_is_the_only_exemption(tmp_path: Path) -> None:
