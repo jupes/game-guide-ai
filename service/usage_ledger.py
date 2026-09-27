@@ -387,7 +387,7 @@ VALUES (%(operation_id)s, %(attempt_index)s, %(occurred_at)s, %(operation)s, %(p
         %(output_tokens)s, %(reasoning_tokens)s, %(billed_account_id)s, %(actor_kind)s, %(campaign_id)s,
         (SELECT p.id FROM metering.price_revisions p
           WHERE p.provider = %(provider)s AND p.alias = %(alias)s AND p.effective_from <= %(occurred_at)s
-          ORDER BY p.effective_from DESC, p.id ASC LIMIT 1))
+          ORDER BY p.effective_from DESC, p.id DESC LIMIT 1))
 ON CONFLICT (operation_id, attempt_index) DO NOTHING
 """
 
@@ -406,7 +406,7 @@ SELECT a.purpose, a.input_tokens, a.cached_input_tokens, a.output_tokens, a.pric
         SELECT p.id, p.input_usd_per_mtok, p.cached_input_usd_per_mtok, p.output_usd_per_mtok
           FROM metering.price_revisions p
          WHERE p.provider = a.provider AND p.alias = a.alias AND p.effective_from <= a.occurred_at
-         ORDER BY p.effective_from DESC, p.id ASC
+         ORDER BY p.effective_from DESC, p.id DESC
          LIMIT 1
        ) r ON true
  WHERE a.billed_account_id = %(account)s AND a.occurred_at >= %(since)s AND a.occurred_at < %(until)s
