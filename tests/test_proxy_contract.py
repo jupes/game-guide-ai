@@ -24,7 +24,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.routing import APIRoute
 
 import service.app as service_app
-from service.spa_fallback import SPA_MOUNT_NAME, SPA_ROUTE_PREFIX, install_spa
+from service.spa_fallback import SPA_ROUTE_PREFIX, install_spa
 from service.workbench_api import api_routes
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -44,8 +44,10 @@ _DELIBERATELY_UNPROXIED = frozenset({"internal"})
 
 def _is_spa(route: APIRoute) -> bool:
     """The SPA fallback's routes, by NAME (lead ruling Q-13): a locally built
-    `ui/dist` must not add `/workspace` or `/profile` as API prefixes."""
-    return route.name == SPA_MOUNT_NAME or route.name.startswith(SPA_ROUTE_PREFIX)
+    `ui/dist` must not add `/workspace` or `/profile` as API prefixes. Only the
+    `spa:` prefix — `api_routes()` never yields the SPA's `Mount(name="ui")`,
+    so a clause on that name could only hide a real route named `ui`."""
+    return route.name.startswith(SPA_ROUTE_PREFIX)
 
 
 def _all_prefixes_of(app: FastAPI) -> set[str]:

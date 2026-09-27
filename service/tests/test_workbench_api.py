@@ -65,6 +65,7 @@ from service.workbench_api import (
     workbench_router,
 )
 from service.workbench_contracts import ErrorBody, ErrorCode, ErrorInfo
+from tests.test_proxy_contract import _prefixes_of
 from tests.test_spa_routes_parity import _live_api_prefixes
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -74,8 +75,11 @@ _GOLDEN_SECRET = "golden-bytes-secret-long-enough-for-the-floor"
 
 def _is_spa(route: APIRoute) -> bool:
     """The SPA fallback's routes, by NAME (lead ruling Q-13) — never by
-    `isinstance`, since one of them and an API route look identical to it."""
-    return route.name == SPA_MOUNT_NAME or route.name.startswith(SPA_ROUTE_PREFIX)
+    `isinstance`, since one of them and an API route look identical to it.
+    Only the `spa:` prefix: `api_routes()` never yields the SPA's
+    `Mount(name="ui")`, so a clause on that name could match nothing but a
+    real API route whose endpoint is called `ui`, and would hide it."""
+    return route.name.startswith(SPA_ROUTE_PREFIX)
 
 
 def _json_headers(body: bytes, *extra: tuple[str, str]) -> list[tuple[str, str]]:
@@ -878,6 +882,29 @@ def test_the_census_filters_the_spa_fallback_by_name(tmp_path: Path) -> None:
     everything = sorted((m, p) for p, r in api_routes(target) for m in (r.methods or set()) - {"HEAD"})
     assert everything == [("GET", "/"), ("GET", "/healthz"), ("GET", "/profile"), ("GET", "/workspace")]
     assert _census(target) == ({("GET", "/healthz")}, set())
+
+
+def test_an_api_route_named_like_the_spa_mount_is_still_seen(tmp_path: Path) -> None:
+    """`api_routes()` never yields the SPA's `Mount("/", name="ui")` — it is not
+    an API route — so the census, the proxy guard and the SPA-parity walk drop
+    the `spa:` routes only. A real route whose endpoint happens to be named `ui`
+    stays in all three (review M-2). The SPA's own routes, on the same app, are
+    still dropped: that is the positive control."""
+    (tmp_path / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    target = FastAPI()
+    router = workbench_router(gm_session(require_session))
+
+    @router.get("/campaigns/{campaign_id}/ui")
+    def ui(campaign_id: str) -> dict[str, str]:
+        return {"id": campaign_id}
+
+    target.include_router(router)
+    install_spa(target, tmp_path)
+    names = sorted(route.name for _, route in api_routes(target))
+    assert names == ["spa:/", "spa:/profile", "spa:/workspace", SPA_MOUNT_NAME]
+    assert _census(target) == (set(), {("GET", "/campaigns/{campaign_id}/ui")})
+    assert _prefixes_of(target) == {"campaigns"}
+    assert _live_api_prefixes(target) == {"/campaigns", "/docs", "/openapi.json", "/redoc"}
 
 
 def test_api_routes_reports_router_mounted_routes_with_their_prefix() -> None:

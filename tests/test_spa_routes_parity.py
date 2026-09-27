@@ -19,7 +19,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 import service.app as service_app
-from service.spa_fallback import CLIENT_ROUTES, SPA_MOUNT_NAME, SPA_ROUTE_PREFIX
+from service.spa_fallback import CLIENT_ROUTES, SPA_ROUTE_PREFIX
 from service.workbench_api import api_routes
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -57,8 +57,11 @@ def _client_route_paths() -> list[str]:
 
 
 def _is_spa_route(route: object) -> bool:
+    # Only the `spa:` prefix: the walk reads `api_routes()`, which never yields
+    # the SPA's `Mount(name="ui")`, so a clause on that name could only hide a
+    # real API route whose endpoint is called `ui`.
     name = getattr(route, "name", "") or ""
-    return name == SPA_MOUNT_NAME or name.startswith(SPA_ROUTE_PREFIX)
+    return name.startswith(SPA_ROUTE_PREFIX)
 
 
 def _live_api_prefixes(app: FastAPI = service_app.app) -> set[str]:
