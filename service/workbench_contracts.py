@@ -248,6 +248,17 @@ def check_plain_text(value: str) -> str:
             raise ValueError(f"must not contain {what}")
     return value
 
+
+def check_stored_text(value: str) -> str:
+    """:func:`check_plain_text` for a value no contract type has read — a store's
+    own argument, such as a participant's alias or a version's summary (bead
+    ``5mj``). A bare ``str`` may still hold a lone surrogate, which UTF-8, and so
+    PostgreSQL, cannot carry; a bounded contract string refuses one by itself,
+    and this refuses it here with the wire's own sentence. The same rule, applied
+    where the contract's types are not — never a second opinion about it.
+    """
+    return check_plain_text(_well_formed(value))
+
 #: Opaque to clients and base64url, because a cursor may ride in a query string.
 #: Search text may not (X-7), which is why a cursor never encodes any.
 Cursor = Annotated[str, StringConstraints(strict=True, pattern=r"^[A-Za-z0-9_-]{1,512}$")]

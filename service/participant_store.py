@@ -80,7 +80,7 @@ from .campaign_store import (
     shared_rows,
 )
 from .db import InMemoryDatabase, UnitOfWork
-from .workbench_contracts import check_plain_text
+from .workbench_contracts import check_stored_text
 
 ALIAS_MAX_CHARS = 40
 #: The bound `0004_campaign_schema.sql` puts on `alias_key`, pinned to the
@@ -140,9 +140,9 @@ def check_alias(alias: str) -> str:
 
     **Characters follow the one rule for stored text** (lead ruling of
     2026-09-21 on beads `ysj` and `5mj`): the alias as SENT goes through
-    `check_plain_text`, so NUL and the other C0 and C1 controls, the bidi
-    controls and the byte order mark are refused here exactly as everywhere
-    else — and before `str.split()`, which would otherwise turn a vertical tab,
+    `check_stored_text`, so NUL and the other C0 and C1 controls, the bidi
+    controls, the byte order mark and a lone surrogate are refused here exactly
+    as everywhere else — and before `str.split()`, which would otherwise turn a vertical tab,
     a file separator or NEL into a space. An alias is then stricter than other
     stored text: every other character of Unicode's C categories — a zero width
     space, a word joiner, a lone surrogate, a private-use or unassigned code
@@ -160,7 +160,7 @@ def check_alias(alias: str) -> str:
     the column's CHECK starts at 1.
     """
     try:
-        check_plain_text(alias)
+        check_stored_text(alias)
     except ValueError:
         raise ValueError(_REFUSED_CHARACTER) from None
     normalised = " ".join(unicodedata.normalize("NFC", alias).split())
