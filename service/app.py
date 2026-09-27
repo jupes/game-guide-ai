@@ -183,6 +183,11 @@ def normalize_llm_error(exc: BaseException) -> str:
 
 _state: dict[str, Any] = {}
 
+# The cost ledger's one way in (yje.5.1.2): a turn's rows go to whatever writer
+# this registry holds when the turn ends (`_build_stores` puts it there, the
+# lifespan teardown clears it), or nowhere. Registered once, here.
+usage_capture.set_ledger_provider(lambda: _state.get("ledger"))
+
 
 def build_reranker(enabled: bool | None = None) -> Any | None:
     """The gated cross-encoder reranker for the live service, or None.
@@ -272,6 +277,12 @@ def _build_stores(db: Database) -> None:
     _state["store"] = PostgresMessageStore(db=db)
     _state["auth"] = PostgresAuthStore(db=db)
     _state["timeline"] = PostgresTimelineStore()
+    # The provider-attempt cost ledger (yje.5.1.2). A store like the others, so
+    # it lives and dies with this registry; `usage_capture` finds it through the
+    # provider registered below `_state`, because `chat()` does not change.
+    from .usage_ledger import LedgerWriter, PostgresUsageLedgerStore
+
+    _state["ledger"] = LedgerWriter(PostgresUsageLedgerStore(), db)
 
 
 def _build_rag(db: Database) -> None:
