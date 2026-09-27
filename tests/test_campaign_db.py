@@ -1279,6 +1279,87 @@ def test_holding_a_participant_hands_back_the_row_so_the_caller_can_read_it(worl
         assert world.participants.hold(unit, "prt_" + "z" * 22, campaign_id=campaign) is None
 
 
+# z9v item 3 — a value of the wrong TYPE is refused in both worlds, by name,
+# before any statement. PostgreSQL would answer `operator does not exist` and
+# abort the caller's whole transaction; the twin used to answer "not found".
+
+#: (method, the parameter given the wrong type, the wrong value): every
+#: identifier and account parameter of every public method, plus `None` (no
+#: parameter is optional any more) and a bool (Python counts one as an int).
+WRONG_TYPES: list[tuple[str, str, object]] = [
+    ("add", "campaign_id", 987654321),
+    ("add", "alias", 987654321),
+    ("add", "campaign_id", None),
+    ("get", "participant_id", 987654321),
+    ("get", "participant_id", None),
+    ("list_for_campaign", "campaign_id", 987654321),
+    ("hold", "participant_id", 987654321),
+    ("hold", "campaign_id", 987654321),
+    ("remove", "campaign_id", 987654321),
+    ("remove", "participant_id", 987654321),
+    ("offer", "campaign_id", 987654321),
+    ("offer", "participant_id", 987654321),
+    ("offer", "user_id", "987654321"),
+    ("accept", "campaign_id", 987654321),
+    ("accept", "participant_id", 987654321),
+    ("accept", "user_id", "987654321"),
+    ("seat_for", "campaign_id", 987654321),
+    ("seat_for", "user_id", "987654321"),
+    ("seats_for_user", "user_id", "987654321"),
+    ("seats_for_user", "user_id", True),
+]
+
+_STORE_CALLS: dict[str, Callable[[Any, Any, dict[str, Any]], object]] = {
+    "add": lambda store, unit, a: store.add(unit, a["campaign_id"], alias=a["alias"]),
+    "get": lambda store, unit, a: store.get(unit, a["participant_id"]),
+    "list_for_campaign": lambda store, unit, a: store.list_for_campaign(unit, a["campaign_id"]),
+    "hold": lambda store, unit, a: store.hold(unit, a["participant_id"], campaign_id=a["campaign_id"]),
+    "remove": lambda store, unit, a: store.remove(unit, a["campaign_id"], a["participant_id"]),
+    "offer": lambda store, unit, a: store.offer(
+        unit, a["campaign_id"], a["participant_id"], user_id=a["user_id"]
+    ),
+    "accept": lambda store, unit, a: store.accept(
+        unit, a["campaign_id"], a["participant_id"], user_id=a["user_id"]
+    ),
+    "seat_for": lambda store, unit, a: store.seat_for(unit, a["campaign_id"], a["user_id"]),
+    "seats_for_user": lambda store, unit, a: store.seats_for_user(unit, a["user_id"]),
+}
+
+
+@pytest.mark.parametrize(
+    ("method", "parameter", "wrong"),
+    WRONG_TYPES,
+    ids=[f"{m}-{p}-{type(w).__name__}" for m, p, w in WRONG_TYPES],
+)
+def test_a_value_of_the_wrong_type_is_refused_by_name_and_the_transaction_goes_on(
+    world: World, method: str, parameter: str, wrong: object
+) -> None:
+    """z9v item 3. Every other argument is valid, so the refusal has one cause.
+    It is the built-in `TypeError`, it names the parameter and never the value,
+    and — the half only the `postgres` parameter can show, in CI — it arrives
+    without a failed statement: the same transaction goes on to seat `Kestrel`
+    and commits. Without the check PostgreSQL raises `operator does not exist`
+    and the write after it fails on an aborted transaction."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign, "Rook")
+    arguments: dict[str, Any] = {
+        "campaign_id": campaign,
+        "participant_id": seat,
+        "alias": "Wren",
+        "user_id": world.players[0],
+    }
+    arguments[parameter] = wrong
+    with world.db.transaction() as unit:
+        with pytest.raises(TypeError, match=f"{parameter} is an? (str|int)") as refused:
+            _STORE_CALLS[method](world.participants, unit, arguments)
+        assert "987654321" not in str(refused.value), "a refusal names the parameter, never the value"
+        world.participants.add(unit, campaign, alias="Kestrel")
+
+    with world.db.transaction() as unit:
+        seated = sorted(p.alias for p in world.participants.list_for_campaign(unit, campaign))
+        assert seated == ["Kestrel", "Rook"]
+
+
 # Behaviour 14 — one live session per GM, across campaigns.
 
 

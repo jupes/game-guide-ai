@@ -407,14 +407,17 @@ def check_reason_code(action: AuditAction, reason_code: str | None) -> str | Non
 
 
 def check_authz_revision(authz_revision: int | None) -> int | None:
-    """The bound `0005_audit_events.sql` carries, applied in both worlds so that
-    the twin cannot accept a row the database would refuse."""
+    """The bounds `0005_audit_events.sql` carries — never negative, and no
+    wider than the `BIGINT` that holds it — applied in both worlds so that the
+    twin cannot accept a row the database would refuse."""
     if authz_revision is None:
         return None
     if isinstance(authz_revision, bool) or not isinstance(authz_revision, int):
         raise ValueError("an audit row's authorisation revision is a whole number")
     if authz_revision < 0:
         raise ValueError("an audit row's authorisation revision is never negative")
+    if authz_revision > WHOLE_NUMBER_MAX:
+        raise ValueError("an audit row's authorisation revision fits the bigint column that holds it")
     return authz_revision
 
 
