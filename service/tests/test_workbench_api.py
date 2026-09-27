@@ -37,7 +37,7 @@ from types import ModuleType
 import httpx
 import pytest
 import starlette.exceptions
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -51,13 +51,14 @@ from service.invites import Role
 from service.security_headers import CONTENT_SECURITY_POLICY
 from service.session import SessionData, encode_session
 from service.spa_fallback import SPA_MOUNT_NAME, SPA_ROUTE_PREFIX, install_spa
-from service.tests.test_auth_guard import _session_guarded_routes
+from service.tests.test_auth_guard import _depends_on, _session_guarded_routes
 from service.workbench_api import (
     FORBIDDEN_ORIGIN_DETAIL,
     FORBIDDEN_ROLE_DETAIL,
     NOT_FOUND_DETAIL,
     UNAUTHENTICATED_BODY,
     WorkbenchRoute,
+    api_route_dependants,
     api_routes,
     gm_session,
     install_workbench,
@@ -805,9 +806,34 @@ def test_the_auth_matrix_walk_sees_a_router_mounted_wrapper_guarded_route() -> N
     def legacy(session: SessionData = Depends(require_session)) -> dict[str, int]:
         return {"user_id": session.user_id}
 
-    guarded = sorted(_session_guarded_routes(api_routes(target)))
+    guarded = sorted(_session_guarded_routes(api_route_dependants(target)))
     assert guarded == [("GET", "/legacy"), ("GET", "/probe/things/{thing_id}")]
     assert _legacy_walk(target) == [("GET", "/legacy")]  # it never saw the router's route
+
+
+def test_the_auth_matrix_walk_sees_a_guard_added_when_a_router_is_included() -> None:
+    """`include_router(..., dependencies=[Depends(require_session)])` puts the
+    guard on the route's effective dependant only; the route object's own
+    `.dependant` never has it (review M-1). The walk reads the effective one.
+    Positive control: an unguarded route on the same app is not reported."""
+    target = FastAPI()
+    guarded, unguarded = APIRouter(), APIRouter()
+
+    @guarded.get("/moved/{thing_id}")
+    def read_moved(thing_id: str) -> dict[str, str]:
+        return {"id": thing_id}
+
+    @unguarded.get("/open")
+    def read_open() -> dict[str, str]:
+        return {}
+
+    target.include_router(guarded, dependencies=[Depends(require_session)])
+    target.include_router(unguarded)
+    rows = api_route_dependants(target)
+    assert sorted(path for path, _, _ in rows) == ["/moved/{thing_id}", "/open"]
+    assert _session_guarded_routes(rows) == [("GET", "/moved/{thing_id}")]
+    # What a walk over the route objects sees: nothing guarded at all.
+    assert [path for path, route, _ in rows if _depends_on(route.dependant, require_session)] == []
 
 
 def test_the_spa_parity_walk_sees_a_router_mounted_route() -> None:
@@ -930,6 +956,8 @@ def test_api_routes_reports_router_mounted_routes_with_their_prefix() -> None:
 def test_api_routes_is_loud_when_it_finds_nothing() -> None:
     with pytest.raises(AssertionError, match="found no APIRoute"):
         api_routes(FastAPI())
+    with pytest.raises(AssertionError, match="found no APIRoute"):
+        api_route_dependants(FastAPI())
 
 
 # ── 10.4: a route module that builds its own 401/403/404 is refused ──────────

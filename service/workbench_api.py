@@ -77,6 +77,7 @@ from typing import NoReturn
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, params
+from fastapi.dependencies.models import Dependant
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -252,20 +253,39 @@ def api_routes(app: FastAPI) -> list[tuple[str, APIRoute]]:
     returns [] and the caller's walk then passes over nothing.
     ctx.original_route is the route object, and the only thing to isinstance.
 
-    Its `.dependant` holds the route's own and its router's dependencies. One
-    passed to `include_router(..., dependencies=...)` lives only on the context
-    (`ctx.dependant`); nothing here passes one, and `workbench_router` puts its
-    guard on the router, where the route object carries it.
+    The route object's `.dependant` holds the route's own and its router's
+    dependencies, but NOT one passed to `include_router(..., dependencies=...)`:
+    that lives only on the context. Anything asking "is this route guarded?"
+    reads `api_route_dependants()` instead.
 
     Not `app.openapi()["paths"]`: a route declared with `include_in_schema=False`
     is missing from it, and a guard built on it would go blind the same way.
     """
-    rows = [
-        (ctx.path, ctx.original_route)
-        for ctx in iter_route_contexts(app.routes)
-        if isinstance(ctx.original_route, APIRoute) and ctx.path is not None
-    ]
+    rows = [(path, route) for path, route, _ in _api_route_rows(app)]
     assert rows, "api_routes() found no APIRoute — did FastAPI's route model change?"
+    return rows
+
+
+def api_route_dependants(app: FastAPI) -> list[tuple[str, APIRoute, Dependant]]:
+    """`api_routes()`, with each route's EFFECTIVE dependant: the one FastAPI
+    solves for a request. It is `ctx.dependant`, which adds the dependencies an
+    `include_router(..., dependencies=...)` call passed to the route's own and
+    its router's; `route.dependant` lacks them, so a guard walk over it would
+    pass over a route guarded that way."""
+    rows = _api_route_rows(app)
+    assert rows, "api_route_dependants() found no APIRoute — did FastAPI's route model change?"
+    return rows
+
+
+def _api_route_rows(app: FastAPI) -> list[tuple[str, APIRoute, Dependant]]:
+    rows: list[tuple[str, APIRoute, Dependant]] = []
+    for ctx in iter_route_contexts(app.routes):
+        route = ctx.original_route
+        if not isinstance(route, APIRoute) or ctx.path is None:
+            continue
+        dependant = ctx.dependant
+        assert isinstance(dependant, Dependant), f"no effective dependant for {ctx.path}"
+        rows.append((ctx.path, route, dependant))
     return rows
 
 
