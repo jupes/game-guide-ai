@@ -499,7 +499,6 @@ def test_the_migration_seeds_exactly_SEED_PRICE_REVISIONS(dsn: str) -> None:
 def test_the_table_has_exactly_the_documented_columns(dsn: str) -> None:
     """X-7: a column is a place content can go. The set is closed."""
     with connect(dsn) as conn:
-        conn.execute("ALTER TABLE metering.provider_attempts ADD COLUMN note TEXT")
         columns = [r[0] for r in conn.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = 'metering' AND table_name = 'provider_attempts' ORDER BY ordinal_position"
