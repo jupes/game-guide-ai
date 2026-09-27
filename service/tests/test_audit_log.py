@@ -16,8 +16,10 @@ from __future__ import annotations
 import inspect
 import logging
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -29,10 +31,12 @@ from service.audit_log import (
     DETAIL_MAX_FIELD_KEYS,
     DETAIL_MAX_KEYS,
     FIELD_KEY,
+    WHOLE_NUMBER_MAX,
     ActorKind,
     AuditAction,
     AuditEvent,
     Decision,
+    DetailValue,
     InMemoryAuditLog,
     MintedId,
     ObjectKind,
@@ -201,6 +205,51 @@ def test_a_detail_that_could_carry_content_is_refused(detail, refusal):
     `Rook` is a value of no kind."""
     with pytest.raises(ValueError, match=refusal):
         check_detail(AuditAction.PARTICIPANT_ADDED, detail)
+
+
+class _SneakyKey:
+    """Not a `str`, yet it hashes and compares equal to a key the action
+    declares — and it prints as an alias. The one shape of key `check_detail`'s
+    `isinstance(key, str)` guard is load-bearing for: an ordinary non-string key
+    (`5`, a tuple) is refused by the dictionary lookup whether or not the guard
+    is there, because `dict.get` answers None for it anyway."""
+
+    def __hash__(self) -> int:
+        return hash("participant_id")
+
+    def __eq__(self, other: object) -> bool:
+        return other == "participant_id"
+
+    def __str__(self) -> str:
+        return "Rook"
+
+
+def test_a_detail_key_that_is_not_a_str_is_refused_even_when_it_equals_a_declared_one() -> None:
+    """z9v item 1, the guard. The value is a well-formed participant id, so
+    without the guard the lookup finds the declared kind, the value passes it,
+    and the row is ACCEPTED: `pytest.raises` is the load-bearing assertion, and
+    deleting the guard turns it red. The message is not asserted here — when
+    the refusal happens it is the vocabulary refusal by construction, so an
+    assertion on it could not fail; what it must not say is the next test's."""
+    # The point is a key that is not a str, which the annotation does not admit.
+    detail = cast(Mapping[str, DetailValue], {_SneakyKey(): PARTICIPANT})
+    with pytest.raises(ValueError):
+        check_detail(AuditAction.PARTICIPANT_ADDED, detail)
+
+
+def test_a_detail_key_that_is_not_a_str_never_reaches_the_refusal_message() -> None:
+    """z9v item 1, the leak (SEC-20). The value is of the wrong kind, so the
+    detail is refused with or without the guard and `pytest.raises` proves
+    nothing: the load-bearing assertion is that `Rook` is not in the message.
+    Without the guard the lookup succeeds and the refusal is the wrong-kind one,
+    whose text interpolates the key — `str(key)`, the alias. With it the refusal
+    names only the action's vocabulary, which the second assertion checks."""
+    # The point is a key that is not a str, which the annotation does not admit.
+    detail = cast(Mapping[str, DetailValue], {_SneakyKey(): 5})
+    with pytest.raises(ValueError) as refused:
+        check_detail(AuditAction.PARTICIPANT_ADDED, detail)
+    assert "Rook" not in str(refused.value)
+    assert "participant_id" in str(refused.value), "the refusal still names the vocabulary"
 
 
 def test_a_refusal_never_repeats_the_value_or_the_key_it_refused():
@@ -393,7 +442,7 @@ def test_every_action_says_what_its_rows_may_carry_in_both_registries():
     assert ACTION_REASONS[AuditAction.PARTICIPANT_ADDED] == frozenset(), "an empty set is an answer"
 
 
-@pytest.mark.parametrize("revision", [-1, -5, 1.5, True])
+@pytest.mark.parametrize("revision", [-1, -5, 1.5, True, 2**63])
 def test_an_authorisation_revision_the_database_would_refuse_is_refused_here(revision):
     """`0005_audit_events.sql` carries `authz_revision >= 0`, so the twin must
     too — otherwise a test on the fakes passes and the first real row is a
@@ -402,6 +451,14 @@ def test_an_authorisation_revision_the_database_would_refuse_is_refused_here(rev
     with db.transaction() as unit:
         with pytest.raises(ValueError, match="authorisation revision"):
             _record(log, unit, authz_revision=revision)
+
+
+def test_the_widest_authorisation_revision_a_bigint_holds_is_accepted() -> None:
+    """The other side of the bound the parametrisation above refuses at
+    `2**63`: the column is a `BIGINT`, so its own maximum is a revision."""
+    log, db = InMemoryAuditLog(), InMemoryDatabase()
+    with db.transaction() as unit:
+        assert _record(log, unit, authz_revision=WHOLE_NUMBER_MAX).authz_revision == 2**63 - 1
 
 
 def test_the_python_vocabularies_are_the_ones_the_migration_checks():

@@ -1,6 +1,6 @@
 # GM Workbench interactions and scope
 
-Status: accepted · 2026-09-16 · independently reviewed, verified and revised twice (§18); product-scope decisions in §17, three of them since decided (see §19 A-23 to A-26, 2026-09-24)
+Status: accepted · 2026-09-16 · independently reviewed, verified and revised twice (§18); product-scope decisions in §17, three of them since decided (see §19 A-23 to A-26, 2026-09-24); the owner's decisions of 2026-09-27 are §19 A-27 and A-28
 
 Bead: `agent-forge-harness-1kg.1.1` · Epic: `agent-forge-harness-1kg`
 Master plan: [`forge/plans/aetheril-gm-workbench-expansion.md`](../forge/plans/aetheril-gm-workbench-expansion.md) ·
@@ -1132,7 +1132,10 @@ reverse nothing: each closes something a row above left open, and the row's own
 text stands as written. **Rows A-19 to A-22 are different: they are the owner's
 decisions of 2026-09-20, and they amend the rows they name.** **Rows A-23 to A-25
 are the owner's decisions of 2026-09-21 and amend in the same way; A-26 records a
-shipped fix.** A downstream bead reads the row and then this table.
+shipped fix.** **Rows A-27 and A-28 are the owner's decisions of 2026-09-27 (D-12,
+D-13) and amend in the same way**; §19.1 then records which of the free-tier design
+spec's conflicts a decision or a record settles. A downstream bead reads the row and
+then this table.
 
 | # | Decision | Amendment | Made by |
 | --- | --- | --- | --- |
@@ -1162,3 +1165,42 @@ shipped fix.** A downstream bead reads the row and then this table.
 | A-24 | AUD-7, E-10, AUD-17, REVEAL-19, REVEAL-20, REVEAL-25, TABLE-10, TABLE-16 | **Owner decision D-4: there are no guests.** Every viewer of the table signs in; a shared screen or projector is signed in by someone. AUD-17's personal-link statuses (`Not sent`, `Waiting`, …) have nothing to describe and are withdrawn. The rules for the table link, its credential and its per-generation bounds are **held, not built**, until the threat model's table-access rewrite (TA-2) says whether a table link survives as an invitation a signed-in account must present. The shared-screen sign-in needs a design. | owner, 2026-09-21; threat model TA-2 |
 | A-25 | AUD-1 (the GM), R-3, E-6 (one GM) | **Owner decision D-5: creating a campaign makes you its GM.** There is no account-level role to pick or grant for the Workbench; a GM route authorises by **campaign ownership** in the query (threat model SEC-2), which it already does. What a GM may *use* is a matter of tier, not role: **three tiers — Free; Player (player features and a credit limit); GM (GM-focused features)**, entitled by `yje.4.1`. One GM per campaign stands. **No route is loosened by this row:** a route that today also requires the `dm` role keeps it until entitlement replaces the role, in its own bead. | owner, 2026-09-21; billing plan §"Owner decisions 2026-09-21" |
 | A-26 | X-10, AE-66, S-4 (threat model) | **`va8` shipped** (PR #89, 2026-09-24): X-10's rule now holds in **every** channel, chat included, and a Content-Security-Policy is served by the application and by `nginx.conf`. AE-66 passes in the chat lane as well as the Workbench's. | lead; threat model TA-1 |
+| A-27 | A-23 (how a seat is offered), AUD-10, AUD-13, AUD-16, AUD-17 (withdrawn by A-24), TABLE-14 | **Owner decision D-12: a GM offers a seat by entering the player's email address.** The player sees the offer once signed in — a new player signs up first — and may accept, decline or block it. **The GM's answer to an offer is identical whether or not an account holds the address** (no oracle), so an offer to an address nobody holds, and one to an account that has blocked the GM, look to the GM like any offer not yet answered. **The GM confirms who accepted before any private reveal is delivered:** AUD-10 reads *nothing is delivered until the seat is accepted and the GM has confirmed who accepted* — a reveal to a seat awaiting that confirmation confirms normally, the GM sees it waiting, and it never falls back to the table — and the `For you` slot (TABLE-14) stays absent until then. AUD-13's Add takes the player's address, and the alias stays the display name A-23 describes; AUD-16's Remove also withdraws an offer not yet accepted (bead `agent-forge-harness-g3x`); AUD-17's withdrawn statuses are replaced by the seat's own — offered, accepted and awaiting the GM's confirmation, seated — whose wording, and whether a decline is shown to the GM, are the design lane's (`agent-forge-harness-cub`). Built by `1kg.2.2`. The identity record adds that only a Verified account holding the address sees or accepts an offer (its IDA-2). | owner, 2026-09-27 (bead `agent-forge-harness-1lq`); identity record IDA-2 |
+| A-28 | A-24 (the shared-screen sign-in), X-4, X-7, AUD-8, TABLE-14, REVEAL-17 | **Owner decision D-13: shared screens use owner-only screen mode** (threat model SEC-48). The GM, signed in on that browser, turns it into a **view-only table screen that shows only the table slot**, and doing so **signs the GM's account out of that browser**; it is redone each session. Only the campaign's owner makes a screen; a player does not. A-24's open item is decided as to mechanism, and the rules are SEC-48's (threat model §15, still proposed): a screen holds a screen grant, never an account and never a table credential (X-4, X-7); it sees the table slot and never a `For you` slot (AUD-8, TABLE-14); it ends with the session and is revoked by a Rotate (REVEAL-17). **Superseded and not to be built:** the design spec's pairing of a screen by a code typed on a phone (its F-7); the threat model's S-8 stays declined. The screens themselves — how the GM finds screen mode, what a screen shows while idle and after End or Leave, revoking one screen, and WT-22's line telling someone signing in on a shared machine not to save the password — are the design lane's (`agent-forge-harness-cub`). | owner, 2026-09-27 (bead `agent-forge-harness-4pq`); threat model SEC-48, S-8 |
+
+### 19.1 The free-tier design spec's conflicts
+
+The design intake of 2026-09-27 read the owner's *Aetheril Free Tier & Entry Spec*
+(dated 2026-09-21, so older than D-8 to D-13, the identity record
+[`account-identity-state-machine.md`](account-identity-state-machine.md) and threat
+model §15) and listed 21 conflicts, C-1 to C-21, in the source of bead
+`agent-forge-harness-cub`. D-*n* are the owner's decisions as the billing plan's
+"Owner decisions" section records them. **Superseded:** a decision or a record wins,
+and the spec's item is not built as drawn; the design lane's second round
+(`agent-forge-harness-cub`) redraws it. **Open:** nothing has decided it yet, and the
+rule in force holds meanwhile. **Stands:** nothing is superseded; the rule named
+stands, and the spec is incomplete or depends on it.
+
+| C | The spec's item | Settled by | Status |
+| --- | --- | --- | --- |
+| C-1 | F-7: a screen signed in by pairing, a code shown on it and typed on a phone | D-13; threat model S-8 | **Superseded** |
+| C-2 | Anyone at the table may sign a screen in, and an account stays "driving" it | D-13: the owner only, and the account is signed out of that browser (SEC-48) | **Superseded** |
+| C-3 | A Traveller is told that answers drop to "the basic model" at 100% and that web fallback and premium narration pause; premium routing per turn (F-2, F-3, S-5, P-2, the downgraded row, F-5a) | D-8 (the tier picks the model), D-11, D-3 (a Traveller never had web fallback) | **Superseded**; the copy is redrawn |
+| C-4 | A per-turn "Basic model" mark, a composer placeholder naming the model, "premium-model narration" | D-9, D-11 (the model is never named) | **Superseded**; tier-branded labels stay open (`agent-forge-harness-au3`) |
+| C-5 | AI-written and AI-edited documents are paid | — | **Open**: N-5 (`agent-forge-harness-888`); D-3 holds meanwhile |
+| C-6 | After 100%, answers continue without end until the refill | D-11: a small daily ceiling, then chat pauses until the next day | **Superseded**; the number is `yje.1.2`'s |
+| C-7 | "Your link", "open your link again", "table links" | D-12: the invitation is the seat offer; threat model SEC-43 | **Superseded** |
+| C-8 | S-1's "I'm 13 or older" checkbox under a heading that states the threshold | D-10; identity record §4.1 | **Superseded** |
+| C-9 | S-4 promises a sign-in link | identity record IDT-1 and IDRC-10: the address's owner is told by email and recovers by reset | **Superseded** |
+| C-10 | S-3 gives an expired link its own screen | identity record IDRC-1: one answer for every stale link | **Superseded** |
+| C-11 | No Unverified account page, suspension notice or "This table is unavailable" | identity record §11 (`yje.2.6`) | **Stands**; to be drawn |
+| C-12 | F-5b and F-5c change TABLE-12's and TABLE-8's copy while calling it existing | TABLE-8, TABLE-12; D-12 (no table link) | **Superseded** |
+| C-13 | The campaign screen quotes §12.2's GM-thread row, and asks for "a name and a tone" | §12.2's Campaign picker row: "only a name is required" | **Superseded** |
+| C-14 | F-5b cites REVEAL-25 as existing | A-24: held, not built | **Superseded** |
+| C-15 | "Unlimited" campaigns, documents and history | the billing plan's "Do not advertise 'unlimited'" | **Open**: N-5 (`agent-forge-harness-888`); the billing plan's rule holds meanwhile |
+| C-16 | "No card needed to start" as a promise of the paid tier | the billing plan's two promotion modes | **Open**: N-5; the two modes hold meanwhile |
+| C-17 | S-3's note that verification "needs a router" | `docs/adr/client-routing.md`: the router shipped and `/verify` is reserved | **Superseded** |
+| C-18 | GM chat mode unlocked by a first campaign | A-25: the `dm` check stays until entitlement (`yje.4.1`) replaces it | **Stands**; a dependency, not a design choice |
+| C-19 | "When the composer disables at zero credits…", against F-3's "never disabled" | D-7 and D-11: the composer stays live at 100%; chat pauses only at D-11's daily ceiling, between turns | **Superseded**; the pause is a new state to draw |
+| C-20 | "The date-of-birth error is one message on the fieldset", against S-1's checkbox | D-10: the question is a month and a year | **Stands**: the card's rule fits the §4.1 form |
+| C-21 | F-1 draws 96 of 500 left in the quiet style; §1.5's gold "Paid" marker is drawn as a lock | — (the spec against itself) | **Open**: the design lane |

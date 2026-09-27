@@ -1019,6 +1019,10 @@ def test_the_contract_document_states_the_rules_this_bead_adds() -> None:
     # 1kg.5.7.2, requirement 6: the rule, its helper, and where it stops.
     assert "**Stored text is plain text.**" in text
     assert "`check_plain_text` and `REFUSED_TEXT_CODE_POINTS`" in text
+    # 1kg.5.7.2, M-2: the 422 body is the fixed envelope — no field name or
+    # character class rides in the response a GM's browser receives.
+    assert "the 422 body on the wire is the fixed envelope every" in text
+    assert "a generic message and `field: null`" in text
     # Bead 929: the GM channel's exemption from AE-51, stated rather than implied.
     assert "AE-51's clearing is a table-client rule. **`GmSnapshot` is exempt**" in text
     assert "is a staleness defect, carried to `1kg.7.2` with V-4, and not a disclosure" in text
@@ -1602,15 +1606,24 @@ def test_a_plain_text_refusal_names_the_field_and_the_class_and_never_the_value(
     """X-7: the refusal names the field and the class, never the value. The
     validation message is where the field and the class are named; the 422 body
     is the generic envelope every ``check_fields`` refusal already answers with,
-    and it must carry no trace of the value either."""
+    and it must carry no trace of the value either.
+
+    1kg.5.7.2 M-2: that generic envelope is not a detail — ``field`` is ``None``
+    and ``message`` is the fixed sentence, never the field name or the class of
+    character, because ``check_fields`` catches the per-field ``ValidationError``
+    and re-raises inside a ``model_validator``, so Pydantic's ``loc`` is empty
+    (docs/workbench-wire-contract.md, "Stored text is plain text")."""
     patch = _fixture_value("FieldPatchRequest", "one field, committed on blur")
     patch["fields"] = {"voice": f"Vashti{char}whispers", "tell": "Hums a hymn off key"}
     with pytest.raises(ValidationError) as caught:
         wc.FieldPatchRequest.model_validate(patch)
     message = str(caught.value)
     assert "voice is not a valid text field" in message and what in message
-    body = json.dumps(wc.validation_error_body(caught.value.errors()).model_dump(mode="json"))
-    assert wc.validation_error_body(caught.value.errors()).detail.code is wc.ErrorCode.VALIDATION_FAILED
+    detail = wc.validation_error_body(caught.value.errors()).detail
+    assert detail.code is wc.ErrorCode.VALIDATION_FAILED
+    assert detail.field is None
+    assert detail.message == "That request isn't valid."
+    body = json.dumps(detail.model_dump(mode="json"))
     for text in (message, body, json.dumps(wc.redacted_errors(caught.value.errors()))):
         for secret in ("Vashti", "whispers", "Hums a hymn"):
             assert secret not in text
