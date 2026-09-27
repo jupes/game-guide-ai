@@ -78,15 +78,20 @@ lives next to this rationale at
 
 ``Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()``
     Denies all four to every frame, `self` included — this app has no feature
-    that uses any of them yet. `agent-forge-harness-1ir.3.4` will carve out
-    `microphone=(self)` on GM pages once the live-session assistant ships;
-    `payment` is denied because Stripe is not integrated (`xiu-yje`) — both
-    revisit this constant, not a copy of it.
+    that uses any of them yet. It is sent on EVERY page, by the middleware and
+    by nginx's `server` block, so it is NOT where
+    `agent-forge-harness-1ir.3.4`'s microphone grant goes: ``microphone=(self)``
+    here would grant it app-wide, where SEC-17 allows it on GM pages only.
+    1ir.3.4 sends its own value on the GM pages' responses instead (kept by the
+    ``setdefault`` below) plus an nginx equivalent, and this constant keeps
+    denying everywhere else. ``payment`` is denied because Stripe is not
+    integrated (`xiu-yje`); that decision is the one to revisit here.
 
-A route may set a STRICTER policy of its own and keep it: the middleware in
-`app.py` uses ``setdefault`` for every header below, so the asset route of
-SEC-19 can answer with ``default-src 'none'; sandbox`` without having to
-unpick this.
+A route may set a policy of its own and keep it: the middleware in `app.py`
+uses ``setdefault`` for every header below, so the asset route of SEC-19 can
+answer with ``default-src 'none'; sandbox``, and a table page with
+``no-referrer``, without having to unpick this.
+`service/tests/test_security_headers.py` pins that for all five headers.
 """
 
 from __future__ import annotations
@@ -116,6 +121,7 @@ REFERRER_POLICY: Final[str] = "strict-origin-when-cross-origin"
 CROSS_ORIGIN_OPENER_POLICY: Final[str] = "same-origin"
 
 #: Non-table-page decision (docs/adr/security-headers-non-table-pages.md).
-#: `agent-forge-harness-1ir.3.4` carves out `microphone=(self)` on GM pages;
-#: this constant is what it edits, not a value it duplicates.
+#: Sent on EVERY page, so it stays a denial: `agent-forge-harness-1ir.3.4`'s
+#: `microphone=(self)` goes on the GM pages' own responses (kept by the
+#: middleware's `setdefault`), never here, where it would grant it app-wide.
 PERMISSIONS_POLICY: Final[str] = "camera=(), microphone=(), geolocation=(), payment=()"
