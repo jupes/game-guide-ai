@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const FILES = ['ToolRail.css', 'ToolMenu.css', 'SlashMenu.css', 'CustomiseRailDialog.css', 'ToolComposer.css'] as const
+const FILES = ['ToolRail.css', 'ToolMenu.css', 'SlashMenu.css', 'CustomiseRailDialog.css', 'ToolComposer.css', 'GmThread.css'] as const
 
 function css(name: string): string {
   return readFileSync(join(HERE, name), 'utf-8')
