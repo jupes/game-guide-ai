@@ -145,6 +145,13 @@ Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
 client has one error path.
 
+One Workbench failure is outside the envelope on purpose: **a 401**. Every
+authentication failure on a Workbench route — no cookie, an expired or
+tampered one, an account that no longer exists — answers the single string body
+`{"detail": "not signed in"}`, so a stolen cookie cannot learn that its account
+was deleted. The client keys on the status (it signs out on any 401) and reads
+this body as a legacy one, which is why the code table has no 401 row.
+
 ### Idempotency
 
 Every Workbench mutation can be retried safely. A key is **scoped to the
@@ -311,10 +318,15 @@ place rather than kept twice.
 **Stored text is plain text.** Every text a document holds — a `text` or `prose`
 value, each item of a `text_list`, and an entry's name and text — refuses NUL and
 the other C0 and C1 controls, DEL, the whole Bidi_Control set (U+061C, U+200E,
-U+200F, U+202A–U+202E, U+2066–U+2069) and U+FEFF, with a 422 whose message names
-the field and the class of character and never the value. A tab is allowed, a
-line feed or carriage return wherever a line break already is, and U+200C,
-U+200D and U+FE0F everywhere, because real names and emoji sequences need them.
+U+200F, U+202A–U+202E, U+2066–U+2069) and U+FEFF, never the value (X-7). The
+validation message and the client's own Zod issue name the field and the class
+of character — but the 422 body on the wire is the fixed envelope every
+`check_fields` refusal answers with: a generic message and `field: null`. A
+class or a field name reaches only a log line (`redacted_errors`) and the
+client's own pre-flight Zod check, never the response a GM's browser receives.
+A tab is allowed, a line feed or carriage return wherever a line break already
+is, and U+200C, U+200D and U+FE0F everywhere, because real names and emoji
+sequences need them.
 PostgreSQL's `text` and `jsonb` refuse U+0000, so without the rule a NUL would be
 a failure to store rather than an answer; a bidirectional override makes what a
 GM sees differ from what is stored. One helper per side is the rule —
@@ -745,10 +757,11 @@ only. A page may be short, or empty, with a non-null cursor.
 
 **The order of checks** is the threat model's (SEC-3), with the origin check in
 front of a write: SEC-7 (`403 forbidden`, *That request didn't come from this
-application.*) → the session (`401`) → the body or the query (`422`) → the
-`dm` role (`403 forbidden`) → the store (`503 backend_unavailable`) → the path
-id → ownership (`404`) → validation that depends on the conversation (`422`)
-→ its state (`409`). SEC-7 compares the `Origin` host with the `Host` header's
+application.*) → the session (`401`, the one body above) → the `dm` role (`403
+forbidden`) → the body or the query (`422`) → the store (`503
+backend_unavailable`) → the path id → ownership (`404`) → validation that
+depends on the conversation (`422`) → its state (`409`). The first three are
+the Workbench router's, so they run before anything a route reads. SEC-7 compares the `Origin` host with the `Host` header's
 host, the port only when `Host` carries one and the scheme never; a
 `Sec-Fetch-Site` that is present must be `same-origin`; a body must be
 `application/json`; a request with neither browser header is not a browser's
@@ -812,6 +825,15 @@ optional usage ideas, routing disclosures, spell card and stat block that
 filled the gaps with `sources: []` and `answerable: true`. For rows written
 before the durable timeline those facts are honestly unknown, which the contract
 says with `null` (see *Not recorded* above).
+
+A routing disclosure never tells the user which model or provider answered
+(owner decision D-9, `agent-forge-harness-au3`). `requested`, `effective` and
+`fallback_from` hold a public model id from `PUBLIC_MODELS` in
+`service/model_catalog.py`, or `auto`, and never a catalog alias. The server
+never sets `provider`. The key stays declared and optional so that rows stored
+before au3, which carry an alias and a provider, still read. This is not a
+version bump: no deployed client has read a timeline yet, and a stale bundle
+would show its placeholder for the entry.
 
 The pieces of an answer are the existing `service/models.py` shapes, reused
 rather than re-declared. That is how the evidence provenance that

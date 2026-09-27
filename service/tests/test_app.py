@@ -13,6 +13,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from service.app import app, get_service
+from service.model_catalog import DEFAULT_ALIAS, public_model_id
 from service.models import Abilities, ChatMode, ChatResponse, Source, StatBlockContent
 
 
@@ -124,7 +125,9 @@ def test_get_models_returns_default_and_enabled_catalog():
     assert body["default"] == "auto"
     ids = [m["id"] for m in body["models"]]
     assert ids[0] == "auto"
-    assert "gpt-4o-mini" in ids
+    # D-9 (au3): the enabled model is listed by its public id, not its alias.
+    assert public_model_id(DEFAULT_ALIAS) in ids
+    assert DEFAULT_ALIAS not in ids
 
 
 def test_get_models_auto_entry_has_no_tier_or_attachment_fields():
@@ -140,8 +143,8 @@ def test_get_models_auto_entry_has_no_tier_or_attachment_fields():
 
 def test_get_models_never_leaks_secret_or_provider_fields():
     # TDD row 1: the catalog + endpoint must never expose keys, secret names,
-    # base URLs, or the exact provider model/snapshot string — only the
-    # public alias ("gpt-4o-mini" as `id`) is expected to appear.
+    # base URLs, or the exact provider model/snapshot string — only a public
+    # id is expected to appear (D-9, au3: not even the alias).
     c = TestClient(app)
     serialized = str(c.get("/models").json())
     for leaked in ("OPENAI_API_KEY", "api_model", "base_url", "secret_env"):

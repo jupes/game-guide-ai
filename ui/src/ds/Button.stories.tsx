@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { fn } from 'storybook/test'
+import { expect, fn, within } from 'storybook/test'
 
 import { Button } from './Button'
 
@@ -44,6 +44,12 @@ export const Variants: Story = {
   ),
 }
 
+// rnm (agent-forge-harness-rnm): "small" carries the smallest visible padding
+// and type of the three sizes, but every size — small included — still has to
+// clear the design intake's explicit 44px minimum touch target (Material
+// Design's touch-target guidance, the same standard --aether-touch-min
+// already names; WCAG 2.2 AA's 24px-with-spacing alternative was not chosen).
+// Asserted here, not just by eye, because no axe rule checks target size.
 export const Sizes: Story = {
   render: () => (
     <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
@@ -52,6 +58,14 @@ export const Sizes: Story = {
       <Button size="large">Large</Button>
     </div>
   ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    for (const name of ['Small', 'Medium', 'Large']) {
+      const box = canvas.getByRole('button', { name }).getBoundingClientRect()
+      await expect(box.height).toBeGreaterThanOrEqual(44)
+      await expect(box.width).toBeGreaterThanOrEqual(44)
+    }
+  },
 }
 
 export const WithIcons: Story = {
@@ -85,3 +99,9 @@ export const FullWidth: Story = {
 // colour is a DIFFERENT value per theme, so a light-only story is half a test.
 
 export const Dark: Story = { ...Variants, globals: { theme: 'dark' } }
+
+// rnm: touch-target size is a layout property, not a themed one, but the
+// theme switch also swaps CSS files (see the design-system-diff note on
+// fonts/typography) — a dark run of the same assertion is what makes sure
+// nothing in that swap can silently shrink the floor back down.
+export const DarkSizes: Story = { ...Sizes, globals: { theme: 'dark' } }

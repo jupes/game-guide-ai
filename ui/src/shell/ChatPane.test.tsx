@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor, act, fireEvent, within, isInaccessible } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent, isInaccessible } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as React from 'react'
 import { AppNavContext } from './AppNav'
@@ -325,20 +325,37 @@ describe('ChatPane — typing indicator (pp6q.1.5)', () => {
     )
   })
 
-  it('still announces the pending state to assistive tech', async () => {
+  it('still announces the pending state to assistive tech (agent-forge-harness-4oz: on the single already-mounted live region, not a freshly-mounted node)', async () => {
     // The dots are decoration. Replacing the announcement with a purely
     // visual animation would be an accessibility regression dressed as
     // polish — a screen-reader user would get no signal that anything is
     // happening at all.
+    //
+    // Capture the pane's one live region BEFORE the send below — while it is
+    // still empty, at first render — and assert the mutation on that SAME
+    // reference. Asserting instead on whatever `role="status"` node happens
+    // to exist right after sending would be asserting on a node the test's
+    // own action just created (with its text already inside it), which is
+    // exactly the shape that fails to announce for real assistive tech and
+    // the reason this bead exists.
     render(<Wrapper post={pendingForever()} />)
+    const [announcer] = screen.getAllByRole('status')
+    expect(announcer.textContent).toBe('')
+
     await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
     await userEvent.keyboard('{Enter}')
-    // Scoped to the transcript (agent-forge-harness-ekf added a second,
-    // persistent `status` node OUTSIDE it): this asserts the PENDING
-    // announcement specifically, same meaning as before.
-    const transcript = screen.getByRole('region', { name: 'Conversation' })
-    const status = await within(transcript).findByRole('status')
-    expect(status.textContent?.trim()).not.toBe('')
+
+    await waitFor(() => expect(announcer.textContent?.trim()).not.toBe(''))
+  })
+
+  it('agent-forge-harness-4oz: exactly one live region exists in the pane, at rest and while a reply is pending', async () => {
+    render(<Wrapper post={pendingForever()} />)
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getAllByRole('status')).toHaveLength(1))
   })
 
   it('hides the dots once the reply arrives', async () => {
@@ -405,14 +422,16 @@ describe('ChatPane — arrival announcer (agent-forge-harness-ekf)', () => {
     expect(arrivalOf(container)).toBe('')
   })
 
-  it('E2/E3/E5: announces "Answer received" once per turn, a fixed phrase, and clears on the next send', async () => {
+  it('E2/E3/E5: announces "Answer received" once per turn, a fixed phrase, and re-announces pending on the next send (agent-forge-harness-4oz: the pending phrase replaces the old clear-to-empty)', async () => {
     const resolvers: Array<(r: ChatResult) => void> = []
     const post: PostFn = () => new Promise((res) => { resolvers.push(res) })
     const { container } = render(<Wrapper post={post} />)
 
     await userEvent.type(screen.getByPlaceholderText('Ask…'), 'first question')
     await userEvent.keyboard('{Enter}')
-    expect(arrivalOf(container)).toBe('')
+    // agent-forge-harness-4oz folded the pending announcement into this same
+    // node: sending announces it immediately, rather than clearing to ''.
+    expect(arrivalOf(container)).toBe('Consulting the tomes…')
 
     act(() => resolvers[0](GROUNDED))
     await waitFor(() => expect(arrivalOf(container)).toBe('Answer received'))
@@ -420,11 +439,12 @@ describe('ChatPane — arrival announcer (agent-forge-harness-ekf)', () => {
     // in the transcript, not twice).
     expect(screen.getAllByText('A basilisk petrifies with its gaze.')).toHaveLength(1)
 
-    // E5 — a second arrival is a second announcement: cleared while the
-    // second turn is pending, not left standing from the first.
+    // E5 — a second arrival is a second announcement: the pending phrase is
+    // re-announced on the SAME node for the second turn, not left standing
+    // from the first turn's "Answer received".
     await userEvent.type(screen.getByPlaceholderText('Ask…'), 'second question')
     await userEvent.keyboard('{Enter}')
-    expect(arrivalOf(container)).toBe('')
+    expect(arrivalOf(container)).toBe('Consulting the tomes…')
 
     act(() => resolvers[1](GROUNDED))
     await waitFor(() => expect(arrivalOf(container)).toBe('Answer received'))
@@ -497,13 +517,13 @@ describe('ChatPane (#21)', () => {
 
     expect(screen.getByText('What is a Basilisk?')).toBeInTheDocument()
 
-    // Resolve the post so the test can clean up
+    // Resolve the post so the test can clean up, and wait for the settle to
+    // land (the announcer's own text is asserted by the "arrival announcer"
+    // describe block below — not this test's concern).
     act(() => resolvePost(GROUNDED))
-    // Scoped to the transcript: the PENDING status is gone. (The separate
-    // arrival announcer outside the transcript now reads "Answer received" —
-    // a different node, and not this assertion's concern.)
-    const transcript = screen.getByRole('region', { name: 'Conversation' })
-    await waitFor(() => expect(within(transcript).queryByRole('status')).not.toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
   })
 
   it('records the first submitted prompt as the active conversation title fallback', async () => {
@@ -541,7 +561,7 @@ describe('ChatPane (#21)', () => {
     )
   })
 
-  it('shows a pending status while waiting for a response', async () => {
+  it('shows a pending status while waiting for a response (agent-forge-harness-4oz: the single pane-wide live region)', async () => {
     let resolvePost!: (r: ChatResult) => void
     const post: PostFn = () =>
       new Promise<ChatResult>((res) => {
@@ -554,11 +574,14 @@ describe('ChatPane (#21)', () => {
     await userEvent.type(textarea, 'Q')
     await userEvent.keyboard('{Enter}')
 
-    const transcript = screen.getByRole('region', { name: 'Conversation' })
-    expect(within(transcript).getByRole('status')).toHaveTextContent(/consulting the tomes/i)
+    // Exactly one live region for the whole pane — captured here so the
+    // settle assertion below is on the SAME node, not a new one.
+    const [announcer] = screen.getAllByRole('status')
+    expect(announcer).toHaveTextContent(/consulting the tomes/i)
 
     act(() => resolvePost(GROUNDED))
-    await waitFor(() => expect(within(transcript).queryByRole('status')).not.toBeInTheDocument())
+    await waitFor(() => expect(announcer).toHaveTextContent('Answer received'))
+    expect(screen.getAllByRole('status')).toHaveLength(1)
   })
 
   it('renders sources in a Card after the answer', async () => {
