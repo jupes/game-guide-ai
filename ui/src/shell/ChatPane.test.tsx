@@ -10,6 +10,7 @@ import { ConversationStoreProvider } from './ConversationStoreContext'
 import { MemoryConversationStore } from './conversationStore'
 import { ThemeProvider } from '../ds/theme'
 import { ChatPane } from './ChatPane'
+import { CHAT_TEXT_MAX_CHARS } from '../gm/contracts'
 import type { Attachment, AttachmentsResult, ChatResult, MessagesResult, UploadAttachmentResult } from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
 import type { GetAttachmentsFn, UploadAttachmentFn } from './ChatPane'
@@ -282,6 +283,26 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
     await userEvent.type(ta, 'line two')
     expect(post).not.toHaveBeenCalled()
     expect(ta.value).toBe('line one\nline two')
+  })
+
+  it('agent-forge-harness-764: disables Send and shows a counter past CHAT_TEXT_MAX_CHARS', async () => {
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Wrapper post={post} />)
+    const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+    // fireEvent.change, not userEvent.type: this draft is 100,001 characters —
+    // typing it key by key would be a real per-character simulation, not a
+    // meaningfully different test.
+    fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+    expect(screen.getByText(`${CHAT_TEXT_MAX_CHARS + 1} of ${CHAT_TEXT_MAX_CHARS} characters`, { exact: false })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    // fireEvent.change doesn't focus the textarea; without the click, {Enter}
+    // would land on document.body and never reach the composer's key handler.
+    await userEvent.click(ta)
+    expect(ta).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    expect(post).not.toHaveBeenCalled()
+    // A send would also clear the draft: the user's over-long text must survive.
+    expect(ta.value.length).toBe(CHAT_TEXT_MAX_CHARS + 1)
   })
 })
 
