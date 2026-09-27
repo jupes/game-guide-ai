@@ -17,7 +17,7 @@ import { MemoryConversationStore } from './conversationStore'
 import { ThemeProvider } from '../ds/theme'
 import { ChatPane } from './ChatPane'
 import type { ChatPaneProps } from './ChatPane'
-import type { ChatResponse } from '../api'
+import type { ChatMode, ChatResponse, StoredMessage } from '../api'
 import type { Exchange, LoadHistoryFn, PostFn } from '../useChat'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { CREATIVE_ANSWER, chatEntry, pagedTimeline } from '../gm/threadFixtures'
@@ -211,5 +211,106 @@ describe('ChatPane (GM) — stored history and turns sent since', () => {
     const [exported] = exportChat.mock.calls[0]
     expect(exported.map((e) => e.prompt)).toEqual([STORED_PROMPT, PROMPT])
     expect(exported[0].response?.answer).toBe(CREATIVE_ANSWER.text)
+  })
+})
+
+/**
+ * The service stores a turn, both halves, only once its answer is back
+ * (`_persist_turn`), and every channel's history reads the same conversation.
+ * `answerNext` lets the oldest turn in flight come back.
+ */
+function fakeService(answerText: string) {
+  const stored: { prompt: string; mode: ChatMode }[] = []
+  const inFlight: (() => void)[] = []
+  const posts: [string, ChatMode, string | null][] = []
+  const post: PostFn = (prompt, mode, conversationId) => {
+    posts.push([prompt, mode, conversationId])
+    return new Promise((resolve) => {
+      inFlight.push(() => {
+        stored.push({ prompt, mode })
+        resolve({ kind: 'ok', response: { answer: answerText, sources: [], answerable: true } })
+      })
+    })
+  }
+  const loadHistory: LoadHistoryFn = async () => ({
+    kind: 'ok',
+    messages: stored.flatMap(({ prompt, mode }, i): StoredMessage[] => [
+      { id: i * 2 + 1, role: 'user', content: prompt, mode, created_at: '2026-09-27T10:00:00Z' },
+      { id: i * 2 + 2, role: 'assistant', content: answerText, mode, created_at: '2026-09-27T10:00:09Z' },
+    ]),
+  })
+  const loadTimeline: LoadTimelinePageFn = async (conversationId) => ({
+    kind: 'ok',
+    page: {
+      conversation_id: conversationId,
+      items: stored
+        .map(({ prompt, mode }, i) =>
+          chatEntry({ entry_id: `ent_${i}`, mode, prompt, answer: { text: answerText, answerable: true, sources: [] } }),
+        )
+        .reverse(),
+      next_cursor: null,
+    },
+  })
+  return { post, loadHistory, loadTimeline, posts, answerNext: () => inFlight.shift()?.() }
+}
+
+describe('ChatPane — a turn in flight when the channel crosses the GM boundary (review M-1)', () => {
+  const Q = 'Q-PROBE'
+
+  it('keeps a Sage turn where it was sent until it settles, then crosses into GM with it stored', async () => {
+    const service = fakeService('A stone-eyed lizard.')
+    const pane = (mode: ChatMode) => (
+      <Pane
+        nav={{ mode, conversationId: 'cnv_1' }}
+        post={service.post}
+        loadHistory={service.loadHistory}
+        loadTimeline={service.loadTimeline}
+      />
+    )
+    const { rerender } = render(pane('sage'))
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), Q)
+    await userEvent.keyboard('{Enter}')
+
+    rerender(pane('gm'))
+    // Not dropped: still drawn, still in flight, and the composer still locked on it…
+    expect(screen.getByText(Q)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Ask…')).toBeDisabled()
+    // …and never drawn in the GM lanes while it is a Sage turn in flight.
+    expect(document.querySelector('.gm-thread__exchange')).toBeNull()
+
+    await act(async () => service.answerNext())
+    await waitFor(() => expect(document.querySelector('.gm-thread__exchange')).not.toBeNull())
+    expect(screen.getByText('A stone-eyed lizard.')).toBeInTheDocument()
+    expect(screen.getAllByText(Q)).toHaveLength(1)
+    expect(screen.getByPlaceholderText('Ask…')).toBeEnabled()
+    expect(service.posts).toEqual([[Q, 'sage', 'cnv_1']])
+  })
+
+  it('keeps a GM turn where it was sent until it settles, then crosses into Sage with it stored', async () => {
+    const service = fakeService('The innkeeper is a retired sapper.')
+    const pane = (mode: ChatMode) => (
+      <Pane
+        nav={{ mode, conversationId: 'cnv_1' }}
+        post={service.post}
+        loadHistory={service.loadHistory}
+        loadTimeline={service.loadTimeline}
+      />
+    )
+    const { rerender } = render(pane('gm'))
+    expect(await screen.findByText('Ask the Game Master…')).toBeInTheDocument()
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), Q)
+    await userEvent.keyboard('{Enter}')
+
+    rerender(pane('sage'))
+    expect(screen.getByText(Q)).toBeInTheDocument()
+    expect(document.querySelector('.assistant-lane')).toHaveAttribute('data-state', 'working')
+    expect(screen.getByPlaceholderText('Ask…')).toBeDisabled()
+
+    await act(async () => service.answerNext())
+    await waitFor(() => expect(document.querySelector('.gm-thread__exchange')).toBeNull())
+    expect(await screen.findByText('The innkeeper is a retired sapper.')).toBeInTheDocument()
+    expect(screen.getAllByText(Q)).toHaveLength(1)
+    expect(screen.getByPlaceholderText('Ask…')).toBeEnabled()
+    expect(service.posts).toEqual([[Q, 'gm', 'cnv_1']])
   })
 })

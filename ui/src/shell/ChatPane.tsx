@@ -102,24 +102,45 @@ export interface ChatPaneProps {
   getAttachments?: GetAttachmentsFn
 }
 
+/** Which side of the GM boundary a pane is on: the GM channel reads the typed
+ * timeline, every other channel reads `/messages`. */
+type Side = 'gm' | 'chat'
+
 export function ChatPane(props: ChatPaneProps): React.JSX.Element {
   // 1kg.3.4: the GM channel and the others read history from different
   // sources, so crossing between them remounts the pane. Turns one source
   // already holds are then never drawn again beside the other's copy of them,
   // and a GM draft is never carried into another channel (RAIL-25).
+  //
+  // Never under a turn in flight, though: a remount would drop it — its answer
+  // would never land, and the composer would unlock beside it. The pane holds
+  // the side the turn was sent from until it settles, so the answer lands
+  // there and is never drawn in the other side's lanes; then it crosses, and
+  // the new side reads a history that now holds the turn.
   const { mode } = useAppNav()
-  return <ChatPaneBody key={mode === 'gm' ? 'gm' : 'chat'} {...props} />
+  const [held, setHeld] = React.useState<Side | null>(null)
+  const side: Side = held ?? (mode === 'gm' ? 'gm' : 'chat')
+  const holdWhilePending = React.useCallback((pending: boolean) => setHeld(pending ? side : null), [side])
+  return <ChatPaneBody key={side} {...props} side={side} onPendingChange={holdWhilePending} />
+}
+
+interface ChatPaneBodyProps extends ChatPaneProps {
+  /** The mode's side of the GM boundary, or the side a turn in flight was sent from. */
+  side: Side
+  onPendingChange: (pending: boolean) => void
 }
 
 function ChatPaneBody({
+  side,
+  onPendingChange,
   post,
   loadHistory,
   loadTimeline,
   uploadAttachment = defaultUploadAttachment,
   getAttachments = defaultGetAttachments,
-}: ChatPaneProps): React.JSX.Element {
+}: ChatPaneBodyProps): React.JSX.Element {
   const { mode, conversationId, setConversationId } = useAppNav()
-  const gm = mode === 'gm'
+  const gm = side === 'gm'
   const conversationStore = useConversationStore()
   // agent-forge-harness-ekf: the announcer's text. Set once per turn THIS
   // pane sent, at the settle (via useChat's onTurnSettled seam — never from
@@ -134,6 +155,10 @@ function ChatPaneBody({
     onConversationAdopted: setConversationId,
     onTurnSettled: (outcome) => setArrival(outcome === 'done' ? 'Answer received' : 'Answer failed'),
   })
+  // Keeps ChatPane on this side of the GM boundary while a turn is in flight.
+  React.useEffect(() => {
+    onPendingChange(pending)
+  }, [onPendingChange, pending])
   // 1kg.3.4: in the GM channel a stored entry and a live turn become the same
   // GmTurn, so a reload draws an answer exactly as it arrived. The thread's
   // empty, loading and error states are §12.2's, which are today's.
