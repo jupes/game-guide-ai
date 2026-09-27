@@ -35,6 +35,42 @@ test('nginx serves the Content-Security-Policy it declares', async ({ page }) =>
   expect(response?.headers()['content-security-policy']).toBe(declared[1])
 })
 
+// agent-forge-harness-y58 (review F3) — the "served" half of the four headers
+// y58 added. tests/test_security_headers_contract.py proves ui/nginx.conf
+// DECLARES each one exactly once, equal to service/security_headers.py; only a
+// real nginx can show it is SERVED, including on a cold deep link, which nginx
+// answers through `location /`'s try_files fallback rather than a real file.
+// Both paths are unproxied, so there is no duplicate-header folding (see the
+// CSP test above) to make equality fail for a correct configuration.
+const Y58_HEADERS = [
+  'X-Content-Type-Options',
+  'Referrer-Policy',
+  'Cross-Origin-Opener-Policy',
+  'Permissions-Policy',
+] as const
+
+for (const documentPath of ['/', '/profile']) {
+  test(`nginx serves the four non-table-page headers it declares, on ${documentPath}`, async ({
+    page,
+  }) => {
+    const conf = await fs.readFile(path.resolve('nginx.conf'), 'utf-8')
+    const response = await page.goto(documentPath)
+    expect(response?.status()).toBe(200)
+    const served = response?.headers() ?? {}
+
+    for (const name of Y58_HEADERS) {
+      // Quoted or bare, name in any case — the same forms the contract test
+      // counts, so a declaration it accepts is one this can read.
+      const declared = new RegExp(`add_header\\s+${name}\\s+(?:"([^"]*)"|([^\\s;"']+))`, 'i').exec(conf)
+      if (declared === null) {
+        throw new Error(`ui/nginx.conf declares no \`add_header ${name} …\` (agent-forge-harness-y58)`)
+      }
+      // Soft, so one run names every header that is missing, not just the first.
+      expect.soft(served[name.toLowerCase()], `${name} on ${documentPath}`).toBe(declared[1] ?? declared[2])
+    }
+  })
+}
+
 test('a model-authored remote image renders no <img> and starts no request to the third-party host', async ({
   page,
 }, testInfo) => {
