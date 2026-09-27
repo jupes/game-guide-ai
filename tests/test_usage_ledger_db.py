@@ -513,8 +513,6 @@ def test_deleting_an_account_with_ledger_rows_succeeds_and_the_rows_remain(dsn: 
     db, store = _database(dsn), PostgresUsageLedgerStore()
     with connect(dsn) as conn:
         user = _one_user(conn)
-        conn.execute("ALTER TABLE metering.provider_attempts "
-                     "ADD FOREIGN KEY (billed_account_id) REFERENCES auth.users (id)")
     with db.transaction() as unit:
         assert store.record_attempts(unit, [attempt(attempt_index=i, billed_account_id=user) for i in range(2)]) == 2
 
@@ -529,8 +527,6 @@ def test_deleting_an_account_with_ledger_rows_succeeds_and_the_rows_remain(dsn: 
 @needs_db
 def test_no_foreign_key_leaves_the_metering_schema(dsn: str) -> None:
     with connect(dsn) as conn:
-        conn.execute("ALTER TABLE metering.provider_attempts "
-                     "ADD FOREIGN KEY (billed_account_id) REFERENCES auth.users (id)")
         edges = conn.execute(
             "SELECT rel.relname, ref_ns.nspname || '.' || ref.relname, c.confdeltype "
             "  FROM pg_constraint c "
