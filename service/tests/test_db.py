@@ -944,7 +944,7 @@ _HOLD_ROW = (
 )
 
 
-def test_a_postgres_hold_names_the_campaign_inside_the_statement_that_takes_the_lock(
+def test_the_scripted_hold_names_the_campaign_inside_the_statement_that_takes_the_lock(
     scripted: tuple[list[str], dict[str, object]],
 ) -> None:
     """G-11 (thl R3(b)). The campaign is a condition of the `SELECT … FOR NO KEY
@@ -963,7 +963,7 @@ def test_a_postgres_hold_names_the_campaign_inside_the_statement_that_takes_the_
 
 
 @pytest.mark.parametrize("mutator", ["accept", "offer", "remove"])
-def test_every_postgres_participant_mutator_bounds_and_holds_the_seat_before_anything_else(
+def test_every_scripted_participant_mutator_bounds_and_holds_the_seat_before_anything_else(
     scripted: tuple[list[str], dict[str, object]], mutator: str
 ) -> None:
     """G-6 at the statement level. A mutator's first two statements are its OWN
@@ -999,7 +999,7 @@ _WRONG_TYPES: list[tuple[str, tuple[object, ...], dict[str, object], str]] = [
 @pytest.mark.parametrize(
     ("method", "args", "kwargs", "parameter"), _WRONG_TYPES, ids=[w[0] for w in _WRONG_TYPES]
 )
-def test_a_postgres_participant_store_refuses_a_wrong_type_before_any_statement(
+def test_the_scripted_participant_store_refuses_a_wrong_type_before_any_statement(
     scripted: tuple[list[str], dict[str, object]],
     method: str,
     args: tuple[object, ...],
