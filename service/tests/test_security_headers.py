@@ -118,21 +118,61 @@ def test_the_spa_document_from_the_static_mount_carries_the_policy() -> None:
             app.router.routes[:] = saved_routes
 
 
-def test_a_route_that_sets_its_own_policy_keeps_it() -> None:
-    """`setdefault`, not assignment. SEC-19 requires asset responses to answer
-    with their own `default-src 'none'; sandbox`, and that bead must not have to
+# Every header the middleware sends, with the value the middleware defaults it
+# to and a value a route has a real reason to send instead (review F2: the
+# `setdefault` claim was pinned for the CSP alone, and an assignment for any of
+# the other four survived the whole suite).
+_ALL_HEADERS = {
+    "content-security-policy": CONTENT_SECURITY_POLICY,
+    **NEW_HEADERS,
+}
+_ROUTE_OWNED_VALUES = [
+    # SEC-19: asset responses answer with their own policy.
+    pytest.param("Content-Security-Policy", "default-src 'none'; sandbox", id="csp-sec19-asset"),
+    # SEC-12/SEC-17 via 1kg.9.5: table and enrolment pages send `no-referrer`.
+    pytest.param("Referrer-Policy", "no-referrer", id="referrer-1kg95-table-page"),
+    # 1ir.3.4: GM pages grant the microphone to themselves, and nowhere else.
+    pytest.param(
+        "Permissions-Policy",
+        "camera=(), microphone=(self), geolocation=(), payment=()",
+        id="permissions-1ir34-gm-page",
+    ),
+    # A future popup flow (e.g. a payment provider's) would need this on its route.
+    pytest.param("Cross-Origin-Opener-Policy", "same-origin-allow-popups", id="coop-popup-route"),
+    # `nosniff` is the header's only defined value, so no route has a real
+    # alternative; a marker is what makes "the route's own value survived"
+    # observable at all.
+    pytest.param("X-Content-Type-Options", "y58-route-owned-marker", id="xcto-marker"),
+]
+
+
+@pytest.mark.parametrize(("header_name", "route_value"), _ROUTE_OWNED_VALUES)
+def test_a_route_that_sets_its_own_policy_keeps_it(header_name: str, route_value: str) -> None:
+    """`setdefault`, not assignment, for every header the middleware sends.
+    SEC-19 requires asset responses to answer with their own `default-src
+    'none'; sandbox`, 1kg.9.5's table pages their own `no-referrer`, 1ir.3.4's
+    GM pages their own microphone grant — and none of those beads may have to
     unpick this middleware to do it."""
-    stricter = "default-src 'none'; sandbox"
+    # Positive control: were the route's value the middleware's own default,
+    # an assignment would produce the same response and this test would pass
+    # for the wrong reason.
+    assert route_value != _ALL_HEADERS[header_name.lower()]
+    path = f"/_y58_route_with_its_own_{header_name.lower()}"
     saved_routes = list(app.router.routes)
 
-    @app.get("/_va8_route_with_its_own_policy")
+    @app.get(path)
     def _route_with_its_own_policy() -> Response:
-        return Response(content="x", headers={"Content-Security-Policy": stricter})
+        return Response(content="x", headers={header_name: route_value})
 
     try:
-        response = TestClient(app).get("/_va8_route_with_its_own_policy")
+        response = TestClient(app).get(path)
         assert response.status_code == 200
-        assert response.headers["content-security-policy"] == stricter
+        assert response.headers[header_name.lower()] == route_value
+        # Per header, not all-or-nothing: owning one header must not cost the
+        # route the middleware's defaults for the other four.
+        for other_name, default in _ALL_HEADERS.items():
+            if other_name != header_name.lower():
+                assert response.headers[other_name] == default, other_name
     finally:
         app.router.routes[:] = saved_routes
 
