@@ -2,16 +2,18 @@
 
 Every test here drives a real `TestClient` request against a real `RagService`
 (slice a's retriever fake, whose `embed` calls the REAL `embed_query`, and a
-fake LLM client), with a twin ledger installed the way `_build_stores` installs
-the real one — as the module's sink, through `monkeypatch`, so it is restored
-after every test. `chat()` itself is untouched by this slice; these tests are
-what shows it did not need to be.
+fake LLM client), with a twin ledger installed where `_build_stores` puts the
+real one — `service.app._state["ledger"]`, through `monkeypatch`, so it is
+restored after every test — and found by the provider `service.app` registers
+at import, the only way a turn ever finds one. `chat()` itself is untouched by
+this slice; these tests are what shows it did not need to be.
 
 The questions, in order: what a turn writes; that it is written once, after the
 last provider call, with nothing held open across any provider call; that a
 turn nobody may take writes nothing; that no ledger failure of any kind can
 change what the user gets back; that the log line and the row are independent
-sinks; and that no private text reaches a row.
+sinks; that no private text reaches a row; and that a store built outside any
+lifespan cannot outlive the registry it was built into.
 
 Every assertion about what was written is made from the test body, on lists
 collected outside the callbacks that fill them, and asserts the count first.
@@ -34,6 +36,7 @@ import openai
 import psycopg
 import pytest
 
+from service import app as appmod
 from service import generate as generate_module
 from service import usage_capture
 from service.app import app, get_message_store, get_service, require_session
@@ -142,7 +145,7 @@ class _Writer(LedgerWriter):
 @pytest.fixture
 def ledger(monkeypatch: pytest.MonkeyPatch) -> _Ledger:
     world = _Ledger()
-    monkeypatch.setattr(usage_capture, "_LEDGER", _Writer(world))
+    monkeypatch.setitem(appmod._state, "ledger", _Writer(world))
     return world
 
 
@@ -264,7 +267,7 @@ def test_a_provider_rate_limit_is_still_a_429_and_its_attempts_are_written(
 ) -> None:
     captured = _post(_client(_service(_ScriptedLLM([_rate_limited()]))), mode="sage")
     _reset_service_overrides()
-    monkeypatch.setattr(usage_capture, "_LEDGER", None)
+    monkeypatch.delitem(appmod._state, "ledger", raising=False)
     control = _post(_client(_service(_ScriptedLLM([_rate_limited()]))), mode="sage")
 
     assert captured.status_code == control.status_code == 429
@@ -326,7 +329,7 @@ def test_a_failing_ledger_changes_nothing_the_user_gets(
     mode: str, field: str, rows: int, failure: str, monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(usage_capture, "_LEDGER", None)
+    monkeypatch.delitem(appmod._state, "ledger", raising=False)
     control = _post(_client(_service(_SeqLLM(_MODE_SCRIPTS[mode]))), mode=mode)
     _reset_service_overrides()
     assert control.status_code == 200, control.text
@@ -335,7 +338,7 @@ def test_a_failing_ledger_changes_nothing_the_user_gets(
     caplog.set_level(logging.WARNING)
     caplog.clear()
     with _failing_sink(failure) as (sink, error):
-        monkeypatch.setattr(usage_capture, "_LEDGER", sink)
+        monkeypatch.setitem(appmod._state, "ledger", sink)
         broken = _post(_client(_service(_SeqLLM(_MODE_SCRIPTS[mode]))), mode=mode)
 
     assert broken.status_code == control.status_code
@@ -350,14 +353,14 @@ def test_a_failing_ledger_changes_nothing_the_user_gets(
 def test_a_failing_ledger_leaves_a_429_exactly_as_it_was(
     failure: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, no_backoff: None,
 ) -> None:
-    monkeypatch.setattr(usage_capture, "_LEDGER", None)
+    monkeypatch.delitem(appmod._state, "ledger", raising=False)
     control = _post(_client(_service(_ScriptedLLM([_rate_limited()]))), mode="sage")
     _reset_service_overrides()
     assert control.status_code == 429
 
     caplog.clear()
     with _failing_sink(failure) as (sink, error):
-        monkeypatch.setattr(usage_capture, "_LEDGER", sink)
+        monkeypatch.setitem(appmod._state, "ledger", sink)
         broken = _post(_client(_service(_ScriptedLLM([_rate_limited()]))), mode="sage")
 
     assert broken.status_code == 429
@@ -393,7 +396,7 @@ def test_a_raising_ledger_still_lets_every_log_line_out(
     records: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with _failing_sink("the store raises") as (sink, _):
-        monkeypatch.setattr(usage_capture, "_LEDGER", sink)
+        monkeypatch.setitem(appmod._state, "ledger", sink)
         response = _post(_client(_service(_SeqLLM(_MODE_SCRIPTS["spell"]))))
 
     assert response.status_code == 200, response.text
@@ -429,8 +432,51 @@ def test_no_prompt_answer_filename_attachment_or_email_reaches_any_row(ledger: _
             assert "@" not in text
 
 
+# ---------------------------------------------------------------------------
+# No sink outlives the registry it was built into
+# ---------------------------------------------------------------------------
+
+def test_the_app_registers_the_one_provider_and_it_answers_the_store_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = _Writer(_Ledger())
+    monkeypatch.delitem(appmod._state, "ledger", raising=False)
+    assert usage_capture._ledger_provider is not None, "service.app registers it at import"
+    assert usage_capture.installed_ledger() is None
+
+    monkeypatch.setitem(appmod._state, "ledger", writer)
+    assert usage_capture.installed_ledger() is writer
+
+    monkeypatch.delitem(appmod._state, "ledger")
+    assert usage_capture.installed_ledger() is None
+
+
+def test_a_store_built_outside_any_lifespan_cannot_outlive_its_registry(caplog: pytest.LogCaptureFixture) -> None:
+    """What `service/tests/test_startup_recovery.py` does: `recover_database`
+    builds the stores with no lifespan around them, and the test's fixture then
+    restores the registry it saved. The PostgreSQL ledger goes with it. A sink
+    that outlived it would be handed every later test's turn, and each of those
+    turns would log a failed write to a database that is not there."""
+    saved = dict(appmod._state)
+    try:
+        appmod._build_stores(Database("postgresql://nobody@127.0.0.1:1/none"))
+        assert isinstance(usage_capture.installed_ledger(), LedgerWriter), "built like the other stores"
+    finally:
+        appmod._state.clear()
+        appmod._state.update(saved)
+    assert usage_capture.installed_ledger() is None
+
+    caplog.set_level(logging.WARNING)
+    caplog.clear()
+    response = _post(_client(_service(_SeqLLM(_MODE_SCRIPTS["spell"]))))
+
+    assert response.status_code == 200, response.text
+    assert [r.getMessage() for r in _warnings(caplog)] == []
+
+
 def test_the_message_store_override_is_reset_between_tests() -> None:
     """Sanity for the fixtures above: nothing this module installs outlives it."""
     assert get_service not in app.dependency_overrides
     assert get_message_store not in app.dependency_overrides
-    assert usage_capture._LEDGER is None
+    assert "ledger" not in appmod._state
+    assert usage_capture.installed_ledger() is None

@@ -593,9 +593,10 @@ class InMemoryUsageLedgerStore:
 
 
 class LedgerWriter:
-    """One turn's rows, one short transaction. Installed by
-    `service.app._build_stores`; `usage_capture.end_operation` calls `write`
-    after the turn's last provider call and swallows what it raises."""
+    """One turn's rows, one short transaction. Built into the app's store
+    registry by `service.app._build_stores`, where the provider `service.app`
+    registers with `usage_capture` finds it; `usage_capture.end_operation` calls
+    `write` after the turn's last provider call and swallows what it raises."""
 
     def __init__(self, store: UsageLedgerStore, db: TransactionalDatabase) -> None:
         self._store = store

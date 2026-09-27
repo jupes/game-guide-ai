@@ -11,8 +11,8 @@ Four kinds of check, all of which run anywhere:
   has exactly the table's documented columns.
 - **The seed guard**: enabling a model alias with no price fails CI.
 - **The capture side**: how `service/usage_capture.py` builds a turn's batch —
-  the attempt sequence, the snapshotted sink, the token mapping, and the one
-  write per turn in `end_operation` that can never raise.
+  the attempt sequence, the sink asked for when the turn ends, the token
+  mapping, and the one write per turn in `end_operation` that can never raise.
 
 Every assertion about what a sink received is made from the test body on a
 list collected outside the sink, and asserts the count first.
@@ -187,6 +187,11 @@ class _Sink:
         return len(rows)
 
 
+def _install(monkeypatch: pytest.MonkeyPatch, sink: _Sink | None) -> None:
+    """What `service.app` registers, answering `sink` — restored after the test."""
+    monkeypatch.setattr(usage_capture, "_ledger_provider", lambda: sink)
+
+
 def _begin(**overrides: Any) -> Any:
     return usage_capture.begin_operation(
         mode=overrides.get("mode", "spell"), billed_account_id=overrides.get("billed_account_id", 7),
@@ -215,13 +220,13 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> list[datetime]:
     return ticks
 
 
-def test_an_operation_built_by_keyword_has_no_sink_and_its_own_empty_batch() -> None:
+def test_an_operation_built_by_keyword_has_its_own_empty_batch() -> None:
     operation = usage_capture.Operation(
         operation_id=OP, operation="chat_turn", mode="sage", billed_account_id=1,
         actor_kind="account", campaign_id=None, request=None,
     )
     copy = dataclasses.replace(operation, mode="spell")
-    assert operation.ledger is None and copy.ledger is None
+    assert not hasattr(operation, "ledger"), "a turn holds no store: the sink is asked for when it ends"
     assert operation._batch == [] and copy._batch == []
     assert operation._batch is not copy._batch
     assert copy == dataclasses.replace(operation, mode="spell"), "the batch takes no part in equality"
@@ -231,7 +236,7 @@ def test_a_turn_writes_its_rows_once_in_recording_order_when_it_ends(
     monkeypatch: pytest.MonkeyPatch, clock: list[datetime],
 ) -> None:
     sink = _Sink()
-    monkeypatch.setattr(usage_capture, "_LEDGER", sink)
+    _install(monkeypatch, sink)
     token = _begin(billed_account_id=7)
     operation = usage_capture.current_operation()
     assert operation is not None
@@ -258,7 +263,7 @@ def test_the_attempt_sequence_is_operation_wide_while_retry_index_is_per_call_si
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sink = _Sink()
-    monkeypatch.setattr(usage_capture, "_LEDGER", sink)
+    _install(monkeypatch, sink)
     token = _begin()
     operation = usage_capture.current_operation()
     assert operation is not None
@@ -276,32 +281,72 @@ def test_the_attempt_sequence_is_operation_wide_while_retry_index_is_per_call_si
     ]
 
 
-def test_the_sink_is_snapshotted_when_the_turn_begins(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A recovery that installs a new sink mid-turn cannot split a turn."""
+def test_the_sink_is_asked_for_when_the_turn_ends_and_gets_the_whole_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registry rebuilt mid-turn (a recovery) decides where the turn goes,
+    and the turn is never split: every row reaches the sink installed at the
+    end, none the one installed at the beginning."""
     began_with, installed_later = _Sink(), _Sink()
-    monkeypatch.setattr(usage_capture, "_LEDGER", began_with)
+    _install(monkeypatch, began_with)
     token = _begin()
-    usage_capture.install_ledger(installed_later)
-    _attempt()
+    _attempt("embedding")
+    _install(monkeypatch, installed_later)
+    _attempt("answer")
     usage_capture.end_operation(token)
 
-    assert [len(rows) for rows in began_with.writes] == [1]
-    assert installed_later.writes == []
+    assert began_with.writes == []
+    assert [[r.purpose for r in rows] for rows in installed_later.writes] == [["embedding", "answer"]]
 
 
-def test_a_turn_begun_with_no_sink_buffers_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(usage_capture, "_LEDGER", None)
+@pytest.mark.parametrize("registered", [True, False], ids=["the provider answers None", "no provider at all"])
+def test_a_turn_that_ends_with_no_sink_writes_nothing_and_says_nothing(
+    registered: bool, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No store is built (no database, a degraded start, after shutdown), or
+    nothing registered a provider (a process that never imported the app)."""
+    sink = _Sink()
+    _install(monkeypatch, sink)
+    caplog.set_level(logging.WARNING)
     token = _begin()
     operation = usage_capture.current_operation()
     assert operation is not None
     _attempt()
-    assert operation._batch == []
+    _attempt()
+    assert len(operation._batch) == 2, "the rows were captured"
+    if registered:
+        _install(monkeypatch, None)
+    else:
+        monkeypatch.setattr(usage_capture, "_ledger_provider", None)
+
     usage_capture.end_operation(token)
+
+    assert sink.writes == []
+    assert operation._batch == [], "the dropped rows are not kept"
+    assert caplog.records == []
+    assert usage_capture.current_operation() is None
+
+
+def test_a_provider_that_raises_is_one_content_free_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    def broken() -> None:
+        raise KeyError("a registry that quotes zzq-secret")
+
+    monkeypatch.setattr(usage_capture, "_ledger_provider", broken)
+    caplog.set_level(logging.WARNING)
+    token = _begin()
+    _attempt()
+
+    usage_capture.end_operation(token)
+
+    assert [r.getMessage() for r in caplog.records] == ["usage ledger write failed (rows=1, error=KeyError)"]
+    assert usage_capture.current_operation() is None
 
 
 def test_an_empty_batch_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     sink = _Sink()
-    monkeypatch.setattr(usage_capture, "_LEDGER", sink)
+    _install(monkeypatch, sink)
     usage_capture.end_operation(_begin())
     assert sink.writes == []
 
@@ -310,7 +355,7 @@ def test_a_failed_write_is_one_content_free_warning_and_never_raises(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
 ) -> None:
     sink = _Sink(error=RuntimeError("INSERT ... VALUES ('a secret prompt')"))
-    monkeypatch.setattr(usage_capture, "_LEDGER", sink)
+    _install(monkeypatch, sink)
     caplog.set_level(logging.WARNING)
     token = _begin()
     operation = usage_capture.current_operation()
@@ -332,7 +377,7 @@ def test_a_failure_capturing_a_row_still_lets_the_log_line_out(
     def broken_clock() -> datetime:
         raise RuntimeError("the clock is broken")
 
-    monkeypatch.setattr(usage_capture, "_LEDGER", _Sink())
+    _install(monkeypatch, _Sink())
     monkeypatch.setattr(usage_capture, "ledger_clock", broken_clock)
     caplog.set_level(logging.WARNING)
     emitted: list[dict[str, Any]] = []

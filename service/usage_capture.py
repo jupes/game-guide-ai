@@ -17,9 +17,12 @@ captured as one ledger row (`AttemptRow`) on the turn's `Operation`; the turn's
 rows are written to `metering.provider_attempts` in one short transaction by
 `end_operation`, which already runs in `chat()`'s `finally`. No provider call
 ever waits on that write, a failed write never touches the answer, and the log
-line stays the independent witness of what a lost write lost. The table, the
-store and the price table live in `service/usage_ledger.py`, which imports this
-module and never the reverse; this module sees the ledger only as `LedgerSink`.
+line stays the independent witness of what a lost write lost. The sink is not
+held here: `end_operation` asks the one provider `service.app` registers at
+import (`set_ledger_provider`), which answers the writer the app's store registry
+holds at that moment, or None. The table, the store and the price table live in
+`service/usage_ledger.py`, which imports this module and never the reverse; this
+module sees the ledger only as `LedgerSink`.
 
 THREE RULES THIS MODULE EXISTS TO ENFORCE
 
@@ -164,17 +167,31 @@ class LedgerSink(Protocol):
     def write(self, rows: Sequence[AttemptRow]) -> int: ...  # pragma: no cover - structural type
 
 
-#: The sink `begin_operation` snapshots into each new operation. Installed by
-#: `service.app._build_stores` and cleared at shutdown; None until then, which
-#: is what every unit test, eval script and the E2E app sees.
-_LEDGER: LedgerSink | None = None
+#: Answers the sink a turn's rows go to right now, or None: no store is built.
+LedgerProvider = Callable[[], "LedgerSink | None"]
+
+#: Registered once, by `service.app` at import, as a lookup in the app's store
+#: registry (`_state`), which `_build_stores` fills and the lifespan teardown
+#: clears. This module therefore holds no sink of its own: whatever rebuilds or
+#: restores that registry — startup, `recover_database`, shutdown, a test's
+#: fixture — is also what decides whether a turn has a ledger, and a store built
+#: for one test cannot outlive it. None (nothing registered) and a provider that
+#: answers None both mean the turn writes nothing.
+_ledger_provider: LedgerProvider | None = None
 
 
-def install_ledger(sink: LedgerSink | None) -> None:
-    """Install (or, with None, remove) the ledger sink for turns begun from now
-    on. A turn already in flight keeps the sink it began with."""
-    global _LEDGER
-    _LEDGER = sink
+def set_ledger_provider(provider: LedgerProvider | None) -> None:
+    """Register (or, with None, remove) the one callable `end_operation` asks
+    for the ledger sink when a turn ends."""
+    global _ledger_provider
+    _ledger_provider = provider
+
+
+def installed_ledger() -> LedgerSink | None:
+    """The sink a turn ending now writes to, as the registered provider answers
+    it; None when no provider is registered or no store is built."""
+    provider = _ledger_provider
+    return None if provider is None else provider()
 
 
 def ledger_clock() -> datetime:
@@ -240,10 +257,6 @@ class Operation:
     # emitter reads nothing else off it and typing it as Request would force
     # every test to build one.
     request: Any
-    #: The ledger sink this turn writes to, snapshotted by `begin_operation` so
-    #: that a recovery installing a new one mid-turn cannot split a turn's rows.
-    #: None: the turn buffers nothing.
-    ledger: LedgerSink | None = None
     # The turn's rows, the operation-wide attempt sequence and the lock both are
     # taken under. On the operation rather than in a context variable because
     # the graph nodes reach the operation through the run config (slice a D-2).
@@ -288,7 +301,6 @@ def begin_operation(
             actor_kind=actor_kind,
             campaign_id=campaign_id,
             request=request if request is not None else _NoHeaders(),
-            ledger=_LEDGER,
         )
         return _CURRENT.set(operation)
     except Exception as exc:
@@ -317,22 +329,31 @@ def end_operation(token: Token[Operation | None] | None) -> None:
 
 
 def _flush(operation: Operation | None) -> None:
-    """The turn's rows, in one transaction through the operation's sink.
+    """The turn's rows, in one transaction through the sink installed NOW.
 
-    An empty batch opens nothing. A failed write drops the turn's rows and logs
-    one line naming the row count and the exception's CLASS — no id, no prompt,
-    no exception text, which can quote a statement and with it a row's values.
-    The log record of every one of those attempts was already written, and is
-    the witness of what was lost."""
+    The sink is asked for here, when the turn ends, and never earlier: a turn
+    holds no reference to a store, so a registry that is rebuilt or cleared
+    mid-turn (a recovery, a shutdown) decides where — or whether — its rows go,
+    all of them at once. No sink: the rows are dropped, silently, as they are
+    on any instance that has no database.
+
+    An empty batch asks for nothing and opens nothing. A failed write drops the
+    turn's rows and logs one line naming the row count and the exception's
+    CLASS — no id, no prompt, no exception text, which can quote a statement
+    and with it a row's values. The log record of every one of those attempts
+    was already written, and is the witness of what was lost."""
     rows: list[AttemptRow] = []
     try:
-        if operation is None or operation.ledger is None:
+        if operation is None:
             return
         with operation._lock:
             rows = list(operation._batch)
             operation._batch.clear()
-        if rows:
-            operation.ledger.write(rows)
+        if not rows:
+            return
+        sink = installed_ledger()
+        if sink is not None:
+            sink.write(rows)
     except Exception as exc:
         log.warning("usage ledger write failed (rows=%d, error=%s)", len(rows), type(exc).__name__)
 
@@ -550,9 +571,8 @@ class AttemptRecorder:
 def _append_row(operation: Operation, fields: Mapping[str, Any]) -> None:
     """Capture one attempt on its operation's batch. The next `attempt_index`
     is taken under the operation's lock, in recording order; nothing is written
-    here — `end_operation` writes the batch once the turn is over."""
-    if operation.ledger is None:
-        return
+    here — `end_operation` writes the batch once the turn is over, to whatever
+    sink is installed then (none: the batch is dropped with the operation)."""
     try:
         with operation._lock:
             operation._batch.append(ledger_row(
