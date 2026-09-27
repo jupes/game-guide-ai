@@ -266,6 +266,56 @@ describe('useChat', () => {
     expect(result.current.exchanges).toHaveLength(1)
   })
 
+  // ── settle() must not re-scope to a conversation the user left (agent-forge-harness-4pg) ──
+  // A turn sent from conv-1 that settles AFTER the user has switched to (and
+  // recalled) conv-2 used to stamp state.scopeId back to conv-1, stranding
+  // conv-2 on "Recalling the conversation…" forever (its recall effect deps
+  // hadn't changed, so it would never re-run to recover).
+
+  it('does not re-scope to a conversation the user has left when a stale send settles', async () => {
+    const { post, resolve: resolvePost } = deferredPost()
+    let resolveConv2History!: (r: MessagesResult) => void
+    const loadHistory: LoadHistoryFn = (conversationId) => {
+      if (conversationId === 'conv-1') return Promise.resolve({ kind: 'ok', messages: [] })
+      return new Promise<MessagesResult>((res) => {
+        resolveConv2History = res
+      })
+    }
+
+    const { result, rerender } = renderHook(
+      ({ convId }: { convId: string | null }) =>
+        useChat({ post, loadHistory, mode: 'sage', conversationId: convId }),
+      { initialProps: { convId: 'conv-1' as string | null } },
+    )
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+
+    // Send from conv-1; its post() is still in flight when the user switches away.
+    act(() => {
+      result.current.send('About goblins')
+    })
+    expect(result.current.exchanges).toHaveLength(1)
+
+    // Switch to conv-2 before the goblins turn settles, then let its recall land.
+    rerender({ convId: 'conv-2' })
+    expect(result.current.loadingHistory).toBe(true)
+    await act(async () => {
+      resolveConv2History({
+        kind: 'ok',
+        messages: [stored(9, 'user', 'About dragons'), stored(10, 'assistant', 'Dragons…')],
+      })
+    })
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+    expect(result.current.exchanges[0]?.prompt).toBe('About dragons')
+
+    // NOW the stale conv-1 turn settles — conv-2 must stay put, not strand.
+    await act(async () => {
+      resolvePost(GROUNDED)
+    })
+    expect(result.current.loadingHistory).toBe(false)
+    expect(result.current.exchanges).toHaveLength(1)
+    expect(result.current.exchanges[0]?.prompt).toBe('About dragons')
+  })
+
   it('degrades to an empty thread with a notice when the history fetch fails', async () => {
     const post: PostFn = async () => GROUNDED
     const loadHistory: LoadHistoryFn = async () => ({
