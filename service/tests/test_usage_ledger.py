@@ -102,7 +102,8 @@ def test_the_migration_updates_and_deletes_nothing() -> None:
 def test_no_foreign_key_leaves_the_schema() -> None:
     assert "REFERENCES auth.users" not in STATEMENTS
     assert "REFERENCES campaign." not in STATEMENTS
-    assert re.findall(r"REFERENCES\s+([\w.]+)", STATEMENTS) == ["metering.price_revisions"]
+    # Up to the column list, so a quoted `"auth"."users"` is caught as well.
+    assert re.findall(r"REFERENCES\s+([^\s(]+)", STATEMENTS, re.I) == ["metering.price_revisions"]
 
 
 def test_the_key_the_index_and_the_price_foreign_key_are_the_promised_ones() -> None:

@@ -379,7 +379,12 @@ embedding row already written is priced by it — nothing is lost by waiting.
   turn's rows; the answer is never affected, and the log line is the witness.
 - **Rows start at the release that ships this.** Nothing is backfilled from the logs.
 - **The write can wait on the gate.** Like every other write of a turn, it waits up to
-  `DB_POOL_TIMEOUT_S` (5 s) for a connection when the gate is saturated — after the answer
-  is complete, never between provider calls.
+  `DB_POOL_TIMEOUT_S` (5 s) for a connection when the gate is saturated — once the answer
+  is composed and before it is sent, as the history and timeline writes do; never between
+  provider calls.
+- **No store, no rows.** The writer lives in the service's store registry beside the
+  history and auth stores, and a turn asks for it only when it ends. An instance that
+  started without its database writes no rows (and logs nothing about it) until
+  `recover_database` builds the stores; a turn that ends after that is written in full.
 - `guest` is not an actor the ledger accepts (there are no guests, billing plan D-4), although
   section 1's field table still lists it for the log record.
