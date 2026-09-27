@@ -35,7 +35,7 @@ import pytest
 from service import document_store as docs
 from service.audit_log import ACTION_DETAIL, AuditAction, MintedId, accepts
 from service.campaign_identity import DOCUMENT, PARTICIPANT, id_check_regex
-from service.campaign_store import InMemoryCampaignStore, MissingParent
+from service.campaign_store import InMemoryCampaignStore, MissingParent, shared_rows
 from service.db import InMemoryDatabase
 from service.document_store import (
     NAME_KEY_MAX,
@@ -730,19 +730,28 @@ def test_no_private_text_reaches_an_exception():
                              base_write_revision=made.write_revision + 99))
         said.append(_refusal(docs._planned, _a_record(type_version=2), {"name": "x"},
                              Author.GM, None, None))
+        said.append(_refusal(store.create, unit, "cmp_" + "z" * 22,
+                             doc_type=DocumentTypeId.NPC, type_version=1,
+                             data={"name": PRIVATE["name"]}, author=Author.GM))
         said.extend(_every_slice_b_refusal(db, unit, store, campaign, made.id))
     assert moved.write_revision == 2
 
     spoken = "\n".join(said)
     for canary in PRIVATE.values():
         assert canary not in spoken, spoken
+    # SEC-20's rule generally, not only for `SheetAlreadyLinked`: no refusal
+    # collected above, slice A's or slice B's, names the id of a document, a
+    # participant or a campaign, however it is spelled.
+    for shape in ("doc_", "prt_", "cmp_"):
+        assert shape not in spoken, spoken
 
 
 def _every_slice_b_refusal(
     db: InMemoryDatabase, unit, store: InMemoryDocumentStore, campaign: str, document_id: str
 ) -> list[str]:
     """Every refusal slice B added, provoked with canaries in reach: the
-    document's name and tag, the seat's alias, and a search string."""
+    document's name and tag, the seat's alias, and a search string. The
+    caller sweeps what they say for canaries and for ids alike."""
     seats = InMemoryParticipantStore(db)
     seat = seats.add(unit, campaign, alias=PRIVATE["alias"]).id
     other = seats.add(unit, campaign, alias="Wren").id
@@ -1049,6 +1058,37 @@ def test_the_twin_reads_its_documents_through_one_accessor_that_hides_tombstones
             ):
                 callers.append(node.name)
     assert callers == ["_live"]
+
+
+def test_a_deleted_documents_tombstone_keeps_only_its_id_and_campaign():
+    """B-10: `_tombstone`'s docstring claims the twin's delete keeps nothing but
+    a document's id and campaign_id — no field text, folded key, link or
+    command id of any kind. Proven on a row started full of canaries, a link
+    and a command id, read back through `shared_rows` itself (never `_live`,
+    which only hides the row and would let a leftover value hide with it)."""
+    db, store = _a_world()
+    campaign = _a_campaign_id(db)
+    with db.transaction() as unit:
+        seat = InMemoryParticipantStore(db).add(unit, campaign, alias=PRIVATE["alias"]).id
+        made = store.create(
+            unit, campaign, doc_type=DocumentTypeId.CHARACTER_SHEET, type_version=1,
+            data={"name": PRIVATE["name"], "tags": [PRIVATE["tag"]]},
+            author=Author.GM, command_id="cmd-canary",
+        )
+        assert store.link_character_sheet(unit, campaign, made.id, participant_id=seat)
+        assert store.set_archived(unit, campaign, made.id, archived=True)
+        assert store.delete(unit, campaign, made.id)
+        row = shared_rows(db, "documents").visible(unit)[made.id]
+    assert row.gone is True
+    assert row.created_at == row.updated_at == docs._GONE_AT
+    assert row.archived_at is None, "archived before the delete, and not after it"
+    assert row.data == {}
+    assert row.name_key == "" and row.search_key == ""
+    assert row.linked_participant_id is None
+    assert row.created_command_id is None
+    assert row.type == "" and row.type_version == 0
+    assert row.write_revision == 0 and row.field_revisions == {}
+    assert row.id == made.id and row.campaign_id == campaign
 
 
 def test_a_restore_is_the_gms_and_takes_no_author():

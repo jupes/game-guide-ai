@@ -121,6 +121,31 @@ def check_alias(alias: str) -> str:
     return normalised
 
 
+def check_argument_types(**given: object) -> None:
+    """Refuse a value of the wrong TYPE, in both worlds, before any statement.
+
+    Every public method of both stores calls this first (z9v item 3). The twin
+    used to trust the annotations: `get(unit, 5)` answered "not found", while
+    PostgreSQL raises `operator does not exist: text = integer` and aborts the
+    caller's whole composed transaction — so the twin accepted what the database
+    would not, and nobody found out before the first real request. Refused here,
+    in Python, the refusal arrives without a failed statement and the caller's
+    transaction stays usable in both worlds.
+
+    `campaign_id`, `participant_id` and `alias` are strings and `None` is not
+    one: no parameter here is optional any more, and no hold is unscoped.
+    `user_id` is an `int` and never a `bool`, which Python counts as one. The
+    refusal is the built-in `TypeError` and names the parameter and the type it
+    must be — never the value, which may be an alias (SEC-20).
+    """
+    for name, value in given.items():
+        if name == "user_id":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"a participant store's {name} is an int")
+        elif not isinstance(value, str):
+            raise TypeError(f"a participant store's {name} is a str")
+
+
 def alias_key(alias: str) -> str:
     """What `participants_alias_uidx` compares, computed here rather than by the
     database.
@@ -297,6 +322,7 @@ class PostgresParticipantStore:
     def add(
         self, unit: UnitOfWork, campaign_id: str, *, alias: str, now: datetime | None = None
     ) -> Participant:
+        check_argument_types(campaign_id=campaign_id, alias=alias)
         named = check_alias(alias)
         # INSERT ... SELECT ... WHERE EXISTS rather than letting the foreign key
         # raise: a ForeignKeyViolation aborts the whole transaction and arrives
@@ -336,6 +362,7 @@ class PostgresParticipantStore:
         raise AliasTaken("that campaign already has an active participant with this alias")
 
     def get(self, unit: UnitOfWork, participant_id: str) -> Participant | None:
+        check_argument_types(participant_id=participant_id)
         row = pg(unit).conn.execute(
             f"SELECT {_P_COLUMNS} FROM campaign.participants WHERE id = %s", (participant_id,)
         ).fetchone()
@@ -344,6 +371,7 @@ class PostgresParticipantStore:
     def list_for_campaign(
         self, unit: UnitOfWork, campaign_id: str, *, include_removed: bool = False
     ) -> list[Participant]:
+        check_argument_types(campaign_id=campaign_id)
         rows = pg(unit).conn.execute(
             f'SELECT {_P_COLUMNS} FROM campaign.participants '
             f'WHERE campaign_id = %s AND (%s OR removed_at IS NULL) '
@@ -360,6 +388,7 @@ class PostgresParticipantStore:
         campaign_id: str,
         transaction_timeout_s: float | None = None,
     ) -> Participant | None:
+        check_argument_types(participant_id=participant_id, campaign_id=campaign_id)
         transaction = pg(unit)
         transaction.note_row_lock()
         transaction.conn.execute(
@@ -379,6 +408,7 @@ class PostgresParticipantStore:
     def remove(
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
     ) -> bool:
+        check_argument_types(campaign_id=campaign_id, participant_id=participant_id)
         self.hold(unit, participant_id, campaign_id=campaign_id)
         changed = pg(unit).conn.execute(
             "UPDATE campaign.participants SET removed_at = %s "
@@ -390,6 +420,7 @@ class PostgresParticipantStore:
     def offer(
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, user_id: int
     ) -> Participant:
+        check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
         self.hold(unit, participant_id, campaign_id=campaign_id)
         conn = pg(unit).conn
         row: tuple | None = None
@@ -431,6 +462,7 @@ class PostgresParticipantStore:
         user_id: int,
         now: datetime | None = None,
     ) -> bool:
+        check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
         seat = self.hold(unit, participant_id, campaign_id=campaign_id)
         if seat is None or not seat.is_active or seat.user_id != user_id:
             raise SeatUnavailable()
@@ -445,6 +477,7 @@ class PostgresParticipantStore:
         return changed is not None
 
     def seat_for(self, unit: UnitOfWork, campaign_id: str, user_id: int) -> Participant | None:
+        check_argument_types(campaign_id=campaign_id, user_id=user_id)
         row = pg(unit).conn.execute(
             f"SELECT {_P_COLUMNS} FROM campaign.participants "
             f"WHERE campaign_id = %s AND user_id = %s "
@@ -454,6 +487,7 @@ class PostgresParticipantStore:
         return None if row is None else _participant(row)
 
     def seats_for_user(self, unit: UnitOfWork, user_id: int) -> list[Participant]:
+        check_argument_types(user_id=user_id)
         rows = pg(unit).conn.execute(
             f'SELECT {_P_COLUMNS} FROM campaign.participants '
             f'WHERE user_id = %s AND removed_at IS NULL AND accepted_at IS NOT NULL '
@@ -482,6 +516,7 @@ class InMemoryParticipantStore:
     def add(
         self, unit: UnitOfWork, campaign_id: str, *, alias: str, now: datetime | None = None
     ) -> Participant:
+        check_argument_types(campaign_id=campaign_id, alias=alias)
         twin = fake(unit)
         named = check_alias(alias)
         if campaign_id not in self._campaigns.visible(twin):
@@ -503,11 +538,13 @@ class InMemoryParticipantStore:
         return participant
 
     def get(self, unit: UnitOfWork, participant_id: str) -> Participant | None:
+        check_argument_types(participant_id=participant_id)
         return self._participants.visible(fake(unit)).get(participant_id)
 
     def list_for_campaign(
         self, unit: UnitOfWork, campaign_id: str, *, include_removed: bool = False
     ) -> list[Participant]:
+        check_argument_types(campaign_id=campaign_id)
         seats = [
             p
             for p in self._participants.visible(fake(unit)).values()
@@ -523,6 +560,7 @@ class InMemoryParticipantStore:
         campaign_id: str,
         transaction_timeout_s: float | None = None,
     ) -> Participant | None:
+        check_argument_types(participant_id=participant_id, campaign_id=campaign_id)
         twin = fake(unit)
         twin.note_row_lock()
         twin.transaction_bound(transaction_timeout_s)
@@ -534,6 +572,7 @@ class InMemoryParticipantStore:
     def remove(
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
     ) -> bool:
+        check_argument_types(campaign_id=campaign_id, participant_id=participant_id)
         found = self.hold(unit, participant_id, campaign_id=campaign_id)
         if found is None or not found.is_active:
             return False
@@ -545,6 +584,7 @@ class InMemoryParticipantStore:
     def offer(
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, user_id: int
     ) -> Participant:
+        check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
         twin = fake(unit)
         seat = self.hold(unit, participant_id, campaign_id=campaign_id)
         campaign = self._campaigns.visible(twin).get(campaign_id)
@@ -572,6 +612,7 @@ class InMemoryParticipantStore:
         user_id: int,
         now: datetime | None = None,
     ) -> bool:
+        check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
         seat = self.hold(unit, participant_id, campaign_id=campaign_id)
         if seat is None or not seat.is_active or seat.user_id != user_id:
             raise SeatUnavailable()
@@ -583,12 +624,14 @@ class InMemoryParticipantStore:
         return True
 
     def seat_for(self, unit: UnitOfWork, campaign_id: str, user_id: int) -> Participant | None:
+        check_argument_types(campaign_id=campaign_id, user_id=user_id)
         for p in self._participants.visible(fake(unit)).values():
             if p.campaign_id == campaign_id and p.user_id == user_id and p.is_accepted:
                 return p
         return None
 
     def seats_for_user(self, unit: UnitOfWork, user_id: int) -> list[Participant]:
+        check_argument_types(user_id=user_id)
         mine = [
             p
             for p in self._participants.visible(fake(unit)).values()
