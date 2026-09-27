@@ -423,7 +423,7 @@ class PostgresUsageLedgerStore:
 
     def record_attempts(self, unit: UnitOfWork, rows: Sequence[AttemptRow]) -> int:
         conn = pg(unit).conn
-        checked = list(rows)
+        checked = [check_attempt(row) for row in rows]
         inserted = 0
         for row in checked:
             params = {f.name: getattr(row, f.name) for f in fields(AttemptRow)}
@@ -436,7 +436,7 @@ class PostgresUsageLedgerStore:
         output_usd_per_mtok: Decimal | None, source: str,
     ) -> PriceRevision:
         conn = pg(unit).conn
-        dict(
+        check_revision(
             provider=provider, alias=alias, effective_from=effective_from,
             input_usd_per_mtok=input_usd_per_mtok, cached_input_usd_per_mtok=cached_input_usd_per_mtok,
             output_usd_per_mtok=output_usd_per_mtok, source=source,
@@ -472,6 +472,7 @@ class PostgresUsageLedgerStore:
         self, unit: UnitOfWork, billed_account_id: int, *, since: datetime, until: datetime,
     ) -> AccountCost:
         conn = pg(unit).conn
+        _check_period(billed_account_id, since, until)
         rows = conn.execute(
             ACCOUNT_COST_SQL, {"account": billed_account_id, "since": since, "until": until},
         ).fetchall()
