@@ -3,8 +3,10 @@
 Status: **proposed** · Bead: `agent-forge-harness-1kg.1.3` · Date: 2026-09-17 ·
 **Amended 2026-09-24 — read section 14 first: players hold accounts, there are no
 guests, and the four bearer secrets of §6.2 are superseded.** **Table access for
-signed-in accounts is section 15 (2026-09-26, TA-4, proposed), which replaces the
-table half of §6.2, §8.2 and §8.3 once the lead accepts it.**
+signed-in accounts is section 15 (2026-09-26, TA-4), which replaces the
+table half of §6.2, §8.2 and §8.3 once the lead accepts it.** **Section 15 was
+accepted by the lead on 2026-09-27 (TA-5): every *on acceptance of §15* pointer
+below is in force.**
 Implements and constrains: [`gm-workbench-interactions.md`](gm-workbench-interactions.md)
 (`1kg.1.1`) · Sibling model: the Live Session Assistant's privacy and threat
 model (`agent-forge-harness-1ir.1.3`, PR #60) · Master plan:
@@ -667,13 +669,14 @@ record of what was decided and why, and must not be built.
 | TA-2 | SEC-1, SEC-5, SEC-6, SEC-8 to SEC-13, §6.2, the residue after §6.2, WT-3, WT-5, WT-7, §8 principals, §8.2, §8.3, T-6, §10 rows 1 and 4, S-3, §12.1 items 3, 6, 7 | **Owner decisions D-1 and D-4 (2026-09-21): every player holds an account and there are no guests** — a shared screen or projector is signed in by someone. **Superseded:** the enrolment code, the device credential and every rule that exists to protect them (single use, interception residue, device replacement, device approval, the 180-day idle expiry); the **Guest** principal and its matrix column; WT-5's accepted residue and the §10 row that accepts it; S-3's device-approval consequence. **What replaces them, at the level of rule:** a table route authenticates by the **account session**, and authorises by the caller's **seat at the campaign** (a participant is an account seated there, bead `fma`), resolved in the same query as the resource, exactly as SEC-2 does for the GM. **Still in force:** SEC-3 (no enumeration), SEC-4, SEC-7 (origin check), SEC-9's rule that End and Rotate revoke at once *for whatever table-access grant replaces the link generation*, SEC-12 and SEC-13's "no revealed content in browser storage", §6.3 in full, and the reveal model (slots, disclosures, one live disclosure per document). **Open, for the rewrite bead (`agent-forge-harness-hgm`, which blocks `1kg.7.1` and `1kg.7.2`):** whether a table link survives as an invitation that a signed-in, seated account must still present; how one cookie serves both the GM and the table route families now that SEC-1's two-credential split is gone (the session cookie is `SameSite=Lax`, `Path=/`, R-1); and the rate-limit key for table routes. | owner, 2026-09-21; recorded by the lead |
 | TA-3 | SEC-2 (the `dm` role), R-3, §8 principal **Other account** | **Owner decision D-5: creating a campaign makes you its GM**, and what an account may use is set by its tier (Free, Player, GM), not by a role. Ownership-in-the-query (SEC-2) is the whole GM authorisation for a Workbench route. **Nothing is loosened by this row**: a route that also requires the `dm` role today keeps that check until entitlement (`yje.4.1`) replaces it in a bead of its own, with a test that a non-`dm` owner is refused before and admitted after. | owner, 2026-09-21; interactions ADR A-25 |
 | TA-4 | SEC-1, SEC-3 (a closed `403` of SEC-45's), SEC-5, SEC-6, SEC-8, SEC-9, SEC-10, SEC-12, SEC-13, SEC-14, SEC-16, SEC-19, SEC-35, SEC-38, WT-3, WT-4, WT-6, WT-7, WT-14, WT-16, WT-19, §4, §5 (B2, B3), §6.1, §6.2, §7, §8.1 (one column, three rows), §8.2, §8.3, T-3 to T-6, T-8, T-17, T-18, §10, §11, §12.1 items 1, 5 and 6, §12.2 (the join and enrolment answers), §12.3 | **Section 15 answers TA-2's three open questions.** No table link survives as a credential: a table read is authorised by the account session and the caller's seat or ownership, in the query that finds the resource (SEC-41, SEC-43). End, expiry, Rotate and Remove revoke the session, the admission generation and the seat, per frame and for media in flight (SEC-42, carrying SEC-9; SEC-16 as read in §15). One `SameSite=Lax` cookie serves both route families; a table route acts with table authority only (SEC-44) and gets `Strict` semantics from Fetch Metadata (SEC-45); it does not enumerate (SEC-46). Entitled table traffic is limited per principal and per source, refusals per account and per source (SEC-47). A shared screen holds a view-only screen grant instead of an account, as the owner decided (D-13, SEC-48; wording and flow to the design lane). The seat offer, now the only invitation, gets its own rule (SEC-50), and the GM confirms who accepted before any private reveal is delivered (D-12, SEC-50(5)). **TP-1** — whether the table slot may show `campaign`-class keys — is a proposal awaiting the lead's signature; signing it adopts *do not widen* and adds *Everyone seated*. | `agent-forge-harness-hgm`, 2026-09-26, revised 2026-09-27 after two reviews and a verification review (§15.12); for the lead to accept |
+| TA-5 | §15 (all of it), TA-4, TP-1 (§15.10), and every *on acceptance of §15* pointer above | **The lead accepts §15 (2026-09-27)**, on owner decisions D-1, D-4, D-12 and D-13, after a second verification review found the High (D-12's GM confirmation of who accepted: §15.2, SEC-41, SEC-42, SEC-50(5), T-6, T-24, the new `confirmed_at` migration of §15.11) and the three Mediums (SEC-50(4)'s Verified holder, S-9 settled by D-3, SEC-48 and S-7 settled by D-13) resolved. §15 is in force: it replaces the table half of §6.2, §8.2 and §8.3, and every pointer above that reads *on acceptance of §15* now applies; `1kg.7.1` and `1kg.7.2` build on it. **TP-1 is signed: do not widen** — the table slot stays `public`-only and shared eligibility ADR §15.2 holds unchanged — and the *Everyone seated* audience, expanded at Confirm to GM-confirmed seats only (ED-15, SEC-50(5)), is adopted, so §15.11's rows conditioned on TP-1's signature apply. | lead, 2026-09-27, from PR #121's verification review |
 
 ## 15. Table access for signed-in accounts
 
 Date: 2026-09-26, revised 2026-09-27 after two reviews and a verification review (§15.12) · Bead:
-`agent-forge-harness-hgm` · Status: **proposed** — it binds
-`1kg.7.1` and `1kg.7.2` once the lead accepts it; TP-1 (§15.10) is a separate
-proposal that needs the lead's signature.
+`agent-forge-harness-hgm` · Status: **Accepted by the lead 2026-09-27 (owner
+decisions D-1, D-4, D-12, D-13)** (TA-5) — it binds `1kg.7.1` and `1kg.7.2`; TP-1
+(§15.10) is signed by the lead the same day.
 
 Owner decisions D-1, D-4 and D-5 (2026-09-21) removed guests, the enrolment code and
 the device credential, and TA-2 left three questions open: whether a table link
@@ -987,11 +990,12 @@ D-3: running a live table is Paid, and `yje.4.1` builds the gate).
 
 ### 15.10 TP-1 — the table slot and `campaign`-class keys
 
-> **PROPOSED — needs the lead's signature.** Signing it adopts the recommendation
-> below: the table slot **keeps** `public` keys only, as shared eligibility ADR §15.2
-> already holds, and the audience picker gains *Everyone seated*, which reaches
-> GM-confirmed seats only. Only a separate, signed widening would change the table
-> slot's classes; until the lead signs either, §15.2 there holds unchanged.
+> **SIGNED by the lead 2026-09-27: do not widen — the table slot stays public-only;
+> the 'Everyone seated' audience (GM-confirmed seats only) is adopted** (TA-5). The
+> table slot **keeps** `public` keys only, as shared eligibility ADR §15.2 already
+> holds, and the audience picker gains *Everyone seated*, which reaches GM-confirmed
+> seats only. Only a separate, signed widening would change the table slot's classes;
+> §15.2 there holds unchanged.
 
 **The question.** Section 4's `eligible_for_audience` refuses every class but
 `public` for the table audience, because *a guest can see the table*. There are no
