@@ -239,7 +239,7 @@ def check_plain_text(value: str) -> str:
     kinds and to the reveal family's projection text (``1kg.5.7.2``), and — bead
     ``5mj`` — to every other stored text: a brief, an edit instruction, a search,
     alt text, a cue's title and a version's summary here, ``/chat``'s prompt in
-    ``models.ChatRequest``, and, through :func:`check_stored_text`, a participant's
+    its route (``service/app.py``), and, through :func:`check_stored_text`, a participant's
     alias (``participant_store.check_alias``, bead ``ysj``) and a summary a store
     is handed. Folding characters out of a comparison key is ``ysj``'s
     ``alias_key``, not this function's — this one only accepts or refuses. It
