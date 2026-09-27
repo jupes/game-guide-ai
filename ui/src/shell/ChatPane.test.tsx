@@ -927,7 +927,11 @@ describe('ChatPane (#21)', () => {
         stat_block: STAT_BLOCK,
       },
     })
-    render(<Wrapper navState={{ mode: 'gm' }} post={post} />)
+    // Sage, the other channel that answers with a stat block: its card is the
+    // full-density one this test pins. In the GM channel the card sits in the
+    // assistant lane at compact density (1kg.3.4) — ChatPaneGm.test.tsx and
+    // gm/GmThread.test.tsx pin that.
+    render(<Wrapper navState={{ mode: 'sage' }} post={post} />)
 
     const textarea = screen.getByPlaceholderText('Ask…')
     await userEvent.type(textarea, 'Describe an encounter')

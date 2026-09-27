@@ -1,0 +1,167 @@
+/**
+ * ChatPane in the GM channel (1kg.3.4): the thread is hydrated from the typed
+ * timeline, renders three lanes, and draws a reloaded turn exactly as it drew
+ * the live one. Sage/Spell/Rules keep their own suite (ChatPane.test.tsx).
+ */
+
+import { describe, it, expect, vi } from 'vitest'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import * as React from 'react'
+import { AppNavContext } from './AppNav'
+import type { AppNavState } from './AppNav'
+import { CurrentUserContext } from './currentUser'
+import type { CurrentUserContextValue } from './currentUser'
+import { ConversationStoreProvider } from './ConversationStoreContext'
+import { MemoryConversationStore } from './conversationStore'
+import { ThemeProvider } from '../ds/theme'
+import { ChatPane } from './ChatPane'
+import type { ChatPaneProps } from './ChatPane'
+import type { ChatResponse } from '../api'
+import type { LoadHistoryFn, PostFn } from '../useChat'
+import type { LoadTimelinePageFn } from '../gm/gmTimeline'
+import { CREATIVE_ANSWER, chatEntry, pagedTimeline } from '../gm/threadFixtures'
+
+function navState(overrides: Partial<AppNavState>): AppNavState {
+  return {
+    screen: 'workspace',
+    mode: 'gm',
+    conversationId: null,
+    enterWorkspace: vi.fn(),
+    setMode: vi.fn(),
+    setConversationId: vi.fn(),
+    backToLanding: vi.fn(),
+    openProfile: vi.fn(),
+    backToWorkspace: vi.fn(),
+    ...overrides,
+  }
+}
+
+const USER: CurrentUserContextValue = {
+  user: { id: 'gm-1', displayName: 'Game Master', initials: 'GM', role: 'dm', signOut: vi.fn(), editProfile: vi.fn() },
+  authStatus: 'authenticated',
+  retryAuthCheck: vi.fn(),
+  signIn: vi.fn(),
+  setDisplayName: vi.fn(),
+  setAvatarTone: vi.fn(),
+}
+
+const store = new MemoryConversationStore()
+const noAttachments: ChatPaneProps['getAttachments'] = async () => ({ kind: 'ok', attachments: [] })
+
+function Pane({ nav, ...props }: ChatPaneProps & { nav: Partial<AppNavState> }): React.JSX.Element {
+  return (
+    <ThemeProvider>
+      <AppNavContext.Provider value={navState(nav)}>
+        <CurrentUserContext.Provider value={USER}>
+          <ConversationStoreProvider store={store}>
+            <ChatPane getAttachments={noAttachments} {...props} />
+          </ConversationStoreProvider>
+        </CurrentUserContext.Provider>
+      </AppNavContext.Provider>
+    </ThemeProvider>
+  )
+}
+
+/** The same answer the timeline fixture stores, as `/chat` returns it live. */
+const LIVE: ChatResponse = {
+  answer: CREATIVE_ANSWER.text,
+  sources: [],
+  answerable: false,
+  stat_block: { ...CREATIVE_ANSWER.stat_block },
+}
+
+const PROMPT = 'Give me a drowned guardian for the marsh.'
+
+describe('ChatPane (GM) — history hydration matches live rendering', () => {
+  it('draws a reloaded turn with exactly the markup it had when it arrived', async () => {
+    const post: PostFn = async () => ({ kind: 'ok', response: LIVE })
+    const live = render(<Pane nav={{}} post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), PROMPT)
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(live.container.querySelector('.assistant-lane[data-state="done"]')).not.toBeNull())
+    const liveMarkup = live.container.querySelector('.gm-thread__exchange')?.outerHTML
+    live.unmount()
+
+    const hydrated = render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={pagedTimeline([[chatEntry()]])} />)
+    await waitFor(() => expect(hydrated.container.querySelector('.gm-thread__exchange')).not.toBeNull())
+    expect(hydrated.container.querySelector('.gm-thread__exchange')?.outerHTML).toBe(liveMarkup)
+    expect(liveMarkup).toContain('Creative — may include invented content')
+  })
+})
+
+describe('ChatPane (GM) — reading the timeline', () => {
+  it('keeps paging through an empty page, and shows what lay behind it', async () => {
+    const load = pagedTimeline([[], [chatEntry({ entry_id: 'ent_old', prompt: 'An older question' })]])
+    render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
+    expect(await screen.findByText('An older question')).toBeInTheDocument()
+    expect(load.cursors).toEqual([null, 'p1'])
+    expect(screen.queryByText('Ask the Game Master…')).toBeNull()
+  })
+
+  it('shows the recalling status while the timeline loads', async () => {
+    const never: LoadTimelinePageFn = () => new Promise(() => {})
+    render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={never} />)
+    // Past the moment useChat's own (skipped) recall settles: the status must
+    // follow the timeline, which is still out.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    const transcript = screen.getByRole('region', { name: 'Conversation' })
+    expect(transcript).toHaveTextContent('Recalling the conversation…')
+    expect(screen.queryByText('Ask the Game Master…')).toBeNull()
+  })
+
+  it('shows a conversation the server has not seen yet as an empty GM thread', async () => {
+    render(<Pane nav={{ conversationId: 'cnv_new' }} loadTimeline={async () => ({ kind: 'missing' })} />)
+    expect(await screen.findByText('Ask the Game Master…')).toBeInTheDocument()
+    expect(screen.queryByText(/unavailable/i)).toBeNull()
+  })
+
+  it('puts a failed read above a thread that still works (§12.2)', async () => {
+    const post: PostFn = async () => ({ kind: 'ok', response: LIVE })
+    render(
+      <Pane
+        nav={{ conversationId: 'cnv_1' }}
+        post={post}
+        loadTimeline={async () => ({ kind: 'error', message: 'Message history unavailable (503).' })}
+      />,
+    )
+    expect(await screen.findByText('Message history unavailable (503).')).toBeInTheDocument()
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), PROMPT)
+    await userEvent.keyboard('{Enter}')
+    expect(await screen.findByText('drowned guardian')).toBeInTheDocument()
+  })
+
+  it('reads GM history from the timeline only, and other channels never from it', async () => {
+    const loadHistory = vi.fn<LoadHistoryFn>(async () => ({ kind: 'ok', messages: [] }))
+    const loadTimeline = vi.fn<LoadTimelinePageFn>(async () => ({ kind: 'missing' }))
+    const { rerender } = render(<Pane nav={{ conversationId: 'cnv_1' }} loadHistory={loadHistory} loadTimeline={loadTimeline} />)
+    await waitFor(() => expect(loadTimeline).toHaveBeenCalled())
+    expect(loadHistory).not.toHaveBeenCalled()
+
+    loadTimeline.mockClear()
+    rerender(<Pane nav={{ mode: 'sage', conversationId: 'cnv_1' }} loadHistory={loadHistory} loadTimeline={loadTimeline} />)
+    await waitFor(() => expect(loadHistory).toHaveBeenCalledWith('cnv_1'))
+    expect(loadTimeline).not.toHaveBeenCalled()
+  })
+})
+
+describe('ChatPane (GM) — switching channel in the same conversation', () => {
+  it('draws each turn once when moving from Sage into the GM channel', async () => {
+    const loadHistory: LoadHistoryFn = async () => ({
+      kind: 'ok',
+      messages: [
+        { id: 1, role: 'user', content: PROMPT, mode: 'sage', created_at: '2026-09-16T19:24:40Z' },
+        { id: 2, role: 'assistant', content: 'An answer.', mode: 'sage', created_at: '2026-09-16T19:24:52Z' },
+      ],
+    })
+    const loadTimeline = pagedTimeline([[chatEntry()]])
+    const { rerender } = render(<Pane nav={{ mode: 'sage', conversationId: 'cnv_1' }} loadHistory={loadHistory} loadTimeline={loadTimeline} />)
+    expect(await screen.findByText(PROMPT)).toBeInTheDocument()
+
+    rerender(<Pane nav={{ mode: 'gm', conversationId: 'cnv_1' }} loadHistory={loadHistory} loadTimeline={loadTimeline} />)
+    await waitFor(() => expect(document.querySelector('.gm-thread__exchange')).not.toBeNull())
+    expect(screen.getAllByText(PROMPT)).toHaveLength(1)
+  })
+})
