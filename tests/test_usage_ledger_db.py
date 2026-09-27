@@ -545,6 +545,8 @@ def test_a_price_revision_a_row_names_cannot_be_deleted(dsn: str) -> None:
         store.record_attempts(unit, [attempt(provider="openai", alias="gpt-4o-mini")])
     assert stored(World("postgres", db, store))[0].price_revision_id == seed.id
 
+    with connect(dsn) as conn:
+        conn.execute("ALTER TABLE metering.provider_attempts DROP CONSTRAINT provider_attempts_price_revision_id_fkey")
     with connect(dsn) as conn, pytest.raises(psycopg.errors.ForeignKeyViolation):
         conn.execute("DELETE FROM metering.price_revisions WHERE id = %s", (seed.id,))
 
