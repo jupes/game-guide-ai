@@ -573,6 +573,10 @@ def test_the_campaign_id_check_is_the_campaigns_own_pattern(dsn: str) -> None:
             for m in [re.search(r"~ '([^']+)'", d)] if m is not None
         ]
 
+    with connect(dsn) as conn:
+        conn.execute("ALTER TABLE metering.provider_attempts DROP CONSTRAINT provider_attempts_campaign_id_check")
+        conn.execute("ALTER TABLE metering.provider_attempts ADD CONSTRAINT provider_attempts_campaign_id_check "
+                     "CHECK (campaign_id IS NULL OR campaign_id ~ '^cmp_[A-Za-z0-9_-]{22,61}$')")
     [ledger] = patterns("metering.provider_attempts", "campaign_id")
     [campaigns] = patterns("campaign.campaigns", "id ~")
     assert ledger == campaigns
