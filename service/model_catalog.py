@@ -95,12 +95,67 @@ def get_profile(alias: str) -> ModelProfile | None:
     return profile if profile is not None and profile.enabled else None
 
 
+PublicTier = Literal["traveller", "adventurer", "loremaster"]
+
+
+@dataclass(frozen=True)
+class PublicModel:
+    """All the browser may know of one catalog entry (owner decision D-9, bead
+    au3): users never learn which model or provider answers. `id` is what the
+    client sends back as `model_preference`; `tier` is None while no tier has
+    been assigned, and such an entry is never shown."""
+
+    id: str
+    tier: PublicTier | None
+    label: str
+
+
+# PLACEHOLDER COPY, pending the design lane (bead au3). This table and the
+# automatic entry below are the ONLY source of what GET /models, the /chat
+# routing blocks and the UI model picker show about a model (the picker's
+# offline fallback repeats only the automatic entry's label, in
+# ui/src/shell/ModelPicker.tsx). Every CATALOG key must appear here: a missing
+# one raises KeyError, never falls back to the alias. Two enabled entries in
+# one tier would both read as that tier; that case is the tier mapping's
+# (b8o.4, iov), not this table's.
+PUBLIC_MODELS: dict[str, PublicModel] = {
+    "gpt-4o-mini": PublicModel(id="traveller", tier="traveller", label="Traveller"),
+    "deepseek-v4-flash": PublicModel(id="unassigned-1", tier=None, label="Unassigned"),
+    "qwen-flash-us": PublicModel(id="unassigned-2", tier=None, label="Unassigned"),
+    "kimi-k3": PublicModel(id="unassigned-3", tier=None, label="Unassigned"),
+}
+
+AUTO_PUBLIC_ENTRY: dict[str, object] = {
+    "id": "auto",
+    "display_name": "Automatic",
+    "description": "Balances speed, cost, and task difficulty.",
+}
+
+
+def public_model_id(alias: str) -> str:
+    """The id the client knows `alias` by. KeyError for an unmapped alias."""
+    return PUBLIC_MODELS[alias].id
+
+
+def get_profile_by_public_id(public_id: str) -> ModelProfile | None:
+    """An enabled profile by its public id, or None — for an unknown id and a
+    disabled entry's id alike, as `get_profile` (TDD row 1)."""
+    for alias, public in PUBLIC_MODELS.items():
+        if public.id == public_id:
+            return get_profile(alias)
+    return None
+
+
 def public_model_entry(profile: ModelProfile) -> dict[str, object]:
     """The public GET /models shape for one entry: id/display_name/tier/
-    supports_attachments only. Never api_model, base_url, or secret_env."""
+    supports_attachments only, the first three from PUBLIC_MODELS. Never the
+    alias, display name, provider, api_model, base_url or secret_env."""
+    public = PUBLIC_MODELS[profile.alias]
+    if public.tier is None:
+        raise LookupError("a catalog entry with no tier cannot be shown")
     return {
-        "id": profile.alias,
-        "display_name": profile.display_name,
-        "tier": profile.tier,
+        "id": public.id,
+        "display_name": public.label,
+        "tier": public.tier,
         "supports_attachments": profile.supports_attachments,
     }

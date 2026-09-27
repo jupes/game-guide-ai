@@ -818,6 +818,15 @@ filled the gaps with `sources: []` and `answerable: true`. For rows written
 before the durable timeline those facts are honestly unknown, which the contract
 says with `null` (see *Not recorded* above).
 
+A routing disclosure never tells the user which model or provider answered
+(owner decision D-9, `agent-forge-harness-au3`). `requested`, `effective` and
+`fallback_from` hold a public model id from `PUBLIC_MODELS` in
+`service/model_catalog.py`, or `auto`, and never a catalog alias. The server
+never sets `provider`. The key stays declared and optional so that rows stored
+before au3, which carry an alias and a provider, still read. This is not a
+version bump: no deployed client has read a timeline yet, and a stale bundle
+would show its placeholder for the entry.
+
 The pieces of an answer are the existing `service/models.py` shapes, reused
 rather than re-declared. That is how the evidence provenance that
 `agent-forge-harness-xiu.5.2` adds to stored answers will round-trip through the

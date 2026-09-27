@@ -27,8 +27,15 @@
 
 /* ── Sizes ── */
 .aether-icon-btn[data-size="small"] {
+  /* 32px visual, 44px touch floor — same trade "medium" already makes below.
+     rnm (agent-forge-harness-rnm): the recorded standard is the design
+     intake's explicit "44px minimum targets" (Material Design's touch-target
+     guidance, matching --aether-touch-min), not WCAG 2.2 AA's 24px-with-
+     spacing alternative. */
   width: 32px;
   height: 32px;
+  min-width: var(--aether-touch-min);
+  min-height: var(--aether-touch-min);
 }
 
 .aether-icon-btn[data-size="small"] .material-symbols-rounded {
