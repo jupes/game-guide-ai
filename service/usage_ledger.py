@@ -146,7 +146,7 @@ class AccountCost:
 SEED_PRICE_REVISIONS: Final[tuple[PriceRevision, ...]] = (
     PriceRevision(
         id=1, provider="openai", alias="gpt-4o-mini",
-        effective_from=datetime(2026, 9, 24, tzinfo=UTC),
+        effective_from=datetime(2026, 9, 24, 0, 0, 1, tzinfo=UTC),
         input_usd_per_mtok=Decimal("0.150000"), cached_input_usd_per_mtok=Decimal("0.075000"),
         output_usd_per_mtok=Decimal("0.600000"),
         source="OpenAI API pricing, read 2026-09-24 (billing plan D-8 evidence note)",
