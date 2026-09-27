@@ -310,14 +310,14 @@ arrive at `COMMIT` — outside every `try` and after a route had composed its
 answer — and no code here is allowed to catch one.
 
 **The routes** (`service/conversations_api.py`, `1kg.2.4` A2) are
-`GET|POST /conversations` and `GET|PATCH /conversations/{id}`, on an
-`APIRouter` that imports nothing from `service/app.py` and is wired in by two
-lines there. They take the Workbench posture by hand until
-`agent-forge-harness-oe6`'s scaffolding moves them onto it: the origin check on
-a write, the `dm` role, validation that answers `validation_error_body` and
-never FastAPI's default 422, and **one `404`** for a conversation that is
-missing, someone else's, never owned or unreadable. They **never claim** a
-conversation. The contract is *The conversation family* in
+`GET|POST /conversations` and `GET|PATCH /conversations/{id}`, on a
+`workbench_router` that imports nothing from `service/app.py`, which hands it
+the GM gate. They take the Workbench posture from `agent-forge-harness-oe6`'s
+scaffolding (*Workbench routes*, at the end of this file): the origin check on
+a write, the one `401` body, the `dm` role, validation that answers
+`validation_error_body` and never FastAPI's default 422, and **one `404`** for a
+conversation that is missing, someone else's, never owned or unreadable. They
+**never claim** a conversation. The contract is *The conversation family* in
 [`workbench-wire-contract.md`](workbench-wire-contract.md).
 
 **Two postures on one `/conversations` prefix.** The legacy routes —
@@ -632,10 +632,10 @@ or reorders an entry.
 ## Workbench routes: the posture every new route inherits
 
 `service/workbench_api.py` (agent-forge-harness-oe6) is the seam every Workbench
-GM route attaches to. It holds no route of its own, and on this branch **no
-Workbench route exists yet**: the conversation timeline is still a
-legacy-shaped `@app.get` with its own hand-validation, until the follow-up bead
-moves it onto the router.
+GM route attaches to. It holds no route of its own. The first routes on it are
+the four conversation routes (`service/conversations_api.py`); the conversation
+timeline is still a legacy-shaped `@app.get` with its own hand-validation,
+until the follow-up bead (`agent-forge-harness-oqx`) moves it onto the router.
 
 **What makes a route a Workbench route.** It is declared on a router made by
 `workbench_router(...)`, so its route object is a `WorkbenchRoute`. Membership
@@ -746,11 +746,17 @@ either, because a route declared with `include_in_schema=False` is missing from
 it. The route census, the auth-matrix walk, the proxy guard and the SPA-parity
 walk all read the table this way, so a router-mounted route cannot land
 unseen; the census fails until a new route's author declares it legacy or
-Workbench.
+Workbench. The auth-matrix walk reads `api_route_dependants(app)`, each route's
+*effective* dependant: a guard passed to `include_router(..., dependencies=...)`
+is there and never on the route object's own `.dependant`. The SPA fallback's
+routes are left out by their `spa:` name prefix only; the `ui` mount is not an
+API route and never appears.
 
 **A route never builds its own 401, 403 or 404.** A structural check in
-`service/tests/test_workbench_api.py` reads the source file of every Workbench
-route's endpoint and refuses a literal 401/403/404. The one exemption is a line
+`service/tests/test_workbench_api.py` reads the syntax tree of every Workbench
+route's endpoint module and refuses a 401/403/404 however it is spelled — a
+literal, a `status` constant or an `HTTPStatus` member, on one line or split
+across several, or handed to a helper of the module's own. The one exemption is a line
 carrying `# workbench-api: deliberate-status` with a reason on the same
 comment, for a switched-off capability that must answer exactly like a path
 that does not exist (`1kg.8.1`'s dark routes). The repository's Python holds

@@ -430,6 +430,38 @@ def test_the_real_app_answers_http_exceptions_through_the_workbench_handler() ->
     assert handlers[starlette.exceptions.HTTPException] is workbench_api.handle_http_exception
 
 
+@pytest.mark.real_auth
+def test_the_real_conversation_routes_answer_one_401_body(legacy_store: InMemoryAuthStore) -> None:
+    """SEC-2 on the real app, not a probe: the four Workbench conversation
+    routes answer every authentication failure with the one body, while the
+    legacy messages route next door still says three things (R-4). Positive
+    control: a valid GM cookie gets past the gate on the same routes."""
+    client = TestClient(app)
+    cookie = config.SESSION_COOKIE_NAME
+    deleted = encode_session(SessionData(user_id=42, role="dm"), _GOLDEN_SECRET)
+    failures = {"no cookie": {}, "garbage cookie": {"cookie": f"{cookie}=garbage"},
+                "deleted account": {"cookie": f"{cookie}={deleted}"}}
+    routes: list[tuple[str, str, dict[str, object] | None]] = [
+        ("GET", "/conversations", None), ("POST", "/conversations", {"schema_version": 1, "started_mode": "sage"}),
+        ("GET", "/conversations/cnv_x", None), ("PATCH", "/conversations/cnv_x", {"schema_version": 1, "title": "t"}),
+    ]
+    answers = {(method, path, state): _answer(client.request(method, path, json=body, headers=headers))
+               for method, path, body in routes for state, headers in failures.items()}
+    assert len(answers) == 12
+    distinct = {(status, body, tuple(headers)) for status, body, headers in answers.values()}
+    assert distinct == {(401, _NOT_SIGNED_IN, tuple(_json_headers(_NOT_SIGNED_IN)))}
+
+    legacy_store.seed_invite("inv-gm", role="dm")
+    legacy_store.redeem_invite("inv-gm", "gm@example.com", "not-a-real-hash")
+    valid = {"cookie": f"{cookie}={encode_session(SessionData(user_id=1, role='dm'), _GOLDEN_SECRET)}"}
+    past_the_gate = [client.request(m, p, json=b, headers=valid).status_code for m, p, b in routes]
+    assert past_the_gate == [503, 503, 503, 503]  # no database in this suite: the store refuses next
+
+    legacy = [client.get("/conversations/x/messages", headers=h).content for h in failures.values()]
+    assert legacy == [b'{"detail":"authentication required"}', b'{"detail":"invalid or expired session"}',
+                      b'{"detail":"account no longer exists"}']
+
+
 def test_exactly_one_module_registers_exception_handlers() -> None:
     registering = sorted(p.name for p in (REPO_ROOT / "service").glob("*.py")
                          if "exception_handler" in p.read_text(encoding="utf-8"))
@@ -859,9 +891,10 @@ def test_the_spa_parity_walk_still_reserves_every_prefix_it_reserved_before() ->
 
 # ── A10: the route census ────────────────────────────────────────────────────
 
-#: Transcribed from c119dfc, where 1kg.4.2 B's timeline route had merged and
-#: 1kg.2.4 A2 and 1kg.2.7 had not. A new route, of either posture, fails the
-#: census until its author says which it is.
+#: Re-derived on d58ab20 (integration/1kg-workbench): 1kg.4.2 B's timeline
+#: route and 1kg.2.4 A2's four conversation routes have merged, 1kg.2.7 has
+#: not. A new route, of either posture, fails the census until its author
+#: says which it is.
 EXPECTED_LEGACY_ROUTES = {
     ("GET", "/healthz"), ("GET", "/models"), ("POST", "/chat"), ("POST", "/metrics/ui"),
     ("GET", "/conversations/{conversation_id}/messages"),
@@ -870,9 +903,13 @@ EXPECTED_LEGACY_ROUTES = {
     ("POST", "/conversations/{conversation_id}/attachments"),
     ("POST", "/auth/signup"), ("POST", "/auth/login"), ("POST", "/auth/logout"), ("GET", "/auth/me"),
 }
-#: None yet. The route beads add theirs here; the follow-up bead moves the
+#: 1kg.2.4 A2's routes, moved onto `workbench_router` by this bead (lead
+#: ruling on PR #98). No exemption list: the follow-up bead (oqx) moves the
 #: timeline route from the set above to this one.
-EXPECTED_WORKBENCH_ROUTES: set[tuple[str, str]] = set()
+EXPECTED_WORKBENCH_ROUTES = {
+    ("GET", "/conversations"), ("POST", "/conversations"),
+    ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
+}
 
 
 def _census(target: FastAPI) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
@@ -888,10 +925,9 @@ def _census(target: FastAPI) -> tuple[set[tuple[str, str]], set[tuple[str, str]]
 
 @pytest.mark.real_auth
 def test_the_route_census_is_complete() -> None:
-    """Both halves by value. The legacy half is never empty, so this is not
-    vacuous; the Workbench half is empty BY ASSERTION, which is a statement,
-    not a silence. The split is on the route object (`ctx.original_route`) —
-    a route context is never an instance of anything that matters here."""
+    """Both halves by value, and neither is empty, so this is not vacuous. The
+    split is on the route object (`ctx.original_route`) — a route context is
+    never an instance of anything that matters here."""
     legacy, workbench = _census(app)
     assert legacy == EXPECTED_LEGACY_ROUTES
     assert workbench == EXPECTED_WORKBENCH_ROUTES
@@ -1168,5 +1204,5 @@ def test_the_route_module_derivation_finds_real_module_files(world: _World, tmp_
 @pytest.mark.real_auth
 def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
     modules = _workbench_route_modules(app)
-    assert modules == set()  # none yet; a route bead adds its module here
+    assert modules == {(REPO_ROOT / "service" / "conversations_api.py").resolve()}  # a route bead adds its module
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []

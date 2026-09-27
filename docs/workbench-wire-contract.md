@@ -752,10 +752,11 @@ only. A page may be short, or empty, with a non-null cursor.
 
 **The order of checks** is the threat model's (SEC-3), with the origin check in
 front of a write: SEC-7 (`403 forbidden`, *That request didn't come from this
-application.*) → the session (`401`) → the body or the query (`422`) → the
-`dm` role (`403 forbidden`) → the store (`503 backend_unavailable`) → the path
-id → ownership (`404`) → validation that depends on the conversation (`422`)
-→ its state (`409`). SEC-7 compares the `Origin` host with the `Host` header's
+application.*) → the session (`401`, the one body above) → the `dm` role (`403
+forbidden`) → the body or the query (`422`) → the store (`503
+backend_unavailable`) → the path id → ownership (`404`) → validation that
+depends on the conversation (`422`) → its state (`409`). The first three are
+the Workbench router's, so they run before anything a route reads. SEC-7 compares the `Origin` host with the `Host` header's
 host, the port only when `Host` carries one and the scheme never; a
 `Sec-Fetch-Site` that is present must be `same-origin`; a body must be
 `application/json`; a request with neither browser header is not a browser's
