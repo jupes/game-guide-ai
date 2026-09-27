@@ -2426,4 +2426,6 @@ def test_no_refusal_in_either_world_names_private_text_or_an_id(world: World) ->
         path: said for path, said in heard.items()
         if any(secret in said for secret in (*PRIVATE.values(), *ID_SHAPES))
     }
-    assert not leaks, leaks
+    # A string, one path a line: pytest shortens a dict message's repr, which
+    # would hide every leaking path but the first and the last.
+    assert not leaks, "\n".join(f"{path}: {said.splitlines()[0]}" for path, said in leaks.items())
