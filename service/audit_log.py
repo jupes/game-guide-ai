@@ -300,14 +300,24 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
 #: rather than an omission, and `None` is legal for every action: most rows are
 #: an allowed decision that needs no explaining. A bead that adds a refusal adds
 #: its code here in the change a reviewer reads, as it does for the detail.
+#: Written out member by member, with no comprehension to fill the gaps: an
+#: action added without its entry is then missing here, and the in-step test in
+#: `service/tests/test_audit_log.py` says so (thl AC4).
 ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
+    AuditAction.SESSION_STARTED: frozenset(),
+    AuditAction.SESSION_ENDED: frozenset(),
+    AuditAction.SESSION_EXPIRED: frozenset(),
+    AuditAction.SESSION_ROTATED: frozenset(),
+    AuditAction.PARTICIPANT_ADDED: frozenset(),
     AuditAction.PARTICIPANT_REMOVED: frozenset({"gm_removed"}),
+    AuditAction.PARTICIPANT_LINKED: frozenset(),
+    AuditAction.PARTICIPANT_UNLINKED: frozenset(),
+    AuditAction.SEAT_OFFERED: frozenset(),
+    AuditAction.SEAT_ACCEPTED: frozenset(),
+    AuditAction.CAMPAIGN_ARCHIVED: frozenset(),
+    AuditAction.CAMPAIGN_RESTORED: frozenset(),
+    AuditAction.CAMPAIGN_DELETED: frozenset(),
     AuditAction.JOIN_BURST_REFUSED: frozenset(JOIN_BOUND.codes),
-    **{
-        action: frozenset()
-        for action in AuditAction
-        if action not in (AuditAction.PARTICIPANT_REMOVED, AuditAction.JOIN_BURST_REFUSED)
-    },
 }
 
 

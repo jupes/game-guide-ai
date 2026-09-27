@@ -14,7 +14,10 @@ server.
 
 `service/tests/test_db.py` owns the other half — the lock-order rules, the
 refusals and the statements — which the twin can show and which runs on any
-machine. Neither file claims the other's half.
+machine. Neither file claims the other's half, with one exception kept
+here: fma's scripted `offer` test
+(`test_a_driver_refusal_inside_offer_becomes_the_one_refusal_with_nothing_attached`)
+is the one statement-level test in this file.
 
 The tests marked `needs_db` need DATABASE_URL, which CI sets for this file
 (`.github/workflows/ci.yml`, pinned by `service/tests/test_ci_workflow.py`).
@@ -397,6 +400,56 @@ def test_the_first_transaction_bound_a_transaction_sets_is_the_one_that_fires(
         assert conn.execute(
             "SELECT reveal_epoch FROM campaign.table_sessions WHERE id = %s", (session.id,)
         ).fetchone()[0] == 0, "the transaction was cut short at one second, and kept nothing"
+
+
+@needs_db
+def test_a_longer_bound_set_first_is_not_cut_short_by_a_shorter_one_set_after_it(
+    dsn: str, owner: int
+) -> None:
+    """thl AC1, the mirror of the test above, and ADR RQ-8(a)'s deciding case.
+
+    The test above sets the bounds ascending (1 s, then 30 s) and the
+    transaction dies at one second. That falsifies "the last value set wins"
+    and nothing else: "the first value wins" and "the shortest value wins"
+    predict the same death. This one sets them DESCENDING — 30 s first, then
+    1 s — where the two part: first-wins predicts the transaction survives a
+    two-second sleep, shortest-wins (and last-wins) predict it dies at one
+    second. The two tests together tell the three rules apart; neither alone
+    does.
+
+    **The control.** The verdict here is the absence of an exception, so it
+    rests on three things that each show a presence:
+    `test_the_first_transaction_bound_a_transaction_sets_is_the_one_that_fires`
+    is the observation that a `transaction_timeout` set inside a transaction
+    does arm and does end the session on this server; the `SELECT 1` on the
+    same connection straight after the sleep is the survival observed inside
+    the block rather than inferred from a clean exit; and the elapsed time is
+    asserted, so a `pg_sleep` that did not run cannot pass as survival. Both
+    bounds are asserted to have reached the transaction before the sleep, and
+    the write is read back on a fresh connection afterwards.
+    """
+    db = _database(dsn)
+    participants = PostgresParticipantStore()
+    with db.transaction() as unit:
+        seat = participants.add(unit, CAMPAIGN, alias="Rook")
+
+    with db.transaction() as unit:
+        unit.lock_campaign(CAMPAIGN, shared=False, transaction_timeout_s=30)
+        participants.hold(unit, seat.id, campaign_id=CAMPAIGN, transaction_timeout_s=1)
+        assert unit.transaction_bounds == ["30s", "1s"]
+        assert unit.conn.execute("SHOW transaction_timeout").fetchone()[0] == "1s", (
+            "the later value is what the server REPORTS"
+        )
+        assert unit.advance_authz_revision(CAMPAIGN) == 1
+        started = time.monotonic()
+        unit.conn.execute("SELECT pg_sleep(2)")
+        assert unit.conn.execute("SELECT 1").fetchone()[0] == 1, "the session outlived the one-second bound"
+        assert time.monotonic() - started >= 2, "the sleep really ran past the shorter bound"
+
+    with connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT authz_revision FROM campaign.authz_state WHERE campaign_id = %s", (CAMPAIGN,)
+        ).fetchone()[0] == 1, "the transaction committed its write"
 
 
 @needs_db
@@ -1194,9 +1247,16 @@ PARTICIPANT_MUTATORS: dict[str, Callable[[Any, Any, str, str, int], object]] = {
 }
 
 
+#: The state of the seat a mutator is called on (thl AC2): one it may change,
+#: one removed in an earlier transaction, and one of another GM's campaign named
+#: with this campaign's id.
+SEAT_STATES = ("active", "removed", "foreign")
+
+
+@pytest.mark.parametrize("state", SEAT_STATES)
 @pytest.mark.parametrize("mutator", sorted(PARTICIPANT_MUTATORS))
 def test_every_participant_mutator_takes_the_seats_row_and_bounds_its_transaction(
-    world: World, mutator: str
+    world: World, mutator: str, state: str
 ) -> None:
     """G-6, and the residue of F-15: every mutator holds the seat's row itself,
     so the order RQ-3 rests on is one no caller can forget, and a bare call is
@@ -1206,17 +1266,46 @@ def test_every_participant_mutator_takes_the_seats_row_and_bounds_its_transactio
     Both halves are read off the unit of work, which keeps them assertable in
     both worlds: the bound the mutator asked for, and the refusal that proves it
     declared a row lock (`lock_campaign` is the first lock a transaction takes,
-    RQ-2, so a declared row lock makes a later one illegal). The call must also
-    have succeeded, so the bound cannot come from a refusal's path alone.
+    RQ-2, so a declared row lock makes a later one illegal). On an active seat
+    the call must also have succeeded, so the bound cannot come from a
+    refusal's path alone.
+
+    **The seat-state axis (thl AC2).** On a seat that is removed, or that
+    belongs to another GM's campaign and is named with this campaign's id,
+    every mutator refuses — `remove` answers False, `offer` and `accept` raise
+    `SeatUnavailable` — so nothing after the refusal can have bounded the
+    transaction or declared a row lock: only the mutator's own leading `hold`
+    can. A mutator that answers from an unlocked read before it holds (mutant
+    M-R) leaves `transaction_bounds` empty on those cells and goes red here,
+    while the active cell stays green. The two unit-of-work assertions sit
+    after the refusal, at the call's own indentation — inside the
+    `pytest.raises` block they would never run.
+
+    The removed cell removes the seat in an earlier transaction — for `accept`
+    after offering it to `player`, so the removal is the only reason left to
+    refuse. The foreign cell seats `Rook` in the other GM's campaign (offered
+    to `player` there, for `accept`) and calls with this campaign's id, so the
+    refusal has one cause: the seat is not in this campaign.
     """
     campaign = _a_campaign(world)
-    seat = _a_participant(world, campaign, "Rook")
+    home = _a_campaign(world, owner=world.other_owner, name="Theirs") if state == "foreign" else campaign
+    seat = _a_participant(world, home, "Rook")
     player = world.players[0]
     if mutator == "accept":
-        _offer(world, campaign, seat, player)
+        _offer(world, home, seat, player)
+    if state == "removed":
+        with world.db.transaction() as unit:
+            assert world.participants.remove(unit, home, seat) is True
+    call = PARTICIPANT_MUTATORS[mutator]
     with world.db.transaction() as unit:
-        outcome = PARTICIPANT_MUTATORS[mutator](world.participants, unit, campaign, seat, player)
-        assert outcome is True or isinstance(outcome, Participant), outcome
+        if state == "active":
+            outcome = call(world.participants, unit, campaign, seat, player)
+            assert outcome is True or isinstance(outcome, Participant), outcome
+        elif mutator == "remove":
+            assert call(world.participants, unit, campaign, seat, player) is False
+        else:
+            with pytest.raises(SeatUnavailable):
+                call(world.participants, unit, campaign, seat, player)
         assert unit.transaction_bounds[:1] == ["5s"], "bounded before anything else (RQ-8)"
         with pytest.raises(CampaignLockOrder):
             unit.lock_campaign(campaign, shared=True)
