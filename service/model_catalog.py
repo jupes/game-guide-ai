@@ -112,10 +112,12 @@ class PublicModel:
 
 # PLACEHOLDER COPY, pending the design lane (bead au3). This table and the
 # automatic entry below are the ONLY source of what GET /models, the /chat
-# routing blocks and the UI model picker show about a model. Every CATALOG key
-# must appear here: a missing one raises KeyError, never falls back to the
-# alias. Two enabled entries in one tier would both read as that tier; that
-# case is the tier mapping's (b8o.4, iov), not this table's.
+# routing blocks and the UI model picker show about a model (the picker's
+# offline fallback repeats only the automatic entry's label, in
+# ui/src/shell/ModelPicker.tsx). Every CATALOG key must appear here: a missing
+# one raises KeyError, never falls back to the alias. Two enabled entries in
+# one tier would both read as that tier; that case is the tier mapping's
+# (b8o.4, iov), not this table's.
 PUBLIC_MODELS: dict[str, PublicModel] = {
     "gpt-4o-mini": PublicModel(id="traveller", tier="traveller", label="Traveller"),
     "deepseek-v4-flash": PublicModel(id="unassigned-1", tier=None, label="Unassigned"),
