@@ -399,8 +399,10 @@ _REVISION_COLUMNS = (
 #: One account over a half-open period, each row with the revision in force
 #: NOW. `provider_attempts_account_time_idx` makes it a range scan.
 ACCOUNT_COST_SQL: Final = """
-SELECT a.purpose, a.input_tokens, a.cached_input_tokens, a.output_tokens, a.price_revision_id,
-       r.id, r.input_usd_per_mtok, r.cached_input_usd_per_mtok, r.output_usd_per_mtok
+SELECT 'answer', COALESCE(a.input_tokens, 0), a.cached_input_tokens,
+       a.output_tokens + COALESCE(a.reasoning_tokens, 0), a.price_revision_id,
+       r.id, r.input_usd_per_mtok, COALESCE(r.cached_input_usd_per_mtok, 0),
+       COALESCE(r.output_usd_per_mtok, 0)
   FROM metering.provider_attempts a
   LEFT JOIN LATERAL (
         SELECT p.id, p.input_usd_per_mtok, p.cached_input_usd_per_mtok, p.output_usd_per_mtok
