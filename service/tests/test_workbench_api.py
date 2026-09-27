@@ -52,7 +52,13 @@ from service import timeline, workbench_api
 from service.app import app, get_auth_store, get_service, require_session
 from service.auth_store import InMemoryAuthStore
 from service.invites import Role
-from service.security_headers import CONTENT_SECURITY_POLICY
+from service.security_headers import (
+    CONTENT_SECURITY_POLICY,
+    CROSS_ORIGIN_OPENER_POLICY,
+    PERMISSIONS_POLICY,
+    REFERRER_POLICY,
+    X_CONTENT_TYPE_OPTIONS,
+)
 from service.session import SessionData, encode_session
 from service.spa_fallback import SPA_MOUNT_NAME, SPA_ROUTE_PREFIX, install_spa
 from service.tests.test_auth_guard import _depends_on, _session_guarded_routes
@@ -87,11 +93,24 @@ def _is_spa(route: APIRoute) -> bool:
     return route.name.startswith(SPA_ROUTE_PREFIX)
 
 
+#: Every header `service.app`'s `set_security_headers` middleware adds, with
+#: the values taken from `service.security_headers` itself (never copied here),
+#: so the golden bytes below fail if the middleware drops or changes one and
+#: cannot drift from it again (agent-forge-harness-y58).
+_SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
+    ("content-security-policy", CONTENT_SECURITY_POLICY),
+    ("cross-origin-opener-policy", CROSS_ORIGIN_OPENER_POLICY),
+    ("permissions-policy", PERMISSIONS_POLICY),
+    ("referrer-policy", REFERRER_POLICY),
+    ("x-content-type-options", X_CONTENT_TYPE_OPTIONS),
+)
+
+
 def _json_headers(body: bytes, *extra: tuple[str, str]) -> list[tuple[str, str]]:
     return sorted([
         ("content-length", str(len(body))),
-        ("content-security-policy", CONTENT_SECURITY_POLICY),
         ("content-type", "application/json"),
+        *_SECURITY_HEADERS,
         *extra,
     ])
 
