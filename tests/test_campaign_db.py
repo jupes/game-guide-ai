@@ -2047,7 +2047,7 @@ def test_a_recorded_decision_reads_back_with_its_detail(world: World) -> None:
             object_ref=seat,
             reason_code="gm_removed",
             authz_revision=3,
-            detail={"participant_id": seat, "codes_revoked": 1, "devices_revoked": 0},
+            detail={"participant_id": seat},
         )
 
     with world.db.transaction() as unit:
@@ -2056,7 +2056,7 @@ def test_a_recorded_decision_reads_back_with_its_detail(world: World) -> None:
         assert kept.campaign_id_tombstone == campaign and kept.object_ref == seat
         assert kept.actor_ref == str(world.owner) and kept.authz_revision == 3
         assert kept.reason_code == "gm_removed"
-        assert kept.detail == {"participant_id": seat, "codes_revoked": 1, "devices_revoked": 0}
+        assert kept.detail == {"participant_id": seat}
         assert kept.id == recorded.id
         assert world.audit.for_campaign(unit, "cmp_" + "z" * 22) == []
 
