@@ -405,7 +405,7 @@ SELECT a.purpose, a.input_tokens, a.cached_input_tokens, a.output_tokens, a.pric
   LEFT JOIN LATERAL (
         SELECT p.id, p.input_usd_per_mtok, p.cached_input_usd_per_mtok, p.output_usd_per_mtok
           FROM metering.price_revisions p
-         WHERE p.id = a.price_revision_id
+         WHERE p.provider = a.provider AND p.alias = a.alias AND p.effective_from <= a.occurred_at
          ORDER BY p.effective_from DESC, p.id DESC
          LIMIT 1
        ) r ON true
