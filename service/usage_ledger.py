@@ -409,7 +409,7 @@ SELECT a.purpose, a.input_tokens, a.cached_input_tokens, a.output_tokens, a.pric
          ORDER BY p.effective_from DESC, p.id DESC
          LIMIT 1
        ) r ON true
- WHERE a.billed_account_id = %(account)s AND a.occurred_at >= %(since)s AND a.occurred_at <= %(until)s
+ WHERE a.billed_account_id = %(account)s AND a.occurred_at >= %(since)s AND a.occurred_at < %(until)s
 """
 
 
