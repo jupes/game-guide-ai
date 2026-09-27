@@ -318,10 +318,15 @@ place rather than kept twice.
 **Stored text is plain text.** Every text a document holds — a `text` or `prose`
 value, each item of a `text_list`, and an entry's name and text — refuses NUL and
 the other C0 and C1 controls, DEL, the whole Bidi_Control set (U+061C, U+200E,
-U+200F, U+202A–U+202E, U+2066–U+2069) and U+FEFF, with a 422 whose message names
-the field and the class of character and never the value. A tab is allowed, a
-line feed or carriage return wherever a line break already is, and U+200C,
-U+200D and U+FE0F everywhere, because real names and emoji sequences need them.
+U+200F, U+202A–U+202E, U+2066–U+2069) and U+FEFF, never the value (X-7). The
+validation message and the client's own Zod issue name the field and the class
+of character — but the 422 body on the wire is the fixed envelope every
+`check_fields` refusal answers with: a generic message and `field: null`. A
+class or a field name reaches only a log line (`redacted_errors`) and the
+client's own pre-flight Zod check, never the response a GM's browser receives.
+A tab is allowed, a line feed or carriage return wherever a line break already
+is, and U+200C, U+200D and U+FE0F everywhere, because real names and emoji
+sequences need them.
 PostgreSQL's `text` and `jsonb` refuse U+0000, so without the rule a NUL would be
 a failure to store rather than an answer; a bidirectional override makes what a
 GM sees differ from what is stored. One helper per side is the rule —
@@ -820,6 +825,15 @@ optional usage ideas, routing disclosures, spell card and stat block that
 filled the gaps with `sources: []` and `answerable: true`. For rows written
 before the durable timeline those facts are honestly unknown, which the contract
 says with `null` (see *Not recorded* above).
+
+A routing disclosure never tells the user which model or provider answered
+(owner decision D-9, `agent-forge-harness-au3`). `requested`, `effective` and
+`fallback_from` hold a public model id from `PUBLIC_MODELS` in
+`service/model_catalog.py`, or `auto`, and never a catalog alias. The server
+never sets `provider`. The key stays declared and optional so that rows stored
+before au3, which carry an alias and a provider, still read. This is not a
+version bump: no deployed client has read a timeline yet, and a stale bundle
+would show its placeholder for the entry.
 
 The pieces of an answer are the existing `service/models.py` shapes, reused
 rather than re-declared. That is how the evidence provenance that

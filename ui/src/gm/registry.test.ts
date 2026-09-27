@@ -587,7 +587,14 @@ describe('a registry that breaks a rule cannot be built', () => {
       { ...REGISTRY, common_field_rules: { ...REGISTRY.common_field_rules, tags: rule('Tags', { revealable: true }) } },
       'never revealable',
     ],
-    ['a type declaring its own revealable tags rule', withNpcRules({ tags: rule('Tags', { revealable: true }) }), 'never revealable'],
+    [
+      'a type declaring its own revealable tags rule',
+      withFirstType({
+        fields: { ...REGISTRY.document_types[0].fields, tags: COMMON_FIELDS.tags },
+        field_rules: { ...REGISTRY.document_types[0].field_rules, tags: rule('Tags', { revealable: true }) },
+      }),
+      'never revealable',
+    ],
     ['a type redeclaring a common field', withNpcRules({ name: rule('Name') }), 'cannot redeclare it'],
     // 1kg.5.7.2. F-12 (a): a raw key or an entity cannot pass as a label, on
     // every route a label takes.
