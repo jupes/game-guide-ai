@@ -410,6 +410,40 @@ def test_a_row_outside_the_vocabulary_is_refused_by_name_before_anything_is_writ
     assert stored(world) == [], "the good row went nowhere either: validation runs before any statement"
 
 
+def test_something_that_is_not_a_row_is_refused_before_anything_is_written(world: World) -> None:
+    fields_only = {f.name: getattr(attempt(attempt_index=1), f.name) for f in fields(AttemptRow)}
+
+    with pytest.raises(LedgerRefused) as refused:
+        record(world, attempt(attempt_index=0), fields_only)  # type: ignore[arg-type]
+
+    assert str(refused.value) == "the usage ledger refused a row: row"
+    assert stored(world) == []
+
+
+PERIOD_REFUSALS = [
+    ("billed_account_id", 0),
+    ("billed_account_id", True),
+    ("since", datetime(2026, 10, 1)),
+    ("until", datetime(2026, 10, 2)),
+]
+
+
+@pytest.mark.parametrize(("key", "value"), PERIOD_REFUSALS, ids=[f"{k}={v!r}" for k, v in PERIOD_REFUSALS])
+def test_a_period_outside_its_shape_is_refused_by_name(world: World, key: str, value: Any) -> None:
+    """A naive instant has no place on the timeline, and an account id is a
+    positive integer, a bool excluded: both worlds say which, never what."""
+    record(world, attempt())
+    arguments: dict[str, Any] = {"billed_account_id": ACCOUNT, "since": SINCE, "until": UNTIL, key: value}
+
+    with pytest.raises(LedgerRefused) as refused, world.db.transaction() as unit:
+        world.store.account_cost(
+            unit, arguments["billed_account_id"], since=arguments["since"], until=arguments["until"],
+        )
+
+    assert str(refused.value) == f"the usage ledger refused a period: {key}"
+    assert repr(value) not in str(refused.value)
+
+
 REVISION_REFUSALS = [
     ("provider", "Open AI"),
     ("alias", "gpt 4o mini"),
