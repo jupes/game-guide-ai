@@ -322,7 +322,8 @@ class PostgresParticipantStore:
     def add(
         self, unit: UnitOfWork, campaign_id: str, *, alias: str, now: datetime | None = None
     ) -> Participant:
-        check_argument_types(campaign_id=campaign_id, alias=alias)
+        if not isinstance(pg(unit).conn, psycopg.Connection):
+            check_argument_types(campaign_id=campaign_id, alias=alias)
         named = check_alias(alias)
         # INSERT ... SELECT ... WHERE EXISTS rather than letting the foreign key
         # raise: a ForeignKeyViolation aborts the whole transaction and arrives
@@ -362,7 +363,8 @@ class PostgresParticipantStore:
         raise AliasTaken("that campaign already has an active participant with this alias")
 
     def get(self, unit: UnitOfWork, participant_id: str) -> Participant | None:
-        check_argument_types(participant_id=participant_id)
+        if not isinstance(pg(unit).conn, psycopg.Connection):
+            check_argument_types(participant_id=participant_id)
         row = pg(unit).conn.execute(
             f"SELECT {_P_COLUMNS} FROM campaign.participants WHERE id = %s", (participant_id,)
         ).fetchone()
@@ -371,7 +373,8 @@ class PostgresParticipantStore:
     def list_for_campaign(
         self, unit: UnitOfWork, campaign_id: str, *, include_removed: bool = False
     ) -> list[Participant]:
-        check_argument_types(campaign_id=campaign_id)
+        if not isinstance(pg(unit).conn, psycopg.Connection):
+            check_argument_types(campaign_id=campaign_id)
         rows = pg(unit).conn.execute(
             f'SELECT {_P_COLUMNS} FROM campaign.participants '
             f'WHERE campaign_id = %s AND (%s OR removed_at IS NULL) '
@@ -388,7 +391,8 @@ class PostgresParticipantStore:
         campaign_id: str,
         transaction_timeout_s: float | None = None,
     ) -> Participant | None:
-        check_argument_types(participant_id=participant_id, campaign_id=campaign_id)
+        if not isinstance(pg(unit).conn, psycopg.Connection):
+            check_argument_types(participant_id=participant_id, campaign_id=campaign_id)
         transaction = pg(unit)
         transaction.note_row_lock()
         transaction.conn.execute(
@@ -408,7 +412,8 @@ class PostgresParticipantStore:
     def remove(
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
     ) -> bool:
-        check_argument_types(campaign_id=campaign_id, participant_id=participant_id)
+        if not isinstance(pg(unit).conn, psycopg.Connection):
+            check_argument_types(campaign_id=campaign_id, participant_id=participant_id)
         self.hold(unit, participant_id, campaign_id=campaign_id)
         changed = pg(unit).conn.execute(
             "UPDATE campaign.participants SET removed_at = %s "
@@ -420,7 +425,8 @@ class PostgresParticipantStore:
     def offer(
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, user_id: int
     ) -> Participant:
-        check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
+        if not isinstance(pg(unit).conn, psycopg.Connection):
+            check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
         self.hold(unit, participant_id, campaign_id=campaign_id)
         conn = pg(unit).conn
         row: tuple | None = None
@@ -462,7 +468,8 @@ class PostgresParticipantStore:
         user_id: int,
         now: datetime | None = None,
     ) -> bool:
-        check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
+        if not isinstance(pg(unit).conn, psycopg.Connection):
+            check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
         seat = self.hold(unit, participant_id, campaign_id=campaign_id)
         if seat is None or not seat.is_active or seat.user_id != user_id:
             raise SeatUnavailable()
@@ -477,7 +484,8 @@ class PostgresParticipantStore:
         return changed is not None
 
     def seat_for(self, unit: UnitOfWork, campaign_id: str, user_id: int) -> Participant | None:
-        check_argument_types(campaign_id=campaign_id, user_id=user_id)
+        if not isinstance(pg(unit).conn, psycopg.Connection):
+            check_argument_types(campaign_id=campaign_id, user_id=user_id)
         row = pg(unit).conn.execute(
             f"SELECT {_P_COLUMNS} FROM campaign.participants "
             f"WHERE campaign_id = %s AND user_id = %s "
@@ -487,7 +495,8 @@ class PostgresParticipantStore:
         return None if row is None else _participant(row)
 
     def seats_for_user(self, unit: UnitOfWork, user_id: int) -> list[Participant]:
-        check_argument_types(user_id=user_id)
+        if not isinstance(pg(unit).conn, psycopg.Connection):
+            check_argument_types(user_id=user_id)
         rows = pg(unit).conn.execute(
             f'SELECT {_P_COLUMNS} FROM campaign.participants '
             f'WHERE user_id = %s AND removed_at IS NULL AND accepted_at IS NOT NULL '
