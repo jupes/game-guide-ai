@@ -423,7 +423,6 @@ class PostgresUsageLedgerStore:
 
     def record_attempts(self, unit: UnitOfWork, rows: Sequence[AttemptRow]) -> int:
         conn = pg(unit).conn
-        conn.execute("SET LOCAL lock_timeout = '1ms'")
         checked = [check_attempt(row) for row in rows]
         inserted = 0
         for row in checked:
