@@ -22,12 +22,40 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from service.security_headers import CONTENT_SECURITY_POLICY
+import pytest
+
+from service.security_headers import (
+    CONTENT_SECURITY_POLICY,
+    CROSS_ORIGIN_OPENER_POLICY,
+    PERMISSIONS_POLICY,
+    REFERRER_POLICY,
+    X_CONTENT_TYPE_OPTIONS,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 NGINX_CONF = REPO_ROOT / "ui" / "nginx.conf"
 
 _DECLARATION = re.compile(r'add_header\s+Content-Security-Policy\s+"([^"]*)"\s+always;')
+
+# y58 — the same drift guard as `_DECLARATION` above, generalised to the four
+# headers this bead added. Built from the header name rather than one regex
+# per header: the four are identical in shape (`add_header <name> "<value>"
+# always;`) and a fifth copy-pasted regex is exactly the kind of drift this
+# file exists to catch.
+_NEW_HEADERS = {
+    "X-Content-Type-Options": X_CONTENT_TYPE_OPTIONS,
+    "Referrer-Policy": REFERRER_POLICY,
+    "Cross-Origin-Opener-Policy": CROSS_ORIGIN_OPENER_POLICY,
+    "Permissions-Policy": PERMISSIONS_POLICY,
+}
+
+
+def _new_header_declaration(header_name: str) -> re.Pattern[str]:
+    return re.compile(rf'add_header\s+{re.escape(header_name)}\s+"([^"]*)"\s+always;')
+
+
+def _new_header_directive(header_name: str) -> re.Pattern[str]:
+    return re.compile(rf"^\s*add_header\s+{re.escape(header_name)}\b", re.MULTILINE)
 
 # `location` is still matched as a DIRECTIVE — anchored at the start of a line —
 # because that anchor is correct for it: nginx directives are one per line, and
@@ -122,6 +150,50 @@ def test_the_policy_is_declared_above_every_location_and_no_location_overrides_i
     assert inside_locations == [], (
         "a location block that defines its own add_header loses the server-level "
         "Content-Security-Policy: nginx does not merge them. Re-declare it there."
+    )
+
+
+@pytest.mark.parametrize("header_name", sorted(_NEW_HEADERS))
+def test_nginx_declares_each_new_security_header_exactly_once_and_it_matches(header_name: str) -> None:
+    """y58's extension of `test_nginx_declares_the_same_policy_exactly_once` to
+    the four headers this bead added, one header per parametrized case so a
+    failure names which one drifted rather than a generic assertion failure."""
+    nginx = NGINX_CONF.read_text(encoding="utf-8")
+    matches = _new_header_declaration(header_name).findall(nginx)
+
+    assert len(matches) == 1, (
+        f'expected exactly one `add_header {header_name} "…" always;` in ui/nginx.conf, '
+        f"found {len(matches)}. Two declarations at the same level do not merge into a "
+        "stronger policy — the browser enforces both."
+    )
+    assert matches[0] == _NEW_HEADERS[header_name], (
+        f"ui/nginx.conf and service/security_headers.py send different {header_name} "
+        "values. nginx serves the SPA in Compose and in the E2E; the service serves it "
+        "in production. A difference means the browser test and production enforce "
+        "different rules (threat model R-6).\n"
+        f"  nginx:   {matches[0]!r}\n"
+        f"  service: {_NEW_HEADERS[header_name]!r}"
+    )
+
+
+@pytest.mark.parametrize("header_name", sorted(_NEW_HEADERS))
+def test_each_new_header_is_declared_above_every_location(header_name: str) -> None:
+    """y58's extension of `test_the_policy_is_declared_above_every_location_...`
+    above. `locations_with_their_own_add_header` already catches a header
+    re-declared INSIDE a location for any header name (it matches the bare
+    `add_header` word); this test covers the other half — that each new header
+    is declared at all, and above the first `location` so every location
+    inherits it."""
+    nginx = NGINX_CONF.read_text(encoding="utf-8")
+
+    first_location = _LOCATION_DIRECTIVE.search(nginx)
+    directive = _new_header_directive(header_name).search(nginx)
+    assert first_location is not None, "ui/nginx.conf declares no `location` block at all"
+    assert directive is not None, f"ui/nginx.conf declares no `add_header {header_name}` directive"
+
+    assert directive.start() < first_location.start(), (
+        f"{header_name} must be declared in the `server` block, above the first "
+        "`location`, so every location inherits it."
     )
 
 
