@@ -62,6 +62,11 @@ dev = [
 # ingestion/eval_answers.py. The offline unit tests use a fake evaluator and need
 # nothing here.
 eval = [
+    # Carries two Dependabot alerts with no patched release (agent-forge-harness-n4h):
+    # ragas GHSA-95ww-475f-pr4f (SSRF in its multi-modal metrics) and its dependency
+    # diskcache GHSA-w8v5-vhqr-4h9v (unpickles its cache directory). What keeps them
+    # unreachable (never in an image, no multi-modal metric, no ragas cache backend)
+    # is pinned by tests/test_unpatched_advisories.py. Re-check when either releases.
     "ragas>=0.4,<0.5",
     # Local generator for the model A/B (ziw.4): gpt-4o-mini (API) vs gemma4:12b
     # (Ollama). ChatOllama construction needs no server; only running the
