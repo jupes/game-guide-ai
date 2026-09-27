@@ -3,7 +3,7 @@
 Date: 2026-09-16  
 Epic: `agent-forge-harness-yje`  
 Status: proposed standalone initiative, revised after [plan review](../reports/additive-retrieval-and-billing-plan-review.md);
-**amended 2026-09-24 with the owner's decisions of 2026-09-21 — read that section first**
+**amended 2026-09-24 with the owner's decisions of 2026-09-21, and 2026-09-27 with D-10 to D-13 — read that section first**
 
 ## Outcome
 
@@ -214,10 +214,19 @@ to A-25) and its threat model (TA-2, TA-3) carry the account-side half.
 | D-7 | **At the credit limit:** a warning at 80%; at 100% the turn in flight completes on the cheapest model, premium features switch off, and an upsell is shown. **Never a cut-off mid-answer.** | Replaces the paid-only limit behaviour; applies to Free, Player and GM alike, each at its own limit. |
 | D-8 | **(2026-09-24) The free tier answers with the small model ("mini"); the paid tiers (Player, GM) answer with OpenAI's GPT-6 Luna.** | Answers part of "Still open": the Player tier's higher-end AI is Luna. **Lead evidence note:** OpenAI's price list (read 2026-09-24) puts `gpt-6-luna` at $0.10 input / $0.01 cached / $0.50 output per 1M tokens — cheaper per token than today's `gpt-4o-mini` ($0.15 / $0.075 / $0.60) — so the split rests on quality and per-turn cost, which `agent-forge-harness-5v3` measures (with `gpt-5-nano` as a free-tier candidate) before `agent-forge-harness-iov` ships the mapping. Luna is OpenAI's, the existing primary provider: no new processor. |
 | D-9 | **(2026-09-24) Users do not see which model answers.** The product shows tier-branded names, never a provider or model name. | Reverses the routing plan's client-facing disclosure (its D3): `GET /models`, the chat response's routing block and the model picker stop exposing aliases and providers (`agent-forge-harness-au3`); server logs and usage records keep them. The privacy notice still names OpenAI as a processor. The tier names are the design lane's. |
+| D-10 | **(2026-09-27) The 13+ screen asks a neutral birth month and year** (the identity record's section 4.1 form), not the design spec's "I'm 13 or older" checkbox. The refusal is remembered on the device. Counsel still confirms. | Settles D-6's method for `yje.2.2` and `yje.2.6`: the gate is `docs/adr/account-identity-state-machine.md` section 4 as written (its amendment IDA-1). D-6's row is unchanged, counsel's confirmation included. |
+| D-11 | **(2026-09-27) After 100% of the monthly credits a Traveller (the Free tier) keeps getting answers on the cheapest model up to a small DAILY ceiling, then chat pauses until the next day.** Never a cut-off mid-answer (D-7); the model is never named (D-9). | Amends D-7 for the Free tier only. D-7 completes the turn in flight; D-11 allows later Traveller turns, bounded by a **daily ceiling** — which is what keeps a Traveller's p95 COGS bounded (profitability rule 2). The design spec's "answers keep coming on the basic model" until the refill, and its per-turn "Basic model" mark, are superseded. **The ceiling's number is set with pricing in `yje.1.2`**, beside every tier's credit number. D-7's paid-tier behaviour (Player, GM) is unchanged. The lifecycle table's Free row reads *at the cap, D-7, then D-11*. Under D-8 a Traveller already answers on the small model, so at 100% there is no model to fall from and none to announce. |
+| D-12 | **(2026-09-27) A GM offers a seat by entering the player's email.** The player sees the offer once signed in (a new player signs up first) and may accept, decline or block; the GM's answer is identical whether or not an account exists (no oracle); the GM confirms who accepted before any private reveal is delivered. | Nothing here is billed or metered: joining a table stays a Free surface (D-3), and an offer's answer discloses no account, tier or billing state of the address. Built by `agent-forge-harness-1kg.2.2`; recorded in the identity record (IDA-2) and the Workbench interactions record (A-27). |
+| D-13 | **(2026-09-27) Shared screens use owner-only screen mode** (Workbench threat model SEC-48): the GM, signed in on that browser, turns it into a view-only table screen showing only the table slot, which signs the GM's account out of that browser; it is redone each session. | A screen is not an account: it has no tier, no credits and no entitlement of its own, and exists only under the GM's live table session, which is the paid surface (D-3). D-4's "nothing is sold to or metered for an anonymous viewer" holds. Recorded in the interactions record (A-28). |
 
 **Still open:** which higher-end AI features the Player tier includes beyond Luna (D-8), and every
 tier's credit number — both wait on the real per-attempt costs `yje.5.1.1`
-started recording on 2026-09-24 and on the cost ledger (`yje.5.1.2`).
+started recording on 2026-09-24 and on the cost ledger (`yje.5.1.2`). D-11's daily
+ceiling is one more number for `yje.1.2`. Also open from the 2026-09-27 design intake
+(N-5, bead `agent-forge-harness-888`): whether AI-written documents are paid or free,
+what the Player tier includes beyond Luna, which tier a sponsored grant gives, and the
+"unlimited" and "no card needed" wording — this plan's "Do not advertise 'unlimited'"
+rule and its two promotion modes hold until then.
 
 ## Subscription and access lifecycle
 
