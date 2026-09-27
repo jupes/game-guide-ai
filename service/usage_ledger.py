@@ -388,7 +388,6 @@ VALUES (%(operation_id)s, %(attempt_index)s, %(occurred_at)s, %(operation)s, %(p
         (SELECT p.id FROM metering.price_revisions p
           WHERE p.provider = %(provider)s AND p.alias = %(alias)s AND p.effective_from <= %(occurred_at)s
           ORDER BY p.effective_from DESC, p.id DESC LIMIT 1))
-ON CONFLICT (operation_id, attempt_index) DO NOTHING
 """
 
 _REVISION_COLUMNS = (
