@@ -226,9 +226,14 @@ def check_plain_text(value: str) -> str:
     Why it exists: PostgreSQL's ``text`` and ``jsonb`` refuse U+0000, so an
     unrefused NUL is a failure to **store** — a 500 — rather than an answer the GM
     can act on; and a bidirectional override makes displayed text differ from its
-    logical order, a spoofing vector in names a GM trusts. Refused here, it is a
-    422 whose message names the class and never the value (X-7); the caller's
-    location names the field.
+    logical order, a spoofing vector in names a GM trusts. Refused here, the raised
+    ``ValueError`` names the class and never the value (X-7). For a document field
+    (validated through :func:`check_fields`) that message is folded into a
+    model-level error with no field location, so the 422 body a client receives is
+    the fixed, generic envelope every :func:`check_fields` refusal answers with —
+    ``field`` is ``None`` and ``message`` never names the class or the field; both
+    reach only a log line (:func:`redacted_errors`) and the client's own
+    pre-flight check.
 
     The one shared helper for this rule. It is applied to the document field
     kinds and to the reveal family's projection text today. Bead ``5mj`` adopts it

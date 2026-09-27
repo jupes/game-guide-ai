@@ -157,26 +157,39 @@ class Staging[T]:
     `table_sessions_one_live_per_gm_uidx` forbids. Staging removes both: nobody
     but the writer sees the change, and a rollback drops the whole staging area
     without touching a committed row at all.
+
+    **One open writer** (ixa.1). A nested unit that tries to write while another
+    open unit is the writer is refused with `TwinWouldBlock` — PostgreSQL would
+    make it wait — and a unit that only reads never claims anything.
     """
 
     def __init__(self) -> None:
         self._rows: dict[str, T] = {}
-        self._staged: dict[int, dict[str, T]] = {}
+        #: Keyed by the unit itself, never by `id(unit)` (ixa.1): CPython hands
+        #: a freed address to the next object it allocates, so a unit that never
+        #: finished would leak its staged rows to whichever unit came next. The
+        #: dictionary holds a strong reference to its key, so while an entry
+        #: survives, that address cannot be reused. The trade: a unit that never
+        #: commits or rolls back keeps one entry alive here.
+        self._staged: dict[InMemoryTransaction, dict[str, T]] = {}
 
     def _mine(self, unit: InMemoryTransaction) -> dict[str, T]:
-        key = id(unit)
-        if key not in self._staged:
-            self._staged[key] = {}
+        # The only way to write, so the claim is taken here — first, before a
+        # row is staged or a callback registered, so a refused write leaves
+        # nothing behind. `visible` reads `_staged` directly and never claims.
+        unit.claim_writer()
+        if unit not in self._staged:
+            self._staged[unit] = {}
 
             def publish() -> None:
-                self._rows.update(self._staged.pop(key, {}))
+                self._rows.update(self._staged.pop(unit, {}))
 
             def discard() -> None:
-                self._staged.pop(key, None)
+                self._staged.pop(unit, None)
 
             unit.on_publish(publish)
             unit.on_rollback(discard)
-        return self._staged[key]
+        return self._staged[unit]
 
     def add(self, unit: InMemoryTransaction, key: str, row: T) -> None:
         """A new row, invisible to every other reader until this unit commits."""
@@ -185,7 +198,7 @@ class Staging[T]:
     def visible(self, unit: InMemoryTransaction) -> dict[str, T]:
         """Committed rows, plus this transaction's own uncommitted ones — what
         a uniqueness check must look at, and nothing more."""
-        return {**self._rows, **self._staged.get(id(unit), {})}
+        return {**self._rows, **self._staged.get(unit, {})}
 
     def replace(self, unit: InMemoryTransaction, key: str, row: T) -> None:
         """Change a row that is already visible. Deliberately the same mechanism
