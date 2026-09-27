@@ -78,6 +78,17 @@ export function ModelPicker({
   const conversation = conversationId !== null ? store.get(conversationId) : undefined
   const value = conversation?.modelPreference ?? catalog.default
 
+  // a6o: a preference the served catalog does not list (a model alias stored
+  // before D-9, or a retired id) goes back to the default, first prompt or
+  // not. ChatPane has only ever posted 'auto', so that is what the server
+  // bound. Only the served catalog can tell: the offline fallback lists 'auto'
+  // alone, and an alias list here would name the models in the bundle.
+  React.useEffect(() => {
+    if (catalog === FALLBACK_CATALOG || conversationId === null) return
+    if (catalog.models.some((m) => m.id === value)) return
+    store.setModelPreference(conversationId, catalog.default)
+  }, [catalog, conversationId, store, value])
+
   const handleChange = (next: string): void => {
     if (conversationId === null || conversation === undefined) return
     if (!conversation.hasFirstPrompt) {
