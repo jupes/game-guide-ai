@@ -244,6 +244,10 @@ def _describes(kind: Kind) -> str:
 _CAMPAIGN = MintedId(ident.CAMPAIGN)
 _PARTICIPANT = MintedId(ident.PARTICIPANT)
 _SESSION = MintedId(ident.TABLE_SESSION)
+#: The character sheet a link or unlink row names (SEC-38). An id, never a
+#: title: a document's name is field text, and nothing derived from field text
+#: may outlive it in a ledger that survives the campaign (ED-26).
+_DOCUMENT = MintedId(ident.DOCUMENT)
 
 #: SEC-10 bounds a generation two ways — 24 credentials, and 60 joins in ten
 #: minutes. Which one a refused join hit is a closed code, not a sentence.
@@ -269,8 +273,8 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
         "codes_revoked": Shape.WHOLE_NUMBER,
         "devices_revoked": Shape.WHOLE_NUMBER,
     },
-    AuditAction.PARTICIPANT_LINKED: {"participant_id": _PARTICIPANT},
-    AuditAction.PARTICIPANT_UNLINKED: {"participant_id": _PARTICIPANT},
+    AuditAction.PARTICIPANT_LINKED: {"participant_id": _PARTICIPANT, "document_id": _DOCUMENT},
+    AuditAction.PARTICIPANT_UNLINKED: {"participant_id": _PARTICIPANT, "document_id": _DOCUMENT},
     # The seat, and never the account: "who was seated" is answered by the
     # participant row, and a user id is personal data the ledger does not need.
     AuditAction.SEAT_OFFERED: {"participant_id": _PARTICIPANT},

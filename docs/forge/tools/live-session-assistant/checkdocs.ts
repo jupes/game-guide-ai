@@ -1,14 +1,17 @@
 // Mechanical consistency checks over the Live Session Assistant plan documents (read-only):
 //   1. every LSA-<key> reference resolves to a key in spec.ts;
-//   2. backticked bead IDs (1ir, 1kg, xiu, yje, ...) exist in the tracker or ids.json (skipped without a tracker);
+//   2. backticked bead IDs (1ir, 1kg, xiu, yje, zkc, ..., or a full agent-forge-harness-* ID) exist in the tracker or
+//      ids.json (skipped without a tracker);
 //   3. markdown tables have consistent column counts;
 //   4. backticked repository paths exist in the working tree or on origin/master;
 //   5. code fences are balanced;
-//   6. threat IDs cited in the threat model are defined in its catalog.
+//   6. threat IDs cited in the threat model are defined in its catalog;
+//   7. the account identity record's own ids and invariants (identity.ts).
 //
 // Usage: bun checkdocs.ts [--snapshot <bd export>] [--tracker-cwd <dir>]
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { IDENTITY_DOC, checkIdentity } from './identity.ts'
 import { BEADS } from './spec.ts'
 import { PREFIX, REPO_ROOT, ids, loadTracker } from './tracker.ts'
 
@@ -20,6 +23,9 @@ const DOCS = [
   'docs/forge/plans/live-session-assistant-delivery.md',
   'docs/forge/reports/live-session-assistant-plan-review.md',
   'docs/forge/reports/live-session-assistant-plan-review-2.md',
+  // Not a plan document: the account identity record (yje.1.6), whose answer table the billing machines consume, so
+  // its tables, cited paths and bead IDs get the same mechanical checks. Appended so DOCS[2] stays the threat model.
+  IDENTITY_DOC,
 ]
 // Paths cited on purpose that are not on master yet: the design archive (never in the repo), the Workbench decision
 // record and plans (PR #58) and wire contract (PR #59), and the billing and retrieval plans (committed separately).
@@ -57,9 +63,12 @@ for (const rel of DOCS) {
   // 2.
   let trackerRefs = 0
   if (tracker) {
-    for (const m of text.matchAll(/`((?:1ir|1kg|xiu|yje|1ka|b8o|iu6|va8|x5bz|764)(?:\.\d+)*)`/g)) {
+    // A known prefix, a full ID, or any backticked token right after the word "bead" (so a new prefix is checked too).
+    const beadRef = /`((?:agent-forge-harness-[a-z0-9]+|1ir|1kg|xiu|yje|1ka|b8o|iu6|va8|x5bz|764|zkc|hgm|fma|idm|cug)(?:\.\d+)*)`|\bbeads? `([a-z0-9]+(?:\.\d+)*)`/g
+    for (const m of text.matchAll(beadRef)) {
+      const id = m[1] ?? m[2]
       trackerRefs++
-      if (!trackerIds.has(m[1])) problems.push(`${rel}: unknown tracker bead ${m[1]}`)
+      if (!trackerIds.has(id.replace(PREFIX, ''))) problems.push(`${rel}: unknown tracker bead ${id}`)
     }
   }
 
@@ -100,6 +109,9 @@ for (const m of tm.matchAll(/TM-(\d+)((?:, \d+)*)/g)) {
   for (const n of nums) if (!defined.has(`TM-${n.padStart(2, '0')}`)) problems.push(`threat model cites undefined TM-${n}`)
 }
 stats['threats defined'] = defined.size
+
+// 7.
+problems.push(...checkIdentity(REPO_ROOT))
 
 console.log(JSON.stringify(stats, null, 2))
 if (!tracker) console.log('\nno tracker available: skipped the bead ID check')

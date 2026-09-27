@@ -34,6 +34,7 @@ import {
   rendererFor,
   revealGroupFor,
   revealableKeys,
+  rule as registryRule,
   ruleFor,
   seedsOwnerDefault,
   toolAvailability,
@@ -472,7 +473,15 @@ describe('a registry that breaks a rule cannot be built', () => {
     ...REGISTRY,
     document_types: REGISTRY.document_types.map((d, i) => (i === 0 ? { ...d, ...patch } : d)),
   })
-  const rule = (label: string): FieldRule => ({ label, editable: true, required: false, revealable: true, warning: null, bounds: null })
+  const rule = (label: string, extra: Partial<FieldRule> = {}): FieldRule => ({
+    label,
+    editable: true,
+    required: false,
+    revealable: false,
+    warning: null,
+    bounds: null,
+    ...extra,
+  })
   const withNpcRules = (patch: Record<string, FieldRule>): Registry =>
     withFirstType({ field_rules: { ...REGISTRY.document_types[0].field_rules, ...patch } })
   const withCharacterSheet = (patch: Record<string, unknown>): Registry => ({
@@ -575,11 +584,32 @@ describe('a registry that breaks a rule cannot be built', () => {
     // a type's own. The second was the hole the first review's fix left.
     [
       'a revealable tags common rule',
-      { ...REGISTRY, common_field_rules: { ...REGISTRY.common_field_rules, tags: rule('Tags') } },
+      { ...REGISTRY, common_field_rules: { ...REGISTRY.common_field_rules, tags: rule('Tags', { revealable: true }) } },
       'never revealable',
     ],
-    ['a type declaring its own revealable tags rule', withNpcRules({ tags: rule('Tags') }), 'never revealable'],
+    ['a type declaring its own revealable tags rule', withNpcRules({ tags: rule('Tags', { revealable: true }) }), 'never revealable'],
     ['a type redeclaring a common field', withNpcRules({ name: rule('Name') }), 'cannot redeclare it'],
+    // 1kg.5.7.2. F-12 (a): a raw key or an entity cannot pass as a label, on
+    // every route a label takes.
+    ['a field label that is a raw key', withNpcRules({ notes: rule('voice') }), 'lower case, like a key'],
+    ['a two-letter raw key', withNpcRules({ notes: rule('xp') }), 'lower case, like a key'],
+    ['an entity without its semicolon', withNpcRules({ notes: rule('&amp') }), 'HTML entity'],
+    ['a numeric entity', withNpcRules({ notes: rule('&#39;') }), 'HTML entity'],
+    ['a hex entity', withNpcRules({ notes: rule('&#x27; quote') }), 'HTML entity'],
+    ['a named entity mid-label', withNpcRules({ notes: rule('Terrain &amp hazards') }), 'HTML entity'],
+    [
+      'a common label that is a raw key',
+      { ...REGISTRY, common_field_rules: { ...REGISTRY.common_field_rules, qualifier: rule('qualifier', { revealable: true }) } },
+      'lower case, like a key',
+    ],
+    [
+      'a warning carrying an entity',
+      withNpcRules({ wants: rule('Wants', { revealable: true, warning: '&amp spoils' }) }),
+      'HTML entity',
+    ],
+    ['a reveal group label that is a raw key', withFirstType({ reveal_groups: [{ id: 'lies', label: 'voice', keys: ['wants', 'leverage'] }] }), 'lower case, like a key'],
+    // F-12 (d): a retired key cannot come back as a common field.
+    ['a reserved key that is a common field', withFirstType({ reserved_keys: ['qualifier'] }), 'cannot be declared as a field again'],
   ]
 
   it.each(cases)('rejects %s', (_name, registry, problem) => {
@@ -596,5 +626,97 @@ describe('a registry that breaks a rule cannot be built', () => {
       message = (error as Error).message
     }
     expect(message.split(';').length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe('tests a constant cannot satisfy, and the validator gaps (1kg.5.7.2)', () => {
+  const doc = (id: string): DocumentType => {
+    const found = documentTypeById(id)
+    if (!found) throw new Error(`no type ${id}`)
+    return found
+  }
+
+  it('gives every per-type selector a second, different answer (F-7, AC 12)', () => {
+    // A selector that returns one constant fails one of these or the first set.
+    expect(rendererFor(doc('npc'))).toBe('game_document')
+    expect(audienceOf(doc('npc'))).toBe('table')
+    // The character sheet is the one other type with an ability block.
+    expect(abilityRowKey(doc('character-sheet'))).toBe('abilities')
+  })
+
+  it('refuses a type with two ability blocks — the twin of the Python test (F-7)', () => {
+    const statblock = doc('statblock')
+    const two: Registry = {
+      ...REGISTRY,
+      document_types: REGISTRY.document_types.map((d) =>
+        d.id === 'statblock'
+          ? {
+              ...d,
+              fields: { ...statblock.fields, stats: 'abilities' },
+              field_rules: { ...statblock.field_rules, stats: registryRule('Stats', { revealable: true }) },
+            }
+          : d,
+      ),
+    }
+    expect(() => validateRegistry(two)).toThrow('at most one ability block')
+  })
+
+  it('pins the type-entry key split to literal lists (F-7, AC 13)', () => {
+    // Not to the module's own constants: moving `printable` out of the flag table
+    // and into the structure keys (review mutation M6) left every suite green.
+    expect([...TYPE_STRUCTURE_KEYS].sort()).toEqual([
+      'default_reveal',
+      'field_rules',
+      'fields',
+      'icon',
+      'id',
+      'label',
+      'library_category',
+      'reserved_keys',
+      'reveal_groups',
+      'type_version',
+    ])
+    expect(Object.keys(TYPE_FLAG_SELECTORS).sort()).toEqual(['accent', 'audience', 'cites_corpus', 'printable', 'renderer'])
+    expect(Object.keys(FIELD_FLAG_SELECTORS).sort()).toEqual(['bounds', 'editable', 'label', 'required', 'revealable', 'warning'])
+  })
+
+  it('builds a label-only rule as NOT revealable (F-12 c, AC 21)', () => {
+    expect(registryRule('Voice').revealable).toBe(false)
+    expect(registryRule('Voice', { revealable: true }).revealable).toBe(true)
+  })
+
+  it.each([['Terrain & hazards'], ['XP'], ['XP budget'], ['Name']])('still takes the label %s (F-12 a)', (label) => {
+    const withLabel: Registry = {
+      ...REGISTRY,
+      document_types: REGISTRY.document_types.map((d, i) =>
+        i === 0 ? { ...d, field_rules: { ...d.field_rules, notes: registryRule(label, { revealable: true }) } } : d,
+      ),
+    }
+    expect(() => validateRegistry(withLabel)).not.toThrow()
+  })
+
+  it("keeps a tool's own entity check unchanged (AC 20)", () => {
+    const withBlurb = (blurb: string): Registry => ({
+      ...REGISTRY,
+      tools: REGISTRY.tools.map((t) => (t.id === 'loot' ? { ...t, blurb } : t)),
+    })
+    expect(() => validateRegistry(withBlurb('roll &amp hoards'))).not.toThrow()
+    expect(() => validateRegistry(withBlurb('Treasure &amp; hoards'))).toThrow('HTML entity')
+  })
+
+  it('cannot be mutated at run time, even through a cast (F-12 h, AC 23)', () => {
+    const npc = doc('npc')
+    const identity = ruleFor(npc, 'true_identity')
+    expect(identity?.revealable).toBe(false)
+    // justification: the cast IS the attack under test. `Readonly<>` is a
+    // compile-time promise; this proves the run-time freeze holds where it does not.
+    const writable = identity as unknown as { revealable: boolean }
+    expect(() => {
+      writable.revealable = true
+    }).toThrow(TypeError)
+    expect(ruleFor(npc, 'true_identity')?.revealable).toBe(false)
+    expect(revealableKeys(npc)).not.toContain('true_identity')
+    const types = REGISTRY.document_types as unknown as DocumentType[]
+    expect(() => types.push(npc)).toThrow(TypeError)
   })
 })

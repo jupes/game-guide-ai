@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { ReactElement } from 'react'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppNavContext } from './AppNav'
 import type { AppNavState } from './AppNav'
@@ -172,7 +172,8 @@ describe('UserMenu profile (swe1.7)', () => {
       </AppNavContext.Provider>,
     )
     await userEvent.click(screen.getByRole('button', { name: /open user menu/i }))
-    await userEvent.click(screen.getByRole('menuitem', { name: /profile/i }))
+    const group = screen.getByRole('group', { name: 'User menu' })
+    await userEvent.click(within(group).getByRole('button', { name: /profile/i }))
     expect(openProfile).toHaveBeenCalledTimes(1)
   })
 
@@ -185,5 +186,103 @@ describe('UserMenu profile (swe1.7)', () => {
       </CurrentUserContext.Provider>,
     )
     expect(document.querySelector('.avatar--arcane')).toBeInTheDocument()
+  })
+})
+
+// ── agent-forge-harness-3j4 — a labelled group of buttons, not an ARIA menu ──
+
+describe('UserMenu popover (agent-forge-harness-3j4)', () => {
+  function renderMenu() {
+    return renderWithTheme(
+      <CurrentUserContext.Provider value={makeUserState()}>
+        <UserMenu />
+      </CurrentUserContext.Provider>,
+    )
+  }
+
+  it('U1: makes no ARIA menu promise', async () => {
+    renderMenu()
+    await userEvent.click(screen.getByRole('button', { name: /open user menu/i }))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+    expect(screen.getByRole('button', { name: /open user menu/i })).not.toHaveAttribute(
+      'aria-haspopup',
+    )
+    const group = screen.getByRole('group', { name: 'User menu' })
+    expect(within(group).getByRole('button', { name: 'Profile' })).toBeInTheDocument()
+    expect(within(group).getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
+  })
+
+  it('U2: Escape closes the popover and returns focus to the trigger', async () => {
+    renderMenu()
+    const trigger = screen.getByRole('button', { name: /open user menu/i })
+    // Keyboard only, and Escape is pressed from INSIDE the popover: were
+    // focus still on the trigger, the focus assertion below would pass
+    // whether or not Escape moved it.
+    await userEvent.tab()
+    expect(trigger).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    await userEvent.tab()
+    await userEvent.tab()
+    const group = screen.getByRole('group', { name: 'User menu' })
+    expect(within(group).getByRole('button', { name: 'Sign out' })).toHaveFocus()
+
+    await userEvent.keyboard('{Escape}')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('group', { name: 'User menu' })).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+  })
+
+  it('U2b: Escape pressed outside the root, with the popover open, does nothing', async () => {
+    renderWithTheme(
+      <CurrentUserContext.Provider value={makeUserState()}>
+        <div>
+          <button type="button">Outside control</button>
+          <UserMenu />
+        </div>
+      </CurrentUserContext.Provider>,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /open user menu/i }))
+    const outside = screen.getByRole('button', { name: 'Outside control' })
+    outside.focus()
+    expect(outside).toHaveFocus()
+
+    await userEvent.keyboard('{Escape}')
+
+    expect(screen.getByRole('group', { name: 'User menu' })).toBeInTheDocument()
+    expect(outside).toHaveFocus()
+  })
+
+  it('U3: an outside press closes the popover; the trigger still toggles', async () => {
+    renderWithTheme(
+      <CurrentUserContext.Provider value={makeUserState()}>
+        <div>
+          <button type="button">Outside control</button>
+          <UserMenu />
+        </div>
+      </CurrentUserContext.Provider>,
+    )
+    const trigger = screen.getByRole('button', { name: /open user menu/i })
+    await userEvent.click(trigger)
+    expect(screen.getByRole('group', { name: 'User menu' })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Outside control' }))
+    expect(screen.queryByRole('group', { name: 'User menu' })).not.toBeInTheDocument()
+
+    // The trigger still toggles it back open, and open->closed again.
+    await userEvent.click(trigger)
+    expect(screen.getByRole('group', { name: 'User menu' })).toBeInTheDocument()
+    await userEvent.click(trigger)
+    expect(screen.queryByRole('group', { name: 'User menu' })).not.toBeInTheDocument()
+  })
+
+  it('U3: a press inside the popover (the read-only role row) does not close it', async () => {
+    renderMenu()
+    await userEvent.click(screen.getByRole('button', { name: /open user menu/i }))
+    expect(screen.getByRole('group', { name: 'User menu' })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByText('Dungeon Master'))
+    expect(screen.getByRole('group', { name: 'User menu' })).toBeInTheDocument()
   })
 })

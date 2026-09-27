@@ -695,6 +695,89 @@
           }
         ]
       }
+    },
+    {
+      "name": "a revealed name holding a NUL",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: a projection's text refuses exactly what a document's text refuses, so a value a document refuses can never ride in a projection instead. NUL is a C0 control",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "name",
+            "value": "Sister\u0000 Ondrey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "revealed prose holding an ESC",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: a projection's text refuses exactly what a document's text refuses, so a value a document refuses can never ride in a projection instead. ESC (U+001B) is a C0 control",
+      "value": {
+        "content_kind": "document",
+        "type": "npc",
+        "fields": [
+          {
+            "key": "notes",
+            "value": "The tunnel\u001b is shown in red ink."
+          }
+        ]
+      }
+    },
+    {
+      "name": "a revealed list item holding a right-to-left override",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: a projection's text refuses exactly what a document's text refuses, so a value a document refuses can never ride in a projection instead. U+202E is a bidirectional control",
+      "value": {
+        "content_kind": "document",
+        "type": "lore",
+        "fields": [
+          {
+            "key": "rumours",
+            "value": [
+              "The bell still rings under the water.",
+              "No one born\u202e in the village will swim."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a revealed entry name holding a byte order mark",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: a projection's text refuses exactly what a document's text refuses, so a value a document refuses can never ride in a projection instead. U+FEFF inside a value is an invisible byte order mark",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "traits",
+            "value": [
+              {
+                "name": "Amphi\ufeffbious",
+                "text": "She breathes water."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a revealed entry text holding a left-to-right mark",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: a projection's text refuses exactly what a document's text refuses, so a value a document refuses can never ride in a projection instead. U+200E is in the Bidi_Control set, which is refused whole",
+      "value": {
+        "content_kind": "document",
+        "type": "statblock",
+        "fields": [
+          {
+            "key": "traits",
+            "value": [
+              {
+                "name": "Amphibious",
+                "text": "She breathes\u200e water."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

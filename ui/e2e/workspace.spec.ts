@@ -78,7 +78,13 @@ test('the profile page shows the role the server assigned and keeps an edited di
     page.getByRole('switch', { name: 'Dungeon Master role' }),
   ).toBeDisabled()
 
-  await page.getByRole('menuitem', { name: 'Profile' }).click()
+  // agent-forge-harness-3j4: labelled group of buttons, not an ARIA menu —
+  // scoped + exact (Playwright's `name` is otherwise a substring match, and
+  // the LeftNav lists conversations as buttons titled by the user's prompts).
+  await page
+    .getByRole('group', { name: 'User menu', exact: true })
+    .getByRole('button', { name: 'Profile', exact: true })
+    .click()
   await expect(page.getByRole('heading', { name: 'Profile' })).toBeVisible()
 
   const displayName = page.getByRole('textbox', { name: 'Display name' })
@@ -99,7 +105,10 @@ test('the profile page shows the role the server assigned and keeps an edited di
   await page.reload()
   await page.getByRole('button', { name: 'Sage' }).click()
   await page.getByRole('button', { name: 'Open user menu' }).click()
-  await page.getByRole('menuitem', { name: 'Profile' }).click()
+  await page
+    .getByRole('group', { name: 'User menu', exact: true })
+    .getByRole('button', { name: 'Profile', exact: true })
+    .click()
   await expect(displayName).toHaveValue('Tessa Quill')
   await expect(page.getByRole('button', { name: 'Arcane avatar' })).toHaveAttribute(
     'aria-pressed',

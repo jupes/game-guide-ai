@@ -163,6 +163,38 @@ describe('useChat', () => {
     expect(result.current.exchanges).toHaveLength(2)
   })
 
+  // ── Announcing arrival (agent-forge-harness-ekf) — additive option ────────
+  // The seam ChatPane's announcer uses: fired once per turn THIS hook sent,
+  // at the settle, never from the recall effect or a re-render.
+
+  it('calls onTurnSettled with "done" on a successful post and "error" on a failed or rejecting one', async () => {
+    const settled: Array<'done' | 'error'> = []
+    const onTurnSettled = (outcome: 'done' | 'error') => settled.push(outcome)
+
+    const okPost: PostFn = async () => GROUNDED
+    const { result: okResult } = renderHook(() =>
+      useChat({ post: okPost, mode: 'sage', conversationId: null, onTurnSettled }),
+    )
+    act(() => { okResult.current.send('What is a Basilisk?') })
+    await waitFor(() => expect(okResult.current.exchanges[0].status).toBe('done'))
+
+    const errorPost: PostFn = async () => ({ kind: 'error', message: 'Service unavailable' })
+    const { result: errorResult } = renderHook(() =>
+      useChat({ post: errorPost, mode: 'sage', conversationId: null, onTurnSettled }),
+    )
+    act(() => { errorResult.current.send('Q') })
+    await waitFor(() => expect(errorResult.current.exchanges[0].status).toBe('error'))
+
+    const rejectingPost: PostFn = () => Promise.reject(new Error('boom'))
+    const { result: rejectingResult } = renderHook(() =>
+      useChat({ post: rejectingPost, mode: 'sage', conversationId: null, onTurnSettled }),
+    )
+    act(() => { rejectingResult.current.send('Q') })
+    await waitFor(() => expect(rejectingResult.current.exchanges[0].status).toBe('error'))
+
+    expect(settled).toEqual(['done', 'error', 'error'])
+  })
+
   it('ignores sends while a request is pending (no double-submit)', async () => {
     const { post, resolve } = deferredPost()
     const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: null }))

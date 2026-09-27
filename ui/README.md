@@ -103,7 +103,7 @@ Light Parchment and Dark Tavern. Every one of them is also a test: see
 ```bash
 bun install        # once
 bun run dev        # Vite dev server on :5173 (proxies /chat, /healthz, /conversations, /metrics, /auth → :8000)
-bun run typecheck  # tsc --noEmit
+bun run typecheck  # tsc --noEmit -- app (src), node (vite.config.ts) and e2e (ui/e2e/**, playwright.config.ts) projects
 bun run lint       # ESLint
 bun run test       # Vitest — see below
 bun run build      # tsc -b && vite build → dist/
@@ -172,7 +172,8 @@ PopoverCarriesTheRaisedElevation`).
 Nor can it see a **live region**. `role="log"`, `role="status"` and `aria-live` change what a
 screen reader says and nothing about the rendered DOM, so adding or deleting one leaves every
 story and every axe run green. Where the choice matters it is pinned by an explicit assertion
-on the role — `ChatPane.stories.tsx > TranscriptIsANamedRegionNotALiveRegion`.
+on the role — `ChatPane.stories.tsx > TranscriptIsANamedRegionNotALiveRegion` and
+`ChatPane.stories.tsx > AnswerArrivalIsAnnounced`.
 
 Finally, **"reachable by keyboard" is not the same claim as "operable by keyboard"**.
 `element.focus()` works on a control the tab order has lost, so a story whose name promises

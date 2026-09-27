@@ -21,7 +21,13 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-/** Closed: one button, and `aria-expanded` says so. */
+/**
+ * Closed: one button, and `aria-expanded` says so.
+ *
+ * agent-forge-harness-3j4 (U6) — re-pointed at `queryByRole('group', { name:
+ * 'User menu' })`: with `role="menu"` gone, "there is no menu" would be true
+ * of every implementation (a test that cannot fail, finding F3's shape).
+ */
 export const Closed: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
@@ -29,7 +35,7 @@ export const Closed: Story = {
       'aria-expanded',
       'false',
     )
-    await expect(canvas.queryByRole('menu')).not.toBeInTheDocument()
+    await expect(canvas.queryByRole('group', { name: 'User menu' })).not.toBeInTheDocument()
   },
 }
 
@@ -38,6 +44,10 @@ export const Closed: Story = {
  *
  * The role row is a DISABLED switch on purpose (x5bz.2 made the role
  * server-authoritative), so the tab order runs trigger → Profile → Sign out.
+ *
+ * agent-forge-harness-3j4 — updated to the new `group`/`button` roles, and
+ * extended with the Escape half: Escape closes the popover, `aria-expanded`
+ * goes false, and focus returns to the trigger (R-3).
  */
 export const OpenedByKeyboard: Story = {
   play: async ({ canvasElement }) => {
@@ -48,12 +58,18 @@ export const OpenedByKeyboard: Story = {
 
     await userEvent.keyboard('{Enter}')
     await expect(trigger).toHaveAttribute('aria-expanded', 'true')
-    await expect(canvas.getByRole('menu')).toBeInTheDocument()
+    const group = canvas.getByRole('group', { name: 'User menu' })
+    await expect(group).toBeInTheDocument()
 
     await userEvent.tab()
-    await expect(canvas.getByRole('menuitem', { name: 'Profile' })).toHaveFocus()
+    await expect(within(group).getByRole('button', { name: 'Profile' })).toHaveFocus()
     await userEvent.tab()
-    await expect(canvas.getByRole('menuitem', { name: 'Sign out' })).toHaveFocus()
+    await expect(within(group).getByRole('button', { name: 'Sign out' })).toHaveFocus()
+
+    await userEvent.keyboard('{Escape}')
+    await expect(canvas.queryByRole('group', { name: 'User menu' })).not.toBeInTheDocument()
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    await expect(trigger).toHaveFocus()
   },
 }
 
@@ -87,20 +103,27 @@ export const SignOutRefused: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await userEvent.click(canvas.getByRole('button', { name: 'Open user menu' }))
-    await userEvent.click(canvas.getByRole('menuitem', { name: 'Sign out' }))
+    const group = canvas.getByRole('group', { name: 'User menu' })
+    await userEvent.click(within(group).getByRole('button', { name: 'Sign out' }))
     const alert = await canvas.findByRole('alert')
     await expect(alert).toHaveTextContent("Couldn't sign out — please try again.")
-    await expect(canvas.getByRole('menu')).toBeInTheDocument()
+    await expect(canvas.getByRole('group', { name: 'User menu' })).toBeInTheDocument()
   },
 }
 
-/** The happy path: the menu closes once the server has actually cleared it. */
+/**
+ * The happy path: the popover closes once the server has actually cleared it.
+ *
+ * agent-forge-harness-3j4 (U6) — re-pointed at `queryByRole('group', { name:
+ * 'User menu' })`, same reason as `Closed` above.
+ */
 export const SignOutAccepted: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await userEvent.click(canvas.getByRole('button', { name: 'Open user menu' }))
-    await userEvent.click(canvas.getByRole('menuitem', { name: 'Sign out' }))
-    await expect(canvas.queryByRole('menu')).not.toBeInTheDocument()
+    const group = canvas.getByRole('group', { name: 'User menu' })
+    await userEvent.click(within(group).getByRole('button', { name: 'Sign out' }))
+    await expect(canvas.queryByRole('group', { name: 'User menu' })).not.toBeInTheDocument()
   },
 }
 
@@ -110,7 +133,7 @@ export const LongDisplayName: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await userEvent.click(canvas.getByRole('button', { name: 'Open user menu' }))
-    await expect(canvas.getByRole('menu')).toBeInTheDocument()
+    await expect(canvas.getByRole('group', { name: 'User menu' })).toBeInTheDocument()
   },
 }
 
@@ -154,7 +177,7 @@ export const Dark: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await userEvent.click(canvas.getByRole('button', { name: 'Open user menu' }))
-    await expect(canvas.getByRole('menu')).toBeInTheDocument()
+    await expect(canvas.getByRole('group', { name: 'User menu' })).toBeInTheDocument()
   },
 }
 
@@ -164,7 +187,8 @@ export const DarkSignOutRefused: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await userEvent.click(canvas.getByRole('button', { name: 'Open user menu' }))
-    await userEvent.click(canvas.getByRole('menuitem', { name: 'Sign out' }))
+    const group = canvas.getByRole('group', { name: 'User menu' })
+    await userEvent.click(within(group).getByRole('button', { name: 'Sign out' }))
     await expect(await canvas.findByRole('alert')).toBeVisible()
   },
 }

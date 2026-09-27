@@ -382,14 +382,39 @@ describe('abilities — six scores, derived modifiers, and an absent score is no
     await user.clear(strength)
     await user.type(strength, '20')
     await user.tab()
+    // The fixture has no Intelligence, and the block commits without one: the
+    // contract spells "no score" by leaving the key out (requirement 7e).
     expect(onCommit).toHaveBeenCalledWith('abilities', {
       str: 20,
       dex: 12,
       con: 17,
-      int: null,
       wis: 13,
       cha: 16,
     })
+  })
+
+  it('leaves an emptied score OUT of the committed block, never null — requirement 7e', async () => {
+    const user = userEvent.setup()
+    const onCommit = vi.fn()
+    show('abilities', { typeId: 'statblock', onCommit })
+    await openEditor(user, 'Ability scores')
+    await user.clear(screen.getByRole('spinbutton', { name: 'Strength' }))
+    await user.tab()
+    const [, block] = onCommit.mock.lastCall ?? []
+    expect(block).toStrictEqual({ dex: 12, con: 17, wis: 13, cha: 16 })
+    expect(Object.hasOwn(block as object, 'str')).toBe(false)
+  })
+
+  it('commits null when no score remains, as every kind clears — requirement 7e', async () => {
+    const user = userEvent.setup()
+    const onCommit = vi.fn()
+    show('abilities', { typeId: 'statblock', onCommit })
+    await openEditor(user, 'Ability scores')
+    for (const name of ['Strength', 'Dexterity', 'Constitution', 'Intelligence', 'Wisdom', 'Charisma']) {
+      await user.clear(screen.getByRole('spinbutton', { name }))
+    }
+    await user.tab()
+    expect(onCommit).toHaveBeenLastCalledWith('abilities', null)
   })
 
   it('renders a REAL score of 0 as 0, with its modifier', async () => {
@@ -399,7 +424,7 @@ describe('abilities — six scores, derived modifiers, and an absent score is no
     const user = userEvent.setup()
     show('abilities', {
       typeId: 'statblock',
-      value: { str: 0, dex: 12, con: 17, int: null, wis: 13, cha: 16 },
+      value: { str: 0, dex: 12, con: 17, wis: 13, cha: 16 },
     })
     const table = screen.getByRole('table', { name: 'Ability scores' })
     const strength = within(table).getByRole('row', { name: /Strength/ })

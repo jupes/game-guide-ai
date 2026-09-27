@@ -33,6 +33,21 @@ export interface UpgradeResult {
   data: Record<string, unknown>
 }
 
+/** Requirement 8 (F-11): the range every version this module takes must lie in. */
+export const VERSION_MIN = 1
+export const VERSION_MAX = 1000
+
+/** A version is an integer from 1 to 1000. Checked explicitly because `NaN`
+ * answers `false` to every comparison, so a walk from `NaN` ran no step and
+ * reported the document as already current; `Number.isInteger` also refuses
+ * `Infinity`, `0.5` and a string. The message names the argument, never the value. */
+function aVersion(value: unknown, what: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < VERSION_MIN || value > VERSION_MAX) {
+    throw new Error(`a version starts at 1: ${what} must be an integer from ${VERSION_MIN} to ${VERSION_MAX}`)
+  }
+  return value
+}
+
 /**
  * `(type, from_version) -> adapter`, walked one step at a time.
  *
@@ -56,9 +71,12 @@ export class AdapterRegistry {
    * rule deletes the rows of keys that left the type. The eligibility storage
    * itself is agent-forge-harness-1ir.2.1's — this comment is the contract an
    * adapter author is held to.
+   *
+   * AN ADAPTER MUST NOT MUTATE NESTED VALUES - IT RECEIVES A SHALLOW COPY, so a
+   * list or an object inside `data` is still the caller's.
    */
   register(type: DocumentTypeId, fromVersion: number, adapter: Adapter): void {
-    if (fromVersion < 1) throw new Error('a version starts at 1')
+    aVersion(fromVersion, 'fromVersion')
     const key = AdapterRegistry.key(type, fromVersion)
     if (this.steps.has(key)) throw new Error(`${type}: a step from version ${fromVersion} is already registered`)
     this.steps.set(key, adapter)
@@ -68,8 +86,11 @@ export class AdapterRegistry {
     return this.steps.get(AdapterRegistry.key(type, fromVersion))
   }
 
-  /** Whether every step exists, without running any of them. */
+  /** Whether every step exists, without running any of them. A version that is
+   * not a version throws rather than answering. */
   canUpgrade(type: DocumentTypeId, fromVersion: number, to: number = DOC_TYPE_VERSION[type]): boolean {
+    aVersion(fromVersion, 'fromVersion')
+    aVersion(to, 'to')
     for (let version = fromVersion; version < to; version += 1) {
       if (this.step(type, version) === undefined) return false
     }
@@ -79,7 +100,14 @@ export class AdapterRegistry {
   /**
    * Carry `data` forward to the type's current version, one step at a time.
    * Throws `AdapterError` when a step is missing and `Error` when asked to go
-   * backwards — never a partially-applied result.
+   * backwards or given a version that is not an integer from 1 to 1000 - never
+   * a partially-applied result.
+   *
+   * THE CALLER VALIDATES THE ADAPTED RESULT WITH `check_fields` BEFORE STORING IT
+   * (on this side, the request schema that carries it): an adapter is code, and
+   * what it returns is not trusted to be a valid document of the new version
+   * until the contract says so. AN ADAPTER MUST NOT MUTATE NESTED VALUES - IT
+   * RECEIVES A SHALLOW COPY.
    */
   upgrade(
     type: DocumentTypeId,
@@ -87,6 +115,8 @@ export class AdapterRegistry {
     data: Readonly<Record<string, unknown>>,
     to: number = DOC_TYPE_VERSION[type],
   ): UpgradeResult {
+    aVersion(fromVersion, 'fromVersion')
+    aVersion(to, 'to')
     if (fromVersion > to) {
       throw new Error(`${type}: a document at version ${fromVersion} is newer than ${to}, and cannot be downgraded`)
     }

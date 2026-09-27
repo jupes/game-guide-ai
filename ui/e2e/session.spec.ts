@@ -33,8 +33,15 @@ test('a signed-in conversation survives a reload, and signing out leaves nothing
   await expect(page.getByText(`E2E rules answer: ${prompt}`)).toBeVisible()
 
   // ── Signing out ───────────────────────────────────────────────────────────
+  // agent-forge-harness-3j4: the popover is a labelled group of buttons, not
+  // an ARIA menu — scoped + exact, since Playwright's `name` is otherwise a
+  // case-insensitive substring match and the LeftNav lists conversations as
+  // buttons titled by the user's own prompts.
   await page.getByRole('button', { name: 'Open user menu' }).click()
-  await page.getByRole('menuitem', { name: 'Sign out' }).click()
+  await page
+    .getByRole('group', { name: 'User menu', exact: true })
+    .getByRole('button', { name: 'Sign out', exact: true })
+    .click()
   await expect(page.getByText('Sign in to continue')).toBeVisible()
 
   // The SERVER ended it, not just the tab: the cookie is httpOnly, so a reload

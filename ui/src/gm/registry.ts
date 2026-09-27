@@ -205,9 +205,12 @@ const COMMON_FIELD_RULES: Readonly<Record<string, FieldRule>> = {
   tags: { label: 'Tags', editable: true, required: false, revealable: false, warning: null, bounds: null },
 }
 
-/** A rule, with the defaults spelled once: editable, revealable, not required,
- * no warning, no per-use bounds. */
-function rule(
+/** A rule, with the defaults spelled once: editable, NOT revealable, not
+ * required, no warning, no per-use bounds. `revealable` defaults to false
+ * (F-12 c): default-deny is the record's posture (ED-4, ED-5), so a new field is
+ * off the allowlist unless its author puts it there, and every revealable rule
+ * below says so explicitly. */
+export function rule(
   label: string,
   extra: {
     editable?: boolean
@@ -221,7 +224,7 @@ function rule(
     label,
     editable: extra.editable ?? true,
     required: extra.required ?? false,
-    revealable: extra.revealable ?? true,
+    revealable: extra.revealable ?? false,
     warning: extra.warning ?? null,
     bounds: extra.bounds ?? null,
   }
@@ -256,7 +259,8 @@ function documentType(
     renderer: extra.renderer ?? 'game_document',
     library_category: DOC_TYPE_LIBRARY_CATEGORY[id],
     type_version: DOC_TYPE_VERSION[id],
-    fields: DOC_TYPE_FIELDS[id],
+    // A copy, so that freezing the registry never freezes the contract's own table.
+    fields: { ...DOC_TYPE_FIELDS[id] },
     field_rules: rules,
     field_labels: labelsOf(rules),
     printable: extra.printable ?? false,
@@ -269,10 +273,20 @@ function documentType(
   }
 }
 
+/** F-12 (h): the registry is deeply frozen at module load, as Python's is a frozen
+ * dataclass behind a MappingProxyType, so `ruleFor(d, 'true_identity')!.revealable
+ * = true` throws in module strict mode instead of widening an allowlist at run
+ * time. `Readonly<>` alone is a compile-time promise a cast walks past. */
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value
+  for (const child of Object.values(value)) deepFreeze(child)
+  return Object.freeze(value)
+}
+
 /** Commands, labels, icons, blurbs and the default pins are the handoff's
  * (tools/toolRegistry.js); working labels, the /hooks alias and the capabilities
  * are the record's (3.3). Registry order is menu order (SLASH-9). */
-export const REGISTRY: Registry = {
+export const REGISTRY: Registry = deepFreeze({
   tools: [
     tool('npc', '/npc', 'NPC', 'person_add', 'Generate an NPC dossier', 'Writing the dossier…'),
     tool('monster', '/monster', 'Monster', 'shield', 'Generate a stat block', 'Building the stat block…'),
@@ -288,14 +302,14 @@ export const REGISTRY: Registry = {
   document_types: [
     documentType('npc', 'NPC Dossier', 'person', {
       rules: {
-        portrait: rule('Portrait'),
-        voice: rule('Voice'),
-        tell: rule('Tell'),
-        attitude: rule('Attitude'),
-        wants: rule('Wants', { warning: 'Would spoil the lie' }),
-        leverage: rule('Leverage', { warning: 'Would spoil the lie' }),
-        if_attacked: rule('If the party attacks'),
-        notes: rule('Notes'),
+        portrait: rule('Portrait', { revealable: true }),
+        voice: rule('Voice', { revealable: true }),
+        tell: rule('Tell', { revealable: true }),
+        attitude: rule('Attitude', { revealable: true }),
+        wants: rule('Wants', { revealable: true, warning: 'Would spoil the lie' }),
+        leverage: rule('Leverage', { revealable: true, warning: 'Would spoil the lie' }),
+        if_attacked: rule('If the party attacks', { revealable: true }),
+        notes: rule('Notes', { revealable: true }),
         true_identity: rule('True identity', { revealable: false }),
       },
       reveal_groups: [
@@ -308,76 +322,76 @@ export const REGISTRY: Registry = {
       renderer: 'stat_block_card',
       rules: {
         // LIB-12: a stat block without its AC and HP is not valid.
-        ac: rule('Armor Class', { required: true, bounds: [0, INTEGER_FIELD_MAX] }),
-        ac_note: rule('Armor Class note'),
-        hp: rule('Hit Points', { required: true, bounds: [0, INTEGER_FIELD_MAX] }),
-        hit_dice: rule('Hit dice'),
-        speed: rule('Speed'),
-        size: rule('Size'),
-        creature_type: rule('Creature type'),
-        alignment: rule('Alignment'),
-        abilities: rule('Ability scores'),
-        saving_throws: rule('Saving throws'),
-        skills: rule('Skills'),
-        damage_immunities: rule('Damage immunities'),
-        condition_immunities: rule('Condition immunities'),
-        senses: rule('Senses'),
-        languages: rule('Languages'),
-        challenge_rating: rule('Challenge rating'),
+        ac: rule('Armor Class', { revealable: true, required: true, bounds: [0, INTEGER_FIELD_MAX] }),
+        ac_note: rule('Armor Class note', { revealable: true }),
+        hp: rule('Hit Points', { revealable: true, required: true, bounds: [0, INTEGER_FIELD_MAX] }),
+        hit_dice: rule('Hit dice', { revealable: true }),
+        speed: rule('Speed', { revealable: true }),
+        size: rule('Size', { revealable: true }),
+        creature_type: rule('Creature type', { revealable: true }),
+        alignment: rule('Alignment', { revealable: true }),
+        abilities: rule('Ability scores', { revealable: true }),
+        saving_throws: rule('Saving throws', { revealable: true }),
+        skills: rule('Skills', { revealable: true }),
+        damage_immunities: rule('Damage immunities', { revealable: true }),
+        condition_immunities: rule('Condition immunities', { revealable: true }),
+        senses: rule('Senses', { revealable: true }),
+        languages: rule('Languages', { revealable: true }),
+        challenge_rating: rule('Challenge rating', { revealable: true }),
         // The one integer field with no per-use bounds, deliberately: it is what
         // keeps the kind's own floor reachable through a declared field, and so
         // keeps the shared boundary fixtures honest.
-        xp: rule('XP'),
-        traits: rule('Traits'),
-        actions: rule('Actions'),
-        bonus_actions: rule('Bonus actions'),
-        reactions: rule('Reactions'),
-        legendary_actions: rule('Legendary actions'),
+        xp: rule('XP', { revealable: true }),
+        traits: rule('Traits', { revealable: true }),
+        actions: rule('Actions', { revealable: true }),
+        bonus_actions: rule('Bonus actions', { revealable: true }),
+        reactions: rule('Reactions', { revealable: true }),
+        legendary_actions: rule('Legendary actions', { revealable: true }),
       },
       default_reveal: { table: [] },
     }),
     documentType('handout', 'Player Handout', 'mail', {
       printable: true,
       rules: {
-        portrait: rule('Illustration'),
-        body: rule('Text'),
+        portrait: rule('Illustration', { revealable: true }),
+        body: rule('Text', { revealable: true }),
       },
       default_reveal: { table: ['portrait', 'name', 'body'] },
     }),
     documentType('session-notes', 'Session Notes', 'history_edu', {
       rules: {
         // There is no session 0.
-        session: rule('Session number', { bounds: [1, INTEGER_FIELD_MAX] }),
-        date: rule('Date'),
-        present: rule('Present'),
-        recap: rule('Recap', { warning: 'Summarises your private GM thread' }),
-        beats: rule('Beats'),
-        loose_threads: rule('Loose threads'),
+        session: rule('Session number', { revealable: true, bounds: [1, INTEGER_FIELD_MAX] }),
+        date: rule('Date', { revealable: true }),
+        present: rule('Present', { revealable: true }),
+        recap: rule('Recap', { revealable: true, warning: 'Summarises your private GM thread' }),
+        beats: rule('Beats', { revealable: true }),
+        loose_threads: rule('Loose threads', { revealable: true }),
       },
       default_reveal: { table: [] },
     }),
     documentType('quest-log', 'Quest Log', 'flag', {
       rules: {
-        open_threads: rule('Open threads'),
-        cold_threads: rule('Cold threads'),
-        resolved_threads: rule('Resolved threads'),
+        open_threads: rule('Open threads', { revealable: true }),
+        cold_threads: rule('Cold threads', { revealable: true }),
+        resolved_threads: rule('Resolved threads', { revealable: true }),
       },
       default_reveal: { table: ['name', 'open_threads', 'resolved_threads'] },
     }),
     documentType('character-sheet', 'Character Sheet', 'contact_page', {
       audience: 'owner',
       rules: {
-        portrait: rule('Portrait'),
+        portrait: rule('Portrait', { revealable: true }),
         // The same field and the same meaning as a stat block's, so the same
         // range — but NOT required (ruling 5.7#2): LIB-12 speaks of stat blocks,
         // and you name a character before you know its hit points.
-        ac: rule('Armor Class', { bounds: [0, INTEGER_FIELD_MAX] }),
-        hp: rule('Hit Points', { bounds: [0, INTEGER_FIELD_MAX] }),
-        speed: rule('Speed'),
-        abilities: rule('Ability scores'),
-        features: rule('Features'),
-        equipment: rule('Equipment'),
-        notes: rule('Notes'),
+        ac: rule('Armor Class', { revealable: true, bounds: [0, INTEGER_FIELD_MAX] }),
+        hp: rule('Hit Points', { revealable: true, bounds: [0, INTEGER_FIELD_MAX] }),
+        speed: rule('Speed', { revealable: true }),
+        abilities: rule('Ability scores', { revealable: true }),
+        features: rule('Features', { revealable: true }),
+        equipment: rule('Equipment', { revealable: true }),
+        notes: rule('Notes', { revealable: true }),
       },
       default_reveal: { owner: ['name', 'qualifier', 'portrait', 'ac', 'hp', 'speed', 'abilities', 'features', 'equipment', 'notes'] },
     }),
@@ -385,25 +399,25 @@ export const REGISTRY: Registry = {
       cites_corpus: true,
       accent: 'arcane',
       rules: {
-        region: rule('Region'),
-        era: rule('Era'),
-        status: rule('Status'),
-        summary: rule('Summary'),
-        history: rule('History'),
-        rumours: rule('Rumours'),
+        region: rule('Region', { revealable: true }),
+        era: rule('Era', { revealable: true }),
+        status: rule('Status', { revealable: true }),
+        summary: rule('Summary', { revealable: true }),
+        history: rule('History', { revealable: true }),
+        rumours: rule('Rumours', { revealable: true }),
       },
       default_reveal: { table: ['name', 'summary'] },
     }),
     documentType('encounter', 'Encounter', 'swords', {
       rules: {
-        difficulty: rule('Difficulty'),
-        xp_budget: rule('XP budget', { bounds: [0, INTEGER_FIELD_MAX] }),
+        difficulty: rule('Difficulty', { revealable: true }),
+        xp_budget: rule('XP budget', { revealable: true, bounds: [0, INTEGER_FIELD_MAX] }),
         // There is no level 0.
-        party_level: rule('Party level', { bounds: [1, INTEGER_FIELD_MAX] }),
-        setup: rule('Setup'),
-        combatants: rule('Combatants'),
-        terrain: rule('Terrain & hazards'),
-        outcome: rule('If it goes wrong', { warning: 'Would spoil the surprise' }),
+        party_level: rule('Party level', { revealable: true, bounds: [1, INTEGER_FIELD_MAX] }),
+        setup: rule('Setup', { revealable: true }),
+        combatants: rule('Combatants', { revealable: true }),
+        terrain: rule('Terrain & hazards', { revealable: true }),
+        outcome: rule('If it goes wrong', { revealable: true, warning: 'Would spoil the surprise' }),
       },
       default_reveal: { table: [] },
     }),
@@ -419,7 +433,7 @@ export const REGISTRY: Registry = {
   accents: ACCENTS,
   audiences: AUDIENCES,
   rail_limit: RAIL_LIMIT,
-}
+})
 
 /** A slash command as the parser matches it (SLASH-2): lower-case, after one `/`. */
 const COMMAND = /^\/[a-z][a-z0-9-]{0,23}$/
@@ -432,6 +446,13 @@ const hasEntity = (text: string) => text.includes('&') && text.includes(';')
 const FIELD_KEY = /^[a-z][a-z0-9_]{0,39}$/
 /** A label is for a person: never a key that escaped (`xp_budget`, `ifAttacked`). */
 const CAMEL_CASE = /[a-z][A-Z]/
+/** F-12 (a): an HTML entity is `&` then `#` and digits, `#x` and hex digits, or
+ * one to ten letters or digits - with or without its `;`, so `&amp` is one and
+ * `Terrain & hazards` is not. The labels' rule only: a tool's label, blurb and
+ * working label keep `hasEntity`. */
+const LABEL_ENTITY = /&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z0-9]{1,10})/
+/** A lower-case letter in any script, as Python's `unicodedata.category(c) == "Ll"` reads it. */
+const LOWER_CASE_FIRST = /^\p{Ll}/u
 /** REVEAL-10: keys that are never revealable, whatever a registry says. Only
  * `tags` is a DECLARED field today; the rest of REVEAL-10's list — sources,
  * version history, authorship, changed-field lists, asset metadata, ids — never
@@ -439,11 +460,17 @@ const CAMEL_CASE = /[a-z][A-Z]/
  * the allowlist (ED-20). */
 export const NEVER_REVEALABLE: readonly string[] = ['tags']
 
+/** The one rule, used for field labels, common labels, group labels and warning
+ * copy. F-12 (a): a raw key cannot pass as a label - a label starts with anything
+ * but a lower-case letter (`voice`, `xp`, `ac` are keys that escaped; `XP`, `Name`
+ * and `Terrain & hazards` are words) and carries no HTML entity, with or without
+ * its `;`. */
 function labelProblems(label: string, what = 'label', limit = 60): string[] {
   const problems: string[] = []
   if (label.trim() === '') problems.push(`the ${what} is empty`)
   if (label.length > limit) problems.push(`the ${what} is longer than ${limit} characters`)
-  if (hasEntity(label)) problems.push(`the ${what} carries an HTML entity`)
+  if (LOWER_CASE_FIRST.test(label.trim())) problems.push(`the ${what} ${JSON.stringify(label)} starts in lower case, like a key`)
+  if (LABEL_ENTITY.test(label)) problems.push(`the ${what} carries an HTML entity`)
   if (label.includes('_')) problems.push(`the ${what} ${JSON.stringify(label)} is snake_case, not words`)
   if (CAMEL_CASE.test(label)) problems.push(`the ${what} ${JSON.stringify(label)} is camelCase, not words`)
   return problems
@@ -460,7 +487,8 @@ function documentTypeProblems(registry: Registry, d: DocumentType): string[] {
   for (const key of [...Object.keys(d.fields), ...d.reserved_keys]) {
     if (!FIELD_KEY.test(key)) problems.push(`${JSON.stringify(key)} is not a flat field key`)
   }
-  if (d.reserved_keys.some((key) => Object.hasOwn(d.fields, key))) {
+  // F-12 (d): a retired key cannot come back as a common field either.
+  if (d.reserved_keys.some((key) => Object.hasOwn(d.fields, key) || Object.hasOwn(COMMON_FIELDS, key))) {
     problems.push('a reserved key cannot be declared as a field again (ED-24)')
   }
   if (new Set(d.reserved_keys).size !== d.reserved_keys.length) problems.push('a reserved key is listed twice')

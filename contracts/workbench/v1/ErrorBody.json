@@ -117,6 +117,17 @@
           "field": "reveal_epoch"
         }
       }
+    },
+    {
+      "name": "a link to a campaign for a conversation already in one (1kg.2.4): a new code, not conflict's meaning widened",
+      "value": {
+        "detail": {
+          "code": "already_linked",
+          "message": "That conversation is already in a campaign.",
+          "retryable": false,
+          "field": "campaign_id"
+        }
+      }
     }
   ],
   "invalid": [

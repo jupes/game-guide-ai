@@ -37,6 +37,7 @@ import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
 
+from service import conversations_api
 from service import migrations as mig
 from service.campaign_store import InMemoryCampaignStore, MissingParent, PostgresCampaignStore
 from service.campaign_store import shared_rows as twin_table
@@ -48,6 +49,8 @@ from service.conversation_store import (
     new_conversation_id,
 )
 from service.db import Database, InMemoryDatabase, PoolSettings
+from service.history import PostgresMessageStore
+from service.model_catalog import CATALOG_REVISION, enabled_profiles
 
 #: A fixed clock, so a test can place rows in a known order without sleeping.
 T0 = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
@@ -968,3 +971,89 @@ def test_a_rename_racing_an_archive_leaves_one_consistent_row(dsn: str) -> None:
         read = store.get_for_owner(unit, made.id, owner_id=owner)
     assert read is not None
     assert read.title == "After" and read.is_archived
+
+
+# ── What the routes rely on, proved on PostgreSQL (1kg.2.4 A2) ───────────────
+
+
+@needs_db
+def test_a_created_conversation_is_claimed_by_its_creator_and_binds_a_manual_model(dsn: str) -> None:
+    """A8's PostgreSQL half (ruling A2-16). `POST /chat` is not modified: a
+    conversation the store created already has its ownership row, so the claim
+    returns the creator, and the model-routing columns are still NULL, so the
+    first turn's manual preference BINDS rather than losing to the create and
+    answering 409 (`b8o.2`)."""
+    owner = _an_owner(dsn)
+    with _database(dsn).transaction() as unit:
+        made = PostgresConversationStore().create(
+            unit, owner_id=owner, campaign_id=None, title=None, started_mode="gm"
+        )
+    messages = PostgresMessageStore(dsn)
+    alias = enabled_profiles()[0].alias
+    assert messages.claim_conversation(made.id, owner) == owner
+    assert messages.claim_conversation_strategy(
+        made.id, strategy="manual", manual_alias=alias, catalog_revision=CATALOG_REVISION
+    ) == ("manual", alias)
+
+
+@needs_db
+def test_a_conversation_chat_claimed_by_a_client_uuid_reads_back_with_nothing_recorded(dsn: str) -> None:
+    """A4's PostgreSQL half (ruling A2-16). Every conversation in production was
+    made by `claim_conversation` with a client-minted UUID; it reads back through
+    both read methods with all five metadata fields NULL, and the wire carries it
+    as a valid `Conversation`."""
+    owner = _an_owner(dsn)
+    legacy = str(uuid.uuid4())
+    assert PostgresMessageStore(dsn).claim_conversation(legacy, owner) == owner
+    store = PostgresConversationStore()
+    with _database(dsn).transaction() as unit:
+        read = store.get_for_owner(unit, legacy, owner_id=owner)
+        page = store.list_for_owner(unit, owner)
+    assert read is not None
+    assert [page_row.id for page_row in page.items] == [legacy]
+    for row in (read, page.items[0]):
+        assert (row.campaign_id, row.title, row.started_mode, row.updated_at, row.archived_at) == (None,) * 5
+        wire = conversations_api.to_wire(row)
+        assert wire.conversation_id == legacy and wire.started_mode is None
+
+
+#: Three ids that differ only in `-`, `_` and nothing, which a linguistic
+#: collation may order differently from code points. The ORDER BY is the index's
+#: and deliberately carries no `COLLATE "C"` (ruling A2-15: residual accepted).
+_COLLATION_IDS = ("cnv_a-b", "cnv_ab", "cnv_a_b")
+
+
+@needs_db
+def test_postgresql_pages_ids_that_tie_on_time_exactly_once_in_its_own_order(dsn: str) -> None:
+    """Ruling A2-15. The twin orders a tie by code point and PostgreSQL by the
+    database's collation, so the two may disagree about the ORDER of these ids;
+    what must hold is that PostgreSQL's cursor pages them exactly once, in the
+    order its own single page shows, at every page size. The collation facts are
+    in the message so a failing run shows what the server was using."""
+    owner = _an_owner(dsn)
+    with connect(dsn) as conn:
+        for conversation_id in _COLLATION_IDS:
+            conn.execute(
+                "INSERT INTO chat.conversations (conversation_id, user_id, created_at) VALUES (%s, %s, %s)",
+                (conversation_id, owner, T0),
+            )
+        collation = conn.execute(
+            "SELECT datcollate FROM pg_database WHERE datname = current_database()"
+        ).fetchone()[0]
+        dash_first = conn.execute("SELECT 'cnv_a-b' < 'cnv_ab'").fetchone()[0]
+    facts = f"datcollate={collation!r}, 'cnv_a-b' < 'cnv_ab' is {dash_first}"
+    store, database = PostgresConversationStore(), _database(dsn)
+    with database.transaction() as unit:
+        whole = [row.id for row in store.list_for_owner(unit, owner).items]
+    assert sorted(whole) == sorted(_COLLATION_IDS), facts
+    for size in (1, 2):
+        walked: list[str] = []
+        cursor: str | None = None
+        for _ in range(10):
+            with database.transaction() as unit:
+                page = store.list_for_owner(unit, owner, cursor=cursor, limit=size)
+            walked.extend(row.id for row in page.items)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        assert walked == whole, f"limit {size}: {walked} against {whole}; {facts}"

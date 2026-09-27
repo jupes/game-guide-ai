@@ -176,3 +176,32 @@ def test_a_conversations_repr_carries_no_title() -> None:
     )
     assert "cellar" not in repr(conversation)
     assert conversation.title == "The Duke knows about the cellar"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"Zx9CanaryQ7",
+        b'["Zx9CanaryQ7", "cnv_x"]',
+        b'["2026-03-01T12:00:00", "Zx9CanaryQ7"]',
+        b"[1, 2, 3]",
+    ],
+)
+def test_a_refused_cursor_chains_nothing_the_caller_sent(payload: bytes) -> None:
+    """Carried from PR #85's review (ruling A2-14): the refusal names no value,
+    and neither its `__cause__` nor its `__context__` is the error that quoted
+    the caller's own decoded payload — a traceback prints both."""
+    forged = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    with pytest.raises(store.InvalidCursor) as refused:
+        store._decode_cursor(forged)
+    assert refused.value.__cause__ is None
+    assert refused.value.__context__ is None
+    assert "Zx9CanaryQ7" not in str(refused.value)
+
+
+def test_both_stores_declare_the_protocol_so_mypy_checks_them_against_it() -> None:
+    """Ruling A2-14: nothing annotated either implementation as a
+    `ConversationStore`, so mypy never compared them with it. Explicit bases make
+    it compare every method — the gate itself is mypy; this pins the bases."""
+    assert store.ConversationStore in store.PostgresConversationStore.__mro__
+    assert store.ConversationStore in store.InMemoryConversationStore.__mro__

@@ -197,7 +197,8 @@ describe('clearedValue and isBlankValue — a kind clears to its own empty', () 
     expect(isBlankValue('asset', null)).toBe(true)
     expect(isBlankValue('integer', null)).toBe(true)
     expect(isBlankValue('abilities', null)).toBe(true)
-    expect(isBlankValue('abilities', { str: null, dex: null })).toBe(true)
+    // One spelling of "no score" (requirement 7e): a block with no key in it.
+    expect(isBlankValue('abilities', {})).toBe(true)
   })
 
   it('never reads a real value as blank — zero included', () => {

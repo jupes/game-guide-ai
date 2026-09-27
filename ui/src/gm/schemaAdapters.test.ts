@@ -120,3 +120,41 @@ describe('the schema-adapter frame', () => {
     expect(registry.step('lore', 1)).toBeUndefined()
   })
 })
+
+describe('a version that is not a version (F-11, requirement 8, 1kg.5.7.2)', () => {
+  it.each([
+    ['NaN', Number.NaN],
+    ['0.5', 0.5],
+    ['-1', -1],
+    ['0', 0],
+    ['1001', 1001],
+    ['a string', '1'],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ])('refuses %s wherever a version is taken (AC 19)', (_name, given) => {
+    // `NaN` answers false to every comparison, so before this a walk from it ran
+    // no step and reported the document as already current.
+    const version = given as number
+    const registry = new AdapterRegistry()
+    registry.register(FIXTURE_TYPE, 1, rename('a', 'b'))
+    const calls = [
+      () => registry.upgrade(FIXTURE_TYPE, version, { name: 'x' }, 2),
+      () => registry.upgrade(FIXTURE_TYPE, 1, { name: 'x' }, version),
+      () => registry.canUpgrade(FIXTURE_TYPE, version, 2),
+      () => registry.canUpgrade(FIXTURE_TYPE, 1, version),
+      () => registry.register('lore', version, rename('a', 'b')),
+    ]
+    for (const call of calls) {
+      expect(call).toThrow('must be an integer from 1 to 1000')
+      expect(call).not.toThrow(AdapterError)
+    }
+  })
+
+  it('says what the caller and an adapter must do, where an adapter author reads it', () => {
+    const here = dirname(fileURLToPath(import.meta.url))
+    const source = readFileSync(join(here, 'schemaAdapters.ts'), 'utf-8')
+    const declaration = source.indexOf('\n  upgrade(')
+    const jsdoc = source.slice(source.lastIndexOf('/**', declaration), declaration).replace(/\s+\*?\s*/g, ' ')
+    expect(jsdoc).toContain('THE CALLER VALIDATES THE ADAPTED RESULT WITH `check_fields` BEFORE STORING IT')
+    expect(jsdoc).toContain('AN ADAPTER MUST NOT MUTATE NESTED VALUES - IT RECEIVES A SHALLOW COPY.')
+  })
+})

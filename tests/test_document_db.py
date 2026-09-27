@@ -53,17 +53,22 @@ from service.db import (
 )
 from service.document_store import (
     SEAL_IDLE_S,
+    SEARCH_KEY_MAX,
     DocumentRecord,
     FieldConflict,
     InMemoryDocumentStore,
+    NotLinkable,
     PostgresDocumentStore,
+    SheetAlreadyLinked,
     StaleTypeVersion,
     UnknownCursor,
     UnknownWriteRevision,
+    _library_statement,
     name_key,
     search_key,
 )
 from service.participant_store import InMemoryParticipantStore, PostgresParticipantStore
+from service.tests.test_document_store import VISIBILITY_WORDS
 from service.workbench_contracts import Author, DocumentTypeId
 
 DOCUMENT = "doc_" + "a" * 22
@@ -77,14 +82,6 @@ QUICK = CampaignLockSettings(lock_timeout_s=1, transaction_timeout_s=5)
 PATIENT = CampaignLockSettings(lock_timeout_s=1, transaction_timeout_s=30)
 #: How long a test waits for another thread before calling it a hang.
 PATIENCE = 15
-
-#: The SQLSTATE PostgreSQL answers with when a JSON string carries U+0000, which
-#: `jsonb` cannot represent. See `test_the_one_known_parity_gap_is_pinned`: this
-#: is the ONE behaviour the twin and the database are allowed to disagree about
-#: in this bead, and F-9 (`1kg.5.7`) closes it. Pinned by SQLSTATE and exception
-#: class and never by the driver's message, which quotes the row (SEC-20).
-PG_NUL_IN_JSONB = "22P05"
-
 
 @pytest.fixture
 def dsn() -> Iterator[str]:
@@ -978,32 +975,34 @@ def test_a_participant_deleted_by_raw_sql_clears_the_link_and_keeps_the_document
     assert row is not None and row[0] is None, "the link went; the document stayed"
 
 
-@needs_db
-def test_the_one_known_parity_gap_is_pinned(dsn: str) -> None:
-    """The twin stores a U+0000 in a field value; PostgreSQL refuses it from
-    `data JSONB`, because `jsonb` cannot represent it.
+def _document_count(world: World) -> int:
+    with world.db.transaction() as unit:
+        if world.kind == "postgres":
+            return int(unit.conn.execute("SELECT count(*) FROM campaign.documents").fetchone()[0])
+        return len(world.documents._documents.visible(fake(unit)))
 
-    `check_fields` accepts it today: `_well_formed` only tries
-    `value.encode("utf-8")`, which U+0000 passes, and `_ListItem` has no
-    `_well_formed` at all. **This is the ONE divergence this bead is allowed to
-    have, and it is pinned rather than hidden.** F-9 closes it in `1kg.5.7`, and
-    both halves of this test change together when it does. A refusal is
-    deliberately NOT added to the store here.
 
-    Pinned by exception class and SQLSTATE, never by the driver's message —
-    that message's DETAIL quotes the failing row (SEC-20).
+def test_a_nul_in_a_field_is_refused_before_any_sql_in_both_worlds(world: World) -> None:
+    """F-9 (`1kg.5.7.2`) closed the one parity gap this file used to pin.
+
+    Before it, the twin stored a U+0000 in a field value and PostgreSQL refused it
+    from `data JSONB` with SQLSTATE 22P05 - a 500, and a divergence between the
+    two worlds. Now `check_fields` refuses it in both, inside the store's own
+    `_validated` call and so before any SQL is composed: a `ValueError` that names
+    the field and the class of character and never the value (X-7, SEC-20), and
+    no document is written.
     """
-    twin = InMemoryDatabase()
-    fake_campaign = _a_fake_world(twin)
-    stored = _a_document(fake_campaign, _a_campaign(fake_campaign),
-                         data={"name": "Vashti\x00", "qualifier": "", "tags": ["x\x00y"]})
-    assert stored.data["name"] == "Vashti\x00", "the twin keeps it"
-
-    world = _a_seeded_world(dsn)
-    with pytest.raises(psycopg.errors.DataError) as refused:
-        _a_document(world, CAMPAIGN,
-                    data={"name": "Vashti\x00", "qualifier": "", "tags": ["x\x00y"]})
-    assert refused.value.sqlstate == PG_NUL_IN_JSONB
+    campaign = _a_campaign(world)
+    before = _document_count(world)
+    nul = chr(0)
+    with pytest.raises(ValueError, match="name is not a valid text field") as refused:
+        _a_document(world, campaign, data={"name": f"Vashti{nul}", "qualifier": "", "tags": [f"x{nul}y"]})
+    assert "a control character" in str(refused.value)
+    assert "Vashti" not in str(refused.value)
+    frames = [entry.name for entry in refused.traceback]
+    assert "_validated" in frames and frames[-1] == "check_fields", frames
+    assert not any("psycopg" in str(entry.path) for entry in refused.traceback), "no SQL was reached"
+    assert _document_count(world) == before
 
 
 def _a_fake_world(db: InMemoryDatabase) -> World:
@@ -1204,3 +1203,1124 @@ def test_only_the_stronger_participant_lock_blocks_a_document_that_references_it
         return
 
     assert _while_another_transaction_holds(dsn, world.db, holder, linker) is True
+
+
+# ── Slice B: archive, delete, restore, the library and the sheet link ────────
+#
+# Appended in sections of its own. Nothing above is edited: the U+0000 parity
+# test is `1kg.5.7.2`'s to change, and no test below stores a control character
+# through the store (that bead refuses them).
+
+
+# Archive (LIB-16) ────────────────────────────────────────────────────────────
+
+
+def test_archiving_reports_whether_a_row_changed_so_an_undo_is_idempotent(
+    world: World,
+) -> None:
+    """The shape of `CampaignStore.set_archived`: the Undo toast and the
+    Archived filter's Restore can both be pressed twice. Archiving is not an
+    edit, so it moves neither `updated_at` (the Recent order) nor the write
+    revision nor the history."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign)
+    moment = made.updated_at + timedelta(hours=1)
+
+    with world.db.transaction() as unit:
+        assert world.documents.set_archived(unit, campaign, made.id, archived=True, now=moment)
+        assert not world.documents.set_archived(
+            unit, campaign, made.id, archived=True, now=moment + timedelta(minutes=1)
+        )
+        archived = world.documents.get(unit, campaign, made.id)
+    assert archived is not None
+    assert archived.archived_at == moment, "the second archive did not re-stamp the row"
+    assert archived.updated_at == made.updated_at, "archiving does not move the Recent order"
+    assert archived.write_revision == made.write_revision and archived.version == made.version
+
+    with world.db.transaction() as unit:
+        assert world.documents.set_archived(unit, campaign, made.id, archived=False, now=moment)
+        assert not world.documents.set_archived(unit, campaign, made.id, archived=False)
+        restored = world.documents.get(unit, campaign, made.id)
+    assert restored is not None
+    assert restored.archived_at is None and restored.updated_at == made.updated_at
+
+
+def test_archiving_a_missing_or_foreign_document_reports_that_nothing_changed(
+    world: World,
+) -> None:
+    """`False`, the `CampaignStore.set_archived` precedent, and never a refusal
+    that would tell another GM's document apart from one that is not there."""
+    mine = _a_campaign(world)
+    theirs = _a_campaign(world, name="Someone else's")
+    made = _a_document(world, mine)
+
+    with world.db.transaction() as unit:
+        assert world.documents.set_archived(unit, theirs, made.id, archived=True) is False
+        assert world.documents.set_archived(unit, mine, DOCUMENT, archived=True) is False
+        after = world.documents.get(unit, mine, made.id)
+    assert after is not None and after.archived_at is None
+
+
+def test_an_archive_flag_that_is_not_a_bool_is_refused(world: World) -> None:
+    """`LibraryQuery.archived` is a `StrictBool`; a truthy string must not
+    archive in one world and be refused by a driver in the other."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign)
+    with world.db.transaction() as unit:
+        with pytest.raises(ValueError, match="archived is true or false"):
+            world.documents.set_archived(unit, campaign, made.id, archived="yes")
+
+
+def test_an_archived_document_is_still_writable(world: World) -> None:
+    """Lead ruling 5.1#1: LIB-16 keeps an archived document open under a
+    Restore banner and never calls it read-only. The route decides."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign)
+    with world.db.transaction() as unit:
+        world.documents.set_archived(unit, campaign, made.id, archived=True)
+    written = _write(world, campaign, made.id, fields={"voice": "gravel"},
+                     author=Author.GM, base_write_revision=None)
+    assert written.data["voice"] == "gravel" and written.archived_at is not None
+
+
+# Delete (LIB-18) ─────────────────────────────────────────────────────────────
+
+
+def test_deleting_a_document_takes_its_whole_history_and_reports_whether_it_did(
+    world: World,
+) -> None:
+    """LIB-18: "This permanently deletes `<title>` and its whole history." There
+    is no soft delete; archiving is the reversible state. Afterwards every
+    reader answers as it does for a document that never existed — and the
+    command id went with the row, so a replay cannot hand the deleted document
+    back."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign, command_id="cmd-1")
+    _write(world, campaign, made.id, fields={"voice": "gravel"},
+           author=Author.ASSISTANT, base_write_revision=None)
+    kept = _a_document(world, campaign)
+
+    with world.db.transaction() as unit:
+        assert world.documents.delete(unit, campaign, made.id) is True
+    with world.db.transaction() as unit:
+        assert world.documents.delete(unit, campaign, made.id) is False, "nothing left to delete"
+        assert world.documents.get(unit, campaign, made.id) is None
+        assert world.documents.hold(unit, campaign, made.id) is None
+        assert world.documents.seal(unit, campaign, made.id) is None
+        assert world.documents.snapshot(unit, campaign, made.id, 1) is None
+        assert world.documents.history(unit, campaign, made.id, before_number=None, limit=5) == []
+        assert world.documents.set_archived(unit, campaign, made.id, archived=True) is False
+        with pytest.raises(MissingParent):
+            world.documents.write_fields(unit, campaign, made.id, fields={"voice": "x"},
+                                         author=Author.GM, base_write_revision=None)
+        assert world.documents.get(unit, campaign, kept.id) is not None, "only that one went"
+
+    again = _a_document(world, campaign, command_id="cmd-1")
+    assert again.id != made.id and again.write_revision == 1
+
+
+def test_deleting_another_campaigns_document_changes_nothing(world: World) -> None:
+    """SEC-2: one statement names the document AND the campaign, so another
+    GM's document is as unreachable as one that does not exist."""
+    mine = _a_campaign(world)
+    theirs = _a_campaign(world, name="Someone else's")
+    made = _a_document(world, mine)
+
+    with world.db.transaction() as unit:
+        assert world.documents.delete(unit, theirs, made.id) is False
+        assert world.documents.delete(unit, mine, DOCUMENT) is False
+    assert len(_versions(world, mine, made.id)) == 1
+
+
+# Restore a VERSION (CANVAS-26, B-5, B-6) — not to be confused with LIB-16's
+# un-archive, which is `set_archived(archived=False)` above ─────────────────────
+
+
+def _restore(world: World, campaign_id: str, document_id: str, **kwargs: Any) -> DocumentRecord:
+    with world.db.transaction() as unit:
+        return world.documents.restore(unit, campaign_id, document_id, **kwargs)
+
+
+def _three_versions(world: World, campaign_id: str) -> DocumentRecord:
+    """Version 1 is AN_NPC, sealed by an assistant write that is version 2, and
+    version 3 is the GM's open working version — so a restore has something to
+    seal first and a key (`tell`) the chosen version does not have."""
+    made = _a_document(world, campaign_id)
+    _write(world, campaign_id, made.id, fields={"voice": "gravel", "tell": "taps"},
+           author=Author.ASSISTANT, base_write_revision=None)
+    return _write(world, campaign_id, made.id, fields={"name": "Vashti the Broker"},
+                  author=Author.GM, base_write_revision=None)
+
+
+def test_a_restore_appends_a_new_sealed_version_equal_to_the_chosen_one(world: World) -> None:
+    """CANVAS-26: "Restore is additive: it appends a new version whose content
+    equals the chosen one." It seals the open version first, deletes nothing,
+    and advances the write revision and the field revision of every key it
+    changed — including a key the chosen version does not have, which is a
+    change like any other to a browser holding an older base."""
+    campaign = _a_campaign(world)
+    before = _three_versions(world, campaign)
+    moment = before.updated_at + timedelta(minutes=3)
+
+    restored = _restore(world, campaign, before.id, version_number=1, now=moment)
+
+    assert restored.data == AN_NPC
+    assert restored.write_revision == before.write_revision + 1
+    revision = restored.write_revision
+    assert restored.field_revisions == {
+        **before.field_revisions, "name": revision, "voice": revision, "tell": revision,
+    }
+    assert restored.updated_at == moment
+    version = restored.version
+    assert (version.number, version.restored_from, version.author) == (4, 1, Author.GM.value)
+    assert version.summary == "" and version.sealed_at == moment, "sealed as it is written"
+    assert version.changed_fields == ("name", "tell", "voice")
+
+    history = _versions(world, campaign, before.id)
+    assert [v.number for v in history] == [1, 2, 3, 4], "nothing is moved or deleted"
+    assert history[2].sealed_at == moment, "the open version was sealed first"
+    assert all(v.sealed_at is not None for v in history)
+    with world.db.transaction() as unit:
+        appended = world.documents.snapshot(unit, campaign, before.id, 4)
+    assert appended is not None and appended.data == AN_NPC
+    assert _folded_keys(world, before.id) == (name_key(AN_NPC["name"]), search_key(AN_NPC))
+
+
+def test_restoring_content_the_document_already_has_changes_nothing(world: World) -> None:
+    """B-5 (the lead's ruling of 2026-09-26, over ruling 5.1#3): a restore whose
+    chosen content equals the live content, compared under the row lock, is a
+    no-op — no seal, no revision advance, no version — and hands the record back
+    unchanged. So Restore pressed twice appends once, and restoring the current
+    version appends nothing. `RestoreRequest` says the same: "restoring what the
+    document already equals changes nothing"."""
+    campaign = _a_campaign(world)
+    before = _three_versions(world, campaign)
+
+    assert _restore(world, campaign, before.id, version_number=3) == before, "the current one"
+    once = _restore(world, campaign, before.id, version_number=1)
+    twice = _restore(world, campaign, before.id, version_number=1,
+                     now=once.updated_at + timedelta(hours=1))
+
+    assert twice == once
+    assert [v.number for v in _versions(world, campaign, before.id)] == [1, 2, 3, 4]
+
+
+def test_an_equal_content_restore_leaves_the_open_version_open(world: World) -> None:
+    """"No seal" is observable: the GM's working version stays the one their
+    next autosave joins."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign)
+    _write(world, campaign, made.id, fields={"voice": "gravel"},
+           author=Author.ASSISTANT, base_write_revision=None)
+    back = _write(world, campaign, made.id, fields={"voice": AN_NPC["voice"]},
+                  author=Author.GM, base_write_revision=None)
+    assert back.data == AN_NPC and back.version.sealed_at is None
+
+    unchanged = _restore(world, campaign, made.id, version_number=1)
+
+    assert unchanged == back
+    assert unchanged.version.number == 3 and unchanged.version.sealed_at is None
+
+
+def test_restoring_a_version_that_is_not_there_is_refused_and_writes_nothing(
+    world: World,
+) -> None:
+    """A number that names no version, a document of another campaign, and one
+    that does not exist are one refusal (SEC-2) — and the target is read before
+    anything is sealed, so a refused restore leaves the open version open.
+
+    The refusals are caught INSIDE a transaction that then commits: the
+    refusal is raised in Python, with no failed statement, so the caller's
+    transaction stays usable — and a seal taken before the read would commit
+    with it, which is what this test would see."""
+    mine = _a_campaign(world)
+    theirs = _a_campaign(world, name="Someone else's")
+    before = _three_versions(world, mine)
+
+    with world.db.transaction() as unit:
+        for campaign, document, number in (
+            (mine, before.id, 99), (theirs, before.id, 1), (mine, DOCUMENT, 1),
+        ):
+            with pytest.raises(MissingParent):
+                world.documents.restore(unit, campaign, document, version_number=number)
+
+    with world.db.transaction() as unit:
+        after = world.documents.get(unit, mine, before.id)
+    assert after == before
+    assert after.version.sealed_at is None
+
+
+def test_a_restore_to_a_document_stored_at_an_older_type_version_is_refused(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail closed, and first (B-6 step 2): the stale type is refused before the
+    chosen version is even read, so a missing number cannot mask it."""
+    campaign = _a_campaign(world)
+    before = _three_versions(world, campaign)
+    monkeypatch.setitem(wire.DOC_TYPE_VERSION, DocumentTypeId.NPC, 2)
+
+    for number in (1, 99):
+        with pytest.raises(StaleTypeVersion):
+            _restore(world, campaign, before.id, version_number=number)
+
+
+def test_a_restore_whose_chosen_content_no_longer_validates_is_refused(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B-6 step 4: the chosen content is validated as a whole document, required
+    keys enforced, before anything is sealed or stored — a version written under
+    an older rule is not a way around the current one."""
+    campaign = _a_campaign(world)
+    before = _three_versions(world, campaign)
+    required = wire.REQUIRED_FIELDS[DocumentTypeId.NPC] | {"tell"}
+    monkeypatch.setitem(wire.REQUIRED_FIELDS, DocumentTypeId.NPC, required)
+
+    with world.db.transaction() as unit:
+        with pytest.raises(ValueError, match="require tell"):
+            world.documents.restore(unit, campaign, before.id, version_number=1)
+
+    with world.db.transaction() as unit:
+        after = world.documents.get(unit, campaign, before.id)
+    assert after == before and after.version.sealed_at is None
+
+
+# The library (LIB-20 to LIB-23, B-11, B-12, B-13) ────────────────────────────
+
+
+def _category(category: wire.LibraryCategory) -> list[str]:
+    """A library category is a SET of types, read from the registry (LIB-3)."""
+    return sorted(
+        kind.value for kind, owner in wire.DOC_TYPE_LIBRARY_CATEGORY.items() if owner is category
+    )
+
+
+NPCS = _category(wire.LibraryCategory.NPCS)
+DOCUMENTS = _category(wire.LibraryCategory.DOCUMENTS)
+
+
+def _library(world: World, campaign_id: str, **kwargs: Any) -> list[Any]:
+    kwargs.setdefault("types", NPCS)
+    kwargs.setdefault("archived", False)
+    kwargs.setdefault("limit", wire.LIBRARY_PAGE_MAX_ITEMS)
+    with world.db.transaction() as unit:
+        return world.documents.list_documents(unit, campaign_id, **kwargs)
+
+
+def _ids(rows: list[Any]) -> list[str]:
+    return [row.id for row in rows]
+
+
+def _named(world: World, campaign_id: str, name: str, **kwargs: Any) -> DocumentRecord:
+    data = {"name": name, "qualifier": "", "tags": []} | kwargs.pop("extra", {})
+    return _a_document(world, campaign_id, data=data, **kwargs)
+
+
+def _recent_order(records: list[DocumentRecord]) -> list[str]:
+    """Newest first, the id breaking a tie in code-point order: what
+    `ORDER BY updated_at DESC, id COLLATE "C"` means, computed independently."""
+    by_id = sorted(records, key=lambda record: record.id)
+    return [record.id for record in sorted(by_id, key=lambda r: r.updated_at, reverse=True)]
+
+
+#: Non-ASCII spelled by code point, so that no test source carries a character
+#: an editor might silently normalise.
+E_ACUTE_CAPITAL = chr(0xC9)
+OMEGA_CAPITAL = chr(0x3A9)
+FULLWIDTH_ANA = "".join(chr(code) for code in (0xFF21, 0xFF4E, 0xFF41))
+ODYSSEUS_CAPITALS = "".join(chr(code) for code in (0x39F, 0x394, 0x3A5, 0x3A3, 0x3A3, 0x395, 0x3A5, 0x3A3))
+ODYSSEUS_FINAL_SIGMA = "".join(
+    chr(code) for code in (0x3BF, 0x3B4, 0x3C5, 0x3C3, 0x3C3, 0x3B5, 0x3C5, 0x3C2)
+)
+DOTTED_CAPITAL_I = chr(0x130)
+COMBINING_DOT_ABOVE = chr(0x307)
+ZERO_WIDTH_SPACE = chr(0x200B)
+
+
+def test_the_library_lists_one_category_newest_first_with_the_id_breaking_ties(
+    world: World,
+) -> None:
+    """LIB-22's default sort, and a stable TOTAL order: documents written in the
+    same instant are told apart by id, identically in both worlds."""
+    campaign = _a_campaign(world)
+    other = _a_campaign(world, name="Someone else's")
+    start = datetime.now(UTC)
+    moments = [start, start + timedelta(seconds=1), start + timedelta(seconds=1),
+               start + timedelta(seconds=1), start + timedelta(seconds=2)]
+    listed = [_named(world, campaign, f"npc {index}", now=moment)
+              for index, moment in enumerate(moments)]
+    _a_document(world, campaign, data=A_STATBLOCK, doc_type=DocumentTypeId.STATBLOCK,
+                now=start + timedelta(seconds=9))
+    _named(world, other, "not mine", now=start + timedelta(seconds=9))
+
+    assert _ids(_library(world, campaign)) == _recent_order(listed)
+
+
+def test_the_name_sort_is_the_folded_name_in_code_point_order(world: World) -> None:
+    """LIB-22's `Name A-Z` over `name_key`, collated "C" in PostgreSQL and
+    compared by code point in Python, so the worlds agree by construction. A
+    capital E with an acute sorts after `zeta` here, where a linguistic
+    collation would put it before: exactly the disagreement "C" rules out."""
+    campaign = _a_campaign(world)
+    emile, omega = E_ACUTE_CAPITAL + "mile", OMEGA_CAPITAL + "mega"
+    names = ["beta", "Alpha", "ALPHA", emile, "zeta", omega]
+    made = {name: _named(world, campaign, name) for name in names}
+    alphas = sorted([made["Alpha"].id, made["ALPHA"].id])
+
+    shown = _library(world, campaign, sort=wire.LibrarySort.NAME)
+
+    assert _ids(shown) == [
+        *alphas, made["beta"].id, made["zeta"].id, made[emile].id, made[omega].id,
+    ]
+
+
+def test_active_or_archived_is_a_filter_and_never_both(world: World) -> None:
+    """LIB-22: "Active or Archived everywhere". There is no query for both."""
+    campaign = _a_campaign(world)
+    kept = _named(world, campaign, "kept")
+    shelved = _named(world, campaign, "shelved")
+    with world.db.transaction() as unit:
+        world.documents.set_archived(unit, campaign, shelved.id, archived=True)
+
+    assert _ids(_library(world, campaign)) == [kept.id]
+    archived = _library(world, campaign, archived=True)
+    assert _ids(archived) == [shelved.id] and archived[0].archived_at is not None
+    assert _ids(_library(world, campaign, archived=True, sort=wire.LibrarySort.NAME)) == [
+        shelved.id
+    ]
+
+
+def test_the_documents_category_narrows_to_one_type(world: World) -> None:
+    """LIB-3 puts five types in Documents and LIB-22 lets that one category be
+    narrowed to a single type; `type` is a filter, never an index key."""
+    campaign = _a_campaign(world)
+    made = {
+        kind: _named(world, campaign, kind.value, doc_type=kind)
+        for kind in (DocumentTypeId.HANDOUT, DocumentTypeId.LORE, DocumentTypeId.QUEST_LOG)
+    }
+    _named(world, campaign, "an npc")
+
+    assert sorted(_ids(_library(world, campaign, types=DOCUMENTS))) == sorted(
+        record.id for record in made.values()
+    )
+    assert _ids(_library(world, campaign, types=[DocumentTypeId.LORE])) == [
+        made[DocumentTypeId.LORE].id
+    ]
+
+
+#: More pages than any test here has rows, so the walk below always ends.
+PAGE_WALK_LIMIT = 10
+
+
+def _every_page(world: World, campaign_id: str, size: int, **kwargs: Any) -> list[list[str]]:
+    """Every page, each anchored on the last id of the one before. BOUNDED: a
+    keyset predicate that lost its tiebreaker hands the anchor back forever,
+    and that regression must fail here, not hang the integration step."""
+    pages: list[list[str]] = []
+    after: str | None = None
+    for _ in range(PAGE_WALK_LIMIT):
+        page = _ids(_library(world, campaign_id, limit=size, after_id=after, **kwargs))
+        if not page:
+            return pages
+        pages.append(page)
+        after = page[-1]
+    pytest.fail(f"the pages never ran out after {PAGE_WALK_LIMIT}: the keyset repeats rows")
+
+
+@pytest.mark.parametrize("sort", list(wire.LibrarySort))
+def test_keyset_paging_crosses_a_page_boundary_without_a_gap_or_a_repeat(
+    world: World, sort: wire.LibrarySort
+) -> None:
+    """B-12. The anchor is a document id and nothing else (inferred decision
+    13: a name in a cursor would carry private text to the client), and its
+    sort key is looked up server-side. Three rows tie on the sort key and
+    straddle the first page boundary, which is where a keyset predicate that
+    forgot the tiebreaker would skip or repeat one."""
+    campaign = _a_campaign(world)
+    start = datetime.now(UTC)
+    tied = start + timedelta(seconds=1)
+    specs = [("a", start), ("same", tied), ("same", tied), ("same", tied), ("z", start)]
+    made = [_named(world, campaign, name, now=moment) for name, moment in specs]
+
+    whole = _ids(_library(world, campaign, sort=sort))
+    pages = _every_page(world, campaign, 2, sort=sort)
+
+    if sort is wire.LibrarySort.RECENT:
+        assert whole == _recent_order(made)
+    else:
+        assert whole == [made[0].id, *sorted(r.id for r in made[1:4]), made[4].id]
+    assert [len(page) for page in pages] == [2, 2, 1]
+    assert [row for page in pages for row in page] == whole
+
+
+def test_a_library_cursor_that_names_no_row_of_that_campaign_is_refused(
+    world: World,
+) -> None:
+    """Never a silent restart at page one, which would loop for ever. A
+    document of another campaign is refused exactly as a missing one is, and so
+    is a deleted one: in the twin, too, where it lingers as a tombstone."""
+    campaign = _a_campaign(world)
+    other = _a_campaign(world, name="Someone else's")
+    _named(world, campaign, "listed")
+    theirs = _named(world, other, "theirs")
+    gone = _named(world, campaign, "gone")
+    with world.db.transaction() as unit:
+        world.documents.delete(unit, campaign, gone.id)
+
+    for anchor in (DOCUMENT, theirs.id, gone.id):
+        with pytest.raises(UnknownCursor) as refused:
+            _library(world, campaign, after_id=anchor)
+        assert refused.value.kind == "library"
+
+
+def test_a_library_row_carries_the_listed_keys_and_no_body(world: World) -> None:
+    """Three keys read out of the JSON (`data->>'name'`, `data->>'qualifier'`,
+    `data->'tags'`), so a list page never loads a 1.3 MB body (F-10). The row
+    is the store's, not the wire's `LibraryItem`: the store validates none of
+    it, and a missing qualifier is None rather than a guess."""
+    campaign = _a_campaign(world)
+    npc = _a_document(world, campaign)
+    lore = _a_document(world, campaign, data={"name": "The Drowned Bell"},
+                       doc_type=DocumentTypeId.LORE)
+
+    [row] = _library(world, campaign)
+    assert (row.id, row.type, row.type_version) == (npc.id, "npc", 1)
+    assert (row.name, row.qualifier, row.tags) == ("Vashti", "Harbourmistress", ("harbour",))
+    assert (row.archived_at, row.updated_at) == (None, npc.updated_at)
+    assert not hasattr(row, "data") and not hasattr(row, "voice")
+    [bare] = _library(world, campaign, types=[DocumentTypeId.LORE])
+    assert (bare.id, bare.name, bare.qualifier, bare.tags) == (
+        lore.id, "The Drowned Bell", None, (),
+    )
+
+
+# Search (LIB-20, requirement 8, B-13) ─────────────────────────────────────────
+
+
+def _found(world: World, campaign_id: str, term: str, **kwargs: Any) -> list[str]:
+    return _ids(_library(world, campaign_id, search=term, **kwargs))
+
+
+def test_a_search_matches_across_a_fold_only_difference_in_both_worlds(
+    world: World,
+) -> None:
+    """Folded by the application on both sides (the term with the same `_fold`
+    as the stored key) and compared case-SENSITIVELY with `strpos`, because
+    both sides are already folded. `lower()` would answer by the database's
+    collation provider and disagree with Python about a final sigma and a
+    dotted capital I, silently."""
+    campaign = _a_campaign(world)
+    wide = _named(world, campaign, FULLWIDTH_ANA + " the Lamplighter")
+    sigma = _named(world, campaign, ODYSSEUS_CAPITALS)
+    dotted = _named(world, campaign, DOTTED_CAPITAL_I + "zmir Docks")
+
+    assert _found(world, campaign, "ana") == [wide.id]
+    assert _found(world, campaign, ODYSSEUS_FINAL_SIGMA) == [sigma.id]
+    assert _found(world, campaign, "i" + COMBINING_DOT_ABOVE + "zmir") == [dotted.id]
+
+
+def test_a_search_matches_name_qualifier_and_tags_and_never_the_body(world: World) -> None:
+    """LIB-20 names three keys. Never the body, never `notes`, and never
+    `npc.true_identity`: an identity link is a GM-only relation and never
+    enters any index (ED-20)."""
+    campaign = _a_campaign(world)
+    made = _a_document(
+        world, campaign,
+        data={"name": "Vashti", "qualifier": "Broker", "tags": ["harbour"],
+              "notes": "keeps the ledger", "true_identity": "the Archivist"},
+    )
+
+    for term in ("vashti", "broker", "harbour"):
+        assert _found(world, campaign, term) == [made.id], term
+    for term in ("ledger", "archivist"):
+        assert _found(world, campaign, term) == [], term
+
+
+def test_a_search_term_cannot_match_across_a_field_boundary(world: World) -> None:
+    """The separator U+001F is what keeps the tags `alpha` and `beta` from
+    reading as `alpha beta`. A term that CONTAINS U+001F cannot reach it: the
+    fold turns it into a space before matching, in both worlds — otherwise the
+    term would find the two separate tags, whose stored key holds exactly
+    `alpha`, U+001F, `beta`. Nothing here stores a control character;
+    `1kg.5.7.2` refuses them in field text."""
+    campaign = _a_campaign(world)
+    apart = _named(world, campaign, "x", extra={"tags": ["alpha", "beta"]})
+    together = _named(world, campaign, "y", extra={"tags": ["alpha beta"]})
+    assert "alpha" + chr(0x1F) + "beta" in _folded_keys(world, apart.id)[1]
+
+    assert _found(world, campaign, "alpha" + chr(0x1F) + "beta") == [together.id]
+    assert _found(world, campaign, "alpha beta") == [together.id]
+    assert sorted(_found(world, campaign, "alpha")) == sorted([apart.id, together.id])
+
+
+def test_a_search_term_is_matched_literally_and_never_as_a_pattern(world: World) -> None:
+    """`strpos` is not a pattern, so nothing needs escaping. With `LIKE`, a GM
+    searching `50%` would match every document starting `50`, `a_b` would match
+    `axb`, and a backslash would escape whatever followed it."""
+    campaign = _a_campaign(world)
+    backslash = "back" + chr(0x5C) + "slash"
+    made = {name: _named(world, campaign, name)
+            for name in ("50% off", "5000 crowns", "a_b", "axb", backslash, "backslash")}
+
+    assert _found(world, campaign, "50%") == [made["50% off"].id]
+    assert _found(world, campaign, "a_b") == [made["a_b"].id]
+    assert _found(world, campaign, "k" + chr(0x5C) + "s") == [made[backslash].id]
+
+
+def test_a_document_with_the_most_tags_saves_and_is_found_by_its_name(world: World) -> None:
+    """`tags` admits 100 items of 2,000 characters, so `search_key` is
+    TRUNCATED at `SEARCH_KEY_MAX` rather than refused: refusing would make a
+    legal document unsaveable. Truncation loses tags first and never the name.
+    The cost is the known limit of lead ruling 5.1#4, pinned here so that it
+    cannot change unnoticed: a tag past the bound is not found."""
+    campaign = _a_campaign(world)
+    tags = ["t" * wire.LIST_ITEM_MAX_CHARS] * (wire.LIST_FIELD_MAX_ITEMS - 1) + ["zeppelin"]
+    made = _named(world, campaign, "Vashti", extra={"tags": tags})
+
+    assert len(_folded_keys(world, made.id)[1]) == SEARCH_KEY_MAX
+    assert _found(world, campaign, "vashti") == [made.id]
+    assert _found(world, campaign, "zeppelin") == [], "the known limit, and only that"
+
+
+def test_a_search_that_folds_to_nothing_adds_no_clause(world: World) -> None:
+    """The caller rejects a search under `SEARCH_MIN_CHARS`; the store treats a
+    term with nothing left after folding as no search at all."""
+    campaign = _a_campaign(world)
+    made = _named(world, campaign, "Vashti")
+    for term in ("", "   ", ZERO_WIDTH_SPACE):
+        assert _found(world, campaign, term) == [made.id], repr(term)
+
+
+def test_a_library_query_it_cannot_honour_is_refused_without_quoting_it(
+    world: World,
+) -> None:
+    """Refused before any statement runs, identically in both worlds, naming
+    the field and never the value: a search string is private text (SEC-20)."""
+    campaign = _a_campaign(world)
+    private = "vashtizzle" * 11
+    with pytest.raises(ValueError, match="search is at most") as refused:
+        _library(world, campaign, search=private)
+    assert private not in f"{refused.value!s}{refused.value!r}"
+    for bad in ({"types": []}, {"types": ["nonesuch"]}, {"sort": "oldest"},
+                {"limit": 0}, {"limit": wire.LIBRARY_PAGE_MAX_ITEMS + 1},
+                {"archived": "no"}):
+        with pytest.raises(ValueError):
+            _library(world, campaign, **bad)
+
+
+# The character-sheet link (AUD-13, AUD-15, AUD-16, O-2, B-1 to B-4) ──────────
+
+
+def _a_sheet(world: World, campaign_id: str, name: str = "Rook") -> DocumentRecord:
+    return _a_document(world, campaign_id, data=A_CHARACTER_SHEET | {"name": name},
+                       doc_type=DocumentTypeId.CHARACTER_SHEET)
+
+
+def _link(world: World, campaign_id: str, document_id: str, participant_id: str) -> bool:
+    with world.db.transaction() as unit:
+        return world.documents.link_character_sheet(
+            unit, campaign_id, document_id, participant_id=participant_id
+        )
+
+
+def _sheet_of(world: World, campaign_id: str, participant_id: str) -> DocumentRecord | None:
+    with world.db.transaction() as unit:
+        return world.documents.sheet_for_participant(unit, campaign_id, participant_id)
+
+
+def _got(world: World, campaign_id: str, document_id: str) -> DocumentRecord:
+    with world.db.transaction() as unit:
+        found = world.documents.get(unit, campaign_id, document_id)
+    assert found is not None
+    return found
+
+
+def _an_account(world: World, email: str) -> int:
+    """An account to offer a seat to: a row of `auth.users` in PostgreSQL, whose
+    foreign key the offer checks; any id in the twin, which has no users."""
+    if world.kind == "fake":
+        return 1000 + len(email)
+    with world.db.transaction() as unit:
+        return int(unit.conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id",
+            (email,),
+        ).fetchone()[0])
+
+
+def test_a_sheet_links_to_a_seat_and_linking_it_again_is_not_a_change(world: World) -> None:
+    """B-4 step 4: already linked to that seat is `False`, so a retried link is
+    not an error. The link changes the link and nothing else — no timestamp,
+    no write revision, no version (B-9)."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+
+    assert _link(world, campaign, sheet.id, seat) is True
+    assert _link(world, campaign, sheet.id, seat) is False
+
+    linked = _got(world, campaign, sheet.id)
+    assert linked.linked_participant_id == seat
+    assert (linked.updated_at, linked.write_revision, linked.version) == (
+        sheet.updated_at, sheet.write_revision, sheet.version,
+    )
+    found = _sheet_of(world, campaign, seat)
+    assert found is not None and found.id == sheet.id
+
+
+def test_a_linked_sheet_is_never_re_pointed_at_another_seat(world: World) -> None:
+    """B-4 step 5. Moving a sheet is an unlink and a link, and the unlink is a
+    fact-changing narrowing the route owns (RQ-5); the primitive never does it
+    silently."""
+    campaign = _a_campaign(world)
+    first = _a_participant(world, campaign, alias="Rook")
+    second = _a_participant(world, campaign, alias="Wren")
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, first)
+
+    with pytest.raises(SheetAlreadyLinked) as refused:
+        _link(world, campaign, sheet.id, second)
+
+    assert (refused.value.document_id, refused.value.participant_id) == (sheet.id, second)
+    assert _got(world, campaign, sheet.id).linked_participant_id == first
+
+
+def test_a_seat_holds_one_sheet_and_the_refusal_leaves_the_transaction_usable(
+    world: World,
+) -> None:
+    """B-4 step 6 and lead ruling 5.1#2. In PostgreSQL the partial unique index
+    decides it, inside a savepoint, so the caller's transaction survives the
+    `UniqueViolation` and the refusal carries none of the driver's text; the
+    twin decides it over the rows it can see."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    first = _a_sheet(world, campaign, "Rook")
+    second = _a_sheet(world, campaign, "Rook's second")
+    _link(world, campaign, first.id, seat)
+
+    with world.db.transaction() as unit:
+        with pytest.raises(SheetAlreadyLinked) as refused:
+            world.documents.link_character_sheet(unit, campaign, second.id, participant_id=seat)
+        still = world.documents.get(unit, campaign, second.id)
+        world.documents.set_archived(unit, campaign, second.id, archived=True)
+
+    assert refused.value.__cause__ is None and refused.value.__context__ is None
+    assert still is not None and still.linked_participant_id is None
+    after = _got(world, campaign, second.id)
+    assert after.archived_at is not None, "the transaction went on and committed"
+    assert after.linked_participant_id is None
+
+
+def test_only_a_character_sheet_is_linkable(world: World) -> None:
+    """AUD-15 names a character sheet, and the check is the TYPE, in Python, in
+    both worlds, with no database constraint and without reading the registry's
+    `audience` flag (owner decision O-2 narrowed that flag to reveal seeding)."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    npc = _a_document(world, campaign)
+
+    with pytest.raises(NotLinkable) as refused:
+        _link(world, campaign, npc.id, seat)
+
+    assert refused.value.type == "npc"
+    assert _got(world, campaign, npc.id).linked_participant_id is None
+
+
+def test_a_missing_foreign_or_removed_seat_cannot_be_linked(world: World) -> None:
+    """B-1: one refusal, `MissingParent`, raised before any statement fails.
+    Participants are marked removed and never deleted, so a removed seat is
+    still a row, and it is refused all the same."""
+    campaign = _a_campaign(world)
+    other = _a_campaign(world, name="Someone else's")
+    removed = _a_participant(world, campaign, alias="Gone")
+    with world.db.transaction() as unit:
+        world.participants.remove(unit, campaign, removed)
+    theirs = _a_participant(world, other)
+    sheet = _a_sheet(world, campaign)
+
+    for seat in ("prt_" + "z" * 22, theirs, removed):
+        with pytest.raises(MissingParent):
+            _link(world, campaign, sheet.id, seat)
+    assert _got(world, campaign, sheet.id).linked_participant_id is None
+
+
+def test_a_missing_or_foreign_document_cannot_be_linked_or_unlinked(world: World) -> None:
+    """B-8: link and unlink RAISE for a missing or foreign document, where
+    archive and delete report `False`."""
+    campaign = _a_campaign(world)
+    other = _a_campaign(world, name="Someone else's")
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+
+    for owner, document in ((other, sheet.id), (campaign, DOCUMENT)):
+        with pytest.raises(MissingParent):
+            _link(world, owner, document, seat)
+        with pytest.raises(MissingParent):
+            with world.db.transaction() as unit:
+                world.documents.unlink_character_sheet(unit, owner, document)
+
+
+def test_the_link_decides_in_the_order_the_ruling_gives(world: World) -> None:
+    """B-4's order is observable where two refusals apply at once: the type is
+    decided before the seat, and the seat before the existing link."""
+    campaign = _a_campaign(world)
+    live = _a_participant(world, campaign, alias="Rook")
+    removed = _a_participant(world, campaign, alias="Gone")
+    with world.db.transaction() as unit:
+        world.participants.remove(unit, campaign, removed)
+    npc = _a_document(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, live)
+
+    with pytest.raises(NotLinkable):
+        _link(world, campaign, npc.id, removed)
+    with pytest.raises(MissingParent):
+        _link(world, campaign, sheet.id, removed)
+
+
+def test_any_seat_that_is_not_removed_is_linkable(world: World) -> None:
+    """B-2: open, offered or accepted alike. The store never reads the seat's
+    account or when it accepted."""
+    campaign = _a_campaign(world)
+    open_seat = _a_participant(world, campaign, alias="Open")
+    offered = _a_participant(world, campaign, alias="Offered")
+    accepted = _a_participant(world, campaign, alias="Accepted")
+    offered_to, accepted_by = _an_account(world, "o@example.com"), _an_account(world, "ab@example.com")
+    with world.db.transaction() as unit:
+        world.participants.offer(unit, campaign, offered, user_id=offered_to)
+        world.participants.offer(unit, campaign, accepted, user_id=accepted_by)
+        world.participants.accept(unit, campaign, accepted, user_id=accepted_by)
+
+    for index, seat in enumerate((open_seat, offered, accepted)):
+        assert _link(world, campaign, _a_sheet(world, campaign, f"sheet {index}").id, seat)
+
+
+def test_an_archived_sheet_is_linkable(world: World) -> None:
+    """B-4: whether an archived sheet may be linked is the route's to decide."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    with world.db.transaction() as unit:
+        world.documents.set_archived(unit, campaign, sheet.id, archived=True)
+    assert _link(world, campaign, sheet.id, seat) is True
+
+
+def test_removing_a_seat_leaves_the_link_and_the_sheet_standing(world: World) -> None:
+    """AUD-16 says what Remove does, and unlinking is not on the list: the seat
+    is marked removed, the sheet stays, and the link stays on the document
+    (B-3). `sheet_for_participant` answers only for a live seat, so it now
+    answers None; the link is still read through `get`."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, seat)
+
+    with world.db.transaction() as unit:
+        assert world.participants.remove(unit, campaign, seat)
+
+    assert _got(world, campaign, sheet.id).linked_participant_id == seat
+    assert _sheet_of(world, campaign, seat) is None
+
+
+def test_unlinking_reports_the_seat_it_was_linked_to_and_frees_both(world: World) -> None:
+    """The former seat id comes back so the route can audit it (SEC-38); a
+    second unlink finds nothing. Afterwards either side may be linked again."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, seat)
+
+    with world.db.transaction() as unit:
+        assert world.documents.unlink_character_sheet(unit, campaign, sheet.id) == seat
+        assert world.documents.unlink_character_sheet(unit, campaign, sheet.id) is None
+
+    unlinked = _got(world, campaign, sheet.id)
+    assert unlinked.linked_participant_id is None and unlinked.updated_at == sheet.updated_at
+    assert _sheet_of(world, campaign, seat) is None
+    assert _link(world, campaign, _a_sheet(world, campaign, "Another").id, seat) is True
+
+
+def test_deleting_a_linked_sheet_frees_its_seat(world: World) -> None:
+    """The link is a column of the row, so it goes with the row — and in the
+    twin the uniqueness scan reads through `_live`, so the tombstone left
+    behind does not keep the seat taken."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, seat)
+    with world.db.transaction() as unit:
+        world.documents.delete(unit, campaign, sheet.id)
+
+    assert _sheet_of(world, campaign, seat) is None
+    assert _link(world, campaign, _a_sheet(world, campaign, "Rook again").id, seat) is True
+
+
+def test_sheet_for_participant_answers_only_for_a_live_seat_of_that_campaign(
+    world: World,
+) -> None:
+    """B-3: None for a missing seat, a seat of another campaign and a seat with
+    no sheet — one answer, as SEC-2 asks. It takes no lock."""
+    campaign = _a_campaign(world)
+    other = _a_campaign(world, name="Someone else's")
+    seat = _a_participant(world, campaign)
+    bare = _a_participant(world, campaign, alias="Wren")
+    sheet = _a_sheet(world, campaign)
+    _link(world, campaign, sheet.id, seat)
+
+    assert _sheet_of(world, other, seat) is None
+    assert _sheet_of(world, campaign, "prt_" + "z" * 22) is None
+    assert _sheet_of(world, campaign, bare) is None
+    found = _sheet_of(world, campaign, seat)
+    assert found is not None and found == _got(world, campaign, sheet.id)
+
+
+# Every slice-B mutator is transactional ─────────────────────────────────────
+
+
+@pytest.mark.parametrize("mutator", ["set_archived", "delete", "restore", "link", "unlink"])
+def test_a_rolled_back_mutation_leaves_no_trace_in_either_world(
+    world: World, mutator: str
+) -> None:
+    """Every mutator takes the unit of work first, so a unit that rolls back
+    takes the change with it — in PostgreSQL by the transaction, in the twin by
+    `Staging` dropping the unit's rows."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign)
+    sheet = _a_sheet(world, campaign)
+    _write(world, campaign, sheet.id, fields={"hp": 9},
+           author=Author.ASSISTANT, base_write_revision=None)
+    if mutator == "unlink":
+        _link(world, campaign, sheet.id, seat)
+    before = _got(world, campaign, sheet.id)
+    calls: dict[str, Callable[[Any], Any]] = {
+        "set_archived": lambda unit: world.documents.set_archived(
+            unit, campaign, sheet.id, archived=True),
+        "delete": lambda unit: world.documents.delete(unit, campaign, sheet.id),
+        "restore": lambda unit: world.documents.restore(
+            unit, campaign, sheet.id, version_number=1),
+        "link": lambda unit: world.documents.link_character_sheet(
+            unit, campaign, sheet.id, participant_id=seat),
+        "unlink": lambda unit: world.documents.unlink_character_sheet(
+            unit, campaign, sheet.id),
+    }
+
+    with pytest.raises(RuntimeError, match="deliberate"):
+        with world.db.transaction() as unit:
+            assert calls[mutator](unit)
+            raise RuntimeError("deliberate")
+
+    assert _got(world, campaign, sheet.id) == before
+    assert len(_versions(world, campaign, sheet.id)) == 2
+
+
+# ── Slice B: what only the database can say ──────────────────────────────────
+
+#: Every index of the two tables but their primary keys, as `pg_get_indexdef`
+#: renders it: the four library indexes (LIB-20 to LIB-23) and the three unique
+#: ones, each partial so an UPDATE of its columns keeps `FOR NO KEY UPDATE`
+#: (RQ-3). A silently dropped or redefined index turns this red.
+DOCUMENT_INDEXES = {
+    "documents_active_recent_idx": (
+        "CREATE INDEX documents_active_recent_idx ON campaign.documents USING btree "
+        '(campaign_id, updated_at DESC, id COLLATE "C") WHERE (archived_at IS NULL)'
+    ),
+    "documents_archived_recent_idx": (
+        "CREATE INDEX documents_archived_recent_idx ON campaign.documents USING btree "
+        '(campaign_id, updated_at DESC, id COLLATE "C") WHERE (archived_at IS NOT NULL)'
+    ),
+    "documents_active_name_idx": (
+        "CREATE INDEX documents_active_name_idx ON campaign.documents USING btree "
+        '(campaign_id, name_key COLLATE "C", id COLLATE "C") WHERE (archived_at IS NULL)'
+    ),
+    "documents_archived_name_idx": (
+        "CREATE INDEX documents_archived_name_idx ON campaign.documents USING btree "
+        '(campaign_id, name_key COLLATE "C", id COLLATE "C") WHERE (archived_at IS NOT NULL)'
+    ),
+    "document_versions_open_uidx": (
+        "CREATE UNIQUE INDEX document_versions_open_uidx ON campaign.document_versions "
+        "USING btree (document_id) WHERE (sealed_at IS NULL)"
+    ),
+    "documents_command_uidx": (
+        "CREATE UNIQUE INDEX documents_command_uidx ON campaign.documents USING btree "
+        "(campaign_id, created_command_id) WHERE (created_command_id IS NOT NULL)"
+    ),
+    "documents_participant_uidx": (
+        "CREATE UNIQUE INDEX documents_participant_uidx ON campaign.documents USING btree "
+        "(linked_participant_id) WHERE (linked_participant_id IS NOT NULL)"
+    ),
+}
+
+
+def _document_indexes(conn: Any) -> dict[str, str]:
+    return dict(
+        conn.execute(
+            "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'campaign' "
+            "AND tablename IN ('documents', 'document_versions')"
+        ).fetchall()
+    )
+
+
+@needs_db
+def test_the_catalog_holds_every_document_index_exactly_as_defined(dsn: str) -> None:
+    """B-15's catalog layer. The `EXPLAIN` test below proves one index is used;
+    this proves all seven are there, with the columns, collations and partial
+    predicates the store's statements and RQ-3 rely on — and that nothing else
+    is, because a later non-partial unique index over a column the store
+    updates would escalate every such UPDATE's lock."""
+    with connect(dsn) as conn:
+        found = _document_indexes(conn)
+
+    assert {name for name in found if name.endswith("_pkey")} == {
+        "documents_pkey", "document_versions_pkey",
+    }
+    assert {name: text for name, text in found.items() if not name.endswith("_pkey")} == (
+        DOCUMENT_INDEXES
+    )
+
+
+@needs_db
+@pytest.mark.parametrize("table", ["campaign.documents", "campaign.document_versions"])
+def test_no_column_in_the_catalog_is_named_as_though_it_held_visibility(
+    dsn: str, table: str
+) -> None:
+    """A name-based check, and it claims no more than that. It catches the
+    mistake that actually happens (a `revealed` flag beside the content) and it
+    cannot catch a visibility flag hidden behind an innocuous name. What rules
+    that out is the reviewer reading the DDL.
+
+    ED-6: nothing about visibility is stored on a document or a version row. A
+    reveal's pin lives on `1kg.7.1`'s slot row. This reads the columns the
+    database really has, from `pg_attribute`, where the twin of this test in
+    `service/tests/test_document_store.py` reads the migration's text."""
+    with connect(dsn) as conn:
+        columns = [
+            row[0]
+            for row in conn.execute(
+                "SELECT attname FROM pg_attribute WHERE attrelid = %s::regclass "
+                "AND attnum > 0 AND NOT attisdropped",
+                (table,),
+            ).fetchall()
+        ]
+    assert "data" in columns, f"this test found no real column of {table}, so it proves nothing"
+    for column in columns:
+        offending = [word for word in VISIBILITY_WORDS if word in column]
+        assert not offending, f"{table}.{column} reads like it held {offending[0]}"
+
+
+#: B-15: at least 20,000 documents across at least five campaigns. Fewer, and a
+#: sequential scan is genuinely cheaper, so the plan would prove nothing.
+SEEDED_DOCUMENTS = 20_000
+SEEDED_CAMPAIGNS = 5
+
+
+@needs_db
+def test_the_default_library_page_is_read_off_its_index(dsn: str) -> None:
+    """B-15's plan layer, with no escape hatch: if the default page — Active,
+    Recent, the Documents category's five types, LIMIT 25 — is not an ordered
+    scan of `documents_active_recent_idx`, the index or the statement is wrong.
+    The plan must also hold no sort of any kind: an index that no longer
+    matches the ORDER BY (a lost `COLLATE "C"`) is still scanned, for its
+    leading keys, under an Incremental Sort.
+
+    It EXPLAINs the store's own statement (`_library_statement`), not a copy of
+    it, with the values inlined client-side so the plan is the one those values
+    get. `ANALYZE` runs first: without statistics the planner guesses.
+    `enable_seqscan` is left alone."""
+    campaigns = [f"cmp_{index:022d}" for index in range(SEEDED_CAMPAIGNS)]
+    per_campaign = SEEDED_DOCUMENTS // SEEDED_CAMPAIGNS
+    with connect(dsn) as conn:
+        owner = conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES ('gm@example.com', 'x') "
+            "RETURNING id"
+        ).fetchone()[0]
+        for campaign in campaigns:
+            conn.execute(
+                "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Seeded')",
+                (campaign, owner),
+            )
+        conn.execute(
+            "INSERT INTO campaign.documents (id, campaign_id, type, type_version, data, "
+            "write_revision, field_revisions, name_key, search_key, updated_at, archived_at) "
+            "SELECT 'doc_' || lpad(i::text, 22, '0'), (%s::text[])[1 + (i - 1) / %s], "
+            "(%s::text[])[1 + i %% %s], 1, jsonb_build_object('name', 'seeded ' || i), 1, "
+            "'{}'::jsonb, 'seeded ' || i, 'seeded ' || i, now() - make_interval(secs => i), "
+            "CASE WHEN i %% 10 = 0 THEN now() ELSE NULL END "
+            "FROM generate_series(1, %s) AS i",
+            (campaigns, per_campaign, [kind.value for kind in DocumentTypeId],
+             len(DocumentTypeId), SEEDED_DOCUMENTS),
+        )
+        assert conn.execute("SELECT count(*) FROM campaign.documents").fetchone()[0] == (
+            SEEDED_DOCUMENTS
+        )
+        conn.execute("ANALYZE campaign.documents")
+        statement, params = _library_statement(
+            campaigns[0], types=DOCUMENTS, archived=False, term="",
+            sort=wire.LibrarySort.RECENT, anchor=None, limit=25,
+        )
+        with psycopg.ClientCursor(conn) as cursor:
+            cursor.execute(f"EXPLAIN {statement}", params)
+            plan = "\n".join(row[0] for row in cursor.fetchall())
+
+    assert "Index Scan using documents_active_recent_idx" in plan, plan
+    assert "Sort" not in plan, "the index gives the order: a sort means it matches no longer"
+
+
+@needs_db
+def test_two_sheets_linked_to_one_seat_at_once_leave_exactly_one_linked(dsn: str) -> None:
+    """B-14, the first race. The second link waits on the first's uncommitted
+    index entry — the server says so — and once the first commits it meets
+    `documents_participant_uidx`, inside its savepoint: it is refused with
+    `SheetAlreadyLinked` and its transaction goes on to read and commit."""
+    world = _a_seeded_world(dsn, PATIENT)
+    seat = _a_participant(world, CAMPAIGN)
+    first = _a_sheet(world, CAMPAIGN, "Rook")
+    second = _a_sheet(world, CAMPAIGN, "Rook's twin")
+    store = world.documents
+
+    def holder(unit: Any) -> None:
+        assert store.link_character_sheet(unit, CAMPAIGN, first.id, participant_id=seat)
+
+    def waiter(unit: Any) -> tuple[Any, Any]:
+        try:
+            store.link_character_sheet(unit, CAMPAIGN, second.id, participant_id=seat)
+        except SheetAlreadyLinked as refused:
+            return refused, store.get(unit, CAMPAIGN, second.id)
+        return None, None
+
+    refused, after = _while_another_transaction_holds(dsn, world.db, holder, waiter)
+
+    assert isinstance(refused, SheetAlreadyLinked), "the second link was not refused"
+    assert refused.__context__ is None, "the driver's error rides on the refusal"
+    assert after is not None and after.linked_participant_id is None
+    with connect(dsn) as conn:
+        linked = conn.execute(
+            "SELECT id FROM campaign.documents WHERE linked_participant_id = %s", (seat,)
+        ).fetchall()
+    assert linked == [(first.id,)]
+
+
+@needs_db
+def test_one_sheet_linked_to_two_seats_at_once_is_never_re_pointed(dsn: str) -> None:
+    """B-14, the second race. The second link waits on the document row the
+    first holds `FOR NO KEY UPDATE`, then reads what the first committed and
+    refuses: a linked sheet is never re-pointed."""
+    world = _a_seeded_world(dsn, PATIENT)
+    rook = _a_participant(world, CAMPAIGN, alias="Rook")
+    wren = _a_participant(world, CAMPAIGN, alias="Wren")
+    sheet = _a_sheet(world, CAMPAIGN)
+    store = world.documents
+
+    def holder(unit: Any) -> None:
+        assert store.link_character_sheet(unit, CAMPAIGN, sheet.id, participant_id=rook)
+
+    def waiter(unit: Any) -> tuple[str, str] | None:
+        # The refusal's ids, never the exception itself: the harness re-raises
+        # whatever exception a waiter hands back.
+        try:
+            store.link_character_sheet(unit, CAMPAIGN, sheet.id, participant_id=wren)
+        except SheetAlreadyLinked as refused:
+            return refused.document_id, refused.participant_id
+        return None
+
+    refused = _while_another_transaction_holds(dsn, world.db, holder, waiter)
+
+    assert refused == (sheet.id, wren), "the sheet was re-pointed"
+    assert _got(world, CAMPAIGN, sheet.id).linked_participant_id == rook

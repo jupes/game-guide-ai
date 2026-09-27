@@ -179,7 +179,7 @@ function isAbilitiesRecord(value: FieldValue): value is Abilities {
 }
 
 /** Whether a field has nothing in it, so the read presentation shows its
- * placeholder. `0` is a value; an ability block of nothing but nulls is not. */
+ * placeholder. `0` is a value; an ability block with no score in it is not. */
 export function isBlankValue(kind: string, value: FieldValue | undefined): boolean {
   if (value === null || value === undefined) return true
   if (typeof value === 'string') return trimWire(value) === ''
