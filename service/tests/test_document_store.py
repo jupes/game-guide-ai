@@ -35,7 +35,7 @@ import pytest
 from service import document_store as docs
 from service.audit_log import ACTION_DETAIL, AuditAction, MintedId, accepts
 from service.campaign_identity import DOCUMENT, PARTICIPANT, id_check_regex
-from service.campaign_store import InMemoryCampaignStore, MissingParent
+from service.campaign_store import InMemoryCampaignStore, MissingParent, shared_rows
 from service.db import InMemoryDatabase
 from service.document_store import (
     NAME_KEY_MAX,
@@ -742,7 +742,10 @@ def _every_slice_b_refusal(
     db: InMemoryDatabase, unit, store: InMemoryDocumentStore, campaign: str, document_id: str
 ) -> list[str]:
     """Every refusal slice B added, provoked with canaries in reach: the
-    document's name and tag, the seat's alias, and a search string."""
+    document's name and tag, the seat's alias, and a search string. Also
+    proves SEC-20's rule generally, not only for `SheetAlreadyLinked`: no
+    collected message names the id of a document, a participant or a
+    campaign, however the refusal is spelled."""
     seats = InMemoryParticipantStore(db)
     seat = seats.add(unit, campaign, alias=PRIVATE["alias"]).id
     other = seats.add(unit, campaign, alias="Wren").id
@@ -760,7 +763,7 @@ def _every_slice_b_refusal(
     link = store.link_character_sheet
     unlink = store.unlink_character_sheet
     elsewhere = "cmp_" + "z" * 22
-    return [
+    refusals = [
         _refusal(link, unit, campaign, sheet, participant_id=other),
         _refusal(link, unit, campaign, spare, participant_id=seat),
         _refusal(link, unit, campaign, document_id, participant_id=other),
@@ -778,6 +781,10 @@ def _every_slice_b_refusal(
                  sort=PRIVATE["search"], limit=10),
         _refusal(store.set_archived, unit, campaign, document_id, archived=PRIVATE["name"]),
     ]
+    spoken = "\n".join(refusals)
+    for shape in ("doc_", "prt_", "cmp_"):
+        assert shape not in spoken, spoken
+    return refusals
 
 
 def _refusal(call, *args, expect: object = ..., **kwargs) -> str:
@@ -1049,6 +1056,34 @@ def test_the_twin_reads_its_documents_through_one_accessor_that_hides_tombstones
             ):
                 callers.append(node.name)
     assert callers == ["_live"]
+
+
+def test_a_deleted_documents_tombstone_keeps_only_its_id_and_campaign():
+    """B-10: `_tombstone`'s docstring claims the twin's delete keeps nothing but
+    a document's id and campaign_id — no field text, folded key, link or
+    command id of any kind. Proven on a row started full of canaries, a link
+    and a command id, read back through `shared_rows` itself (never `_live`,
+    which only hides the row and would let a leftover value hide with it)."""
+    db, store = _a_world()
+    campaign = _a_campaign_id(db)
+    with db.transaction() as unit:
+        seat = InMemoryParticipantStore(db).add(unit, campaign, alias=PRIVATE["alias"]).id
+        made = store.create(
+            unit, campaign, doc_type=DocumentTypeId.CHARACTER_SHEET, type_version=1,
+            data={"name": PRIVATE["name"], "tags": [PRIVATE["tag"]]},
+            author=Author.GM, command_id="cmd-canary",
+        )
+        assert store.link_character_sheet(unit, campaign, made.id, participant_id=seat)
+        assert store.delete(unit, campaign, made.id)
+        row = shared_rows(db, "documents").visible(unit)[made.id]
+    assert row.gone is True
+    assert row.data == {}
+    assert row.name_key == "" and row.search_key == ""
+    assert row.linked_participant_id is None
+    assert row.created_command_id is None
+    assert row.type == "" and row.type_version == 0
+    assert row.write_revision == 0 and row.field_revisions == {}
+    assert row.id == made.id and row.campaign_id == campaign
 
 
 def test_a_restore_is_the_gms_and_takes_no_author():
