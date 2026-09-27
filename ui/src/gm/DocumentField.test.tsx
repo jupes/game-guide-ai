@@ -452,6 +452,31 @@ describe('abilities — six scores, derived modifiers, and an absent score is no
     expect(screen.getByText('Between 0 and 99')).toBeInTheDocument()
     expect(screen.getByRole('spinbutton', { name: 'Strength' })).toHaveValue(ABILITY_SCORE_MAX + 1)
   })
+
+  it('leaves an emptied score OUT of onDraft, never null — requirement 7e on the draft path', async () => {
+    // The commit path (above) is pinned; the draft path shares the same
+    // withScore/blockOrNull helpers but had no test of its own reaching
+    // onDraft, and 1kg.6.5's autosave will be the first real consumer of it.
+    const user = userEvent.setup()
+    const onDraft = vi.fn()
+    show('abilities', { typeId: 'statblock', onDraft })
+    await openEditor(user, 'Ability scores')
+    await user.clear(screen.getByRole('spinbutton', { name: 'Strength' }))
+    const [, block] = onDraft.mock.lastCall ?? []
+    expect(block).toStrictEqual({ dex: 12, con: 17, wis: 13, cha: 16 })
+    expect(Object.hasOwn(block as object, 'str')).toBe(false)
+  })
+
+  it('sends onDraft null when no score remains, as every kind clears — requirement 7e on the draft path', async () => {
+    const user = userEvent.setup()
+    const onDraft = vi.fn()
+    show('abilities', { typeId: 'statblock', onDraft })
+    await openEditor(user, 'Ability scores')
+    for (const name of ['Strength', 'Dexterity', 'Constitution', 'Intelligence', 'Wisdom', 'Charisma']) {
+      await user.clear(screen.getByRole('spinbutton', { name }))
+    }
+    expect(onDraft).toHaveBeenLastCalledWith('abilities', null)
+  })
 })
 
 // ── integer ──────────────────────────────────────────────────────────────────

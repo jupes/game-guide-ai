@@ -300,14 +300,24 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
 #: rather than an omission, and `None` is legal for every action: most rows are
 #: an allowed decision that needs no explaining. A bead that adds a refusal adds
 #: its code here in the change a reviewer reads, as it does for the detail.
+#: Written out member by member, with no comprehension to fill the gaps: an
+#: action added without its entry is then missing here, and the in-step test in
+#: `service/tests/test_audit_log.py` says so (thl AC4).
 ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
+    AuditAction.SESSION_STARTED: frozenset(),
+    AuditAction.SESSION_ENDED: frozenset(),
+    AuditAction.SESSION_EXPIRED: frozenset(),
+    AuditAction.SESSION_ROTATED: frozenset(),
+    AuditAction.PARTICIPANT_ADDED: frozenset(),
     AuditAction.PARTICIPANT_REMOVED: frozenset({"gm_removed"}),
+    AuditAction.PARTICIPANT_LINKED: frozenset(),
+    AuditAction.PARTICIPANT_UNLINKED: frozenset(),
+    AuditAction.SEAT_OFFERED: frozenset(),
+    AuditAction.SEAT_ACCEPTED: frozenset(),
+    AuditAction.CAMPAIGN_ARCHIVED: frozenset(),
+    AuditAction.CAMPAIGN_RESTORED: frozenset(),
+    AuditAction.CAMPAIGN_DELETED: frozenset(),
     AuditAction.JOIN_BURST_REFUSED: frozenset(JOIN_BOUND.codes),
-    **{
-        action: frozenset()
-        for action in AuditAction
-        if action not in (AuditAction.PARTICIPANT_REMOVED, AuditAction.JOIN_BURST_REFUSED)
-    },
 }
 
 
@@ -407,14 +417,17 @@ def check_reason_code(action: AuditAction, reason_code: str | None) -> str | Non
 
 
 def check_authz_revision(authz_revision: int | None) -> int | None:
-    """The bound `0005_audit_events.sql` carries, applied in both worlds so that
-    the twin cannot accept a row the database would refuse."""
+    """The bounds `0005_audit_events.sql` carries — never negative, and no
+    wider than the `BIGINT` that holds it — applied in both worlds so that the
+    twin cannot accept a row the database would refuse."""
     if authz_revision is None:
         return None
     if isinstance(authz_revision, bool) or not isinstance(authz_revision, int):
         raise ValueError("an audit row's authorisation revision is a whole number")
     if authz_revision < 0:
         raise ValueError("an audit row's authorisation revision is never negative")
+    if authz_revision > WHOLE_NUMBER_MAX:
+        raise ValueError("an audit row's authorisation revision fits the bigint column that holds it")
     return authz_revision
 
 
@@ -623,24 +636,29 @@ class InMemoryAuditLog:
 
     def __init__(self) -> None:
         self._rows: list[AuditEvent] = []
-        #: Rows this transaction has written and nobody else may see yet.
-        self._staged: dict[int, list[AuditEvent]] = {}
+        #: Rows each open unit has written and nobody else may see yet, keyed by
+        #: the unit itself and never by `id(unit)` (ixa.1), for the reason
+        #: `campaign_store.Staging` gives: the strong reference to the key keeps
+        #: its address from being handed to a later unit.
+        self._staged: dict[InMemoryTransaction, list[AuditEvent]] = {}
         self._next_id = 1
 
     def _mine(self, unit: InMemoryTransaction) -> list[AuditEvent]:
-        key = id(unit)
-        if key not in self._staged:
-            self._staged[key] = []
+        # The claim first (ixa.1): a second open writer is refused before
+        # anything is staged or registered. `for_campaign` never comes here.
+        unit.claim_writer()
+        if unit not in self._staged:
+            self._staged[unit] = []
 
             def publish() -> None:
-                self._rows.extend(self._staged.pop(key, []))
+                self._rows.extend(self._staged.pop(unit, []))
 
             def discard() -> None:
-                self._staged.pop(key, None)
+                self._staged.pop(unit, None)
 
             unit.on_publish(publish)
             unit.on_rollback(discard)
-        return self._staged[key]
+        return self._staged[unit]
 
     def append(
         self,
@@ -686,13 +704,14 @@ class InMemoryAuditLog:
             authz_revision=checked.authz_revision,
             detail=checked.detail,
         )
-        self._next_id += 1
         self._mine(twin).append(event)
+        # Only once the row is staged: a refused append must not use up an id.
+        self._next_id += 1
         return event
 
     def for_campaign(self, unit: UnitOfWork, campaign_id: str) -> list[AuditEvent]:
         twin = fake(unit)
-        visible = [*self._rows, *self._staged.get(id(twin), [])]
+        visible = [*self._rows, *self._staged.get(twin, [])]
         return sorted(
             (e for e in visible if e.campaign_id_tombstone == campaign_id),
             key=lambda e: (e.created_at, e.id),

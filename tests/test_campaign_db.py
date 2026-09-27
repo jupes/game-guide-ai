@@ -14,7 +14,10 @@ server.
 
 `service/tests/test_db.py` owns the other half — the lock-order rules, the
 refusals and the statements — which the twin can show and which runs on any
-machine. Neither file claims the other's half.
+machine. Neither file claims the other's half, with one exception kept
+here: fma's scripted `offer` test
+(`test_a_driver_refusal_inside_offer_becomes_the_one_refusal_with_nothing_attached`)
+is the one statement-level test in this file.
 
 The tests marked `needs_db` need DATABASE_URL, which CI sets for this file
 (`.github/workflows/ci.yml`, pinned by `service/tests/test_ci_workflow.py`).
@@ -68,6 +71,7 @@ from service.db import (
     InMemoryDatabase,
     PgTransaction,
     PoolSettings,
+    TwinWouldBlock,
 )
 from service.participant_store import (
     InMemoryParticipantStore,
@@ -396,6 +400,56 @@ def test_the_first_transaction_bound_a_transaction_sets_is_the_one_that_fires(
         assert conn.execute(
             "SELECT reveal_epoch FROM campaign.table_sessions WHERE id = %s", (session.id,)
         ).fetchone()[0] == 0, "the transaction was cut short at one second, and kept nothing"
+
+
+@needs_db
+def test_a_longer_bound_set_first_is_not_cut_short_by_a_shorter_one_set_after_it(
+    dsn: str, owner: int
+) -> None:
+    """thl AC1, the mirror of the test above, and ADR RQ-8(a)'s deciding case.
+
+    The test above sets the bounds ascending (1 s, then 30 s) and the
+    transaction dies at one second. That falsifies "the last value set wins"
+    and nothing else: "the first value wins" and "the shortest value wins"
+    predict the same death. This one sets them DESCENDING — 30 s first, then
+    1 s — where the two part: first-wins predicts the transaction survives a
+    two-second sleep, shortest-wins (and last-wins) predict it dies at one
+    second. The two tests together tell the three rules apart; neither alone
+    does.
+
+    **The control.** The verdict here is the absence of an exception, so it
+    rests on three things that each show a presence:
+    `test_the_first_transaction_bound_a_transaction_sets_is_the_one_that_fires`
+    is the observation that a `transaction_timeout` set inside a transaction
+    does arm and does end the session on this server; the `SELECT 1` on the
+    same connection straight after the sleep is the survival observed inside
+    the block rather than inferred from a clean exit; and the elapsed time is
+    asserted, so a `pg_sleep` that did not run cannot pass as survival. Both
+    bounds are asserted to have reached the transaction before the sleep, and
+    the write is read back on a fresh connection afterwards.
+    """
+    db = _database(dsn)
+    participants = PostgresParticipantStore()
+    with db.transaction() as unit:
+        seat = participants.add(unit, CAMPAIGN, alias="Rook")
+
+    with db.transaction() as unit:
+        unit.lock_campaign(CAMPAIGN, shared=False, transaction_timeout_s=30)
+        participants.hold(unit, seat.id, campaign_id=CAMPAIGN, transaction_timeout_s=1)
+        assert unit.transaction_bounds == ["30s", "1s"]
+        assert unit.conn.execute("SHOW transaction_timeout").fetchone()[0] == "1s", (
+            "the later value is what the server REPORTS"
+        )
+        assert unit.advance_authz_revision(CAMPAIGN) == 1
+        started = time.monotonic()
+        unit.conn.execute("SELECT pg_sleep(2)")
+        assert unit.conn.execute("SELECT 1").fetchone()[0] == 1, "the session outlived the one-second bound"
+        assert time.monotonic() - started >= 2, "the sleep really ran past the shorter bound"
+
+    with connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT authz_revision FROM campaign.authz_state WHERE campaign_id = %s", (CAMPAIGN,)
+        ).fetchone()[0] == 1, "the transaction committed its write"
 
 
 @needs_db
@@ -1193,9 +1247,16 @@ PARTICIPANT_MUTATORS: dict[str, Callable[[Any, Any, str, str, int], object]] = {
 }
 
 
+#: The state of the seat a mutator is called on (thl AC2): one it may change,
+#: one removed in an earlier transaction, and one of another GM's campaign named
+#: with this campaign's id.
+SEAT_STATES = ("active", "removed", "foreign")
+
+
+@pytest.mark.parametrize("state", SEAT_STATES)
 @pytest.mark.parametrize("mutator", sorted(PARTICIPANT_MUTATORS))
 def test_every_participant_mutator_takes_the_seats_row_and_bounds_its_transaction(
-    world: World, mutator: str
+    world: World, mutator: str, state: str
 ) -> None:
     """G-6, and the residue of F-15: every mutator holds the seat's row itself,
     so the order RQ-3 rests on is one no caller can forget, and a bare call is
@@ -1205,17 +1266,46 @@ def test_every_participant_mutator_takes_the_seats_row_and_bounds_its_transactio
     Both halves are read off the unit of work, which keeps them assertable in
     both worlds: the bound the mutator asked for, and the refusal that proves it
     declared a row lock (`lock_campaign` is the first lock a transaction takes,
-    RQ-2, so a declared row lock makes a later one illegal). The call must also
-    have succeeded, so the bound cannot come from a refusal's path alone.
+    RQ-2, so a declared row lock makes a later one illegal). On an active seat
+    the call must also have succeeded, so the bound cannot come from a
+    refusal's path alone.
+
+    **The seat-state axis (thl AC2).** On a seat that is removed, or that
+    belongs to another GM's campaign and is named with this campaign's id,
+    every mutator refuses — `remove` answers False, `offer` and `accept` raise
+    `SeatUnavailable` — so nothing after the refusal can have bounded the
+    transaction or declared a row lock: only the mutator's own leading `hold`
+    can. A mutator that answers from an unlocked read before it holds (mutant
+    M-R) leaves `transaction_bounds` empty on those cells and goes red here,
+    while the active cell stays green. The two unit-of-work assertions sit
+    after the refusal, at the call's own indentation — inside the
+    `pytest.raises` block they would never run.
+
+    The removed cell removes the seat in an earlier transaction — for `accept`
+    after offering it to `player`, so the removal is the only reason left to
+    refuse. The foreign cell seats `Rook` in the other GM's campaign (offered
+    to `player` there, for `accept`) and calls with this campaign's id, so the
+    refusal has one cause: the seat is not in this campaign.
     """
     campaign = _a_campaign(world)
-    seat = _a_participant(world, campaign, "Rook")
+    home = _a_campaign(world, owner=world.other_owner, name="Theirs") if state == "foreign" else campaign
+    seat = _a_participant(world, home, "Rook")
     player = world.players[0]
     if mutator == "accept":
-        _offer(world, campaign, seat, player)
+        _offer(world, home, seat, player)
+    if state == "removed":
+        with world.db.transaction() as unit:
+            assert world.participants.remove(unit, home, seat) is True
+    call = PARTICIPANT_MUTATORS[mutator]
     with world.db.transaction() as unit:
-        outcome = PARTICIPANT_MUTATORS[mutator](world.participants, unit, campaign, seat, player)
-        assert outcome is True or isinstance(outcome, Participant), outcome
+        if state == "active":
+            outcome = call(world.participants, unit, campaign, seat, player)
+            assert outcome is True or isinstance(outcome, Participant), outcome
+        elif mutator == "remove":
+            assert call(world.participants, unit, campaign, seat, player) is False
+        else:
+            with pytest.raises(SeatUnavailable):
+                call(world.participants, unit, campaign, seat, player)
         assert unit.transaction_bounds[:1] == ["5s"], "bounded before anything else (RQ-8)"
         with pytest.raises(CampaignLockOrder):
             unit.lock_campaign(campaign, shared=True)
@@ -1276,6 +1366,87 @@ def test_holding_a_participant_hands_back_the_row_so_the_caller_can_read_it(worl
         assert held is not None
         assert (held.id, held.campaign_id, held.is_active) == (seat, campaign, True)
         assert world.participants.hold(unit, "prt_" + "z" * 22, campaign_id=campaign) is None
+
+
+# z9v item 3 — a value of the wrong TYPE is refused in both worlds, by name,
+# before any statement. PostgreSQL would answer `operator does not exist` and
+# abort the caller's whole transaction; the twin used to answer "not found".
+
+#: (method, the parameter given the wrong type, the wrong value): every
+#: identifier and account parameter of every public method, plus `None` (no
+#: parameter is optional any more) and a bool (Python counts one as an int).
+WRONG_TYPES: list[tuple[str, str, object]] = [
+    ("add", "campaign_id", 987654321),
+    ("add", "alias", 987654321),
+    ("add", "campaign_id", None),
+    ("get", "participant_id", 987654321),
+    ("get", "participant_id", None),
+    ("list_for_campaign", "campaign_id", 987654321),
+    ("hold", "participant_id", 987654321),
+    ("hold", "campaign_id", 987654321),
+    ("remove", "campaign_id", 987654321),
+    ("remove", "participant_id", 987654321),
+    ("offer", "campaign_id", 987654321),
+    ("offer", "participant_id", 987654321),
+    ("offer", "user_id", "987654321"),
+    ("accept", "campaign_id", 987654321),
+    ("accept", "participant_id", 987654321),
+    ("accept", "user_id", "987654321"),
+    ("seat_for", "campaign_id", 987654321),
+    ("seat_for", "user_id", "987654321"),
+    ("seats_for_user", "user_id", "987654321"),
+    ("seats_for_user", "user_id", True),
+]
+
+_STORE_CALLS: dict[str, Callable[[Any, Any, dict[str, Any]], object]] = {
+    "add": lambda store, unit, a: store.add(unit, a["campaign_id"], alias=a["alias"]),
+    "get": lambda store, unit, a: store.get(unit, a["participant_id"]),
+    "list_for_campaign": lambda store, unit, a: store.list_for_campaign(unit, a["campaign_id"]),
+    "hold": lambda store, unit, a: store.hold(unit, a["participant_id"], campaign_id=a["campaign_id"]),
+    "remove": lambda store, unit, a: store.remove(unit, a["campaign_id"], a["participant_id"]),
+    "offer": lambda store, unit, a: store.offer(
+        unit, a["campaign_id"], a["participant_id"], user_id=a["user_id"]
+    ),
+    "accept": lambda store, unit, a: store.accept(
+        unit, a["campaign_id"], a["participant_id"], user_id=a["user_id"]
+    ),
+    "seat_for": lambda store, unit, a: store.seat_for(unit, a["campaign_id"], a["user_id"]),
+    "seats_for_user": lambda store, unit, a: store.seats_for_user(unit, a["user_id"]),
+}
+
+
+@pytest.mark.parametrize(
+    ("method", "parameter", "wrong"),
+    WRONG_TYPES,
+    ids=[f"{m}-{p}-{type(w).__name__}" for m, p, w in WRONG_TYPES],
+)
+def test_a_value_of_the_wrong_type_is_refused_by_name_and_the_transaction_goes_on(
+    world: World, method: str, parameter: str, wrong: object
+) -> None:
+    """z9v item 3. Every other argument is valid, so the refusal has one cause.
+    It is the built-in `TypeError`, it names the parameter and never the value,
+    and — the half only the `postgres` parameter can show, in CI — it arrives
+    without a failed statement: the same transaction goes on to seat `Kestrel`
+    and commits. Without the check PostgreSQL raises `operator does not exist`
+    and the write after it fails on an aborted transaction."""
+    campaign = _a_campaign(world)
+    seat = _a_participant(world, campaign, "Rook")
+    arguments: dict[str, Any] = {
+        "campaign_id": campaign,
+        "participant_id": seat,
+        "alias": "Wren",
+        "user_id": world.players[0],
+    }
+    arguments[parameter] = wrong
+    with world.db.transaction() as unit:
+        with pytest.raises(TypeError, match=f"{parameter} is an? (str|int)") as refused:
+            _STORE_CALLS[method](world.participants, unit, arguments)
+        assert "987654321" not in str(refused.value), "a refusal names the parameter, never the value"
+        world.participants.add(unit, campaign, alias="Kestrel")
+
+    with world.db.transaction() as unit:
+        seated = sorted(p.alias for p in world.participants.list_for_campaign(unit, campaign))
+        assert seated == ["Kestrel", "Rook"]
 
 
 # Behaviour 14 — one live session per GM, across campaigns.
@@ -1929,6 +2100,174 @@ def test_no_store_record_shows_a_digest_or_an_alias_when_it_is_printed() -> None
         assert "Nocturne" not in printed, f"{type(record).__name__} shows a campaign name"
         assert "987654321" not in printed, f"{type(record).__name__} shows an account"
         assert type(record).__name__ in printed, "a record still says what it is"
+
+
+# ── ixa.1 — the twin refuses what only a race can answer ─────────────────────
+#
+# On the twin a single-threaded test can interleave two transactions only by
+# nesting one inside the other, and until ixa.1 the inner one then committed
+# states PostgreSQL forbids, because nothing made it wait. Each test below is
+# one of those probes. It now raises `TwinWouldBlock` at the inner unit's first
+# write, or at its conflicting campaign lock, and it names the PostgreSQL test
+# that shows what the server does instead — or says plainly that none exists
+# yet. Twin-only: the PostgreSQL half of a race is a two-connection test.
+
+
+def _twin() -> World:
+    db = InMemoryDatabase()
+    return World(
+        "fake",
+        db,
+        InMemoryCampaignStore(db),
+        InMemoryParticipantStore(db),
+        InMemoryTableSessionStore(db, slot_clear=no_slots),
+        InMemoryAuditLog(),
+        owner=1,
+        other_owner=2,
+        players=(3, 4, 5),
+        slot_clears=[],
+    )
+
+
+def test_the_twin_refuses_a_second_session_start_while_the_first_is_uncommitted() -> None:
+    """Probe N1. The twin used to commit both: two live sessions for one GM. In
+    PostgreSQL `table_sessions_one_live_per_gm_uidx` makes the second start
+    wait for the first and then refuses it —
+    `test_two_racing_session_starts_for_one_gm_leave_exactly_one_winner`."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    expires = datetime.now(UTC) + timedelta(hours=12)
+    with world.db.transaction() as outer:
+        first, _ = world.sessions.start(outer, campaign, owner_id=world.owner, expires_at=expires)
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.sessions.start(inner, campaign, owner_id=world.owner, expires_at=expires)
+
+    with world.db.transaction() as unit:
+        assert world.sessions.get(unit, first.id) is not None
+        with pytest.raises(LiveSessionExists):
+            world.sessions.start(unit, campaign, owner_id=world.owner, expires_at=expires)
+
+
+def test_the_twin_refuses_a_second_seat_on_an_alias_while_the_first_is_uncommitted() -> None:
+    """Probe N2. The twin used to commit both: two active seats answering to
+    one alias. In PostgreSQL `participants_alias_uidx` makes the second insert
+    wait for the first and then skips it. **No PostgreSQL test of that race
+    exists yet** — the index is the evidence, and the follow-up is named in
+    the pull request."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    with world.db.transaction() as outer:
+        world.participants.add(outer, campaign, alias="Rook")
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.participants.add(inner, campaign, alias="rook")
+
+    with world.db.transaction() as unit:
+        assert [p.alias for p in world.participants.list_for_campaign(unit, campaign)] == ["Rook"]
+
+
+def test_the_twin_refuses_a_remove_nested_inside_an_uncommitted_accept() -> None:
+    """Probe N3'. The twin used to lose the GM's Remove: the inner unit
+    removed the committed row, and the outer then published its own accepted
+    copy over it. In PostgreSQL the Remove waits for the seat's row and then
+    marks the seat just accepted —
+    `test_a_remove_waiting_behind_an_accept_wins_and_the_seat_reads_removed`."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    player = world.players[0]
+    seat = _a_participant(world, campaign, "Rook")
+    _offer(world, campaign, seat, player)
+    with world.db.transaction() as outer:
+        assert world.participants.accept(outer, campaign, seat, user_id=player) is True
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.participants.remove(inner, campaign, seat)
+
+    with world.db.transaction() as unit:
+        held = world.participants.get(unit, seat)
+        assert held is not None and held.is_accepted, "only the outer unit's decision committed"
+
+
+def test_the_twin_refuses_an_accept_nested_inside_an_uncommitted_remove() -> None:
+    """Probe N3'', the other order. The twin used to let the inner unit accept
+    a seat the outer had removed, and the outer then published the removal over
+    it. In PostgreSQL the acceptance waits and is refused —
+    `test_an_accept_waiting_behind_a_remove_is_refused_and_the_seat_stays_removed`."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    player = world.players[0]
+    seat = _a_participant(world, campaign, "Rook")
+    _offer(world, campaign, seat, player)
+    with world.db.transaction() as outer:
+        assert world.participants.remove(outer, campaign, seat) is True
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.participants.accept(inner, campaign, seat, user_id=player)
+
+    with world.db.transaction() as unit:
+        held = world.participants.get(unit, seat)
+        assert held is not None and not held.is_active and held.accepted_at is None
+
+
+def test_the_twin_refuses_a_narrow_nested_inside_an_uncommitted_narrow() -> None:
+    """Probe N4. The twin used to commit both and lose one advance:
+    `reveal_epoch` 1, not 2. In PostgreSQL the second narrowing waits for the
+    session's row. **No PostgreSQL test of that wait exists yet** — the row
+    lock `narrow` takes is the evidence, and the follow-up is named in the pull
+    request."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    session, _ = _a_session(world, campaign)
+    with world.db.transaction() as outer:
+        world.sessions.narrow(outer, campaign, session.id)
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.sessions.narrow(inner, campaign, session.id)
+
+    with world.db.transaction() as unit:
+        narrowed = world.sessions.get(unit, session.id)
+        assert narrowed is not None and narrowed.reveal_epoch == 1
+
+
+def test_the_twin_refuses_an_offer_nested_inside_an_uncommitted_offer() -> None:
+    """Probe N5. The twin used to commit both offers of one open seat, the
+    later one winning. In PostgreSQL the second waits for the row, is handed the
+    seat just offered and is refused —
+    `test_two_offers_of_one_open_seat_leave_exactly_one_account_in_it`."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    first, second = world.players[0], world.players[1]
+    seat = _a_participant(world, campaign, "Rook")
+    with world.db.transaction() as outer:
+        world.participants.offer(outer, campaign, seat, user_id=first)
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.participants.offer(inner, campaign, seat, user_id=second)
+
+    with world.db.transaction() as unit:
+        held = world.participants.get(unit, seat)
+        assert held is not None and held.user_id == first
+
+
+def test_the_twin_refuses_a_second_exclusive_holder_of_one_campaign() -> None:
+    """Probe P9. The twin used to let two nested exclusive holders both
+    advance the revision and commit 1, not 2. In PostgreSQL the second
+    `FOR UPDATE` waits and times out —
+    `test_a_conflicting_campaign_lock_waits_and_then_times_out[exclusive-blocks-exclusive]`.
+    The refusal is at the LOCK, before any write: the conflict is judged on the
+    holder's recorded lock, not on whether it has written."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    with world.db.transaction() as outer:
+        outer.lock_campaign(campaign, shared=False)
+        assert outer.advance_authz_revision(campaign) == 1
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                inner.lock_campaign(campaign, shared=False)
+
+    with world.db.transaction() as unit:
+        assert world.campaigns.authz_revision(unit, campaign) == 1
 
 
 # Behaviours 30 and 31 — two callers, one winner. No fake can show this.

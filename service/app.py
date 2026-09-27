@@ -56,7 +56,16 @@ from .metrics import (
     record_safely,
 )
 from .migrations import MigrationError, Mode, migrate
-from .model_catalog import CATALOG_REVISION, DEFAULT_ALIAS, enabled_profiles, get_profile, public_model_entry
+from .model_catalog import (
+    AUTO_PUBLIC_ENTRY,
+    CATALOG_REVISION,
+    DEFAULT_ALIAS,
+    enabled_profiles,
+    get_profile,
+    get_profile_by_public_id,
+    public_model_entry,
+    public_model_id,
+)
 from .models import (
     Attachment,
     AttachmentResponse,
@@ -78,7 +87,13 @@ from .ratelimit import (
     check_chat_request,
     client_source,
 )
-from .security_headers import CONTENT_SECURITY_POLICY
+from .security_headers import (
+    CONTENT_SECURITY_POLICY,
+    CROSS_ORIGIN_OPENER_POLICY,
+    PERMISSIONS_POLICY,
+    REFERRER_POLICY,
+    X_CONTENT_TYPE_OPTIONS,
+)
 from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
@@ -167,6 +182,11 @@ def normalize_llm_error(exc: BaseException) -> str:
     return "unknown"
 
 _state: dict[str, Any] = {}
+
+# The cost ledger's one way in (yje.5.1.2): a turn's rows go to whatever writer
+# this registry holds when the turn ends (`_build_stores` puts it there, the
+# lifespan teardown clears it), or nowhere. Registered once, here.
+usage_capture.set_ledger_provider(lambda: _state.get("ledger"))
 
 
 def build_reranker(enabled: bool | None = None) -> Any | None:
@@ -257,6 +277,12 @@ def _build_stores(db: Database) -> None:
     _state["store"] = PostgresMessageStore(db=db)
     _state["auth"] = PostgresAuthStore(db=db)
     _state["timeline"] = PostgresTimelineStore()
+    # The provider-attempt cost ledger (yje.5.1.2). A store like the others, so
+    # it lives and dies with this registry; `usage_capture` finds it through the
+    # provider registered below `_state`, because `chat()` does not change.
+    from .usage_ledger import LedgerWriter, PostgresUsageLedgerStore
+
+    _state["ledger"] = LedgerWriter(PostgresUsageLedgerStore(), db)
 
 
 def _build_rag(db: Database) -> None:
@@ -616,7 +642,8 @@ async def capture_chat_metrics(request: Request, call_next):
 
 @app.middleware("http")
 async def set_security_headers(request: Request, call_next):
-    """Send the Content-Security-Policy on every response this app produces (va8).
+    """Send the security headers this app owns on every response it produces
+    (va8, and agent-forge-harness-y58 for the four added after it).
 
     A separate middleware rather than two lines inside `capture_chat_metrics`:
     that one returns early for every path that is not `/chat`, so folding the
@@ -630,9 +657,10 @@ async def set_security_headers(request: Request, call_next):
     middleware wraps the router, and the router is what holds the `StaticFiles`
     mount at the bottom of this file.
 
-    `setdefault`, not assignment: a route may answer with a stricter policy of
-    its own — SEC-19 requires `default-src 'none'; sandbox` on asset responses —
-    and must not have to unpick this middleware to keep it.
+    `setdefault`, not assignment, for every header here: a route may answer
+    with a stricter policy of its own — SEC-19 requires `default-src 'none';
+    sandbox` on asset responses — and must not have to unpick this middleware
+    to keep it.
 
     Known and accepted: a 500 raised by an UNHANDLED exception is produced by
     Starlette's `ServerErrorMiddleware`, which sits outside all user middleware,
@@ -641,6 +669,10 @@ async def set_security_headers(request: Request, call_next):
     """
     response = await call_next(request)
     response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+    response.headers.setdefault("X-Content-Type-Options", X_CONTENT_TYPE_OPTIONS)
+    response.headers.setdefault("Referrer-Policy", REFERRER_POLICY)
+    response.headers.setdefault("Cross-Origin-Opener-Policy", CROSS_ORIGIN_OPENER_POLICY)
+    response.headers.setdefault("Permissions-Policy", PERMISSIONS_POLICY)
     return response
 
 
@@ -851,18 +883,13 @@ def healthz() -> dict[str, str | bool]:
 
 @app.get("/models")
 def get_models() -> dict[str, object]:
-    """Server-owned model catalog (agent-forge-harness-b8o.1, Checkpoint 1).
-    Read-only for now — no request yet resolves a model preference against
-    this catalog (that's b8o.2/b8o.4). Never exposes secret names, base URLs,
-    or the exact provider model/snapshot string — see model_catalog.py."""
-    auto_entry: dict[str, object] = {
-        "id": "auto",
-        "display_name": "Automatic",
-        "description": "Balances speed, cost, and task difficulty.",
-    }
+    """Server-owned model catalog (agent-forge-harness-b8o.1, Checkpoint 1),
+    as the client may know it: public ids and tier labels only (D-9, au3).
+    Never an alias, model or provider name, secret name, base URL, or the
+    exact provider model/snapshot string — see model_catalog.PUBLIC_MODELS."""
     return {
         "default": "auto",
-        "models": [auto_entry, *(public_model_entry(p) for p in enabled_profiles())],
+        "models": [dict(AUTO_PUBLIC_ENTRY), *(public_model_entry(p) for p in enabled_profiles())],
     }
 
 
@@ -977,13 +1004,16 @@ def chat(
     # the plan was written), so every request already has a real key to bind
     # against; there's no stateless-single-turn path left to special-case.
     # Before the try for the same reason as ownership (409/422, not 500).
-    requested_alias = req.model_preference
-    if requested_alias != "auto" and get_profile(requested_alias) is None:
+    # D-9 (au3): the client names a model by its PUBLIC id, never the alias; a
+    # real alias sent here is as unknown as any other string (no oracle).
+    requested = req.model_preference
+    requested_profile = None if requested == "auto" else get_profile_by_public_id(requested)
+    if requested != "auto" and requested_profile is None:
         raise HTTPException(
-            status_code=422, detail=f"unknown or disabled model: {requested_alias!r}",
+            status_code=422, detail=f"unknown or disabled model: {requested!r}",
         )
-    strategy: Literal["auto", "manual"] = "auto" if requested_alias == "auto" else "manual"
-    manual_alias = None if strategy == "auto" else requested_alias
+    strategy: Literal["auto", "manual"] = "auto" if requested == "auto" else "manual"
+    manual_alias = None if requested_profile is None else requested_profile.alias
     if store is not None:
         bound_strategy, bound_alias = store.claim_conversation_strategy(
             conversation_id, strategy=strategy, manual_alias=manual_alias,
@@ -1003,11 +1033,11 @@ def chat(
         effective_alias = manual_alias
     else:
         effective_alias = DEFAULT_ALIAS
-    effective_profile = get_profile(effective_alias)
-    assert effective_profile is not None  # validated above; DEFAULT_ALIAS is always enabled
+    assert get_profile(effective_alias) is not None  # validated above; DEFAULT_ALIAS is always enabled
+    # The alias and provider stay server-side (logs, traces and usage records
+    # take them from generate.py); the client is told the public id only.
     routing = RoutingInfo(
-        requested=requested_alias, effective=effective_alias,
-        provider=effective_profile.provider, strategy=strategy,
+        requested=requested, effective=public_model_id(effective_alias), strategy=strategy,
     )
 
     # yje.5.1.1: one usage-capture operation per turn, created AFTER every gate
@@ -1034,7 +1064,7 @@ def chat(
             # "economy subroute" is the same baseline; Checkpoint 4 gives
             # this its own real resolution once more tiers exist.
             resp.suggestions_routing = SuggestionsRoutingInfo(
-                effective=DEFAULT_ALIAS, provider=effective_profile.provider,
+                effective=public_model_id(DEFAULT_ALIAS),
             )
         record_safely(
             metrics,
