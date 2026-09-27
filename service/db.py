@@ -170,7 +170,8 @@ class _CampaignLockOrder:
         #: Every bound this transaction has asked for, in order, in the same
         #: spirit: a store that holds a row bounds the transaction first, and
         #: this is how a test says so in either world. Only the FIRST of them is
-        #: ever armed — see `transaction_bound`.
+        #: in force, whether a later one is longer or shorter — see
+        #: `transaction_bound`.
         self.transaction_bounds: list[str] = []
         self._locked_anything_else = False
         #: One source for the two bounds. A store that holds a row reads it from
@@ -188,18 +189,23 @@ class _CampaignLockOrder:
         other half: nothing legitimate holds a campaign's authorisation row for
         ten minutes, and a bound nobody can reach is not a bound.
 
-        **The first bound a transaction sets is the one that fires.** PostgreSQL
-        17 arms the transaction timer only when one is not already running, so a
-        second primitive setting a longer bound changes what `SHOW
-        transaction_timeout` reports and not when the transaction is cut short:
-        `hold(...)` and then `end(..., transaction_timeout_s=30)` still ends at
-        five seconds. A caller that needs longer therefore passes its bound to
-        the **first** primitive it calls — for every fact-changing path that is
-        `lock_campaign`, which is the first lock a transaction takes anyway
-        (RQ-2). `tests/test_campaign_db.py` pins this against the server rather
-        than against a reading of its source, because the behaviour is the
-        server's; the list above records every bound asked for, in order, so a
-        test can tell the two apart.
+        **The first bound a transaction sets is the one in force**, whether a
+        later one is longer or shorter: a second primitive's bound changes what
+        `SHOW transaction_timeout` reports and not when the transaction is cut
+        short. So `hold(...)` and then `end(..., transaction_timeout_s=30)` still
+        ends at five seconds, and `lock_campaign(..., transaction_timeout_s=30)`
+        followed by a mutator's default five seconds still has thirty. A caller
+        that needs longer therefore passes its bound to the **first** primitive
+        it calls — for every fact-changing path that is `lock_campaign`, which is
+        the first lock a transaction takes anyway (RQ-2).
+
+        `tests/test_campaign_db.py` pins both directions against the server
+        rather than against a reading of its source, because the behaviour is
+        the server's: one second then thirty is cut short at one second, which
+        rules out "the last value wins"; thirty then one survives a two-second
+        sleep and commits (CI run 36347259922), which rules out "the shortest value
+        wins". The list above records every bound asked for, in order, so a test
+        can tell them apart.
         """
         if transaction_timeout_s is None:
             bound = self.campaign_lock.transaction_timeout
