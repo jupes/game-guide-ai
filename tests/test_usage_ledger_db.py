@@ -607,6 +607,9 @@ def test_the_database_itself_refuses_what_no_row_may_hold(dsn: str, column: str,
     placeholders = ", ".join(f"%({name})s" for name in values)
     statement = f"INSERT INTO metering.provider_attempts ({columns}) VALUES ({placeholders})"
     with connect(dsn) as conn:
+        for (name,) in conn.execute("SELECT conname FROM pg_constraint WHERE conrelid = "
+                                    "'metering.provider_attempts'::regclass AND contype = 'c'").fetchall():
+            conn.execute(f'ALTER TABLE metering.provider_attempts DROP CONSTRAINT "{name}"')
         conn.execute(statement, values)  # the valid row is accepted: the refusal below is the value's
         with pytest.raises(psycopg.errors.CheckViolation):
             conn.execute(statement, {**values, "attempt_index": 1, column: value})
