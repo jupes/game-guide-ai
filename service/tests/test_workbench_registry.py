@@ -274,7 +274,15 @@ def _character_sheet(**changes: object) -> tuple[reg.DocumentType, ...]:
             _broken(common_field_rules={**_COMMON_RULES, "tags": reg.FieldRule("Tags", revealable=True)}),
             "never revealable",
         ),
-        (_broken(document_types=_with_npc_rules(tags=reg.FieldRule("Tags", revealable=True))), "never revealable"),
+        (
+            _broken(
+                document_types=_with_first_type(
+                    fields={**reg.REGISTRY.document_types[0].fields, "tags": reg.COMMON_FIELDS["tags"]},
+                    field_rules={**_NPC_RULES, "tags": reg.FieldRule("Tags", revealable=True)},
+                )
+            ),
+            "never revealable",
+        ),
         (_broken(document_types=_with_npc_rules(name=reg.FieldRule("Name"))), "cannot redeclare it"),
     ],
 )
