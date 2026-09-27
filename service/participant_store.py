@@ -409,6 +409,7 @@ class PostgresParticipantStore:
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
     ) -> bool:
         check_argument_types(campaign_id=campaign_id, participant_id=participant_id)
+        self.hold(unit, participant_id, campaign_id=campaign_id)
         changed = pg(unit).conn.execute(
             "UPDATE campaign.participants SET removed_at = %s "
             "WHERE id = %s AND campaign_id = %s AND removed_at IS NULL RETURNING id",
@@ -420,6 +421,7 @@ class PostgresParticipantStore:
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, user_id: int
     ) -> Participant:
         check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
+        self.hold(unit, participant_id, campaign_id=campaign_id)
         conn = pg(unit).conn
         row: tuple | None = None
         try:
@@ -461,8 +463,8 @@ class PostgresParticipantStore:
         now: datetime | None = None,
     ) -> bool:
         check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
-        seat = self.get(unit, participant_id)
-        if seat is None or seat.campaign_id != campaign_id or not seat.is_active or seat.user_id != user_id:
+        seat = self.hold(unit, participant_id, campaign_id=campaign_id)
+        if seat is None or not seat.is_active or seat.user_id != user_id:
             raise SeatUnavailable()
         if seat.accepted_at is not None:
             return False
