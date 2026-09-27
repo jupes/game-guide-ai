@@ -97,6 +97,7 @@ from .security_headers import (
 from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
+from .workbench_api import gm_session, install_workbench
 from .workbench_contracts import CONTRACT_VERSION, ErrorBody, ErrorCode, TimelinePage
 
 log = logging.getLogger(__name__)
@@ -357,6 +358,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="D&D 5e RAG — Agent Service", version="1.0", lifespan=lifespan)
+install_workbench(app)
 
 
 def get_service() -> RagService:
@@ -1445,7 +1447,9 @@ def me(
     return AuthUser(email=user.email, role=user.role)
 
 
-app.include_router(conversations_api.build_router(require_session, get_timeline_database))
+#: The GM gate every Workbench router is built with (agent-forge-harness-oe6).
+WORKBENCH_GM = gm_session(require_session)
+app.include_router(conversations_api.build_router(WORKBENCH_GM, get_timeline_database))
 # Mount the pre-built UI last, as an ALLOWLIST fallback, not a catch-all
 # (agent-forge-harness-y40) -- see service/spa_fallback.py for what each path
 # answers and why the order matters. Only active when `cd ui && bun run build`

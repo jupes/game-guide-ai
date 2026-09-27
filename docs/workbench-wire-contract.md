@@ -145,6 +145,13 @@ Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
 client has one error path.
 
+One Workbench failure is outside the envelope on purpose: **a 401**. Every
+authentication failure on a Workbench route — no cookie, an expired or
+tampered one, an account that no longer exists — answers the single string body
+`{"detail": "not signed in"}`, so a stolen cookie cannot learn that its account
+was deleted. The client keys on the status (it signs out on any 401) and reads
+this body as a legacy one, which is why the code table has no 401 row.
+
 ### Idempotency
 
 Every Workbench mutation can be retried safely. A key is **scoped to the
@@ -750,10 +757,11 @@ only. A page may be short, or empty, with a non-null cursor.
 
 **The order of checks** is the threat model's (SEC-3), with the origin check in
 front of a write: SEC-7 (`403 forbidden`, *That request didn't come from this
-application.*) → the session (`401`) → the body or the query (`422`) → the
-`dm` role (`403 forbidden`) → the store (`503 backend_unavailable`) → the path
-id → ownership (`404`) → validation that depends on the conversation (`422`)
-→ its state (`409`). SEC-7 compares the `Origin` host with the `Host` header's
+application.*) → the session (`401`, the one body above) → the `dm` role (`403
+forbidden`) → the body or the query (`422`) → the store (`503
+backend_unavailable`) → the path id → ownership (`404`) → validation that
+depends on the conversation (`422`) → its state (`409`). The first three are
+the Workbench router's, so they run before anything a route reads. SEC-7 compares the `Origin` host with the `Host` header's
 host, the port only when `Host` carries one and the scheme never; a
 `Sec-Fetch-Site` that is present must be `same-origin`; a body must be
 `application/json`; a request with neither browser header is not a browser's
