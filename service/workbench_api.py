@@ -72,6 +72,7 @@ one exemption is a line carrying the deliberate-status token documented in
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
 from typing import NoReturn
@@ -178,16 +179,18 @@ def _is_own_origin(origin: str, host: str | None) -> bool:
     return (claimed_port or _DEFAULT_PORTS[claimed.scheme]) == served_port
 
 
+_DECIMAL_LENGTH = re.compile(r"[0-9]+")
+
+
 def _carries_body(request: Request) -> bool:
+    """A length that is anything but ASCII digits (`+0`, `abc`) is unreadable,
+    and is treated as a body so that the content-type clause fails closed."""
     if "transfer-encoding" in request.headers:
         return True
     length = request.headers.get("content-length")
     if length is None:
         return False
-    try:
-        return int(length) != 0
-    except ValueError:
-        return True
+    return _DECIMAL_LENGTH.fullmatch(length) is None or int(length) != 0
 
 
 def origin_check(content_types: Sequence[str] = ("application/json",)) -> Callable[[Request], None]:

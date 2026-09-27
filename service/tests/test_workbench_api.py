@@ -695,6 +695,7 @@ def test_the_origin_rule_at_its_edges() -> None:
         "chunked JSON": ("PUT", [("transfer-encoding", "chunked"), ("content-type", "application/json")]),
         "chunked, no type": ("PUT", [("transfer-encoding", "chunked")]),
         "unreadable length, no type": ("PATCH", [("content-length", "abc")]),
+        "signed zero length, no type": ("PATCH", [("content-length", "+0")]),
         "empty body, no type": ("DELETE", [("content-length", "0")]),
         "JSON with a charset": ("POST", [("content-length", "2"), ("content-type", "Application/JSON; charset=utf-8")]),
         "HEAD from anywhere": ("HEAD", [("origin", "https://evil.example"), ("sec-fetch-site", "cross-site")]),
@@ -713,7 +714,8 @@ def test_the_origin_rule_at_its_edges() -> None:
         "IPv6 literal": "allowed", "Origin with a path": "refused", "Origin with userinfo": "refused",
         "Origin of another scheme": "refused", "Host with userinfo": "refused", "no Host at all": "refused",
         "a port that is not a port": "refused", "chunked JSON": "allowed", "chunked, no type": "refused",
-        "unreadable length, no type": "refused", "empty body, no type": "allowed",
+        "unreadable length, no type": "refused", "signed zero length, no type": "refused",
+        "empty body, no type": "allowed",
         "JSON with a charset": "allowed", "HEAD from anywhere": "allowed",
     }
 
