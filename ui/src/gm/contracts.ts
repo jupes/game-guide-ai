@@ -1085,21 +1085,23 @@ export type LibraryPage = z.infer<typeof LibraryPageSchema>
 // beneath the turn that asked for them however late they finish (RAIL-16), and
 // the shape matches what useChat already keeps as an `Exchange`.
 
-/** Mirrors service.models.RoutingInfo: which model answered (b8o.2). */
+/** Mirrors service.models.RoutingInfo: which model answered (b8o.2), as a
+ * public model id, never an alias. D-9 (au3): the server never sends a
+ * provider; the key survives, optional, for rows stored before au3. */
 const RoutingInfoSchema = z.object({
   requested: z.string(),
   effective: z.string(),
-  provider: z.string(),
+  provider: z.string().nullish(),
   strategy: z.enum(['auto', 'manual']),
   task_class: z.string().nullish(),
   reason: z.string().nullish(),
   fallback_from: z.string().nullish(),
 })
 
-/** Mirrors service.models.SuggestionsRoutingInfo. */
+/** Mirrors service.models.SuggestionsRoutingInfo; the same D-9 rule. */
 const SuggestionsRoutingInfoSchema = z.object({
   effective: z.string(),
-  provider: z.string(),
+  provider: z.string().nullish(),
   reason: z.string().nullish(),
   fallback_from: z.string().nullish(),
 })

@@ -12,13 +12,19 @@ Run from repo root:
 
 from __future__ import annotations
 
+import pytest
+
 from service.model_catalog import (
+    AUTO_PUBLIC_ENTRY,
     CATALOG,
     DEFAULT_ALIAS,
+    PUBLIC_MODELS,
     ModelProfile,
     enabled_profiles,
     get_profile,
+    get_profile_by_public_id,
     public_model_entry,
+    public_model_id,
 )
 
 
@@ -70,13 +76,80 @@ def test_public_model_entry_never_leaks_secret_fields():
 
 
 def test_public_model_entry_shape_matches_the_contract():
+    # D-9 (au3): id, display_name and tier come from PUBLIC_MODELS, never from
+    # the catalog's own alias, display name or cost tier.
     profile = get_profile(DEFAULT_ALIAS)
     assert profile is not None
     entry = public_model_entry(profile)
-    assert entry["id"] == profile.alias
-    assert entry["display_name"] == profile.display_name
-    assert entry["tier"] == profile.tier
+    public = PUBLIC_MODELS[profile.alias]
+    assert entry["id"] == public.id != profile.alias
+    assert entry["display_name"] == public.label != profile.display_name
+    assert entry["tier"] == public.tier != profile.tier
     assert entry["supports_attachments"] == profile.supports_attachments
+
+
+# ---------------------------------------------------------------------------
+# D-9 (au3): users never learn which model or provider answers. PUBLIC_MODELS
+# is the one mapping from a catalog alias to what the client may see.
+# ---------------------------------------------------------------------------
+
+# D-8 names the free tier's model "mini" and the paid tiers' "Luna"; Luna is
+# not in CATALOG yet, and no label may hint at either.
+_MODEL_WORDS_NOT_IN_CATALOG = ("mini", "luna")
+
+
+def _names_of_models_and_providers() -> set[str]:
+    names = set(_MODEL_WORDS_NOT_IN_CATALOG)
+    for p in CATALOG.values():
+        names |= {p.alias, p.display_name, p.api_model, p.provider}
+    return {n.lower() for n in names}
+
+
+def test_every_catalog_alias_has_exactly_one_distinct_public_id():
+    assert set(PUBLIC_MODELS) == set(CATALOG)
+    ids = [public.id for public in PUBLIC_MODELS.values()]
+    assert len(ids) == len(set(ids)), "one public id names one catalog entry"
+    assert "auto" not in ids, "auto is the strategy's id, not a model's"
+
+
+def test_no_public_id_or_label_names_a_model_or_provider():
+    shown = [text.lower() for public in PUBLIC_MODELS.values() for text in (public.id, public.label)]
+    shown += [str(value).lower() for value in AUTO_PUBLIC_ENTRY.values()]
+    for name in _names_of_models_and_providers():
+        assert not any(name in text for text in shown), name
+
+
+def test_every_enabled_entry_is_shown_with_a_tier():
+    for profile in enabled_profiles():
+        assert PUBLIC_MODELS[profile.alias].tier in ("traveller", "adventurer", "loremaster")
+
+
+def test_an_alias_missing_from_the_mapping_fails_loudly_instead_of_leaking():
+    unmapped = ModelProfile(
+        alias="test-unmapped", display_name="Test Unmapped", provider="openai",
+        api_model="gpt-9000", base_url=None, secret_env="OPENAI_API_KEY",
+        tier="economy", supports_attachments=True, enabled=True,
+    )
+    CATALOG["test-unmapped"] = unmapped
+    try:
+        with pytest.raises(KeyError):
+            public_model_entry(unmapped)
+        with pytest.raises(KeyError):
+            public_model_id("test-unmapped")
+    finally:
+        del CATALOG["test-unmapped"]
+
+
+def test_an_entry_with_no_tier_is_never_shown():
+    with pytest.raises(LookupError, match="no tier"):
+        public_model_entry(CATALOG["deepseek-v4-flash"])
+
+
+def test_get_profile_by_public_id_knows_only_enabled_public_ids():
+    assert get_profile_by_public_id(public_model_id(DEFAULT_ALIAS)) == get_profile(DEFAULT_ALIAS)
+    # A disabled entry's id, the real alias, "auto" and noise all look alike.
+    for unknown in (public_model_id("deepseek-v4-flash"), DEFAULT_ALIAS, "auto", "nope"):
+        assert get_profile_by_public_id(unknown) is None, unknown
 
 
 # ---------------------------------------------------------------------------

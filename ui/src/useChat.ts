@@ -221,11 +221,21 @@ export function useChat({
           value: outcome,
           labels,
         })
-        setState((prev) => ({
-          ...prev,
-          scopeId: conversationId,
-          exchanges: prev.exchanges.map((e) => (e.id === id ? { ...e, ...update } : e)),
-        }))
+        setState((prev) => {
+          // The user may have switched to (and recalled) a different
+          // conversation while this turn was in flight. Never stamp scopeId
+          // back to the conversation this turn was SENT from — that would
+          // clobber the scope the user has since moved to and strand it on
+          // "Recalling the conversation…" forever, since nothing would ever
+          // change the recall effect's deps again (agent-forge-harness-4pg).
+          // A turn that settles after its conversation was left is dropped
+          // here, same as the recall effect drops a stale response.
+          if (prev.scopeId !== conversationId) return prev
+          return {
+            ...prev,
+            exchanges: prev.exchanges.map((e) => (e.id === id ? { ...e, ...update } : e)),
+          }
+        })
         // agent-forge-harness-ekf: fires once, here, at the settle — never
         // from a recall or a re-render. `update.status` is always 'done' or
         // 'error' at this call site (never 'pending').

@@ -1,6 +1,6 @@
 # Account identity and state machine (no billing)
 
-Status: proposed · 2026-09-26 · bead `agent-forge-harness-yje.1.6` · every engineering choice is decided here; the owner's choices are in section 12, each with a default that holds until answered
+Status: proposed · 2026-09-26 · bead `agent-forge-harness-yje.1.6` · every engineering choice is decided here; the owner's choices are in section 12, each with a default that holds until answered · amended 2026-09-27 by the owner's decisions D-10 and D-12 (section 15)
 
 Consumed by: the billing state machines (`yje.1.3`) and the entitlement decision (`yje.4.1`). Blocks: the identity schema migrations (`yje.2.1`). Built by: `yje.2.1` to `yje.2.4` and `yje.2.6`. Related: the identity-implementation record (`yje.1.5`, PR #84, a draft not yet on this branch), account deletion (`agent-forge-harness-zkc`), seats (`agent-forge-harness-fma`), table access (`agent-forge-harness-hgm`).
 
@@ -32,6 +32,9 @@ defines none; section 10 is the whole interface between the two.
 - **D-3** Free is the cheap surfaces — capped chat, campaigns and documents, joining tables as a player. The tenth lifecycle state (bead `idm`) is *verified, never subscribed*: Free presupposes a verified email.
 - **D-5** creating a campaign makes you its GM; there is no account-level role (interactions record A-25, threat model TA-3).
 - **D-6** minimum age 13+, self-attested at signup, the refusal remembered so a retry does not work, no guardian path; the owner confirms with counsel before launch.
+
+The owner's decisions of 2026-09-27 — **D-10** (the age question's form) and **D-12**
+(how a seat is offered) — amend this record in section 15.
 
 ### 1.3 Scope
 
@@ -460,3 +463,15 @@ Each has a default that holds until answered, so section 9 stays deterministic.
 - This record supersedes nothing yet: the invite record stays in force until open
   signup ships (its superseding note), and this machine takes effect with `yje.2.1`
   to `yje.2.4`.
+
+## 15. Amendments
+
+Rows below amend the rules they name. The rule above is kept as written, as the
+record of what was decided and why; a downstream bead reads the rule and then this
+table. The owner's decisions of 2026-09-27 answer the design intake of the owner's
+free-tier and entry spec (bead `agent-forge-harness-cub`).
+
+| # | Amends | Amendment | Made by |
+|---|---|---|---|
+| IDA-1 | Section 4.1; OQ-1 | **Owner decision D-10: the 13+ screen asks a neutral birth month and year — section 4.1's form, as written — not the design spec's "I'm 13 or older" checkbox**, which is superseded. The refusal stays remembered on the device (section 4.2, unchanged). This is the owner's confirmation of OQ-1's first item. **Counsel still confirms**: OQ-1 stays open for counsel's answer on the mechanism, the minimum by country and a stronger memory, and section 4 holds as its default until then | owner, 2026-09-27 (bead `agent-forge-harness-mzp`) |
+| IDA-2 | Section 8.1 (the offer paragraph); section 8.2, the Unverified row; section 9, "a seat offered to this account"; IDRC-5; section 11, the `1kg.2.2` row | **Owner decision D-12: a GM offers a seat by entering the player's email address.** The player sees the offer once signed in (a new player signs up first) and may accept, decline or block it; withdrawing an offer is the GM's remove (bead `agent-forge-harness-g3x`). **The GM's answer is identical whether or not an account holds the address** — no existence oracle. That tightens section 8.1 and the `1kg.2.2` obligation: the answer no longer differs even for a missing account, so in IDRC-5's order A the GM gets the answer every offer gets, not `SeatUnavailable`. Three consequences for identity. (1) **Only a Verified account holding the address sees or accepts an offer**: before verification the address is unproven, and whoever signed up with someone else's address (IDRC-10) must not learn which GMs invited its owner — section 8.2's Unverified row reads *may be offered one; sees none and cannot accept*, and section 9's cell reads *a seat offered to this account's verified address*. (2) A Deleted account answers as no account (section 3.2), so an offer to its address is held like one to an address nobody holds. (3) By the same no-oracle rule, nothing the GM sees before an acceptance tells a Suspended account, or one that has blocked the GM, from an address nobody holds. How an offer to an address with no account is held, when an offer binds to an account (IDRC-5's order B assumes it binds when made, and Z-7's re-test covers whichever is built) and what the GM sees to confirm who accepted are `1kg.2.2`'s and the design lane's; the GM's confirmation before any private reveal is the interactions record's A-27. An offer is addressed by email, but it is not a claim by email: only an accepting account's session seats it | owner, 2026-09-27 (bead `agent-forge-harness-1lq`) |
