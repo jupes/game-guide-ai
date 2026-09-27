@@ -409,8 +409,7 @@ class PostgresParticipantStore:
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
     ) -> bool:
         check_argument_types(campaign_id=campaign_id, participant_id=participant_id)
-        if not isinstance(pg(unit).conn, psycopg.Connection):
-            self.hold(unit, participant_id, campaign_id=campaign_id)
+        self.hold(unit, participant_id, campaign_id=campaign_id)
         changed = pg(unit).conn.execute(
             "UPDATE campaign.participants SET removed_at = %s "
             "WHERE id = %s AND campaign_id = %s AND removed_at IS NULL RETURNING id",
@@ -422,8 +421,7 @@ class PostgresParticipantStore:
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, user_id: int
     ) -> Participant:
         check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
-        if not isinstance(pg(unit).conn, psycopg.Connection):
-            self.hold(unit, participant_id, campaign_id=campaign_id)
+        self.hold(unit, participant_id, campaign_id=campaign_id)
         conn = pg(unit).conn
         row: tuple | None = None
         try:
@@ -465,11 +463,7 @@ class PostgresParticipantStore:
         now: datetime | None = None,
     ) -> bool:
         check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
-        if isinstance(pg(unit).conn, psycopg.Connection):
-            found = self.get(unit, participant_id)
-            seat = found if found is not None and found.campaign_id == campaign_id else None
-        else:
-            seat = self.hold(unit, participant_id, campaign_id=campaign_id)
+        seat = self.hold(unit, participant_id, campaign_id=campaign_id)
         if seat is None or not seat.is_active or seat.user_id != user_id:
             raise SeatUnavailable()
         if seat.accepted_at is not None:
