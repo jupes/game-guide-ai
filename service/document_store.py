@@ -1142,7 +1142,7 @@ class PostgresDocumentStore:
         if before_number is not None and not self._has_version(
             unit, campaign_id, document_id, before_number
         ):
-            raise UnknownCursor(f"history {document_id}")
+            raise UnknownCursor("history")
         rows = pg(unit).conn.execute(
             f"SELECT {_V_COLUMNS} FROM campaign.document_versions v "
             f"JOIN campaign.documents d ON d.id = v.document_id "
@@ -1186,7 +1186,7 @@ class PostgresDocumentStore:
                 (after_id, campaign_id),
             ).fetchone()
             if found is None:
-                raise UnknownCursor(f"library {after_id}")
+                raise UnknownCursor("library")
             anchor = (found[0] if order is LibrarySort.RECENT else found[1], found[2])
         statement, params = _library_statement(
             campaign_id, types=kinds, archived=flag, term=term, sort=order,
@@ -1298,7 +1298,7 @@ class PostgresDocumentStore:
             ).fetchone()
             if made is not None:
                 return self._with_current(unit, campaign_id, made)
-        raise MissingParent(f"no such campaign {campaign_id}")
+        raise MissingParent("no such campaign")
 
     def write_fields(
         self,
@@ -1315,7 +1315,7 @@ class PostgresDocumentStore:
         check_summary(summary)
         record = self.hold(unit, campaign_id, document_id)
         if record is None:
-            raise MissingParent(f"no such document {document_id} in {campaign_id}")
+            raise MissingParent("no such document in that campaign")
         writer, merged, plan = _planned(record, fields, author, base_write_revision, now)
         if plan is None:
             return record
@@ -1417,7 +1417,7 @@ class PostgresDocumentStore:
     ) -> DocumentRecord:
         record = self.hold(unit, campaign_id, document_id)
         if record is None:
-            raise MissingParent(f"no such document {document_id} in {campaign_id}")
+            raise MissingParent("no such document in that campaign")
         kind = _writable_kind(record)
         chosen = self.snapshot(unit, campaign_id, document_id, version_number)
         plan = _restoring(record, kind, chosen, now)
@@ -1541,7 +1541,7 @@ class PostgresDocumentStore:
     ) -> str | None:
         record = self.hold(unit, campaign_id, document_id)
         if record is None:
-            raise MissingParent(f"no such document {document_id} in {campaign_id}")
+            raise MissingParent("no such document in that campaign")
         if record.linked_participant_id is None:
             return None
         pg(unit).conn.execute(
