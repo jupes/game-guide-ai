@@ -151,6 +151,18 @@ def records(monkeypatch):
 
 
 @pytest.fixture
+def outcome_records(monkeypatch):
+    """Collect every emitted structuring_outcome record — a separate list from
+    `records` (which patches `_emit_record`), so a graph wired through the
+    wrong emitter shows up as a mismatch here rather than being masked."""
+    collected: list[dict] = []
+    monkeypatch.setattr(
+        usage_capture, "_emit_outcome_record", lambda operation, fields: collected.append(dict(fields)),
+    )
+    return collected
+
+
+@pytest.fixture
 def no_backoff(monkeypatch):
     """Keep the retry COUNT (and therefore the record count) exactly as it is,
     while not spending the real backoff seconds in a unit test."""
@@ -219,6 +231,33 @@ def test_every_provider_attempt_of_a_turn_is_recorded_in_order(mode, replies, ex
     assert [r["status"] for r in records] == ["ok"] * len(expected)
     assert svc.retriever.embed_client.calls == 1
     assert llm.calls == len(expected) - 1  # every purpose but the embedding
+
+
+# ---------------------------------------------------------------------------
+# agent-forge-harness-kyr — structuring_outcome: a second, content-free event
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("mode", "replies", "outcome_purposes"),
+    [
+        (
+            "spell",
+            [_SPELL_ANSWER, _SUGG_JSON, _SPELL_JSON],
+            ["suggestions", "spell_structuring"],
+        ),
+        ("gm", [_STATBLOCK_ANSWER, _STATBLOCK_JSON], ["statblock_structuring"]),
+        ("sage", [_STATBLOCK_ANSWER, _STATBLOCK_JSON], ["statblock_structuring"]),
+    ],
+)
+def test_a_successful_structuring_call_records_one_outcome_produced_each(
+    mode, replies, outcome_purposes, outcome_records,
+):
+    svc = _service(_SeqLLM(replies))
+
+    _turn(svc, "What does Fireball do?", mode)
+
+    assert [r["purpose"] for r in outcome_records] == outcome_purposes
+    assert [r["outcome"] for r in outcome_records] == ["produced"] * len(outcome_purposes)
 
 
 def test_the_embedding_record_carries_the_embed_alias_and_the_reported_tokens(records):
@@ -305,7 +344,7 @@ def test_a_provider_failure_records_every_attempt_and_propagates_unchanged(recor
     ],
 )
 def test_a_failing_structuring_call_records_one_attempt_and_never_retries(
-    mode, replies, purpose, field, records, no_backoff,
+    mode, replies, purpose, field, records, outcome_records, no_backoff,
 ):
     llm = _ScriptedLLM([*replies, _rate_limit_error()])
     svc = _service(llm)
@@ -321,16 +360,66 @@ def test_a_failing_structuring_call_records_one_attempt_and_never_retries(
     assert getattr(resp, field) is None
     assert resp.answer == replies[0]
 
+    # A provider error (not ours) is not a parse failure: it is a call that
+    # produced nothing usable.
+    outcomes = [r for r in outcome_records if r["purpose"] == purpose]
+    assert len(outcomes) == 1
+    assert outcomes[0]["outcome"] == "none"
+
+
+def test_a_suggestions_provider_failure_is_none_not_a_parse_failure(
+    records, outcome_records, no_backoff,
+):
+    """Review H-1: the suggestions call is the one structuring purpose that
+    retries (it is not `max_attempts=1`), so it gets its own case. Three
+    RateLimitErrors exhaust it; the answer and the spell card still arrive. A
+    provider outage is `none` — never filed as a parse failure of ours."""
+    llm = _ScriptedLLM([
+        _SPELL_ANSWER, _rate_limit_error(), _rate_limit_error(), _rate_limit_error(), _SPELL_JSON,
+    ])
+    svc = _service(llm)
+
+    resp = _turn(svc, "What does Fireball do?", "spell")
+
+    suggestions = [r for r in records if r["purpose"] == "suggestions"]
+    assert [r["status"] for r in suggestions] == ["error", "error", "error"]
+    assert [r["error_class"] for r in suggestions] == ["RateLimitError"] * 3
+    assert llm.calls == 5
+    assert resp.suggestions is None
+    assert resp.spell_content is not None
+    assert [(r["purpose"], r["outcome"]) for r in outcome_records] == [
+        ("suggestions", "none"), ("spell_structuring", "produced"),
+    ]
+
+
+# Valid JSON of the wrong shape: the parser gets past json.loads and pydantic
+# raises a ValidationError, not a bare ValueError (review H-1, mutant M2).
+_SUGG_WRONG_SHAPE = '[{"style": "practical"}]'
+_OBJECT_WRONG_SHAPE = '{"name": "x"}'
+
 
 @pytest.mark.parametrize(
     ("mode", "replies", "purpose", "field"),
     [
+        ("spell", [_SPELL_ANSWER, "not json at all", _SPELL_JSON], "suggestions", "suggestions"),
         ("spell", [_SPELL_ANSWER, _SUGG_JSON, "not json at all"], "spell_structuring", "spell_content"),
         ("gm", [_STATBLOCK_ANSWER, "not json at all"], "statblock_structuring", "stat_block"),
+        pytest.param(
+            "spell", [_SPELL_ANSWER, _SUGG_WRONG_SHAPE, _SPELL_JSON], "suggestions", "suggestions",
+            id="suggestions-wrong-shape",
+        ),
+        pytest.param(
+            "spell", [_SPELL_ANSWER, _SUGG_JSON, _OBJECT_WRONG_SHAPE], "spell_structuring", "spell_content",
+            id="spell-wrong-shape",
+        ),
+        pytest.param(
+            "gm", [_STATBLOCK_ANSWER, _OBJECT_WRONG_SHAPE], "statblock_structuring", "stat_block",
+            id="statblock-wrong-shape",
+        ),
     ],
 )
 def test_a_malformed_structuring_reply_is_an_ok_attempt_not_a_provider_error(
-    mode, replies, purpose, field, records,
+    mode, replies, purpose, field, records, outcome_records,
 ):
     """A parse failure is ours, not the provider's — and it was still billed."""
     svc = _service(_SeqLLM(replies))
@@ -343,8 +432,13 @@ def test_a_malformed_structuring_reply_is_an_ok_attempt_not_a_provider_error(
     assert structuring[0]["error_class"] is None
     assert getattr(resp, field) is None
 
+    # Ours, not the provider's: the outcome is a parse failure, not "none".
+    outcomes = [r for r in outcome_records if r["purpose"] == purpose]
+    assert len(outcomes) == 1
+    assert outcomes[0]["outcome"] == "parse_failure"
 
-def test_the_statblock_cost_guard_still_skips_the_call_entirely(records):
+
+def test_the_statblock_cost_guard_still_skips_the_call_entirely(records, outcome_records):
     """No markers -> no structuring call at all, and therefore no record: a
     call that never happened must not look like an attempt."""
     llm = _SeqLLM([_NO_MARKERS_ANSWER])
@@ -355,12 +449,20 @@ def test_the_statblock_cost_guard_still_skips_the_call_entirely(records):
     assert [r["purpose"] for r in records] == ["embedding", "answer"]
     assert llm.calls == 1
 
+    # Zero provider_attempt records for this purpose, but exactly one
+    # structuring_outcome record — a call that never happened must still be
+    # countable as a skip, not silently invisible.
+    assert [r for r in records if r["purpose"] == "statblock_structuring"] == []
+    statblock_outcomes = [r for r in outcome_records if r["purpose"] == "statblock_structuring"]
+    assert len(statblock_outcomes) == 1
+    assert statblock_outcomes[0]["outcome"] == "skipped_by_gate"
+
 
 # ---------------------------------------------------------------------------
 # AC 10 — nothing is recorded outside a live turn, with a positive control
 # ---------------------------------------------------------------------------
 
-def test_positive_control_the_same_service_does_record_inside_a_turn(records):
+def test_positive_control_the_same_service_does_record_inside_a_turn(records, outcome_records):
     """First, prove "zero" carries information: the identical service, driven
     through the identical path WITH an operation, records four attempts."""
     svc = _service(_SeqLLM([_SPELL_ANSWER, _SUGG_JSON, _SPELL_JSON]))
@@ -370,9 +472,18 @@ def test_positive_control_the_same_service_does_record_inside_a_turn(records):
     assert [r["purpose"] for r in records] == [
         "embedding", "answer", "suggestions", "spell_structuring",
     ]
+    assert [r["purpose"] for r in outcome_records] == ["suggestions", "spell_structuring"]
 
 
-def test_a_direct_service_call_outside_a_turn_records_nothing(records):
+def _usage_capture_warnings(caplog) -> list[str]:
+    return [
+        r.getMessage() for r in caplog.records
+        if r.name == "service.usage_capture" and r.levelname == "WARNING"
+    ]
+
+
+def test_a_direct_service_call_outside_a_turn_records_nothing(records, outcome_records, caplog):
+    caplog.set_level("WARNING", logger="service.usage_capture")
     svc = _service(_SeqLLM([_SPELL_ANSWER, _SUGG_JSON, _SPELL_JSON]))
 
     resp = svc.answer("What does Fireball do?", mode="spell")
@@ -380,9 +491,14 @@ def test_a_direct_service_call_outside_a_turn_records_nothing(records):
     assert records == []
     assert resp.answer == _SPELL_ANSWER
     assert resp.spell_content is not None  # the turn still worked in full
+    # Review M-2: no outcome record either — and a silent no-op, not a failure
+    # swallowed by record_structuring_outcome's own `except`.
+    assert outcome_records == []
+    assert _usage_capture_warnings(caplog) == []
 
 
-def test_a_bare_graph_invoke_with_config_none_records_nothing(records):
+def test_a_bare_graph_invoke_with_config_none_records_nothing(records, outcome_records, caplog):
+    caplog.set_level("WARNING", logger="service.usage_capture")
     svc = _service(_SeqLLM([_SPELL_ANSWER, _SUGG_JSON, _SPELL_JSON]))
     graph = build_rag_graph(svc)
 
@@ -390,6 +506,8 @@ def test_a_bare_graph_invoke_with_config_none_records_nothing(records):
 
     assert records == []
     assert out["answer"] == _SPELL_ANSWER
+    assert outcome_records == []
+    assert _usage_capture_warnings(caplog) == []
 
 
 def test_an_embed_query_call_with_no_sink_returns_what_it_returns_today(records):
