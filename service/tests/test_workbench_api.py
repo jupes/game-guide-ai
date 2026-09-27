@@ -6,10 +6,13 @@ application-wide handlers that bead installs must leave every one of these
 exactly as it is (status, body and the whole header set). It does NOT prove the
 handlers are installed — the handler-identity tests do that.
 
-The rest proves the Workbench half on PROBE apps. There is no Workbench route on
-the real app yet, so every rule is exercised on routers built by the same
-factory the route beads will use (`workbench_router(gm_session(require_session))`
-on an app prepared by `install_workbench`), over a two-tenant fake store. Those
+The rest proves the Workbench half on PROBE apps, so that every rule is
+exercised in isolation on routers built by the same factory the real routes use
+(`workbench_router(gm_session(require_session))` on an app prepared by
+`install_workbench`), over a two-tenant fake store. The real app's Workbench
+routes — the four conversation routes — are held to the census, the one 401
+body and the structural check here, and to T-2 and T-7 in
+`test_conversations_api.py`. Those
 probe apps authenticate through the REAL `require_session`: `conftest.py`
 installs its default session on `service.app.app` only, so what makes a probe
 app authenticate is its own `get_auth_store` override plus the monkeypatched
