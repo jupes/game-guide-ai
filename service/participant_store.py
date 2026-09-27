@@ -80,6 +80,7 @@ from .campaign_store import (
     shared_rows,
 )
 from .db import InMemoryDatabase, UnitOfWork
+from .workbench_contracts import check_plain_text
 
 ALIAS_MAX_CHARS = 40
 #: The bound `0004_campaign_schema.sql` puts on `alias_key`, pinned to the
@@ -90,6 +91,42 @@ ALIAS_MAX_CHARS = 40
 #: checked separately.
 ALIAS_KEY_MAX = 200
 
+#: The two format characters a stored alias keeps: ZERO WIDTH NON-JOINER and
+#: ZERO WIDTH JOINER, which real names (Persian, several Indic scripts) and emoji
+#: sequences need (lead ruling of 2026-09-21, bead `ysj`). Two exact code points,
+#: never a range: U+200E and U+200F sit right beside them and stay refused.
+_JOINERS = frozenset({0x200C, 0x200D})
+#: What `alias_key` folds out: Unicode's Default_Ignorable_Code_Point set, as
+#: inclusive ranges (DerivedCoreProperties.txt), plus U+2800 BRAILLE PATTERN
+#: BLANK, which is not default-ignorable but renders as nothing. Most of the set
+#: never reaches the key — `check_alias` refuses category C but the joiners — and
+#: what does is exactly what lets two aliases look identical: the joiners, the
+#: grapheme joiner, the variation selectors and the Hangul fillers.
+_INVISIBLE_RANGES: tuple[tuple[int, int], ...] = (
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x206F),
+    (0x2800, 0x2800),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+_FOLDED_OUT = str.maketrans(dict.fromkeys(code for low, high in _INVISIBLE_RANGES for code in range(low, high + 1)))
+#: One sentence for every character refusal, so that it names the field and the
+#: rule and never the character — which would say something about the alias.
+_REFUSED_CHARACTER = "an alias carries no control or formatting characters"
+
 
 def check_alias(alias: str) -> str:
     """The two bounds `0004_campaign_schema.sql` carries, and the normalisation
@@ -99,24 +136,44 @@ def check_alias(alias: str) -> str:
     `'Ana'`, `'Ana '` and an `'Ana'` written with a no-break space must not be
     three different seats at one table, and a single space must not be an alias
     at all — `str.split()` is what collapses them, so every space Unicode knows
-    about counts and not only the ASCII one. A character from
-    Unicode's C categories — a control, a format character, a lone surrogate —
-    is refused outright: it is invisible, it survives no round trip intact, and
-    it is how two aliases are made to look identical to a GM.
+    about counts and not only the ASCII one.
+
+    **Characters follow the one rule for stored text** (lead ruling of
+    2026-09-21 on beads `ysj` and `5mj`): the alias as SENT goes through
+    `check_plain_text`, so NUL and the other C0 and C1 controls, the bidi
+    controls and the byte order mark are refused here exactly as everywhere
+    else — and before `str.split()`, which would otherwise turn a vertical tab,
+    a file separator or NEL into a space. An alias is then stricter than other
+    stored text: every other character of Unicode's C categories — a zero width
+    space, a word joiner, a lone surrogate, a private-use or unassigned code
+    point — stays refused, because it is invisible and it is how two aliases are
+    made to look identical to a GM. The two exceptions are U+200C and U+200D,
+    which real names need; they are kept, and `alias_key` folds them out.
 
     **The key is bounded here too**, because the column that holds it is: NFKC
     expands, so twelve legal characters can fold to 216 and the row PostgreSQL
     then refuses comes back as a check violation whose DETAIL quotes the whole
     failing row — the alias with it (SEC-20). The twin would have seated it. The
     bound is the column's, not a rule of its own, so widening one means widening
-    the other, and the pinning test says so.
+    the other, and the pinning test says so. For the same reason a key must not
+    be empty: an alias of nothing but invisible characters folds to one, and
+    the column's CHECK starts at 1.
     """
+    try:
+        check_plain_text(alias)
+    except ValueError:
+        raise ValueError(_REFUSED_CHARACTER) from None
     normalised = " ".join(unicodedata.normalize("NFC", alias).split())
-    if any(unicodedata.category(character)[0] == "C" for character in normalised):
-        raise ValueError("an alias carries no control or formatting characters")
+    if any(
+        unicodedata.category(character)[0] == "C" and ord(character) not in _JOINERS for character in normalised
+    ):
+        raise ValueError(_REFUSED_CHARACTER)
     if not 1 <= len(normalised) <= ALIAS_MAX_CHARS:
         raise ValueError(f"an alias is 1 to {ALIAS_MAX_CHARS} characters")
-    if len(alias_key(normalised)) > ALIAS_KEY_MAX:
+    key = alias_key(normalised)
+    if not key.strip():
+        raise ValueError("an alias has at least one visible character")
+    if len(key) > ALIAS_KEY_MAX:
         raise ValueError(f"an alias folds to at most {ALIAS_KEY_MAX} characters")
     return normalised
 
@@ -157,8 +214,19 @@ def alias_key(alias: str) -> str:
     the application makes the two worlds agree **by construction**: NFKC so that
     compatibility forms fold together, then `casefold`, which is the full
     case-insensitive comparison Unicode defines and `lower()` is not.
+
+    **Invisible characters are folded out** (bead `ysj`), so that two aliases
+    differing only by one collide: the joiners a stored alias keeps, the
+    grapheme joiner, the variation selectors, the Hangul fillers and the braille
+    blank (`_INVISIBLE_RANGES`). They go BEFORE normalising as well as after: a
+    grapheme joiner between a letter and its accent stops NFKC composing them,
+    and NFKC turns U+3164 into U+1160, so dropping them only afterwards would
+    leave one key composed and the other not. Folding only shortens a key, so
+    `ALIAS_KEY_MAX` and the column's CHECK are unaffected — but a key can now be
+    empty, which `check_alias` refuses.
     """
-    return unicodedata.normalize("NFKC", alias).casefold()
+    visible = alias.translate(_FOLDED_OUT)
+    return unicodedata.normalize("NFKC", visible).casefold().translate(_FOLDED_OUT)
 
 
 @dataclass(frozen=True)
