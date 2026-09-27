@@ -154,6 +154,12 @@ function SuggestionCards({ suggestions }: { suggestions: Suggestion[] }): React.
   )
 }
 
+// ── Single-live-region announcer (agent-forge-harness-4oz) ──────────────────
+// The exact phrase announced the moment a turn is SENT — asserted verbatim in
+// ChatPane.test.tsx and ChatPane.stories.tsx > AwaitingAnswer, so it lives in
+// one named place rather than as a string literal repeated at each call site.
+const PENDING_ANNOUNCEMENT = 'Consulting the tomes…'
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function ChatPane({
@@ -169,10 +175,13 @@ export function ChatPane({
 }): React.JSX.Element {
   const { mode, conversationId, setConversationId } = useAppNav()
   const conversationStore = useConversationStore()
-  // agent-forge-harness-ekf: the announcer's text. Set once per turn THIS
-  // pane sent, at the settle (via useChat's onTurnSettled seam — never from
-  // a recall, a conversation switch or a re-render); cleared when the next
-  // turn is sent (handleSend, below).
+  // agent-forge-harness-ekf / agent-forge-harness-4oz: the ONE announcer for
+  // the whole pane — 4oz folded the pending announcement into this same node
+  // (see its comment below) rather than leaving a second, per-exchange
+  // `role="status"` span inside the transcript. Set to PENDING_ANNOUNCEMENT
+  // when a turn is sent (handleSend, below) and to the settle outcome via
+  // useChat's onTurnSettled seam — never from a recall, a conversation
+  // switch or a re-render.
   const [arrival, setArrival] = React.useState('')
   const { exchanges, send, pending, historyError, loadingHistory } = useChat({
     post,
@@ -231,9 +240,12 @@ export function ChatPane({
     if (conversationId !== null) {
       conversationStore.recordFirstPrompt(conversationId, trimmed)
     }
-    // agent-forge-harness-ekf: nothing else ever clears the announcer — not a
-    // recall, not a conversation switch — only sending the NEXT turn.
-    setArrival('')
+    // agent-forge-harness-ekf / agent-forge-harness-4oz: nothing else ever
+    // changes the announcer — not a recall, not a conversation switch — only
+    // sending the NEXT turn, which re-announces the pending phrase on this
+    // SAME already-mounted node (never a fresh node mounted with its text
+    // already inside it — that shape is the defect 4oz fixed).
+    setArrival(PENDING_ANNOUNCEMENT)
     send(trimmed)
     setDraft('')
   }, [conversationId, conversationStore, draft, pending, send])
@@ -323,11 +335,11 @@ export function ChatPane({
           `exchanges` in place (its effect keys on `conversationId`), so
           switching conversations mutates the live region rather than
           remounting it — a recalled 40-turn history arriving as "new" content.
-          The pending state is already announced by the `role="status"` node
-          below, which is the narrow form of the same idea. The RESOLUTION of a
-          turn is now announced too (agent-forge-harness-ekf) — by the
-          separate, persistent `role="status"` node BELOW this transcript
-          (`.chat-pane__arrival`), never by this region itself.
+          Both the pending state AND the resolution of a turn are announced
+          (agent-forge-harness-ekf / agent-forge-harness-4oz) by the single,
+          persistent `role="status"` node BELOW this transcript
+          (`.chat-pane__arrival`), never by this region itself and never by a
+          second node inside it.
 
           Axe has no rule for any of this, in either direction, so
           ChatPane.stories.tsx > TranscriptIsANamedRegionNotALiveRegion pins
@@ -359,17 +371,20 @@ export function ChatPane({
               {/* DM response */}
               {exchange.status === 'pending' && (
                 <ChatMessage role="dm">
-                  {/* The dots are decoration (aria-hidden); the status text is
-                      the actual affordance and stays for assistive tech —
-                      swapping an announcement for an animation would be an
-                      a11y regression dressed as polish (pp6q.1.5). */}
+                  {/* Purely decorative (aria-hidden) — the pending state is
+                      announced once for the whole pane, by the single
+                      `.chat-pane__arrival` live region below, not by a node
+                      here. A second, per-exchange `role="status"` span used
+                      to live in this spot; keeping it would be the
+                      two-live-regions-in-one-pane defect
+                      agent-forge-harness-4oz exists to fix (swapping the
+                      announcement for a silent animation would, in turn, be
+                      an a11y regression dressed as polish — pp6q.1.5 — which
+                      is why the arrival node below carries it instead). */}
                   <span className="chat-pane__typing" aria-hidden="true">
                     <i className="chat-pane__dot" />
                     <i className="chat-pane__dot" />
                     <i className="chat-pane__dot" />
-                  </span>
-                  <span role="status" className="chat-pane__sr-only">
-                    Consulting the tomes…
                   </span>
                 </ChatMessage>
               )}
@@ -442,18 +457,28 @@ export function ChatPane({
         </div>
       </div>
 
-      {/* agent-forge-harness-ekf — the arrival announcer. A SIBLING of the
-          transcript above, never inside `region "Conversation"`: the
-          transcript stays a named, focusable region and NOT a live region
-          (see the comment on it above). This node is mounted for the whole
-          life of the pane — it is never conditionally rendered, because a
-          live region that appears together with its text is the defect this
-          bead exists to fix (a removal from a live region is not announced).
-          Its text changes exactly once per turn THIS pane sent, at the
-          moment that turn settles (`onTurnSettled`, above), and is cleared
-          when the next turn is sent (`handleSend`, above) — nothing else
-          ever changes it: not a history recall, not a conversation switch,
-          not the pending announcement below. Shape copied from
+      {/* agent-forge-harness-ekf / agent-forge-harness-4oz — the ONE
+          announcer for the whole pane. A SIBLING of the transcript above,
+          never inside `region "Conversation"`: the transcript stays a named,
+          focusable region and NOT a live region (see the comment on it
+          above). This node is mounted for the whole life of the pane — it is
+          never conditionally rendered, because a live region that appears
+          together with its text is the defect this bead exists to fix (a
+          removal from a live region is not announced, and neither is text
+          that was already there the instant a node first mounted).
+
+          agent-forge-harness-4oz folded the pending announcement into this
+          same node instead of leaving a second, per-exchange `role="status"`
+          span inside the transcript (the shape `ekf` shipped it in) — two
+          live regions in one pane is the less reliable shape for real screen
+          readers, and this node was already mounted-empty-then-filled, so it
+          is the one to consolidate onto.
+
+          Its text now changes exactly twice per turn THIS pane sent: to
+          PENDING_ANNOUNCEMENT the moment the turn is SENT (`handleSend`,
+          above), and to the settle outcome the moment the turn SETTLES
+          (`onTurnSettled`, above). Nothing else ever changes it — not a
+          history recall, not a conversation switch. Shape copied from
           `gm/ToolComposer.tsx`'s own persistent `role="status"` node. */}
       <p role="status" className="chat-pane__sr-only chat-pane__arrival">
         {arrival}
