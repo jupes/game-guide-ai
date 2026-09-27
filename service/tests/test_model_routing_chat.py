@@ -18,9 +18,13 @@ from fastapi.testclient import TestClient
 
 from service.app import app, get_message_store, get_service
 from service.history import InMemoryMessageStore
-from service.models import ChatMode, ChatResponse
+from service.model_catalog import CATALOG, DEFAULT_ALIAS, public_model_id
+from service.models import ChatMode, ChatResponse, Suggestion
 
 _REQUEST = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+
+# D-9 (au3): the client names a model by its public id, never the alias.
+_PUBLIC_ID = public_model_id(DEFAULT_ALIAS)
 
 
 class _FakeService:
@@ -52,17 +56,17 @@ def test_omitting_model_preference_defaults_to_auto(env):
 def test_auto_resolves_to_the_catalog_default(env):
     c = TestClient(app)
     body = c.post("/chat", json={"prompt": "hi", "model_preference": "auto"}).json()
-    assert body["routing"]["effective"] == "gpt-4o-mini"
-    assert body["routing"]["provider"] == "openai"
+    assert body["routing"]["effective"] == _PUBLIC_ID
+    assert body["routing"]["provider"] is None
 
 
 def test_manual_alias_is_disclosed_as_both_requested_and_effective(env):
     c = TestClient(app)
     body = c.post(
-        "/chat", json={"prompt": "hi", "model_preference": "gpt-4o-mini"},
+        "/chat", json={"prompt": "hi", "model_preference": _PUBLIC_ID},
     ).json()
-    assert body["routing"]["requested"] == "gpt-4o-mini"
-    assert body["routing"]["effective"] == "gpt-4o-mini"
+    assert body["routing"]["requested"] == _PUBLIC_ID
+    assert body["routing"]["effective"] == _PUBLIC_ID
     assert body["routing"]["strategy"] == "manual"
 
 
@@ -98,7 +102,7 @@ def test_changing_model_preference_on_a_started_conversation_is_409(env):
     conv = r1.json()["conversation_id"]
     r2 = c.post(
         "/chat",
-        json={"prompt": "again", "model_preference": "gpt-4o-mini", "conversation_id": conv},
+        json={"prompt": "again", "model_preference": _PUBLIC_ID, "conversation_id": conv},
     )
     assert r2.status_code == 409
 
@@ -115,7 +119,7 @@ def test_409_happens_before_any_provider_call(env):
     try:
         r2 = c.post(
             "/chat",
-            json={"prompt": "again", "model_preference": "gpt-4o-mini", "conversation_id": conv},
+            json={"prompt": "again", "model_preference": _PUBLIC_ID, "conversation_id": conv},
         )
         assert r2.status_code == 409
     finally:
@@ -145,7 +149,7 @@ def test_strategy_binding_survives_a_provider_failure(env):
 
     r2 = c.post(
         "/chat",
-        json={"prompt": "again", "model_preference": "gpt-4o-mini", "conversation_id": conv},
+        json={"prompt": "again", "model_preference": _PUBLIC_ID, "conversation_id": conv},
     )
     assert r2.status_code == 409
 
@@ -162,3 +166,53 @@ def test_no_message_store_configured_skips_binding_gracefully():
         assert r.json()["routing"]["strategy"] == "auto"
     finally:
         app.dependency_overrides.pop(get_service, None)
+
+
+# ---------------------------------------------------------------------------
+# D-9 (au3): users never learn which model or provider answers.
+# ---------------------------------------------------------------------------
+
+def test_a_real_alias_and_a_disabled_public_id_are_422_same_as_unknown(env):
+    # No oracle: the enabled model's real alias, a disabled entry's public id
+    # and noise are refused with the same status and the same words.
+    c = TestClient(app)
+    for value in (DEFAULT_ALIAS, public_model_id("deepseek-v4-flash"), "not-a-real-model"):
+        r = c.post("/chat", json={"prompt": "hi", "model_preference": value})
+        assert r.status_code == 422, value
+        assert r.json()["detail"] == f"unknown or disabled model: {value!r}"
+
+
+def test_a_manual_public_id_binds_the_internal_alias(env):
+    # What the conversation is bound to is server-side and keeps the alias;
+    # only the wire changed.
+    c = TestClient(app)
+    conv = c.post("/chat", json={"prompt": "hi", "model_preference": _PUBLIC_ID}).json()["conversation_id"]
+    assert env.conversation_strategy(conv) == ("manual", DEFAULT_ALIAS)
+
+
+class _SpellService:
+    def answer(self, prompt, mode="sage", conversation_id=None,
+               attachment_context=None, attachment_label=None):
+        return ChatResponse(
+            answer="ok", sources=[], answerable=True,
+            mode=ChatMode(mode), conversation_id=conversation_id,
+            suggestions=[
+                Suggestion(style=style, text="idea") for style in ("practical", "roleplay", "wacky")
+            ],
+        )
+
+
+def test_no_chat_response_or_catalog_names_a_model_or_provider(env):
+    app.dependency_overrides[get_service] = lambda: _SpellService()
+    c = TestClient(app)
+    responses = [c.get("/models")]
+    for preference in ("auto", _PUBLIC_ID):
+        r = c.post("/chat", json={"prompt": "Fireball", "mode": "spell", "model_preference": preference})
+        assert r.status_code == 200
+        assert r.json()["routing"] is not None and r.json()["suggestions_routing"] is not None
+        responses.append(r)
+    names = {name for p in CATALOG.values() for name in (p.alias, p.display_name, p.api_model, p.provider)}
+    for r in responses:
+        wire = r.text.lower()
+        for name in names:
+            assert name.lower() not in wire, (r.url, name)
