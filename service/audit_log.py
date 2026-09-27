@@ -623,24 +623,29 @@ class InMemoryAuditLog:
 
     def __init__(self) -> None:
         self._rows: list[AuditEvent] = []
-        #: Rows this transaction has written and nobody else may see yet.
-        self._staged: dict[int, list[AuditEvent]] = {}
+        #: Rows each open unit has written and nobody else may see yet, keyed by
+        #: the unit itself and never by `id(unit)` (ixa.1), for the reason
+        #: `campaign_store.Staging` gives: the strong reference to the key keeps
+        #: its address from being handed to a later unit.
+        self._staged: dict[InMemoryTransaction, list[AuditEvent]] = {}
         self._next_id = 1
 
     def _mine(self, unit: InMemoryTransaction) -> list[AuditEvent]:
-        key = id(unit)
-        if key not in self._staged:
-            self._staged[key] = []
+        # The claim first (ixa.1): a second open writer is refused before
+        # anything is staged or registered. `for_campaign` never comes here.
+        unit.claim_writer()
+        if unit not in self._staged:
+            self._staged[unit] = []
 
             def publish() -> None:
-                self._rows.extend(self._staged.pop(key, []))
+                self._rows.extend(self._staged.pop(unit, []))
 
             def discard() -> None:
-                self._staged.pop(key, None)
+                self._staged.pop(unit, None)
 
             unit.on_publish(publish)
             unit.on_rollback(discard)
-        return self._staged[key]
+        return self._staged[unit]
 
     def append(
         self,
@@ -686,13 +691,14 @@ class InMemoryAuditLog:
             authz_revision=checked.authz_revision,
             detail=checked.detail,
         )
-        self._next_id += 1
         self._mine(twin).append(event)
+        # Only once the row is staged: a refused append must not use up an id.
+        self._next_id += 1
         return event
 
     def for_campaign(self, unit: UnitOfWork, campaign_id: str) -> list[AuditEvent]:
         twin = fake(unit)
-        visible = [*self._rows, *self._staged.get(id(twin), [])]
+        visible = [*self._rows, *self._staged.get(twin, [])]
         return sorted(
             (e for e in visible if e.campaign_id_tombstone == campaign_id),
             key=lambda e: (e.created_at, e.id),

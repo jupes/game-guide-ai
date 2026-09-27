@@ -68,6 +68,7 @@ from service.db import (
     InMemoryDatabase,
     PgTransaction,
     PoolSettings,
+    TwinWouldBlock,
 )
 from service.participant_store import (
     InMemoryParticipantStore,
@@ -1929,6 +1930,174 @@ def test_no_store_record_shows_a_digest_or_an_alias_when_it_is_printed() -> None
         assert "Nocturne" not in printed, f"{type(record).__name__} shows a campaign name"
         assert "987654321" not in printed, f"{type(record).__name__} shows an account"
         assert type(record).__name__ in printed, "a record still says what it is"
+
+
+# ── ixa.1 — the twin refuses what only a race can answer ─────────────────────
+#
+# On the twin a single-threaded test can interleave two transactions only by
+# nesting one inside the other, and until ixa.1 the inner one then committed
+# states PostgreSQL forbids, because nothing made it wait. Each test below is
+# one of those probes. It now raises `TwinWouldBlock` at the inner unit's first
+# write, or at its conflicting campaign lock, and it names the PostgreSQL test
+# that shows what the server does instead — or says plainly that none exists
+# yet. Twin-only: the PostgreSQL half of a race is a two-connection test.
+
+
+def _twin() -> World:
+    db = InMemoryDatabase()
+    return World(
+        "fake",
+        db,
+        InMemoryCampaignStore(db),
+        InMemoryParticipantStore(db),
+        InMemoryTableSessionStore(db, slot_clear=no_slots),
+        InMemoryAuditLog(),
+        owner=1,
+        other_owner=2,
+        players=(3, 4, 5),
+        slot_clears=[],
+    )
+
+
+def test_the_twin_refuses_a_second_session_start_while_the_first_is_uncommitted() -> None:
+    """Probe N1. The twin used to commit both: two live sessions for one GM. In
+    PostgreSQL `table_sessions_one_live_per_gm_uidx` makes the second start
+    wait for the first and then refuses it —
+    `test_two_racing_session_starts_for_one_gm_leave_exactly_one_winner`."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    expires = datetime.now(UTC) + timedelta(hours=12)
+    with world.db.transaction() as outer:
+        first, _ = world.sessions.start(outer, campaign, owner_id=world.owner, expires_at=expires)
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.sessions.start(inner, campaign, owner_id=world.owner, expires_at=expires)
+
+    with world.db.transaction() as unit:
+        assert world.sessions.get(unit, first.id) is not None
+        with pytest.raises(LiveSessionExists):
+            world.sessions.start(unit, campaign, owner_id=world.owner, expires_at=expires)
+
+
+def test_the_twin_refuses_a_second_seat_on_an_alias_while_the_first_is_uncommitted() -> None:
+    """Probe N2. The twin used to commit both: two active seats answering to
+    one alias. In PostgreSQL `participants_alias_uidx` makes the second insert
+    wait for the first and then skips it. **No PostgreSQL test of that race
+    exists yet** — the index is the evidence, and the follow-up is named in
+    the pull request."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    with world.db.transaction() as outer:
+        world.participants.add(outer, campaign, alias="Rook")
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.participants.add(inner, campaign, alias="rook")
+
+    with world.db.transaction() as unit:
+        assert [p.alias for p in world.participants.list_for_campaign(unit, campaign)] == ["Rook"]
+
+
+def test_the_twin_refuses_a_remove_nested_inside_an_uncommitted_accept() -> None:
+    """Probe N3'. The twin used to lose the GM's Remove: the inner unit
+    removed the committed row, and the outer then published its own accepted
+    copy over it. In PostgreSQL the Remove waits for the seat's row and then
+    marks the seat just accepted —
+    `test_a_remove_waiting_behind_an_accept_wins_and_the_seat_reads_removed`."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    player = world.players[0]
+    seat = _a_participant(world, campaign, "Rook")
+    _offer(world, campaign, seat, player)
+    with world.db.transaction() as outer:
+        assert world.participants.accept(outer, campaign, seat, user_id=player) is True
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.participants.remove(inner, campaign, seat)
+
+    with world.db.transaction() as unit:
+        held = world.participants.get(unit, seat)
+        assert held is not None and held.is_accepted, "only the outer unit's decision committed"
+
+
+def test_the_twin_refuses_an_accept_nested_inside_an_uncommitted_remove() -> None:
+    """Probe N3'', the other order. The twin used to let the inner unit accept
+    a seat the outer had removed, and the outer then published the removal over
+    it. In PostgreSQL the acceptance waits and is refused —
+    `test_an_accept_waiting_behind_a_remove_is_refused_and_the_seat_stays_removed`."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    player = world.players[0]
+    seat = _a_participant(world, campaign, "Rook")
+    _offer(world, campaign, seat, player)
+    with world.db.transaction() as outer:
+        assert world.participants.remove(outer, campaign, seat) is True
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.participants.accept(inner, campaign, seat, user_id=player)
+
+    with world.db.transaction() as unit:
+        held = world.participants.get(unit, seat)
+        assert held is not None and not held.is_active and held.accepted_at is None
+
+
+def test_the_twin_refuses_a_narrow_nested_inside_an_uncommitted_narrow() -> None:
+    """Probe N4. The twin used to commit both and lose one advance:
+    `reveal_epoch` 1, not 2. In PostgreSQL the second narrowing waits for the
+    session's row. **No PostgreSQL test of that wait exists yet** — the row
+    lock `narrow` takes is the evidence, and the follow-up is named in the pull
+    request."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    session, _ = _a_session(world, campaign)
+    with world.db.transaction() as outer:
+        world.sessions.narrow(outer, campaign, session.id)
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.sessions.narrow(inner, campaign, session.id)
+
+    with world.db.transaction() as unit:
+        narrowed = world.sessions.get(unit, session.id)
+        assert narrowed is not None and narrowed.reveal_epoch == 1
+
+
+def test_the_twin_refuses_an_offer_nested_inside_an_uncommitted_offer() -> None:
+    """Probe N5. The twin used to commit both offers of one open seat, the
+    later one winning. In PostgreSQL the second waits for the row, is handed the
+    seat just offered and is refused —
+    `test_two_offers_of_one_open_seat_leave_exactly_one_account_in_it`."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    first, second = world.players[0], world.players[1]
+    seat = _a_participant(world, campaign, "Rook")
+    with world.db.transaction() as outer:
+        world.participants.offer(outer, campaign, seat, user_id=first)
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                world.participants.offer(inner, campaign, seat, user_id=second)
+
+    with world.db.transaction() as unit:
+        held = world.participants.get(unit, seat)
+        assert held is not None and held.user_id == first
+
+
+def test_the_twin_refuses_a_second_exclusive_holder_of_one_campaign() -> None:
+    """Probe P9. The twin used to let two nested exclusive holders both
+    advance the revision and commit 1, not 2. In PostgreSQL the second
+    `FOR UPDATE` waits and times out —
+    `test_a_conflicting_campaign_lock_waits_and_then_times_out[exclusive-blocks-exclusive]`.
+    The refusal is at the LOCK, before any write: the conflict is judged on the
+    holder's recorded lock, not on whether it has written."""
+    world = _twin()
+    campaign = _a_campaign(world)
+    with world.db.transaction() as outer:
+        outer.lock_campaign(campaign, shared=False)
+        assert outer.advance_authz_revision(campaign) == 1
+        with world.db.transaction() as inner:
+            with pytest.raises(TwinWouldBlock):
+                inner.lock_campaign(campaign, shared=False)
+
+    with world.db.transaction() as unit:
+        assert world.campaigns.authz_revision(unit, campaign) == 1
 
 
 # Behaviours 30 and 31 — two callers, one winner. No fake can show this.

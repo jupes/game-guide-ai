@@ -699,19 +699,61 @@ class Database:
 # ── The in-memory twin ───────────────────────────────────────────────────────
 
 
+class TwinWouldBlock(Exception):
+    """The in-memory twin was asked to do something that PostgreSQL would make
+    wait, and it cannot say how the wait would end (ixa.1).
+
+    `InMemoryDatabase` takes a re-entrant lock, so a test can open a second unit
+    of work inside the first — which is how a visibility test is written. Two
+    such units that both **write**, or that take conflicting locks on one
+    campaign, are a race: in PostgreSQL the second one waits for the first, and
+    what it then sees is the first one's committed row. The twin has no second
+    connection to wait on, so it used to carry on and commit states the database
+    forbids. It now refuses instead.
+
+    **Deliberately outside every domain hierarchy** — not a `CampaignLockRefused`
+    or a store error — so that no route can map it to an answer and no `except`
+    written for a domain refusal can swallow it: it is a test that asked the
+    twin something only a two-connection PostgreSQL test can answer. The message
+    is fixed and names no row, alias or id.
+    """
+
+    MESSAGE = (
+        "the in-memory twin cannot tell whether PostgreSQL would block here; "
+        "a race belongs in a two-connection PostgreSQL test"
+    )
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
+
+
 class InMemoryTransaction(_CampaignLockOrder):
     """The unit of work of `InMemoryDatabase`. A fake store either changes its
     state at once and registers how to take the change back (`on_rollback`), or
     stages what other readers must not see yet and registers how to make it
-    visible (`on_publish`)."""
+    visible (`on_publish`).
+
+    **One open writer per database** (ixa.1). The first unit that stages a write
+    claims its database's writer; another open unit that then tries to stage a
+    write, or to take a conflicting lock on the same campaign, is refused with
+    `TwinWouldBlock`. Readers never claim, so a unit opened inside a writer to
+    look at what it can see keeps working. **Row locks are not modelled:** a
+    nested `hold` still answers from the committed rows, and it is the first
+    write after it that is refused — the twin does not claim to know which rows
+    PostgreSQL would hold. A unit built directly, with no `database`, never
+    claims and is never refused.
+    """
 
     def __init__(
         self,
         authz_state: dict[str, int] | None = None,
         *,
         campaign_lock: CampaignLockSettings | None = None,
+        database: InMemoryDatabase | None = None,
     ) -> None:
         super().__init__(campaign_lock)
+        #: The database whose writer this unit claims when it stages a write.
+        self._database = database
         # The COMMITTED `campaign.authz_state` table, as the twin holds it:
         # campaign id to authorisation revision. A transaction made without one
         # locks no campaign, which fails closed rather than silently succeeding.
@@ -724,6 +766,14 @@ class InMemoryTransaction(_CampaignLockOrder):
         self._undo: list[Callable[[], None]] = []
         self.notifications: list[tuple[str, str]] = []
         self.locks: list[tuple[AdvisoryLock, str]] = []
+
+    def claim_writer(self) -> None:
+        """Become this database's open writer, or be refused with
+        `TwinWouldBlock` because another open unit already is. Every staging
+        path calls this **before** it stages anything or registers a callback,
+        so a refused write leaves nothing behind. Claiming again is a no-op."""
+        if self._database is not None:
+            self._database._claim_writer(self)
 
     def on_commit(self, callback: Callable[[], None]) -> None:
         self._after_commit.append(callback)
@@ -757,6 +807,7 @@ class InMemoryTransaction(_CampaignLockOrder):
         needs no undo: the staged dictionary dies with the transaction, and the
         committed one was never touched.
         """
+        self.claim_writer()
         if campaign_id not in self._authz_staged:
             self.on_publish(
                 lambda: self._authz_state.__setitem__(campaign_id, self._authz_staged[campaign_id])
@@ -787,16 +838,30 @@ class InMemoryTransaction(_CampaignLockOrder):
         shared: bool,
         transaction_timeout_s: float | None = None,
     ) -> None:
-        """The order rules, the fail-closed refusal and the bound's validity,
-        and nothing more: every in-memory transaction is already serial, so the
-        twin has no conflict to model and makes no claim about one (RQ-2(a)).
+        """The order rules, the fail-closed refusal and the bound's validity.
         The bound itself is PostgreSQL's; what is checked here is that the value
         the caller passed would be a bound at all, because a test that can only
-        run against the twin must still catch a caller that switches it off."""
+        run against the twin must still catch a caller that switches it off.
+
+        **A conflict is refused, not modelled** (ixa.1, RQ-2(a)). If another
+        open unit of this database holds the same campaign in a conflicting
+        mode — exclusive against anything, shared against exclusive — PostgreSQL
+        would make this call wait, so the twin raises `TwinWouldBlock`. Two
+        shared holders coexist and different campaigns never conflict, as on the
+        server. The check is made on the other units' recorded locks, so it
+        holds whether or not they have written anything.
+
+        It is made **last**, after `CampaignAuthzMissing`: in PostgreSQL a
+        `SELECT … FOR SHARE` on an authorisation row whose insert has not
+        committed finds nothing and does not wait, so "no such row" is the
+        answer that matches the server there.
+        """
         mode = self._check_campaign_lock(campaign_id, shared=shared)
         self.transaction_bound(transaction_timeout_s)
         if self.authz_revision(campaign_id) is None:
             raise CampaignAuthzMissing("that campaign has no authorisation row")
+        if self._database is not None:
+            self._database._refuse_a_conflicting_lock(self, campaign_id, mode)
         self._note_campaign_lock(campaign_id, mode)
 
     def advance_authz_revision(self, campaign_id: str) -> int:
@@ -830,18 +895,50 @@ class InMemoryDatabase:
         #: cannot. justification: the value is a `Staging[T]` of a row type this
         #: module must not import (the stores import `db`, never the reverse).
         self.tables: dict[str, Any] = {}
+        #: The units `transaction()` has opened and not yet closed, compared by
+        #: identity — whose recorded campaign locks a new lock may conflict with.
+        self._open: list[InMemoryTransaction] = []
+        #: The one open unit that has staged a write, if any (ixa.1).
+        self._writer: InMemoryTransaction | None = None
+
+    def _claim_writer(self, unit: InMemoryTransaction) -> None:
+        with self._lock:
+            if self._writer is None:
+                self._writer = unit
+            elif self._writer is not unit:
+                raise TwinWouldBlock()
+
+    def _refuse_a_conflicting_lock(self, unit: InMemoryTransaction, campaign_id: str, mode: str) -> None:
+        with self._lock:
+            for other in self._open:
+                if other is unit:
+                    continue
+                for held, held_mode in other.campaign_locks:
+                    if held == campaign_id and EXCLUSIVE in (mode, held_mode):
+                        raise TwinWouldBlock()
 
     @contextmanager
     def transaction(self) -> Iterator[InMemoryTransaction]:
-        unit = InMemoryTransaction(self.authz_state, campaign_lock=self.campaign_lock)
+        unit = InMemoryTransaction(self.authz_state, campaign_lock=self.campaign_lock, database=self)
         with self._lock:
+            # Registered inside the lock, never at construction: two threads each
+            # building a unit must not both be open at once.
+            self._open.append(unit)
             try:
-                yield unit
-            except BaseException:
-                for undo in reversed(unit._undo):
-                    undo()
-                raise
-            for publish in unit._publish:
-                publish()
-            self.notifications.extend(unit.notifications)
+                try:
+                    yield unit
+                except BaseException:
+                    for undo in reversed(unit._undo):
+                        undo()
+                    raise
+                for publish in unit._publish:
+                    publish()
+                self.notifications.extend(unit.notifications)
+            finally:
+                # Commit, rollback or a publish callback that raised alike — and
+                # only this unit's own claim: a nested unit's exit leaves its
+                # parent the writer.
+                self._open = [other for other in self._open if other is not unit]
+                if self._writer is unit:
+                    self._writer = None
         _run_after_commit(unit._after_commit)
