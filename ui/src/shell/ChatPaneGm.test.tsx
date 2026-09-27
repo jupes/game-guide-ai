@@ -18,9 +18,13 @@ import { ThemeProvider } from '../ds/theme'
 import { ChatPane } from './ChatPane'
 import type { ChatPaneProps } from './ChatPane'
 import type { ChatResponse } from '../api'
-import type { LoadHistoryFn, PostFn } from '../useChat'
+import type { Exchange, LoadHistoryFn, PostFn } from '../useChat'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { CREATIVE_ANSWER, chatEntry, pagedTimeline } from '../gm/threadFixtures'
+
+// Review M-3: what the Export button hands to the download, without a download.
+const exportChat = vi.hoisted(() => vi.fn<(exchanges: Exchange[]) => void>())
+vi.mock('../exportChat', () => ({ exportChat }))
 
 function navState(overrides: Partial<AppNavState>): AppNavState {
   return {
@@ -163,5 +167,49 @@ describe('ChatPane (GM) — switching channel in the same conversation', () => {
     rerender(<Pane nav={{ mode: 'gm', conversationId: 'cnv_1' }} loadHistory={loadHistory} loadTimeline={loadTimeline} />)
     await waitFor(() => expect(document.querySelector('.gm-thread__exchange')).not.toBeNull())
     expect(screen.getAllByText(PROMPT)).toHaveLength(1)
+  })
+})
+
+/** True when `a` comes before `b` in document order. */
+function precedes(a: Node, b: Node): boolean {
+  return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+}
+
+const STORED_PROMPT = 'Who holds the lighthouse key?'
+const storedThread = (): LoadTimelinePageFn =>
+  pagedTimeline([[chatEntry({ entry_id: 'ent_old', prompt: STORED_PROMPT })]])
+
+describe('ChatPane (GM) — stored history and turns sent since', () => {
+  it('draws the stored history above a turn sent after it opened (review M-4)', async () => {
+    const post: PostFn = async () => ({ kind: 'ok', response: LIVE })
+    const { container } = render(<Pane nav={{ conversationId: 'cnv_1' }} post={post} loadTimeline={storedThread()} />)
+    expect(await screen.findByText(STORED_PROMPT)).toBeInTheDocument()
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), PROMPT)
+    await userEvent.keyboard('{Enter}')
+    const live = await screen.findByText(PROMPT)
+
+    expect(precedes(screen.getByText(STORED_PROMPT), live)).toBe(true)
+    const drawn = [...container.querySelectorAll('.gm-thread__exchange')]
+    expect(drawn).toHaveLength(2)
+    expect(drawn[0]).toHaveTextContent(STORED_PROMPT)
+    expect(drawn[1]).toHaveTextContent(PROMPT)
+  })
+
+  it('exports the stored history, then the turns sent since (review M-3)', async () => {
+    exportChat.mockClear()
+    const post: PostFn = async () => ({ kind: 'ok', response: LIVE })
+    const { container } = render(<Pane nav={{ conversationId: 'cnv_1' }} post={post} loadTimeline={storedThread()} />)
+    expect(await screen.findByText(STORED_PROMPT)).toBeInTheDocument()
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), PROMPT)
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(container.querySelectorAll('.assistant-lane[data-state="done"]')).toHaveLength(2))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Export chat' }))
+
+    expect(exportChat).toHaveBeenCalledTimes(1)
+    const [exported] = exportChat.mock.calls[0]
+    expect(exported.map((e) => e.prompt)).toEqual([STORED_PROMPT, PROMPT])
+    expect(exported[0].response?.answer).toBe(CREATIVE_ANSWER.text)
   })
 })
