@@ -35,8 +35,13 @@ export type LoadTimelinePageFn = (conversationId: string, cursor: string | null)
 
 /** A plain turn's outcome, as the lane shows it (RAIL-14). `answerable` and
  * `sources` are `null` when a turn predates the durable timeline and they were
- * never recorded — shown as unknown, never as grounded. */
-export type LaneAnswer = Pick<ChatAnswer, 'text' | 'answerable' | 'sources' | 'spell_content' | 'stat_block'>
+ * never recorded — shown as unknown, never as grounded. `suggestions` are a
+ * spell answer's usage ideas; a mode chip keeps the same conversation, so a
+ * spell entry can be hydrated into this thread (agent-forge-harness-0ru). */
+export type LaneAnswer = Pick<
+  ChatAnswer,
+  'text' | 'answerable' | 'sources' | 'spell_content' | 'stat_block' | 'suggestions'
+>
 
 export type AnswerState =
   /** Hydrated with no stored answer: the turn failed, or is running elsewhere. */
@@ -103,6 +108,7 @@ export function answerFromResponse(response: ChatResponse): LaneAnswer {
     sources: response.sources,
     spell_content: response.spell_content,
     stat_block: response.stat_block,
+    suggestions: response.suggestions,
   }
 }
 

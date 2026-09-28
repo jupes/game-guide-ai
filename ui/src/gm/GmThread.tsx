@@ -33,6 +33,7 @@ import { DiceRoll } from '../ds/DiceRoll'
 import { SpellCard } from '../ds/SpellCard'
 import { StatBlockCard } from '../ds/StatBlockCard'
 import { SourceList } from '../components/SourceList'
+import { SuggestionCards } from '../components/SuggestionCards'
 import { parseDiceNotation } from '../shell/diceNotation'
 import { AssistantLane } from './AssistantLane'
 import { AssistantText } from './AssistantText'
@@ -228,9 +229,11 @@ function AnswerLane({ answer }: { answer: AnswerState }): React.JSX.Element | nu
 }
 
 /**
- * Prose, then what was lifted out of it, then the notice, then the evidence —
- * the order a GM reads, and the order it is announced. `answerable` of `null`
- * (not recorded) earns neither the creative notice nor citations.
+ * Prose, then what was lifted out of it, then the notice, then a spell's usage
+ * suggestions (in `ChatPane`'s order, apart from the card so quoted rules stay
+ * visibly verbatim), then the evidence — the order a GM reads, and the order
+ * it is announced. `answerable` of `null` (not recorded) earns neither the
+ * creative notice nor citations.
  */
 function AnswerBody({ answer }: { answer: LaneAnswer }): React.JSX.Element {
   const grounded = answer.answerable === true
@@ -246,6 +249,7 @@ function AnswerBody({ answer }: { answer: LaneAnswer }): React.JSX.Element {
           <DiceRoll die={dice.die} value={dice.value} modifier={dice.modifier} />
         </div>
       )}
+      <SuggestionCards suggestions={answer.suggestions} />
       {grounded && answer.sources !== null && answer.sources.length > 0 && (
         <div className="gm-thread__sources">
           <SourceList sources={answer.sources} />

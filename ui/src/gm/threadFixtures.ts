@@ -7,6 +7,7 @@
  * follow `contracts/workbench/v1/TimelineEntry.json`.
  */
 
+import type { Suggestion } from '../api'
 import { parseTimelineEntry } from './contracts'
 import type { TimelineItem } from './contracts'
 import type { LoadTimelinePageFn } from './gmTimeline'
@@ -42,6 +43,22 @@ export const SOURCED_ANSWER = {
   sources: [
     { book: 'mm-5e', chapter: 'Bestiary', section: 'Stat Block', entity: 'Basilisk', page: 12, snippet: 'Armor Class 15 ...' },
   ],
+}
+
+export const SPELL_SUGGESTIONS: Suggestion[] = [
+  { style: 'practical', text: 'Clear a room of enemies.' },
+  { style: 'roleplay', text: 'Light the beacon at the festival.' },
+  { style: 'wacky', text: 'Instantly roast a feast.' },
+]
+
+/** A spell answer with the usage suggestions spell mode adds — a mode chip
+ * keeps the same conversation, so one can be hydrated into the GM thread. */
+export const SPELL_ANSWER = {
+  text: 'Fireball: a bright streak blossoms into flame.',
+  answerable: true,
+  sources: [],
+  spell_content: { name: 'Fireball', description: 'Each creature in a 20-foot-radius sphere must make a Dexterity saving throw.', level: 3, school: 'evocation' },
+  suggestions: SPELL_SUGGESTIONS,
 }
 
 export function chatEntry(overrides: Record<string, unknown> = {}): TimelineItem {

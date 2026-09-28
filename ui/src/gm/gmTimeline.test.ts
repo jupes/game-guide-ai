@@ -26,6 +26,8 @@ import {
   DIVIDER_ENTRY,
   EDIT_ENTRY,
   OPAQUE_ENTRY,
+  SPELL_ANSWER,
+  SPELL_SUGGESTIONS,
   chatEntry,
   manyChatEntries,
   pagedTimeline,
@@ -227,6 +229,20 @@ describe('a live turn and its reload are the same turn', () => {
       spell_content: undefined,
       stat_block: hydrated.answer.answer.stat_block,
     })
+  })
+
+  it('carries a spell answer’s usage suggestions, as the stored entry does (agent-forge-harness-0ru)', () => {
+    const [hydrated] = turnsFromTimeline([chatEntry({ mode: 'spell', answer: SPELL_ANSWER })])
+    if (hydrated.kind !== 'chat' || hydrated.answer.state !== 'answered') throw new Error('expected an answer')
+    const live = answerFromResponse({
+      answer: SPELL_ANSWER.text,
+      sources: [],
+      answerable: true,
+      spell_content: SPELL_ANSWER.spell_content,
+      suggestions: SPELL_SUGGESTIONS,
+    })
+    expect(live.suggestions).toEqual(SPELL_SUGGESTIONS)
+    expect(live.suggestions).toEqual(hydrated.answer.answer.suggestions)
   })
 
   it('maps the pending and failed stages of a live turn', () => {
