@@ -135,7 +135,12 @@ describe('ChatPane (GM) — reading the timeline', () => {
     expect(await screen.findByText('Message history unavailable (503).')).toBeInTheDocument()
     await userEvent.type(screen.getByPlaceholderText('Ask…'), PROMPT)
     await userEvent.keyboard('{Enter}')
-    expect(await screen.findByText('drowned guardian')).toBeInTheDocument()
+    // Queried and asserted in one callback, never through a handle held across
+    // an await: Markdown re-sets its innerHTML on the pane's next render (React
+    // 19 re-applies `dangerouslySetInnerHTML` whenever the object is new), so
+    // the <strong> findByText first matched can be detached by the time a
+    // separate expect reads it (agent-forge-harness-57l).
+    await waitFor(() => expect(screen.getByText('drowned guardian')).toBeInTheDocument())
   })
 
   it('reads GM history from the timeline only, and other channels never from it', async () => {
@@ -387,6 +392,25 @@ describe('ChatPane (GM) — Load earlier (1kg.3.6)', () => {
     expect(exchanges[0]).toHaveTextContent(OLDER_PROMPT)
     expect(screen.getAllByText(OLDER_PROMPT)).toHaveLength(1)
     // The list has ended — nothing left to load.
+    expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
+  })
+
+  it('walks through an empty older page to the turns behind it (review M4)', async () => {
+    // A page may be empty while its cursor is not null — only a null cursor
+    // ends the list, on the Load earlier path as on the first read.
+    const load = pagedTimeline([
+      manyChatEntries(HYDRATE_TARGET, 9400),
+      [],
+      [chatEntry({ entry_id: 'ent_behind_empty', prompt: OLDER_PROMPT })],
+    ])
+    const { container } = render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
+    await waitFor(() => expect(container.querySelectorAll('.gm-thread__exchange')).toHaveLength(HYDRATE_TARGET))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
+    await waitFor(() => expect(screen.getByText(OLDER_PROMPT)).toBeInTheDocument())
+
+    expect(load.cursors).toEqual([null, 'p1', 'p2'])
+    expect(container.querySelectorAll('.gm-thread__exchange')[0]).toHaveTextContent(OLDER_PROMPT)
     expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
   })
 
