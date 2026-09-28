@@ -1249,13 +1249,53 @@ describe('plain text: what stored text refuses (1kg.5.7.2, requirement 6)', () =
     for (const [name, char] of Object.entries(ALLOWED)) expect([name, project(char)]).toEqual([name, true])
   })
 
-  it('stops at the document kinds and the projection — AC 15, ruling 3', () => {
-    // A version's summary, a brief, chat text and a cue title are bead 5mj's, and
-    // each still accepts a NUL until it lands: the boundary is pinned, not assumed.
+  // Bead 5mj: every other stored text on the wire, as the schema, a valid fixture
+  // example and the path to the text inside it; an issue names the path's first
+  // key. test_workbench_contracts.py walks the same table.
+  const storedTextPaths: [string, string, string, string[]][] = [
+    ['a brief', 'ToolInvocationRequest', 'npc with a brief', ['brief']],
+    ['an edit instruction', 'EditRequest', "the whole document, in the GM's words", ['instruction', 'text']],
+    ['a library search', 'LibraryQuery', 'the first page of NPCs, most recently updated first', ['search']],
+    ['a cue search', 'CueListQuery', 'the first page of cues', ['search']],
+    ["an image's alt text", 'AssetCreateRequest', 'a portrait, with the alt text a screen reader will hear', ['alt']],
+    ["a new cue's title", 'CueCreateRequest', 'upload takes a title and a kind (LIB-26)', ['title']],
+    ["a cue's new title", 'CueRenameRequest', 'a new title', ['title']],
+    ['a version summary', 'DocumentVersion', 'an assistant pass', ['summary']],
+  ]
+
+  it.each(storedTextPaths)('%s takes the one rule — 5mj', (_site, schema, example, path) => {
+    // A NUL is a PostgreSQL error where a 422 belongs, and a bidi override makes
+    // what a GM sees differ from what is stored — on every stored text path, not
+    // only a document's fields. A lone surrogate is refused with the table.
+    const fixture = readJson<Fixture>(join(FIXTURES, `${schema}.json`))
+    const withText = (text: string) => {
+      const value = structuredClone(fixture.valid.find((e) => e.name === example)?.value) as Record<string, unknown>
+      let holder = value
+      for (const key of path.slice(0, -1)) holder = holder[key] as Record<string, unknown>
+      holder[path[path.length - 1]] = text
+      return CONTRACT_SCHEMAS[schema].safeParse(value)
+    }
+    for (const char of [...REFUSED, String.fromCharCode(0xd800)]) {
+      const parsed = withText(`Vashti${char}whispers`)
+      expect([char.codePointAt(0), parsed.success]).toEqual([char.codePointAt(0), false])
+      if (parsed.success) continue
+      expect(parsed.error.issues.some((issue) => issue.path[0] === path[0])).toBe(true)
+      expect(JSON.stringify(parsed.error.issues)).not.toContain('Vashti')
+    }
+    for (const [name, char] of Object.entries(ALLOWED)) {
+      expect([name, withText(`Vashti${char}whispers`).success]).toEqual([name, true])
+    }
+  })
+
+  it("reaches submitted text and stops at the assistant's answer — AC 15, ruling 3", () => {
+    // Until bead 5mj landed, a version's summary, a brief and a cue title each
+    // still accepted a NUL; now each refuses it (every path is walked above). The
+    // assistant's own answer is not submitted text: a timeline entry reads back
+    // what the model wrote, so it still accepts one, and the boundary stays there.
     const nul = String.fromCodePoint(0)
     const versions = readJson<Fixture>(join(FIXTURES, 'DocumentVersion.json'))
     const version = { ...(versions.valid[0].value as Record<string, unknown>), summary: `Wants${nul}the signet` }
-    expect(CONTRACT_SCHEMAS.DocumentVersion.safeParse(version).success).toBe(true)
+    expect(CONTRACT_SCHEMAS.DocumentVersion.safeParse(version).success).toBe(false)
     const request = {
       schema_version: 1,
       invocation_id: 'inv_9f2c4e1a7b3d4c5e',
@@ -1264,14 +1304,14 @@ describe('plain text: what stored text refuses (1kg.5.7.2, requirement 6)', () =
       campaign_id: 'cmp_4b1d9e7a',
       conversation_id: '0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d',
     }
-    expect(CONTRACT_SCHEMAS.ToolInvocationRequest.safeParse(request).success).toBe(true)
+    expect(CONTRACT_SCHEMAS.ToolInvocationRequest.safeParse(request).success).toBe(false)
     const entries = readJson<Fixture>(join(FIXTURES, 'TimelineEntry.json'))
     const chat = structuredClone(entries.valid.find((e) => e.name === 'a chat exchange with its complete outcome')?.value) as {
       answer: { text: string }
     }
     chat.answer.text = `A basilisk${nul} petrifies.`
     expect(CONTRACT_SCHEMAS.TimelineEntry.safeParse(chat).success).toBe(true)
-    expect(CONTRACT_SCHEMAS.CueRenameRequest.safeParse({ schema_version: 1, title: `Rain${nul}` }).success).toBe(true)
+    expect(CONTRACT_SCHEMAS.CueRenameRequest.safeParse({ schema_version: 1, title: `Rain${nul}` }).success).toBe(false)
   })
 })
 

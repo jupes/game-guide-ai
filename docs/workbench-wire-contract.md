@@ -331,9 +331,17 @@ PostgreSQL's `text` and `jsonb` refuse U+0000, so without the rule a NUL would b
 a failure to store rather than an answer; a bidirectional override makes what a
 GM sees differ from what is stored. One helper per side is the rule —
 `check_plain_text` and `REFUSED_TEXT_CODE_POINTS` in `workbench_contracts.py`,
-`isPlainText`, `plainText` and `plainOneLine` in `contracts.ts` — and a version's
-summary, a brief, chat text, cue titles and aliases do not call it yet (bead
-`5mj`). A score of `{"str": null}` is refused for the same reason every kind has
+`isPlainText`, `plainText` and `plainOneLine` in `contracts.ts` — and since bead
+`5mj` every other stored text calls it too: a brief, an edit instruction and a
+search (each checked as stored, after the trim, so a mark the trim removes is
+never stored), alt text, a cue's title, a version's summary (on the wire and in
+`document_store.check_summary`), `/chat`'s prompt and a participant's alias
+(`check_stored_text`, which adds the wire's well-formedness check for a value no
+contract type has read). Unlike a document field, each of these answers a 422
+that names the field. An alias is stricter still: every other Unicode C-category
+character stays refused, only U+200C and U+200D are kept, and `alias_key` folds
+the default-ignorable code points and U+2800 out so that two aliases differing
+only by one collide (bead `ysj`). A score of `{"str": null}` is refused for the same reason every kind has
 one way to say empty: leaving the key out already says it.
 
 Every type has `name`, `qualifier` and `tags`. `name` is the title everywhere and
