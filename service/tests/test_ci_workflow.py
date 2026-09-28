@@ -5,6 +5,27 @@ from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/ci.yml")
 
+#: The runner image every job pins. `ubuntu-latest` becomes Ubuntu 26 on
+#: 2026-10-19, and this file is also the master deploy workflow, so the image
+#: changes only when someone changes it here, after verifying every job on the
+#: new one: PostgreSQL service, Playwright, and the deploy job's gcloud steps
+#: (agent-forge-harness-7q6).
+RUNNER = "ubuntu-24.04"
+
+#: The first major of each action whose action.yml says `runs.using: node24`.
+#: Node.js 20 actions are deprecated on GitHub-hosted runners. An action missing
+#: from this table fails the test until someone checks its runtime and adds it.
+#: setup-uv publishes no major tags after v7 (v8.0.0 onwards are immutable exact
+#: versions), so its major compares the same whichever form is used.
+FIRST_NODE24_MAJOR = {
+    "actions/checkout": 5,
+    "actions/upload-artifact": 6,
+    "astral-sh/setup-uv": 7,
+    "oven-sh/setup-bun": 2,  # the floating v2 tag resolves to a node24 release (v2.2.0)
+    "google-github-actions/auth": 3,
+    "google-github-actions/setup-gcloud": 3,
+}
+
 #: Tests that only mean something against a real database. Each must be reachable
 #: from CI with DATABASE_URL set, or it silently reverts to a permanent skip.
 DB_BACKED_TESTS = [
@@ -24,6 +45,13 @@ def _python_job() -> str:
     return WORKFLOW.read_text(encoding="utf-8").split("\n  python-tests:\n", 1)[1].split(
         "\n  ui-tests:\n", 1
     )[0]
+
+
+def _jobs() -> dict[str, str]:
+    """Each job's name mapped to its block, read from the workflow's `jobs:` key."""
+    body = WORKFLOW.read_text(encoding="utf-8").split("\njobs:\n", 1)[1]
+    parts = re.split(r"^ {2}([A-Za-z0-9_-]+):[ \t]*\n", body, flags=re.M)
+    return dict(zip(parts[1::2], parts[2::2], strict=True))
 
 
 def _deploy_gates() -> list[str]:
@@ -61,7 +89,7 @@ def test_ci_runs_e2e_on_pull_requests_and_never_deploys_them():
     assert "\n  ui-e2e:\n" in workflow
     e2e_job = workflow.split("\n  ui-e2e:\n", 1)[1].split("\n  deploy:\n", 1)[0]
     assert "bun run test:e2e" in e2e_job
-    assert "actions/upload-artifact@v4" in e2e_job
+    assert "actions/upload-artifact@v7" in e2e_job
     assert "ui/e2e-results" in e2e_job
 
     deploy_job = workflow.split("\n  deploy:\n", 1)[1]
@@ -179,3 +207,37 @@ def test_contract_parity_gates_deploy():
     assert needs, "the deploy job must keep a one-line `needs:` list"
     assert "contract-parity" in [name.strip() for name in needs.group(1).split(",")]
     assert "needs.contract-parity.result == 'success'" in _deploy_gates()
+
+
+# ── Runner image and action runtimes (agent-forge-harness-7q6) ───────────────
+
+
+def test_every_job_pins_its_runner_image():
+    """`ubuntu-latest` moves to a new Ubuntu on GitHub's schedule, not ours, and
+    this workflow deploys master. Every job names the image it was verified on."""
+    jobs = _jobs()
+    assert {"python-tests", "ui-tests", "ui-e2e", "deploy"} <= set(jobs), (
+        f"job parsing is broken: found {sorted(jobs)}"
+    )
+    runners = {name: re.findall(r"^ {4}runs-on:\s*(.+?)\s*$", block, re.M) for name, block in jobs.items()}
+    unpinned = {name: found for name, found in runners.items() if found != [RUNNER]}
+    assert not unpinned, f"every job must set `runs-on: {RUNNER}`; these do not: {unpinned}"
+
+
+def test_every_action_is_on_a_node24_major():
+    """Node.js 20 actions are deprecated on GitHub-hosted runners. Every `uses:`
+    names an owner/repo@v<major> at or above that action's first node24 major."""
+    uses = re.findall(r"^\s*(?:-\s+)?uses:\s*(\S+)\s*$", WORKFLOW.read_text(encoding="utf-8"), re.M)
+    assert len(uses) >= len(FIRST_NODE24_MAJOR), f"`uses:` parsing is broken: found {uses}"
+    stale: list[str] = []
+    for ref in uses:
+        parsed = re.fullmatch(r"([\w.-]+/[\w.-]+)@v(\d+)(?:\.\d+)*", ref)
+        assert parsed, f"{ref}: expected owner/repo@v<major>, so its runtime can be checked"
+        action, major = parsed.group(1), int(parsed.group(2))
+        assert action in FIRST_NODE24_MAJOR, (
+            f"{action} is not in FIRST_NODE24_MAJOR: check which of its majors has "
+            "`runs.using: node24` in action.yml and add it"
+        )
+        if major < FIRST_NODE24_MAJOR[action]:
+            stale.append(f"{ref} (node24 from v{FIRST_NODE24_MAJOR[action]})")
+    assert not stale, f"these actions still run on a deprecated Node.js: {stale}"

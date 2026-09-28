@@ -13,6 +13,11 @@
 #                       (hosting epic 17u). SKIPS until configured — never a green
 #                       check for having deployed nothing — and once it does run,
 #                       verifies the built image is actually serving.
+#
+# Runner image: every job pins ubuntu-24.04, not ubuntu-latest (which becomes
+# Ubuntu 26 on 2026-10-19). Move it on purpose, once every job, deploy's gcloud
+# steps included, has run green on the new image. Actions sit on their Node 24
+# majors. service/tests/test_ci_workflow.py holds both (agent-forge-harness-7q6).
 
 name: CI
 
@@ -38,7 +43,7 @@ concurrency:
 
 jobs:
   python-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # A real PostgreSQL, for the tests whose whole subject is behaviour no fake
     # reproduces: the atomic single-use invite guarantee (row locks), what the
@@ -63,8 +68,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       # --frozen: install exactly what uv.lock pins and FAIL if the lock has
@@ -98,13 +103,13 @@ jobs:
             tests/test_usage_ledger_db.py
 
   ui-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     defaults:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -127,13 +132,13 @@ jobs:
   # UI plus a deterministic FastAPI service, then records TTFB/FCP/LCP/CLS.
   ui-e2e:
     needs: [python-tests, ui-tests]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -143,7 +148,7 @@ jobs:
         run: bun run test:e2e
       - name: Upload Playwright performance evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-e2e-results-${{ github.sha }}
           path: ui/e2e-results
@@ -154,10 +159,10 @@ jobs:
   # (licensing — no verbatim book text in the repo), so this job can only run
   # once EVAL_DATABASE_URL points at a reachable, ingested pgvector instance.
   retrieval-metrics:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check eval prerequisites
         id: prereq
         run: |
@@ -172,7 +177,7 @@ jobs:
               echo "repository secrets to run retrieval metrics per merge (docs/ci.md)."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         if: steps.prereq.outputs.ready == 'true'
         with:
           enable-cache: true
@@ -195,7 +200,7 @@ jobs:
             --threshold-points 2.0
       - name: Upload fresh results artifact
         if: steps.prereq.outputs.ready == 'true' && always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: eval-results-${{ github.sha }}
           path: ingestion/eval_results.json
@@ -205,11 +210,11 @@ jobs:
   # one and compares the two validators' verdicts (docs/workbench-wire-contract.md).
   # It is the only job that needs both toolchains, which is why it is its own job.
   contract-parity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - uses: oven-sh/setup-bun@v2
@@ -225,7 +230,7 @@ jobs:
   # this job; override by re-running the workflow with force_deploy=true
   # ("proceed anyway"), or revert the merge commit ("back out") — docs/ci.md.
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: [python-tests, ui-tests, ui-e2e, contract-parity, retrieval-metrics]
     # DEPLOY_TARGET gates the JOB, not a step inside it. Previously an
@@ -265,18 +270,18 @@ jobs:
     env:
       WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}   # gates the auth steps until WIF is set up
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Auth steps stay dormant until the WIF secrets exist (docs/deploy-gcp.md §8),
       # so an unconfigured repo still reaches the graceful no-op below instead of failing.
       - name: Authenticate to Google Cloud (WIF)
         if: env.WIF_PROVIDER != ''
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
       - name: Set up gcloud
         if: env.WIF_PROVIDER != ''
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@v3
       - name: Configure Docker for Artifact Registry
         if: env.WIF_PROVIDER != ''
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
