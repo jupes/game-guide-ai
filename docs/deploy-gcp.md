@@ -725,6 +725,60 @@ No secret rotation and no drain here: this is a cooperative user, not an
 adversary with a live session, so there is nothing to race. If you are *not*
 sure the account is uncompromised, treat it as §10 instead.
 
+## 12. The job scheduler (DEFERRED — `1kg.9.5`)
+
+**Documentation only until `1kg.9.5`.** Nothing in this section has been run,
+and nothing needs to run yet: no job kind exists, and while
+`JOB_SCHEDULER_SECRET` is unset `POST /internal/jobs` answers exactly what a path
+that does not exist answers — to everyone. `1kg.9.5` runs these steps, in this
+order, when the first job kind ships (RT-15).
+
+The route runs the job outbox for a quiet service: up to 20 due jobs, starting
+none after 30 s, answering only `{"ran", "failed", "remaining"}` (a 503
+`jobs unavailable` while the instance has no database). It is never proxied by a
+public front end — Cloud Scheduler calls the service's own URL.
+
+**The credential is a shared secret, and it is INTERIM.** Cloud Scheduler stores
+the header value in the job's configuration, readable by anyone who can read
+the job. The lasting credential is the OIDC token Scheduler already sends:
+verified by the application against the service's audience and the scheduler's
+service account, it replaces the header. That needs the service account below
+to exist first, which is why the header comes first.
+
+```bash
+# 1. The secret, and the runtime SA's read access to it (like §4's):
+openssl rand -base64 48 | tr -d '\n' | gcloud secrets create job-scheduler-secret --data-file=-
+gcloud secrets add-iam-policy-binding job-scheduler-secret \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role=roles/secretmanager.secretAccessor
+
+# 2. deploy.sh passes it: add JOB_SCHEDULER_SECRET=job-scheduler-secret:latest to
+#    its --set-secrets list (1kg.9.5 edits deploy.sh and its guard test), deploy.
+#    Fewer than 32 characters and the service refuses it: the route stays missing.
+
+# 3. A service account for the scheduler, allowed to invoke the service — the
+#    service is IAM-locked until §9, and its OIDC token is also what 1kg.9.5
+#    will verify in the application:
+gcloud iam service-accounts create job-scheduler --display-name="Cloud Scheduler: /internal/jobs"
+gcloud run services add-iam-policy-binding game-guide-ai --region="$REGION" \
+  --member="serviceAccount:job-scheduler@${PROJECT}.iam.gserviceaccount.com" --role=roles/run.invoker
+
+# 4. The job: every ten minutes (RT-15; the first three jobs are free).
+SERVICE_URL=$(gcloud run services describe game-guide-ai --region "$REGION" --format='value(status.url)')
+gcloud scheduler jobs create http game-guide-ai-jobs --location="$REGION" \
+  --schedule="*/10 * * * *" --http-method=POST --uri="$SERVICE_URL/internal/jobs" \
+  --headers="X-Job-Scheduler-Secret=$(gcloud secrets versions access latest --secret=job-scheduler-secret)" \
+  --oidc-service-account-email="job-scheduler@${PROJECT}.iam.gserviceaccount.com" \
+  --oidc-token-audience="$SERVICE_URL" --attempt-deadline=120s
+```
+
+Verify with `gcloud scheduler jobs run game-guide-ai-jobs --location="$REGION"`
+and the job's last attempt status. An uncredentialed `curl -X POST
+"$SERVICE_URL/internal/jobs"` must answer what `curl -X POST "$SERVICE_URL/nope"`
+answers. Rotating the secret is step 1's `versions add`, a redeploy, then step
+4's `update` with the new header — in that order, or the job fails until the
+redeploy lands.
+
 ## Cost
 
 ~$9.4/mo steady state (Cloud SQL `db-f1-micro`), within the $10 cap. Corpus
