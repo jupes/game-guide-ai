@@ -72,15 +72,24 @@ def _integration_step_run() -> str:
 def _database_backed_test_files() -> list[str]:
     """Every test module under pytest's testpaths that gates on a real database.
 
-    A module is database-backed when it uses the `needs_db` marker or reads
-    DATABASE_URL itself. Discovered, not listed, so the next one cannot be added
-    without CI running it: the seven tests from #53 skipped on every run because
-    nobody added them to a list (agent-forge-harness-5fo).
+    A module is database-backed when it uses the `needs_db` marker, reads
+    DATABASE_URL itself, or imports from `_pg`/`tests._pg` at all -- that
+    module mints its own `DSN`, `needs_db`, `throwaway_database` or
+    `corpus_database` from there, so the import line alone is the gate,
+    without guessing at which of those names it uses (a bare `DSN` would also
+    match an unrelated same-named local, e.g. `tests/test_bootstrap_db.py`'s
+    fake one). Discovered, not listed, so the next one cannot be added without
+    CI running it: the seven tests from #53 skipped on every run because
+    nobody added them to a list (agent-forge-harness-5fo), and a module using
+    `tests._pg`'s own gate rather than `needs_db`/DATABASE_URL directly in its
+    own text was the same gap again (#124 M-2).
     """
     config = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     testpaths = config["tool"]["pytest"]["ini_options"]["testpaths"]
     reads_dsn = re.compile(
         r"""(?:environ\.get|getenv)\(\s*["']DATABASE_URL["']|environ\[\s*["']DATABASE_URL["']\s*\]"""
+        r"""|^from\s+(?:tests\.)?_pg\s+import\b""",
+        re.M,
     )
     this_file = Path(__file__).resolve()
     found: list[str] = []
@@ -302,9 +311,16 @@ def test_every_job_pins_its_runner_image():
 
 def test_every_action_is_on_a_node24_major():
     """Node.js 20 actions are deprecated on GitHub-hosted runners. Every `uses:`
-    names an owner/repo@v<major> at or above that action's first node24 major."""
-    uses = re.findall(r"^\s*(?:-\s+)?uses:\s*(\S+)\s*$", WORKFLOW.read_text(encoding="utf-8"), re.M)
-    assert len(uses) >= len(FIRST_NODE24_MAJOR), f"`uses:` parsing is broken: found {uses}"
+    names an owner/repo@v<major> at or above that action's first node24 major.
+
+    The regex allows an optional trailing comment (`uses: x@v4  # v4`, or a
+    future SHA-pin-with-a-version-comment) so such a line is still parsed and
+    checked, never silently skipped, and the count is checked exactly against
+    every `uses:` occurrence in the file -- `>= len(FIRST_NODE24_MAJOR)` is a
+    weak floor that a line dropped from parsing (12 vs 15 seen) cannot fail."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    uses = re.findall(r"^\s*(?:-\s+)?uses:\s*(\S+)(?:\s+#.*)?\s*$", text, re.M)
+    assert len(uses) == text.count("uses:"), f"`uses:` parsing is broken: found {uses}"
     stale: list[str] = []
     for ref in uses:
         parsed = re.fullmatch(r"([\w.-]+/[\w.-]+)@v(\d+)(?:\.\d+)*", ref)
