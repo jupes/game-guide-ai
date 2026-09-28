@@ -271,7 +271,7 @@ class PostgresJobQueue:
                 row = unit.conn.execute(
                     "SELECT id FROM app.jobs "
                     "WHERE kind = %s AND dedupe_key = %s AND dead_at IS NULL AND attempts = 0 "
-                    "FOR UPDATE",  # DELIBERATELY BROKEN (red proof, reverted by the next commit)
+                    "FOR SHARE",
                     (kind, dedupe_key),
                 ).fetchone()
             if row is not None:
