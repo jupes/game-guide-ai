@@ -227,7 +227,11 @@ def _decode_cursor(cursor: str) -> tuple[datetime, str]:
     try:
         raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
         moment, conversation_id = json.loads(raw.decode("utf-8"))
-        return aware(datetime.fromisoformat(moment), "a cursor"), str(conversation_id)
+        # Only an id of `_CURSOR_ID`'s characters, checked here, before any
+        # statement sees it: JSON carries any character as an escape, and a
+        # NUL or a lone surrogate would fail inside psycopg, not here.
+        if isinstance(conversation_id, str) and _CURSOR_ID.fullmatch(conversation_id):
+            return aware(datetime.fromisoformat(moment), "a cursor"), conversation_id
     except Exception:
         # Any failure to read it is the one refusal. Nothing is kept: the
         # errors above quote the caller's own decoded payload.
@@ -689,8 +693,6 @@ class InMemoryConversationStore(ConversationStore):
     ) -> ConversationPage:
         size = clamp_limit(limit)
         after = None if cursor is None else _decode_cursor(cursor)
-        if after is not None and _CURSOR_ID.fullmatch(after[1]) is None:
-            raise InvalidCursor("that page cursor did not come from this server")
         checked_mode = check_started_mode(started_mode)
         found = [
             row
