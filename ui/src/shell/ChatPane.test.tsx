@@ -1349,3 +1349,59 @@ describe('ChatPane (#21)', () => {
     expect(screen.getByText('Practical')).toBeInTheDocument()
   })
 })
+
+describe('ChatPane — model preference wiring (agent-forge-harness-bta)', () => {
+  // b8o.2's AC ("ChatRequest sends an allowlisted model_preference") is unmet
+  // in the shipped UI unless the conversation's STORED preference — set by
+  // ModelPicker, one of /models' own public ids per D-9 (au3), or a pre-D9
+  // alias a conversation was already bound with (a6o/#122) — actually reaches
+  // `post`. Before this fix, ChatPane called useChat with no
+  // `modelPreference` at all, so useChat's own default ('auto') went out on
+  // every turn regardless of what the picker showed.
+  const emptyHistory: LoadHistoryFn = async () => ({ kind: 'ok', messages: [] })
+  const noAttachments: GetAttachmentsFn = async () => ({ kind: 'ok', attachments: [] })
+
+  it("sends the active conversation's stored modelPreference, not useChat's default", async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+
+    render(
+      <Wrapper
+        navState={{ conversationId: conv.id }}
+        store={store}
+        post={post}
+        loadHistory={emptyHistory}
+        getAttachments={noAttachments}
+      />,
+    )
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'What is a basilisk?')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post).toHaveBeenCalledWith('What is a basilisk?', 'sage', conv.id, 'traveller')
+  })
+
+  it("falls back to 'auto' for a conversation with no stored preference", async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+
+    render(
+      <Wrapper
+        navState={{ conversationId: conv.id }}
+        store={store}
+        post={post}
+        loadHistory={emptyHistory}
+        getAttachments={noAttachments}
+      />,
+    )
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'What is a basilisk?')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post).toHaveBeenCalledWith('What is a basilisk?', 'sage', conv.id, 'auto')
+  })
+})

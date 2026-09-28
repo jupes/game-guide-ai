@@ -159,6 +159,13 @@ function ChatPaneBody({
   const { mode, conversationId, setConversationId } = useAppNav()
   const gm = side === 'gm'
   const conversationStore = useConversationStore()
+  // agent-forge-harness-bta: the conversation's bound preference (a public
+  // /models id per D-9, or, for a conversation started before D-9, the exact
+  // alias it was already bound with — service/app.py's `_pre_d9_binding`,
+  // agent-forge-harness-a6o/#122). Threaded through to `useChat` unchanged —
+  // never rewritten or filtered here — so it is exactly what ModelPicker
+  // shows and exactly what the server already bound this conversation to.
+  const conversation = conversationId !== null ? conversationStore.get(conversationId) : undefined
   // agent-forge-harness-ekf / agent-forge-harness-4oz: the ONE announcer for
   // the whole pane — 4oz folded the pending announcement into this same node
   // (see its comment below) rather than leaving a second, per-exchange
@@ -194,6 +201,7 @@ function ChatPaneBody({
     loadHistory: gm ? SKIP_RECALL : loadHistory,
     mode,
     conversationId,
+    modelPreference: conversation?.modelPreference,
     onConversationAdopted: setConversationId,
     onTurnSettled: handleTurnSettled,
   })

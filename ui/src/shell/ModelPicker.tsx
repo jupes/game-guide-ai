@@ -79,15 +79,23 @@ export function ModelPicker({
   const value = conversation?.modelPreference ?? catalog.default
 
   // a6o: a preference the served catalog does not list (a model alias stored
-  // before D-9, or a retired id) goes back to the default, first prompt or
-  // not. ChatPane has only ever posted 'auto', so that is what the server
-  // bound. Only the served catalog can tell: the offline fallback lists 'auto'
-  // alone, and an alias list here would name the models in the bundle.
+  // before D-9, or a retired id) goes back to the default — but only BEFORE
+  // the first prompt. Once a conversation has sent one, it is already bound
+  // server-side (D6's Conversation affinity) to whatever it last posted, alias
+  // included (agent-forge-harness-a6o/#122's pre-D9 exception in
+  // service/app.py). agent-forge-harness-bta wires this stored value straight
+  // into every subsequent `/chat` call, so rewriting it here after that point
+  // would desync the client from the server's own binding and turn the very
+  // next turn into a 409 (claim_conversation_strategy mismatch). Only the
+  // served catalog can tell a stale value apart from a current one: the
+  // offline fallback lists 'auto' alone, and an alias list here would name
+  // the models in the bundle.
   React.useEffect(() => {
     if (catalog === FALLBACK_CATALOG || conversationId === null) return
+    if (conversation?.hasFirstPrompt) return
     if (catalog.models.some((m) => m.id === value)) return
     store.setModelPreference(conversationId, catalog.default)
-  }, [catalog, conversationId, store, value])
+  }, [catalog, conversation?.hasFirstPrompt, conversationId, store, value])
 
   const handleChange = (next: string): void => {
     if (conversationId === null || conversation === undefined) return

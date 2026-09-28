@@ -156,13 +156,9 @@ const CATALOG_AFTER_D9 = {
 }
 
 describe('ModelPicker with a stored preference the catalog does not list (a6o)', () => {
-  it.each([
-    ['before', false],
-    ['after', true],
-  ])('resets it to the default once the catalog loads, %s the first prompt, without a new conversation', async (_when, started) => {
+  it('resets it to the default once the catalog loads, before the first prompt, without a new conversation', async () => {
     const store = new MemoryConversationStore()
     const conv = store.create('sage', undefined, 'gpt-4o-mini')
-    if (started) store.recordFirstPrompt(conv.id, 'What is a basilisk?')
     const setConversationId = vi.fn()
     const confirmChange = vi.fn(() => true)
     renderPicker(makeNavState({ conversationId: conv.id, setConversationId }), store, {
@@ -171,6 +167,34 @@ describe('ModelPicker with a stored preference the catalog does not list (a6o)',
 
     await waitFor(() => expect(store.get(conv.id)?.modelPreference).toBe('auto'))
     expect((screen.getByRole('combobox', { name: /model/i }) as HTMLSelectElement).value).toBe('auto')
+    expect(confirmChange).not.toHaveBeenCalled()
+    expect(setConversationId).not.toHaveBeenCalled()
+  })
+
+  // agent-forge-harness-bta: once ChatPane actually sends the conversation's
+  // STORED preference (rather than always 'auto' regardless of what this
+  // reset did), resetting an already-bound conversation's preference would
+  // make its NEXT turn request something other than what the server already
+  // bound it to on its first turn — service/app.py's
+  // claim_conversation_strategy 409s that mismatch (D6's Conversation
+  // affinity). A conversation with a first prompt is already bound, so its
+  // stored preference — even a pre-D9 alias the current catalog no longer
+  // lists (a6o) — must survive untouched; #122 lets the server keep honouring
+  // it for exactly this conversation.
+  it('leaves an already-bound conversation preference alone, even if the catalog no longer lists it', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'gpt-4o-mini')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?')
+    const setConversationId = vi.fn()
+    const confirmChange = vi.fn(() => true)
+    renderPicker(makeNavState({ conversationId: conv.id, setConversationId }), store, {
+      getModels: async () => CATALOG_AFTER_D9, confirmChange,
+    })
+
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Traveller' })).toBeInTheDocument())
+    // Let any reset effect the catalog load could have triggered settle.
+    await act(async () => {})
+    expect(store.get(conv.id)?.modelPreference).toBe('gpt-4o-mini')
     expect(confirmChange).not.toHaveBeenCalled()
     expect(setConversationId).not.toHaveBeenCalled()
   })
