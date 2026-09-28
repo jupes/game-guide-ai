@@ -19,6 +19,7 @@ import base64
 import json
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import quote
 
 import pytest
@@ -27,6 +28,7 @@ from httpx import Response
 
 from service import timeline
 from service.app import (
+    WORKBENCH_GM,
     app,
     get_message_store,
     get_service,
@@ -38,7 +40,9 @@ from service.db import InMemoryDatabase
 from service.history import InMemoryMessageStore
 from service.models import ChatMode, ChatResponse, Source
 from service.session import SessionData
+from service.tests.test_workbench_api import _answer, _json_headers
 from service.timeline_store import InMemoryTimelineStore
+from service.workbench_api import NOT_FOUND_DETAIL, WorkbenchRoute, api_route_dependants
 from service.workbench_contracts import TimelinePage
 
 OWNER = 1
@@ -355,9 +359,11 @@ def test_the_role_is_checked_before_the_conversation_is_looked_up(world: _World,
 # The 401 is proved by `service/tests/test_auth_guard.py`'s route matrix, which
 # walks the real routing table for everything depending on `require_session` and
 # fails if a guarded route is not listed. This route is listed there, so both
-# halves — 401 without a session, not-401 with one — run against it.
-# `require_session` itself is left exactly as it is (R-4); SEC-2's single 401
-# body belongs to `agent-forge-harness-oe6` (R-5).
+# halves — 401 without a session, not-401 with one — run against it. Its BODY
+# is the scaffolding's one body since oqx moved the route onto
+# `workbench_router` (SEC-2, closing the F-23 oracle): every authentication
+# failure is asserted in `test_workbench_api.py`'s real-app 401 matrix.
+# `require_session` itself is left exactly as it is (R-4).
 
 
 # ── C7 (route) and the refusals ──────────────────────────────────────────────
@@ -634,6 +640,11 @@ def test_no_refusal_of_this_route_is_ever_logged_with_a_traceback(
     longer chains the value (`parse_page_query` raises `from None`), but a log
     line carrying `exc_info` would print whatever chain there is. There is no
     such line, and this is what keeps it that way.
+
+    Since oqx the application's one validation handler answers this route's
+    422s, and it logs each one (SEC-23) as `redacted_errors` with the method and
+    the route template: the parameter's name, never its value. Those lines are
+    pinned exactly; a refused conversation still logs nothing at all.
     """
     world.own()
     with caplog.at_level(logging.DEBUG):
@@ -647,7 +658,11 @@ def test_no_refusal_of_this_route_is_ever_logged_with_a_traceback(
     def ours() -> list[logging.LogRecord]:
         return [r for r in caplog.records if r.name.startswith("service")]
 
-    assert ours() == [], "a refused parameter or a refused conversation was logged at all"
+    refused = "workbench request refused by validation: GET /conversations/{conversation_id}/timeline "
+    redacted = "[{{'type': 'value_error', 'loc': ['query', '{}'], 'msg': 'invalid'}}]"
+    assert [(r.name, r.getMessage(), r.exc_info) for r in ours()] == [
+        ("service.workbench_api", refused + redacted.format(field), None) for field in ("limit", "cursor", "limit")
+    ], "a refused conversation was logged, or a refused parameter beyond its redacted name"
 
     # Not vacuous: the one path that does log — a database failure during the
     # read — is driven here, and the same assertions are made of it.
@@ -809,3 +824,102 @@ def test_no_log_line_of_this_route_carries_the_path_parameter(
             client, "forged\nWARNING:root:not a real line"
         ).status_code == 404
     assert [r for r in caplog.records if r.name.startswith("service")] == []
+
+
+# ── oqx: the route on the Workbench scaffolding ──────────────────────────────
+#
+# `agent-forge-harness-oqx` moved this route from a hand-built `@app.get` onto
+# `workbench_router`. What the scaffolding answers instead is the intended
+# change: the one 401 body (`test_workbench_api.py`'s real-app matrix), the one
+# 404 body, the role checked before the query, and the one validation handler's
+# redacted log line. Every other answer is pinned below byte for byte: the bytes
+# were captured from the legacy handler, and the test ran green against it
+# before it was deleted.
+
+_FORBIDDEN = b'{"detail":{"code":"forbidden","message":"This is a Game Master feature.","retryable":false}}'
+_INVALID = (b'{"detail":{"code":"validation_failed","message":"That request isn\'t valid.",'
+            b'"retryable":false,"field":"%s"}}')
+_UNAVAILABLE = (b'{"detail":{"code":"backend_unavailable",'
+                b'"message":"The conversation timeline is briefly unavailable. Try again.","retryable":true}}')
+
+
+class _Down:
+    """A timeline store whose database went away at the ownership statement."""
+
+    def owner_of(self, unit, conversation_id):
+        import psycopg
+
+        raise psycopg.OperationalError("the server closed the connection")
+
+
+def test_every_answer_but_the_401_and_the_404_is_the_legacy_routes_byte_for_byte(
+    world: _World, client
+) -> None:
+    """Status, body and the whole header set, for every refusal the move must
+    not change; and the page itself, as the positive control."""
+    world.own()
+    world.say("user", "q")
+    world.say("assistant", "a")
+    cases = [("limit", _timeline(client, limit="0"), 422, _INVALID % b"limit"),
+             ("cursor", _timeline(client, cursor="not-base64url!"), 422, _INVALID % b"cursor")]
+    app.dependency_overrides[require_session] = lambda: SessionData(user_id=OWNER, role="player")
+    try:
+        cases.append(("player", _timeline(client), 403, _FORBIDDEN))
+    finally:
+        app.dependency_overrides[require_session] = lambda: SessionData(user_id=OWNER, role="dm")
+    try:
+        app.dependency_overrides[get_timeline_store] = lambda: None
+        cases.append(("no store", _timeline(client), 503, _UNAVAILABLE))
+        app.dependency_overrides[get_timeline_store] = lambda: _Down()
+        cases.append(("database down", _timeline(client), 503, _UNAVAILABLE))
+    finally:
+        app.dependency_overrides[get_timeline_store] = lambda: world.timeline
+    assert [label for label, *_ in cases] == ["limit", "cursor", "player", "no store", "database down"]
+    for label, response, status, body in cases:
+        assert _answer(response) == (status, body, _json_headers(body)), label
+    page = _timeline(client)
+    assert (page.status_code, [e["prompt"] for e in page.json()["items"]]) == (200, ["q"])
+
+
+def test_the_404_is_the_scaffoldings_one_body(world: _World, client) -> None:
+    """Intended change: the route's own sentence ("That conversation isn't
+    available.") gave way to the one 404 every Workbench route answers, from
+    `not_found()` (SEC-3). Missing, never claimed, someone else's and malformed
+    are still one answer; it is now the one `GET /conversations/{id}` gives."""
+    answers = _bodies_for_404(world, client) + [_timeline_encoded(client, MALFORMED_IDS[0])]
+    assert [(a.status_code, a.json()) for a in answers] == [(404, {"detail": dict(NOT_FOUND_DETAIL)})] * 4
+
+
+def test_a_player_is_refused_before_the_query_is_read(world: _World, client) -> None:
+    """Intended change: the `dm` gate is the router's, so it runs before the
+    handler reads anything. A player sending a bad `limit` or `cursor` gets the
+    one 403, where the legacy handler answered its 422 first. A GM still gets
+    the 422: the control that the query is still refused."""
+    world.own()
+    bad = ({"limit": "0"}, {"cursor": "not-base64url!"})
+    app.dependency_overrides[require_session] = lambda: SessionData(user_id=OWNER, role="player")
+    try:
+        as_player = [_timeline(client, **params) for params in bad]
+    finally:
+        app.dependency_overrides[require_session] = lambda: SessionData(user_id=OWNER, role="dm")
+    assert [(r.status_code, r.content) for r in as_player] == [(403, _FORBIDDEN)] * 2
+    assert [_timeline(client, **params).status_code for params in bad] == [422, 422]
+
+
+def test_the_route_is_a_workbench_route_behind_the_apps_gm_gate() -> None:
+    """Declared on `workbench_router`, in a route module of its own, and guarded
+    by the app's `WORKBENCH_GM` — the census in `test_workbench_api.py` says the
+    same from the other side."""
+    rows = [(route, dependant) for path, route, dependant in api_route_dependants(app)
+            if path == "/conversations/{conversation_id}/timeline"]
+    assert len(rows) == 1
+    route, dependant = rows[0]
+    assert isinstance(route, WorkbenchRoute)
+    assert route.methods == {"GET"}
+    assert route.endpoint.__module__ == "service.timeline_api"
+    assert any(d.call is WORKBENCH_GM for d in dependant.dependencies)
+
+
+def test_the_route_module_imports_nothing_from_the_app() -> None:
+    text = (Path(__file__).resolve().parents[1] / "timeline_api.py").read_text(encoding="utf-8")
+    assert "from .app" not in text and "service.app" not in text

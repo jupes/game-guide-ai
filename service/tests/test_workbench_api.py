@@ -10,9 +10,10 @@ The rest proves the Workbench half on PROBE apps, so that every rule is
 exercised in isolation on routers built by the same factory the real routes use
 (`workbench_router(gm_session(require_session))` on an app prepared by
 `install_workbench`), over a two-tenant fake store. The real app's Workbench
-routes — the four conversation routes — are held to the census, the one 401
-body and the structural check here, and to T-2 and T-7 in
-`test_conversations_api.py`. Those
+routes — the four conversation routes and, since `agent-forge-harness-oqx`, the
+timeline — are held to the census, the one 401 body and the structural check
+here, and to T-2 and T-7 in `test_conversations_api.py` and to the pinned
+answers in `test_timeline_route.py`. Those
 probe apps authenticate through the REAL `require_session`: `conftest.py`
 installs its default session on `service.app.app` only, so what makes a probe
 app authenticate is its own `get_auth_store` override plus the monkeypatched
@@ -144,7 +145,9 @@ def legacy_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[InMemoryAuthStore]
 
 def test_legacy_validation_answers_are_byte_identical(legacy_store: InMemoryAuthStore) -> None:
     """FastAPI's default 422 list — `input` echo included, a recorded residual —
-    and the timeline route's own hand-validated 422 (1kg.4.2), unchanged."""
+    and the timeline route's 422 (1kg.4.2), unchanged. Since oqx the timeline
+    is a Workbench route and the one validation handler answers it; the case
+    stays here because these bytes are exactly what the move must preserve."""
     client = TestClient(app)
     missing_prompt = b'{"detail":[{"type":"missing","loc":["body","prompt"],"msg":"Field required","input":{}}]}'
     bad_mode = (
@@ -187,7 +190,9 @@ def test_legacy_validation_answers_are_byte_identical(legacy_store: InMemoryAuth
 @pytest.mark.real_auth
 def test_legacy_refusals_are_byte_identical(legacy_store: InMemoryAuthStore) -> None:
     """`require_session`'s three 401 bodies (F-23's oracle included — R-4 leaves
-    legacy routes exactly as they are), an unknown path and a wrong method."""
+    legacy routes exactly as they are), an unknown path and a wrong method.
+    The timeline's no-cookie case moved to the real-app Workbench 401 matrix
+    below when oqx moved the route, where all three failures are asserted."""
     client = TestClient(app)
     deleted = encode_session(SessionData(user_id=42, role="dm"), _GOLDEN_SECRET)
     cookie = config.SESSION_COOKIE_NAME
@@ -202,13 +207,12 @@ def test_legacy_refusals_are_byte_identical(legacy_store: InMemoryAuthStore) -> 
          client.get("/conversations/x/messages", headers={"cookie": f"{cookie}=garbage"}), 401, invalid, ()),
         ("messages: deleted account",
          client.get("/conversations/x/messages", headers={"cookie": f"{cookie}={deleted}"}), 401, gone, ()),
-        ("timeline: no cookie", client.get("/conversations/x/timeline"), 401, required, ()),
         ("unknown path", client.get("/no/such/path"), 404, not_found, ()),
         ("wrong method", client.delete("/healthz"), 405, not_allowed, (("allow", "GET"),)),
     ]
     assert [label for label, *_ in cases] == [
         "messages: no cookie", "messages: garbage cookie", "messages: deleted account",
-        "timeline: no cookie", "unknown path", "wrong method",
+        "unknown path", "wrong method",
     ]
     for label, response, status, body, extra in cases:
         assert _answer(response) == (status, body, _json_headers(body, *extra)), label
@@ -453,11 +457,12 @@ def test_the_real_app_answers_http_exceptions_through_the_workbench_handler() ->
 
 
 @pytest.mark.real_auth
-def test_the_real_conversation_routes_answer_one_401_body(legacy_store: InMemoryAuthStore) -> None:
+def test_the_real_workbench_routes_answer_one_401_body(legacy_store: InMemoryAuthStore) -> None:
     """SEC-2 on the real app, not a probe: the four Workbench conversation
-    routes answer every authentication failure with the one body, while the
-    legacy messages route next door still says three things (R-4). Positive
-    control: a valid GM cookie gets past the gate on the same routes."""
+    routes and the timeline (since oqx, which closes the F-23 oracle it kept)
+    answer every authentication failure with the one body, while the legacy
+    messages route next door still says three things (R-4). Positive control:
+    a valid GM cookie gets past the gate on the same routes."""
     client = TestClient(app)
     cookie = config.SESSION_COOKIE_NAME
     deleted = encode_session(SessionData(user_id=42, role="dm"), _GOLDEN_SECRET)
@@ -466,10 +471,11 @@ def test_the_real_conversation_routes_answer_one_401_body(legacy_store: InMemory
     routes: list[tuple[str, str, dict[str, object] | None]] = [
         ("GET", "/conversations", None), ("POST", "/conversations", {"schema_version": 1, "started_mode": "sage"}),
         ("GET", "/conversations/cnv_x", None), ("PATCH", "/conversations/cnv_x", {"schema_version": 1, "title": "t"}),
+        ("GET", "/conversations/cnv_x/timeline", None),
     ]
     answers = {(method, path, state): _answer(client.request(method, path, json=body, headers=headers))
                for method, path, body in routes for state, headers in failures.items()}
-    assert len(answers) == 12
+    assert len(answers) == 15
     distinct = {(status, body, tuple(headers)) for status, body, headers in answers.values()}
     assert distinct == {(401, _NOT_SIGNED_IN, tuple(_json_headers(_NOT_SIGNED_IN)))}
 
@@ -477,7 +483,7 @@ def test_the_real_conversation_routes_answer_one_401_body(legacy_store: InMemory
     legacy_store.redeem_invite("inv-gm", "gm@example.com", "not-a-real-hash")
     valid = {"cookie": f"{cookie}={encode_session(SessionData(user_id=1, role='dm'), _GOLDEN_SECRET)}"}
     past_the_gate = [client.request(m, p, json=b, headers=valid).status_code for m, p, b in routes]
-    assert past_the_gate == [503, 503, 503, 503]  # no database in this suite: the store refuses next
+    assert past_the_gate == [503, 503, 503, 503, 503]  # no database in this suite: the store refuses next
 
     legacy = [client.get("/conversations/x/messages", headers=h).content for h in failures.values()]
     assert legacy == [b'{"detail":"authentication required"}', b'{"detail":"invalid or expired session"}',
@@ -922,17 +928,17 @@ def test_the_spa_parity_walk_still_reserves_every_prefix_it_reserved_before() ->
 EXPECTED_LEGACY_ROUTES = {
     ("GET", "/healthz"), ("GET", "/models"), ("POST", "/chat"), ("POST", "/metrics/ui"),
     ("GET", "/conversations/{conversation_id}/messages"),
-    ("GET", "/conversations/{conversation_id}/timeline"),
     ("GET", "/conversations/{conversation_id}/attachments"),
     ("POST", "/conversations/{conversation_id}/attachments"),
     ("POST", "/auth/signup"), ("POST", "/auth/login"), ("POST", "/auth/logout"), ("GET", "/auth/me"),
 }
-#: 1kg.2.4 A2's routes, moved onto `workbench_router` by this bead (lead
-#: ruling on PR #98). No exemption list: the follow-up bead (oqx) moves the
-#: timeline route from the set above to this one.
+#: 1kg.2.4 A2's routes, moved onto `workbench_router` by oe6 (lead ruling on
+#: PR #98), and 1kg.4.2 B's timeline route, moved from the set above by oqx.
+#: No exemption list and nothing pending.
 EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/conversations"), ("POST", "/conversations"),
     ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
+    ("GET", "/conversations/{conversation_id}/timeline"),
 }
 
 
@@ -1228,5 +1234,8 @@ def test_the_route_module_derivation_finds_real_module_files(world: _World, tmp_
 @pytest.mark.real_auth
 def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
     modules = _workbench_route_modules(app)
-    assert modules == {(REPO_ROOT / "service" / "conversations_api.py").resolve()}  # a route bead adds its module
+    assert modules == {  # a route bead adds its module
+        (REPO_ROOT / "service" / "conversations_api.py").resolve(),
+        (REPO_ROOT / "service" / "timeline_api.py").resolve(),
+    }
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []
