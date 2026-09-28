@@ -157,14 +157,19 @@ def _create(
 
 
 def _a_legacy_conversation(
-    world: World, *, owner: int | None = None, now: datetime | None = None
+    world: World,
+    *,
+    owner: int | None = None,
+    now: datetime | None = None,
+    conversation_id: str | None = None,
 ) -> str:
     """A row this bead's store did not create — a client-minted `randomUUID()`,
     no title, no campaign, no `started_mode`. That is what `chat.conversations`
     holds today for every conversation in production, and every one of them must
-    keep working on every method here, forever, with no deprecation."""
+    keep working on every method here, forever, with no deprecation. An explicit
+    `conversation_id` is any other string `/chat` once accepted."""
     owner_id = world.owner if owner is None else owner
-    conversation_id = str(uuid.uuid4())
+    conversation_id = str(uuid.uuid4()) if conversation_id is None else conversation_id
     moment = T0 if now is None else now
     if world.kind == "fake":
         with world.db.transaction() as unit:
@@ -480,6 +485,54 @@ def test_a_cursor_carries_no_owner_no_filter_and_no_text(world: World) -> None:
 def test_a_cursor_this_server_did_not_mint_is_refused(world: World) -> None:
     with pytest.raises(InvalidCursor), world.db.transaction() as unit:
         world.conversations.list_for_owner(unit, world.owner, cursor="not-a-cursor")
+
+
+def test_the_index_never_lists_an_id_no_cursor_could_carry_so_paging_never_skips_past_one(
+    world: World,
+) -> None:
+    """agent-forge-harness-1ag, and PR #127's review (H-1). `/chat` accepted any
+    string as an id once, and a cursor is base64 of `[sort_key, id]`: a row
+    whose id is long, or whose characters JSON escapes, anchors a cursor past
+    the wire `Cursor`'s 512 characters, and the route can then only end the walk
+    there and skip every older row. So the index lists only a row whose id is 1
+    to 64 printable ASCII characters. The longest cursor such an id can anchor
+    is one whose every character JSON escapes, with a microsecond timestamp, and
+    it is asserted here to fit. Every row has its own moment, so the order
+    claims nothing about a collation."""
+    worst = '"\\' * 32
+    assert len(worst) == 64
+    moments = iter(T0 + timedelta(minutes=m, microseconds=123_456) for m in range(8))
+    oldest = _create(world, now=next(moments)).id
+    left_out = [_a_legacy_conversation(world, now=next(moments), conversation_id="x" * 360)]
+    uuid_row = _a_legacy_conversation(world, now=next(moments))
+    left_out.append(_a_legacy_conversation(world, now=next(moments), conversation_id="y" * 65))
+    listed_worst = _a_legacy_conversation(world, now=next(moments), conversation_id=worst)
+    left_out.append(_a_legacy_conversation(world, now=next(moments), conversation_id="a\x01b"))
+    left_out.append(_a_legacy_conversation(world, now=next(moments), conversation_id="café"))
+    newest = _create(world, now=next(moments)).id
+    expected = [newest, listed_worst, uuid_row, oldest]
+
+    assert _ids(world) == expected
+    assert _every_page(world, limit=2) == expected
+    seen: list[str] = []
+    cursor: str | None = None
+    for _ in range(len(expected) + 1):
+        with world.db.transaction() as unit:
+            page = world.conversations.list_for_owner(unit, world.owner, cursor=cursor, limit=1)
+        seen.extend(row.id for row in page.items)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+        assert re.fullmatch(r"[A-Za-z0-9_-]{1,512}", cursor), f"a {len(cursor)}-char cursor"
+    assert seen == expected, "paging skipped or repeated rows"
+    assert cursor is None
+    assert not set(left_out) & set(seen)
+    # Left out of the index only: the row is still there for the legacy routes.
+    with world.db.transaction() as unit:
+        assert all(
+            world.conversations.get_for_owner(unit, row, owner_id=world.owner) is not None
+            for row in left_out
+        )
 
 
 # ── Rename, archive, unarchive ───────────────────────────────────────────────

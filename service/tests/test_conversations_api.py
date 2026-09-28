@@ -20,28 +20,31 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import quote
 
 import psycopg
 import pytest
 from fastapi import HTTPException
+from fastapi.dependencies.models import Dependant
+from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 from httpx import Response
 from starlette.requests import Request
 
-from service import conversations_api
-from service.app import app, get_timeline_database, require_session
+from service import conversations_api, workbench_api
+from service.app import WORKBENCH_GM, app, get_timeline_database, require_session
 from service.campaign_store import InMemoryCampaignStore, Staging
 from service.campaign_store import shared_rows as twin_table
 from service.conversation_store import Conversation as StoredConversation
+from service.conversation_store import ConversationPage as StoredPage
 from service.conversation_store import InMemoryConversationStore
 from service.db import InMemoryDatabase
 from service.invites import Role
 from service.session import SessionData
-from service.tests.test_auth_guard import PROTECTED_ROUTES
-from service.workbench_contracts import Conversation, ConversationPage, ErrorBody
+from service.tests.test_auth_guard import PROTECTED_ROUTES, _depends_on
+from service.workbench_contracts import Conversation, ConversationPage, ErrorBody, validation_error_body
 
 OWNER = 1
 STRANGER = 2
@@ -58,7 +61,9 @@ WIRE_KEYS = {
     "updated_at",
     "archived_at",
 }
-NOT_FOUND = {"detail": {"code": "not_found", "message": "That conversation isn't available.", "retryable": False}}
+#: The scaffolding's one 404 (`workbench_api.NOT_FOUND_DETAIL`, oe6), which
+#: replaced this module's own "That conversation isn't available." (SEC-3).
+NOT_FOUND = {"detail": {"code": "not_found", "message": "That isn't available.", "retryable": False}}
 FORBIDDEN_ROLE = {"detail": {"code": "forbidden", "message": "This is a Game Master feature.", "retryable": False}}
 FORBIDDEN_ORIGIN = {
     "detail": {"code": "forbidden", "message": "That request didn't come from this application.", "retryable": False}
@@ -284,9 +289,12 @@ def test_a_campaign_conversation_must_be_started_in_gm(client: TestClient, world
 # ── A2-3: the order of the checks ────────────────────────────────────────────
 
 
-def test_the_writes_check_origin_then_session_then_body_then_role_then_store(
+def test_the_writes_check_origin_then_session_then_role_then_body_then_store(
     client: TestClient, world: _World
 ) -> None:
+    """The scaffolding's order (oe6): its router runs the origin check and the
+    GM gate (session, then role) before any route's own dependency, so the
+    role now comes BEFORE the body — a player learns nothing about a body."""
     foreign = {"origin": "https://evil.example", "sec-fetch-site": "cross-site"}
     mine = world.conversation().id
     writes = [
@@ -300,29 +308,46 @@ def test_the_writes_check_origin_then_session_then_body_then_role_then_store(
         assert write(body, headers=foreign).json() == FORBIDDEN_ORIGIN, "1. SEC-7 before authentication"
         assert write(bad).status_code == 401, "2. authentication before the body"
         _as(OWNER, "player")
-        assert write(bad).status_code == 422, "3. the body before the role"
-        assert write(body).json() == FORBIDDEN_ROLE, "4. the role before the store"
+        assert write(bad).json() == FORBIDDEN_ROLE, "3. the role before the body"
+        assert write(body).json() == FORBIDDEN_ROLE, "3. the role before the store"
         app.dependency_overrides[get_timeline_database] = lambda: None
-        assert write(body).json() == FORBIDDEN_ROLE, "4. the role before the store"
+        assert write(body).json() == FORBIDDEN_ROLE, "3. the role before the store"
         _as(OWNER)
+        assert write(bad).status_code == 422, "4. the body before the store"
         assert write(body).json() == UNAVAILABLE, "5. the store before the path id and ownership"
         app.dependency_overrides[get_timeline_database] = lambda: world.db
     assert world.stored(mine) is not None and world.stored(mine).archived_at is None  # type: ignore[union-attr]
     assert world.row_count() == 1
 
 
-def test_the_reads_check_session_then_query_then_role_then_store(client: TestClient) -> None:
+def test_the_reads_check_session_then_role_then_query_then_store(client: TestClient) -> None:
     _signed_out()
     assert client.get("/conversations", params={"limit": "0"}).status_code == 401
     assert _read(client, "not an id").status_code == 401
     _as(OWNER, "player")
-    assert client.get("/conversations", params={"limit": "0"}).status_code == 422
+    assert client.get("/conversations", params={"limit": "0"}).json() == FORBIDDEN_ROLE, "the role before the query"
     assert client.get("/conversations").json() == FORBIDDEN_ROLE
     assert _read(client, "not an id").json() == FORBIDDEN_ROLE
     _as(OWNER)
     app.dependency_overrides[get_timeline_database] = lambda: None
+    assert client.get("/conversations", params={"limit": "0"}).status_code == 422, "the query before the store"
     assert client.get("/conversations").json() == UNAVAILABLE
     assert _read(client, "not an id").json() == UNAVAILABLE, "the store before the path id"
+
+
+def test_the_patch_checks_role_then_store_before_the_path_id(client: TestClient, world: _World) -> None:
+    """A2-3 steps 4-6, pinned past `mine`: PR #100's review (M-2) found that
+    every existing PATCH-order test used an id that IS readable, so a mutant
+    that ran `_readable` before the role gate or before the store-availability
+    check still passed the whole suite (mutant M2b). `not an id` would 404 on
+    its own, so seeing FORBIDDEN_ROLE or UNAVAILABLE instead — never the path
+    id's 404 — proves the order holds for an id the store can never resolve."""
+    _as(OWNER, "player")
+    assert _patch(client, "not an id", archived=True).json() == FORBIDDEN_ROLE, "the role before the path id"
+    _as(OWNER)
+    app.dependency_overrides[get_timeline_database] = lambda: None
+    assert _patch(client, "not an id", archived=True).json() == UNAVAILABLE, "the store before the path id"
+    app.dependency_overrides[get_timeline_database] = lambda: world.db
 
 
 def test_the_path_id_is_checked_after_the_store_and_answers_the_one_404(client: TestClient) -> None:
@@ -390,7 +415,12 @@ def test_the_404_is_built_in_one_place(client: TestClient, world: _World, monkey
     """Why the matrix above cannot drift, and why the timing of the refusals is
     comparable: every one of them, the campaign's included, is `not_found()`."""
     refused = _refused_ids(world, viewer=OWNER, other=STRANGER)
-    monkeypatch.setattr(conversations_api, "not_found", lambda: HTTPException(status_code=418, detail="marker"))
+
+    def marker() -> NoReturn:
+        # The scaffolding's `not_found()` raises (it used to be returned here).
+        raise HTTPException(status_code=418, detail="marker")
+
+    monkeypatch.setattr(conversations_api, "not_found", marker)
     for conversation_id in refused.values():
         assert _read(client, conversation_id).status_code == 418
         assert _patch(client, conversation_id, archived=True).status_code == 418
@@ -623,6 +653,66 @@ def test_a_stored_row_the_wire_cannot_carry_is_left_out_and_the_walk_still_ends(
     # One row per page, so the walk also meets a page whose only row is left
     # out: an empty page with a cursor, which is not the end of the list.
     assert _walk(client, limit="1") == list(reversed(readable))
+
+
+def test_a_legacy_id_no_cursor_could_carry_is_never_listed_and_the_walk_reaches_every_row_past_it(
+    client: TestClient, world: _World, caplog: pytest.LogCaptureFixture
+) -> None:
+    """agent-forge-harness-1ag, and PR #127's review (H-1). `/chat` accepted any
+    string as an id once, and the store's cursor is base64 of `[sort_key, id]`,
+    so a legacy id this long cannot anchor a cursor inside the wire `Cursor`'s
+    512 characters: first that was a 500, then a walk that ended early and
+    skipped every older row. The store never lists such a row, so every page is
+    anchored on an id a cursor can carry and the walk reaches every readable row
+    past it at every page size — the default one too, where the long id could
+    land 100th on a page."""
+    oldest = world.conversation(now=T0).id
+    older = world.legacy("cnv_older_legacy", now=T0 + timedelta(minutes=1))
+    huge = world.legacy("x" * 360, now=T0 + timedelta(minutes=2))
+    newest = world.conversation(now=T0 + timedelta(minutes=3)).id
+    sizes: list[dict[str, str]] = [{"limit": "1"}, {"limit": "2"}, {}]
+    with caplog.at_level(logging.WARNING, logger="service.conversations_api"):
+        walks = [_walk(client, **size) for size in sizes]
+        ours = [r for r in caplog.records if r.name == "service.conversations_api"]
+    assert walks == [[newest, older, oldest]] * len(sizes), "paging skipped rows"
+    assert huge not in {row for walk in walks for row in walk}
+    # Nothing the route cannot carry ever reached it, so it neither counted a
+    # row out nor had to end a walk early.
+    assert [r.getMessage() for r in ours] == []
+
+
+class _OverlongCursor(InMemoryConversationStore):
+    """A store that hands back a page cursor the wire cannot carry. No store of
+    ours mints one any more (see the test above); this pins what the route does
+    if one ever did. The cursor holds the canary, so a log that carried it in
+    any form would show."""
+
+    def list_for_owner(self, *args: Any, **kwargs: Any) -> StoredPage:
+        page = super().list_for_owner(*args, **kwargs)
+        return StoredPage(page.items, CANARY * 47)
+
+
+def test_a_store_cursor_past_the_wire_bound_ends_the_walk_at_200_and_logs_one_fixed_line(
+    client: TestClient, world: _World, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The route's defence behind the store's rule (PR #127's review, M-1): a
+    store cursor past `Cursor`'s 512 characters never reaches
+    `ConversationPage`'s own validation as a 500. The page still answers, the
+    walk ends there, and the one log line is a fixed string whose record carries
+    no argument at all — a cursor is client-held data that decodes to an id
+    (SEC-20), so neither it nor anything read from it may reach a log in any
+    form, raw or encoded."""
+    made = [world.conversation(now=T0 + timedelta(minutes=m)).id for m in range(2)]
+    assert len(CANARY * 47) > 512
+    app.dependency_overrides[conversations_api.get_conversation_store] = lambda: _OverlongCursor(world.db)
+    with caplog.at_level(logging.DEBUG, logger="service"):
+        page = client.get("/conversations", params={"limit": "1"})
+        ours = [r for r in caplog.records if r.name.startswith("service")]
+    assert page.status_code == 200, page.text
+    assert (_ids(page), page.json()["next_cursor"]) == ([made[1]], None)
+    assert [(r.name, r.getMessage(), r.args) for r in ours] == [
+        ("service.conversations_api", "conversation index: page cursor exceeded the wire bound, ending the walk", ())
+    ]
 
 
 def test_every_page_validates_as_the_contracts_page(client: TestClient, world: _World) -> None:
@@ -916,7 +1006,7 @@ def test_a_request_with_no_host_header_cannot_name_this_application() -> None:
     """The one refusal a test client cannot send: it always adds a Host."""
     scope = {"type": "http", "method": "POST", "headers": [(b"origin", b"http://127.0.0.1")]}
     with pytest.raises(HTTPException) as refused:
-        conversations_api.origin_check(Request(scope))
+        workbench_api.origin_check()(Request(scope))
     assert refused.value.status_code == 403
 
 
@@ -938,10 +1028,10 @@ def test_a_request_with_no_host_header_cannot_name_this_application() -> None:
 def test_what_counts_as_a_body_and_as_this_application(headers: list[tuple[bytes, bytes]], allowed: bool) -> None:
     request = Request({"type": "http", "method": "POST", "headers": headers})
     if allowed:
-        conversations_api.origin_check(request)
+        workbench_api.origin_check()(request)
         return
     with pytest.raises(HTTPException) as refused:
-        conversations_api.origin_check(request)
+        workbench_api.origin_check()(request)
     assert refused.value.status_code == 403
 
 
@@ -955,6 +1045,10 @@ def test_a_read_is_not_origin_checked(client: TestClient, world: _World) -> None
 # ── Bodies ───────────────────────────────────────────────────────────────────
 
 
+#: The 422 for a body over the cap: validation_failed naming no field.
+OVER_THE_CAP = {"detail": {"code": "validation_failed", "message": "That request isn't valid.", "retryable": False}}
+
+
 def test_a_body_over_the_cap_is_refused_and_one_at_the_cap_is_read(client: TestClient, world: _World) -> None:
     cap = conversations_api.BODY_MAX_BYTES
     body = '{"schema_version":1,"started_mode":"sage"}'
@@ -962,10 +1056,7 @@ def test_a_body_over_the_cap_is_refused_and_one_at_the_cap_is_read(client: TestC
     json_type = {"content-type": "application/json"}
     assert client.post("/conversations", content=at_cap, headers=json_type).status_code == 201
     over = client.post("/conversations", content=at_cap + " ", headers=json_type)
-    assert (over.status_code, over.json()) == (
-        422,
-        {"detail": {"code": "validation_failed", "message": "That request isn't valid.", "retryable": False}},
-    )
+    assert (over.status_code, over.json()) == (422, OVER_THE_CAP)
     assert world.row_count() == 1
 
 
@@ -982,9 +1073,9 @@ def _streamed(chunks: list[bytes], pulled: list[int]) -> Request:
 def test_a_streamed_body_is_refused_at_the_chunk_that_crosses_the_cap_and_the_rest_is_never_read() -> None:
     pulled: list[int] = []
     chunks = [b"x" * 4096, b"x" * 4096, b"x" * 2, b"x" * 4096, b"x" * 4096]
-    with pytest.raises(HTTPException) as refused:
+    with pytest.raises(RequestValidationError) as refused:
         asyncio.run(conversations_api.read_body(_streamed(chunks, pulled)))
-    assert refused.value.status_code == 422
+    assert validation_error_body(refused.value.errors()).model_dump(mode="json", exclude_none=True) == OVER_THE_CAP
     assert pulled == [0, 1, 2], "read past the chunk that crossed the cap"
 
 
@@ -992,9 +1083,9 @@ def test_a_declared_length_over_the_cap_is_refused_before_a_byte_is_read() -> No
     pulled: list[int] = []
     request = _streamed([b"{}"], pulled)
     request.scope["headers"] = [(b"content-length", str(conversations_api.BODY_MAX_BYTES + 1).encode())]
-    with pytest.raises(HTTPException) as refused:
+    with pytest.raises(RequestValidationError) as refused:
         asyncio.run(conversations_api.read_body(request))
-    assert refused.value.status_code == 422
+    assert validation_error_body(refused.value.errors()).model_dump(mode="json", exclude_none=True) == OVER_THE_CAP
     assert pulled == []
 
 
@@ -1003,6 +1094,34 @@ def test_a_body_that_is_not_the_contracts_json_is_a_422_not_a_500(client: TestCl
     answer = client.post("/conversations", content=raw, headers={"content-type": "application/json"})
     assert answer.status_code == 422
     ErrorBody.model_validate(answer.json())
+
+
+def _carries_nothing(exc: RequestValidationError) -> None:
+    """`_parse` reads `exc.errors(include_input=False, ...)` and raises outside
+    its `except`, so the 422 it builds chains nothing and carries no input;
+    `read_body`'s refusals are hand-built by `_invalid` and never touch the
+    body at all. Mutant: `_parse` re-raising `RequestValidationError(exc.errors())`
+    *inside* the `except` would set `__context__` to the caught ValidationError
+    (which carries `input`, the raw request) — none of that is true here."""
+    assert exc.__context__ is None
+    assert exc.__cause__ is None
+    assert all("input" not in error for error in exc.errors())
+    assert CANARY not in str(exc)
+
+
+def test__parse_carries_no_input_and_chains_nothing() -> None:
+    raw = f'{{"schema_version":1,"started_mode":"{CANARY}"}}'.encode()
+    with pytest.raises(RequestValidationError) as parsed:
+        conversations_api._parse(conversations_api.ConversationCreateRequest, raw)
+    _carries_nothing(parsed.value)
+
+
+def test_read_body_carries_no_input_and_chains_nothing() -> None:
+    pulled: list[int] = []
+    chunks = [CANARY.encode() + b"x" * conversations_api.BODY_MAX_BYTES]
+    with pytest.raises(RequestValidationError) as refused:
+        asyncio.run(conversations_api.read_body(_streamed(chunks, pulled)))
+    _carries_nothing(refused.value)
 
 
 # ── 503, and no private text in a log or an answer (A12) ─────────────────────
@@ -1039,8 +1158,10 @@ def test_no_title_campaign_id_or_conversation_id_reaches_a_log_line(
     client: TestClient, world: _World, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Every path of every route, the refusals included, with the canary in
-    each value a caller controls. The two paths that DO log — an outage and an
-    omitted row — are driven too, so the assertion is not over zero records."""
+    each value a caller controls. The paths that DO log are driven too, so the
+    assertion is not over zero records: an outage, an omitted row, and — since
+    oe6 — each 422, which the application's one validation handler logs as
+    `redacted_errors` with the method and the route template (SEC-23)."""
     campaign = world.campaign()
     with caplog.at_level(logging.DEBUG, logger="service"):
         made = _create(client, started_mode="gm", campaign_id=campaign, title=CANARY).json()
@@ -1056,7 +1177,17 @@ def test_no_title_campaign_id_or_conversation_id_reaches_a_log_line(
         app.dependency_overrides[conversations_api.get_conversation_store] = lambda: _Down(world.db)
         _create(client, title=CANARY)
     ours = [r for r in caplog.records if r.name.startswith("service")]
-    assert len(ours) == 2, [r.getMessage() for r in ours]
+    refused = "workbench request refused by validation: "
+    assert [(r.name, r.getMessage()) for r in ours] == [
+        ("service.workbench_api", refused + "POST /conversations [{'type': 'value_error', 'loc': ['body', 'title'], "
+         "'msg': 'Value error, a title holds no control or bidirectional-formatting characters'}]"),
+        ("service.workbench_api", refused + "POST /conversations [{'type': 'enum', 'loc': ['body', 'started_mode'], "
+         "'msg': \"Input should be 'sage', 'spell', 'rules' or 'gm'\"}]"),
+        ("service.workbench_api", refused + "GET /conversations [{'type': 'value_error', "
+         "'loc': ['query', 'started_mode'], 'msg': 'invalid'}]"),
+        ("service.conversations_api", "conversation index: 1 stored rows omitted as unreadable"),
+        ("service.conversations_api", "conversation route: database unavailable (OperationalError)"),
+    ]
     for record in ours:
         text = record.getMessage() + " ".join(str(arg) for arg in (record.args or ()))
         assert CANARY not in text and campaign not in text and made["conversation_id"] not in text
@@ -1096,25 +1227,28 @@ CONVERSATION_ROUTES = {
 }
 
 
-def _conversation_routes() -> list[tuple[str, str, APIRoute]]:
+def _conversation_routes() -> list[tuple[str, str, APIRoute, Dependant]]:
     rows = [
-        (method, str(ctx.path), ctx.original_route)
-        for ctx in iter_route_contexts(app.routes)
-        if isinstance(ctx.original_route, APIRoute)
-        for method in (ctx.methods or set())
+        (method, path, route, dependant)
+        for path, route, dependant in workbench_api.api_route_dependants(app)
+        for method in (route.methods or set())
     ]
     assert rows, "the routing table read as empty: the walk below would pass for nothing"
     return [row for row in rows if row[2].endpoint.__module__ == conversations_api.__name__]
 
 
 def test_every_conversation_route_is_session_guarded_and_in_the_auth_matrix() -> None:
-    """`test_auth_guard.py`'s own completeness walk reads `app.routes`, where an
-    included router is one opaque entry, so it cannot see these. This walk can."""
+    """Each route is a Workbench route whose effective dependencies hold the
+    app's GM gate directly and `require_session` beneath it (oe6): the guard is
+    the router's, so no route can leave it out. `test_auth_guard.py`'s walk
+    sees these too now; this one also pins which gate guards them."""
     found = _conversation_routes()
-    assert {(method, path) for method, path, _ in found} == CONVERSATION_ROUTES
+    assert {(method, path) for method, path, _, _ in found} == CONVERSATION_ROUTES
     listed = {(method, template) for method, template, _, _ in PROTECTED_ROUTES}
-    for method, path, route in found:
-        assert any(d.call is require_session for d in route.dependant.dependencies), (method, path)
+    for method, path, route, dependant in found:
+        assert isinstance(route, workbench_api.WorkbenchRoute), (method, path)
+        assert any(d.call is WORKBENCH_GM for d in dependant.dependencies), (method, path)
+        assert _depends_on(dependant, require_session), (method, path)
         assert (method, path) in listed, f"{method} {path} is missing from PROTECTED_ROUTES"
 
 

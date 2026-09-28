@@ -10,7 +10,7 @@ pull request / push to master
    ├─ python-tests        pytest — service, ingestion, repo guards ─┐
    ├─ ui-tests            typecheck · lint · vitest ───────────────┤
    ├─ contract-parity     Pydantic vs Zod, differential fuzz       │
-   │                      (informational: does not gate deploy)    │
+   │                      (gates deploy; not a need of ui-e2e)     │
    │                                                              ▼
    │                    ui-e2e — production Compose + perf budgets
    └─ retrieval-metrics   eval_golden vs live corpus DB → regression gate
@@ -28,9 +28,11 @@ pull request / push to master
 example of the Workbench wire contract and checks two things: that the Pydantic
 models and the Zod schemas give the same verdict, and that the client can read
 whatever the server emits. The shared fixtures already run inside `python-tests`
-and `ui-tests`; this covers the cases nobody thought to write. It does not gate
-`deploy`, because no route serves that contract yet — add it to `deploy`'s
-`needs` when the first Workbench route ships. See
+and `ui-tests`; this covers the cases nobody thought to write. It gates
+`deploy`: the conversation timeline route serves that contract, so a Pydantic/Zod
+disagreement is a screen that breaks after a deploy with nothing red anywhere.
+The fuzz is deterministic (fixed fixtures, a fixed replacement list), so the gate
+adds no flake. `force_deploy` does not waive it (agent-forge-harness-oe6). See
 [`workbench-wire-contract.md`](workbench-wire-contract.md).
 
 ## Static analysis gates

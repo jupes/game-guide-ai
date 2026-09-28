@@ -101,6 +101,7 @@ from .workbench_contracts import (
     DocumentTypeId,
     LibrarySort,
     check_fields,
+    check_stored_text,
 )
 
 #: CANVAS-34's "ten minutes idle": a write that arrives this long or longer
@@ -491,9 +492,18 @@ def check_summary(summary: str) -> str:
     A summary may be empty: a burst of GM autosaves needs no summary. The
     line-break rule the wire's `_TextValue` also applies is `1kg.5.2`'s, not
     this column's — the `CHECK` bounds length and nothing else.
+
+    **Its characters follow the one rule for stored text** (bead `5mj`,
+    `check_stored_text`): `text` refuses U+0000 with SQLSTATE 22021 and UTF-8
+    cannot carry a lone surrogate, so either would otherwise be a driver error
+    in PostgreSQL and a stored row in the twin.
     """
     if len(summary) > TEXT_FIELD_MAX_CHARS:
         raise ValueError(f"a version summary is at most {TEXT_FIELD_MAX_CHARS} characters")
+    try:
+        check_stored_text(summary)
+    except ValueError as refused:
+        raise ValueError(f"a version summary {refused}") from None
     return summary
 
 

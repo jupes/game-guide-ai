@@ -33,6 +33,7 @@ from service.generate import (
     generate_spell_content,
     generate_stat_block,
 )
+from service.models import Suggestion
 
 _REQUEST = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
 
@@ -169,6 +170,88 @@ def test_builder_dict_key_set_is_exactly_expected_keys_on_success_and_on_error()
     assert set(err) == usage_capture.EXPECTED_KEYS
     assert ok["event"] == "provider_attempt"
     assert ok["record_version"] == 1
+
+
+# ---------------------------------------------------------------------------
+# The outcome record: a second, independent closed key set (agent-forge-
+# harness-kyr) — no alias, status or token field, and no text field of any
+# kind (X-7).
+# ---------------------------------------------------------------------------
+
+def test_expected_outcome_keys_is_the_documented_closed_set():
+    assert usage_capture.EXPECTED_OUTCOME_KEYS == frozenset({
+        "event", "record_version", "operation_id", "operation", "purpose", "mode",
+        "outcome", "billed_account_id", "actor_kind", "campaign_id",
+    })
+
+
+def test_outcomes_is_the_documented_closed_set():
+    assert usage_capture.OUTCOMES == frozenset({"produced", "none", "parse_failure", "skipped_by_gate"})
+
+
+def test_reserved_cloud_run_field_names_are_not_in_the_outcome_record():
+    reserved = {"severity", "message", "timestamp", "time", "httpRequest"}
+    assert not (usage_capture.EXPECTED_OUTCOME_KEYS & reserved)
+    assert not any(k.startswith("logging.googleapis.com/") for k in usage_capture.EXPECTED_OUTCOME_KEYS)
+
+
+def test_outcome_builder_dict_key_set_is_exactly_expected_outcome_keys():
+    produced = usage_capture.build_outcome_record(
+        operation=_operation(), purpose=usage_capture.PURPOSE_SUGGESTIONS,
+        outcome=usage_capture.OUTCOME_PRODUCED,
+    )
+    skipped = usage_capture.build_outcome_record(
+        operation=_operation(), purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING,
+        outcome=usage_capture.OUTCOME_SKIPPED_BY_GATE,
+    )
+    assert set(produced) == usage_capture.EXPECTED_OUTCOME_KEYS
+    assert set(skipped) == usage_capture.EXPECTED_OUTCOME_KEYS
+    assert produced["event"] == "structuring_outcome"
+    assert produced["record_version"] == 1
+    assert produced["outcome"] == "produced"
+    assert skipped["outcome"] == "skipped_by_gate"
+
+
+def _raised(fn) -> BaseException:
+    """The exception `fn` really raises, so each case below is the genuine
+    article rather than a hand-built instance of the right class."""
+    try:
+        fn()
+    except Exception as exc:
+        return exc
+    raise AssertionError(f"{fn} did not raise")
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        # The provider's: nothing usable came back, and it is not our parser.
+        pytest.param(_rate_limit_error(), "none", id="openai-rate-limit"),
+        pytest.param(openai.APIConnectionError(request=_REQUEST), "none", id="openai-connection"),
+        pytest.param(openai.APITimeoutError(request=_REQUEST), "none", id="openai-timeout"),
+        pytest.param(
+            openai.AuthenticationError("bad key", response=httpx.Response(401, request=_REQUEST), body=None),
+            "none", id="openai-auth",
+        ),
+        pytest.param(RuntimeError("boom"), "none", id="runtime-error"),
+        pytest.param(TimeoutError(), "none", id="builtin-timeout"),
+        # Ours: a reply that arrived fine and would not parse into the shape.
+        pytest.param(ValueError("suggestions JSON must be an array"), "parse_failure", id="value-error"),
+        pytest.param(_raised(lambda: json.loads("not json at all")), "parse_failure", id="json-decode-error"),
+        pytest.param(
+            _raised(lambda: Suggestion.model_validate({"style": "practical"})),
+            "parse_failure", id="pydantic-validation-error",
+        ),
+    ],
+)
+def test_outcome_for_failure_files_ours_as_parse_failure_and_the_providers_as_none(exc, expected):
+    """Review H-1: the whole classification contract, tested directly rather
+    than only through the graph's exception fixtures. A provider outage must
+    never be filed as a parse failure, valid JSON of the wrong shape (pydantic's
+    ValidationError, a ValueError subclass) must never be filed as `none`, and
+    the result is always one of the closed-set constants, never text off `exc`."""
+    assert usage_capture.outcome_for_failure(exc) == expected
+    assert usage_capture.outcome_for_failure(exc) in usage_capture.OUTCOMES
 
 
 def test_provider_is_the_catalog_provider_or_null_never_a_guess():
@@ -484,6 +567,105 @@ def test_embedding_scope_is_a_no_op_without_an_operation():
     token = usage_capture.begin_embedding_scope(None)
     assert token is None
     usage_capture.end_embedding_scope(token)
+
+
+def test_record_structuring_outcome_is_a_no_op_without_an_operation(monkeypatch, caplog):
+    """No operation -> no emitter call AND no warning: a silent no-op, not a
+    failure swallowed by the function's own `except` (review M-2 — a raising
+    emitter alone could not tell those two apart)."""
+    caplog.set_level("WARNING", logger="service.usage_capture")
+    emitted: list[dict] = []
+    monkeypatch.setattr(
+        usage_capture, "_emit_outcome_record", lambda operation, fields: emitted.append(dict(fields)),
+    )
+
+    usage_capture.record_structuring_outcome(
+        None, purpose=usage_capture.PURPOSE_SUGGESTIONS, outcome=usage_capture.OUTCOME_PRODUCED,
+    )
+
+    assert emitted == []
+    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+@pytest.mark.parametrize("purpose", [
+    usage_capture.PURPOSE_SUGGESTIONS,
+    usage_capture.PURPOSE_SPELL_STRUCTURING,
+    usage_capture.PURPOSE_STATBLOCK_STRUCTURING,
+])
+@pytest.mark.parametrize("outcome", ["produced", "none", "parse_failure", "skipped_by_gate"])
+def test_record_structuring_outcome_emits_one_record_for_every_closed_set_pair(
+    purpose, outcome, monkeypatch, caplog,
+):
+    """The positive control for the refusals below: inside a turn, every
+    structuring purpose x every outcome emits exactly one record, silently."""
+    caplog.set_level("WARNING", logger="service.usage_capture")
+    monkeypatch.setattr(usage_capture, "operation_from_config", lambda config: _operation())
+    emitted: list[dict] = []
+    monkeypatch.setattr(
+        usage_capture, "_emit_outcome_record", lambda operation, fields: emitted.append(dict(fields)),
+    )
+
+    usage_capture.record_structuring_outcome({}, purpose=purpose, outcome=outcome)
+
+    assert len(emitted) == 1
+    assert (emitted[0]["purpose"], emitted[0]["outcome"]) == (purpose, outcome)
+    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+@pytest.mark.parametrize(
+    ("purpose", "outcome"),
+    [
+        pytest.param("suggestions", "RateLimitError: zzqsecret-7d1e the orb hums", id="free-text-outcome"),
+        pytest.param("zzqsecret-7d1e the orb hums", "produced", id="free-text-purpose"),
+        pytest.param("answer", "produced", id="not-a-structuring-purpose"),
+        pytest.param("embedding", "none", id="embedding-is-not-structuring"),
+    ],
+)
+def test_record_structuring_outcome_refuses_anything_outside_the_closed_sets(
+    purpose, outcome, monkeypatch, caplog,
+):
+    """Review M-1: records are content-free by construction, not because every
+    caller happens to pass a constant. A free string in `outcome` or `purpose` is
+    a text field by another name (X-7), so it is refused — one bounded warning
+    that never echoes the value, and no record."""
+    caplog.set_level("WARNING", logger="service.usage_capture")
+    monkeypatch.setattr(usage_capture, "operation_from_config", lambda config: _operation())
+    emitted: list[dict] = []
+    monkeypatch.setattr(
+        usage_capture, "_emit_outcome_record", lambda operation, fields: emitted.append(dict(fields)),
+    )
+
+    usage_capture.record_structuring_outcome({}, purpose=purpose, outcome=outcome)
+
+    assert emitted == []
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "record_structuring_outcome" in warnings[0]
+    assert "zzqsecret" not in warnings[0]
+
+
+def test_record_structuring_outcome_never_raises_on_a_malformed_config():
+    class _Hostile(dict):
+        def get(self, *args, **kwargs):
+            raise RuntimeError("hostile config")
+
+    # Must not raise. `operation_from_config` isolates the hostile lookup
+    # itself and returns None, so record_structuring_outcome simply no-ops.
+    usage_capture.record_structuring_outcome(
+        _Hostile(), purpose=usage_capture.PURPOSE_SUGGESTIONS, outcome=usage_capture.OUTCOME_PRODUCED,
+    )
+
+
+def test_record_structuring_outcome_never_raises_when_the_emitter_does(monkeypatch, caplog):
+    caplog.set_level("WARNING", logger="service.usage_capture")
+    monkeypatch.setattr(usage_capture, "operation_from_config", lambda config: _operation())
+    monkeypatch.setattr(usage_capture, "_emit_outcome_record", _boom)
+
+    usage_capture.record_structuring_outcome(
+        {}, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING, outcome=usage_capture.OUTCOME_SKIPPED_BY_GATE,
+    )
+
+    assert any("record_structuring_outcome" in r.getMessage() for r in caplog.records)
 
 
 def test_observer_for_never_raises_when_the_recorder_cannot_be_built(monkeypatch, caplog):

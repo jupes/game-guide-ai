@@ -1,7 +1,8 @@
 """The conversation routes (1kg.2.4 A2): the owner's index, create, read, and patch.
 
-Four routes on an `APIRouter`, wired into `service/app.py` by two lines and
-importing nothing from it (ruling A2-1):
+Four Workbench routes on a `workbench_router` (`agent-forge-harness-oe6`),
+wired into `service/app.py` and importing nothing from it (ruling A2-1): the
+application hands `build_router` its GM gate, `gm_session(require_session)`.
 
 | Route | Answers |
 | --- | --- |
@@ -10,25 +11,27 @@ importing nothing from it (ruling A2-1):
 | `GET /conversations/{id}` | one conversation's metadata |
 | `PATCH /conversations/{id}` | rename, archive, unarchive, link to a campaign, bind the channel |
 
-**The Workbench posture, built by hand** until `agent-forge-harness-oe6`'s
-scaffolding moves these routes onto it (R-4, R-5). Every check runs in one order
-(ruling A2-3; SEC-3): the origin check on a write (SEC-7) → authentication →
-the body or the query, which depend on nothing else → the `dm` role → the store
-→ the path id → ownership → validation that depends on the conversation → its
-state. A 409, and any 422 that depends on a conversation, is therefore
-unreachable for a conversation the caller does not own.
+**The Workbench posture is the scaffolding's**, not this module's: the router
+runs the origin check on a write (SEC-7), then authentication, whose every
+failure is the one 401 body (SEC-2), then the `dm` role (R-3). Then, here: the
+body or the query, which depend on nothing else → the store → the path id →
+ownership → validation that depends on the conversation → its state. A 409, and
+any 422 that depends on a conversation, is therefore unreachable for a
+conversation the caller does not own (SEC-3).
 
 **One 404.** A conversation that is missing, belongs to someone else, has no
 owner row, or has an id outside `OpaqueId` — and a campaign that is not a live
-one of the caller's — answer the same 404 from one helper, `not_found`. These
-routes **never claim** a conversation (§8.1): `GET …/messages` next door still
-does, and its 403 is the legacy oracle the threat model's §10 accepts for the
-pilot.
+one of the caller's — answer the same 404 from the scaffolding's one helper,
+`not_found()`. These routes **never claim** a conversation (§8.1): `GET
+…/messages` next door still does, and its 403 is the legacy oracle the threat
+model's §10 accepts for the pilot.
 
 **No private text anywhere.** No handler logs a title, a campaign id or a
-conversation id, and no refusal repeats what it was sent: validation answers
-with `validation_error_body`, which reads only an error's type and location, and
-nothing here chains a caller's input into an exception.
+conversation id, and no refusal repeats what it was sent. Every 422 is raised
+as a `RequestValidationError` carrying no input, and the application's one
+validation handler answers it with `validation_error_body`, which reads only an
+error's type and location, and logs it redacted (SEC-23). Nothing here chains a
+caller's input into an exception.
 
 Deletion is not here. Archive is reversible and destroys nothing; deletion
 follows `agent-forge-harness-1ka.5`.
@@ -41,10 +44,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
-from urllib.parse import urlsplit
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from . import timeline
@@ -60,6 +63,7 @@ from .conversation_store import (
 from .db import Database, UnitOfWork
 from .models import ChatMode
 from .session import SessionData
+from .workbench_api import SessionDependency, not_found, workbench_router
 from .workbench_contracts import (
     CONTRACT_VERSION,
     CONVERSATION_PAGE_MAX_ITEMS,
@@ -73,7 +77,6 @@ from .workbench_contracts import (
     ErrorInfo,
     OpaqueId,
     SchemaVersion,
-    validation_error_body,
 )
 
 log = logging.getLogger(__name__)
@@ -85,13 +88,8 @@ BODY_MAX_BYTES = 8_192
 WIRE_VERSION = cast("SchemaVersion", CONTRACT_VERSION)
 
 #: Fixed sentences. A refusal never interpolates anything it was sent (X-7).
-FORBIDDEN_ORIGIN_MESSAGE = "That request didn't come from this application."
 UNAVAILABLE_MESSAGE = "Conversations are briefly unavailable. Try again."
 ALREADY_LINKED_MESSAGE = "That conversation is already in a campaign."
-
-#: The one media type a write's body may have (SEC-7). There are no uploads here.
-JSON_MEDIA_TYPE = "application/json"
-_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def get_conversation_store() -> ConversationStore:
@@ -100,30 +98,14 @@ def get_conversation_store() -> ConversationStore:
 
 
 # ── Refusals ─────────────────────────────────────────────────────────────────
+# The 401, the 403s and the 404 are the scaffolding's (`workbench_api`); these
+# are the answers it has no envelope for.
 
 
 def _refusal(status: int, body: ErrorBody) -> HTTPException:
     """A Workbench refusal as FastAPI raises one: `detail` holds the object, so
     the wire body is exactly `ErrorBody`, without the keys that are unset."""
     return HTTPException(status_code=status, detail=body.detail.model_dump(mode="json", exclude_none=True))
-
-
-def not_found() -> HTTPException:
-    """THE 404 of these routes, and the only place one is built.
-
-    Missing, foreign, unowned and unreadable conversations, and a campaign that
-    is not a live one of the caller's, all come through here, so their answers
-    cannot drift apart in a status, a body or a header (SEC-3, T-2).
-    """
-    return _refusal(404, timeline.error_body(ErrorCode.NOT_FOUND, timeline.NOT_FOUND_MESSAGE, retryable=False))
-
-
-def _forbidden_role() -> HTTPException:
-    return _refusal(403, timeline.error_body(ErrorCode.FORBIDDEN, timeline.FORBIDDEN_MESSAGE, retryable=False))
-
-
-def _forbidden_origin() -> HTTPException:
-    return _refusal(403, timeline.error_body(ErrorCode.FORBIDDEN, FORBIDDEN_ORIGIN_MESSAGE, retryable=False))
 
 
 def _unavailable() -> HTTPException:
@@ -137,97 +119,25 @@ def _already_linked() -> HTTPException:
     return _refusal(409, ErrorBody(detail=info))
 
 
-def _invalid(field: str | None) -> HTTPException:
-    """A 422 naming the field at fault — never its value."""
-    loc: tuple[str, ...] = ("body", field) if field is not None else ()
-    return _refusal(422, validation_error_body([{"type": "value_error", "loc": loc, "msg": "invalid"}]))
+def _invalid(field: str | None, part: str = "body") -> RequestValidationError:
+    """A 422 naming the field at fault — never its value. The application's one
+    validation handler answers it (SEC-23)."""
+    loc: tuple[str, ...] = (part, field) if field is not None else ()
+    return RequestValidationError([{"type": "value_error", "loc": loc, "msg": "invalid"}])
 
 
-def _invalid_query(field: str) -> HTTPException:
-    return _refusal(422, timeline.parameter_error_body(field))
+def _invalid_query(field: str) -> RequestValidationError:
+    return _invalid(field, "query")
 
 
-# ── SEC-7: where a write came from ───────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class _Authority:
-    host: str
-    port: int | None
-
-
-def _authority(text: str) -> _Authority | None:
-    """`host[:port]` as a `Host` header or an origin's network location carries
-    it, or None when it cannot be read — which is a refusal, never a guess."""
-    try:
-        parts = urlsplit(f"//{text}")
-        host, port = parts.hostname, parts.port
-    except ValueError:
-        return None
-    return None if not host else _Authority(host.lower(), port)
-
-
-def _origin_authority(origin: str) -> _Authority | None:
-    try:
-        parts = urlsplit(origin)
-        host, port, scheme = parts.hostname, parts.port, parts.scheme.lower()
-    except ValueError:
-        return None
-    if not host or scheme not in _DEFAULT_PORTS:
-        return None
-    return _Authority(host.lower(), port if port is not None else _DEFAULT_PORTS[scheme])
-
-
-def _same_application(origin: str, host_header: str | None) -> bool:
-    """The `Origin` names this application: its host is the `Host` header's
-    host, case-insensitively, and its port is the `Host` header's port when that
-    header carries one. The scheme is never compared: Cloud Run terminates TLS
-    and forwards HTTP, so this service cannot know its own scheme
-    (`config.py`'s `SESSION_COOKIE_SECURE` note). `null` names no origin."""
-    if origin == "null" or host_header is None:
-        return False
-    claimed, served = _origin_authority(origin), _authority(host_header)
-    if claimed is None or served is None or claimed.host != served.host:
-        return False
-    return served.port is None or claimed.port == served.port
-
-
-def _carries_a_body(request: Request) -> bool:
-    if "transfer-encoding" in request.headers:
-        return True
-    declared = request.headers.get("content-length")
-    if declared is None:
-        return False
-    # An unreadable length is treated as a body: the check fails closed.
-    return not declared.isdigit() or int(declared) > 0
-
-
-def origin_check(request: Request) -> None:
-    """SEC-7, for the two writes. A browser request says where it came from and
-    must say this application; a request that says nothing is not a browser's,
-    and cross-site forgery is a browser attack. A body, from anyone, is JSON.
-
-    Emits no CORS header, and there is no CORS middleware to add one.
-    """
-    origin = request.headers.get("origin")
-    if origin is not None and not _same_application(origin, request.headers.get("host")):
-        raise _forbidden_origin()
-    fetch_site = request.headers.get("sec-fetch-site")
-    if fetch_site is not None and fetch_site != "same-origin":
-        raise _forbidden_origin()
-    if _carries_a_body(request):
-        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        if media_type != JSON_MEDIA_TYPE:
-            raise _forbidden_origin()
-
-
-# ── Bodies and queries: validated here, never by FastAPI (SEC-23) ────────────
+# ── Bodies and queries: validated here, never by FastAPI's parameters ────────
 
 
 async def read_body(request: Request) -> bytes:
     """The raw body, at most `BODY_MAX_BYTES`. A longer one is refused as soon
     as it is known to be longer — by its declared length, or by the first chunk
-    that crosses the line — and the rest is never read."""
+    that crosses the line — and the rest is never read. FastAPI would read a
+    declared body model to the end first, which is why there is none."""
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > BODY_MAX_BYTES:
         raise _invalid(None)
@@ -240,12 +150,14 @@ async def read_body(request: Request) -> bytes:
 
 
 def _parse[M: BaseModel](model: type[M], raw: bytes) -> M:
-    """The body as the contract reads it, or the Workbench 422. Nothing is
-    logged, and the error is not chained: its `input` is the request."""
+    """The body as the contract reads it, or the Workbench 422. The error list
+    handed on carries no input, and it is raised outside the `except`, so it
+    chains nothing: a ValidationError's `input` is the request."""
     try:
         return model.model_validate_json(raw)
     except ValidationError as exc:
-        raise _refusal(422, validation_error_body(exc.errors())) from None
+        errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    raise RequestValidationError([{**error, "loc": ("body", *error["loc"])} for error in errors])
 
 
 _LIMIT: TypeAdapter[int] = TypeAdapter(int)
@@ -276,7 +188,8 @@ def parse_index_query(
     """Every parameter of the index, or the 422 naming the first at fault.
 
     Each is declared `str | None` on the handler so FastAPI never validates it:
-    its default 422 repeats the request (SEC-23). A limit outside 1..100 is a
+    its readings are laxer than the contract's (`include_archived=yes` would be
+    true there). A limit outside 1..100 is a
     refusal here even though the store would clamp it. Parameters this route
     does not know are ignored. There is no title and no search parameter.
     """
@@ -342,7 +255,15 @@ def _page(rows: list[StoredConversation], next_cursor: str | None) -> Conversati
     """The index page. A row the contract cannot carry — an id outside
     `OpaqueId` that `/chat` accepted once — is left out rather than taking the
     page down, and only the COUNT is logged. The cursor is the store's, passed
-    through unchanged: a page may be short and still not be the last."""
+    through mostly unchanged: a page may be short and still not be the last.
+
+    The store never lists a row whose id could carry its base64 cursor past the
+    wire `Cursor`'s 512 characters (agent-forge-harness-1ag), so every cursor it
+    hands back fits. The check below is defence behind that rule, not the rule:
+    a cursor that did not fit would otherwise reach `ConversationPage`'s own
+    validation as an uncaught error, a 500. Here it ends the walk instead —
+    `next_cursor=None` — and only that fact is logged, never the cursor, which
+    is client-held data that decodes to an id (SEC-20)."""
     items: list[Conversation] = []
     for row in rows:
         try:
@@ -351,23 +272,23 @@ def _page(rows: list[StoredConversation], next_cursor: str | None) -> Conversati
             continue
     if len(items) < len(rows):
         log.warning("conversation index: %d stored rows omitted as unreadable", len(rows) - len(items))
+    if next_cursor is not None:
+        try:
+            _CURSOR.validate_python(next_cursor)
+        except ValidationError:
+            log.warning("conversation index: page cursor exceeded the wire bound, ending the walk")
+            next_cursor = None
     return ConversationPage(schema_version=WIRE_VERSION, items=items, next_cursor=next_cursor)
 
 
-def _readable(conversation_id: str) -> None:
+def _readable(conversation_id: str) -> bool:
     """The path id, against the shape the contract carries it in. Outside it is
     the same 404 as missing — the timeline route's rule."""
     try:
         timeline.require_readable_id(conversation_id)
     except timeline.ConversationNotFound:
-        raise not_found() from None
-
-
-def _require_dm(session: SessionData) -> None:
-    # R-3, TA-3: every new Workbench route needs the dm role until yje.4.1
-    # replaces this check in one place.
-    if session.role != "dm":
-        raise _forbidden_role()
+        return False
+    return True
 
 
 def _logged_outage(exc: BaseException) -> HTTPException:
@@ -405,7 +326,7 @@ def apply_patch(
     refusal is raised inside the transaction, so it rolls back what came before."""
     row = store.get_for_owner(unit, conversation_id, owner_id=owner_id)
     if row is None:
-        raise not_found()
+        not_found()
     _check_against(row, patch)
     if patch.campaign_id is not None:
         if row.campaign_id is None:
@@ -415,7 +336,7 @@ def apply_patch(
                 # never by a second oracle.
                 again = store.get_for_owner(unit, conversation_id, owner_id=owner_id)
                 if again is None or again.campaign_id is None:
-                    raise not_found()
+                    not_found()
                 if again.campaign_id != patch.campaign_id:
                     raise _already_linked()
         elif row.campaign_id != patch.campaign_id:
@@ -423,17 +344,17 @@ def apply_patch(
     if patch.started_mode is not None:
         # First writer wins; a different winner is the answer, not an error.
         if store.bind_started_mode(unit, conversation_id, owner_id=owner_id, mode=patch.started_mode.value) is None:
-            raise not_found()
+            not_found()
     # A rename to the title it already has changes nothing, not even the order.
     if patch.title is not None and patch.title != row.title:
         if not store.rename(unit, conversation_id, owner_id=owner_id, title=patch.title):
-            raise not_found()
+            not_found()
     if patch.archived is not None:
         # False means it was already in that state: a repeat is a no-op.
         store.set_archived(unit, conversation_id, owner_id=owner_id, archived=patch.archived)
     final = store.get_for_owner(unit, conversation_id, owner_id=owner_id)
     if final is None:
-        raise not_found()
+        not_found()
     if final.campaign_id is not None and final.started_mode not in (None, ChatMode.gm.value):
         # Only reachable through a race with another request of the same owner
         # between the checks above and these writes. Refused, so the whole
@@ -446,16 +367,19 @@ def apply_patch(
 
 
 def build_router(
-    session: Callable[..., SessionData],
+    gm: SessionDependency,
     database: Callable[[], Database | None],
 ) -> APIRouter:
-    """The four routes, depending on the app's own `require_session` and its
-    database getter, so the app's overrides and its recovery apply unchanged."""
-    router = APIRouter()
+    """The four routes on a `workbench_router`, given the app's GM gate
+    (`gm_session(require_session)`) and its database getter, so the app's
+    overrides and its recovery apply unchanged. The router runs the origin
+    check and `gm` before any route's own dependencies; each route declares
+    `Depends(gm)` again for the session, which FastAPI resolves once."""
+    router = workbench_router(gm)
 
     @router.get("/conversations", response_model=ConversationPage)
     def list_conversations(
-        user: SessionData = Depends(session),
+        user: SessionData = Depends(gm),
         limit: str | None = None,
         cursor: str | None = None,
         include_archived: str | None = None,
@@ -467,7 +391,6 @@ def build_router(
         """The owner's index. A campaign filter the caller does not own matches
         nothing, so the page is empty: no 404, no oracle."""
         query = parse_index_query(limit, cursor, include_archived, started_mode, campaign_id)
-        _require_dm(user)
         if db is None:
             raise _unavailable()
         try:
@@ -489,8 +412,7 @@ def build_router(
 
     @router.post("/conversations", response_model=Conversation, status_code=201)
     def create_conversation(
-        _origin: None = Depends(origin_check),
-        user: SessionData = Depends(session),
+        user: SessionData = Depends(gm),
         raw: bytes = Depends(read_body),
         store: ConversationStore = Depends(get_conversation_store),
         db: Database | None = Depends(database),
@@ -498,9 +420,9 @@ def build_router(
         """A new conversation: the id minted here, the owner the session. There
         is no claim (§8.1) and no idempotency key (ruling 2.4#5)."""
         request = _parse(ConversationCreateRequest, raw)
-        _require_dm(user)
         if db is None:
             raise _unavailable()
+        made: StoredConversation | None = None
         try:
             with db.transaction() as unit:
                 made = store.create(
@@ -511,39 +433,40 @@ def build_router(
                     started_mode=request.started_mode.value,
                 )
         except MissingParent:
-            # "404 by campaign" (§8.1): a missing and a foreign campaign are one answer.
-            raise not_found() from None
+            pass  # answered below, outside the `except`, so nothing is chained
         except psycopg.Error as exc:
             raise _logged_outage(exc) from exc
+        if made is None:
+            # "404 by campaign" (§8.1): a missing and a foreign campaign are one answer.
+            not_found()
         return to_wire(made)
 
     @router.get("/conversations/{conversation_id}", response_model=Conversation)
     def read_conversation(
         conversation_id: str,
-        user: SessionData = Depends(session),
+        user: SessionData = Depends(gm),
         store: ConversationStore = Depends(get_conversation_store),
         db: Database | None = Depends(database),
     ) -> Conversation:
         """One conversation, archived or not, for its owner — and the one 404 for
         everybody else. Never a claim."""
-        _require_dm(user)
         if db is None:
             raise _unavailable()
-        _readable(conversation_id)
+        if not _readable(conversation_id):
+            not_found()
         try:
             with db.transaction() as unit:
                 found = store.get_for_owner(unit, conversation_id, owner_id=user.user_id)
         except psycopg.Error as exc:
             raise _logged_outage(exc) from exc
         if found is None:
-            raise not_found()
+            not_found()
         return to_wire(found)
 
     @router.patch("/conversations/{conversation_id}", response_model=Conversation)
     def patch_conversation(
         conversation_id: str,
-        _origin: None = Depends(origin_check),
-        user: SessionData = Depends(session),
+        user: SessionData = Depends(gm),
         raw: bytes = Depends(read_body),
         store: ConversationStore = Depends(get_conversation_store),
         db: Database | None = Depends(database),
@@ -551,10 +474,10 @@ def build_router(
         """Rename, archive, unarchive, link, bind the channel — in one
         transaction, all or nothing."""
         patch = _parse(ConversationPatchRequest, raw)
-        _require_dm(user)
         if db is None:
             raise _unavailable()
-        _readable(conversation_id)
+        if not _readable(conversation_id):
+            not_found()
         try:
             with db.transaction() as unit:
                 final = apply_patch(store, unit, conversation_id, owner_id=user.user_id, patch=patch)

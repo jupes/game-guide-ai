@@ -87,6 +87,7 @@ from service.table_session_store import (
     TableSession,
     no_slots,
 )
+from service.workbench_contracts import REFUSED_TEXT_CODE_POINTS
 
 CAMPAIGN = "cmp_" + "a" * 22
 OTHER_CAMPAIGN = "cmp_" + "b" * 22
@@ -843,6 +844,23 @@ def test_an_alias_is_unique_within_its_campaign_and_case_does_not_help(world: Wo
         # apart, so without the compatibility normalisation `alias_key` is
         # doing nothing here and every other pair in this list still passes.
         pytest.param("Ａｎａ", "Ana", id="full-width-and-ascii"),
+        # ysj: invisible characters OUTSIDE category C, which `check_alias`
+        # accepts, so only `alias_key` can make these collide — and the two
+        # joiners the lead ruling of 2026-09-21 allows in a stored alias.
+        pytest.param("Ana", "Ana" + chr(0x034F), id="a-combining-grapheme-joiner"),
+        pytest.param("Ana", "Ana" + chr(0xFE0F), id="a-variation-selector-16"),
+        pytest.param("Ana", "Ana" + chr(0x3164), id="a-hangul-filler"),
+        pytest.param("Ana", "Ana" + chr(0x2800), id="a-braille-blank"),
+        pytest.param("Ana", "An" + chr(0x200D) + "a", id="a-zero-width-joiner"),
+        pytest.param("Ana", "An" + chr(0x200C) + "a", id="a-zero-width-non-joiner"),
+        # A grapheme joiner between a letter and its accent stops NFC and NFKC
+        # composing them, so a key that only dropped it AFTER normalising would
+        # hold a decomposed accent where the other holds a composed one.
+        pytest.param(
+            unicodedata.normalize("NFC", "Zoe" + chr(0x301)),
+            "Zoe" + chr(0x034F) + chr(0x301),
+            id="a-joiner-inside-an-accent",
+        ),
     ],
 )
 def test_two_aliases_a_gm_could_not_tell_apart_cannot_both_be_seated(
@@ -879,6 +897,50 @@ def test_an_alias_whose_key_folds_past_the_columns_bound_is_refused_in_both_worl
         assert world.participants.list_for_campaign(unit, campaign) == [], "nothing was seated"
         # The refusal is raised before any statement, so this transaction is
         # still usable — which is exactly what a driver's error would not leave.
+        assert world.participants.add(unit, campaign, alias="Rook").alias == "Rook"
+
+
+#: Written by code point: an invisible character in this file is one a reviewer
+#: would have to notice, and the whole point of these names is that it is kept.
+_NAMES_THAT_NEED_A_JOINER = {
+    # "Alireza" as Persian writes it: ZWNJ keeps the two halves unjoined.
+    "a-persian-name-with-a-non-joiner": "".join(
+        chr(code) for code in (0x0639, 0x0644, 0x06CC, 0x200C, 0x0631, 0x0636, 0x0627)
+    ),
+    # "Wren" and the woman-mage emoji: a ZWJ sequence ending in VS16.
+    "an-emoji-zwj-sequence": "Wren " + "".join(chr(code) for code in (0x1F9D9, 0x200D, 0x2640, 0xFE0F)),
+}
+
+
+@pytest.mark.parametrize("alias", list(_NAMES_THAT_NEED_A_JOINER.values()), ids=list(_NAMES_THAT_NEED_A_JOINER))
+def test_a_name_that_needs_a_joiner_is_seated_as_written(world: World, alias: str) -> None:
+    """ysj, and the lead ruling of 2026-09-21: U+200C and U+200D are
+    orthographically required in real names and in emoji sequences, so they are
+    kept in the STORED alias — in both worlds — and only folded out of the key."""
+    campaign = _a_campaign(world)
+    with world.db.transaction() as unit:
+        assert world.participants.add(unit, campaign, alias=alias).alias == alias
+    with world.db.transaction() as unit:
+        [seated] = world.participants.list_for_campaign(unit, campaign)
+        assert seated.alias == alias, "the joiner is kept in what is stored"
+
+
+@pytest.mark.parametrize(
+    "invisible",
+    [chr(0x3164), chr(0x2800), chr(0x034F), chr(0x200D), chr(0x200C) + chr(0xFE0F)],
+    ids=["a-hangul-filler", "a-braille-blank", "a-grapheme-joiner", "a-joiner", "a-non-joiner-and-a-selector"],
+)
+def test_an_alias_with_nothing_visible_in_it_is_refused_in_both_worlds(world: World, invisible: str) -> None:
+    """Folding the invisible characters out of `alias_key` can leave it empty,
+    and `0004_campaign_schema.sql` bounds the key at 1 to 200: PostgreSQL would
+    refuse the INSERT with a check violation whose DETAIL quotes the row, alias
+    included, while the twin seated it. An alias a GM cannot see is not one."""
+    campaign = _a_campaign(world)
+    with world.db.transaction() as unit:
+        with pytest.raises(ValueError, match="at least one visible character") as refused:
+            world.participants.add(unit, campaign, alias=invisible)
+        assert invisible not in str(refused.value), "a refusal never repeats private text"
+        assert world.participants.list_for_campaign(unit, campaign) == [], "nothing was seated"
         assert world.participants.add(unit, campaign, alias="Rook").alias == "Rook"
 
 
@@ -2047,7 +2109,7 @@ def test_a_recorded_decision_reads_back_with_its_detail(world: World) -> None:
             object_ref=seat,
             reason_code="gm_removed",
             authz_revision=3,
-            detail={"participant_id": seat, "codes_revoked": 1, "devices_revoked": 0},
+            detail={"participant_id": seat},
         )
 
     with world.db.transaction() as unit:
@@ -2056,7 +2118,7 @@ def test_a_recorded_decision_reads_back_with_its_detail(world: World) -> None:
         assert kept.campaign_id_tombstone == campaign and kept.object_ref == seat
         assert kept.actor_ref == str(world.owner) and kept.authz_revision == 3
         assert kept.reason_code == "gm_removed"
-        assert kept.detail == {"participant_id": seat, "codes_revoked": 1, "devices_revoked": 0}
+        assert kept.detail == {"participant_id": seat}
         assert kept.id == recorded.id
         assert world.audit.for_campaign(unit, "cmp_" + "z" * 22) == []
 
@@ -2753,6 +2815,20 @@ def test_an_alias_with_a_control_character_is_refused() -> None:
     for control in (chr(0), chr(7), chr(0x200B), chr(0x2060)):
         with pytest.raises(ValueError, match="control or formatting"):
             check_alias(f"Ro{control}ok")
+
+
+def test_an_alias_follows_the_one_rule_for_stored_text() -> None:
+    """ysj and 5mj, by the lead ruling of 2026-09-21: one opinion about stored
+    text, `check_plain_text`'s, and the alias agrees with it. Everything that
+    refuses is refused here too — on the alias as SENT, because `str.split()`
+    would otherwise quietly turn a vertical tab, a file separator or NEL into a
+    space — and the two joiners real names need are accepted and kept."""
+    for code in sorted(REFUSED_TEXT_CODE_POINTS) + [0xD800]:
+        with pytest.raises(ValueError, match="an alias carries no control or formatting") as refused:
+            check_alias(f"Wren{chr(code)}hold")
+        assert "Wren" not in str(refused.value), "a refusal never repeats private text"
+    for joiner in (0x200C, 0x200D):
+        assert check_alias(f"Wren{chr(joiner)}hold") == f"Wren{chr(joiner)}hold"
 
 
 def test_the_alias_key_is_the_comparison_both_worlds_make() -> None:
