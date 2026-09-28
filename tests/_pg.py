@@ -17,10 +17,19 @@ import re
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
 DSN = os.environ.get("DATABASE_URL") or None
+
+#: The corpus schema, in the order docker-compose.yml mounts it into vector-db.
+#: 01-extensions.sql creates pgvector, so the server must have that extension
+#: available, which is why CI runs compose's image.
+CORPUS_SCHEMA = [
+    Path(__file__).resolve().parent.parent / "vector-db" / "init" / name
+    for name in ("01-extensions.sql", "02-schema.sql", "03-hybrid-search.sql", "03a-corpus-provenance.sql")
+]
 
 needs_db = pytest.mark.skipif(DSN is None, reason="no DATABASE_URL (CI always sets it)")
 
@@ -47,3 +56,17 @@ def throwaway_database(prefix: str) -> Iterator[str]:
     finally:
         with connect(DSN) as admin:
             admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+@contextmanager
+def corpus_database(prefix: str) -> Iterator[str]:
+    """Yields the DSN of a new database holding the corpus schema and no rows.
+
+    The server DATABASE_URL names has no corpus in CI (it is deliberately not in
+    git), so a test that reads `dnd.chunks` builds one instead of assuming it.
+    """
+    with throwaway_database(prefix) as dsn:
+        with connect(dsn) as conn:
+            for path in CORPUS_SCHEMA:
+                conn.execute(path.read_text(encoding="utf-8"))
+        yield dsn
