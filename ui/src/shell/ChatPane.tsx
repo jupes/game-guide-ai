@@ -13,13 +13,15 @@ import { Card } from '../ds/Card'
 import { Chip } from '../ds/Chip'
 import { DiceRoll } from '../ds/DiceRoll'
 import { SpellCard } from '../ds/SpellCard'
-import type { SpellCardProps } from '../ds/SpellCard'
 import { StatBlockCard } from '../ds/StatBlockCard'
-import type { StatBlockCardProps } from '../ds/StatBlockCard'
 import { SourceList } from '../components/SourceList'
 import { Markdown } from '../components/Markdown'
 import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
+import { toSpellCardProps, toStatBlockCardProps } from '../gm/adapters'
+import { GmThread } from '../gm/GmThread'
+import { exchangesForExport, turnFromExchange, turnsFromTimeline, useGmTimeline } from '../gm/gmTimeline'
+import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { useAppNav } from './AppNav'
 import { useConversationStore } from './ConversationStoreContext'
 import { parseDiceNotation } from './diceNotation'
@@ -31,79 +33,11 @@ import {
 import type {
   Attachment,
   AttachmentsResult,
-  SpellContent,
-  StatBlockContent,
   Suggestion,
   UploadAttachmentResult,
 } from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
 import './ChatPane.css'
-
-// ── z7fl.4 — snake_case (wire) -> camelCase (DS widget prop) adapters ────────
-// A local mapping, not a widget-contract or wire-format change: the ported
-// widgets keep their DS camelCase props unchanged (mirrors the .d.ts
-// exactly); the API stays snake_case like every other field. This is the
-// only place the two conventions meet.
-
-function toSpellCardProps(sc: SpellContent): SpellCardProps {
-  return {
-    name: sc.name,
-    level: sc.level ?? undefined,
-    school: sc.school ?? undefined,
-    castingTime: sc.casting_time ?? undefined,
-    range: sc.range ?? undefined,
-    duration: sc.duration ?? undefined,
-    components: sc.components
-      ? {
-          v: sc.components.v ?? undefined,
-          s: sc.components.s ?? undefined,
-          m: sc.components.m ?? undefined,
-        }
-      : undefined,
-    description: sc.description,
-    higherLevels: sc.higher_levels ?? undefined,
-    classes: sc.classes ?? undefined,
-    concentration: sc.concentration ?? undefined,
-    ritual: sc.ritual ?? undefined,
-  }
-}
-
-function toStatBlockCardProps(sb: StatBlockContent): StatBlockCardProps {
-  return {
-    name: sb.name,
-    size: sb.size ?? undefined,
-    type: sb.type ?? undefined,
-    alignment: sb.alignment ?? undefined,
-    ac: sb.ac,
-    acNote: sb.ac_note ?? undefined,
-    hp: sb.hp,
-    hitDice: sb.hit_dice ?? undefined,
-    speed: sb.speed ?? undefined,
-    abilities: sb.abilities
-      ? {
-          str: sb.abilities.str ?? undefined,
-          dex: sb.abilities.dex ?? undefined,
-          con: sb.abilities.con ?? undefined,
-          int: sb.abilities.int ?? undefined,
-          wis: sb.abilities.wis ?? undefined,
-          cha: sb.abilities.cha ?? undefined,
-        }
-      : undefined,
-    savingThrows: sb.saving_throws ?? undefined,
-    skills: sb.skills ?? undefined,
-    damageImmunities: sb.damage_immunities ?? undefined,
-    conditionImmunities: sb.condition_immunities ?? undefined,
-    senses: sb.senses ?? undefined,
-    languages: sb.languages ?? undefined,
-    cr: sb.cr ?? undefined,
-    xp: sb.xp ?? undefined,
-    traits: sb.traits ?? undefined,
-    actions: sb.actions ?? undefined,
-    bonusActions: sb.bonus_actions ?? undefined,
-    reactions: sb.reactions ?? undefined,
-    legendaryActions: sb.legendary_actions ?? undefined,
-  }
-}
 
 // ── Autoscroll (pp6q.1.3) ────────────────────────────────────────────────────
 // Follow the newest message ONLY while the reader is already at the bottom.
@@ -162,18 +96,57 @@ const PENDING_ANNOUNCEMENT = 'Consulting the tomes…'
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function ChatPane({
-  post,
-  loadHistory,
-  uploadAttachment = defaultUploadAttachment,
-  getAttachments = defaultGetAttachments,
-}: {
+/** 1kg.3.4: the GM channel's history is the typed timeline, not `/messages`. */
+const SKIP_RECALL: LoadHistoryFn = async () => ({ kind: 'ok', messages: [] })
+
+export interface ChatPaneProps {
   post?: PostFn
   loadHistory?: LoadHistoryFn
+  /** The GM channel's history (1kg.3.4). */
+  loadTimeline?: LoadTimelinePageFn
   uploadAttachment?: UploadAttachmentFn
   getAttachments?: GetAttachmentsFn
-}): React.JSX.Element {
+}
+
+/** Which side of the GM boundary a pane is on: the GM channel reads the typed
+ * timeline, every other channel reads `/messages`. */
+type Side = 'gm' | 'chat'
+
+export function ChatPane(props: ChatPaneProps): React.JSX.Element {
+  // 1kg.3.4: the GM channel and the others read history from different
+  // sources, so crossing between them remounts the pane. Turns one source
+  // already holds are then never drawn again beside the other's copy of them,
+  // and a GM draft is never carried into another channel (RAIL-25).
+  //
+  // Never under a turn in flight, though: a remount would drop it — its answer
+  // would never land, and the composer would unlock beside it. The pane holds
+  // the side the turn was sent from until it settles, so the answer lands
+  // there and is never drawn in the other side's lanes; then it crosses, and
+  // the new side reads a history that now holds the turn.
+  const { mode } = useAppNav()
+  const [held, setHeld] = React.useState<Side | null>(null)
+  const side: Side = held ?? (mode === 'gm' ? 'gm' : 'chat')
+  const holdWhilePending = React.useCallback((pending: boolean) => setHeld(pending ? side : null), [side])
+  return <ChatPaneBody key={side} {...props} side={side} onPendingChange={holdWhilePending} />
+}
+
+interface ChatPaneBodyProps extends ChatPaneProps {
+  /** The mode's side of the GM boundary, or the side a turn in flight was sent from. */
+  side: Side
+  onPendingChange: (pending: boolean) => void
+}
+
+function ChatPaneBody({
+  side,
+  onPendingChange,
+  post,
+  loadHistory,
+  loadTimeline,
+  uploadAttachment = defaultUploadAttachment,
+  getAttachments = defaultGetAttachments,
+}: ChatPaneBodyProps): React.JSX.Element {
   const { mode, conversationId, setConversationId } = useAppNav()
+  const gm = side === 'gm'
   const conversationStore = useConversationStore()
   // agent-forge-harness-ekf / agent-forge-harness-4oz: the ONE announcer for
   // the whole pane — 4oz folded the pending announcement into this same node
@@ -185,12 +158,27 @@ export function ChatPane({
   const [arrival, setArrival] = React.useState('')
   const { exchanges, send, pending, historyError, loadingHistory } = useChat({
     post,
-    loadHistory,
+    loadHistory: gm ? SKIP_RECALL : loadHistory,
     mode,
     conversationId,
     onConversationAdopted: setConversationId,
     onTurnSettled: (outcome) => setArrival(outcome === 'done' ? 'Answer received' : 'Answer failed'),
   })
+  // Keeps ChatPane on this side of the GM boundary while a turn is in flight.
+  React.useEffect(() => {
+    onPendingChange(pending)
+  }, [onPendingChange, pending])
+  // 1kg.3.4: in the GM channel a stored entry and a live turn become the same
+  // GmTurn, so a reload draws an answer exactly as it arrived. The thread's
+  // empty, loading and error states are §12.2's, which are today's.
+  const timeline = useGmTimeline(conversationId, gm, loadTimeline)
+  const gmTurns = React.useMemo(
+    () => (gm ? [...turnsFromTimeline(timeline.items), ...exchanges.map(turnFromExchange)] : []),
+    [gm, timeline.items, exchanges],
+  )
+  const threadError = gm ? timeline.error : historyError
+  const threadLoading = gm ? timeline.loading : loadingHistory
+  const threadLength = gm ? gmTurns.length : exchanges.length
   const [draft, setDraft] = React.useState('')
   // Scoped like useChat's history state: derive "this scope's attachments" from
   // scopeId===conversationId rather than resetting via setState-in-effect (a
@@ -232,7 +220,7 @@ export function ChatPane({
     // content changes, not when the flag flips. Including it would re-scroll
     // the instant a reader scrolled back down, before new content arrived.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exchanges, conversationId])
+  }, [exchanges, conversationId, timeline.items])
 
   const handleSend = React.useCallback(() => {
     const trimmed = draft.trim()
@@ -354,14 +342,16 @@ export function ChatPane({
       >
         <div className="chat-pane__column">
         {/* History recall failed — recoverable: the thread starts empty. */}
-        {historyError && <ChatMessage role="system">{historyError}</ChatMessage>}
+        {threadError && <ChatMessage role="system">{threadError}</ChatMessage>}
 
-        {exchanges.length === 0 && loadingHistory ? (
+        {threadLength === 0 && threadLoading ? (
           <p className="chat-pane__empty" role="status">
             Recalling the conversation…
           </p>
-        ) : exchanges.length === 0 ? (
-          !historyError && <p className="chat-pane__empty">{EMPTY_LABELS[mode]}</p>
+        ) : threadLength === 0 ? (
+          !threadError && <p className="chat-pane__empty">{EMPTY_LABELS[mode]}</p>
+        ) : gm ? (
+          <GmThread turns={gmTurns} />
         ) : (
           exchanges.map((exchange) => (
             <React.Fragment key={exchange.id}>
@@ -410,13 +400,6 @@ export function ChatPane({
                   )}
                   {exchange.response.stat_block && (
                     <StatBlockCard {...toStatBlockCardProps(exchange.response.stat_block)} density="default" />
-                  )}
-
-                  {/* GM creative notice — answer is invented/extrapolated, not grounded */}
-                  {mode === 'gm' && !exchange.response.answerable && (
-                    <ChatMessage role="system">
-                      ✦ Creative — may include invented content not drawn from the sources.
-                    </ChatMessage>
                   )}
 
                   {/* Dice roll — parse answer for dice notation */}
@@ -487,7 +470,7 @@ export function ChatPane({
       {/* Jump-to-latest — only while the reader has scrolled away (pp6q.1.3).
           A real <button> rather than a floating decoration so it is keyboard
           reachable and announced, like the ChatGPT/Claude equivalent. */}
-      {!atBottom && exchanges.length > 0 && (
+      {!atBottom && threadLength > 0 && (
         <div className="chat-pane__jump">
           <button
             type="button"
@@ -515,7 +498,7 @@ export function ChatPane({
         <IconButton
           icon="download"
           ariaLabel="Export chat"
-          onClick={() => exportChat(exchanges)}
+          onClick={() => exportChat(gm ? [...exchangesForExport(timeline.items), ...exchanges] : exchanges)}
         />
       </div>
 
