@@ -55,3 +55,63 @@
 .gm-thread__sources .source-snippet {
   font-size: var(--md-sys-typescale-body-small-size);
 }
+
+/* Load earlier (1kg.3.6, ADR 12.2's GM-thread row) — paging behind a button
+   at the top of the thread, in VersionList's Load-more voice. */
+.gm-thread__load-earlier {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--aether-space-1);
+  margin-bottom: var(--aether-space-2);
+}
+
+.gm-thread__load-earlier-error {
+  margin: 0;
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+  color: var(--md-sys-color-error);
+  text-align: center;
+}
+
+.gm-thread__load-earlier-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--aether-space-2);
+  min-height: var(--aether-touch-min);
+  padding: 0 var(--aether-space-4);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-primary);
+  font-family: var(--aether-font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--aether-transition-button);
+}
+
+.gm-thread__load-earlier-button:hover:not(:disabled) {
+  background: var(--md-sys-color-surface-container-high);
+}
+
+.gm-thread__load-earlier-button:disabled {
+  cursor: progress;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-thread__load-earlier-button:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.gm-thread__load-earlier-button .material-symbols-rounded {
+  font-size: 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-thread__load-earlier-button {
+    transition: none;
+  }
+}

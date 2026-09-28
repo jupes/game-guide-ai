@@ -20,6 +20,11 @@
  *
  * It renders a `GmTurn[]` and nothing else, so a live turn and its reload are
  * drawn by the same code (`gmTimeline.ts`).
+ *
+ * **Load earlier** (1kg.3.6) is the one control this component owns outright:
+ * a button at the top of the thread, present only while `hasEarlier` is true.
+ * It fetches nothing itself — `ChatPane` owns `useGmTimeline` and wires its
+ * `loadEarlier`/`loadingEarlier`/`earlierError` straight through as props.
  */
 
 import * as React from 'react'
@@ -55,11 +60,29 @@ export interface GmThreadProps {
   turns: readonly GmTurn[]
   /** CANVAS-3: Open in canvas. */
   onOpenDocument?: (link: DocumentLink) => void
+  /** 1kg.3.6: an older page exists to walk to. Omitted (or false) draws no
+   * control — a thread that fits in one page has nothing to load. */
+  hasEarlier?: boolean
+  /** A Load earlier walk is in flight. */
+  loadingEarlier?: boolean
+  /** A failed walk (§12.2). STATE-1: the thread above stays exactly as it was. */
+  earlierError?: string | null
+  onLoadEarlier?: () => void
 }
 
-export function GmThread({ turns, onOpenDocument = noCanvas }: GmThreadProps): React.JSX.Element {
+export function GmThread({
+  turns,
+  onOpenDocument = noCanvas,
+  hasEarlier = false,
+  loadingEarlier = false,
+  earlierError = null,
+  onLoadEarlier,
+}: GmThreadProps): React.JSX.Element {
   return (
     <>
+      {hasEarlier && onLoadEarlier && (
+        <LoadEarlier loading={loadingEarlier} error={earlierError} onLoadEarlier={onLoadEarlier} />
+      )}
       {turns.map((turn) => (
         <div key={turn.key} className="gm-thread__exchange">
           <Narration turn={turn} />
@@ -67,6 +90,42 @@ export function GmThread({ turns, onOpenDocument = noCanvas }: GmThreadProps): R
         </div>
       ))}
     </>
+  )
+}
+
+/**
+ * The control at the top of the thread (1kg.3.6, ADR 12.2's GM-thread row):
+ * continues the walk from the cursor `useGmTimeline` kept, prepending what it
+ * finds above this control. It carries no live region of its own — starting
+ * and finishing are announced once each on the pane's single announcer
+ * (agent-forge-harness-ekf / agent-forge-harness-4oz), never by a second
+ * `role="status"` here — and a failed walk leaves it in place as its own
+ * retry (STATE-1, STATE-2): the same press resumes from the same cursor.
+ */
+function LoadEarlier({
+  loading,
+  error,
+  onLoadEarlier,
+}: {
+  loading: boolean
+  error: string | null
+  onLoadEarlier: () => void
+}): React.JSX.Element {
+  return (
+    <div className="gm-thread__load-earlier">
+      {error !== null && <p className="gm-thread__load-earlier-error">{error}</p>}
+      <button
+        type="button"
+        className="gm-thread__load-earlier-button"
+        onClick={onLoadEarlier}
+        disabled={loading}
+      >
+        <span className="material-symbols-rounded" aria-hidden="true">
+          {loading ? 'progress_activity' : 'expand_less'}
+        </span>
+        {loading ? 'Loading…' : 'Load earlier'}
+      </button>
+    </div>
   )
 }
 

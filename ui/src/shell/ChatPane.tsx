@@ -233,6 +233,53 @@ function ChatPaneBody({
   const feedRef = React.useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = React.useState(true)
 
+  // Load earlier (1kg.3.6): the feed's height just before a press, captured
+  // synchronously in the click handler — before React has re-rendered for
+  // either the loading state or the prepended turns. The layout effect below
+  // turns that into a scrollTop adjustment once the older turns land, so the
+  // content the reader was looking at holds still while the thread above it
+  // grows. `null` once consumed, and reset on a conversation switch so a
+  // press that never resolved before the switch cannot misapply itself to a
+  // different conversation's geometry.
+  const earlierScrollAdjustRef = React.useRef<number | null>(null)
+  // The other half of STATE-7's pair (below): whether the settle-announcement
+  // effect just saw a walk that was THIS conversation's, so switching away
+  // mid-walk cannot fire a stale "loaded"/"failed" phrase once the NEW
+  // conversation's own (unrelated) loadingEarlier happens to read false.
+  const wasLoadingEarlierRef = React.useRef(false)
+  React.useEffect(() => {
+    earlierScrollAdjustRef.current = null
+    wasLoadingEarlierRef.current = false
+  }, [conversationId])
+
+  React.useLayoutEffect(() => {
+    const feed = feedRef.current
+    const before = earlierScrollAdjustRef.current
+    earlierScrollAdjustRef.current = null
+    if (feed && before !== null) feed.scrollTop += feed.scrollHeight - before
+  }, [timeline.items])
+
+  const { loadEarlier } = timeline
+  const handleLoadEarlier = React.useCallback(() => {
+    const feed = feedRef.current
+    if (feed) earlierScrollAdjustRef.current = feed.scrollHeight
+    // agent-forge-harness-ekf / agent-forge-harness-4oz: the same single
+    // announcer, not a live region of GmThread's own (STATE-7 rations this
+    // to one announcement now and one when the walk settles, below).
+    setArrival('Loading earlier turns…')
+    loadEarlier()
+  }, [loadEarlier])
+
+  // The other half of STATE-7's pair: once a Load earlier walk settles,
+  // announce how it went. Keyed on the loadingEarlier→settled transition so
+  // this never fires on mount or from an unrelated rerender.
+  React.useEffect(() => {
+    if (wasLoadingEarlierRef.current && !timeline.loadingEarlier) {
+      setArrival(timeline.earlierError !== null ? 'Couldn’t load earlier turns' : 'Earlier turns loaded')
+    }
+    wasLoadingEarlierRef.current = timeline.loadingEarlier
+  }, [timeline.loadingEarlier, timeline.earlierError])
+
   const scrollToLatest = React.useCallback(() => {
     const feed = feedRef.current
     if (!feed) return
@@ -399,7 +446,13 @@ function ChatPaneBody({
         ) : threadLength === 0 ? (
           !threadError && <p className="chat-pane__empty">{EMPTY_LABELS[mode]}</p>
         ) : gm ? (
-          <GmThread turns={gmTurns} />
+          <GmThread
+            turns={gmTurns}
+            hasEarlier={timeline.hasEarlier}
+            loadingEarlier={timeline.loadingEarlier}
+            earlierError={timeline.earlierError}
+            onLoadEarlier={handleLoadEarlier}
+          />
         ) : (
           exchanges.map((exchange) => (
             <React.Fragment key={exchange.id}>
@@ -510,9 +563,16 @@ function ChatPaneBody({
           above), and to the settle outcome the moment the turn SETTLES
           (`handleTurnSettled`, above) — or, for a settle that is never shown
           (the user left its conversation), silently back to empty instead
-          (agent-forge-harness-swg, pr129 M-2). Nothing else ever changes it —
-          not a history recall, not a conversation switch. Shape copied from
-          `gm/ToolComposer.tsx`'s own persistent `role="status"` node. */}
+          (agent-forge-harness-swg, pr129 M-2). Apart from Load earlier
+          (below), nothing else ever changes it — not a history recall, not a
+          conversation switch. Shape copied from `gm/ToolComposer.tsx`'s own
+          persistent `role="status"` node.
+
+          1kg.3.6 (STATE-7) reuses this SAME node, the same way, for Load
+          earlier: exactly twice per press, to a starting phrase in
+          `handleLoadEarlier` and to the outcome once `useGmTimeline`'s
+          `loadingEarlier` settles — never a second `role="status"` inside
+          `GmThread` for it. */}
       <p role="status" className="chat-pane__sr-only chat-pane__arrival">
         {arrival}
       </p>

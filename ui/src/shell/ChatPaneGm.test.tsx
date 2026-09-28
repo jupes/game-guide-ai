@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as React from 'react'
 import { AppNavContext } from './AppNav'
@@ -17,10 +17,11 @@ import { MemoryConversationStore } from './conversationStore'
 import { ThemeProvider } from '../ds/theme'
 import { ChatPane } from './ChatPane'
 import type { ChatPaneProps } from './ChatPane'
-import type { ChatMode, ChatResponse, StoredMessage } from '../api'
+import type { ChatMode, ChatResponse, StoredMessage, TimelinePageResult } from '../api'
 import type { Exchange, LoadHistoryFn, PostFn } from '../useChat'
+import { HYDRATE_TARGET } from '../gm/gmTimeline'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
-import { CREATIVE_ANSWER, chatEntry, pagedTimeline } from '../gm/threadFixtures'
+import { CREATIVE_ANSWER, chatEntry, manyChatEntries, pagedTimeline } from '../gm/threadFixtures'
 
 // Review M-3: what the Export button hands to the download, without a download.
 const exportChat = vi.hoisted(() => vi.fn<(exchanges: Exchange[]) => void>())
@@ -134,7 +135,12 @@ describe('ChatPane (GM) — reading the timeline', () => {
     expect(await screen.findByText('Message history unavailable (503).')).toBeInTheDocument()
     await userEvent.type(screen.getByPlaceholderText('Ask…'), PROMPT)
     await userEvent.keyboard('{Enter}')
-    expect(await screen.findByText('drowned guardian')).toBeInTheDocument()
+    // Queried and asserted in one callback, never through a handle held across
+    // an await: Markdown re-sets its innerHTML on the pane's next render (React
+    // 19 re-applies `dangerouslySetInnerHTML` whenever the object is new), so
+    // the <strong> findByText first matched can be detached by the time a
+    // separate expect reads it (agent-forge-harness-57l).
+    await waitFor(() => expect(screen.getByText('drowned guardian')).toBeInTheDocument())
   })
 
   it('reads GM history from the timeline only, and other channels never from it', async () => {
@@ -333,5 +339,198 @@ describe('ChatPane — a turn in flight when the channel crosses the GM boundary
     expect(screen.getAllByText(Q)).toHaveLength(1)
     expect(screen.getByPlaceholderText('Ask…')).toBeEnabled()
     expect(service.posts).toEqual([[Q, 'gm', 'cnv_1']])
+  })
+})
+
+// jsdom performs NO layout — see ChatPane.test.tsx's own stubGeometry. This
+// copy's scrollHeight is a getter/setter rather than a fixed value, so a test
+// can simulate the DOM growing once the older turn actually renders.
+function stubGeometry(
+  el: Element,
+  { scrollHeight, clientHeight, scrollTop }: { scrollHeight: number; clientHeight: number; scrollTop: number },
+) {
+  let height = scrollHeight
+  let top = scrollTop
+  Object.defineProperty(el, 'scrollHeight', { get: () => height, configurable: true })
+  Object.defineProperty(el, 'clientHeight', { value: clientHeight, configurable: true })
+  Object.defineProperty(el, 'scrollTop', {
+    get: () => top,
+    set: (v: number) => {
+      top = v
+    },
+    configurable: true,
+  })
+  return {
+    get scrollTop() {
+      return top
+    },
+    set scrollTop(v: number) {
+      top = v
+    },
+    set scrollHeight(v: number) {
+      height = v
+    },
+  }
+}
+
+describe('ChatPane (GM) — Load earlier (1kg.3.6)', () => {
+  const OLDER_PROMPT = 'Who guards the old bridge?'
+
+  it('offers Load earlier once the thread exceeds one page, and prepends without duplicating', async () => {
+    const load = pagedTimeline([manyChatEntries(HYDRATE_TARGET, 9000), [chatEntry({ entry_id: 'ent_older', prompt: OLDER_PROMPT })]])
+    const { container } = render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
+    await waitFor(() => expect(container.querySelectorAll('.gm-thread__exchange')).toHaveLength(HYDRATE_TARGET))
+    const button = screen.getByRole('button', { name: 'Load earlier' })
+
+    await userEvent.click(button)
+    expect(await screen.findByText(OLDER_PROMPT)).toBeInTheDocument()
+
+    const exchanges = container.querySelectorAll('.gm-thread__exchange')
+    expect(exchanges).toHaveLength(HYDRATE_TARGET + 1)
+    // Prepended, not appended — the older turn leads the thread — and drawn
+    // exactly once, not twice over.
+    expect(exchanges[0]).toHaveTextContent(OLDER_PROMPT)
+    expect(screen.getAllByText(OLDER_PROMPT)).toHaveLength(1)
+    // The list has ended — nothing left to load.
+    expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
+  })
+
+  it('walks through an empty older page to the turns behind it (review M4)', async () => {
+    // A page may be empty while its cursor is not null — only a null cursor
+    // ends the list, on the Load earlier path as on the first read.
+    const load = pagedTimeline([
+      manyChatEntries(HYDRATE_TARGET, 9400),
+      [],
+      [chatEntry({ entry_id: 'ent_behind_empty', prompt: OLDER_PROMPT })],
+    ])
+    const { container } = render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
+    await waitFor(() => expect(container.querySelectorAll('.gm-thread__exchange')).toHaveLength(HYDRATE_TARGET))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
+    await waitFor(() => expect(screen.getByText(OLDER_PROMPT)).toBeInTheDocument())
+
+    expect(load.cursors).toEqual([null, 'p1', 'p2'])
+    expect(container.querySelectorAll('.gm-thread__exchange')[0]).toHaveTextContent(OLDER_PROMPT)
+    expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
+  })
+
+  it('announces the start of a Load earlier walk, then its outcome, on the one live region the pane already had', async () => {
+    // A promise the test resolves explicitly (review M-2's own pattern,
+    // above) — an in-memory fetch that settled on its own microtask could
+    // beat `userEvent.click`'s own await to the punch and skip past the
+    // starting announcement before this test ever gets to read it.
+    let resolveOlder: ((result: TimelinePageResult) => void) | null = null
+    const load: LoadTimelinePageFn = async (conversationId, cursor) => {
+      if (cursor === null) {
+        return { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 9100), next_cursor: 'p1' } }
+      }
+      return new Promise((resolve) => {
+        resolveOlder = resolve
+      })
+    }
+    render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load earlier' })).toBeInTheDocument())
+    // Captured before the press, like the turn-announcement test above.
+    const announcer = screen.getByRole('status')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
+    expect(announcer).toHaveTextContent('Loading earlier turns…')
+    expect(screen.getAllByRole('status')).toEqual([announcer])
+
+    await act(async () => {
+      resolveOlder?.({ kind: 'ok', page: { conversation_id: 'cnv_1', items: [chatEntry({ entry_id: 'ent_older2' })], next_cursor: null } })
+    })
+    expect(announcer).toHaveTextContent('Earlier turns loaded')
+    expect(screen.getAllByRole('status')).toEqual([announcer])
+  })
+
+  it('retries in place after a failed walk, without losing what is already drawn (STATE-1)', async () => {
+    let failNext = true
+    const load = vi.fn<LoadTimelinePageFn>(async (conversationId, cursor) => {
+      if (cursor === null) {
+        return { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 9200), next_cursor: 'p1' } }
+      }
+      if (failNext) {
+        failNext = false
+        return { kind: 'error', message: 'Message history unavailable (503).' }
+      }
+      return { kind: 'ok', page: { conversation_id: conversationId, items: [chatEntry({ entry_id: 'ent_older3' })], next_cursor: null } }
+    })
+    const { container } = render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load earlier' })).toBeInTheDocument())
+    const announcer = screen.getByRole('status')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
+    expect(await screen.findByText('Message history unavailable (503).')).toBeInTheDocument()
+    expect(container.querySelectorAll('.gm-thread__exchange')).toHaveLength(HYDRATE_TARGET)
+    await waitFor(() => expect(announcer).toHaveTextContent('Couldn’t load earlier turns'))
+
+    // Same control, same kept cursor — a retry, not a dead end (STATE-2).
+    await userEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
+    await waitFor(() => expect(container.querySelectorAll('.gm-thread__exchange')).toHaveLength(HYDRATE_TARGET + 1))
+    expect(screen.queryByText('Message history unavailable (503).')).toBeNull()
+    expect(load.mock.calls.filter(([, cursor]) => cursor === 'p1')).toHaveLength(2)
+  })
+
+  it('keeps the reader’s scroll position when older turns are prepended above it', async () => {
+    const load = pagedTimeline([manyChatEntries(HYDRATE_TARGET, 9300), [chatEntry({ entry_id: 'ent_older4', prompt: OLDER_PROMPT })]])
+    const { container } = render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
+    await waitFor(() => expect(container.querySelectorAll('.gm-thread__exchange')).toHaveLength(HYDRATE_TARGET))
+
+    const feed = container.querySelector('.chat-pane__exchanges')!
+    // Scrolled up near the top, where Load earlier lives — not at the bottom.
+    // Firing the scroll event matters: without it `atBottom` keeps its
+    // fresh-thread default of true, and pp6q.1.3's own autoscroll effect
+    // would jump the feed straight to the bottom on the very same update.
+    const geo = stubGeometry(feed, { scrollHeight: 5000, clientHeight: 400, scrollTop: 30 })
+    fireEvent.scroll(feed)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
+    // The feed grows by 200px of content once the older turn renders — jsdom
+    // performs no layout, so the test stands in for the browser here.
+    geo.scrollHeight = 5200
+
+    await waitFor(() => expect(screen.getByText(OLDER_PROMPT)).toBeInTheDocument())
+    expect(geo.scrollTop).toBe(230)
+  })
+
+  it('never fires the settle announcement for a switched-to conversation once an old walk resolves late', async () => {
+    let resolveOlderA: ((result: TimelinePageResult) => void) | null = null
+    const loadA: LoadTimelinePageFn = async (conversationId, cursor) => {
+      if (cursor === null) {
+        return { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 9500), next_cursor: 'p1' } }
+      }
+      return new Promise((resolve) => {
+        resolveOlderA = resolve
+      })
+    }
+    const loadB = pagedTimeline([[chatEntry({ entry_id: 'ent_b', prompt: 'A question about cnv_b' })]])
+
+    const { rerender } = render(<Pane nav={{ conversationId: 'cnv_a' }} loadTimeline={loadA} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load earlier' })).toBeInTheDocument())
+    const announcer = screen.getByRole('status')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
+    expect(announcer).toHaveTextContent('Loading earlier turns…')
+
+    // Away to a different conversation before cnv_a's walk ever resolves.
+    rerender(<Pane nav={{ conversationId: 'cnv_b' }} loadTimeline={loadB} />)
+    await waitFor(() => expect(screen.getByText('A question about cnv_b')).toBeInTheDocument())
+    // The bug this guards: `useGmTimeline` reads `loadingEarlier` as false
+    // for a freshly-switched-to scope (its LOADING sentinel), which looks
+    // exactly like cnv_a's walk just settling unless the switch itself resets
+    // the settle-announcement's own tracking too.
+    expect(announcer).not.toHaveTextContent('Earlier turns loaded')
+    expect(announcer).not.toHaveTextContent('Couldn’t load earlier turns')
+
+    await act(async () => {
+      resolveOlderA?.({
+        kind: 'ok',
+        page: { conversation_id: 'cnv_a', items: [chatEntry({ entry_id: 'ent_older_a' })], next_cursor: null },
+      })
+    })
+    // And cnv_a's now-irrelevant walk resolving late changes nothing either.
+    expect(announcer).not.toHaveTextContent('Earlier turns loaded')
+    expect(announcer).not.toHaveTextContent('Couldn’t load earlier turns')
   })
 })
