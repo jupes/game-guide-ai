@@ -1020,6 +1020,34 @@ def test_a_body_that_is_not_the_contracts_json_is_a_422_not_a_500(client: TestCl
     ErrorBody.model_validate(answer.json())
 
 
+def _carries_nothing(exc: RequestValidationError) -> None:
+    """`_parse` reads `exc.errors(include_input=False, ...)` and raises outside
+    its `except`, so the 422 it builds chains nothing and carries no input;
+    `read_body`'s refusals are hand-built by `_invalid` and never touch the
+    body at all. Mutant: `_parse` re-raising `RequestValidationError(exc.errors())`
+    *inside* the `except` would set `__context__` to the caught ValidationError
+    (which carries `input`, the raw request) — none of that is true here."""
+    assert exc.__context__ is None
+    assert exc.__cause__ is None
+    assert all("input" not in error for error in exc.errors())
+    assert CANARY not in str(exc)
+
+
+def test__parse_carries_no_input_and_chains_nothing() -> None:
+    raw = f'{{"schema_version":1,"started_mode":"{CANARY}"}}'.encode()
+    with pytest.raises(RequestValidationError) as parsed:
+        conversations_api._parse(conversations_api.ConversationCreateRequest, raw)
+    _carries_nothing(parsed.value)
+
+
+def test_read_body_carries_no_input_and_chains_nothing() -> None:
+    pulled: list[int] = []
+    chunks = [CANARY.encode() + b"x" * conversations_api.BODY_MAX_BYTES]
+    with pytest.raises(RequestValidationError) as refused:
+        asyncio.run(conversations_api.read_body(_streamed(chunks, pulled)))
+    _carries_nothing(refused.value)
+
+
 # ── 503, and no private text in a log or an answer (A12) ─────────────────────
 
 
