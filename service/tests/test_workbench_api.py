@@ -931,21 +931,25 @@ def test_the_spa_parity_walk_still_reserves_every_prefix_it_reserved_before() ->
     """Moving the walk onto `api_routes()` dropped nothing: FastAPI's own
     documentation routes stay reserved though they are not API routes."""
     assert _live_api_prefixes() == {"/openapi.json", "/docs", "/redoc", "/healthz", "/models", "/chat",
-                                    "/metrics", "/conversations", "/auth"}
+                                    "/metrics", "/conversations", "/auth", "/internal"}
 
 
 # ── A10: the route census ────────────────────────────────────────────────────
 
 #: Re-derived on d58ab20 (integration/1kg-workbench): 1kg.4.2 B's timeline
-#: route and 1kg.2.4 A2's four conversation routes have merged, 1kg.2.7 has
-#: not. A new route, of either posture, fails the census until its author
-#: says which it is.
+#: route and 1kg.2.4 A2's four conversation routes have merged. A new route, of
+#: either posture, fails the census until its author says which it is.
 EXPECTED_LEGACY_ROUTES = {
     ("GET", "/healthz"), ("GET", "/models"), ("POST", "/chat"), ("POST", "/metrics/ui"),
     ("GET", "/conversations/{conversation_id}/messages"),
     ("GET", "/conversations/{conversation_id}/attachments"),
     ("POST", "/conversations/{conversation_id}/attachments"),
     ("POST", "/auth/signup"), ("POST", "/auth/login"), ("POST", "/auth/logout"), ("GET", "/auth/me"),
+    # 1kg.2.7: Cloud Scheduler's route. Not a Workbench GM route — no session,
+    # no `dm` gate — so legacy posture; it authenticates with the scheduler's
+    # credential and, without it, matches nothing (`service/job_driver.py`).
+    # One method: every other method is routed as if the path did not exist.
+    ("POST", "/internal/jobs"),
 }
 #: 1kg.2.4 A2's routes, moved onto `workbench_router` by oe6 (lead ruling on
 #: PR #98), and 1kg.4.2 B's timeline route, moved from the set above by oqx.

@@ -33,7 +33,7 @@ from fastapi.exceptions import RequestValidationError
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from . import conversations_api, gcp_logging, timeline_api, usage_capture
+from . import conversations_api, gcp_logging, job_driver, timeline_api, usage_capture
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .db import Database, PoolSettings
@@ -45,6 +45,7 @@ from .hashing import (
 )
 from .history import MessageStore, PostgresMessageStore, StoredAttachment
 from .invites import InviteError
+from .jobs import JobRunner, PostgresJobQueue
 from .metrics import (
     BooleanMetricPoint,
     CategoricalMetricPoint,
@@ -287,6 +288,17 @@ def _build_stores(db: Database) -> None:
     from .usage_ledger import LedgerWriter, PostgresUsageLedgerStore
 
     _state["ledger"] = LedgerWriter(PostgresUsageLedgerStore(), db)
+    # The job outbox's drivers (1kg.2.7). No kind is registered yet, so the hook
+    # stays off; a bead that adds one calls `runner.register(kind, handler)` here.
+    runner = JobRunner(PostgresJobQueue(db), single_flight=job_driver.JOB_LOCK)
+    _state["jobs"] = job_driver.JobDriver(runner, healthy=_schema_understood)
+
+
+def _schema_understood() -> bool:
+    """A degraded instance runs no job: `unavailable` never checked the schema,
+    `failed` refused it. `ahead` is an older build mid-rollout, which runs the
+    kinds it knows."""
+    return _state.get("migrations") in ("current", "ahead")
 
 
 def _build_rag(db: Database) -> None:
@@ -643,6 +655,12 @@ async def capture_chat_metrics(request: Request, call_next):
             ),
         )
     return response
+
+
+# The job hook (1kg.2.7, RT-15): declared between the two middleware functions,
+# so it wraps `capture_chat_metrics` (job time never enters the chat duration)
+# and `set_security_headers` stays the outermost, as its docstring requires.
+app.add_middleware(job_driver.JobHookMiddleware, driver=lambda: _state.get("jobs"))
 
 
 @app.middleware("http")
@@ -1427,6 +1445,17 @@ def me(
 WORKBENCH_GM = gm_session(require_session)
 app.include_router(conversations_api.build_router(WORKBENCH_GM, get_timeline_database))
 app.include_router(timeline_api.build_router(WORKBENCH_GM, get_timeline_store, get_timeline_database))
+
+
+def _job_driver() -> job_driver.JobDriver | None:
+    # A scheduler call may be the only traffic a degraded instance gets, so it
+    # looks for the database like the other getters (it runs in the thread pool).
+    if "jobs" not in _state:
+        recover_database()
+    return _state.get("jobs")
+
+
+app.include_router(job_driver.build_router(_job_driver))
 # Mount the pre-built UI last, as an ALLOWLIST fallback, not a catch-all
 # (agent-forge-harness-y40) -- see service/spa_fallback.py for what each path
 # answers and why the order matters. Only active when `cd ui && bun run build`
