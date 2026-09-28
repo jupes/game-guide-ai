@@ -20,11 +20,22 @@ be idempotent**. `attempts` doubles as the fencing token: only the latest
 claimer may reschedule a job.
 
 **Nothing here runs by itself.** Cloud Run allocates CPU only while a request is
-in flight, so there is no worker thread. `JobRunner.run_due()` is called from
-the three places RT-15 names — after the commit that created the job
-(`run_after_commit`), from a hook on ordinary requests, and from an
-authenticated `/internal/jobs` that Cloud Scheduler calls. The last two are
-wired by the beads that introduce the first job kinds (`1kg.8.1`, `1kg.9.5`).
+in flight, so there is no worker thread. The runner is driven from the three
+places RT-15 names, all wired in `service/job_driver.py` (1kg.2.7): after the
+commit that created the job (`run_after_commit`, inside that request) or after
+its response (`job_driver.run_after_response`); from a hook on signed-in
+requests, one due job at most every few seconds; and from an authenticated
+`POST /internal/jobs` that Cloud Scheduler calls. Every driver takes the
+instance's one job lock without waiting, so job work holds at most one of the
+gate's connections, and runs in the thread pool, never on the event loop.
+
+A handler is registered by kind (`JobRunner.register`) where the application
+builds its stores. `max_attempts=None` retries for ever with capped backoff; a
+kind with no handler at dispatch fails content-free and is retried. A handler
+is given a `JobContext` deadline that is **advisory** — nothing interrupts it,
+so it must bound its own I/O — and every transaction the queue opens carries
+server-side `lock_timeout`, `statement_timeout` and `transaction_timeout`,
+which bound the database's side and not a client's wall clock (`1kg.2.8`).
 
 **Dedupe absorbs only into a job nobody has started.** Once a job has been
 claimed, its handler may already have read the state it acts on, so a new
