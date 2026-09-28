@@ -1641,25 +1641,79 @@ def test_a_projection_refuses_what_a_document_refuses(shape: str) -> None:
         assert adapter.validate_python(f"Sister{char}Ondrey") == f"Sister{char}Ondrey"
 
 
-def test_the_refusal_stops_at_the_document_kinds_and_the_projection() -> None:
-    """AC 15 and ruling 3: the scope boundary is pinned rather than assumed. A
-    version's summary, a brief, chat text and a cue title are bead ``5mj``'s, and
-    each still accepts a NUL until it lands."""
+def test_the_refusal_reaches_submitted_text_and_stops_at_the_assistants_answer() -> None:
+    """AC 15 and ruling 3: the scope boundary is pinned rather than assumed. Until
+    bead ``5mj`` landed, a version's summary, a brief and a cue title each still
+    accepted a NUL; now each refuses it (every path is walked by
+    ``test_every_other_stored_text_takes_the_one_rule``). The assistant's own
+    answer is not submitted text: a timeline entry reads back what the model
+    wrote, so it still accepts one, and the boundary stays pinned there."""
     nul = chr(0)
     version = _fixture_value("DocumentVersion", "an assistant pass")
     version["summary"] = f"Wants{nul}the signet"
-    assert wc.DocumentVersion.model_validate(version).summary == f"Wants{nul}the signet"
-    assert wc.ToolInvocationRequest.model_validate({**_REQUEST, "brief": f"a{nul}guard"}).brief == f"a{nul}guard"
+    with pytest.raises(ValidationError, match="must not contain a control character"):
+        wc.DocumentVersion.model_validate(version)
+    with pytest.raises(ValidationError, match="must not contain a control character"):
+        wc.ToolInvocationRequest.model_validate({**_REQUEST, "brief": f"a{nul}guard"})
     chat = _valid_entry("a chat exchange with its complete outcome")
     chat["answer"]["text"] = f"A basilisk{nul} petrifies."
     wc.CONTRACT_SCHEMAS["TimelineEntry"].validate_python(chat)
-    assert wc.CueRenameRequest.model_validate({"schema_version": 1, "title": f"Rain{nul}"}).title == f"Rain{nul}"
+    with pytest.raises(ValidationError, match="must not contain a control character"):
+        wc.CueRenameRequest.model_validate({"schema_version": 1, "title": f"Rain{nul}"})
 
 
 def _fixture_value(schema: str, name: str) -> dict[str, Any]:
     fixture = json.loads((FIXTURES / f"{schema}.json").read_text(encoding="utf-8"))
     value: dict[str, Any] = copy.deepcopy(next(e["value"] for e in fixture["valid"] if e["name"] == name))
     return value
+
+
+#: Bead 5mj: every other stored text on the wire, as the schema, a valid fixture
+#: example, the path to the text inside it and the field a 422 names.
+#: ``contracts.test.ts`` walks the same table.
+_STORED_TEXT_PATHS: dict[str, tuple[str, str, tuple[str, ...], str]] = {
+    "a brief": ("ToolInvocationRequest", "npc with a brief", ("brief",), "brief"),
+    "an edit instruction": (
+        "EditRequest", "the whole document, in the GM's words", ("instruction", "text"), "instruction"
+    ),
+    "a library search": ("LibraryQuery", "the first page of NPCs, most recently updated first", ("search",), "search"),
+    "a cue search": ("CueListQuery", "the first page of cues", ("search",), "search"),
+    "an image's alt text": (
+        "AssetCreateRequest", "a portrait, with the alt text a screen reader will hear", ("alt",), "alt"
+    ),
+    "a new cue's title": ("CueCreateRequest", "upload takes a title and a kind (LIB-26)", ("title",), "title"),
+    "a cue's new title": ("CueRenameRequest", "a new title", ("title",), "title"),
+    "a version summary": ("DocumentVersion", "an assistant pass", ("summary",), "summary"),
+}
+
+
+def _with_text(site: str, text: str) -> Any:
+    schema, example, path, _ = _STORED_TEXT_PATHS[site]
+    value = _fixture_value(schema, example)
+    holder = value
+    for key in path[:-1]:
+        holder = holder[key]
+    holder[path[-1]] = text
+    return wc.CONTRACT_SCHEMAS[schema].validate_python(value)
+
+
+@pytest.mark.parametrize("site", list(_STORED_TEXT_PATHS))
+def test_every_other_stored_text_takes_the_one_rule(site: str) -> None:
+    """5mj: a NUL is a PostgreSQL error (22021) where a 422 belongs, and a bidi
+    override makes what a GM sees differ from what is stored — on every stored
+    text path, not only a document's fields. The whole table is refused, and a
+    lone surrogate with it, with a 422 that names the FIELD and never the value;
+    the joiners, VS16 and a tab stay allowed."""
+    field = _STORED_TEXT_PATHS[site][3]
+    for char in [*_REFUSED, chr(0xD800)]:
+        with pytest.raises(ValidationError) as caught:
+            _with_text(site, f"Vashti{char}whispers")
+        detail = wc.validation_error_body(caught.value.errors()).detail
+        assert (detail.code, detail.field) == (wc.ErrorCode.VALIDATION_FAILED, field), hex(ord(char))
+        said = json.dumps(detail.model_dump(mode="json")) + json.dumps(wc.redacted_errors(caught.value.errors()))
+        assert "Vashti" not in said and "whispers" not in said
+    for char in _ALLOWED.values():
+        _with_text(site, f"Vashti{char}whispers")
 
 
 # ── M-2: a stored value that is not an object (1kg.5.7.2) ────────────────────

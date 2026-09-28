@@ -28,6 +28,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.exceptions import RequestValidationError
 
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
@@ -98,7 +99,7 @@ from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
 from .workbench_api import gm_session, install_workbench
-from .workbench_contracts import CONTRACT_VERSION
+from .workbench_contracts import CHAT_TEXT_MAX_CHARS, CONTRACT_VERSION, check_plain_text
 
 log = logging.getLogger(__name__)
 
@@ -902,6 +903,23 @@ def get_models() -> dict[str, object]:
 CHAT_THROTTLE_HEADER = "X-Chat-Throttled"
 
 
+def _refuse_unstorable_prompt(prompt: str) -> None:
+    """Bead 5mj: the prompt is stored text, so it takes the one rule
+    (`check_plain_text`). It is persisted to PostgreSQL `text` and `jsonb`, which
+    refuse U+0000, so an unrefused NUL was a provider call paid for and then a
+    write that failed; a bidi override is stored text that reads differently
+    from how it is stored. Raised as a validation error that carries no `input`,
+    so the application's one handler (`workbench_api.handle_validation_error`)
+    answers FastAPI's default 422 list with nothing of the prompt in it: the
+    field, never the value."""
+    try:
+        check_plain_text(prompt)
+    except ValueError as refused:
+        raise RequestValidationError(
+            [{"type": "value_error", "loc": ("body", "prompt"), "msg": f"Value error, {refused}"}]
+        ) from None
+
+
 def _throttle_chat(request: Request, user_id: int) -> None:
     """Spend one chat request from this tester's budget, or 429."""
     try:
@@ -972,6 +990,9 @@ def chat(
     timeline: TimelineStore | None = Depends(get_timeline_store),
     tdb: Database | None = Depends(get_timeline_database),
 ) -> ChatResponse:
+    # Stored-text rule (5mj): a prompt that cannot be stored is refused before
+    # anything is spent on it — the budget below included.
+    _refuse_unstorable_prompt(req.prompt)
     # Cost guard (x5bz.3): spend one of this tester's chat budget before any
     # work happens. Before the try for the same reason as the gates below — a
     # 429 raised inside it would be caught by the `except Exception` and
@@ -982,6 +1003,20 @@ def chat(
     # before this runs. No role exemption — the account most likely to run up a
     # bill by accident is the one being used to test.
     _enforce_daily_cap(store)
+    # Prompt length gate (agent-forge-harness-764): reuse the Workbench's own
+    # request-side ceiling rather than a `Field(max_length=...)` on
+    # ChatRequest.prompt, whose rejection would go through FastAPI's default
+    # RequestValidationError handler and echo the whole oversized prompt back
+    # in the 422 body (R-12, docs/adr/gm-workbench-threat-model.md). A plain
+    # HTTPException here is handled ordinarily -- no echo -- exactly like the
+    # model_preference 422 below. `detail` stays a static string; the prompt
+    # itself must never appear in it. Raised before the try so it isn't masked
+    # as a 500, same as the gates around it.
+    if len(req.prompt) > CHAT_TEXT_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"prompt exceeds the {CHAT_TEXT_MAX_CHARS}-character limit",
+        )
     # Server-side role gate: the GM channel is DM-only, enforced from the session
     # role (not the UI toggle). Raised before the try so it isn't masked as a 500.
     if req.mode.value == "gm" and session.role != "dm":
