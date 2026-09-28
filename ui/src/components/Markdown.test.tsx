@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
+import * as React from 'react'
 import { Markdown } from './Markdown'
 
 // ── pp6q.1.1 — sanitized markdown rendering ──────────────────────────────────
@@ -50,6 +51,63 @@ describe('Markdown — rendering', () => {
     // They correspond to SourceList ordering; markdown must not eat or relink them.
     expect(md('Petrifies with its gaze [1], per the bestiary [2].').textContent)
       .toContain('[1]')
+  })
+})
+
+// ── agent-forge-harness-0k9 — a re-render never rebuilds a drawn answer ───────
+// React 19 compares `dangerouslySetInnerHTML` by object identity and re-assigns
+// innerHTML whenever the object is new, even when `__html` is the same string.
+// An answer re-renders on every unrelated ChatPane update, so each of those
+// rebuilt its DOM: a reader's selection in it vanished, and a node a test had
+// just found was detached under it (agent-forge-harness-57l).
+
+const ANSWER = 'Here is a **drowned guardian** for the marsh.'
+
+/** A parent whose re-render changes nothing Markdown is given. */
+function Host({ source, tick }: { source: string; tick: number }): React.JSX.Element {
+  return (
+    <section data-tick={tick}>
+      <Markdown source={source} />
+    </section>
+  )
+}
+
+describe('Markdown — re-rendering (agent-forge-harness-0k9)', () => {
+  it('keeps its DOM when an unrelated parent re-render leaves the source unchanged', () => {
+    const { container, rerender } = render(<Host source={ANSWER} tick={0} />)
+    const strong = container.querySelector('strong')
+    expect(strong).not.toBeNull()
+
+    rerender(<Host source={ANSWER} tick={1} />)
+
+    // The parent did re-render…
+    expect(container.querySelector('section')).toHaveAttribute('data-tick', '1')
+    // …and the answer's node is the one that was there before, still attached.
+    expect(strong).toBeInTheDocument()
+    expect(container.querySelector('strong')).toBe(strong)
+  })
+
+  it('keeps a reader’s selection inside an answer across an unrelated parent re-render', () => {
+    const { container, rerender } = render(<Host source={ANSWER} tick={0} />)
+    const text = container.querySelector('strong')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, 'drowned'.length)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    rerender(<Host source={ANSWER} tick={1} />)
+
+    expect(selection.toString()).toBe('drowned')
+    selection.removeAllRanges()
+  })
+
+  it('still redraws when the source itself changes', () => {
+    const { container, rerender } = render(<Host source={ANSWER} tick={0} />)
+    rerender(<Host source="Here is a **sunken sentinel** instead." tick={0} />)
+    expect(container.querySelector('strong')?.textContent).toBe('sunken sentinel')
+    expect(container).not.toHaveTextContent('drowned guardian')
   })
 })
 
