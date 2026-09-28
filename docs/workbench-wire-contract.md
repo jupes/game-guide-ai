@@ -708,7 +708,11 @@ D-9).
   every route, with no deprecation. An id outside the *Identifiers* grammar
   cannot be carried: `GET` and `PATCH` answer the one `404`, and the index
   leaves such a row out rather than failing, logging only how many it left out.
-  The legacy routes still read it.
+  The legacy routes still read it. A legacy id long enough also carries the
+  page's cursor past the *Pagination* grammar's 512 characters (only a
+  hand-made `/chat` request can mint one this long); rather than fail there
+  too, the index ends the walk at that page — `next_cursor: null` — and cannot
+  be paged past that row, logging only that it happened.
 
 **Titles.** A title a request sends is trimmed the way a brief is (see
 *Trimming*), is 1 to 200 code points after trimming, and is stored trimmed. It

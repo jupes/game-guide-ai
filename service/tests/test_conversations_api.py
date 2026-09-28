@@ -334,6 +334,21 @@ def test_the_reads_check_session_then_role_then_query_then_store(client: TestCli
     assert _read(client, "not an id").json() == UNAVAILABLE, "the store before the path id"
 
 
+def test_the_patch_checks_role_then_store_before_the_path_id(client: TestClient, world: _World) -> None:
+    """A2-3 steps 4-6, pinned past `mine`: PR #100's review (M-2) found that
+    every existing PATCH-order test used an id that IS readable, so a mutant
+    that ran `_readable` before the role gate or before the store-availability
+    check still passed the whole suite (mutant M2b). `not an id` would 404 on
+    its own, so seeing FORBIDDEN_ROLE or UNAVAILABLE instead — never the path
+    id's 404 — proves the order holds for an id the store can never resolve."""
+    _as(OWNER, "player")
+    assert _patch(client, "not an id", archived=True).json() == FORBIDDEN_ROLE, "the role before the path id"
+    _as(OWNER)
+    app.dependency_overrides[get_timeline_database] = lambda: None
+    assert _patch(client, "not an id", archived=True).json() == UNAVAILABLE, "the store before the path id"
+    app.dependency_overrides[get_timeline_database] = lambda: world.db
+
+
 def test_the_path_id_is_checked_after_the_store_and_answers_the_one_404(client: TestClient) -> None:
     for conversation_id in ("not an id", "x" * 65, "a.b"):
         assert (_read(client, conversation_id).json(), _read(client, conversation_id).status_code) == (NOT_FOUND, 404)
@@ -637,6 +652,32 @@ def test_a_stored_row_the_wire_cannot_carry_is_left_out_and_the_walk_still_ends(
     # One row per page, so the walk also meets a page whose only row is left
     # out: an empty page with a cursor, which is not the end of the list.
     assert _walk(client, limit="1") == list(reversed(readable))
+
+
+def test_a_row_whose_id_would_break_the_cursors_512_char_bound_ends_the_page_at_200_not_500(
+    client: TestClient, world: _World, caplog: pytest.LogCaptureFixture
+) -> None:
+    """agent-forge-harness-1ag / M-1: `/chat` accepted any string as an id once,
+    and a legacy id long enough turns the store's own cursor — base64 of
+    `[sort_key, id]` — past the wire `Cursor`'s 512-char bound. Building
+    `ConversationPage` with that cursor must never reach the caller as an
+    uncaught `ValidationError` (a 500): the page still answers 200, empty of
+    that row like any other the wire cannot carry, and the walk ends there —
+    it cannot carry a cursor that does not fit the contract."""
+    huge, older = "x" * 360, "y" * 10
+    world.legacy(huge, now=T0 + timedelta(minutes=1))
+    world.legacy(older, now=T0)
+    with caplog.at_level(logging.WARNING, logger="service.conversations_api"):
+        page = client.get("/conversations", params={"limit": "1"})
+        ours = [r for r in caplog.records if r.name == "service.conversations_api"]
+    assert page.status_code == 200, page.text
+    body = page.json()
+    assert body["items"] == []
+    assert body["next_cursor"] is None
+    messages = [r.getMessage() for r in ours]
+    assert "conversation index: 1 stored rows omitted as unreadable" in messages
+    assert any("cursor" in m for m in messages)
+    assert all(huge not in m and older not in m for m in messages)
 
 
 def test_every_page_validates_as_the_contracts_page(client: TestClient, world: _World) -> None:
