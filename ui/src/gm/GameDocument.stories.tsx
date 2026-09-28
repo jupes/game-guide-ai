@@ -13,6 +13,7 @@ import * as React from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test'
 
+import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { DOCUMENT_TYPE_IDS } from './contracts'
 import type { Document, FieldValue } from './contracts'
 import { documentFixture } from './documentFixtures'
@@ -265,6 +266,9 @@ export const GoldWash: Story = {
   play: async ({ args, canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getAllByText('Changed')).toHaveLength(2)
+    // 1dw: the small ds/Button call site, not rendered by ds/'s own `Sizes`
+    // story.
+    await expectTouchTarget(canvas, 'Got it')
     await userEvent.click(canvas.getByRole('button', { name: 'Got it' }))
     await expect(args.onAcknowledgeChanges).toHaveBeenCalledTimes(1)
   },
@@ -473,6 +477,17 @@ export const NarrowCanvas: Story = {
     ),
   ],
   play: async ({ canvasElement }) => {
+    // The bar's placement is clamped against an assumed size (GameDocument's
+    // BAR_SIZE), not the real rendered one, so this assertion is only honest
+    // once the bar's actual width matches — which needs every self-hosted
+    // webfont (`src/ds/tokens/fonts.css`) to have finished loading. Racing that
+    // swap is exactly what made this story flaky under CPU load (agent-forge-
+    // harness-asy): `findByRole` below only waits for the toolbar element to
+    // exist, not for its text to be laid out in its final font, so measuring
+    // right after finding it can catch fallback-font metrics that are wider
+    // than the assumed size. Waiting for fonts here — rather than widening the
+    // tolerance — makes the assertion wait for layout instead of racing it.
+    await document.fonts.ready
     const canvas = within(canvasElement)
     const wants = proseIn(canvasElement, 'Wants')
     await userEvent.pointer([

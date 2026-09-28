@@ -395,6 +395,27 @@ def test_locking_a_campaign_that_has_no_authorisation_row_fails_closed():
             unit.lock_campaign("cmp_gone", shared=True)
 
 
+def test_the_authz_check_runs_before_a_conflicting_lock_is_ever_considered():
+    """`lock_campaign`'s docstring: the missing-authorisation check is made
+    **last**, after `CampaignAuthzMissing` — read the other way, the
+    conflicting-lock check must never run first. A campaign whose `authz_state`
+    row is staged (created) but not yet committed is invisible to every other
+    open unit's `authz_revision`, so a second unit that only reads it must see
+    `CampaignAuthzMissing`, never `TwinWouldBlock` from the exclusive lock the
+    first unit already holds on that same campaign. If the order were
+    reversed, the conflicting-lock check would run first and raise
+    `TwinWouldBlock` instead, because the first unit's exclusive lock is real
+    and open.
+    """
+    db = InMemoryDatabase()
+    with db.transaction() as writer:
+        writer.create_authz_state("cmp_new")
+        writer.lock_campaign("cmp_new", shared=False)
+        with pytest.raises(CampaignAuthzMissing, match="authorisation"):
+            with db.transaction() as reader:
+                reader.lock_campaign("cmp_new", shared=True)
+
+
 def test_one_transaction_may_not_lock_two_different_campaigns():
     db = InMemoryDatabase()
     first, second = _campaign(db, "cmp_one"), _campaign(db, "cmp_two")

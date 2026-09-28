@@ -10,6 +10,7 @@ import { ConversationStoreProvider } from './ConversationStoreContext'
 import { MemoryConversationStore } from './conversationStore'
 import { ThemeProvider } from '../ds/theme'
 import { ChatPane } from './ChatPane'
+import { CHAT_TEXT_MAX_CHARS } from '../gm/contracts'
 import type {
   Attachment,
   AttachmentsResult,
@@ -294,6 +295,47 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
     await userEvent.type(ta, 'line two')
     expect(post).not.toHaveBeenCalled()
     expect(ta.value).toBe('line one\nline two')
+  })
+
+  it('agent-forge-harness-764: disables Send and shows a counter past CHAT_TEXT_MAX_CHARS', async () => {
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Wrapper post={post} />)
+    const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+    // fireEvent.change, not userEvent.type: this draft is 100,001 characters —
+    // typing it key by key would be a real per-character simulation, not a
+    // meaningfully different test.
+    fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+    expect(screen.getByText(`${CHAT_TEXT_MAX_CHARS + 1} of ${CHAT_TEXT_MAX_CHARS} characters`, { exact: false })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    // fireEvent.change doesn't focus the textarea; without the click, {Enter}
+    // would land on document.body and never reach the composer's key handler.
+    await userEvent.click(ta)
+    expect(ta).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    expect(post).not.toHaveBeenCalled()
+    // A send would also clear the draft: the user's over-long text must survive.
+    expect(ta.value.length).toBe(CHAT_TEXT_MAX_CHARS + 1)
+  })
+
+  it('agent-forge-harness-764 × 4oz: the over-length counter describes the field and adds no second live region', () => {
+    const { container } = render(<Wrapper />)
+    // The pane's one announcer, captured at rest (the 4oz tests' own shape).
+    const [announcer] = screen.getAllByRole('status')
+    const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+    // 764: the refusal is still said, and said ON the field it is about.
+    expect(ta).toHaveAttribute('aria-invalid', 'true')
+    expect(ta).toHaveAccessibleDescription(
+      `${CHAT_TEXT_MAX_CHARS + 1} of ${CHAT_TEXT_MAX_CHARS} characters — shorten your message to send it.`,
+    )
+    // 4oz: not by a second live region beside the announcer — counted in every
+    // live-region shape, not role="status" alone — and not by the announcer,
+    // whose text changes only when a turn is sent or settles.
+    const live = container.querySelectorAll(
+      '[role="status"], [role="alert"], [role="log"], [aria-live]:not([aria-live="off"])',
+    )
+    expect(Array.from(live)).toEqual([announcer])
+    expect(announcer.textContent).toBe('')
   })
 })
 

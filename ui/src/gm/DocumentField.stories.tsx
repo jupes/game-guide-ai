@@ -13,6 +13,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
 import { tabTo } from '../../.storybook/keyboard'
+import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { DocumentField } from './DocumentField'
 import type { DocumentTypeId, FieldValue } from './contracts'
 import { documentFieldReads } from './documentFields'
@@ -73,6 +74,31 @@ export const ProseField: Story = {
 /** `text_list` — items stay items; the handoff flattened them to a CSV string. */
 export const TextListField: Story = {
   args: { field: fieldRead('tags'), value: fixtureValue('tags') },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    // 1dw: "Add to Tags" is a small ds/Button call site only rendered once
+    // this field is opened for editing — the ds/ `Sizes` story never renders
+    // it either way.
+    await userEvent.click(canvas.getByRole('button', { name: 'Edit Tags' }))
+    await expectTouchTarget(canvas, 'Add to Tags')
+  },
+}
+
+/** `entry_list` — name/text pairs, e.g. a stat block's traits. */
+export const EntryListField: Story = {
+  args: {
+    field: fieldRead('traits', 'statblock'),
+    value: fixtureValue('traits', 'statblock'),
+    documentName: String(documentFixture('statblock').data.name),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    // 1dw: the entry_list editor's own "Add to …" small ds/Button call site
+    // (a separate JSX usage from the text_list one above, sharing the same
+    // class and CSS rule).
+    await userEvent.click(canvas.getByRole('button', { name: 'Edit Traits' }))
+    await expectTouchTarget(canvas, 'Add to Traits')
+  },
 }
 
 /** `integer` — Armour Class on a stat block. */
@@ -139,6 +165,10 @@ export const Conflict: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByText(/never once above the noise/)).toBeInTheDocument()
+    // 1dw: the tonal ("Keep mine") and outlined ("Use latest") small ds/Button
+    // call sites, neither rendered by ds/'s own `Sizes` story.
+    await expectTouchTarget(canvas, 'Keep mine')
+    await expectTouchTarget(canvas, 'Use latest')
   },
 }
 
