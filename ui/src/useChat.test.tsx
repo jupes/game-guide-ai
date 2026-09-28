@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
+import { useState } from 'react'
 import { useChat } from './useChat'
 import type { ChatResult, ChatMode, MessagesResult, StoredMessage } from './api'
 import type { MetricPoint } from './metrics/metrics'
@@ -355,6 +356,125 @@ describe('useChat', () => {
     // Settled for conv-1 — the conversation the turn was sent for — not
     // conv-2, which is merely what the hook is scoped to now.
     expect(settled).toEqual([['conv-1', 'done']])
+  })
+
+  // ── onTurnSettled says whether the settle was SHOWN (pr129 M-1) ───────────
+  // Comparing ids is not enough: after A -> B -> A the ids match again, but
+  // A's recall has replaced the exchange list, so the settle writes nothing
+  // and no answer is drawn. `shown` is decided by the settle's own state
+  // update (did it find and write its exchange?) and by the commit that
+  // follows (is that exchange on screen?).
+
+  it('reports shown=true for a settle drawn in the conversation on screen, and shown=false for one that is not (A -> B, A -> B -> A)', async () => {
+    const shownFlags: boolean[] = []
+    const onTurnSettled = (_outcome: 'done' | 'error', _conversationId: string | null, shown: boolean) =>
+      shownFlags.push(shown)
+
+    const resolvers: Array<(r: ChatResult) => void> = []
+    const post: PostFn = () => new Promise<ChatResult>((res) => { resolvers.push(res) })
+    const loadHistory: LoadHistoryFn = async (id) => ({
+      kind: 'ok',
+      messages: [
+        stored(id === 'conv-1' ? 1 : 3, 'user', `Question ${id}`),
+        stored(id === 'conv-1' ? 2 : 4, 'assistant', 'Stored'),
+      ],
+    })
+    const { result, rerender } = renderHook(
+      ({ convId }: { convId: string | null }) =>
+        useChat({ post, loadHistory, mode: 'sage', conversationId: convId, onTurnSettled }),
+      { initialProps: { convId: 'conv-1' as string | null } },
+    )
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+
+    // 1. A current settle: drawn, shown.
+    act(() => { result.current.send('first') })
+    await act(async () => { resolvers[0](GROUNDED) })
+    expect(result.current.exchanges.at(-1)?.status).toBe('done')
+    expect(shownFlags).toEqual([true])
+
+    // 2. A -> B, then the A turn settles: not shown.
+    act(() => { result.current.send('second') })
+    rerender({ convId: 'conv-2' })
+    await waitFor(() => expect(result.current.exchanges[0]?.prompt).toBe('Question conv-2'))
+    await act(async () => { resolvers[1](GROUNDED) })
+    expect(shownFlags).toEqual([true, false])
+
+    // 3. A -> B -> A, both recalls landed, then the A turn settles: the ids
+    // match again, but the exchange it was sent for is gone — not shown.
+    rerender({ convId: 'conv-1' })
+    await waitFor(() => expect(result.current.exchanges[0]?.prompt).toBe('Question conv-1'))
+    act(() => { result.current.send('third') })
+    rerender({ convId: 'conv-2' })
+    await waitFor(() => expect(result.current.exchanges[0]?.prompt).toBe('Question conv-2'))
+    rerender({ convId: 'conv-1' })
+    await waitFor(() => expect(result.current.exchanges[0]?.prompt).toBe('Question conv-1'))
+    await act(async () => { resolvers[2](GROUNDED) })
+    expect(result.current.exchanges.some((e) => e.prompt === 'third')).toBe(false)
+    expect(shownFlags).toEqual([true, false, false])
+  })
+
+  it('reports shown=false for a settle that lands after A -> B while B is still recalling (applied to A, drawn nowhere)', async () => {
+    // The settle still finds its exchange (state has not left A yet — B's
+    // recall is in flight), so it is APPLIED; but the hook already returns
+    // B's empty, loading view, so it is not DRAWN. Applied alone is not shown.
+    const settled: Array<[string | null, boolean]> = []
+    const onTurnSettled = (_outcome: 'done' | 'error', conversationId: string | null, shown: boolean) =>
+      settled.push([conversationId, shown])
+    const { post, resolve: resolvePost } = deferredPost()
+    let resolveConv2History!: (r: MessagesResult) => void
+    const loadHistory: LoadHistoryFn = (conversationId) =>
+      conversationId === 'conv-1'
+        ? Promise.resolve({ kind: 'ok', messages: [] })
+        : new Promise<MessagesResult>((res) => { resolveConv2History = res })
+
+    const { result, rerender } = renderHook(
+      ({ convId }: { convId: string | null }) =>
+        useChat({ post, loadHistory, mode: 'sage', conversationId: convId, onTurnSettled }),
+      { initialProps: { convId: 'conv-1' as string | null } },
+    )
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+    act(() => { result.current.send('About goblins') })
+
+    rerender({ convId: 'conv-2' })
+    expect(result.current.loadingHistory).toBe(true)
+    await act(async () => { resolvePost(GROUNDED) })
+    expect(result.current.exchanges).toEqual([])
+    expect(settled).toEqual([['conv-1', false]])
+
+    // B's recall landing afterwards reports nothing further.
+    await act(async () => { resolveConv2History({ kind: 'ok', messages: [] }) })
+    expect(result.current.loadingHistory).toBe(false)
+    expect(settled).toEqual([['conv-1', false]])
+  })
+
+  it('reports the first turn of a NEW conversation as shown once the consumer adopts the minted id', async () => {
+    const settled: Array<['done' | 'error', boolean]> = []
+    const onTurnSettled = (outcome: 'done' | 'error', _conversationId: string | null, shown: boolean) =>
+      settled.push([outcome, shown])
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: { ...GROUNDED.kind === 'ok' ? GROUNDED.response : {}, conversation_id: 'srv-new' },
+    }) as ChatResult
+    const loadHistory: LoadHistoryFn = async () => ({ kind: 'ok', messages: [] })
+
+    const { result } = renderHook(() => {
+      const [conversationId, setConversationId] = useState<string | null>(null)
+      return {
+        conversationId,
+        chat: useChat({
+          post,
+          loadHistory,
+          mode: 'sage',
+          conversationId,
+          onConversationAdopted: setConversationId,
+          onTurnSettled,
+        }),
+      }
+    })
+
+    act(() => { result.current.chat.send('What is a Basilisk?') })
+    await waitFor(() => expect(result.current.conversationId).toBe('srv-new'))
+    await waitFor(() => expect(settled).toEqual([['done', true]]))
   })
 
   it('degrades to an empty thread with a notice when the history fetch fails', async () => {

@@ -156,30 +156,35 @@ function ChatPaneBody({
   // useChat's onTurnSettled seam — never from a recall, a conversation
   // switch or a re-render.
   const [arrival, setArrival] = React.useState('')
-  // agent-forge-harness-swg (pr114 M-1): this component is never remounted on
-  // a conversation switch (see the comment on the transcript region below),
-  // so the `onTurnSettled` closure below can fire long after it was created —
-  // for a turn sent under a conversation the user has since left. Reading a
-  // captured `conversationId` at that point would still read the OLD one (the
-  // closure is fixed to whatever render created it); a ref updated every
-  // render always holds the one actually on screen right now.
-  const conversationIdRef = React.useRef(conversationId)
-  React.useEffect(() => {
-    conversationIdRef.current = conversationId
-  }, [conversationId])
+  const handleTurnSettled = React.useCallback(
+    (outcome: 'done' | 'error', _sentFor: string | null, shown: boolean) => {
+      // agent-forge-harness-swg (pr114 M-1, pr129 M-1): this component is
+      // never remounted on a conversation switch (see the comment on the
+      // transcript region below), so a turn can settle after the user left
+      // its conversation — or left and came back, by which time a recall has
+      // replaced the exchange it would have filled. Announce an outcome only
+      // when useChat reports the settle as SHOWN: applied to the exchanges on
+      // screen and drawn there. Comparing conversation ids is not enough.
+      if (shown) {
+        setArrival(outcome === 'done' ? 'Answer received' : 'Answer failed')
+        return
+      }
+      // pr129 M-2: a suppressed settle must not leave its turn's pending
+      // phrase standing — the next send would set the SAME text, the live
+      // region would not change, and that send's pending state would go
+      // unannounced. Clearing to empty is itself silent (a removal from a
+      // live region is not announced). Any other text is left alone.
+      setArrival((current) => (current === PENDING_ANNOUNCEMENT ? '' : current))
+    },
+    [],
+  )
   const { exchanges, send, pending, historyError, loadingHistory } = useChat({
     post,
     loadHistory: gm ? SKIP_RECALL : loadHistory,
     mode,
     conversationId,
     onConversationAdopted: setConversationId,
-    onTurnSettled: (outcome, settledConversationId) => {
-      // Only announce for the conversation currently on screen — a settle
-      // for one the user has since left must not overwrite this pane's
-      // announcer with an outcome it never showed (pr114 M-1).
-      if (settledConversationId !== conversationIdRef.current) return
-      setArrival(outcome === 'done' ? 'Answer received' : 'Answer failed')
-    },
+    onTurnSettled: handleTurnSettled,
   })
   // Keeps ChatPane on this side of the GM boundary while a turn is in flight.
   React.useEffect(() => {
@@ -487,8 +492,10 @@ function ChatPaneBody({
           Its text now changes exactly twice per turn THIS pane sent: to
           PENDING_ANNOUNCEMENT the moment the turn is SENT (`handleSend`,
           above), and to the settle outcome the moment the turn SETTLES
-          (`onTurnSettled`, above). Nothing else ever changes it — not a
-          history recall, not a conversation switch. Shape copied from
+          (`handleTurnSettled`, above) — or, for a settle that is never shown
+          (the user left its conversation), silently back to empty instead
+          (agent-forge-harness-swg, pr129 M-2). Nothing else ever changes it —
+          not a history recall, not a conversation switch. Shape copied from
           `gm/ToolComposer.tsx`'s own persistent `role="status"` node. */}
       <p role="status" className="chat-pane__sr-only chat-pane__arrival">
         {arrival}
