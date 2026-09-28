@@ -3,9 +3,9 @@ The posture every Workbench GM route inherits (agent-forge-harness-oe6).
 
 One 401 body (SEC-2), one non-enumerating 404 from one code path (SEC-3), the
 origin check (SEC-7) and one application-wide validation handler (SEC-23),
-built once so that no route bead has to build its own. The first routes on it
-are the four conversation routes (`service/conversations_api.py`); the
-timeline route is still legacy-shaped until `agent-forge-harness-oqx` moves it.
+built once so that no route bead has to build its own. The routes on it are the
+four conversation routes (`service/conversations_api.py`) and the conversation
+timeline (`service/timeline_api.py`, moved here by `agent-forge-harness-oqx`).
 
 What makes a route a Workbench route
 ------------------------------------
