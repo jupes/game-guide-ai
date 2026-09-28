@@ -73,6 +73,16 @@ def records(monkeypatch):
     return collected
 
 
+@pytest.fixture
+def outcome_records(monkeypatch):
+    """The `structuring_outcome` records, collected the same way (review M-1)."""
+    collected: list[dict] = []
+    monkeypatch.setattr(
+        usage_capture, "_emit_outcome_record", lambda operation, fields: collected.append(dict(fields)),
+    )
+    return collected
+
+
 def _client(svc, store=None) -> TestClient:
     app.dependency_overrides[get_service] = lambda: svc
     app.dependency_overrides[get_message_store] = lambda: store or InMemoryMessageStore()
@@ -161,7 +171,7 @@ def test_two_turns_get_two_different_operation_ids(records):
 # AC 7 — the key set is closed, and no private content can reach a record
 # ---------------------------------------------------------------------------
 
-def test_no_prompt_answer_filename_or_attachment_text_reaches_any_record(records):
+def test_no_prompt_answer_filename_or_attachment_text_reaches_any_record(records, outcome_records):
     unique_prompt = "zzqprompt-6f2a what does my homebrew file say"
     unique_answer = "zzqanswer-91bd the orb hums with malice [1]."
     unique_filename = "zzqfilename-4c7e.txt"
@@ -178,6 +188,19 @@ def test_no_prompt_answer_filename_or_attachment_text_reaches_any_record(records
     assert len(records) == 4, "records must exist before a privacy assertion means anything"
     for record in records:
         assert set(record) == usage_capture.EXPECTED_KEYS
+        blob = json.dumps(record)
+        for secret in (unique_prompt, unique_answer, unique_filename, unique_attachment, email):
+            assert secret not in blob
+        for value in record.values():
+            assert not (isinstance(value, str) and "@" in value)
+
+    # Review M-1: the structuring_outcome records of the same turn get the same
+    # scan — the count first, so the scan below cannot pass vacuously.
+    assert [(r["purpose"], r["outcome"]) for r in outcome_records] == [
+        ("suggestions", "produced"), ("spell_structuring", "produced"),
+    ]
+    for record in outcome_records:
+        assert set(record) == usage_capture.EXPECTED_OUTCOME_KEYS
         blob = json.dumps(record)
         for secret in (unique_prompt, unique_answer, unique_filename, unique_attachment, email):
             assert secret not in blob
