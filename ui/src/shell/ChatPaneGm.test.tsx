@@ -135,12 +135,25 @@ describe('ChatPane (GM) — reading the timeline', () => {
     expect(await screen.findByText('Message history unavailable (503).')).toBeInTheDocument()
     await userEvent.type(screen.getByPlaceholderText('Ask…'), PROMPT)
     await userEvent.keyboard('{Enter}')
-    // Queried and asserted in one callback, never through a handle held across
-    // an await: Markdown re-sets its innerHTML on the pane's next render (React
-    // 19 re-applies `dangerouslySetInnerHTML` whenever the object is new), so
-    // the <strong> findByText first matched can be detached by the time a
-    // separate expect reads it (agent-forge-harness-57l).
-    await waitFor(() => expect(screen.getByText('drowned guardian')).toBeInTheDocument())
+    expect(await screen.findByText('drowned guardian')).toBeInTheDocument()
+  })
+
+  it('keeps an answer it has drawn when the pane renders again (agent-forge-harness-57l)', async () => {
+    // What made the test above flaky, made deterministic: the node findByText
+    // resolved to was detached by the pane's next render, because Markdown
+    // rebuilt its innerHTML on every render (agent-forge-harness-0k9). The
+    // re-render here is forced rather than raced.
+    const post: PostFn = async () => ({ kind: 'ok', response: LIVE })
+    const { container, rerender } = render(<Pane nav={{}} post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), PROMPT)
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(container.querySelector('.assistant-lane[data-state="done"]')).not.toBeNull())
+    const answer = screen.getByText('drowned guardian')
+
+    rerender(<Pane nav={{}} post={post} />)
+
+    expect(answer).toBeInTheDocument()
+    expect(screen.getByText('drowned guardian')).toBe(answer)
   })
 
   it('reads GM history from the timeline only, and other channels never from it', async () => {

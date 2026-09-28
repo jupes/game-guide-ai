@@ -210,12 +210,19 @@ function renderMarkdown(source: string): string {
 export function Markdown({ source, className }: MarkdownProps): React.JSX.Element {
   // Recomputed only when the source changes: sanitizing is not free and an
   // assistant answer re-renders on every unrelated ChatPane state change.
-  const html = React.useMemo(() => renderMarkdown(source), [source])
+  //
+  // The `{ __html }` object is memoized with it, not rebuilt per render: React
+  // 19 compares `dangerouslySetInnerHTML` by object identity and re-assigns
+  // `innerHTML` whenever the object is new, without comparing `__html`. A fresh
+  // object tore down and rebuilt the answer's DOM on each of those re-renders,
+  // so a reader's selection in it vanished and any node held across one was
+  // detached (agent-forge-harness-0k9, agent-forge-harness-57l).
+  const markup = React.useMemo(() => ({ __html: renderMarkdown(source) }), [source])
   return (
     <div
       className={['aether-markdown', className].filter(Boolean).join(' ')}
-      // Safe by construction: `html` is DOMPurify output, never raw model text.
-      dangerouslySetInnerHTML={{ __html: html }}
+      // Safe by construction: `__html` is DOMPurify output, never raw model text.
+      dangerouslySetInnerHTML={markup}
     />
   )
 }
