@@ -353,6 +353,16 @@ def test_the_queues_bound_is_transaction_local_and_does_not_leak(db, dsn):
             "current_setting('transaction_timeout')"
         ).fetchone()
         assert settings == ("2s", "2s", "5s")
+        # The same connection, once the transaction is over: `Database` opens a
+        # fresh connection per block today, so only this read can tell a
+        # transaction-local setting from a session-wide one.
+        conn.commit()
+        leftover = conn.execute(
+            "SELECT current_setting('lock_timeout'), "
+            "current_setting('statement_timeout'), "
+            "current_setting('transaction_timeout')"
+        ).fetchone()
+        assert leftover != settings and "2s" not in leftover, "the bound outlived its transaction"
 
     with db.connection() as conn:
         after = conn.execute("SELECT current_setting('statement_timeout')").fetchone()[0]
