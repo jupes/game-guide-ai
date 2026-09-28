@@ -139,26 +139,35 @@ export const EmptyGmChannel: Story = {
 }
 
 /**
- * Recalling stored history. A status, not a spinner with no words.
- *
- * agent-forge-harness-ekf (E1b) — amended to also show the SEPARATE arrival
- * announcer: present for the pane's whole life, and empty while history is
- * recalling (a recall announces nothing — only a settled turn does).
+ * Recalling stored history. Visible text, not a live region — a spinner
+ * with no words would still be wrong, but agent-forge-harness-swg (pr116
+ * M-1) removed this message's OWN `role="status"`: it used to be a SECOND
+ * live region, mounted together with its text, alongside the pane's one
+ * announcer below. That announcer (`.chat-pane__arrival`, agent-forge-
+ * harness-ekf) stays present for the pane's whole life and empty while
+ * history is recalling — a recall announces nothing, same as a
+ * conversation switch (ChatPane.test.tsx E6).
  */
 export const LoadingHistory: Story = {
   args: { loadHistory: neverHistory },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    // `role="status"` does not take its name from content (ARIA in HTML),
-    // so a second status node (the arrival announcer) can't be told apart
-    // by name — scope to the transcript, where only the recall status lives.
+    await expect(await canvas.findByText('Recalling the conversation…')).toBeInTheDocument()
+
+    // The recall message itself is not a live region — findByRole would
+    // never resolve for it, so assert its absence directly.
     const transcript = canvas.getByRole('region', { name: 'Conversation' })
-    await expect(await within(transcript).findByRole('status')).toHaveTextContent(
-      'Recalling the conversation…',
-    )
+    await expect(within(transcript).queryByRole('status')).toBeNull()
+
     const arrival = canvasElement.querySelector('.chat-pane__arrival')
     await expect(arrival).toHaveAttribute('role', 'status')
     await expect(arrival).toHaveTextContent('')
+
+    // Exactly one live region anywhere in the pane while recalling (counts
+    // every form, not just `role="status"` — agent-forge-harness-swg pr116 M-2).
+    await expect(
+      canvasElement.querySelectorAll('[role="status"],[role="alert"],[role="log"],[aria-live]'),
+    ).toHaveLength(1)
   },
 }
 
