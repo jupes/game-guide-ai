@@ -1761,6 +1761,40 @@ describe('the conversation family (1kg.2.4)', () => {
     }
   })
 
+  // agent-forge-harness-644 review M1: pinning only that the shared set IS
+  // refused lets a title-only refusal grow back unseen -- the second opinion
+  // 644 retired. Both directions, over every code point to U+3000, each refused
+  // code point and its neighbours (U+FEFF sits above U+3000), and astral
+  // samples. Lone surrogates are left out: well-formedness is its own rule.
+  // test_conversation_contract.py sweeps the same set on the server.
+  it('a title refuses a code point if and only if the shared rule or the one-line rule does', () => {
+    const lineBreaks = new Set([0x0a, 0x0d, 0x2028, 0x2029])
+    const sweep = new Set<number>()
+    for (let code = 0; code <= 0x3000; code += 1) sweep.add(code)
+    for (const code of REFUSED_TEXT_CODE_POINTS) for (const step of [-1, 0, 1]) if (code + step >= 0) sweep.add(code + step)
+    for (const code of [0x1f3b2, 0xe0001, 0xe007f, 0xf0000, 0x10fffd, 0x10ffff]) sweep.add(code)
+    const wrong: string[] = []
+    for (const code of sweep) {
+      if (code >= 0xd800 && code <= 0xdfff) continue
+      const expected = REFUSED_TEXT_CODE_POINTS.has(code) || lineBreaks.has(code)
+      const refused = !ConversationCreateRequestSchema.safeParse({
+        schema_version: 1, started_mode: 'sage', title: `Harbour${String.fromCodePoint(code)}job`,
+      }).success
+      if (refused !== expected) wrong.push(`U+${code.toString(16).toUpperCase().padStart(4, '0')} ${refused ? 'refused' : 'kept'}`)
+    }
+    expect(wrong).toEqual([])
+  })
+
+  it("trims a title's edges before checking them, as the server does (review N1)", () => {
+    const create = (title: string) =>
+      ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title }).success
+    const bom = String.fromCharCode(0xfeff)
+    const lrm = String.fromCharCode(0x200e)
+    expect(create(`${bom}Harbour${bom}`)).toBe(true)
+    expect(create(`${lrm}Harbour`)).toBe(false)
+    expect(create(`Harbour${lrm}`)).toBe(false)
+  })
+
   it('bounds a title after trimming, as the server stores it', () => {
     const create = (title: unknown) => ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title })
     expect(create(' '.repeat(3) + 'a'.repeat(200) + '\t').success).toBe(true)

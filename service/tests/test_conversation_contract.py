@@ -62,6 +62,51 @@ def test_a_title_stays_one_line_a_dimension_check_plain_text_does_not_cover(code
         _create(f"Harbour{chr(code)}job")
 
 
+#: Where a title's refusal is swept: every code point to U+3000, each refused
+#: code point and its two neighbours (U+FEFF sits above U+3000), and astral
+#: samples. Lone surrogates are left out: well-formedness is its own rule, and
+#: no UTF-8 request body can carry one.
+_TITLE_SWEEP = sorted(
+    (
+        set(range(0x0000, 0x3001))
+        | {code + step for code in wc.REFUSED_TEXT_CODE_POINTS for step in (-1, 0, 1) if code + step >= 0}
+        | {0x1F3B2, 0xE0001, 0xE007F, 0xF0000, 0x10FFFD, 0x10FFFF}
+    )
+    - set(range(0xD800, 0xE000))
+)
+#: The one-line rule's own code points (LF, CR, LS, PS) -- spelled out here so
+#: this pin is independent of the module's private tuple.
+_A_TITLE_LINE_BREAK = frozenset({0x0A, 0x0D, 0x2028, 0x2029})
+
+
+def test_a_title_refuses_a_code_point_if_and_only_if_the_shared_rule_or_the_one_line_rule_does() -> None:
+    """agent-forge-harness-644 review M1: pinning only that the shared set IS
+    refused lets a title-only refusal grow back unseen -- the second opinion
+    644 retired. Both directions, exhaustively over the sweep."""
+    wrong: list[str] = []
+    for code in _TITLE_SWEEP:
+        expected = code in wc.REFUSED_TEXT_CODE_POINTS or code in _A_TITLE_LINE_BREAK
+        try:
+            _create(f"Harbour{chr(code)}job")
+            refused = False
+        except ValidationError:
+            refused = True
+        if refused != expected:
+            wrong.append(f"U+{code:04X} {'refused' if refused else 'kept'}")
+    assert wrong == []
+
+
+def test_a_title_edge_is_trimmed_before_it_is_checked_as_the_client_does() -> None:
+    """Review N1: the BOM is in the trimmed set, so at an edge it is trimmed
+    away, never refused; a bidirectional mark is not, so at an edge it stays
+    and is refused. contracts.test.ts pins the same two cases."""
+    bom, lrm = chr(0xFEFF), chr(0x200E)
+    assert _create(f"{bom}Harbour{bom}").title == "Harbour"
+    for edged in (f"{lrm}Harbour", f"Harbour{lrm}"):
+        with pytest.raises(ValidationError):
+            _create(edged)
+
+
 def test_a_title_is_trimmed_as_the_client_trims_and_stored_trimmed() -> None:
     assert _create(" \t Harbour " + chr(0x3000)).title == "Harbour"
     assert wc.ConversationPatchRequest.model_validate({"schema_version": 1, "title": "  Job "}).title == "Job"
