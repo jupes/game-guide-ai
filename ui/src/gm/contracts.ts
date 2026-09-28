@@ -2320,20 +2320,14 @@ export type TableSnapshot = z.infer<typeof TableSnapshotSchema>
 export const CONVERSATION_PAGE_MAX_ITEMS = 100
 export const CONVERSATION_TITLE_MAX_CHARS = 200
 
-/** The code points a title may not hold, by code point so that none sits in this
- * file (ruling A2-9): the C0 and C1 controls, and the bidirectional embeddings,
- * overrides and isolates. The server refuses exactly this set. */
-export function isRefusedInATitle(code: number): boolean {
-  return (
-    code <= 0x1f ||
-    (code >= 0x7f && code <= 0x9f) ||
-    (code >= 0x202a && code <= 0x202e) ||
-    (code >= 0x2066 && code <= 0x2069)
-  )
-}
-
 /** A title as a request sends it: 1 to 200 characters once trimmed as the server
- * trims, with no refused code point left inside. The server stores it trimmed. */
+ * trims, held to one line, with no code point in `REFUSED_TEXT_CODE_POINTS` left
+ * inside either — the one shared stored-text rule (lead ruling of 2026-09-21),
+ * not a title-only list. Ruling A2-9 originally gave titles their own, narrower
+ * `isRefusedInATitle`; agent-forge-harness-644 retired it, since a conversation
+ * title is stored text like any other `isPlainText` refuses, and a second
+ * opinion here could only drift from the first. The composition mirrors
+ * `plainOneLine` (a cue's title and the like). The server stores it trimmed. */
 const ConversationTitleRequestSchema = z
   .string()
   .refine(isWellFormedText, WELL_FORMED)
@@ -2344,9 +2338,10 @@ const ConversationTitleRequestSchema = z
     },
     { message: `a title is 1 to ${CONVERSATION_TITLE_MAX_CHARS} characters after trimming` },
   )
-  .refine((value) => ![...trimWire(value)].some((character) => isRefusedInATitle(character.codePointAt(0) ?? 0)), {
-    message: 'a title holds no control or bidirectional-formatting characters',
+  .refine((value) => !LINE_BREAKS.some((mark) => trimWire(value).includes(mark)), {
+    message: 'must be a single line',
   })
+  .superRefine(refuseTrimmedPlainText)
 
 /** One conversation's metadata. Every key is present; what a row never recorded
  * is `null`. Read it through `parseConversation`. */

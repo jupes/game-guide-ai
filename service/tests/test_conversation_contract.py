@@ -3,8 +3,10 @@
 The shared fixtures under `contracts/workbench/v1/Conversation*.json` are the
 specification and `test_workbench_contracts.py` runs them; this file holds what
 a fixture cannot say: that the family's numbers are the store's, that the title
-rule refuses exactly the code points ruling A2-9 spells out, that a refusal
-names the field and never the value, and that a patch is emitted as sent.
+rule refuses exactly REFUSED_TEXT_CODE_POINTS — the one shared stored-text rule
+(lead ruling 2026-09-21, agent-forge-harness-644; originally ruling A2-9's own,
+narrower REFUSED_IN_A_TITLE, retired here) — that a refusal names the field and
+never the value, and that a patch is emitted as sent.
 """
 
 from __future__ import annotations
@@ -25,29 +27,39 @@ def test_the_familys_bounds_are_the_stores() -> None:
     assert wc.CONVERSATION_TITLE_MAX_CHARS == store.TITLE_MAX_CHARS
 
 
-def test_the_refused_set_is_exactly_the_four_ranges_the_ruling_spells_out() -> None:
-    spelled = (
-        set(range(0x0000, 0x001F + 1))
-        | set(range(0x007F, 0x009F + 1))
-        | set(range(0x202A, 0x202E + 1))
-        | set(range(0x2066, 0x2069 + 1))
-    )
-    assert wc.REFUSED_IN_A_TITLE == spelled
+def test_the_title_rule_keeps_no_second_opinion() -> None:
+    """agent-forge-harness-644: a title used to refuse its own hand-picked
+    REFUSED_IN_A_TITLE list — narrower than the lead ruling of 2026-09-21's
+    check_plain_text/REFUSED_TEXT_CODE_POINTS, which every other piece of
+    stored text refuses by. There must not be three opinions (1kg.2.4,
+    1kg.5.7.2, and this one): the list is retired, not merely unused."""
+    assert not hasattr(wc, "REFUSED_IN_A_TITLE")
 
 
 def _create(title: Any) -> wc.ConversationCreateRequest:
     return wc.ConversationCreateRequest.model_validate({"schema_version": 1, "started_mode": "sage", "title": title})
 
 
-@pytest.mark.parametrize("code", sorted(wc.REFUSED_IN_A_TITLE))
+@pytest.mark.parametrize("code", sorted(wc.REFUSED_TEXT_CODE_POINTS))
 def test_every_refused_code_point_is_refused_inside_a_title(code: int) -> None:
     with pytest.raises(ValidationError):
         _create(f"Harbour{chr(code)}job")
 
 
-@pytest.mark.parametrize("code", [0x20, 0x7E, 0xA0, 0x2029, 0x202F, 0x2065, 0x206A, 0x1F3B2])
+@pytest.mark.parametrize("code", [0x09, 0x20, 0x7E, 0xA0, 0x202F, 0x2065, 0x206A, 0x200C, 0x200D, 0xFE0F, 0x1F3B2])
 def test_the_code_points_either_side_of_each_range_are_kept(code: int) -> None:
     assert _create(f"Harbour{chr(code)}job").title == f"Harbour{chr(code)}job"
+
+
+@pytest.mark.parametrize("code", [0x0A, 0x0D, 0x2028, 0x2029])
+def test_a_title_stays_one_line_a_dimension_check_plain_text_does_not_cover(code: int) -> None:
+    """check_plain_text carves tab/LF/CR out of its refused set on purpose — a
+    multi-line prose field needs them (see its own docstring) — so a title
+    needs its OWN one-line rule alongside it, the same composition
+    `plainOneLine` uses in contracts.ts for a cue's title and the like. This is
+    not REFUSED_TEXT_CODE_POINTS' job and must not grow into a second list."""
+    with pytest.raises(ValidationError):
+        _create(f"Harbour{chr(code)}job")
 
 
 def test_a_title_is_trimmed_as_the_client_trims_and_stored_trimmed() -> None:
