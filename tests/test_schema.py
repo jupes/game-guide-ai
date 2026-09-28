@@ -481,3 +481,27 @@ def test_claim_conversation_strategy_without_an_ownership_row_raises(db):
             f"never-owned-{uuid.uuid4().hex[:8]}", strategy="auto",
             manual_alias=None, catalog_revision="r1",
         )
+
+
+@needs_db
+def test_conversation_binding_reads_back_the_winning_revision_from_a_real_database(db):
+    """a6o: /chat honours a pre-D-9 alias only on a binding made under the
+    pre-D-9 catalog revision, so the revision must read back as written, and
+    as the first writer's, not a later loser's."""
+    from service.history import PostgresMessageStore
+
+    current = db.execute("SELECT current_database()").fetchone()[0]
+    real = PostgresMessageStore(dsn=_target_dsn(DSN, current))
+    conv = f"binding-{uuid.uuid4().hex[:8]}"
+    user_id = db.execute(
+        "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id",
+        (f"binding-{uuid.uuid4().hex[:8]}@example.com",),
+    ).fetchone()[0]
+    db.execute("INSERT INTO chat.conversations (conversation_id, user_id) VALUES (%s, %s)",
+               (conv, user_id))
+
+    assert real.conversation_binding(conv) is None, "an owned but unbound conversation"
+    assert real.conversation_binding(f"missing-{uuid.uuid4().hex[:8]}") is None
+    real.claim_conversation_strategy(conv, strategy="manual", manual_alias="m", catalog_revision="r1")
+    real.claim_conversation_strategy(conv, strategy="auto", manual_alias=None, catalog_revision="r2")
+    assert real.conversation_binding(conv) == ("manual", "m", "r1")

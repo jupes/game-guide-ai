@@ -72,6 +72,12 @@ class MessageStore(Protocol):
     def conversation_strategy(self, conversation_id: str) -> tuple[str, str | None] | None:
         ...  # pragma: no cover - structural type
 
+    def conversation_binding(
+        self, conversation_id: str,
+    ) -> tuple[str, str | None, str | None] | None:
+        """`conversation_strategy` plus the catalog revision it was bound under."""
+        ...  # pragma: no cover - structural type
+
     def has_content(self, conversation_id: str) -> bool:
         ...  # pragma: no cover - structural type
 
@@ -98,6 +104,7 @@ class InMemoryMessageStore:
     _attachments: list[StoredAttachment] = field(default_factory=list)
     _owners: dict[str, int] = field(default_factory=dict)
     _strategies: dict[str, tuple[str, str | None]] = field(default_factory=dict)
+    _revisions: dict[str, str] = field(default_factory=dict)
 
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
@@ -136,13 +143,17 @@ class InMemoryMessageStore:
         self, conversation_id: str, *, strategy: str, manual_alias: str | None,
         catalog_revision: str,
     ) -> tuple[str, str | None]:
-        # catalog_revision isn't read back today (nothing yet compares across
-        # revisions) but is accepted + stored to match the real store's shape.
-        del catalog_revision
+        self._revisions.setdefault(conversation_id, catalog_revision)
         return self._strategies.setdefault(conversation_id, (strategy, manual_alias))
 
     def conversation_strategy(self, conversation_id: str) -> tuple[str, str | None] | None:
         return self._strategies.get(conversation_id)
+
+    def conversation_binding(
+        self, conversation_id: str,
+    ) -> tuple[str, str | None, str | None] | None:
+        bound = self._strategies.get(conversation_id)
+        return None if bound is None else (*bound, self._revisions.get(conversation_id))
 
     def owner_of(self, conversation_id: str) -> int | None:
         return self._owners.get(conversation_id)
@@ -343,6 +354,19 @@ class PostgresMessageStore:
         if row is None or row[0] is None:
             return None
         return (row[0], row[1])
+
+    def conversation_binding(
+        self, conversation_id: str,
+    ) -> tuple[str, str | None, str | None] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT selection_strategy, manual_alias, catalog_revision "
+                "FROM chat.conversations WHERE conversation_id = %s",
+                (conversation_id,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return (row[0], row[1], row[2])
 
     def owner_of(self, conversation_id: str) -> int | None:
         with self._connect() as conn:

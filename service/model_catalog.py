@@ -76,9 +76,12 @@ DEFAULT_ALIAS = "gpt-4o-mini"
 
 # Bumped whenever CATALOG's alias set or policy meaningfully changes; recorded
 # on each conversation's strategy binding (b8o.2, D6) so a future change can
-# tell which catalog shape a given conversation was bound under. Static for
-# now — becomes meaningful once the catalog actually changes after launch.
-CATALOG_REVISION = "v1"
+# tell which catalog shape a given conversation was bound under.
+# v2: D-9 (au3), a client names a model by its public id. A binding under
+# PRE_D9_CATALOG_REVISION was made by a client naming the alias itself, so that
+# conversation may keep naming it (a6o; see /chat).
+CATALOG_REVISION = "v2"
+PRE_D9_CATALOG_REVISION = "v1"
 
 
 def enabled_profiles() -> list[ModelProfile]:

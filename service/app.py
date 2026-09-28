@@ -61,6 +61,8 @@ from .model_catalog import (
     AUTO_PUBLIC_ENTRY,
     CATALOG_REVISION,
     DEFAULT_ALIAS,
+    PRE_D9_CATALOG_REVISION,
+    ModelProfile,
     enabled_profiles,
     get_profile,
     get_profile_by_public_id,
@@ -979,6 +981,21 @@ def _enforce_daily_cap(store: MessageStore | None) -> None:
     )
 
 
+def _pre_d9_binding(
+    store: MessageStore | None, conversation_id: str, alias: str,
+) -> ModelProfile | None:
+    """The enabled profile this conversation was bound to by naming `alias`
+    itself, before D-9 (a6o), or None. Such a client keeps sending the alias it
+    bound by; honouring it tells the caller nothing they did not tell the
+    server. A binding made since D-9 never counts, or a caller could bind one
+    through a public id and then test aliases against it."""
+    if store is None:
+        return None
+    if store.conversation_binding(conversation_id) != ("manual", alias, PRE_D9_CATALOG_REVISION):
+        return None
+    return get_profile(alias)
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
@@ -1042,13 +1059,17 @@ def chat(
     # against; there's no stateless-single-turn path left to special-case.
     # Before the try for the same reason as ownership (409/422, not 500).
     # D-9 (au3): the client names a model by its PUBLIC id, never the alias; a
-    # real alias sent here is as unknown as any other string (no oracle).
+    # real alias sent here is as unknown as any other string (no oracle), save
+    # on a conversation bound by that alias before D-9 (a6o, _pre_d9_binding).
     requested = req.model_preference
     requested_profile = None if requested == "auto" else get_profile_by_public_id(requested)
     if requested != "auto" and requested_profile is None:
-        raise HTTPException(
-            status_code=422, detail=f"unknown or disabled model: {requested!r}",
-        )
+        requested_profile = _pre_d9_binding(store, conversation_id, requested)
+        if requested_profile is None:
+            raise HTTPException(
+                status_code=422, detail=f"unknown or disabled model: {requested!r}",
+            )
+        requested = public_model_id(requested_profile.alias)
     strategy: Literal["auto", "manual"] = "auto" if requested == "auto" else "manual"
     manual_alias = None if requested_profile is None else requested_profile.alias
     if store is not None:
