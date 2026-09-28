@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
+import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { VersionList } from './VersionList'
 import { HISTORY_PAGE_SIZE } from './canvasStatus'
 import type { DocumentVersion } from './contracts'
@@ -73,6 +74,9 @@ export const Restore: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement)
     await expect(canvas.queryByRole('button', { name: 'Restore v3' })).not.toBeInTheDocument()
+    // 1dw: the small ds/Button call site, not rendered by ds/'s own `Sizes`
+    // story.
+    await expectTouchTarget(canvas, 'Restore v1')
     await userEvent.click(canvas.getByRole('button', { name: 'Restore v1' }))
     await expect(canvas.queryByRole('dialog')).not.toBeInTheDocument()
     await expect(args.onRestore).toHaveBeenCalledWith(expect.objectContaining({ number: 1 }))
@@ -111,6 +115,9 @@ export const Failed: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('alert')).toHaveTextContent("Couldn't load history")
+    // 1dw: the small ds/Button call site, not rendered by ds/'s own `Sizes`
+    // story.
+    await expectTouchTarget(canvas, 'Retry')
     await userEvent.click(canvas.getByRole('button', { name: 'Retry' }))
     await expect(args.onRetry).toHaveBeenCalled()
   },

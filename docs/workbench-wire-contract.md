@@ -331,9 +331,17 @@ PostgreSQL's `text` and `jsonb` refuse U+0000, so without the rule a NUL would b
 a failure to store rather than an answer; a bidirectional override makes what a
 GM sees differ from what is stored. One helper per side is the rule —
 `check_plain_text` and `REFUSED_TEXT_CODE_POINTS` in `workbench_contracts.py`,
-`isPlainText`, `plainText` and `plainOneLine` in `contracts.ts` — and a version's
-summary, a brief, chat text, cue titles and aliases do not call it yet (bead
-`5mj`). A score of `{"str": null}` is refused for the same reason every kind has
+`isPlainText`, `plainText` and `plainOneLine` in `contracts.ts` — and since bead
+`5mj` every other stored text calls it too: a brief, an edit instruction and a
+search (each checked as stored, after the trim, so a mark the trim removes is
+never stored), alt text, a cue's title, a version's summary (on the wire and in
+`document_store.check_summary`), `/chat`'s prompt and a participant's alias
+(`check_stored_text`, which adds the wire's well-formedness check for a value no
+contract type has read). Unlike a document field, each of these answers a 422
+that names the field. An alias is stricter still: every other Unicode C-category
+character stays refused, only U+200C and U+200D are kept, and `alias_key` folds
+the default-ignorable code points and U+2800 out so that two aliases differing
+only by one collide (bead `ysj`). A score of `{"str": null}` is refused for the same reason every kind has
 one way to say empty: leaving the key out already says it.
 
 Every type has `name`, `qualifier` and `tags`. `name` is the title everywhere and
@@ -708,7 +716,12 @@ D-9).
   every route, with no deprecation. An id outside the *Identifiers* grammar
   cannot be carried: `GET` and `PATCH` answer the one `404`, and the index
   leaves such a row out rather than failing, logging only how many it left out.
-  The legacy routes still read it.
+  The legacy routes still read it. The index never lists at all a row whose id
+  could carry the page's cursor past the *Pagination* grammar's 512 characters:
+  it lists only an id of 1 to 64 printable ASCII characters (U+0020 to U+007E),
+  which every server-minted id and every UUID is. Only a hand-made `/chat`
+  request can mint any other id; such a row is left out uncounted, so a paging
+  walk is never cut short by one and always reaches every row behind it.
 
 **Titles.** A title a request sends is trimmed the way a brief is (see
 *Trimming*), is 1 to 200 code points after trimming, and is stored trimmed. It

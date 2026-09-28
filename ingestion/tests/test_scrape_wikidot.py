@@ -14,7 +14,6 @@ Run:
 
 from __future__ import annotations
 
-import os
 import uuid
 
 import pytest
@@ -29,9 +28,7 @@ from ingestion.scrape_wikidot import (
     fetch_page,
     parse_page,
 )
-
-DSN = os.environ.get("DATABASE_URL") or None
-needs_db = pytest.mark.skipif(DSN is None, reason="no DATABASE_URL (CI always sets it)")
+from tests._pg import corpus_database, needs_db
 
 SPELL_HTML = """
 <html><head><title>Fireball - DND 5th Edition</title></head>
@@ -312,7 +309,9 @@ _EMBEDDING = "[" + ",".join(["0"] * 1536) + "]"
 def test_dedup_report_counts_overlaps_without_filtering_anything(tmp_path):
     import psycopg
 
-    with psycopg.connect(DSN, autocommit=True) as conn:
+    # A database of its own holding the corpus schema: the one DATABASE_URL names
+    # has no dnd.chunks in CI, and dropping it afterwards is the cleanup.
+    with corpus_database("wikidot") as dsn, psycopg.connect(dsn, autocommit=True) as conn:
         suffix = uuid.uuid4().hex[:8]
         wiki_id, phb_id, unique_id = f"w-{suffix}", f"p-{suffix}", f"u-{suffix}"
         conn.execute(_INSERT_CHUNK, (wiki_id, "wikidot-5e", "https://x", "spell",
@@ -322,11 +321,7 @@ def test_dedup_report_counts_overlaps_without_filtering_anything(tmp_path):
         # A wikidot-only spell — must NOT show up as an overlap.
         conn.execute(_INSERT_CHUNK, (unique_id, "wikidot-5e", "https://x", "spell",
                                       f"Unique-Wiki-Spell-{suffix}", _EMBEDDING))
-        try:
-            report = dedup_report(DSN)
-        finally:
-            conn.execute("DELETE FROM dnd.chunks WHERE chunk_id = ANY(%s)",
-                          ([wiki_id, phb_id, unique_id],))
+        report = dedup_report(dsn)
 
     overlap_names = {o["entity_name"] for o in report["overlaps"]}
     assert f"Fireball-{suffix}" in overlap_names

@@ -252,19 +252,33 @@ describe('touch targets and focus (LAYOUT-9, §10.2)', () => {
 const REPLACEMENT_CHARACTER = String.fromCodePoint(0xfffd)
 const DEFERRED_MARKERS = ['TO' + 'DO', 'FIX' + 'ME', 'HA' + 'CK']
 
+/**
+ * The first disallowed control character in `text`, as a diagnostic string, or
+ * `null` when it holds none. A plain loop with no per-character `expect()`:
+ * scanning every character of every owned file is the point of this guard, but
+ * asserting on each of the ~155k characters they hold turned one test into
+ * ~155k assertions and blew CI's per-test timeout under any slowdown. The scan
+ * stays exactly as thorough; only the assertion count changes, from one per
+ * character to one per file.
+ */
+export function firstControlCharacter(text: string): string | null {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.codePointAt(index) ?? 0
+    const allowed = code === 0x09 || code === 0x0a || code === 0x0d
+    const control = code <= 0x1f || code === 0x7f || (code >= 0x80 && code <= 0x9f)
+    if (control && !allowed) {
+      return `control character U+${code.toString(16).padStart(4, '0')} at offset ${index}`
+    }
+  }
+  return null
+}
+
 describe('source hygiene', () => {
   it('holds no control character in any file this bead adds', () => {
     for (const file of OWNED) {
       const text = read(file)
-      for (let index = 0; index < text.length; index += 1) {
-        const code = text.codePointAt(index) ?? 0
-        const allowed = code === 0x09 || code === 0x0a || code === 0x0d
-        const control = code <= 0x1f || code === 0x7f || (code >= 0x80 && code <= 0x9f)
-        expect(
-          control && !allowed,
-          `${file} holds control character U+${code.toString(16).padStart(4, '0')} at offset ${index}`,
-        ).toBe(false)
-      }
+      const found = firstControlCharacter(text)
+      expect(found, `${file} holds ${found ?? 'a disallowed control character'}`).toBeNull()
       expect(text, `${file} decoded with a replacement character — it is not clean UTF-8`).not.toContain(
         REPLACEMENT_CHARACTER,
       )
@@ -278,5 +292,31 @@ describe('source hygiene', () => {
       expect(text, `${file} still logs`).not.toMatch(/console\.(log|debug|warn|error)\s*\(/)
       expect(text, `${file} still carries deferred work`).not.toMatch(deferred)
     }
+  })
+
+  // The file loop above moved from one expect() per character to one per file
+  // (agent-forge-harness-ogi): these prove the underlying scan still catches
+  // every offset and byte the old per-character expect() did, directly.
+  describe('firstControlCharacter', () => {
+    it('clears text with none of the disallowed codes', () => {
+      expect(firstControlCharacter('clean text, no control bytes here')).toBeNull()
+    })
+
+    it('still allows the whitespace controls the guard exempts', () => {
+      expect(firstControlCharacter('line one\nline two\tindented\r\n')).toBeNull()
+    })
+
+    it('names the offset and codepoint of a NUL byte', () => {
+      expect(firstControlCharacter('abc\u0000def')).toBe('control character U+0000 at offset 3')
+    })
+
+    it('catches a C1 control byte, not only the C0 range', () => {
+      expect(firstControlCharacter('abc\u0090def')).toBe('control character U+0090 at offset 3')
+    })
+
+    it('catches a control byte at the very last offset', () => {
+      const text = `${'x'.repeat(200)}\u0007`
+      expect(firstControlCharacter(text)).toBe(`control character U+0007 at offset ${text.length - 1}`)
+    })
   })
 })

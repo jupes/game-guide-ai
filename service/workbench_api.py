@@ -3,9 +3,9 @@ The posture every Workbench GM route inherits (agent-forge-harness-oe6).
 
 One 401 body (SEC-2), one non-enumerating 404 from one code path (SEC-3), the
 origin check (SEC-7) and one application-wide validation handler (SEC-23),
-built once so that no route bead has to build its own. The first routes on it
-are the four conversation routes (`service/conversations_api.py`); the
-timeline route is still legacy-shaped until `agent-forge-harness-oqx` moves it.
+built once so that no route bead has to build its own. The routes on it are the
+four conversation routes (`service/conversations_api.py`) and the conversation
+timeline (`service/timeline_api.py`, moved here by `agent-forge-harness-oqx`).
 
 What makes a route a Workbench route
 ------------------------------------
@@ -325,11 +325,17 @@ async def handle_validation_error(request: Request, exc: Exception) -> Response:
     was sent, and logs `redacted_errors` with the method and route template —
     never the exception's text, its raw errors or the URL (SEC-20, SEC-21).
     Every other route keeps FastAPI's default answer, `input` echo included (a
-    recorded residual).
+    recorded residual) — unless that answer cannot be encoded: UTF-8 cannot
+    carry a lone surrogate, so repeating one was a 500. That failure alone
+    answers `redacted_errors` instead, which names the field and never the
+    value (bead 5mj); every default that could be sent is sent byte for byte.
     """
     assert isinstance(exc, RequestValidationError)
     if not is_workbench_route(request):
-        return await request_validation_exception_handler(request, exc)
+        try:
+            return await request_validation_exception_handler(request, exc)
+        except UnicodeEncodeError:
+            return JSONResponse(status_code=422, content={"detail": redacted_errors(exc.errors())})
     errors = exc.errors()
     log.info("workbench request refused by validation: %s %s %s",
              request.method, _route_template(request), redacted_errors(errors))

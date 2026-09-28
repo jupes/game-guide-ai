@@ -585,12 +585,16 @@ renders again after a roll-forward, and one bad row never takes a page down.
 **404, and never a claim.** The route resolves ownership through `owner_of` in
 one read-only statement inside the same transaction as the read, and a
 conversation that is missing, has no ownership row, or belongs to another user
-answers the **identical 404** from one code path (threat model §8.1, SEC-2,
-SEC-3). That is deliberately unlike `GET …/messages`, which answers 403 and
-claims an unowned conversation that has content — grandfathered, and left as it
-is. The route requires the `dm` role (SEC-2), validates `limit` and `cursor`
-itself so FastAPI's default 422 can never echo the request back (SEC-23), and
-fails closed with `backend_unavailable` when the store or the database is away.
+answers the **identical 404** — the Workbench scaffolding's one body, from
+`not_found()` — from one code path (threat model §8.1, SEC-2, SEC-3). That is
+deliberately unlike `GET …/messages`, which answers 403 and claims an unowned
+conversation that has content — grandfathered, and left as it is. The route is
+a Workbench route (`service/timeline_api.py`, see below): the router answers
+every authentication failure with the one 401 body and requires the `dm` role
+(SEC-2) before the handler reads anything; `limit` and `cursor` are validated
+by the route and refused through the one validation handler, so FastAPI's
+default 422 can never echo the request back (SEC-23); and it fails closed with
+`backend_unavailable` when the store or the database is away.
 
 **The typed entries.** `chat.timeline_entries` holds one row per exchange that
 `POST /chat` answered once the durable timeline shipped. The row is the entry's
@@ -632,10 +636,10 @@ or reorders an entry.
 ## Workbench routes: the posture every new route inherits
 
 `service/workbench_api.py` (agent-forge-harness-oe6) is the seam every Workbench
-GM route attaches to. It holds no route of its own. The first routes on it are
-the four conversation routes (`service/conversations_api.py`); the conversation
-timeline is still a legacy-shaped `@app.get` with its own hand-validation,
-until the follow-up bead (`agent-forge-harness-oqx`) moves it onto the router.
+GM route attaches to. It holds no route of its own. The routes on it are the
+four conversation routes (`service/conversations_api.py`) and the conversation
+timeline (`service/timeline_api.py`), which `agent-forge-harness-oqx` moved
+off its hand-built `@app.get`.
 
 **What makes a route a Workbench route.** It is declared on a router made by
 `workbench_router(...)`, so its route object is a `WorkbenchRoute`. Membership

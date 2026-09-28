@@ -28,11 +28,12 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.exceptions import RequestValidationError
 
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from . import conversations_api, gcp_logging, timeline, usage_capture
+from . import conversations_api, gcp_logging, timeline_api, usage_capture
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .db import Database, PoolSettings
@@ -98,7 +99,7 @@ from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
 from .workbench_api import gm_session, install_workbench
-from .workbench_contracts import CONTRACT_VERSION, ErrorBody, ErrorCode, TimelinePage
+from .workbench_contracts import CHAT_TEXT_MAX_CHARS, CONTRACT_VERSION, check_plain_text
 
 log = logging.getLogger(__name__)
 
@@ -902,6 +903,23 @@ def get_models() -> dict[str, object]:
 CHAT_THROTTLE_HEADER = "X-Chat-Throttled"
 
 
+def _refuse_unstorable_prompt(prompt: str) -> None:
+    """Bead 5mj: the prompt is stored text, so it takes the one rule
+    (`check_plain_text`). It is persisted to PostgreSQL `text` and `jsonb`, which
+    refuse U+0000, so an unrefused NUL was a provider call paid for and then a
+    write that failed; a bidi override is stored text that reads differently
+    from how it is stored. Raised as a validation error that carries no `input`,
+    so the application's one handler (`workbench_api.handle_validation_error`)
+    answers FastAPI's default 422 list with nothing of the prompt in it: the
+    field, never the value."""
+    try:
+        check_plain_text(prompt)
+    except ValueError as refused:
+        raise RequestValidationError(
+            [{"type": "value_error", "loc": ("body", "prompt"), "msg": f"Value error, {refused}"}]
+        ) from None
+
+
 def _throttle_chat(request: Request, user_id: int) -> None:
     """Spend one chat request from this tester's budget, or 429."""
     try:
@@ -972,6 +990,9 @@ def chat(
     timeline: TimelineStore | None = Depends(get_timeline_store),
     tdb: Database | None = Depends(get_timeline_database),
 ) -> ChatResponse:
+    # Stored-text rule (5mj): a prompt that cannot be stored is refused before
+    # anything is spent on it — the budget below included.
+    _refuse_unstorable_prompt(req.prompt)
     # Cost guard (x5bz.3): spend one of this tester's chat budget before any
     # work happens. Before the try for the same reason as the gates below — a
     # 429 raised inside it would be caught by the `except Exception` and
@@ -982,6 +1003,20 @@ def chat(
     # before this runs. No role exemption — the account most likely to run up a
     # bill by accident is the one being used to test.
     _enforce_daily_cap(store)
+    # Prompt length gate (agent-forge-harness-764): reuse the Workbench's own
+    # request-side ceiling rather than a `Field(max_length=...)` on
+    # ChatRequest.prompt, whose rejection would go through FastAPI's default
+    # RequestValidationError handler and echo the whole oversized prompt back
+    # in the 422 body (R-12, docs/adr/gm-workbench-threat-model.md). A plain
+    # HTTPException here is handled ordinarily -- no echo -- exactly like the
+    # model_preference 422 below. `detail` stays a static string; the prompt
+    # itself must never appear in it. Raised before the try so it isn't masked
+    # as a 500, same as the gates around it.
+    if len(req.prompt) > CHAT_TEXT_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"prompt exceeds the {CHAT_TEXT_MAX_CHARS}-character limit",
+        )
     # Server-side role gate: the GM channel is DM-only, enforced from the session
     # role (not the UI toggle). Raised before the try so it isn't masked as a 500.
     if req.mode.value == "gm" and session.role != "dm":
@@ -1178,86 +1213,6 @@ def conversation_messages(
     return MessagesResponse(conversation_id=conversation_id, messages=messages)
 
 
-def _timeline_refusal(status: int, body: ErrorBody) -> HTTPException:
-    """A Workbench refusal as FastAPI raises one: `detail` holds the object, so
-    the wire body is exactly `ErrorBody`. `exclude_none` keeps the optional keys
-    out, as the contract's own examples do."""
-    return HTTPException(status_code=status, detail=body.detail.model_dump(mode="json", exclude_none=True))
-
-
-@app.get("/conversations/{conversation_id}/timeline", response_model=TimelinePage)
-def conversation_timeline(
-    conversation_id: str,
-    # Declared `str | None` so FastAPI never validates them: its default 422
-    # body repeats the request's own input (SEC-23, R-12). This route validates
-    # both itself and answers with `validation_error_body`.
-    limit: str | None = None,
-    cursor: str | None = None,
-    store: TimelineStore | None = Depends(get_timeline_store),
-    db: Database | None = Depends(get_timeline_database),
-    # Authentication only. `require_session` answers three 401 bodies today;
-    # SEC-2's single body belongs to `agent-forge-harness-oe6`, which will also
-    # move this route onto its scaffolding (R-4, R-5).
-    session: SessionData = Depends(require_session),
-) -> TimelinePage:
-    """The conversation as typed entries, newest first (1kg.4.2).
-
-    Ownership is resolved through `owner_of` in one read-only statement and a
-    conversation that is missing, unowned or another user's answers the same
-    404 from one code path (§8.1, SEC-2, SEC-3). This route **never claims**;
-    `GET …/messages` still does, and is deliberately unchanged.
-    """
-    try:
-        size, page_cursor = timeline.parse_page_query(limit, cursor)
-    except timeline.ParameterRefused as refused:
-        raise _timeline_refusal(422, timeline.parameter_error_body(refused.field)) from refused
-    if session.role != "dm":
-        raise _timeline_refusal(
-            403, timeline.error_body(ErrorCode.FORBIDDEN, timeline.FORBIDDEN_MESSAGE, retryable=False)
-        )
-    unavailable = _timeline_refusal(
-        503, timeline.error_body(ErrorCode.BACKEND_UNAVAILABLE, timeline.UNAVAILABLE_MESSAGE, retryable=True)
-    )
-    if store is None or db is None:
-        raise unavailable
-    try:
-        # The path id's shape, before any statement runs. An id outside
-        # `OpaqueId` is one the contract's `TimelinePage` cannot carry, and
-        # reaching the page build with one used to raise a `ValidationError`
-        # inside the transaction — neither `ConversationNotFound` nor a
-        # database error — so an owner got a bare 500 from their own
-        # conversation. It is `ConversationNotFound` here, which is to say the
-        # identical 404 a missing or a foreign conversation gets, from this
-        # handler's one refusal path: malformed and missing are
-        # indistinguishable (SEC-3), and no new refusal shape is added.
-        #
-        # Checked *after* the 503 gate above for the same reason: with the
-        # store absent both malformed and missing answer 503, with it present
-        # both answer 404, so the two never diverge in any reachable state.
-        #
-        # Acceptable for real users: the shipped UI mints UUIDs, which fit the
-        # shape. `/chat` and `GET …/messages` are deliberately untouched, so a
-        # legacy conversation with an id outside it stays readable there.
-        timeline.require_readable_id(conversation_id)
-        # One transaction covers the ownership check and the read, so the whole
-        # request takes one connection.
-        with db.transaction() as unit:
-            timeline.authorize(store, unit, conversation_id, user_id=session.user_id)
-            return timeline.read_page(store, unit, conversation_id, limit=size, cursor=page_cursor)
-    except timeline.ConversationNotFound as missing:
-        raise _timeline_refusal(
-            404, timeline.error_body(ErrorCode.NOT_FOUND, timeline.NOT_FOUND_MESSAGE, retryable=False)
-        ) from missing
-    except _DB_ERRORS as exc:
-        # Content-free: the exception TYPE, never its message, which can carry
-        # a statement and therefore a prompt (SEC-20) — and never the path
-        # parameter either, which is caller-controlled and whose `%0A` would
-        # forge a log line. The fact, not the value: the route and the status
-        # are already in the access log, so nothing diagnostic is lost.
-        log.warning("timeline read failed: %s", type(exc).__name__)
-        raise unavailable from exc
-
-
 def _to_attachment(sa: StoredAttachment) -> Attachment:
     """Map a stored attachment to UI-facing metadata (extracted text omitted)."""
     return Attachment(
@@ -1450,6 +1405,7 @@ def me(
 #: The GM gate every Workbench router is built with (agent-forge-harness-oe6).
 WORKBENCH_GM = gm_session(require_session)
 app.include_router(conversations_api.build_router(WORKBENCH_GM, get_timeline_database))
+app.include_router(timeline_api.build_router(WORKBENCH_GM, get_timeline_store, get_timeline_database))
 # Mount the pre-built UI last, as an ALLOWLIST fallback, not a catch-all
 # (agent-forge-harness-y40) -- see service/spa_fallback.py for what each path
 # answers and why the order matters. Only active when `cd ui && bun run build`

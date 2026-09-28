@@ -396,10 +396,12 @@ function refusedTextClass(value: string): string | null {
  * never the value (X-7); the issue's path names the field.
  *
  * The one shared rule. It covers the document field kinds and the reveal family's
- * projection text today; bead `5mj` adopts it for the other stored text and bead
- * `ysj`'s participant-alias rule calls it. Folding characters out of a comparison
- * key is `ysj`'s, not this function's — this one only accepts or refuses. A lone
- * surrogate stays `isWellFormedText`'s to refuse.
+ * projection text (1kg.5.7.2) and, since bead `5mj`, every other stored text a
+ * client sends: a brief, an edit instruction, a search, alt text, a cue's title
+ * and a version's summary. The server applies the same rule to `/chat`'s prompt
+ * and to a participant's alias (bead `ysj`). Folding characters out of a
+ * comparison key is the server's `alias_key`, not this function's — this one only
+ * accepts or refuses. A lone surrogate stays `isWellFormedText`'s to refuse.
  */
 export function isPlainText(value: string): boolean {
   return refusedTextClass(value) === null
@@ -411,16 +413,23 @@ function refusePlainText(value: string, ctx: z.RefinementCtx): void {
 }
 
 /** `text(min, max)` with `isPlainText`: a document field's own text. `text()`
- * itself is shared with chat, a brief, alt text, cue titles, aliases and the
- * library, which this rule does not reach yet (bead `5mj`), so it is wrapped,
- * never changed. */
+ * itself is shared with responses that read back what was never submitted — an
+ * assistant's answer, a label — so it is wrapped, never changed. */
 export function plainText(min: number, max: number) {
   return text(min, max).superRefine(refusePlainText)
 }
 
-/** `oneLine(min, max)` with `isPlainText`. */
+/** `oneLine(min, max)` with `isPlainText`: alt text, a cue's title and a
+ * version's summary as well as a document's one-line fields (bead `5mj`). */
 export function plainOneLine(min: number, max: number) {
   return oneLine(min, max).superRefine(refusePlainText)
+}
+
+/** `isPlainText` for a value stored TRIMMED — a brief, an edit instruction and a
+ * search (bead `5mj`): the rule reads what is stored, so a mark `trimWire` removes
+ * is never stored and one inside is refused, exactly as the server checks it. */
+function refuseTrimmedPlainText(value: string, ctx: z.RefinementCtx): void {
+  refusePlainText(trimWire(value), ctx)
 }
 
 const ToolIdSchema = z.enum(TOOL_IDS)
@@ -467,7 +476,7 @@ export const ToolInvocationRequestSchema = refusingProtoKeys(
       schema_version: z.literal(CONTRACT_VERSION),
       invocation_id: InvocationIdSchema,
       tool_id: ToolIdSchema,
-      brief: z.string().refine(isWellFormedText, WELL_FORMED),
+      brief: z.string().refine(isWellFormedText, WELL_FORMED).superRefine(refuseTrimmedPlainText),
       campaign_id: OpaqueIdSchema,
       conversation_id: OpaqueIdSchema,
       source_entry_id: OpaqueIdSchema.nullish(),
@@ -792,7 +801,7 @@ export const DocumentVersionSchema = z
   .object({
     number: VersionNumberSchema,
     author: z.enum(AUTHORS),
-    summary: oneLine(0, TEXT_FIELD_MAX_CHARS),
+    summary: plainOneLine(0, TEXT_FIELD_MAX_CHARS),
     created_at: TimestampSchema,
     /** CANVAS-34: only a sealed version may be pinned by a reveal or exported. */
     sealed: z.boolean(),
@@ -932,6 +941,7 @@ const instructionText = z
     },
     { message: `an instruction is 1 to ${BRIEF_MAX_CHARS} characters` },
   )
+  .superRefine(refuseTrimmedPlainText)
 const textInstructionShape = { kind: z.literal('text'), text: instructionText }
 const actionInstructionShape = { kind: z.literal('action'), action: z.enum(EDIT_ACTIONS) }
 
@@ -1036,7 +1046,8 @@ export const LibraryQuerySchema = refusingProtoKeys(
             return length === 0 || (length >= SEARCH_MIN_CHARS && length <= SEARCH_MAX_CHARS)
           },
           { message: `a search is ${SEARCH_MIN_CHARS} to ${SEARCH_MAX_CHARS} characters` },
-        ),
+        )
+        .superRefine(refuseTrimmedPlainText),
       sort: z.enum(LIBRARY_SORTS),
       archived: z.boolean(),
       /** Only in Documents, the one category that holds more than one type (LIB-22). */
@@ -1268,10 +1279,10 @@ export const GM_EVENT_KINDS = ['tool_lane', 'edit_lane', 'session', 'audio', 'sl
 export const TABLE_EVENT_KINDS = ['session', 'inactive', 'audio', 'slot', 'snapshot', 'ready', 'reconnect'] as const
 
 const MediaTypeSchema = z.string().regex(/^(image|audio)\/[a-z0-9.+-]{1,32}$/)
-const AltTextSchema = oneLine(1, ALT_MAX_CHARS)
+const AltTextSchema = plainOneLine(1, ALT_MAX_CHARS)
 const PixelsSchema = z.number().int().min(1).max(IMAGE_MAX_SIDE)
 const DurationMsSchema = z.number().int().min(1).max(AMBIENCE_MAX_MS)
-const CueTitleSchema = oneLine(1, CUE_TITLE_MAX_CHARS)
+const CueTitleSchema = plainOneLine(1, CUE_TITLE_MAX_CHARS)
 const mediaTypeFits = (kind: AssetKind, mediaType: string) => MEDIA_TYPES[kind].includes(mediaType)
 /** An image needs alt text; an audio asset carries no text at all — its title is the cue's (AUDIO-29). */
 const altFits = (kind: AssetKind, alt: string | null | undefined) => (kind === 'image') === (alt != null)
@@ -1409,6 +1420,7 @@ const searchTextSchema = z
     },
     { message: `a search is ${SEARCH_MIN_CHARS} to ${SEARCH_MAX_CHARS} characters` },
   )
+  .superRefine(refuseTrimmedPlainText)
 
 /** The Cues category of the library (LIB-5, LIB-26), a request body like LibraryQuery. */
 export const CueListQuerySchema = refusingProtoKeys(
