@@ -181,10 +181,6 @@ class JobQueue(Protocol):
 
 # ── Postgres ─────────────────────────────────────────────────────────────────
 
-#: MATERIALIZED, not `WHERE id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)`: the
-#: planner may run that subquery once per outer row, and each rerun skips the rows
-#: this statement has already locked, so the LIMIT window slides and one claim
-#: leases the whole backlog.
 def _bound(conn: object) -> None:
     """The first statement of every transaction this queue opens.
 
@@ -202,6 +198,10 @@ def _bound(conn: object) -> None:
     )
 
 
+#: MATERIALIZED, not `WHERE id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)`: the
+#: planner may run that subquery once per outer row, and each rerun skips the rows
+#: this statement has already locked, so the LIMIT window slides and one claim
+#: leases the whole backlog.
 _CLAIM = """
 WITH due AS MATERIALIZED (
   SELECT id FROM app.jobs
