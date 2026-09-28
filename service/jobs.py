@@ -200,6 +200,8 @@ def _bound(conn: object) -> None:
         "set_config('transaction_timeout', %s, true)",
         (LOCK_TIMEOUT, STATEMENT_TIMEOUT, TRANSACTION_TIMEOUT),
     )
+    # DELIBERATELY BROKEN (red proof, reverted by the next commit): session-wide.
+    conn.execute("SELECT set_config('statement_timeout', %s, false)", (STATEMENT_TIMEOUT,))  # type: ignore[attr-defined]  # justification: as above
 
 
 _CLAIM = """
