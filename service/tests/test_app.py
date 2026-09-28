@@ -464,6 +464,30 @@ def test_chat_prompt_over_limit_does_not_echo_prompt():
         app.dependency_overrides.clear()
 
 
+def test_chat_prompt_bound_answers_before_the_model_check_with_its_own_422():
+    """764 x au3 (D-9, PR #119): /chat now raises two different 422s. An
+    over-limit prompt that ALSO names an unknown model gets the bound's static
+    body -- never the model check's, and never the prompt -- because the bound
+    runs first. The control shows the same model on a within-limit prompt
+    still gets the model check's own 422, word for word."""
+    c = _client(_GROUNDED)
+    try:
+        canary = "ECHO-CANARY-764-AU3-"
+        oversized = canary + "z" * (CHAT_TEXT_MAX_CHARS + 1 - len(canary))
+        r = c.post("/chat", json={"prompt": oversized, "model_preference": "not-a-real-model"})
+        assert r.status_code == 422
+        assert r.json() == {
+            "detail": f"prompt exceeds the {CHAT_TEXT_MAX_CHARS}-character limit",
+        }
+        assert canary not in r.text
+
+        control = c.post("/chat", json={"prompt": "hi", "model_preference": "not-a-real-model"})
+        assert control.status_code == 422
+        assert control.json() == {"detail": "unknown or disabled model: 'not-a-real-model'"}
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_chat_prompt_at_limit_is_not_rejected():
     """A prompt of exactly CHAT_TEXT_MAX_CHARS chars is unaffected by the gate."""
     c = _client(_GROUNDED)
