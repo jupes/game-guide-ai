@@ -325,11 +325,17 @@ async def handle_validation_error(request: Request, exc: Exception) -> Response:
     was sent, and logs `redacted_errors` with the method and route template —
     never the exception's text, its raw errors or the URL (SEC-20, SEC-21).
     Every other route keeps FastAPI's default answer, `input` echo included (a
-    recorded residual).
+    recorded residual) — unless that answer cannot be encoded: UTF-8 cannot
+    carry a lone surrogate, so repeating one was a 500. That failure alone
+    answers `redacted_errors` instead, which names the field and never the
+    value (bead 5mj); every default that could be sent is sent byte for byte.
     """
     assert isinstance(exc, RequestValidationError)
     if not is_workbench_route(request):
-        return await request_validation_exception_handler(request, exc)
+        try:
+            return await request_validation_exception_handler(request, exc)
+        except UnicodeEncodeError:
+            return JSONResponse(status_code=422, content={"detail": redacted_errors(exc.errors())})
     errors = exc.errors()
     log.info("workbench request refused by validation: %s %s %s",
              request.method, _route_template(request), redacted_errors(errors))
