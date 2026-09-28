@@ -22,6 +22,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+import service.app as app_module
 from service.app import app, get_message_store, get_service
 from service.history import InMemoryMessageStore
 from service.models import ChatMode, ChatResponse
@@ -85,6 +86,23 @@ def test_a_prompt_holding_what_stored_text_refuses_is_a_422_naming_the_field(env
     assert all(set(error) == {"type", "loc", "msg"} for error in detail), "no input, no context"
     assert service.asked == [], "refused before the provider is paid for the turn"
     assert store.recent(_CONVERSATION, limit=10) == [], "and before anything is stored"
+
+
+def test_a_refused_prompt_never_reaches_the_throttle_or_the_daily_cap(env, monkeypatch) -> None:
+    """The docstring's ordering claim: refused before the throttle (x5bz.3) and
+    the daily cap (x5bz.3.3) spend anything. `service.asked == []` and
+    `store.recent() == []` above hold either way -- a refusal never answers or
+    stores a turn regardless of where it sits relative to the throttle -- so
+    this pins the ordering directly by recording whether either gate ran."""
+    service, store = env
+    calls: list[str] = []
+    monkeypatch.setattr(app_module, "check_chat_request", lambda user_id: calls.append("throttle"))
+    monkeypatch.setattr(store, "calls_today", lambda: calls.append("daily_cap") or 0)
+
+    response = _ask("Vashti" + chr(0) + "whispers of fireball")
+
+    assert response.status_code == 422
+    assert calls == [], "the prompt rule must run before the throttle and the daily cap"
 
 
 def test_a_prompt_the_rule_allows_is_answered_and_stored_as_written(env) -> None:
