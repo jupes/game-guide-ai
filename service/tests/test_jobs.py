@@ -8,6 +8,7 @@ committed; a claim is a lease with a fencing token; rows never hold content.
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
@@ -572,6 +573,36 @@ def test_an_inline_failure_leaves_the_row_as_its_retry_record():
     with queue.db.transaction() as unit:
         runner.run_after_commit(unit, queue.enqueue(unit, "asset.delete", now=T0))
     assert queue.snapshot() == [(1, "asset.delete", 1, "ConnectionError", False)]
+
+
+def test_after_the_commit_the_single_flight_lock_is_taken_without_waiting():
+    """`run_after_commit` is job work too, so it takes the instance's one
+    single-flight lock (1kg.2.7) — without blocking. While another attempt holds
+    it, the job is not tried and not claimed: its row waits for a driver, and
+    the request that committed never queues behind job work."""
+    queue = _queue()
+    ran: list[int] = []
+    lock = threading.Lock()
+    runner = JobRunner(
+        queue, {"asset.delete": JobHandler(lambda job, context: ran.append(job.id))},
+        clock=lambda: T0, single_flight=lock,
+    )
+
+    assert lock.acquire(blocking=False)  # job work already in flight elsewhere
+    try:
+        with queue.db.transaction() as unit:
+            held = queue.enqueue(unit, "asset.delete", {"asset_id": "a-1"}, now=T0)
+            runner.run_after_commit(unit, held)
+    finally:
+        lock.release()
+    assert ran == [] and queue.snapshot() == [(held, "asset.delete", 0, None, False)], "left for a driver"
+
+    with queue.db.transaction() as unit:
+        free = queue.enqueue(unit, "asset.delete", {"asset_id": "a-2"}, now=T0)
+        runner.run_after_commit(unit, free)
+    assert ran == [free], "the lock was free, so the job ran at once"
+    assert lock.acquire(blocking=False), "and the lock was given back"
+    lock.release()
 
 
 def test_the_in_memory_database_is_shared_with_the_other_fakes():

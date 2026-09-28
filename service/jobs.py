@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
@@ -516,11 +517,20 @@ class JobRunner:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic: Callable[[], float] = time.monotonic,
+        single_flight: threading.Lock | None = None,
     ) -> None:
         self._queue = queue
         self._handlers = dict(handlers or {})
         self._clock = clock
         self._monotonic = monotonic
+        #: The instance's one job lock (`service/job_driver.JOB_LOCK`), injected
+        #: rather than imported: the driver imports this module, not the reverse.
+        self._single_flight = single_flight
+
+    def has_handlers(self) -> bool:
+        """Whether this build runs any kind at all — without one, a driver has
+        nothing to claim and does not ask the database."""
+        return bool(self._handlers)
 
     def register(self, kind: str, handler: JobHandler) -> None:
         """Wire a kind at startup. Claims take a snapshot of what is registered,
@@ -559,10 +569,27 @@ class JobRunner:
         return JobRunResult(ran, failed, remaining=False)
 
     def run_after_commit(self, unit: UnitOfWork, job_id: int) -> None:
-        """Try the job as soon as `unit` commits; its row stays as the retry record."""
+        """Try the job as soon as `unit` commits; its row stays as the retry record.
+
+        This runs inside the request that committed, before its response. Where
+        the answer must not wait for the job — a revocation's acknowledgement
+        never waits on its reconciliation (RQ-5) — use
+        `service.job_driver.run_after_response` instead.
+
+        It takes the single-flight lock without waiting. If other job work holds
+        it, nothing is claimed: the row waits for the request hook or
+        `/internal/jobs`, and job work on the instance still holds at most one
+        of the gate's connections."""
 
         def run() -> None:
-            self.run_job(job_id)
+            lock = self._single_flight
+            if lock is not None and not lock.acquire(blocking=False):
+                return
+            try:
+                self.run_job(job_id)
+            finally:
+                if lock is not None:
+                    lock.release()
 
         unit.on_commit(run)
 
