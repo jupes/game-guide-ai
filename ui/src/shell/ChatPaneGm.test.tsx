@@ -488,14 +488,23 @@ describe('ChatPane (GM) — Load earlier (1kg.3.6)', () => {
   it('keeps the reader’s scroll position when older turns are prepended above it', async () => {
     const load = pagedTimeline([manyChatEntries(HYDRATE_TARGET, 9300), [chatEntry({ entry_id: 'ent_older4', prompt: OLDER_PROMPT })]])
     const { container } = render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
-    await waitFor(() => expect(container.querySelectorAll('.gm-thread__exchange')).toHaveLength(HYDRATE_TARGET))
-
+    // Geometry goes on before the first page lands, so the pane's own
+    // open-at-the-newest-turn autoscroll (pp6q.1.3, a passive effect) runs
+    // against it and can be waited for. Stubbed only once the page's turns were
+    // in the DOM, that effect could still be pending, since React yields after a
+    // long commit. It then ran at the start of the reader's scroll below and
+    // moved the feed to the bottom first (5000 + 200, never 230:
+    // agent-forge-harness-wos).
     const feed = container.querySelector('.chat-pane__exchanges')!
-    // Scrolled up near the top, where Load earlier lives — not at the bottom.
+    const geo = stubGeometry(feed, { scrollHeight: 5000, clientHeight: 400, scrollTop: 0 })
+    await waitFor(() => expect(container.querySelectorAll('.gm-thread__exchange')).toHaveLength(HYDRATE_TARGET))
+    await waitFor(() => expect(geo.scrollTop).toBe(5000))
+
+    // The reader then scrolls up near the top, where Load earlier lives.
     // Firing the scroll event matters: without it `atBottom` keeps its
-    // fresh-thread default of true, and pp6q.1.3's own autoscroll effect
-    // would jump the feed straight to the bottom on the very same update.
-    const geo = stubGeometry(feed, { scrollHeight: 5000, clientHeight: 400, scrollTop: 30 })
+    // fresh-thread default of true, and that same autoscroll effect would jump
+    // the feed straight to the bottom on the prepend's update.
+    geo.scrollTop = 30
     fireEvent.scroll(feed)
 
     fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
