@@ -259,6 +259,13 @@ def _decode_cursor(cursor: str) -> tuple[datetime, str]:
 #: read it alike — a code-point range, no character class, no collation.
 _LISTABLE_ID_PATTERN: Final = r"^[ -~]{1,64}$"
 _LISTABLE_ID: Final = re.compile(_LISTABLE_ID_PATTERN)
+#: The id a cursor may carry: the same characters, at any length (the route,
+#: not the store, holds a cursor to the wire's 512). Only a listed row anchors
+#: a cursor, so one carrying any other character did not come from this
+#: server, and that character must never reach the statement: a NUL is
+#: psycopg's `DataError`, which the route answers as a retryable 503, and a
+#: lone surrogate is its `UnicodeEncodeError`, a 500 (agent-forge-harness-kky).
+_CURSOR_ID: Final = re.compile(r"[ -~]+")
 
 
 def _listable(conversation_id: str) -> bool:
@@ -682,6 +689,8 @@ class InMemoryConversationStore(ConversationStore):
     ) -> ConversationPage:
         size = clamp_limit(limit)
         after = None if cursor is None else _decode_cursor(cursor)
+        if after is not None and _CURSOR_ID.fullmatch(after[1]) is None:
+            raise InvalidCursor("that page cursor did not come from this server")
         checked_mode = check_started_mode(started_mode)
         found = [
             row
