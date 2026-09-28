@@ -115,8 +115,8 @@ def test_a_router_mounted_route_is_visible_to_the_proxy_guard() -> None:
 
 
 def test_deliberately_unproxied_prefixes_are_excluded_and_never_proxied() -> None:
-    """Exercised on an app that HAS such a route: on the real app the set is
-    empty today, and the exclusion would be a no-op nothing checks."""
+    """Exercised on an app that has such a route and nothing else, so the
+    exclusion is seen to act; the real app is the next test."""
     assert _DELIBERATELY_UNPROXIED == frozenset({"internal"})
     app = FastAPI()
 
@@ -131,6 +131,14 @@ def test_deliberately_unproxied_prefixes_are_excluded_and_never_proxied() -> Non
     for prefix in sorted(_DELIBERATELY_UNPROXIED):
         assert not re.search(rf"location\s+/{prefix}\b", nginx), f"ui/nginx.conf proxies /{prefix}"
         assert not re.search(rf"['\"]/{prefix}['\"]\s*:", vite), f"ui/vite.config.ts proxies /{prefix}"
+
+
+def test_the_real_app_serves_internal_and_neither_front_end_forwards_it() -> None:
+    """Since `1kg.2.7` the exclusion is not hypothetical: the service really
+    serves `/internal/jobs`, and it is still not a prefix either front end must
+    (or may) proxy."""
+    assert "internal" in _all_prefixes_of(service_app.app)
+    assert "internal" not in _route_prefixes()
 
 
 def test_the_spa_fallback_is_not_an_api_prefix(tmp_path: Path) -> None:

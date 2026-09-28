@@ -210,11 +210,69 @@ yet**: a running handler may already have read the state it acts on, so later wo
 gets a row of its own. A payload is a flat object of identifiers; a failure stores
 the exception's class name, never its message.
 
-Nothing runs by itself: Cloud Run allocates CPU only during a request. RT-15 names
-three callers for `JobRunner` — after the commit (`run_after_commit`, available now),
-a hook on ordinary requests, and an authenticated `/internal/jobs` for Cloud
-Scheduler. The last two arrive with the first job kinds (`1kg.8.1`, `1kg.9.5`);
-adding them with no job to run would only add a query to every chat request.
+**An absorbed enqueue holds its row until it commits.** `INSERT ... ON CONFLICT DO
+NOTHING` locks nothing, so between the absorb and the enqueuer's commit another
+instance could claim the job, run it and delete it, and the enqueuer's change was
+never processed (W-1, proven against PostgreSQL 17 in CI before it was fixed). The
+absorb now reads the row `FOR SHARE`, which a claim's `FOR UPDATE SKIP LOCKED`
+skips until every absorber has committed. Share locks are compatible, so
+concurrent enqueuers never wait for each other. **What an enqueue can wait for:**
+only a claim's own transaction on that row — one short statement under the queue's
+bounds below — and if the claim wins, the enqueue inserts a row of its own. No
+timeout is set in the caller's transaction: that would re-time the rest of the
+caller's work. Many concurrent share holders make a multixact, and in principle
+could keep a claim off that one row for as long as absorbers keep arriving; each
+holds it only until its own short transaction commits.
+
+#### Who runs jobs (1kg.2.7)
+
+Nothing runs by itself: Cloud Run allocates CPU only during a request. The three
+drivers RT-15 names are wired in `service/job_driver.py`:
+
+| Driver | When | Runs |
+|--------|------|------|
+| `JobRunner.run_after_commit` | when the enqueuing transaction commits — **inside** that request, before its response | the one job |
+| `job_driver.run_after_response` | a Starlette background task, **after** the response has been sent | the one job |
+| the request hook (`JobHookMiddleware`) | after a signed-in request has been answered; never `/healthz`, `/internal` or `/table`; at most once every 5 s per instance, backing off 30 s after an outage | one due job |
+| `POST /internal/jobs` | Cloud Scheduler, every ten minutes (`docs/deploy-gcp.md` §12) | up to 20 due jobs, none started after 30 s |
+
+Use `run_after_response` whenever the answer must not wait for the job — a
+revocation's acknowledgement never waits on its reconciliation (RQ-5). The first
+three are opportunistic, since Cloud Run may withhold the CPU once the final body
+is sent; the durable row and the scheduler are what make "retried until done"
+true. With no kind registered the hook never asks the database, so it adds no
+query to a chat request.
+
+**One attempt at a time per instance.** Every driver takes one lock without
+waiting — before it asks the gate for a connection — and, if job work is already
+in flight, does not make its attempt (`/internal/jobs` answers `ran: 0, remaining:
+true` at once). Job work therefore holds **at most one** of the gate's
+connections, on every path; nothing queues behind it, so nothing accumulates, and
+login, chat and table traffic keep the rest (SEC-35). A gate with no free
+connection (`PoolTimeout`) is "busy": the attempt is skipped. An `OperationalError`
+or `OSError` is an outage: its class and SQLSTATE are logged, and the hook backs
+off. A degraded instance (`migrations` not `current` or `ahead`) runs nothing, and
+the scheduler route answers it with a content-free 503. Every driver runs the
+synchronous runner in the thread pool, never on the event loop, and nothing that
+goes wrong in job work reaches a response or a log beyond a kind, an id, an
+exception class and a SQLSTATE.
+
+**The bound is soft — this is exactly what it covers.** Every transaction the
+queue opens (`claim`, `complete`, `fail`) begins with `set_config(..., true)` for
+`lock_timeout` 2 s, `statement_timeout` 2 s and `transaction_timeout` 5 s,
+transaction-scoped because `Database.connection()` is not in autocommit. Beside
+them stands the driver's `connect_timeout`. These are **server-side defence in
+depth for the database, not a client wall clock**: they do **not** cover `COMMIT`,
+and they do nothing against a black-holed network, where the client waits on a
+socket the server never answers. A handler is given a `JobContext` deadline that
+is **advisory** — nothing interrupts a running handler, so it must bound its own
+I/O — and `/internal/jobs`' budget is **cooperative**: it stops starting jobs and
+never interrupts one. From outside, Cloud Run's request timeout and Cloud
+Scheduler's attempt deadline bound the call. Every ordinary synchronous route in
+this service has the same exposure; the job path is held to that standard, not a
+higher one. A hard client-side deadline is `1kg.2.8`'s question. An attempt whose
+commit outcome is unknown is already safe: `complete` is an idempotent delete,
+`fail` is fenced by `attempts`, and a lease that is never finalised runs out.
 
 ## 5. Connections
 
