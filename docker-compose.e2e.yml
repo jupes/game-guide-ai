@@ -19,6 +19,30 @@ services:
       # the default (1) and gets the real key from Secret Manager.
       SESSION_SECRET: "e2e-only-throwaway-session-signing-key"
       SESSION_COOKIE_SECURE: "0"
+      # The whole Playwright run shares ONE auth rate-limit bucket, and the
+      # production default is sized for one household.
+      #
+      # `AUTH_TRUSTED_PROXY_HOPS` defaults to 0 and nginx.conf sets only
+      # X-Real-IP, so `client_source()` keys on the PEER address — which behind
+      # the `ui` container is the nginx container, identically for every request
+      # from every worker and every retry. `check_auth_attempt()` spends budget
+      # on success as well as failure, so a clean 9-test run spends ~11-13 of
+      # the default 30 per 300s. A run with a few genuine failures (Playwright
+      # starts a fresh worker per failure, each provisioning two accounts) plus
+      # `retries: 1` crosses 30 and turns every later sign-in into a 429 —
+      # a red run that says nothing about the product.
+      #
+      # Raised rather than disabled: the limiter still RUNS, on the real code
+      # path, so a change that breaks it is still exercised here. The number is
+      # simply above anything one E2E run can spend. Production is untouched —
+      # nothing outside this file sets these.
+      #
+      # Only the SOURCE dimension is raised. The per-account budget keys on the
+      # email, and every account this suite touches is created by it with a
+      # per-run-unique address, so no account sees more than a handful of
+      # attempts — `AUTH_RATE_LIMIT_PER_ACCOUNT` keeps its production value and
+      # keeps guarding the brute-force path.
+      AUTH_RATE_LIMIT_PER_SOURCE: "100000"
     healthcheck:
       test:
         - CMD

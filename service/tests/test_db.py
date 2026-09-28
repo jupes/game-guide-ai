@@ -1,8 +1,10 @@
 """Bounded pools and the transaction boundary (1kg.1.5) — without a database.
 
-The settings and their bounds, the in-memory twin's all-or-nothing contract, the
-gate, and the Postgres unit of work against a scripted connection. What needs a
-server — that the gate really refuses a connection too many, that nothing is held
+The settings and their bounds, the in-memory twin's all-or-nothing contract and
+its one open writer, the gate, and the Postgres unit of work against a scripted
+connection — and, on the same connection, the participant store's statements
+and their order, which `tests/test_campaign_db.py` leaves to this file. What
+needs a server — that the gate really refuses a connection too many, that nothing is held
 between operations, that the realtime pool closes cleanly — is in
 `tests/test_db_postgres.py`, which CI runs.
 """
@@ -19,13 +21,24 @@ import pytest
 from psycopg_pool import PoolClosed, PoolTimeout
 
 from service import db as dbmod
+from service.audit_log import ActorKind, AuditAction, AuditEvent, Decision, InMemoryAuditLog, ObjectKind
+from service.campaign_store import CampaignStoreError, SeatUnavailable, Staging, shared_rows
 from service.db import (
     AdvisoryLock,
+    CampaignAuthzMissing,
+    CampaignLockNotHeld,
+    CampaignLockOrder,
+    CampaignLockRefused,
+    CampaignLockSettings,
     Database,
     InMemoryDatabase,
+    InMemoryTransaction,
+    PgTransaction,
     PoolSettings,
+    TwinWouldBlock,
     advisory_key,
 )
+from service.participant_store import PostgresParticipantStore
 
 # ── Settings ─────────────────────────────────────────────────────────────────
 
@@ -61,6 +74,184 @@ def test_a_setting_out_of_bounds_is_refused_by_name(name, value):
     accepts twenty-two."""
     with pytest.raises(ValueError, match=f"{name} must be a whole number from"):
         PoolSettings.from_env({name: value})
+
+
+# ── The campaign lock's bounds (1kg.2.1, RQ-8) ───────────────────────────────
+
+
+def test_the_campaign_lock_defaults_are_rq8s_suggested_numbers():
+    """RQ-8 suggests two seconds to wait for the lock and five as a bound on the
+    whole transaction. Both are settings because a campaign deletion or an
+    enforcement scan legitimately needs longer than a display does."""
+    settings = CampaignLockSettings.from_env({})
+    assert (settings.lock_timeout_s, settings.transaction_timeout_s) == (2, 5)
+
+
+def test_the_campaign_lock_settings_come_from_the_environment():
+    settings = CampaignLockSettings.from_env(
+        {"CAMPAIGN_LOCK_TIMEOUT_S": "3", "CAMPAIGN_TRANSACTION_TIMEOUT_S": "30"}
+    )
+    assert (settings.lock_timeout_s, settings.transaction_timeout_s) == (3, 30)
+    assert CampaignLockSettings.from_env({"CAMPAIGN_LOCK_TIMEOUT_S": "0.5"}).lock_timeout_s == 0.5, (
+        "a fraction of a second is a legal wait, and the only one a gate of 1 s leaves"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "refusal"),
+    [
+        ("CAMPAIGN_LOCK_TIMEOUT_S", "0", "must be a number from"),
+        ("CAMPAIGN_LOCK_TIMEOUT_S", "5", "must be a number from"),
+        ("CAMPAIGN_LOCK_TIMEOUT_S", "two", "must be a number from"),
+        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "0", "must be a whole number from"),
+        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "61", "must be a whole number from"),
+        ("CAMPAIGN_TRANSACTION_TIMEOUT_S", "2.5", "must be a whole number from"),
+    ],
+)
+def test_a_campaign_lock_setting_out_of_bounds_is_refused_by_name(name, value, refusal):
+    with pytest.raises(ValueError, match=f"{name} {refusal}"):
+        CampaignLockSettings.from_env({name: value})
+
+
+def test_an_explicit_lock_timeout_must_be_below_the_gates_acquire_timeout():
+    """RQ-8: "the lock timeout always below the gate's acquire timeout". A request
+    waiting for the campaign lock is holding one of the gate's four connections,
+    so a lock wait that outlasts the gate's own timeout turns one slow campaign
+    into a 503 for unrelated traffic.
+
+    Checked against whatever `DB_POOL_TIMEOUT_S` is set to — not against its
+    default of five — because the gate's bound moves anywhere in 1..60. What is
+    refused is a value an operator **set**: one nobody set is derived from the
+    gate instead, and is below it by construction (G-4).
+    """
+    # Default gate (5 s): 4 is allowed, and nothing above it can be reached
+    # anyway because CAMPAIGN_LOCK_TIMEOUT_S is itself bounded at 4.
+    assert CampaignLockSettings.from_env({"CAMPAIGN_LOCK_TIMEOUT_S": "4"}).lock_timeout_s == 4
+
+    # A narrowed gate makes the same value illegal.
+    with pytest.raises(ValueError, match="CAMPAIGN_LOCK_TIMEOUT_S must be below DB_POOL_TIMEOUT_S"):
+        CampaignLockSettings.from_env({"CAMPAIGN_LOCK_TIMEOUT_S": "4", "DB_POOL_TIMEOUT_S": "4"})
+    with pytest.raises(ValueError, match="CAMPAIGN_LOCK_TIMEOUT_S must be below DB_POOL_TIMEOUT_S"):
+        CampaignLockSettings.from_env({"CAMPAIGN_LOCK_TIMEOUT_S": "1", "DB_POOL_TIMEOUT_S": "1"})
+
+
+@pytest.mark.parametrize("gate", range(1, 61))
+def test_every_documented_gate_still_builds_a_database_and_a_lock_below_it(gate):
+    """G-4. `DB_POOL_TIMEOUT_S` is documented as 1–60 and is read by `app.py`,
+    while the campaign lock's timeout is read from the environment by nobody —
+    so a fixed default of two seconds made a documented gate of 1 or 2 refuse to
+    start the service, with no setting an operator could use to fix it. The
+    default is derived from the gate instead, and the invariant holds either
+    way: for a value nobody set, by construction; for one somebody set, by the
+    refusal above.
+    """
+    settings = PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=gate)
+    for lock in (
+        CampaignLockSettings.from_env({"DB_POOL_TIMEOUT_S": str(gate)}),
+        Database("postgresql://test/db", settings).campaign_lock,
+    ):
+        assert 0 < lock.lock_timeout_s < gate, f"a gate of {gate} s"
+        assert lock.lock_timeout.endswith("ms"), "whole milliseconds, which is the server's unit"
+
+
+def test_the_caller_may_pass_its_own_pool_settings():
+    """`Database` already holds a `PoolSettings`; the check reads that object
+    rather than re-reading the environment, so a programmatically-built
+    `Database` is checked against its own gate."""
+    settings = CampaignLockSettings.from_env(
+        {"CAMPAIGN_LOCK_TIMEOUT_S": "3"}, pool=PoolSettings(acquire_timeout_s=10)
+    )
+    assert settings.lock_timeout_s == 3
+
+    with pytest.raises(ValueError, match="must be below DB_POOL_TIMEOUT_S"):
+        CampaignLockSettings.from_env(
+            {"CAMPAIGN_LOCK_TIMEOUT_S": "3"}, pool=PoolSettings(acquire_timeout_s=3)
+        )
+
+
+def test_a_database_built_in_code_checks_the_two_timeouts_against_each_other():
+    """The invariant must not depend on somebody calling `from_env`. Nothing
+    does today — `service/app.py` builds its own `PoolSettings` and takes the
+    campaign lock's defaults — so a `Database` handed both a short gate and a
+    lock timeout that is not under it must refuse, rather than let a request
+    waiting for the campaign lock outlive the gate slot it is holding."""
+    with pytest.raises(ValueError, match="below the gate's acquire timeout"):
+        Database(
+            "postgresql://test/db",
+            PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2),
+            CampaignLockSettings(lock_timeout_s=2),
+        )
+
+    allowed = Database(
+        "postgresql://test/db",
+        PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2),
+        CampaignLockSettings(lock_timeout_s=1),
+    )
+    assert allowed.campaign_lock.lock_timeout_s == 1
+
+    derived = Database(
+        "postgresql://test/db", PoolSettings(sync_max=1, async_max=0, acquire_timeout_s=2)
+    )
+    assert derived.campaign_lock.lock_timeout_s == 1, "half the gate, below two seconds"
+
+
+@pytest.mark.parametrize(
+    "lock_timeout_s", [0, 0.049, 4.1, True, float("nan")], ids=["zero", "tiny", "long", "bool", "nan"]
+)
+def test_a_campaign_lock_timeout_that_is_not_a_duration_is_refused_where_it_is_built(
+    lock_timeout_s,
+):
+    """The other half of deriving it: the value is a float now, so the bound
+    lives on the settings object rather than on the one `from_env` parser. Zero
+    is how PostgreSQL spells "wait for ever", a bool is not a duration, and
+    below 50 ms nothing could ever be acquired."""
+    with pytest.raises(ValueError, match="campaign lock timeout"):
+        CampaignLockSettings(lock_timeout_s=lock_timeout_s)
+
+
+def test_the_lock_timeout_reaches_the_server_in_whole_milliseconds():
+    """`set_config('lock_timeout', ...)` takes the server's own spelling, whose
+    unit here is the millisecond: `'0.5s'` is a syntax error to it, and a
+    fraction that rounded to zero would be "wait for ever"."""
+    assert CampaignLockSettings(lock_timeout_s=2).lock_timeout == "2000ms"
+    assert CampaignLockSettings(lock_timeout_s=0.5).lock_timeout == "500ms"
+    assert CampaignLockSettings(lock_timeout_s=0.0501).lock_timeout == "50ms"
+
+
+@pytest.mark.parametrize(
+    "bound",
+    [0, -1, 601, float("nan"), 1e-05, True],
+    ids=["zero", "negative", "too-long", "nan", "tiny", "bool"],
+)
+def test_a_caller_cannot_switch_the_transaction_bound_off_through_the_parameter(bound):
+    """`0` is how PostgreSQL spells "no timeout"; its unit here is the
+    millisecond, so `1e-05s` rounds to the same thing; and a negative or a NaN
+    would be the server's error, whose text is not this module's. A bool is not
+    a duration either, and it passed the range check because Python makes it an
+    int: `transaction_bound(True)` answered `'Trues'`, which the server would
+    have refused in the middle of a transaction with an error of its own (G-5).
+    The parameter exists so that a long caller can RAISE the bound RQ-8
+    requires, never remove it — and the check is in both units of work, because
+    a test that can only run against the twin must still catch it."""
+    for unit in (PgTransaction(conn=None), InMemoryTransaction()):
+        with pytest.raises(ValueError, match="a transaction bound is from"):
+            unit.transaction_bound(bound)
+
+
+def test_the_bound_a_caller_does_pass_is_the_one_used_and_none_means_the_default():
+    unit = PgTransaction(conn=None, campaign_lock=CampaignLockSettings(transaction_timeout_s=7))
+    assert unit.transaction_bound(None) == "7s"
+    assert unit.transaction_bound(30) == "30s"
+    assert unit.transaction_bound(0.001) == "0.001s", "one millisecond is the floor, not zero"
+
+
+def test_the_twin_refuses_an_unbounded_campaign_lock_the_way_the_postgres_unit_does():
+    db = InMemoryDatabase()
+    with db.transaction() as unit:
+        unit.create_authz_state("cmp_one")
+        with pytest.raises(ValueError, match="a transaction bound is from"):
+            unit.lock_campaign("cmp_one", shared=True, transaction_timeout_s=0)
+        assert unit.campaign_locks == [], "a lock that was refused is not recorded as held"
 
 
 def test_an_advisory_key_is_a_stable_signed_32_bit_number():
@@ -170,12 +361,352 @@ def test_in_memory_transactions_are_serial():
     assert order == ["first-in", "first-out", "second-in"]
 
 
+# ── The campaign lock and the authorisation revision (1kg.2.1, RQ-2) ─────────
+#
+# What the twin can and cannot show. It records which campaign a transaction
+# locked and in which mode, refuses a second campaign, refuses a revision written
+# without the exclusive lock, and takes an increment back on rollback. It does
+# not model who blocks whom: a lock another open unit holds in a conflicting
+# mode is refused with `TwinWouldBlock` (ixa.1, below), and what the server does
+# instead is `tests/test_campaign_db.py`'s (RQ-2(a)).
+
+
+def _campaign(db: InMemoryDatabase, campaign_id: str = "cmp_one", revision: int = 0) -> str:
+    """The `authz_state` row PostgreSQL's AFTER INSERT trigger writes; here, by hand."""
+    db.authz_state[campaign_id] = revision
+    return campaign_id
+
+
+def test_the_twin_records_which_campaign_a_transaction_locked_and_in_which_mode():
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with db.transaction() as unit:
+        unit.lock_campaign(campaign, shared=True)
+        assert unit.campaign_locks == [(campaign, "share")]
+    with db.transaction() as unit:
+        unit.lock_campaign(campaign, shared=False)
+        assert unit.campaign_locks == [(campaign, "exclusive")]
+
+
+def test_locking_a_campaign_that_has_no_authorisation_row_fails_closed():
+    """RQ-2(c). A caller maps this to the generic 404; a job makes it a no-op."""
+    with pytest.raises(CampaignAuthzMissing, match="authorisation"):
+        with InMemoryDatabase().transaction() as unit:
+            unit.lock_campaign("cmp_gone", shared=True)
+
+
+def test_the_authz_check_runs_before_a_conflicting_lock_is_ever_considered():
+    """`lock_campaign`'s docstring: the missing-authorisation check is made
+    **last**, after `CampaignAuthzMissing` — read the other way, the
+    conflicting-lock check must never run first. A campaign whose `authz_state`
+    row is staged (created) but not yet committed is invisible to every other
+    open unit's `authz_revision`, so a second unit that only reads it must see
+    `CampaignAuthzMissing`, never `TwinWouldBlock` from the exclusive lock the
+    first unit already holds on that same campaign. If the order were
+    reversed, the conflicting-lock check would run first and raise
+    `TwinWouldBlock` instead, because the first unit's exclusive lock is real
+    and open.
+    """
+    db = InMemoryDatabase()
+    with db.transaction() as writer:
+        writer.create_authz_state("cmp_new")
+        writer.lock_campaign("cmp_new", shared=False)
+        with pytest.raises(CampaignAuthzMissing, match="authorisation"):
+            with db.transaction() as reader:
+                reader.lock_campaign("cmp_new", shared=True)
+
+
+def test_one_transaction_may_not_lock_two_different_campaigns():
+    db = InMemoryDatabase()
+    first, second = _campaign(db, "cmp_one"), _campaign(db, "cmp_two")
+    with pytest.raises(CampaignLockOrder, match="one campaign"):
+        with db.transaction() as unit:
+            unit.lock_campaign(first, shared=False)
+            unit.lock_campaign(second, shared=False)
+
+
+def test_the_campaign_lock_comes_before_any_other_lock_the_transaction_takes():
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with pytest.raises(CampaignLockOrder, match="first lock"):
+        with db.transaction() as unit:
+            unit.lock(AdvisoryLock.TABLE_SESSION, "ses_one")
+            unit.lock_campaign(campaign, shared=True)
+
+
+def test_a_shared_campaign_lock_is_never_upgraded_in_place():
+    """Two holders of FOR SHARE both asking for FOR UPDATE deadlock. A caller
+    that will write takes the exclusive lock at the start."""
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with pytest.raises(CampaignLockOrder, match="upgrade"):
+        with db.transaction() as unit:
+            unit.lock_campaign(campaign, shared=True)
+            unit.lock_campaign(campaign, shared=False)
+
+
+def test_re_locking_the_same_campaign_in_the_same_mode_is_allowed():
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with db.transaction() as unit:
+        unit.lock_campaign(campaign, shared=False)
+        unit.lock_campaign(campaign, shared=False)
+        assert unit.campaign_locks == [(campaign, "exclusive"), (campaign, "exclusive")]
+
+
+@pytest.mark.parametrize(
+    "take",
+    [
+        pytest.param(lambda unit, campaign: None, id="no-lock"),
+        pytest.param(lambda unit, campaign: unit.lock_campaign(campaign, shared=True), id="shared"),
+    ],
+)
+def test_advancing_the_revision_without_the_exclusive_lock_is_refused(take):
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with pytest.raises(CampaignLockNotHeld, match="exclusively"):
+        with db.transaction() as unit:
+            take(unit, campaign)
+            unit.advance_authz_revision(campaign)
+    assert db.authz_state[campaign] == 0
+
+
+def test_advancing_another_campaigns_revision_under_this_ones_lock_is_refused():
+    db = InMemoryDatabase()
+    held, other = _campaign(db, "cmp_one"), _campaign(db, "cmp_two")
+    with pytest.raises(CampaignLockNotHeld, match="exclusively"):
+        with db.transaction() as unit:
+            unit.lock_campaign(held, shared=False)
+            unit.advance_authz_revision(other)
+    assert db.authz_state[other] == 0
+
+
+def test_the_revision_advances_under_the_exclusive_lock_and_a_rollback_takes_it_back():
+    db = InMemoryDatabase()
+    campaign = _campaign(db)
+    with db.transaction() as unit:
+        assert unit.lock_campaign(campaign, shared=False) is None
+        assert unit.advance_authz_revision(campaign) == 1
+        assert unit.advance_authz_revision(campaign) == 2
+    assert db.authz_state[campaign] == 2
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with db.transaction() as unit:
+            unit.lock_campaign(campaign, shared=False)
+            assert unit.advance_authz_revision(campaign) == 3
+            raise RuntimeError("boom")
+    assert db.authz_state[campaign] == 2, "a rolled-back increment is taken back"
+
+
+# ── One open writer (ixa.1) ──────────────────────────────────────────────────
+#
+# The claim's lifecycle, on the twin alone. Which states it keeps a nested unit
+# from committing — two live sessions, two seats on one alias, a lost Remove —
+# is the shared suite's, in `tests/test_campaign_db.py`.
+
+AUDITED = "cmp_" + "a" * 22
+
+
+def _rows(db: InMemoryDatabase) -> Staging[str]:
+    return shared_rows(db, "rows")
+
+
+def _audited(log: InMemoryAuditLog, unit: InMemoryTransaction) -> AuditEvent:
+    return log.append(
+        unit,
+        campaign_id=AUDITED,
+        actor_kind=ActorKind.GM,
+        action=AuditAction.CAMPAIGN_ARCHIVED,
+        object_kind=ObjectKind.CAMPAIGN,
+        decision=Decision.ALLOWED,
+    )
+
+
+def test_a_second_open_writer_is_refused_and_a_reader_inside_the_writer_is_not() -> None:
+    """The first unit to stage a write is the writer; a unit opened inside it
+    may read — only committed rows — and is refused the moment it writes."""
+    db = InMemoryDatabase()
+    rows = _rows(db)
+    with db.transaction() as writer:
+        rows.add(writer, "a", "first")
+        with db.transaction() as reader:
+            assert rows.visible(reader) == {}, "a nested reader sees what is committed, and works"
+            with pytest.raises(TwinWouldBlock):
+                rows.add(reader, "b", "second")
+    with db.transaction() as unit:
+        assert rows.visible(unit) == {"a": "first"}
+
+
+@pytest.mark.parametrize("ending", ["commit", "rollback", "publish-raises"])
+def test_the_writer_claim_is_released_however_the_transaction_ends(ending: str) -> None:
+    """A claim that outlived its unit would refuse every later writer on that
+    database. Released in a `finally`: on commit, on rollback, and when a
+    publish callback raises halfway through the commit."""
+    db = InMemoryDatabase()
+    rows = _rows(db)
+
+    def publish_fails() -> None:
+        raise RuntimeError("publish failed")
+
+    def write_and_end() -> None:
+        with db.transaction() as unit:
+            rows.add(unit, "a", "first")
+            if ending == "publish-raises":
+                unit.on_publish(publish_fails)
+            if ending == "rollback":
+                raise RuntimeError("rolled back")
+
+    if ending == "commit":
+        write_and_end()
+    else:
+        with pytest.raises(RuntimeError):
+            write_and_end()
+    with db.transaction() as unit:
+        rows.add(unit, "b", "second")
+
+
+def test_a_nested_unit_leaving_does_not_release_its_parents_claim() -> None:
+    db = InMemoryDatabase()
+    rows = _rows(db)
+    with db.transaction() as writer:
+        rows.add(writer, "a", "first")
+        with db.transaction() as reader:
+            rows.visible(reader)
+        with db.transaction() as second:
+            with pytest.raises(TwinWouldBlock):
+                rows.add(second, "b", "second")
+
+
+def test_a_unit_built_without_a_database_never_claims_and_is_never_refused() -> None:
+    """`InMemoryTransaction()` built directly belongs to no database, so it has
+    no writer to claim or to be refused by — before, during and after a
+    database's own writer is open."""
+    db = InMemoryDatabase()
+    rows = _rows(db)
+    bare = InMemoryTransaction()
+    rows.add(bare, "bare-1", "x")
+    with db.transaction() as writer:
+        rows.add(writer, "a", "first")
+        rows.add(bare, "bare-2", "y")
+        bare.create_authz_state("cmp_bare")
+    assert rows.visible(bare) == {"a": "first", "bare-1": "x", "bare-2": "y"}
+
+
+def test_a_refused_write_leaves_nothing_behind() -> None:
+    """The claim is taken before anything is staged or registered, in all three
+    staging paths, so the refused unit commits with nothing to publish — and
+    the audit twin's next row takes the id the refused one would have had."""
+    db = InMemoryDatabase()
+    rows, log = _rows(db), InMemoryAuditLog()
+    with db.transaction() as writer:
+        first = _audited(log, writer)
+        with db.transaction() as refused:
+            with pytest.raises(TwinWouldBlock):
+                rows.add(refused, "b", "refused")
+            with pytest.raises(TwinWouldBlock):
+                _audited(log, refused)
+            with pytest.raises(TwinWouldBlock):
+                refused.create_authz_state("cmp_two")
+            assert (refused._publish, refused._undo) == ([], []), "no callback was registered"
+    with db.transaction() as unit:
+        assert rows.visible(unit) == {}
+        assert unit.authz_revision("cmp_two") is None
+        assert [e.id for e in log.for_campaign(unit, AUDITED)] == [first.id]
+        second = _audited(log, unit)
+    assert second.id == first.id + 1, "a refused append used up no id"
+
+
+@pytest.mark.parametrize(
+    ("held_shared", "wanted_shared", "conflicts"),
+    [
+        pytest.param(True, True, False, id="share-with-share"),
+        pytest.param(True, False, True, id="share-blocks-exclusive"),
+        pytest.param(False, True, True, id="exclusive-blocks-share"),
+        pytest.param(False, False, True, id="exclusive-blocks-exclusive"),
+    ],
+)
+def test_a_campaign_lock_another_open_unit_holds_in_a_conflicting_mode_is_refused(
+    held_shared: bool, wanted_shared: bool, conflicts: bool
+) -> None:
+    """PostgreSQL's matrix on the authorisation row — the one
+    `tests/test_campaign_db.py` proves at `test_two_shared_holders_…` and
+    `test_a_conflicting_campaign_lock_waits_and_then_times_out` — refused
+    rather than waited on. A different campaign never conflicts, and a refused
+    lock is not recorded as held."""
+    db = InMemoryDatabase()
+    campaign, other = _campaign(db), _campaign(db, "cmp_two")
+    with db.transaction() as holder:
+        holder.lock_campaign(campaign, shared=held_shared)
+        with db.transaction() as elsewhere:
+            elsewhere.lock_campaign(other, shared=False)
+        with db.transaction() as wanting:
+            if conflicts:
+                with pytest.raises(TwinWouldBlock):
+                    wanting.lock_campaign(campaign, shared=wanted_shared)
+                assert wanting.campaign_locks == []
+            else:
+                wanting.lock_campaign(campaign, shared=wanted_shared)
+                assert wanting.campaign_locks == [(campaign, "share")]
+
+
+def test_twin_would_block_is_no_domain_refusal_and_names_nothing() -> None:
+    """No route may map it to an answer and no `except` for a domain refusal may
+    swallow it: it is a test asking the twin what only PostgreSQL can answer."""
+    for domain in (CampaignLockRefused, CampaignStoreError, LookupError, ValueError):
+        assert not issubclass(TwinWouldBlock, domain), domain
+    assert str(TwinWouldBlock()) == TwinWouldBlock.MESSAGE
+    assert "two-connection PostgreSQL test" in TwinWouldBlock.MESSAGE
+
+
+@pytest.mark.parametrize("table", ["staging", "audit"])
+def test_a_unit_that_never_finished_leaks_nothing_to_the_next_unit_allocated(table: str) -> None:
+    """ixa.1 (2). Both twins keyed their staging by `id(unit)`, and CPython
+    hands a freed address to the next object it allocates — so a unit that
+    staged a row and never committed or rolled back leaked it to the unit made
+    after it. Keyed by the unit itself, the dictionary's reference keeps the
+    address taken. The failure message carries the iteration and collision
+    counts, which is the observation, not merely that it failed."""
+    iterations, collisions = 200, 0
+    for _ in range(iterations):
+        leaker = InMemoryTransaction()
+        if table == "staging":
+            staging: Staging[str] = Staging()
+            staging.add(leaker, "row", "leaked")
+            del leaker
+            fresh = InMemoryTransaction()
+            collisions += bool(staging.visible(fresh))
+        else:
+            log = InMemoryAuditLog()
+            _audited(log, leaker)
+            del leaker
+            fresh = InMemoryTransaction()
+            collisions += bool(log.for_campaign(fresh, AUDITED))
+    assert collisions == 0, f"iterations={iterations} collisions={collisions}"
+
+
 # ── The Postgres unit of work, against a scripted connection ─────────────────
 
 
+class _Result:
+    """What psycopg's `execute` hands back: one row, or none."""
+
+    def __init__(self, row: tuple | None) -> None:
+        self._row = row
+
+    def fetchone(self) -> tuple | None:
+        return self._row
+
+
 class _Connection:
-    def __init__(self, log: list[str]) -> None:
+    def __init__(self, log: list[str], rows: list[tuple[str, tuple]] | None = None) -> None:
         self.log = log
+        #: `(fragment of the statement, the row it returns)`, primed by a test.
+        self.rows = [] if rows is None else rows
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name == "isolation_level":
+            self.log.append(f"isolation_level={value.name}")  # type: ignore[attr-defined]
+        object.__setattr__(self, name, value)
 
     def __enter__(self):
         self.log.append("connect")
@@ -197,17 +728,23 @@ class _Connection:
 
     def execute(self, sql: str, params=None):
         self.log.append(f"{sql} {params}")
+        for fragment, row in self.rows:
+            if fragment in sql:
+                return _Result(row)
+        return _Result(None)
 
 
 @pytest.fixture
 def scripted(monkeypatch):
     """psycopg.connect replaced by a recorder: what the gate does around it."""
     log: list[str] = []
-    seen: dict[str, object] = {}
+    rows: list[tuple[str, tuple]] = []
+    seen: dict[str, object] = {"rows": rows}
 
     def connect(dsn, **kwargs):
         seen["dsn"], seen["kwargs"] = dsn, kwargs
-        return _Connection(log)
+        seen["conn"] = connection = _Connection(log, rows)
+        return connection
 
     monkeypatch.setattr(psycopg, "connect", connect)
     return log, seen
@@ -293,6 +830,7 @@ def test_the_unit_of_work_commits_then_releases_then_calls_back(scripted):
         unit.on_commit(after_commit)
     assert log == [
         "connect",
+        "isolation_level=READ_COMMITTED",
         "begin",
         f"SELECT pg_advisory_xact_lock(%s, %s) (2, {advisory_key('s-1')})",
         "SELECT pg_notify(%s, %s) ('table_session', 's-1')",
@@ -311,7 +849,7 @@ def test_a_failed_unit_of_work_rolls_back_and_never_calls_back(scripted):
         with db.transaction() as unit:
             unit.on_commit(lambda: log.append("after-commit"))
             raise RuntimeError("boom")
-    assert log == ["connect", "begin", "rollback", "rollback+close"]
+    assert log == ["connect", "isolation_level=READ_COMMITTED", "begin", "rollback", "rollback+close"]
 
 
 def test_the_postgres_unit_of_work_checks_notifications_too(scripted):
@@ -321,6 +859,184 @@ def test_the_postgres_unit_of_work_checks_notifications_too(scripted):
         with db.transaction() as unit:
             unit.notify("Table Session")
     assert not any("pg_notify" in line for line in log)
+
+
+# ── The campaign lock, as PostgreSQL is asked for it ─────────────────────────
+#
+# The statements and their order, against the scripted connection. Whether the
+# lock then *conflicts* — who waits for whom, which timeout fires, what the
+# server reports its isolation level to be — is `tests/test_campaign_db.py`'s,
+# and runs only in CI against a real server.
+
+_SET_BOUNDS = "SELECT set_config('lock_timeout', %s, true), set_config('transaction_timeout', %s, true)"
+_AUTHZ_ROW = ("FROM campaign.authz_state", ("cmp_one",))
+
+
+def _scripted_database() -> Database:
+    return Database("postgresql://test/db", PoolSettings(sync_max=1, async_max=0))
+
+
+def test_a_transaction_sets_read_committed_on_its_connection_before_any_statement(scripted):
+    """The mechanism, not the server's answer: RQ-2 reasons about what a lock
+    holds still under READ COMMITTED, so the level is stated rather than
+    inherited from a server, database or role default."""
+    log, _ = scripted
+    with _scripted_database().transaction():
+        pass
+    assert log == ["connect", "isolation_level=READ_COMMITTED", "begin", "commit", "commit+close"]
+
+
+@pytest.mark.parametrize(
+    ("shared", "strength"), [(True, "FOR SHARE"), (False, "FOR UPDATE")]
+)
+def test_the_campaign_lock_bounds_the_wait_and_the_transaction_before_it_locks(scripted, shared, strength):
+    log, seen = scripted
+    seen["rows"].append(_AUTHZ_ROW)
+    with _scripted_database().transaction() as unit:
+        unit.lock_campaign("cmp_one", shared=shared)
+        assert log[-2:] == [
+            f"{_SET_BOUNDS} ('2000ms', '5s')",
+            f"SELECT campaign_id FROM campaign.authz_state WHERE campaign_id = %s {strength} ('cmp_one',)",
+        ]
+        assert unit.campaign_locks == [("cmp_one", "share" if shared else "exclusive")]
+
+
+def test_a_caller_may_raise_the_transaction_bound_for_its_own_longer_work(scripted):
+    """A campaign deletion or an enforcement scan needs more than RQ-8's five
+    seconds; raising it for everyone instead would be the wrong trade."""
+    log, seen = scripted
+    seen["rows"].append(_AUTHZ_ROW)
+    with _scripted_database().transaction() as unit:
+        unit.lock_campaign("cmp_one", shared=False, transaction_timeout_s=30)
+    assert f"{_SET_BOUNDS} ('2000ms', '30s')" in log, "the wait is in the GUC's own unit"
+
+
+def test_locking_a_campaign_postgres_has_no_authorisation_row_for_fails_closed(scripted):
+    """Nothing is primed, so the SELECT finds no row (RQ-2(c))."""
+    _, seen = scripted
+    held: list[list[tuple[str, str]]] = []
+    with pytest.raises(CampaignAuthzMissing, match="authorisation"):
+        with _scripted_database().transaction() as unit:
+            held.append(unit.campaign_locks)
+            unit.lock_campaign("cmp_gone", shared=True)
+    assert held == [[]], "a lock that was refused is not recorded as held"
+
+
+def test_the_revision_advance_is_one_guarded_statement_under_the_exclusive_lock(scripted):
+    log, seen = scripted
+    seen["rows"].extend([_AUTHZ_ROW, ("UPDATE campaign.authz_state", (7,))])
+    with _scripted_database().transaction() as unit:
+        with pytest.raises(CampaignLockNotHeld, match="exclusively"):
+            unit.advance_authz_revision("cmp_one")
+        assert not any("UPDATE campaign.authz_state" in line for line in log)
+
+        unit.lock_campaign("cmp_one", shared=False)
+        assert unit.advance_authz_revision("cmp_one") == 7
+    assert log[-3] == (
+        "UPDATE campaign.authz_state SET authz_revision = authz_revision + 1 "
+        "WHERE campaign_id = %s RETURNING authz_revision ('cmp_one',)"
+    )
+
+
+def test_a_revision_advance_that_changes_no_row_fails_closed(scripted):
+    """The lock succeeded and the UPDATE then matched nothing: the row went away
+    under a transaction that believed it held it. Never a silent zero."""
+    _, seen = scripted
+    seen["rows"].append(_AUTHZ_ROW)
+    with pytest.raises(CampaignAuthzMissing, match="authorisation"):
+        with _scripted_database().transaction() as unit:
+            unit.lock_campaign("cmp_one", shared=False)
+            unit.advance_authz_revision("cmp_one")
+
+
+# ── The participant store, as PostgreSQL is asked for it ─────────────────────
+#
+# `PostgresParticipantStore`'s statements and their order, against the scripted
+# connection (thl, z9v). What those statements then do to ANOTHER transaction —
+# which row is locked, who waits — is `tests/test_campaign_db.py`'s and runs only
+# in CI. These are the local half: each goes red on this machine when the
+# statement it pins changes, where the behavioural test would merely be skipped.
+
+_HOLD_BOUND = "SELECT set_config('transaction_timeout', %s, true) ('5s',)"
+_HOLD_ROW = (
+    "SELECT id, campaign_id, alias, created_at, removed_at, user_id, accepted_at "
+    "FROM campaign.participants WHERE id = %s AND campaign_id = %s FOR NO KEY UPDATE "
+    "('prt_seat', 'cmp_one')"
+)
+
+
+def test_the_scripted_hold_names_the_campaign_inside_the_statement_that_takes_the_lock(
+    scripted: tuple[list[str], dict[str, object]],
+) -> None:
+    """G-11 (thl R3(b)). The campaign is a condition of the `SELECT … FOR NO KEY
+    UPDATE` itself, with both values bound to it, so another campaign's row is
+    never matched and therefore never locked. Locking by id alone and filtering
+    in Python afterwards — the pre-fix defect, mutant G11b — sends a statement
+    without the campaign and fails here. The hold also declares its row lock, so
+    the campaign lock may not follow it (mutant M-C3). The behaviour the
+    statement buys is `test_a_hold_naming_the_wrong_campaign_locks_nothing`."""
+    log, _ = scripted
+    with _scripted_database().transaction() as unit:
+        assert PostgresParticipantStore().hold(unit, "prt_seat", campaign_id="cmp_one") is None
+        assert log[3:] == [_HOLD_BOUND, _HOLD_ROW]
+        with pytest.raises(CampaignLockOrder):
+            unit.lock_campaign("cmp_one", shared=True)
+
+
+@pytest.mark.parametrize("mutator", ["accept", "offer", "remove"])
+def test_every_scripted_participant_mutator_bounds_and_holds_the_seat_before_anything_else(
+    scripted: tuple[list[str], dict[str, object]], mutator: str
+) -> None:
+    """G-6 at the statement level. A mutator's first two statements are its OWN
+    hold — the bound, then the scoped row lock — with no delegate to supply
+    them. Nothing is primed, so the seat is not found and each mutator refuses,
+    which is beside the point here. Kills G6a (the three holds deleted) and
+    M-B7 (remove's alone) on this machine; the behavioural proof is the
+    `[postgres-*]` cells of `test_every_participant_mutator_takes_the_seats_row_…`."""
+    log, _ = scripted
+    store = PostgresParticipantStore()
+    with _scripted_database().transaction() as unit:
+        if mutator == "remove":
+            assert store.remove(unit, "cmp_one", "prt_seat") is False
+        else:
+            with pytest.raises(SeatUnavailable):
+                getattr(store, mutator)(unit, "cmp_one", "prt_seat", user_id=7)
+    assert log[3:5] == [_HOLD_BOUND, _HOLD_ROW]
+
+
+_WRONG_TYPES: list[tuple[str, tuple[object, ...], dict[str, object], str]] = [
+    ("add", ("cmp_one",), {"alias": 5}, "alias"),
+    ("get", (5,), {}, "participant_id"),
+    ("list_for_campaign", (5,), {}, "campaign_id"),
+    ("hold", ("prt_seat",), {"campaign_id": 5}, "campaign_id"),
+    ("remove", (5, "prt_seat"), {}, "campaign_id"),
+    ("offer", ("cmp_one", "prt_seat"), {"user_id": "7"}, "user_id"),
+    ("accept", ("cmp_one", 5), {"user_id": 7}, "participant_id"),
+    ("seat_for", ("cmp_one", True), {}, "user_id"),
+    ("seats_for_user", (None,), {}, "user_id"),
+]
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "kwargs", "parameter"), _WRONG_TYPES, ids=[w[0] for w in _WRONG_TYPES]
+)
+def test_the_scripted_participant_store_refuses_a_wrong_type_before_any_statement(
+    scripted: tuple[list[str], dict[str, object]],
+    method: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    parameter: str,
+) -> None:
+    """z9v item 3, the local half of the shared-suite test. The refusal comes
+    before a statement reaches the connection — which is what keeps the
+    caller's transaction usable on the server, where a type error would abort
+    it. One cell per public method."""
+    log, _ = scripted
+    with _scripted_database().transaction() as unit:
+        before = len(log)
+        with pytest.raises(TypeError, match=parameter):
+            getattr(PostgresParticipantStore(), method)(unit, *args, **kwargs)
+        assert log[before:] == [], "refused before any statement"
 
 
 # ── A connection string that does not parse is refused without being repeated ─

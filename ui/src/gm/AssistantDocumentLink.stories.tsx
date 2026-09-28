@@ -57,3 +57,12 @@ export const KeyboardReachable: Story = {
     await expect(args.onOpen).toHaveBeenCalledTimes(1)
   },
 }
+
+// ── Dark Tavern ──────────────────────────────────────────────────────────────
+// agent-forge-harness-27h, rework 1. This file had NO dark story, so strict axe
+// had never rendered AssistantDocumentLink against the dark palette at all. That is exactly
+// the hole that hid `--aether-nat20` at 4.49:1 on its dark container until a
+// dark DiceRoll story was written for it: in a themed design system every
+// colour is a DIFFERENT value per theme, so a light-only story is half a test.
+
+export const Dark: Story = { ...Dossier, globals: { theme: 'dark' } }

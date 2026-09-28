@@ -1,0 +1,63 @@
+/* ── SelectionBar ────────────────────────────────────────────────────────────
+   CANVAS-23's targeted edit (1kg.6.2).
+
+   The bar is positioned against `.gm-document`, which is its containing block,
+   from coordinates `selectionBarPosition` worked out — so it never covers the
+   words it acts on and never leaves a 400 px pane. Colours are tokens; the
+   motion is answered under `prefers-reduced-motion`; each action holds the
+   44 px touch floor and draws a visible focus ring.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.gm-selection-bar {
+  position: absolute;
+  z-index: var(--aether-z-sticky);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--aether-space-1);
+  padding: var(--aether-space-1) var(--aether-space-2);
+  font-family: var(--aether-font-ui);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-full);
+  box-shadow: var(--md-sys-elevation-level2);
+  transition: opacity var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+.gm-selection-bar__mark {
+  font-size: 16px;
+  color: var(--md-sys-color-primary);
+}
+
+.gm-selection-bar__action {
+  min-height: var(--aether-touch-min);
+  padding: 0 var(--aether-space-3);
+  font-family: var(--aether-font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface);
+  background: transparent;
+  border: none;
+  border-radius: var(--md-sys-shape-corner-full);
+  cursor: pointer;
+  transition: background-color var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+.gm-selection-bar__action:hover {
+  background: var(--md-sys-color-surface-container-highest);
+}
+
+.gm-selection-bar__action:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-selection-bar {
+    transition: none;
+  }
+
+  .gm-selection-bar__action {
+    transition: none;
+  }
+}

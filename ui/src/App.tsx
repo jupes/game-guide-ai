@@ -31,10 +31,29 @@ export default function App(): React.JSX.Element {
 
   // Identity changed (sign-in, sign-out, session expiry): drop navigation state
   // so the incoming user never inherits the previous one's open conversation.
+  //
+  // `user.id` alone can't tell this apart from the FIRST resolution of the
+  // session check: `checking -> authenticated` and `unauthenticated ->
+  // authenticated` are both 'guest' -> <email> (currentUser.tsx). Naively
+  // resetting on every `user.id` change would clobber a cold-loaded deep
+  // link the moment the session check resolves (agent-forge-harness-y40,
+  // R8) — so this only fires between two SETTLED statuses (`authenticated`
+  // or `unauthenticated`; `checking`/`unavailable` haven't answered the
+  // question yet) whose ids actually differ. `lastSettledUserId` remembers
+  // the last settled id seen, `null` meaning "none yet".
+  const lastSettledUserId = React.useRef<string | null>(null)
   React.useEffect(() => {
-    setConversationId(null)
-    backToLanding()
-  }, [user.id, setConversationId, backToLanding])
+    const settled = authStatus === 'authenticated' || authStatus === 'unauthenticated'
+    if (!settled) return
+    const previous = lastSettledUserId.current
+    if (previous !== null && previous !== user.id) {
+      setConversationId(null)
+      // `replace`, not a user navigation: this must not leave a history
+      // entry a signed-out user (or the next account) could Back into.
+      backToLanding('replace')
+    }
+    lastSettledUserId.current = user.id
+  }, [authStatus, user.id, setConversationId, backToLanding])
 
   // Hold everything until the identity is known. Rendering the workspace during
   // the check let a returning user start a conversation while the store was

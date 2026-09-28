@@ -1,0 +1,208 @@
+{
+  "schema": "RevealLive",
+  "direction": "response",
+  "note": "What one slot holds, as the GM sees it — the GM channel and GmSnapshot only (threat model 8.3: reveal state, with the epoch, every slot, version numbers and mask keys, is GM yes / participant never / guest never). `disclosure_id` is owner decision O-3: a group display is per-recipient copies of ONE disclosure, and every copy carries its id — that is what makes `stop all copies` expressible and what tells the GM's indicator that three slots are one act rather than three. `stale_text` is alignment requirement 4's 'whether a newer version exists', named for the predicate REVEAL-8 actually fixes: the comparison is of TEXT, not of version numbers, so ten autosaves raise one notice and reverting the text clears it. It is what raises `Table is seeing an earlier version` and its Use latest version. `pending_delivery` is AUD-10: a reveal to a participant who is NOT ENROLLED, OR ENROLLED AND NOT CURRENTLY CONNECTED confirms normally and waits; it never falls back to the table. Both cases are one flag because they are one fact for the GM — nobody is reading this yet. It is PER ENTRY, because one participant may be waiting while the others holding copies of the same disclosure are not.",
+  "valid": [
+    {
+      "name": "a name and a portrait, pinned and current",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "version": 3,
+        "mask": [
+          "name",
+          "portrait"
+        ],
+        "stale_text": false,
+        "pending_delivery": false
+      }
+    },
+    {
+      "name": "the GM has edited a revealed field since",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "version": 3,
+        "mask": [
+          "notes"
+        ],
+        "stale_text": true,
+        "pending_delivery": false
+      }
+    },
+    {
+      "name": "revealed to a participant who has not joined yet",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_1a2b3c4d",
+        "type": "handout",
+        "version": 1,
+        "mask": [
+          "name"
+        ],
+        "stale_text": false,
+        "pending_delivery": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a mask key that is not revealable for the type",
+      "why": "REVEAL-10, ED-5: tags are gm_only by construction, so no slot can be holding them",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "version": 3,
+        "mask": [
+          "tags"
+        ],
+        "stale_text": false,
+        "pending_delivery": false
+      }
+    },
+    {
+      "name": "a mask that names an identity link",
+      "why": "ED-20, ED-5: `true_identity` is a field npc declares and the registry does not mark revealable, so it is gm_only by construction and no slot can be holding it",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "version": 3,
+        "mask": [
+          "true_identity"
+        ],
+        "stale_text": false,
+        "pending_delivery": false
+      }
+    },
+    {
+      "name": "a mask key of another type",
+      "why": "a slot's mask is checked against the type it holds, so a key npc declares cannot appear on a handout",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_1a2b3c4d",
+        "type": "handout",
+        "version": 1,
+        "mask": [
+          "voice"
+        ],
+        "stale_text": false,
+        "pending_delivery": false
+      }
+    },
+    {
+      "name": "an empty mask",
+      "why": "REVEAL-5: an empty mask is not a live slot, it is a Stop",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "version": 3,
+        "mask": [],
+        "stale_text": false,
+        "pending_delivery": false
+      }
+    },
+    {
+      "name": "a wildcard mask",
+      "why": "REVEAL-9, ED-8: no wildcard is ever stored, so none can be read back out of a slot",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "version": 3,
+        "mask": [
+          "all"
+        ],
+        "stale_text": false,
+        "pending_delivery": false
+      }
+    },
+    {
+      "name": "a write revision in place of the pinned version",
+      "why": "REVEAL-8, CANVAS-34: a slot pins a sealed version number; a write revision is the concurrency token",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "write_revision": 12,
+        "mask": [
+          "name"
+        ],
+        "stale_text": false,
+        "pending_delivery": false
+      }
+    },
+    {
+      "name": "the revealed text alongside the mask",
+      "why": "GM-side state says which keys are live, never what they say — the GM reads the text from the document (EXPORT-12) — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "version": 3,
+        "mask": [
+          "name"
+        ],
+        "stale_text": false,
+        "pending_delivery": false,
+        "values": {
+          "name": "Sister Ondrey Vashe"
+        }
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "an eligibility class",
+      "why": "ED-11: Workbench v1 is mask-only; no class is shown and nothing classifies (M-4) — an undeclared key is invalid for the server to emit and stripped by a client, so this is a server example",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "version": 3,
+        "mask": [
+          "name"
+        ],
+        "stale_text": false,
+        "pending_delivery": false,
+        "eligibility": "public"
+      },
+      "applies_to": [
+        "server"
+      ]
+    },
+    {
+      "name": "a live slot with no disclosure id",
+      "why": "owner decision O-3: every copy of a disclosure carries its id, because that is what makes `stop all copies` expressible and what tells the GM's indicator that three slots are one act",
+      "value": {
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "version": 3,
+        "mask": [
+          "name"
+        ],
+        "stale_text": false,
+        "pending_delivery": false
+      }
+    },
+    {
+      "name": "no delivery flag",
+      "why": "AUD-10: the GM is told plainly when a participant has not joined, so the fact is always present — never absent and guessed",
+      "value": {
+        "disclosure_id": "dsc_0001b7e2c1a9",
+        "document_id": "doc_9k2f7a1c",
+        "type": "npc",
+        "version": 3,
+        "mask": [
+          "name"
+        ],
+        "stale_text": false
+      }
+    }
+  ]
+}

@@ -34,6 +34,101 @@
     {
       "name": "an integral number is an integer however it is spelled: JavaScript cannot tell 14.0 from 14",
       "value": { "schema_version": 1, "type": "npc", "type_version": 1.0, "base_write_revision": 14.0, "fields": { "wants": "The signet." } }
+    },
+    {
+      "name": "a handout's text",
+      "value": {
+        "schema_version": 1,
+        "type": "handout",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": {
+          "body": "Three names are struck through."
+        }
+      }
+    },
+    {
+      "name": "session notes, every field of the type in one autosave",
+      "value": {
+        "schema_version": 1,
+        "type": "session-notes",
+        "type_version": 1,
+        "base_write_revision": 2,
+        "fields": {
+          "session": 12,
+          "date": "16 September, the second Tideday",
+          "present": ["Bryn", "Oda", "Kesh"],
+          "recap": "They found the ledger, and then the tide found them.",
+          "beats": ["The ledger names the harbourmaster"],
+          "loose_threads": ["Who paid for the scuttling?"]
+        }
+      }
+    },
+    {
+      "name": "a quest log thread moved to resolved",
+      "value": {
+        "schema_version": 1,
+        "type": "quest-log",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": {
+          "open_threads": [],
+          "resolved_threads": [
+            {
+              "name": "The missing chaplain",
+              "text": "Found, drowned."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "a character sheet's ability row",
+      "value": {
+        "schema_version": 1,
+        "type": "character-sheet",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": {
+          "abilities": {
+            "dex": 16,
+            "cha": 17
+          }
+        }
+      }
+    },
+    {
+      "name": "a lore entry's rumours, cleared",
+      "value": {
+        "schema_version": 1,
+        "type": "lore",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": {
+          "rumours": []
+        }
+      }
+    },
+    {
+      "name": "a stat block's speed alone: a patch need not mention a required field",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "speed": "20 ft., swim 40 ft." } }
+    },
+    {
+      "name": "a stat block's armour class, set to a new number",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "ac": 0 } }
+    },
+    {
+      "name": "an encounter's budget",
+      "value": {
+        "schema_version": 1,
+        "type": "encounter",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": {
+          "xp_budget": 2400,
+          "party_level": 3
+        }
+      }
     }
   ],
   "invalid": [
@@ -41,6 +136,26 @@
       "name": "a patch that touches nothing",
       "why": "a no-op is decided by the server comparing values, not sent as an empty patch",
       "value": { "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 14, "fields": {} }
+    },
+    {
+      "name": "clearing a stat block's armour class",
+      "why": "LIB-12: ac is required on a stat block, so an autosave of an emptied AC cell is refused rather than storing a document the record calls invalid",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "ac": null } }
+    },
+    {
+      "name": "clearing a stat block's hit points",
+      "why": "LIB-12 names all three, and the stat_block_card renderer is handed hp as a required integer",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "hp": null } }
+    },
+    {
+      "name": "a negative armour class in an autosave",
+      "why": "1kg.5.7, F-10: statblock.ac is floored at 0 by its own per-field bounds, inside the integer kind's own range",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "ac": -1 } }
+    },
+    {
+      "name": "a party level of zero",
+      "why": "1kg.5.7, F-10: there is no level 0, so encounter.party_level starts at 1",
+      "value": { "schema_version": 1, "type": "encounter", "type_version": 1, "base_write_revision": 1, "fields": { "party_level": 0 } }
     },
     {
       "name": "no base revision",
@@ -112,6 +227,117 @@
       "name": "no type",
       "why": "values are checked against the type's field kinds on both sides, before the write",
       "value": { "schema_version": 1, "type_version": 1, "base_write_revision": 14, "fields": { "wants": "The signet." } }
+    },
+    {
+      "name": "an armour class written as text",
+      "why": "1kg.5.3: an integer field takes a JSON integer. \"12\" is not one, and neither is true — Pydantic would otherwise read true as 1",
+      "value": { "schema_version": 1, "type": "statblock", "type_version": 1, "base_write_revision": 1, "fields": { "ac": "12" } }
+    },
+    {
+      "name": "an ability the rules do not have",
+      "why": "1kg.5.3: the ability block has a closed key set (str, dex, con, int, wis, cha). In a request the client builds, a stray key is a bug on both sides",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": { "abilities": { "str": 10, "luck": 3 } }
+      }
+    },
+    {
+      "name": "a prototype key smuggled into an ability block",
+      "why": "The known pitfall: JSON allows an own __proto__ key and a plain-object lookup would find a function. refusingProtoKeys recurses so a nested one is refused before any field schema sees it",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": { "abilities": { "str": 10, "__proto__": { "polluted": true } } }
+      }
+    },
+    {
+      "name": "a trait with no name",
+      "why": "1kg.5.3: an entry_list entry is {name, text}, and the name is what a renderer shows as its heading, so it cannot be blank",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": { "traits": [{ "name": "", "text": "She breathes water." }] }
+      }
+    },
+    {
+      "name": "a trait whose name is a tab",
+      "why": "Requirement 5 (1kg.5.7.2, F-8): the name is what a renderer shows as its heading, so it cannot be blank, and blank is decided by the contract's own trim, exactly as for a document's name. A tab is allowed inside text, but trimming empties this name",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": {
+          "traits": [
+            {
+              "name": "\t",
+              "text": "She breathes water."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "a trait whose name is spaces",
+      "why": "Requirement 5 (1kg.5.7.2, F-8): the name is what a renderer shows as its heading, so it cannot be blank, and blank is decided by the contract's own trim, exactly as for a document's name. Trimming empties this name",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": {
+          "traits": [
+            {
+              "name": "   ",
+              "text": "She breathes water."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "a trait carrying a key the entry does not declare",
+      "why": "1kg.5.3, ED-2: an entry_list is ONE field and nothing addresses inside it, so its entries are closed too. In a request both sides refuse the key",
+      "value": {
+        "schema_version": 1,
+        "type": "statblock",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": { "traits": [{ "name": "Amphibious", "text": "She breathes water.", "damage": "1d6" }] }
+      }
+    },
+    {
+      "name": "a session number that is text",
+      "why": "1kg.5.3: session is an integer field",
+      "value": {
+        "schema_version": 1,
+        "type": "session-notes",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": {
+          "session": "12"
+        }
+      }
+    },
+    {
+      "name": "a character sheet's speed as a number",
+      "why": "speed is text because it reads '30 ft.', and a text field never takes a number on either side",
+      "value": {
+        "schema_version": 1,
+        "type": "character-sheet",
+        "type_version": 1,
+        "base_write_revision": 1,
+        "fields": {
+          "speed": 30
+        }
+      }
     }
   ]
 }

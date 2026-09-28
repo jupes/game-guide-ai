@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
+import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { VersionList } from './VersionList'
 import { HISTORY_PAGE_SIZE } from './canvasStatus'
 import type { DocumentVersion } from './contracts'
@@ -73,6 +74,9 @@ export const Restore: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement)
     await expect(canvas.queryByRole('button', { name: 'Restore v3' })).not.toBeInTheDocument()
+    // 1dw: the small ds/Button call site, not rendered by ds/'s own `Sizes`
+    // story.
+    await expectTouchTarget(canvas, 'Restore v1')
     await userEvent.click(canvas.getByRole('button', { name: 'Restore v1' }))
     await expect(canvas.queryByRole('dialog')).not.toBeInTheDocument()
     await expect(args.onRestore).toHaveBeenCalledWith(expect.objectContaining({ number: 1 }))
@@ -111,6 +115,9 @@ export const Failed: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('alert')).toHaveTextContent("Couldn't load history")
+    // 1dw: the small ds/Button call site, not rendered by ds/'s own `Sizes`
+    // story.
+    await expectTouchTarget(canvas, 'Retry')
     await userEvent.click(canvas.getByRole('button', { name: 'Retry' }))
     await expect(args.onRetry).toHaveBeenCalled()
   },
@@ -149,3 +156,13 @@ export const PagingInFlight: Story = {
     await expect(canvas.getByRole('status')).toHaveTextContent('Loading older versions…')
   },
 }
+
+// ── Dark Tavern ──────────────────────────────────────────────────────────────
+// agent-forge-harness-27h, rework 1. This file had NO dark story, so strict axe
+// had never rendered the version list against the dark palette. `DarkFailed`
+// covers the error state, which is where a themed palette most often slips
+// below AA — the same shape of defect as the AuthScreen error this branch fixed.
+
+export const Dark: Story = { ...Playground, globals: { theme: 'dark' } }
+
+export const DarkFailed: Story = { ...Failed, globals: { theme: 'dark' } }

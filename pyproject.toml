@@ -22,10 +22,15 @@ dependencies = [
     #   - langchain-openai: ChatOpenAI generate node
     #   - langchain (meta) + langfuse: REQUIRED by `from langfuse.langchain import
     #     CallbackHandler` in service/tracing.py — langchain-core alone is NOT enough.
-    "langgraph>=0.2,<0.4",
-    "langchain-core>=0.3,<0.4",
-    "langchain-openai>=0.2,<0.4",
-    "langchain>=0.3,<0.4",
+    #
+    # The floors are security floors, not preferences (v1u): each is the first
+    # release that patches a Dependabot advisory, and none of those fixes was
+    # backported to the 0.3 line. They keep a fresh `uv lock`, and
+    # Dockerfile.service's unpinned `pip install .`, from resolving back below one.
+    "langgraph>=1.0.10,<2",
+    "langchain-core>=1.2.22,<2",
+    "langchain-openai>=1.1.14,<2",
+    "langchain>=1.3.9,<2",
     "langfuse>=3,<4",
     # PDF text extraction for chat file attachments (swe1.6). Core (not the
     # [extract] extra) because the live upload endpoint imports it at runtime.
@@ -59,11 +64,16 @@ dev = [
 # ingestion/eval_answers.py. The offline unit tests use a fake evaluator and need
 # nothing here.
 eval = [
+    # Carries two Dependabot alerts with no patched release (agent-forge-harness-n4h):
+    # ragas GHSA-95ww-475f-pr4f (SSRF in its multi-modal metrics) and its dependency
+    # diskcache GHSA-w8v5-vhqr-4h9v (unpickles its cache directory). What keeps them
+    # unreachable (never in an image, no multi-modal metric, no ragas cache backend)
+    # is pinned by tests/test_unpatched_advisories.py. Re-check when either releases.
     "ragas>=0.4,<0.5",
     # Local generator for the model A/B (ziw.4): gpt-4o-mini (API) vs gemma4:12b
     # (Ollama). ChatOllama construction needs no server; only running the
     # comparison does. `ollama pull gemma4:12b` (~8GB) + Ollama 0.22+.
-    "langchain-ollama>=0.2,<0.4",
+    "langchain-ollama>=1,<2",
 ]
 # Gated cross-encoder rerank in the live service (1em.1). Heavy (pulls torch),
 # so opt-in twice: install this extra AND set RAG_RERANK=1 (see config.py).
@@ -153,6 +163,16 @@ ignore = [
 python_version = "3.12"
 files = ["service", "config.py"]
 ignore_missing_imports = true
+# A statement after a `return` is what a validator looks like when it was edited
+# without being re-read; ruff and mypy's defaults both pass over one. This is the
+# gate that sees it, and the tree is clean under it.
+#
+# Scope: `files` above, so this is the PYTHON gate over `service/` and
+# `config.py` — every module in them, not only the ones whose author turned it
+# on — and it is not repository-wide. Policy, and how to silence a false
+# positive, are in `docs/ci.md`; the short version is `# type: ignore[unreachable]`
+# on the line, never by removing this flag.
+warn_unreachable = true
 
 [tool.pytest.ini_options]
 # Puts the repo root on sys.path so `import service` / `import ingestion` resolve

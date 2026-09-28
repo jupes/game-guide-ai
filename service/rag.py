@@ -136,10 +136,18 @@ class RagService:
         is invoke + response mapping only. Langfuse tracing is attached here,
         env-gated + off by default (see tracing.py).
         """
+        from . import usage_capture
         from .generate import context_texts
         from .tracing import build_trace_config
 
         config = build_trace_config(model=self.model, mode=mode) or None
+        # yje.5.1.1: hand the live turn's usage-capture operation to the graph
+        # through the run config — the same channel the Langfuse callbacks
+        # already use, and explicit rather than relying on LangGraph's executor
+        # to copy a context variable across the GM fan-out. Returns `config`
+        # untouched when no turn is in flight, so an untraced direct call still
+        # invokes with `config=None` exactly as before.
+        config = usage_capture.run_config_with_operation(config)
         final = self._compiled_graph().invoke(
             {
                 "prompt": prompt, "mode": mode,

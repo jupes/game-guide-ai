@@ -20,6 +20,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from enum import Enum
 from importlib.util import find_spec
 from pathlib import Path
@@ -27,12 +28,12 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.staticfiles import StaticFiles
+from fastapi.exceptions import RequestValidationError
 
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from . import gcp_logging
+from . import conversations_api, gcp_logging, timeline_api, usage_capture
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .db import Database, PoolSettings
@@ -56,7 +57,18 @@ from .metrics import (
     record_safely,
 )
 from .migrations import MigrationError, Mode, migrate
-from .model_catalog import CATALOG_REVISION, DEFAULT_ALIAS, enabled_profiles, get_profile, public_model_entry
+from .model_catalog import (
+    AUTO_PUBLIC_ENTRY,
+    CATALOG_REVISION,
+    DEFAULT_ALIAS,
+    PRE_D9_CATALOG_REVISION,
+    ModelProfile,
+    enabled_profiles,
+    get_profile,
+    get_profile_by_public_id,
+    public_model_entry,
+    public_model_id,
+)
 from .models import (
     Attachment,
     AttachmentResponse,
@@ -78,7 +90,18 @@ from .ratelimit import (
     check_chat_request,
     client_source,
 )
+from .security_headers import (
+    CONTENT_SECURITY_POLICY,
+    CROSS_ORIGIN_OPENER_POLICY,
+    PERMISSIONS_POLICY,
+    REFERRER_POLICY,
+    X_CONTENT_TYPE_OPTIONS,
+)
 from .session import SessionData, decode_session, encode_session
+from .spa_fallback import install_spa
+from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
+from .workbench_api import gm_session, install_workbench
+from .workbench_contracts import CHAT_TEXT_MAX_CHARS, CONTRACT_VERSION, check_plain_text
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +186,11 @@ def normalize_llm_error(exc: BaseException) -> str:
     return "unknown"
 
 _state: dict[str, Any] = {}
+
+# The cost ledger's one way in (yje.5.1.2): a turn's rows go to whatever writer
+# this registry holds when the turn ends (`_build_stores` puts it there, the
+# lifespan teardown clears it), or nowhere. Registered once, here.
+usage_capture.set_ledger_provider(lambda: _state.get("ledger"))
 
 
 def build_reranker(enabled: bool | None = None) -> Any | None:
@@ -252,6 +280,13 @@ def _build_stores(db: Database) -> None:
     Only ever called once the schema has been checked."""
     _state["store"] = PostgresMessageStore(db=db)
     _state["auth"] = PostgresAuthStore(db=db)
+    _state["timeline"] = PostgresTimelineStore()
+    # The provider-attempt cost ledger (yje.5.1.2). A store like the others, so
+    # it lives and dies with this registry; `usage_capture` finds it through the
+    # provider registered below `_state`, because `chat()` does not change.
+    from .usage_ledger import LedgerWriter, PostgresUsageLedgerStore
+
+    _state["ledger"] = LedgerWriter(PostgresUsageLedgerStore(), db)
 
 
 def _build_rag(db: Database) -> None:
@@ -326,6 +361,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="D&D 5e RAG — Agent Service", version="1.0", lifespan=lifespan)
+install_workbench(app)
 
 
 def get_service() -> RagService:
@@ -343,6 +379,22 @@ def get_message_store() -> MessageStore | None:
     if "store" not in _state:
         recover_database()
     return _state.get("store")
+
+
+def get_timeline_store() -> TimelineStore | None:
+    # Same posture as `get_message_store`: None is a valid state. Without one
+    # the timeline route answers 503 and no other path is affected.
+    if "timeline" not in _state:
+        recover_database()
+    return _state.get("timeline")
+
+
+def get_timeline_database() -> Database | None:
+    # The database only when a store exists, so a degraded instance whose schema
+    # was never checked cannot be read through.
+    if "timeline" not in _state:
+        recover_database()
+    return _state.get("db") if "timeline" in _state else None
 
 
 def get_metrics_sink(request: Request) -> MetricsSink:
@@ -593,22 +645,110 @@ async def capture_chat_metrics(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def set_security_headers(request: Request, call_next):
+    """Send the security headers this app owns on every response it produces
+    (va8, and agent-forge-harness-y58 for the four added after it).
+
+    A separate middleware rather than two lines inside `capture_chat_metrics`:
+    that one returns early for every path that is not `/chat`, so folding the
+    header into it would leave the SPA document, `/healthz`, `/auth/*` and every
+    404 with no policy at all — and its metric contract is pinned by
+    `service/tests/test_metrics.py`.
+
+    Declared last, so it is the OUTERMOST user middleware (Starlette inserts
+    each one at position 0) and `setdefault` therefore gets the last word. That
+    ordering is not what puts the header on the production SPA, though: ANY user
+    middleware wraps the router, and the router is what holds the `StaticFiles`
+    mount at the bottom of this file.
+
+    `setdefault`, not assignment, for every header here: a route may answer
+    with a stricter policy of its own — SEC-19 requires `default-src 'none';
+    sandbox` on asset responses — and must not have to unpick this middleware
+    to keep it.
+
+    Known and accepted: a 500 raised by an UNHANDLED exception is produced by
+    Starlette's `ServerErrorMiddleware`, which sits outside all user middleware,
+    so it carries no policy. Handled responses — including `HTTPException`, 401,
+    404 and 422 — do.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+    response.headers.setdefault("X-Content-Type-Options", X_CONTENT_TYPE_OPTIONS)
+    response.headers.setdefault("Referrer-Policy", REFERRER_POLICY)
+    response.headers.setdefault("Cross-Origin-Opener-Policy", CROSS_ORIGIN_OPENER_POLICY)
+    response.headers.setdefault("Permissions-Policy", PERMISSIONS_POLICY)
+    return response
+
+
 def _persist_turn(
     store: MessageStore | None, conversation_id: str | None,
     mode: str, role: str, content: str,
     suggestions: list[dict[str, Any]] | None = None,
-) -> None:
+) -> int | None:
     """Best-effort history write: a failure is logged, never raised — a chat
     answer must not fail because persistence did (deliberately outside the
-    _DB_ERRORS → 503 taxonomy, which is reserved for retrieval)."""
+    _DB_ERRORS → 503 taxonomy, which is reserved for retrieval).
+
+    Answers the new row's id, or `None` when nothing was written: the turn's
+    timeline entry links the rows it carries (1kg.4.2, ruling R-1)."""
     if store is None or conversation_id is None:
-        return
+        return None
     try:
-        store.append(conversation_id, mode, role, content, suggestions=suggestions)
+        return store.append(conversation_id, mode, role, content, suggestions=suggestions)
     except Exception:
         log.warning(
             "history write failed (mode=%s, conversation_id=%s, role=%s)",
             mode, conversation_id, role, exc_info=True,
+        )
+        return None
+
+
+#: What `/chat` answered, under the names `ChatAnswer` keeps it by. `text` is
+#: `resp.answer` and `created_at` is minted: `ChatResponse` has no time.
+_ANSWER_FIELDS = {
+    "answerable", "sources", "suggestions", "routing", "suggestions_routing", "spell_content", "stat_block",
+}
+
+
+def _record_timeline_entry(
+    timeline: TimelineStore | None, tdb: Database | None, *,
+    conversation_id: str, owner_id: int, req: ChatRequest, resp: ChatResponse,
+    user_message_id: int | None, assistant_message_id: int | None,
+) -> None:
+    """Best-effort: the answered turn as one typed timeline entry (1kg.4.2).
+
+    The posture of `_persist_turn`, and for the same reason: an answer must
+    never fail because a record of it did. The call sits inside `chat()`'s
+    `try:`, so this catch-all is load-bearing — without it a failure here
+    would be answered as a 500. It runs only once `svc.answer` has returned
+    and both message rows are written, on one short transaction of its own,
+    and makes no provider call. A turn it cannot write — the contract bounds
+    what `/chat`'s own models do not — is served by the legacy adapter from its
+    rows instead.
+
+    The log line is content-free: the exception's TYPE, never its message,
+    which can quote a statement and with it the prompt or the answer (X-7).
+    """
+    if timeline is None or tdb is None:
+        return
+    try:
+        created_at = datetime.now(UTC)
+        answer = resp.model_dump(mode="json", include=_ANSWER_FIELDS)
+        entry = {
+            "schema_version": CONTRACT_VERSION, "entry_kind": "chat", "entry_id": new_entry_id(),
+            "created_at": created_at, "mode": req.mode.value, "prompt": req.prompt,
+            "answer": {**answer, "text": resp.answer, "created_at": created_at},
+        }
+        with tdb.transaction() as unit:
+            timeline.append(
+                unit, conversation_id, entry, created_at, owner_id=owner_id,
+                user_message_id=user_message_id, assistant_message_id=assistant_message_id,
+            )
+    except Exception as exc:
+        log.warning(
+            "timeline entry write failed (mode=%s, conversation_id=%s): %s",
+            req.mode.value, conversation_id, type(exc).__name__,
         )
 
 
@@ -748,18 +888,13 @@ def healthz() -> dict[str, str | bool]:
 
 @app.get("/models")
 def get_models() -> dict[str, object]:
-    """Server-owned model catalog (agent-forge-harness-b8o.1, Checkpoint 1).
-    Read-only for now — no request yet resolves a model preference against
-    this catalog (that's b8o.2/b8o.4). Never exposes secret names, base URLs,
-    or the exact provider model/snapshot string — see model_catalog.py."""
-    auto_entry: dict[str, object] = {
-        "id": "auto",
-        "display_name": "Automatic",
-        "description": "Balances speed, cost, and task difficulty.",
-    }
+    """Server-owned model catalog (agent-forge-harness-b8o.1, Checkpoint 1),
+    as the client may know it: public ids and tier labels only (D-9, au3).
+    Never an alias, model or provider name, secret name, base URL, or the
+    exact provider model/snapshot string — see model_catalog.PUBLIC_MODELS."""
     return {
         "default": "auto",
-        "models": [auto_entry, *(public_model_entry(p) for p in enabled_profiles())],
+        "models": [dict(AUTO_PUBLIC_ENTRY), *(public_model_entry(p) for p in enabled_profiles())],
     }
 
 
@@ -768,6 +903,23 @@ def get_models() -> dict[str, object]:
 #: alone proves nothing. The value also says WHICH control fired, because "slow
 #: down" and "the day's budget is gone" need different words in the UI.
 CHAT_THROTTLE_HEADER = "X-Chat-Throttled"
+
+
+def _refuse_unstorable_prompt(prompt: str) -> None:
+    """Bead 5mj: the prompt is stored text, so it takes the one rule
+    (`check_plain_text`). It is persisted to PostgreSQL `text` and `jsonb`, which
+    refuse U+0000, so an unrefused NUL was a provider call paid for and then a
+    write that failed; a bidi override is stored text that reads differently
+    from how it is stored. Raised as a validation error that carries no `input`,
+    so the application's one handler (`workbench_api.handle_validation_error`)
+    answers FastAPI's default 422 list with nothing of the prompt in it: the
+    field, never the value."""
+    try:
+        check_plain_text(prompt)
+    except ValueError as refused:
+        raise RequestValidationError(
+            [{"type": "value_error", "loc": ("body", "prompt"), "msg": f"Value error, {refused}"}]
+        ) from None
 
 
 def _throttle_chat(request: Request, user_id: int) -> None:
@@ -829,6 +981,21 @@ def _enforce_daily_cap(store: MessageStore | None) -> None:
     )
 
 
+def _pre_d9_binding(
+    store: MessageStore | None, conversation_id: str, alias: str,
+) -> ModelProfile | None:
+    """The enabled profile this conversation was bound to by naming `alias`
+    itself, before D-9 (a6o), or None. Such a client keeps sending the alias it
+    bound by; honouring it tells the caller nothing they did not tell the
+    server. A binding made since D-9 never counts, or a caller could bind one
+    through a public id and then test aliases against it."""
+    if store is None:
+        return None
+    if store.conversation_binding(conversation_id) != ("manual", alias, PRE_D9_CATALOG_REVISION):
+        return None
+    return get_profile(alias)
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(
     req: ChatRequest,
@@ -837,7 +1004,12 @@ def chat(
     store: MessageStore | None = Depends(get_message_store),
     metrics: MetricsSink = Depends(get_metrics_sink),
     session: SessionData = Depends(require_session),
+    timeline: TimelineStore | None = Depends(get_timeline_store),
+    tdb: Database | None = Depends(get_timeline_database),
 ) -> ChatResponse:
+    # Stored-text rule (5mj): a prompt that cannot be stored is refused before
+    # anything is spent on it — the budget below included.
+    _refuse_unstorable_prompt(req.prompt)
     # Cost guard (x5bz.3): spend one of this tester's chat budget before any
     # work happens. Before the try for the same reason as the gates below — a
     # 429 raised inside it would be caught by the `except Exception` and
@@ -848,6 +1020,20 @@ def chat(
     # before this runs. No role exemption — the account most likely to run up a
     # bill by accident is the one being used to test.
     _enforce_daily_cap(store)
+    # Prompt length gate (agent-forge-harness-764): reuse the Workbench's own
+    # request-side ceiling rather than a `Field(max_length=...)` on
+    # ChatRequest.prompt, whose rejection would go through FastAPI's default
+    # RequestValidationError handler and echo the whole oversized prompt back
+    # in the 422 body (R-12, docs/adr/gm-workbench-threat-model.md). A plain
+    # HTTPException here is handled ordinarily -- no echo -- exactly like the
+    # model_preference 422 below. `detail` stays a static string; the prompt
+    # itself must never appear in it. Raised before the try so it isn't masked
+    # as a 500, same as the gates around it.
+    if len(req.prompt) > CHAT_TEXT_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"prompt exceeds the {CHAT_TEXT_MAX_CHARS}-character limit",
+        )
     # Server-side role gate: the GM channel is DM-only, enforced from the session
     # role (not the UI toggle). Raised before the try so it isn't masked as a 500.
     if req.mode.value == "gm" and session.role != "dm":
@@ -872,13 +1058,20 @@ def chat(
     # the plan was written), so every request already has a real key to bind
     # against; there's no stateless-single-turn path left to special-case.
     # Before the try for the same reason as ownership (409/422, not 500).
-    requested_alias = req.model_preference
-    if requested_alias != "auto" and get_profile(requested_alias) is None:
-        raise HTTPException(
-            status_code=422, detail=f"unknown or disabled model: {requested_alias!r}",
-        )
-    strategy: Literal["auto", "manual"] = "auto" if requested_alias == "auto" else "manual"
-    manual_alias = None if strategy == "auto" else requested_alias
+    # D-9 (au3): the client names a model by its PUBLIC id, never the alias; a
+    # real alias sent here is as unknown as any other string (no oracle), save
+    # on a conversation bound by that alias before D-9 (a6o, _pre_d9_binding).
+    requested = req.model_preference
+    requested_profile = None if requested == "auto" else get_profile_by_public_id(requested)
+    if requested != "auto" and requested_profile is None:
+        requested_profile = _pre_d9_binding(store, conversation_id, requested)
+        if requested_profile is None:
+            raise HTTPException(
+                status_code=422, detail=f"unknown or disabled model: {requested!r}",
+            )
+        requested = public_model_id(requested_profile.alias)
+    strategy: Literal["auto", "manual"] = "auto" if requested == "auto" else "manual"
+    manual_alias = None if requested_profile is None else requested_profile.alias
     if store is not None:
         bound_strategy, bound_alias = store.claim_conversation_strategy(
             conversation_id, strategy=strategy, manual_alias=manual_alias,
@@ -898,13 +1091,22 @@ def chat(
         effective_alias = manual_alias
     else:
         effective_alias = DEFAULT_ALIAS
-    effective_profile = get_profile(effective_alias)
-    assert effective_profile is not None  # validated above; DEFAULT_ALIAS is always enabled
+    assert get_profile(effective_alias) is not None  # validated above; DEFAULT_ALIAS is always enabled
+    # The alias and provider stay server-side (logs, traces and usage records
+    # take them from generate.py); the client is told the public id only.
     routing = RoutingInfo(
-        requested=requested_alias, effective=effective_alias,
-        provider=effective_profile.provider, strategy=strategy,
+        requested=requested, effective=public_model_id(effective_alias), strategy=strategy,
     )
 
+    # yje.5.1.1: one usage-capture operation per turn, created AFTER every gate
+    # above (a turn a gate refuses makes no provider call and must record
+    # nothing) and before any provider call below. It is outside the try on
+    # purpose — `begin_operation` cannot raise, by construction rather than by
+    # hope — and torn down in the finally at the end of this chain.
+    op_token = usage_capture.begin_operation(
+        mode=req.mode.value, billed_account_id=session.user_id,
+        actor_kind=usage_capture.ACTOR_ACCOUNT, campaign_id=None, request=request,
+    )
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, conversation_id,
@@ -920,7 +1122,7 @@ def chat(
             # "economy subroute" is the same baseline; Checkpoint 4 gives
             # this its own real resolution once more tiers exist.
             resp.suggestions_routing = SuggestionsRoutingInfo(
-                effective=DEFAULT_ALIAS, provider=effective_profile.provider,
+                effective=public_model_id(DEFAULT_ALIAS),
             )
         record_safely(
             metrics,
@@ -932,13 +1134,17 @@ def chat(
                 labels=MetricLabels(mode=req.mode.value, route_template="/chat"),
             ),
         )
-        _persist_turn(store, conversation_id, req.mode.value, "user", req.prompt)
-        _persist_turn(
+        user_message_id = _persist_turn(store, conversation_id, req.mode.value, "user", req.prompt)
+        assistant_message_id = _persist_turn(
             store, conversation_id, req.mode.value, "assistant", resp.answer,
             suggestions=(
                 [s.model_dump(mode="json") for s in resp.suggestions]
                 if resp.suggestions else None
             ),
+        )
+        _record_timeline_entry(
+            timeline, tdb, conversation_id=conversation_id, owner_id=session.user_id, req=req, resp=resp,
+            user_message_id=user_message_id, assistant_message_id=assistant_message_id,
         )
         return resp
     except _LLM_ERRORS as exc:
@@ -983,6 +1189,8 @@ def chat(
         # Anything else is a bug in our code — log the full traceback, return 500.
         log.exception("internal error on /chat (mode=%s)", req.mode.value)
         raise HTTPException(status_code=500, detail="internal error") from None
+    finally:
+        usage_capture.end_operation(op_token)
 
 
 @app.post("/metrics/ui", status_code=status.HTTP_202_ACCEPTED)
@@ -1215,8 +1423,13 @@ def me(
     return AuthUser(email=user.email, role=user.role)
 
 
-# Mount the pre-built UI at "/" — after route decorators so API routes always win.
-# Only active when `cd ui && bun run build` has been run (ui/dist/ must exist).
+#: The GM gate every Workbench router is built with (agent-forge-harness-oe6).
+WORKBENCH_GM = gm_session(require_session)
+app.include_router(conversations_api.build_router(WORKBENCH_GM, get_timeline_database))
+app.include_router(timeline_api.build_router(WORKBENCH_GM, get_timeline_store, get_timeline_database))
+# Mount the pre-built UI last, as an ALLOWLIST fallback, not a catch-all
+# (agent-forge-harness-y40) -- see service/spa_fallback.py for what each path
+# answers and why the order matters. Only active when `cd ui && bun run build`
+# has been run (ui/dist/ must exist).
 _UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
-if _UI_DIST.is_dir():
-    app.mount("/", StaticFiles(directory=_UI_DIST, html=True), name="ui")
+install_spa(app, _UI_DIST)

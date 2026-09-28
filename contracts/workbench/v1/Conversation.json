@@ -1,0 +1,265 @@
+{
+  "schema": "Conversation",
+  "direction": "response",
+  "note": "One conversation's metadata (1kg.2.4). Every key is present; what a row never recorded is null (Not recorded). The owner, the model-routing strategy, its alias and the catalog revision are never on the wire (D-9).",
+  "valid": [
+    {
+      "name": "a GM thread inside a campaign, renamed",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Session zero: the harbour job",
+        "started_mode": "gm",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    },
+    {
+      "name": "a legacy conversation: a client-minted UUID with nothing recorded",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "3f9a1b2c-7d4e-4f5a-9b8c-1d2e3f4a5b6c",
+        "campaign_id": null,
+        "title": null,
+        "started_mode": null,
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": null,
+        "archived_at": null
+      }
+    },
+    {
+      "name": "a plain chat conversation, never renamed",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_Hh5pZ8cN2uYq6Jt0aGx4Ew",
+        "campaign_id": null,
+        "title": null,
+        "started_mode": "sage",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": null,
+        "archived_at": null
+      }
+    },
+    {
+      "name": "an archived conversation is still its owner's to read",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Session zero: the harbour job",
+        "started_mode": "gm",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-17T08:00:00Z",
+        "archived_at": "2026-09-17T08:00:00Z"
+      }
+    },
+    {
+      "name": "a title of 200 characters",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "@repeat:a:200",
+        "started_mode": "gm",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    },
+    {
+      "name": "a stored title is read as stored: a response has no trim rule",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": " Harbour ",
+        "started_mode": "gm",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    },
+    {
+      "name": "a newer server's additive field is tolerated by the client",
+      "applies_to": [
+        "client"
+      ],
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Session zero: the harbour job",
+        "started_mode": "gm",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "pinned": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a campaign_id key left out",
+      "why": "Not recorded is a key present and null, never a missing key",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "3f9a1b2c-7d4e-4f5a-9b8c-1d2e3f4a5b6c",
+        "title": null,
+        "started_mode": null,
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": null,
+        "archived_at": null
+      }
+    },
+    {
+      "name": "a started_mode key left out",
+      "why": "Not recorded is a key present and null, never a missing key",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "3f9a1b2c-7d4e-4f5a-9b8c-1d2e3f4a5b6c",
+        "campaign_id": null,
+        "title": null,
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": null,
+        "archived_at": null
+      }
+    },
+    {
+      "name": "a channel the service does not have",
+      "why": "started_mode is one of ChatMode: sage, spell, rules, gm",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Session zero: the harbour job",
+        "started_mode": "combat",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    },
+    {
+      "name": "an empty title",
+      "why": "a title is 1 to 200 characters",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "",
+        "started_mode": "gm",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    },
+    {
+      "name": "a title of 201 characters",
+      "why": "a title is 1 to 200 characters (0006's CHECK)",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "@repeat:a:201",
+        "started_mode": "gm",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    },
+    {
+      "name": "an id outside the opaque grammar",
+      "why": "identifiers are [A-Za-z0-9_-]{1,64}",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "not an id",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Session zero: the harbour job",
+        "started_mode": "gm",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    },
+    {
+      "name": "a display string for a time",
+      "why": "CANVAS-27: one timestamp grammar, never a display string",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Session zero: the harbour job",
+        "started_mode": "gm",
+        "created_at": "7:36 PM",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    },
+    {
+      "name": "no creation time",
+      "why": "every conversation row has created_at",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Session zero: the harbour job",
+        "started_mode": "gm",
+        "created_at": null,
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    },
+    {
+      "name": "the owner's id on the wire",
+      "why": "the owner comes from the session and is never sent back; the server refuses to emit it and a client strips it",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Session zero: the harbour job",
+        "started_mode": "gm",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "owner_id": 7
+      }
+    },
+    {
+      "name": "the model-routing strategy on the wire",
+      "why": "D-9: users do not see which model answers; selection_strategy, manual_alias and catalog_revision stay on the server",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Session zero: the harbour job",
+        "started_mode": "gm",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "selection_strategy": "manual",
+        "manual_alias": "gpt-4o-mini"
+      }
+    },
+    {
+      "name": "a newer contract version",
+      "why": "schema_version is 1 throughout this contract version",
+      "value": {
+        "schema_version": 2,
+        "conversation_id": "cnv_9Qe2mT4xLb7Rk1Vd0sWf3A",
+        "campaign_id": "cmp_4b1d9e7a",
+        "title": "Session zero: the harbour job",
+        "started_mode": "gm",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    }
+  ]
+}

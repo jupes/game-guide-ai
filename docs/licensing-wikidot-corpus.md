@@ -5,6 +5,16 @@ second, non-PDF ingestion source added by `dnd-corpus-wikidot-expansion`
 (`agent-forge-harness-4x66`). Required by that feature's own acceptance criteria before any
 scraped content ships to testers.
 
+> **Review note (2026-09-16).** The conclusions below were written for the closed, invite-gated
+> pilot. The "safe to re-serve with attribution" conclusion and the suggestion that wikidot
+> content could feed a public SRD tier should not be relied on for any wider audience. The
+> [plan review](forge/reports/additive-retrieval-and-billing-plan-review.md) found that 422 of
+> the 849 wikidot chunks overlap PDF book text, that the site hosts full entries from non-SRD
+> books, and that Wikidot's terms make contributors responsible for what they post, so the
+> site-wide CC BY-SA 3.0 footer cannot be assumed to license publisher-owned text. Whether any
+> wikidot content may reach a public or paid tier is decided by `agent-forge-harness-yje.1.1`,
+> with counsel input.
+
 ## The source and its license
 
 Content ingested from [dnd5e.wikidot.com](https://dnd5e.wikidot.com) is licensed

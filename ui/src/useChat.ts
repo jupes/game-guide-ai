@@ -50,6 +50,44 @@ export interface UseChatOptions {
    * the user could never return to. Adopting it is what makes the id the server
    * chose the one the next turn continues. */
   onConversationAdopted?: (conversationId: string) => void
+  /** Called exactly once per turn THIS hook sent, right after the commit in
+   * which it settles (agent-forge-harness-ekf) — 'done' for an answer, 'error'
+   * for a failed result or a rejection. Additive and optional: every existing
+   * caller is unaffected. This is the seam a consumer uses to announce arrival
+   * without re-deriving it from `exchanges` (a recalled turn and a settled
+   * turn both end up `status: 'done'` with ids the consumer cannot tell apart).
+   *
+   * The second argument is the conversation id the turn was SENT for — not
+   * necessarily the one this hook is scoped to right now
+   * (agent-forge-harness-swg / pr114 M-1).
+   *
+   * The third, `shown`, is whether this settle is actually on screen: true only
+   * when the settle's own state update found its exchange and wrote the
+   * outcome into it (so it was APPLIED), and that exchange is among the
+   * exchanges this hook is returning at the commit that follows (so it is
+   * DRAWN). Comparing conversation ids alone cannot tell — after A -> B -> A
+   * the ids match again, but A's recall has replaced the exchange list and
+   * the settle writes nothing (agent-forge-harness-swg / pr129 M-1). The one
+   * exception is a turn sent with no id whose server-minted id the consumer
+   * has adopted (x5bz.3.2): that is the same conversation, not a switch away,
+   * so it counts as shown even while the adopted id's recall re-reads it. A
+   * consumer that announces arrival must announce only when `shown` is true. */
+  onTurnSettled?: (outcome: 'done' | 'error', conversationId: string | null, shown: boolean) => void
+}
+
+/** The latest settle of a turn this hook sent (agent-forge-harness-swg /
+ * pr129 M-1). Recorded by `settle`'s own state update, so whether it was
+ * applied is decided against the exact state it landed on rather than against
+ * a snapshot taken before other queued updates (a recall, say) are processed. */
+interface SettleRecord {
+  exchangeId: number
+  outcome: 'done' | 'error'
+  /** The conversation the turn was sent for. */
+  sentFor: string | null
+  /** The id the server minted for a turn sent with none (x5bz.3.2), else null. */
+  adoptedId: string | null
+  /** The update found the exchange in the scope it was sent for and wrote it. */
+  applied: boolean
 }
 
 interface ChatState {
@@ -59,6 +97,9 @@ interface ChatState {
   /** Non-null when the history recall for this scope failed. */
   historyError: string | null
   loadingHistory: boolean
+  /** Carried through every update so a settle queued alongside a recall is
+   * never lost; reported once, by identity (see the effect in `useChat`). */
+  lastSettle: SettleRecord | null
 }
 
 /** Pair stored rows into display exchanges. A `user` row opens an exchange;
@@ -101,6 +142,7 @@ export function useChat({
   conversationId,
   modelPreference = 'auto',
   onConversationAdopted,
+  onTurnSettled,
   now = monotonicNow,
   recordMetric = recordBrowserMetric,
 }: UseChatOptions) {
@@ -110,9 +152,12 @@ export function useChat({
     historyError: null,
     // A conversation opened at mount is loading until the recall effect settles.
     loadingHistory: conversationId !== null,
+    lastSettle: null,
   })
   const pendingRef = useRef(false)
   const nextId = useRef(1)
+  /** The settle `onTurnSettled` last reported — each is reported exactly once. */
+  const reportedSettle = useRef<SettleRecord | null>(null)
 
   // Derive the visible exchanges: if the scope has changed, treat as empty
   // (and loading) until the recall effect below re-seeds. Pure derivation —
@@ -141,6 +186,7 @@ export function useChat({
               exchanges: [...toExchanges(result.messages, nextId), ...live],
               historyError: null,
               loadingHistory: false,
+              lastSettle: prev.lastSettle,
             }
           }
           return {
@@ -148,6 +194,7 @@ export function useChat({
             exchanges: live,
             historyError: result.message,
             loadingHistory: false,
+            lastSettle: prev.lastSettle,
           }
         })
       },
@@ -159,6 +206,7 @@ export function useChat({
           exchanges: prev.scopeId === conversationId ? prev.exchanges : [],
           historyError: err instanceof Error ? err.message : 'Message history unavailable.',
           loadingHistory: false,
+          lastSettle: prev.lastSettle,
         }))
       },
     )
@@ -185,10 +233,11 @@ export function useChat({
         // Entering a new scope via send(): its recall may still be in flight.
         loadingHistory:
           prev.scopeId === conversationId ? prev.loadingHistory : conversationId !== null,
+        lastSettle: prev.lastSettle,
       }))
 
       const settle = (
-        update: Partial<Exchange>,
+        update: Partial<Exchange> & { status: 'done' | 'error' },
         // 'throttled' is deliberately its own outcome rather than folding into
         // http_error: it is the cost guard doing its job, not the service
         // failing, and the metric is the only place an operator would see the
@@ -196,6 +245,7 @@ export function useChat({
         outcome:
           | 'success' | 'http_error' | 'network_error' | 'aborted' | 'throttled'
           | 'conversation_mismatch',
+        adoptedId: string | null = null,
       ) => {
         pendingRef.current = false
         const labels = runtimeMetricLabels(mode)
@@ -213,11 +263,35 @@ export function useChat({
           value: outcome,
           labels,
         })
-        setState((prev) => ({
-          ...prev,
-          scopeId: conversationId,
-          exchanges: prev.exchanges.map((e) => (e.id === id ? { ...e, ...update } : e)),
-        }))
+        setState((prev) => {
+          // The user may have switched to (and recalled) a different
+          // conversation while this turn was in flight. Never stamp scopeId
+          // back to the conversation this turn was SENT from — that would
+          // clobber the scope the user has since moved to and strand it on
+          // "Recalling the conversation…" forever, since nothing would ever
+          // change the recall effect's deps again (agent-forge-harness-4pg).
+          // A turn that settles after its conversation was left is dropped
+          // here, same as the recall effect drops a stale response — and so is
+          // one whose exchange a recall has since replaced (A -> B -> A: the
+          // scope matches again, but there is nothing left to write into).
+          // `conversationId` here is THIS send's own closure — the
+          // conversation the turn was sent for (agent-forge-harness-swg).
+          const applied =
+            prev.scopeId === conversationId && prev.exchanges.some((e) => e.id === id)
+          const lastSettle: SettleRecord = {
+            exchangeId: id,
+            outcome: update.status,
+            sentFor: conversationId,
+            adoptedId,
+            applied,
+          }
+          if (!applied) return { ...prev, lastSettle }
+          return {
+            ...prev,
+            exchanges: prev.exchanges.map((e) => (e.id === id ? { ...e, ...update } : e)),
+            lastSettle,
+          }
+        })
       }
 
       void post(trimmed, mode, conversationId, modelPreference).then(
@@ -227,10 +301,12 @@ export function useChat({
             // adoption, and re-announcing it would churn navigation state on
             // every single turn.
             const supplied = result.response.conversation_id
-            if (conversationId === null && typeof supplied === 'string' && supplied) {
-              onConversationAdopted?.(supplied)
+            const adopted =
+              conversationId === null && typeof supplied === 'string' && supplied ? supplied : null
+            if (adopted !== null) {
+              onConversationAdopted?.(adopted)
             }
-            settle({ status: 'done', response: result.response }, 'success')
+            settle({ status: 'done', response: result.response }, 'success', adopted)
           } else {
             settle(
               { status: 'error', error: result.message },
@@ -257,6 +333,24 @@ export function useChat({
     },
     [post, mode, conversationId, modelPreference, now, recordMetric, onConversationAdopted],
   )
+
+  // agent-forge-harness-ekf / agent-forge-harness-swg (pr129 M-1): report each
+  // settle exactly once, after the commit that carries it — never from a
+  // recall or a re-render (a record is reported by identity, and recalls only
+  // carry the existing one through). Whether it is SHOWN is decided here, at
+  // that commit, against the exchanges this render actually returns.
+  const { lastSettle, exchanges: scopeExchanges } = state
+  useEffect(() => {
+    const s = lastSettle
+    if (s === null || reportedSettle.current === s) return
+    reportedSettle.current = s
+    // Drawn: the exchange is among those this render returns (`exchanges`
+    // above is `scopeExchanges` exactly when `scoped`).
+    const drawn = scoped && scopeExchanges.some((e) => e.id === s.exchangeId)
+    const shown =
+      s.applied && (drawn || (s.adoptedId !== null && conversationId === s.adoptedId))
+    onTurnSettled?.(s.outcome, s.sentFor, shown)
+  }, [lastSettle, scoped, scopeExchanges, conversationId, onTurnSettled])
 
   return { exchanges, send, pending, historyError, loadingHistory }
 }

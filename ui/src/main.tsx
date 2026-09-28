@@ -4,11 +4,7 @@ import { createRoot } from 'react-dom/client'
 // → elevation → spacing → motion → base (incl. .aether-parchment helper)
 import './ds/styles.css'
 import './index.css'
-import App from './App.tsx'
-import { ThemeProvider } from './ds/theme'
-import { AppNavProvider } from './shell/AppNav'
-import { CurrentUserProvider } from './shell/currentUser'
-import { ConversationStoreProvider } from './shell/ConversationStoreContext'
+import { AppRoot } from './AppRoot.tsx'
 import { startMetrics } from './metrics/metrics'
 
 // Apply the parchment ground to the document body so the app sits on parchment
@@ -18,14 +14,6 @@ startMetrics()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ThemeProvider>
-      <AppNavProvider>
-        <CurrentUserProvider>
-          <ConversationStoreProvider>
-            <App />
-          </ConversationStoreProvider>
-        </CurrentUserProvider>
-      </AppNavProvider>
-    </ThemeProvider>
+    <AppRoot />
   </StrictMode>,
 )

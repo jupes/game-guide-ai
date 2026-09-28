@@ -11,7 +11,7 @@ every epic that adds a table (`1kg`, `1ir`, `yje`).
 | The connection gate and the realtime pool, the transaction boundary, the in-memory twin | `service/db.py` |
 | The job outbox and its runner | `service/jobs.py` |
 | Tests without a database | `service/tests/test_migrations.py`, `test_db.py`, `test_jobs.py`, `test_startup_migrations.py` |
-| Tests against a real PostgreSQL (CI) | `tests/test_migrations_db.py`, `tests/test_db_postgres.py`, `tests/test_schema.py` |
+| Tests against a real PostgreSQL (CI) | `tests/test_migrations_db.py`, `tests/test_db_postgres.py`, `tests/test_campaign_db.py`, `tests/test_schema.py` |
 
 The **corpus** schema (`dnd`, `vector-db/init/`) is not part of this. It needs the
 `vector` extension and an ingested corpus, belongs to the ingestion pipeline, and is
@@ -20,7 +20,7 @@ still applied by the container's init directory or `scripts/bootstrap-db.sh`.
 ## 1. How the schema is applied
 
 `service/sql/migrations/NNNN_snake_case.sql` is the one definition of the `chat`,
-`auth` and `app` schemas. At startup — before anything is served — the service calls
+`auth`, `app`, `campaign`, `audit` and `metering` schemas. At startup — before anything is served — the service calls
 `migrate()`, which applies whatever the database has not seen yet: once, in order,
 each file in its own transaction together with its row in `app.schema_migrations`
 (version, name, SHA-256 of the LF-normalised file, when, how long, which revision).
@@ -96,6 +96,22 @@ Rules the runner or CI enforce:
   the tool only ever appends, so an edit fails `discover()` in CI; changing a pinned
   line has to be done by hand, in a diff a reviewer sees. The only legitimate case is
   a file that *could not* apply anywhere — say so in the pull request.
+- **An *unreleased* one may still be edited in place**, and only while it is
+  unreleased. **Unreleased means the file exists on no branch but its own pull
+  request's.** From the moment it is merged into `master` or into an
+  `integration/**` branch it is *released* — whether or not anything has been
+  deployed — and it is never edited in place again. Deployment is not the line,
+  because a shared branch is: other worktrees, other pull requests stacking
+  migrations on top, and any developer's Compose stack (which keeps a persistent
+  volume and applies migrations at start) can all have applied it by then, and
+  each of those databases would meet the changed checksum as drift. While it is
+  still only on its own pull request the file has been applied nowhere but CI's
+  throwaway databases, so no ledger row anywhere contradicts its checksum, and a
+  seventh file to correct a sixth that nothing has ever run would be history
+  nobody needs. Editing one is the same mechanical act as the rule above —
+  re-pin the line by hand, in the diff — so the pull request must **say which
+  lines it re-pinned and why**, and a reviewer must confirm the file is really
+  unreleased.
 - **One number, one file.** Two branches that each add a migration both append to
   `manifest.txt`, so git reports a conflict instead of merging two `0007`s. Renumber
   the later one before merging.
@@ -110,6 +126,22 @@ Rules the runner or CI enforce:
   ("adoption"). Later migrations run exactly once and need no `IF NOT EXISTS`.
 - **Rows that are not user content stay that way**: the outbox, the ledger and any
   audit table hold ids and codes, never text a user wrote (SEC-20).
+
+### The files, and what each one owns
+
+| File | Schema | What it adds |
+|---|---|---|
+| `0001_chat_schema.sql` | `chat` | conversations, messages, attachments |
+| `0002_auth_schema.sql` | `auth` | users, invites, and the ownership foreign keys |
+| `0003_jobs_outbox.sql` | `app` | the job outbox (`service/jobs.py`) |
+| `0004_campaign_schema.sql` | `campaign` | campaigns and their authorisation row, participants, enrolment codes, device credentials, table sessions, table credentials, the per-generation join counter (`1kg.2.1`) |
+| `0005_audit_events.sql` | `audit` | the append-only ledger (`service/audit_log.py`) |
+| `0006_conversation_metadata.sql` | `chat` | `campaign_id`, `title`, `updated_at`, `archived_at` on `chat.conversations` |
+| `0007_conversation_started_mode.sql` | `chat` | `started_mode` on `chat.conversations`, and `conversations_owner_recent_idx`, the owner's index page (`1kg.2.4`) |
+| `0008_document_schema.sql` | `campaign` | documents and their versions: the live `data`, the `write_revision` and per-field revisions, the one open working version, the folded `name_key` / `search_key`, the character-sheet link, and the four library indexes (`1kg.5.1`) |
+| `0009_participant_accounts.sql` | `campaign` | a participant becomes an account's seat (`agent-forge-harness-fma`): `user_id` (`REFERENCES auth.users`, `ON DELETE NO ACTION`) and `accepted_at` on `participants`, the CHECK that an accepted seat has an account (safe because both columns are new), one live seat per account per campaign and the account's own index (both partial); and it **drops** `enrolment_codes` and `device_credentials`. A drop is a contraction (section 3), shipped here because no build that reads those tables has ever been deployed — master's production build has no campaign schema — so there is no rollback to a build that needs them |
+| `0010_timeline_entries.sql` | `chat` | the conversation timeline's typed entries (`1kg.4.2`): one row per exchange `POST /chat` answered, written best-effort after the answer — a minted `entry_id` whose CHECK `service.timeline_store.entry_id_check_regex()` generates, `entry_kind` against the kinds of this migration, `schema_version`, `created_at`, `seq` (the tiebreak), the validated `payload`, and `user_message_id` / `assistant_message_id`, the `chat.messages` rows it carries (each carried by at most one entry; both cascade). Cascades with its conversation; no campaign column |
+| `0011_usage_ledger.sql` | `metering` | the provider-attempt cost ledger and its price table (`yje.5.1.2`): `provider_attempts`, one append-only row per provider attempt keyed by `(operation_id, attempt_index)`, with `occurred_at`, the closed-shape codes, the four token counts, `billed_account_id` and `campaign_id` as plain values (no foreign key out of the schema: a cost row outlives the account and the campaign it names), and `price_revision_id`, the revision in force when the row was written; `price_revisions`, one immutable row per `(provider, alias, effective_from)` with three `NUMERIC(12,6)` rates, seeded with `gpt-4o-mini`; `provider_attempts_account_time_idx` and `price_revisions_lookup_idx`. No update or delete path (`docs/runbooks/usage-capture.md` section 7) |
 
 ## 3. Roll forward, never back
 
@@ -212,6 +244,8 @@ only while a request is in flight. The second fact decides the design:
 | `DB_POOL_MAX` | 4 | 0–10 | The gate: connections routes may have open at once. `0` removes it (unbounded, as before) |
 | `DB_ASYNC_POOL_MAX` | 3 | 0–5 | The realtime pool |
 | `DB_POOL_TIMEOUT_S` | 5 | 1–60 | How long a request waits for its turn before it fails as 503 |
+| `CAMPAIGN_LOCK_TIMEOUT_S` | half the gate, at most 2 | 0.05–4 | How long a request waits for a campaign's authorisation row. **Must be below `DB_POOL_TIMEOUT_S`**: a request waiting for the lock is holding one of the gate's connections. Unset, it is derived from the gate, so every documented gate starts; set, a value that is not below the gate is refused by name at startup |
+| `CAMPAIGN_TRANSACTION_TIMEOUT_S` | 5 | 1–60 | How long a transaction holding that row may live (RQ-8). A single long caller passes its own bound instead of raising this for everyone |
 | `MIGRATIONS_DATABASE_URL` | — | | The schema owner's DSN, when it differs from the runtime's |
 | `MIGRATIONS_MODE` | `apply` | `apply`, `verify` | `verify` never applies; pending migrations then stop startup |
 

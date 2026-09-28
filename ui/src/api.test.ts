@@ -363,6 +363,76 @@ describe('getMessages', () => {
   })
 })
 
+// ── 1kg.3.4 — the GM thread's timeline ────────────────────────────────────────
+
+import { getTimelinePage, setUnauthorizedHandler } from './api'
+
+const TIMELINE_PAGE = {
+  schema_version: 1,
+  conversation_id: 'cnv_1',
+  items: [
+    {
+      schema_version: 1, entry_kind: 'chat', entry_id: 'ent_1', created_at: '2026-09-16T19:20:11Z', mode: 'gm',
+      prompt: 'Who runs the inn?', answer: null,
+    },
+    // One entry from a newer server is one placeholder, not a failed page.
+    { schema_version: 2, entry_kind: 'chat', entry_id: 'ent_2', created_at: '2026-09-16T19:21:00Z' },
+  ],
+  next_cursor: 'abc_DEF-1',
+}
+
+describe('getTimelinePage', () => {
+  it('GETs the first page with no cursor, and a later one with its cursor', async () => {
+    const urls: string[] = []
+    const spy: typeof fetch = (async (url: RequestInfo | URL) => {
+      urls.push(String(url))
+      return new Response(JSON.stringify(TIMELINE_PAGE), { status: 200 })
+    }) as typeof fetch
+    await getTimelinePage('a/b', null, spy)
+    await getTimelinePage('a/b', 'abc_DEF-1', spy)
+    expect(urls).toEqual(['/conversations/a%2Fb/timeline', '/conversations/a%2Fb/timeline?cursor=abc_DEF-1'])
+  })
+
+  it('reads a page entry by entry and keeps its cursor', async () => {
+    const result = await getTimelinePage('cnv_1', null, fakeFetch(200, TIMELINE_PAGE))
+    expect(result.kind).toBe('ok')
+    if (result.kind !== 'ok') return
+    expect(result.page.next_cursor).toBe('abc_DEF-1')
+    expect(result.page.items.map((item) => item.kind)).toEqual(['ok', 'unknown'])
+  })
+
+  it('reads a 404 as a conversation with nothing readable yet', async () => {
+    expect(await getTimelinePage('cnv_new', null, fakeFetch(404))).toEqual({ kind: 'missing' })
+  })
+
+  it('maps a 503 to an error result', async () => {
+    const result = await getTimelinePage('cnv_1', null, fakeFetch(503))
+    expect(result).toEqual({ kind: 'error', message: 'Message history unavailable (503).' })
+  })
+
+  it('maps a network failure, and an unreadable body, to error results rather than throws', async () => {
+    const failing: typeof fetch = (async () => {
+      throw new TypeError('fetch failed')
+    }) as typeof fetch
+    expect((await getTimelinePage('cnv_1', null, failing)).kind).toBe('error')
+    const html = await getTimelinePage('cnv_1', null, htmlFetch())
+    expect(html).toEqual({ kind: 'error', message: 'The service returned an unreadable response.' })
+  })
+
+  it('reports a lost session like every other guarded call', async () => {
+    let notified = 0
+    setUnauthorizedHandler(() => {
+      notified += 1
+    })
+    try {
+      await getTimelinePage('cnv_1', null, fakeFetch(401))
+    } finally {
+      setUnauthorizedHandler(null)
+    }
+    expect(notified).toBe(1)
+  })
+})
+
 // ── swe1.6 — file attachments ─────────────────────────────────────────────────
 
 import { uploadAttachment, getAttachments } from './api'

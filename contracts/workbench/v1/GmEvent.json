@@ -68,6 +68,7 @@
           "state": "live",
           "gen": 1,
           "audio_epoch": 3,
+          "reveal_epoch": 4,
           "started_at": "2026-09-16T19:31:02Z",
           "ends_at": "2026-09-17T07:31:02Z",
           "ended_at": null,
@@ -202,6 +203,80 @@
           "pending": 1
         },
         "mood": "tense"
+      }
+    },
+    {
+      "name": "a slot changed: the table is now showing a dossier",
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 4,
+        "slot": {
+          "kind": "table"
+        },
+        "seq": 12,
+        "live": {
+          "disclosure_id": "dsc_0001b7e2c1a9",
+          "document_id": "doc_9k2f7a1c",
+          "type": "npc",
+          "version": 3,
+          "mask": [
+            "name",
+            "portrait"
+          ],
+          "stale_text": false,
+          "pending_delivery": false
+        }
+      }
+    },
+    {
+      "name": "a slot was stopped",
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 5,
+        "slot": {
+          "kind": "participant",
+          "participant_id": "pt_4c1b9e7a"
+        },
+        "seq": 4,
+        "live": null
+      }
+    },
+    {
+      "name": "the whole reveal picture, as a stream opens",
+      "value": {
+        "schema_version": 1,
+        "event": "snapshot",
+        "state": {
+          "session_id": "ses_7d3e1f0a",
+          "gen": 1,
+          "reveal_epoch": 4,
+          "slots": [
+            {
+              "slot": {
+                "kind": "table"
+              },
+              "seq": 12,
+              "live": {
+                "disclosure_id": "dsc_0001b7e2c1a9",
+                "document_id": "doc_9k2f7a1c",
+                "type": "npc",
+                "version": 3,
+                "mask": [
+                  "name",
+                  "portrait"
+                ],
+                "stale_text": false,
+                "pending_delivery": false
+              }
+            }
+          ]
+        }
       }
     }
   ],
@@ -361,6 +436,99 @@
       "value": {
         "schema_version": 2,
         "event": "reconnect"
+      }
+    },
+    {
+      "name": "a slot frame with no epoch",
+      "why": "REVEAL-22, REVEAL-13: the GM's client must always know the epoch its next Confirm names, and must never read missing state as 'nothing revealed'",
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "slot": {
+          "kind": "table"
+        },
+        "seq": 12,
+        "live": {
+          "disclosure_id": "dsc_0001b7e2c1a9",
+          "document_id": "doc_9k2f7a1c",
+          "type": "npc",
+          "version": 3,
+          "mask": [
+            "name",
+            "portrait"
+          ],
+          "stale_text": false,
+          "pending_delivery": false
+        }
+      }
+    },
+    {
+      "name": "a slot frame carrying the revealed text",
+      "why": "EXPORT-12: a frame says which keys are live; documents travel through the document endpoints only",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 4,
+        "slot": {
+          "kind": "table"
+        },
+        "seq": 12,
+        "live": {
+          "disclosure_id": "dsc_0001b7e2c1a9",
+          "document_id": "doc_9k2f7a1c",
+          "type": "npc",
+          "version": 3,
+          "mask": [
+            "name",
+            "portrait"
+          ],
+          "stale_text": false,
+          "pending_delivery": false
+        },
+        "values": {
+          "name": "Sister Ondrey Vashe"
+        }
+      }
+    },
+    {
+      "name": "a snapshot frame with no state",
+      "why": "the snapshot frame IS the reveal picture; an empty session says so with an empty slot list",
+      "value": {
+        "schema_version": 1,
+        "event": "snapshot"
+      }
+    },
+    {
+      "name": "the table slot waiting for a device",
+      "why": "AUD-10: only a participant can lack a device; the table has no one to wait for",
+      "value": {
+        "schema_version": 1,
+        "event": "slot",
+        "session_id": "ses_7d3e1f0a",
+        "gen": 1,
+        "reveal_epoch": 4,
+        "slot": {
+          "kind": "table"
+        },
+        "seq": 12,
+        "live": {
+          "disclosure_id": "dsc_0001b7e2c1a9",
+          "document_id": "doc_9k2f7a1c",
+          "type": "npc",
+          "version": 3,
+          "mask": [
+            "name"
+          ],
+          "stale_text": false,
+          "pending_delivery": true
+        }
       }
     }
   ]

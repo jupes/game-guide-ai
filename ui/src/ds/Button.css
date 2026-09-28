@@ -28,10 +28,28 @@
   pointer-events: none;
 }
 
-/* Touch-target floor for md and lg */
+/* Touch-target floor for every size, incl. small.
+   rnm (agent-forge-harness-rnm): the design intake specifies "44px minimum
+   targets" explicitly, which is Material Design's touch-target guidance and
+   the design system's own --aether-touch-min token — not WCAG 2.2 AA's 24px-
+   with-spacing alternative. That is the recorded standard for this component.
+   1dw: `min-height` overrides the smaller `height: 32px` below, so small
+   grows to a full 44px box — it is NOT a 32px pill sitting inside a larger,
+   invisible hit area. On every visible-background variant (filled, tonal,
+   elevated, outlined) that 44px box is what actually paints, so small and
+   medium now read as the same height at rest. Only the text variant, which
+   has no visible fill, keeps the 32px look, because the extra 12px of hit
+   area has nothing painted in it to reveal the growth. If the 32px pill is
+   wanted on every variant, that needs an invisible ::before hit-area
+   instead of this rule. */
+.aether-btn[data-size="small"],
 .aether-btn[data-size="medium"],
 .aether-btn[data-size="large"] {
   min-height: var(--aether-touch-min);
+}
+
+.aether-btn[data-size="small"] {
+  min-width: var(--aether-touch-min);
 }
 
 /* ── Sizes ── */

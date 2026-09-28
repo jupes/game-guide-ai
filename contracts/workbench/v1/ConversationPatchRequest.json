@@ -1,0 +1,125 @@
+{
+  "schema": "ConversationPatchRequest",
+  "direction": "request",
+  "note": "PATCH /conversations/{id}: rename, archive, unarchive, link an uncampaigned conversation to a campaign, bind the channel. At least one key; none is nullable, because moving a conversation between campaigns or unlinking it is not in v1. A repeat is a no-op, so no key is needed.",
+  "valid": [
+    {
+      "name": "a rename",
+      "value": {
+        "schema_version": 1,
+        "title": "The harbour job"
+      }
+    },
+    {
+      "name": "an archive",
+      "value": {
+        "schema_version": 1,
+        "archived": true
+      }
+    },
+    {
+      "name": "an unarchive",
+      "value": {
+        "schema_version": 1,
+        "archived": false
+      }
+    },
+    {
+      "name": "a link to a campaign",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a"
+      }
+    },
+    {
+      "name": "binding the channel",
+      "value": {
+        "schema_version": 1,
+        "started_mode": "gm"
+      }
+    },
+    {
+      "name": "several changes at once",
+      "value": {
+        "schema_version": 1,
+        "title": "  The harbour job  ",
+        "archived": false,
+        "started_mode": "gm"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "nothing to change",
+      "why": "a patch names at least one of title, archived, campaign_id and started_mode",
+      "value": {
+        "schema_version": 1
+      }
+    },
+    {
+      "name": "unlinking with a null campaign",
+      "why": "requirement 6: moving or unlinking is not in v1, so campaign_id is not nullable",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": null
+      }
+    },
+    {
+      "name": "clearing the title with null",
+      "why": "no key of a patch is nullable",
+      "value": {
+        "schema_version": 1,
+        "title": null
+      }
+    },
+    {
+      "name": "a null archive flag",
+      "why": "no key of a patch is nullable",
+      "value": {
+        "schema_version": 1,
+        "archived": null
+      }
+    },
+    {
+      "name": "an archive flag as text",
+      "why": "no coercion between JSON types",
+      "value": {
+        "schema_version": 1,
+        "archived": "true"
+      }
+    },
+    {
+      "name": "a title that trims to nothing",
+      "why": "ruling A2-9: 1 to 200 characters after trimming",
+      "value": {
+        "schema_version": 1,
+        "title": "   "
+      }
+    },
+    {
+      "name": "a tab inside a title",
+      "why": "ruling A2-9: U+0000 to U+001F are refused inside a title; only its edges are trimmed",
+      "value": {
+        "schema_version": 1,
+        "title": "Harbour\tjob"
+      }
+    },
+    {
+      "name": "a moment instead of the archive flag",
+      "why": "the server sets archived_at; a request is strict",
+      "value": {
+        "schema_version": 1,
+        "archived_at": "2026-09-17T08:00:00Z"
+      }
+    },
+    {
+      "name": "the owner in a request",
+      "why": "the owner is the session; a request is strict",
+      "value": {
+        "schema_version": 1,
+        "title": "Mine now",
+        "owner_id": 7
+      }
+    }
+  ]
+}

@@ -35,7 +35,13 @@
 
 .auth-screen__error {
   margin: 0;
-  color: var(--aether-color-error, #b3261e);
+  /* Was `var(--aether-color-error, #b3261e)`. `--aether-color-error` is not a
+     token this design system defines, so the hard-coded light-theme red WAS
+     the value, in both themes — 2.62:1 against the dark tavern surface, a WCAG
+     AA failure on the sign-in form's error message, which is the one piece of
+     text a stuck user most needs to read. The real role tokenises per theme
+     (#ba1a1a light, #ffb4ab dark). agent-forge-harness-27h. */
+  color: var(--md-sys-color-error);
   font-size: 0.875rem;
 }
 

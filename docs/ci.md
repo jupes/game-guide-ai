@@ -10,13 +10,13 @@ pull request / push to master
    ├─ python-tests        pytest — service, ingestion, repo guards ─┐
    ├─ ui-tests            typecheck · lint · vitest ───────────────┤
    ├─ contract-parity     Pydantic vs Zod, differential fuzz       │
-   │                      (informational: does not gate deploy)    │
+   │                      (gates deploy; not a need of ui-e2e)     │
    │                                                              ▼
    │                    ui-e2e — production Compose + perf budgets
    └─ retrieval-metrics   eval_golden vs live corpus DB → regression gate
           │                    (skips loudly until secrets are configured)
           ▼
-       deploy             push/manual only; requires every gate to pass
+       deploy             push/manual, master only; requires every gate to pass
                           (skipped until hosting exists — never a green
                            check for having deployed nothing)
 ```
@@ -28,10 +28,32 @@ pull request / push to master
 example of the Workbench wire contract and checks two things: that the Pydantic
 models and the Zod schemas give the same verdict, and that the client can read
 whatever the server emits. The shared fixtures already run inside `python-tests`
-and `ui-tests`; this covers the cases nobody thought to write. It does not gate
-`deploy`, because no route serves that contract yet — add it to `deploy`'s
-`needs` when the first Workbench route ships. See
+and `ui-tests`; this covers the cases nobody thought to write. It gates
+`deploy`: the conversation timeline route serves that contract, so a Pydantic/Zod
+disagreement is a screen that breaks after a deploy with nothing red anywhere.
+The fuzz is deterministic (fixed fixtures, a fixed replacement list), so the gate
+adds no flake. `force_deploy` does not waive it (agent-forge-harness-oe6). See
 [`workbench-wire-contract.md`](workbench-wire-contract.md).
+
+## Static analysis gates
+
+`python-tests` runs `ruff` and `mypy` before pytest; both are configured in
+[`pyproject.toml`](../pyproject.toml).
+
+`mypy` runs with **`warn_unreachable = true`**. Its scope is mypy's own
+`files = ["service", "config.py"]` — it is the **Python** gate over those two
+paths, every module in them and whoever wrote them, not a repository-wide
+setting. It went on because a statement after a `return` is what a validator
+looks like when it was edited without being re-read, and neither `ruff` nor
+mypy's defaults see one. Tightening a gate that already passes can only add a
+refusal class, never turn a currently-green tree red; the tree was verified
+clean under it at the point it was turned on.
+
+`warn_unreachable` has a known class of false positives: `if TYPE_CHECKING:`
+bodies, `sys.version_info` guards, `assert_never` exhaustiveness arms, and
+narrowing on a value typed `Any`. Silence one **per line**, with
+`# type: ignore[unreachable]` and a comment naming which of those it is — never
+by removing the flag, because the next genuinely dead branch then ships unseen.
 
 ## Browser release tracer and UI performance gate
 
@@ -77,6 +99,10 @@ Your two options from there:
 - **Proceed anyway** — re-run the pipeline with the override:
   `gh workflow run CI -f force_deploy=true` (or Actions → CI → Run workflow →
   check *force_deploy*). Tests still must pass; only the metrics gate is waived.
+  A manual run deploys **only from `master`**: `gh workflow run` targets the
+  default branch unless you pass `--ref`, and the `deploy` job requires
+  `github.ref == 'refs/heads/master'`. A run on any other ref tests without
+  deploying — the job is skipped, with or without *force_deploy*.
 - **Back out** — `git revert <merge-sha> && git push`. The revert lands on
   `master`, the pipeline runs again and redeploys the previous behavior.
 

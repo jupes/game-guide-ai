@@ -50,10 +50,16 @@ const preview: Preview = {
     },
 
     a11y: {
-      // 'todo' - show a11y violations in the test UI only
-      // 'error' - fail CI on a11y violations
-      // 'off' - skip a11y checks entirely
-      test: 'todo',
+      // 'error' — an axe violation FAILS the story's test, locally and in CI.
+      //
+      // This was 'todo' (warning-only) until agent-forge-harness-27h. In that
+      // mode the addon guards its own `expect(...).toHaveNoViolations()` out of
+      // existence: axe still runs and still records violations, the suite still
+      // goes green, and four real violations sat behind it for weeks.
+      //
+      // What this gate does NOT prove is written down in ui/README.md, under
+      // "What the axe gate does not check". Axe is a floor, not a ceiling.
+      test: 'error',
     },
   },
 }

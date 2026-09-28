@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 import openai
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -71,6 +71,19 @@ class AttemptObserver(Protocol):
     ) -> None: ...  # pragma: no cover - structural type
 
 
+@runtime_checkable
+class AttemptStartObserver(Protocol):
+    """Optional companion to AttemptObserver (agent-forge-harness-yje.5.1.1).
+
+    `record` is called AFTER a provider call returns or raises, which is too
+    late to time the call: the retry backoff of the previous attempt has
+    already been slept through. An observer that also implements this one
+    method is told when each attempt actually begins, so per-attempt latency
+    can exclude the backoff. Kept separate on purpose — AttemptObserver.record's
+    keyword set is pinned by existing fakes and cannot grow."""
+    def attempt_started(self) -> None: ...  # pragma: no cover - structural type
+
+
 class NullAttemptObserver:
     """Default observer: does nothing. Safe when no one is watching."""
     def record(
@@ -123,6 +136,11 @@ def generate_result(
     service's current model alias."""
     obs = observer or NullAttemptObserver()
     for attempt in range(1, max_attempts + 1):
+        # Immediately before the call, and therefore AFTER the previous
+        # attempt's backoff sleep below — which is what keeps the backoff out
+        # of the observed latency (agent-forge-harness-yje.5.1.1).
+        if isinstance(obs, AttemptStartObserver):
+            obs.attempt_started()
         try:
             resp = client.invoke(messages, config=config)
         except BaseException as exc:
@@ -399,25 +417,30 @@ def parse_spell_content(text: str) -> SpellContent:
 def generate_spell_content(
     answer: str, *,
     model: str = DEFAULT_MODEL, client: LLMClient | None = None,
-    config: Any | None = None,
+    config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> SpellContent:
     """One structured LLM call that extracts spell content from the already-
     generated prose `answer` (an extraction task, not independent
     regeneration — see module docstring). Raises on any LLM or parse failure;
-    the caller (graph structure node) degrades to None."""
+    the caller (graph structure node) degrades to None.
+
+    Routed through `generate_result` (yje.5.1.1) so the attempt is observed like
+    every other provider call. `max_attempts=1` preserves today's exact "one
+    call, no retry" behaviour — adding retries here would change cost and
+    latency. `parse_spell_content` strips its input anyway, so handing it
+    `GenerationResult.text` is behaviour-preserving."""
     if client is None:  # pragma: no cover - live path mirrors generate_answer
         from langchain_openai import ChatOpenAI
 
         client = ChatOpenAI(model=model, temperature=TEMPERATURE)
-    resp = client.invoke(
+    result = generate_result(
         [
             SystemMessage(content=SPELL_CONTENT_SYSTEM),
             HumanMessage(content=SPELL_CONTENT_TEMPLATE.format(answer=answer)),
         ],
-        config=config,
+        alias=model, client=client, config=config, observer=observer, max_attempts=1,
     )
-    content = resp.content
-    return parse_spell_content(content if isinstance(content, str) else str(content))
+    return parse_spell_content(result.text)
 
 
 # NPC/stat-block structuring (z7fl.1 Checkpoint B). GM/Sage only, and only
@@ -490,25 +513,27 @@ def parse_stat_block(text: str) -> StatBlockContent:
 def generate_stat_block(
     answer: str, *,
     model: str = DEFAULT_MODEL, client: LLMClient | None = None,
-    config: Any | None = None,
+    config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> StatBlockContent:
     """One structured LLM call that extracts a stat block from the already-
     generated prose `answer`. Raises on any LLM or parse failure; the caller
     (graph structure node) degrades to None. Callers should gate this behind
-    `_looks_like_statblock` — see structure_node in service/graph.py."""
+    `_looks_like_statblock` — see structure_node in service/graph.py.
+
+    Routed through `generate_result` with `max_attempts=1` for the same reasons
+    as `generate_spell_content` above."""
     if client is None:  # pragma: no cover - live path mirrors generate_answer
         from langchain_openai import ChatOpenAI
 
         client = ChatOpenAI(model=model, temperature=TEMPERATURE)
-    resp = client.invoke(
+    result = generate_result(
         [
             SystemMessage(content=STATBLOCK_SYSTEM),
             HumanMessage(content=STATBLOCK_TEMPLATE.format(answer=answer)),
         ],
-        config=config,
+        alias=model, client=client, config=config, observer=observer, max_attempts=1,
     )
-    content = resp.content
-    return parse_stat_block(content if isinstance(content, str) else str(content))
+    return parse_stat_block(result.text)
 
 
 def generate_answer(

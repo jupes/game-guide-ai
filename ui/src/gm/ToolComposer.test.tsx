@@ -360,12 +360,38 @@ describe('ToolComposer — the slash menu keyboard (§4.4)', () => {
 // ── SLASH-12: the ARIA wiring ────────────────────────────────────────────────
 
 describe('ToolComposer — screen-reader wiring (SLASH-12)', () => {
-  it('keeps the textarea a textbox: no combobox, no aria-expanded', async () => {
+  // SLASH-12a amends SLASH-12: the textarea still takes no explicit role (none
+  // is permitted on it), but the combobox is now DECLARED on a wrapper, so
+  // assistive tech is told a popup exists and whether it is open. Before this,
+  // nothing said so and the polite live region was carrying that weight alone.
+  it('keeps the textarea a textbox and puts the combobox on the wrapper', async () => {
     render(<Harness />)
     await userEvent.type(composer(), '/')
-    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(composer()).not.toHaveAttribute('role')
     expect(composer()).not.toHaveAttribute('aria-expanded')
     expect(composer()).toHaveAttribute('aria-autocomplete', 'list')
+
+    const combobox = screen.getByRole('combobox', { name: 'Message' })
+    expect(combobox).not.toBe(composer())
+    expect(combobox).toContainElement(composer())
+  })
+
+  it('reflects the menu in the combobox aria-expanded (SLASH-12a)', async () => {
+    render(<Harness />)
+    const combobox = screen.getByRole('combobox', { name: 'Message' })
+    expect(combobox).toHaveAttribute('aria-expanded', 'false')
+    expect(combobox).not.toHaveAttribute('aria-controls')
+
+    await userEvent.type(composer(), '/')
+    expect(combobox).toHaveAttribute('aria-expanded', 'true')
+    expect(combobox).toHaveAttribute(
+      'aria-controls',
+      screen.getByRole('listbox', { name: 'Tools' }).id,
+    )
+
+    await userEvent.keyboard('{Escape}')
+    expect(combobox).toHaveAttribute('aria-expanded', 'false')
+    expect(combobox).not.toHaveAttribute('aria-controls')
   })
 
   it('points aria-controls at the listbox and aria-activedescendant at the active option', async () => {

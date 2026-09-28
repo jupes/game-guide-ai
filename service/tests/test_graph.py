@@ -630,3 +630,56 @@ def test_graph_rules_mode_never_populates_stat_block():
     out = graph.invoke({"prompt": "Describe an encounter", "mode": "rules"})
     assert out.get("stat_block") is None
     assert llm.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# v1u — the run config must reach every LLM call
+# ---------------------------------------------------------------------------
+
+
+class _ConfigRecordingLLM(_SeqLLM):
+    """`_SeqLLM` that also keeps the `config` each call was handed."""
+
+    def __init__(self, texts):
+        super().__init__(texts)
+        self.configs: list = []
+
+    def invoke(self, messages, config=None, **kw):
+        self.configs.append(config)
+        return super().invoke(messages, config=config, **kw)
+
+
+@pytest.mark.parametrize(
+    ("mode", "replies", "nodes"),
+    [
+        (
+            "spell",
+            ["Fireball: 8d6 fire damage [1].", _SUGG_JSON, '{"name": "Fireball", "description": "8d6 fire."}'],
+            "generate, suggest, structure (spell content)",
+        ),
+        ("gm", [_STATBLOCK_ANSWER, _STATBLOCK_JSON], "generate, structure (stat block)"),
+    ],
+)
+def test_graph_hands_the_run_config_to_every_llm_call(mode, replies, nodes):
+    """Langfuse attaches through the run config (tracing.py): its callbacks ride in
+    on `graph.invoke(..., config=...)` and each LLM node forwards them to the model
+    call, which is what gives a generation its token/cost span.
+
+    LangGraph only injects `config` into a node whose parameter is annotated as
+    `RunnableConfig`. Since 1.0 any other annotation is warned about and then
+    SKIPPED, so the node runs with None while the answer stays identical and every
+    other assertion in this file still passes. A LangChain chat model recovers the
+    callbacks from a context variable anyway; a client that is not a LangChain
+    runnable — which `LLMClient` allows, and which these fakes are — gets nothing."""
+    llm = _ConfigRecordingLLM(replies)
+    graph = build_rag_graph(_svc(_result(answerable=True), llm))
+
+    graph.invoke(
+        {"prompt": "What does Fireball do?", "mode": mode},
+        config={"metadata": {"trace_marker": "v1u"}},
+    )
+
+    assert llm.calls == len(replies), f"expected one LLM call per node: {nodes}"
+    for call, config in enumerate(llm.configs, start=1):
+        assert config is not None, f"LLM call {call} of [{nodes}] ran without the run config"
+        assert config["metadata"]["trace_marker"] == "v1u"

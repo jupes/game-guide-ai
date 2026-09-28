@@ -4,18 +4,34 @@
   "valid": [
     {
       "name": "minimal",
-      "value": { "detail": { "code": "not_found", "message": "This document isn't available.", "retryable": false } }
+      "value": {
+        "detail": {
+          "code": "not_found",
+          "message": "This document isn't available.",
+          "retryable": false
+        }
+      }
     },
     {
       "name": "validation failure names its field",
       "value": {
-        "detail": { "code": "brief_too_long", "message": "A brief can be at most 2,000 characters.", "retryable": false, "field": "brief" }
+        "detail": {
+          "code": "brief_too_long",
+          "message": "A brief can be at most 2,000 characters.",
+          "retryable": false,
+          "field": "brief"
+        }
       }
     },
     {
       "name": "per-user throttle says when to retry",
       "value": {
-        "detail": { "code": "throttled_user", "message": "That's a lot at once.", "retryable": true, "retry_after_s": 90 }
+        "detail": {
+          "code": "throttled_user",
+          "message": "That's a lot at once.",
+          "retryable": true,
+          "retry_after_s": 90
+        }
       }
     },
     {
@@ -25,7 +41,10 @@
           "code": "cap_reached",
           "message": "Two tools are already running.",
           "retryable": true,
-          "in_flight": ["inv_9f2c4e1a7b3d4c5e", "inv_0a1b2c3d4e5f6a7b"]
+          "in_flight": [
+            "inv_9f2c4e1a7b3d4c5e",
+            "inv_0a1b2c3d4e5f6a7b"
+          ]
         }
       }
     },
@@ -36,38 +55,132 @@
           "code": "conflict",
           "message": "This document changed elsewhere.",
           "retryable": false,
-          "conflict": { "write_revision": 16, "fields": ["wants", "leverage"] }
+          "conflict": {
+            "write_revision": 16,
+            "fields": [
+              "wants",
+              "leverage"
+            ]
+          }
         }
       }
     },
     {
       "name": "a newer server's error code is tolerated by the client",
-      "applies_to": ["client"],
-      "value": { "detail": { "code": "some_future_code", "message": "Something new went wrong.", "retryable": false } }
+      "applies_to": [
+        "client"
+      ],
+      "value": {
+        "detail": {
+          "code": "some_future_code",
+          "message": "Something new went wrong.",
+          "retryable": false
+        }
+      }
     },
     {
       "name": "an additive field from a newer server is tolerated by the client",
-      "applies_to": ["client"],
-      "value": { "detail": { "code": "conflict", "message": "The document changed elsewhere.", "retryable": false, "hint": "reload" } }
+      "applies_to": [
+        "client"
+      ],
+      "value": {
+        "detail": {
+          "code": "conflict",
+          "message": "The document changed elsewhere.",
+          "retryable": false,
+          "hint": "reload"
+        }
+      }
+    },
+    {
+      "name": "a mask naming keys that are not revealable",
+      "value": {
+        "detail": {
+          "code": "validation_failed",
+          "message": "Some of those fields can't be shown.",
+          "retryable": false,
+          "field": "mask",
+          "keys": [
+            "tags",
+            "secret_name"
+          ]
+        }
+      }
+    },
+    {
+      "name": "a Confirm that names a stale reveal epoch",
+      "value": {
+        "detail": {
+          "code": "conflict",
+          "message": "The table changed since you opened this. Check what it shows, then confirm again.",
+          "retryable": false,
+          "field": "reveal_epoch"
+        }
+      }
+    },
+    {
+      "name": "a link to a campaign for a conversation already in one (1kg.2.4): a new code, not conflict's meaning widened",
+      "value": {
+        "detail": {
+          "code": "already_linked",
+          "message": "That conversation is already in a campaign.",
+          "retryable": false,
+          "field": "campaign_id"
+        }
+      }
     }
   ],
   "invalid": [
     {
       "name": "legacy string detail is not the Workbench envelope",
       "why": "Workbench errors are structured; the tolerant reader for legacy bodies is a separate client helper",
-      "value": { "detail": "authorization backend unavailable" }
+      "value": {
+        "detail": "authorization backend unavailable"
+      }
     },
-    { "name": "missing message", "why": "every error names itself (STATE-2)", "value": { "detail": { "code": "conflict", "retryable": false } } },
-    { "name": "empty message", "why": "bounded 1..500", "value": { "detail": { "code": "conflict", "message": "", "retryable": false } } },
+    {
+      "name": "missing message",
+      "why": "every error names itself (STATE-2)",
+      "value": {
+        "detail": {
+          "code": "conflict",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "empty message",
+      "why": "bounded 1..500",
+      "value": {
+        "detail": {
+          "code": "conflict",
+          "message": "",
+          "retryable": false
+        }
+      }
+    },
     {
       "name": "retryable must be a boolean",
       "why": "no coercion",
-      "value": { "detail": { "code": "conflict", "message": "Changed elsewhere.", "retryable": "yes" } }
+      "value": {
+        "detail": {
+          "code": "conflict",
+          "message": "Changed elsewhere.",
+          "retryable": "yes"
+        }
+      }
     },
     {
       "name": "negative retry_after_s",
       "why": "bounded >= 0",
-      "value": { "detail": { "code": "throttled_user", "message": "Slow down.", "retryable": true, "retry_after_s": -1 } }
+      "value": {
+        "detail": {
+          "code": "throttled_user",
+          "message": "Slow down.",
+          "retryable": true,
+          "retry_after_s": -1
+        }
+      }
     },
     {
       "name": "too many in-flight ids",
@@ -78,8 +191,15 @@
           "message": "Busy.",
           "retryable": true,
           "in_flight": [
-            "inv_aaaaaaaaaaaaaaa1", "inv_aaaaaaaaaaaaaaa2", "inv_aaaaaaaaaaaaaaa3", "inv_aaaaaaaaaaaaaaa4", "inv_aaaaaaaaaaaaaaa5",
-            "inv_aaaaaaaaaaaaaaa6", "inv_aaaaaaaaaaaaaaa7", "inv_aaaaaaaaaaaaaaa8", "inv_aaaaaaaaaaaaaaa9"
+            "inv_aaaaaaaaaaaaaaa1",
+            "inv_aaaaaaaaaaaaaaa2",
+            "inv_aaaaaaaaaaaaaaa3",
+            "inv_aaaaaaaaaaaaaaa4",
+            "inv_aaaaaaaaaaaaaaa5",
+            "inv_aaaaaaaaaaaaaaa6",
+            "inv_aaaaaaaaaaaaaaa7",
+            "inv_aaaaaaaaaaaaaaa8",
+            "inv_aaaaaaaaaaaaaaa9"
           ]
         }
       }
@@ -87,13 +207,23 @@
     {
       "name": "a conflict that carries the other writer's text",
       "why": "X-7: GM-private text never rides in an error, where logs and traces see it; a client reads the latest values through the document endpoint",
-      "applies_to": ["server"],
+      "applies_to": [
+        "server"
+      ],
       "value": {
         "detail": {
           "code": "conflict",
           "message": "This document changed elsewhere.",
           "retryable": false,
-          "conflict": { "write_revision": 16, "fields": ["wants"], "latest": { "wants": "The signet, and an apology." } }
+          "conflict": {
+            "write_revision": 16,
+            "fields": [
+              "wants"
+            ],
+            "latest": {
+              "wants": "The signet, and an apology."
+            }
+          }
         }
       }
     },
@@ -101,27 +231,87 @@
       "name": "a conflict that names no field",
       "why": "CANVAS-19: a conflict exists only because a touched field changed; with none there is nothing to resolve",
       "value": {
-        "detail": { "code": "conflict", "message": "This document changed elsewhere.", "retryable": false, "conflict": { "write_revision": 16, "fields": [] } }
+        "detail": {
+          "code": "conflict",
+          "message": "This document changed elsewhere.",
+          "retryable": false,
+          "conflict": {
+            "write_revision": 16,
+            "fields": []
+          }
+        }
       }
     },
     {
       "name": "a conflict without the revision to rebase on",
       "why": "CANVAS-20: Keep mine re-applies the GM's text on the latest revision, so the client must be told which that is",
       "value": {
-        "detail": { "code": "conflict", "message": "This document changed elsewhere.", "retryable": false, "conflict": { "fields": ["wants"] } }
+        "detail": {
+          "code": "conflict",
+          "message": "This document changed elsewhere.",
+          "retryable": false,
+          "conflict": {
+            "fields": [
+              "wants"
+            ]
+          }
+        }
       }
     },
     {
       "name": "the server never emits a code outside its closed set",
       "why": "error codes are bounded so they are safe as metric labels (plan invariant 10)",
-      "applies_to": ["server"],
-      "value": { "detail": { "code": "some_future_code", "message": "Something new went wrong.", "retryable": false } }
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "detail": {
+          "code": "some_future_code",
+          "message": "Something new went wrong.",
+          "retryable": false
+        }
+      }
     },
     {
       "name": "the server never emits an undeclared field",
       "why": "extra=forbid on the server",
-      "applies_to": ["server"],
-      "value": { "detail": { "code": "conflict", "message": "The document changed elsewhere.", "retryable": false, "hint": "reload" } }
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "detail": {
+          "code": "conflict",
+          "message": "The document changed elsewhere.",
+          "retryable": false,
+          "hint": "reload"
+        }
+      }
+    },
+    {
+      "name": "keys holding field text instead of field keys",
+      "why": "X-7: an error body is where logs and traces look, so it names keys and never what they say — the key shape makes prose unrepresentable",
+      "value": {
+        "detail": {
+          "code": "validation_failed",
+          "message": "Some of those fields can't be shown.",
+          "retryable": false,
+          "keys": [
+            "Wants: the relic her order lost"
+          ]
+        }
+      }
+    },
+    {
+      "name": "an empty keys list",
+      "why": "keys appears only when there are keys at fault; an empty list would say nothing and still take a field",
+      "value": {
+        "detail": {
+          "code": "validation_failed",
+          "message": "Some of those fields can't be shown.",
+          "retryable": false,
+          "keys": []
+        }
+      }
     }
   ]
 }

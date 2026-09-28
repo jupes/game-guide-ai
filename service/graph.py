@@ -39,11 +39,15 @@ import logging
 from collections.abc import Hashable
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
+# Runtime import (not TYPE_CHECKING): `add_node` resolves each node's type hints.
+from langchain_core.runnables import RunnableConfig
+
 from config import CONTEXT_TOP_N, SNIPPET_MAX, TOP_K
 from ingestion.rerank import should_rerank
 from ingestion.retrieval import RetrievalResult, RetrievedChunk, assemble_result
 from ingestion.scope import scope_for_mode
 
+from . import usage_capture
 from .attachments import cap_text
 from .generate import (
     _looks_like_statblock,
@@ -117,8 +121,18 @@ def build_rag_graph(svc: RagService) -> Any:
         # Empty/whitespace prompt refuses without retrieval or an LLM call.
         return "embed" if state["prompt"].strip() else "refuse"
 
-    def embed_node(state: GraphState) -> GraphState:
-        return {"emb": svc.retriever.embed(state["prompt"])}
+    def embed_node(state: GraphState, config: RunnableConfig) -> GraphState:
+        # The `config` annotation is load-bearing here for the same reason it is
+        # on the three LLM nodes below — see the comment on generate_node.
+        # yje.5.1.1: the query embedding is a paid provider call, so the usage
+        # sink is installed AROUND the embed and torn down in a finally. Scoped
+        # rather than passed: RagRetriever.embed takes one positional argument
+        # in every fake in the suite.
+        token = usage_capture.begin_embedding_scope(config)
+        try:
+            return {"emb": svc.retriever.embed(state["prompt"])}
+        finally:
+            usage_capture.end_embedding_scope(token)
 
     def extract_hints_node(state: GraphState) -> GraphState:
         classes, entities, ctypes = svc.retriever.analyze(state["prompt"])
@@ -207,9 +221,20 @@ def build_rag_graph(svc: RagService) -> Any:
     def gate_route(state: GraphState) -> Literal["generate", "refuse"]:
         return state["route"]
 
-    def generate_node(state: GraphState, config: Any = None) -> GraphState:
+    def generate_node(state: GraphState, config: RunnableConfig) -> GraphState:
         # LangGraph injects the run `config` (Langfuse callbacks) as the 2nd arg;
         # forward it to the LLM call so the generation emits a token/cost span.
+        #
+        # The annotation is load-bearing, here and on the two nodes below. Since
+        # LangGraph 1.0 `config` is injected ONLY when it is annotated as
+        # `RunnableConfig`; anything else is warned about and skipped, so the node
+        # gets None. A LangChain chat model handed None can still recover the
+        # callbacks from a context variable, which is why that fails quietly — but
+        # an `LLMClient` that is not a LangChain runnable sees only what it is
+        # handed. This module has `from __future__ import annotations`, so
+        # LangGraph compares the annotation as a STRING: it accepts
+        # "RunnableConfig" and "Optional[RunnableConfig]", and does NOT accept
+        # "RunnableConfig | None".
         result = state["result"]
         # D2 (agent-forge-harness-b8o.1): assembly extracted into
         # service/generate.py so the eval capture harness (Checkpoint 3) can
@@ -223,9 +248,13 @@ def build_rag_graph(svc: RagService) -> Any:
             attachment_label=state.get("attachment_label"),
             top_n=CONTEXT_TOP_N,
         )
+        observer = usage_capture.observer_for(
+            config, purpose=usage_capture.PURPOSE_ANSWER, alias=svc.model,
+        )
         answer = generate_answer(
             state["prompt"], context, mode=state["mode"],
             model=svc.model, client=svc.factory.client_for(svc.model), config=config,
+            observer=observer,
         )
         # An attachment can ground an answer the corpus alone couldn't — treat
         # the response as answerable even when corpus retrieval wasn't.
@@ -244,31 +273,61 @@ def build_rag_graph(svc: RagService) -> Any:
             return "structure"
         return "cite"
 
-    def suggest_node(state: GraphState, config: Any = None) -> GraphState:
+    def suggest_node(state: GraphState, config: RunnableConfig) -> GraphState:
         # Best-effort garnish: any LLM/parse failure degrades to no suggestions
         # rather than failing an answer that already generated.
         context = build_context(state["result"], top_n=CONTEXT_TOP_N)
+        # Built BEFORE the try: a failure here must never be swallowed by the
+        # degrade-to-None below, which would drop the suggestions, return 200
+        # and pass any test that only checks a status code. It cannot fail —
+        # observer_for owns its own isolation — and this placement is what
+        # makes that provable rather than assumed.
+        observer = usage_capture.observer_for(
+            config, purpose=usage_capture.PURPOSE_SUGGESTIONS, alias=svc.model,
+        )
         try:
             suggestions = generate_suggestions(
                 state["prompt"], context,
                 model=svc.model, client=svc.factory.client_for(svc.model), config=config,
+                observer=observer,
             )
-        except Exception:
+        except Exception as exc:
             log.warning("spell suggestions failed; answering without them", exc_info=True)
+            # Ours (parse_failure) vs the provider's (none): one classification,
+            # shared by every structuring branch and tested directly.
+            usage_capture.record_structuring_outcome(
+                config, purpose=usage_capture.PURPOSE_SUGGESTIONS,
+                outcome=usage_capture.outcome_for_failure(exc),
+            )
             return {"suggestions": None}
+        usage_capture.record_structuring_outcome(
+            config, purpose=usage_capture.PURPOSE_SUGGESTIONS, outcome=usage_capture.OUTCOME_PRODUCED,
+        )
         return {"suggestions": suggestions}
 
-    def structure_node(state: GraphState, config: Any = None) -> GraphState:
+    def structure_node(state: GraphState, config: RunnableConfig) -> GraphState:
         # Best-effort structuring: any LLM/parse failure degrades to None
         # rather than failing an answer that already generated.
         if state["mode"] == "spell":
+            # Before the try, for the reason spelled out in suggest_node.
+            observer = usage_capture.observer_for(
+                config, purpose=usage_capture.PURPOSE_SPELL_STRUCTURING, alias=svc.model,
+            )
             try:
                 spell_content = generate_spell_content(
                     state["answer"], model=svc.model, client=svc.factory.client_for(svc.model), config=config,
+                    observer=observer,
                 )
-            except Exception:
+            except Exception as exc:
                 log.warning("spell content structuring failed; answering without it", exc_info=True)
+                usage_capture.record_structuring_outcome(
+                    config, purpose=usage_capture.PURPOSE_SPELL_STRUCTURING,
+                    outcome=usage_capture.outcome_for_failure(exc),
+                )
                 return {"spell_content": None}
+            usage_capture.record_structuring_outcome(
+                config, purpose=usage_capture.PURPOSE_SPELL_STRUCTURING, outcome=usage_capture.OUTCOME_PRODUCED,
+            )
             return {"spell_content": spell_content}
         # sage/gm: cost-gated on a cheap text heuristic (z7fl.1 Checkpoint B)
         # -- most GM/Sage turns are plain narrative, not a creature
@@ -276,14 +335,32 @@ def build_rag_graph(svc: RagService) -> Any:
         # them would waste the majority of calls. Skip entirely when the
         # heuristic doesn't match: no LLM call at all.
         if not _looks_like_statblock(state["answer"]):
+            usage_capture.record_structuring_outcome(
+                config, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING,
+                outcome=usage_capture.OUTCOME_SKIPPED_BY_GATE,
+            )
             return {"stat_block": None}
+        # Before the try, for the reason spelled out in suggest_node. Also
+        # after the cost guard above, so a skipped structuring call stays a
+        # call that was never made rather than an attempt that was.
+        observer = usage_capture.observer_for(
+            config, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING, alias=svc.model,
+        )
         try:
             stat_block = generate_stat_block(
                 state["answer"], model=svc.model, client=svc.factory.client_for(svc.model), config=config,
+                observer=observer,
             )
-        except Exception:
+        except Exception as exc:
             log.warning("stat block structuring failed; answering without it", exc_info=True)
+            usage_capture.record_structuring_outcome(
+                config, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING,
+                outcome=usage_capture.outcome_for_failure(exc),
+            )
             return {"stat_block": None}
+        usage_capture.record_structuring_outcome(
+            config, purpose=usage_capture.PURPOSE_STATBLOCK_STRUCTURING, outcome=usage_capture.OUTCOME_PRODUCED,
+        )
         return {"stat_block": stat_block}
 
     def cite_node(state: GraphState) -> GraphState:

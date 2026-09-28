@@ -12,6 +12,8 @@ import {
   MessagesResponseSchema,
   AttachmentsResponseSchema,
 } from './schemas'
+import { parseTimelinePage } from './gm/contracts'
+import type { ReadTimelinePage } from './gm/contracts'
 
 export type ChatMode = 'sage' | 'spell' | 'rules' | 'gm'
 
@@ -247,6 +249,46 @@ export async function getMessages(
   const body = await parseJson(res, MessagesResponseSchema)
   if (body === null) return { kind: 'error', message: UNREADABLE }
   return { kind: 'ok', messages: body.messages }
+}
+
+/** One page of the GM thread's typed timeline (1kg.3.4). */
+export type TimelinePageResult =
+  | { kind: 'ok'; page: ReadTimelinePage }
+  /** 404 — missing, never written, or someone else's: the route answers all
+   * three alike (SEC-3). A conversation made in the sidebar reaches the server
+   * only with its first turn, so this is how a new thread reads. */
+  | { kind: 'missing' }
+  | { kind: 'error'; message: string }
+
+/** `GET /conversations/{id}/timeline`, newest first, read entry by entry so one
+ * entry from a newer server is one placeholder rather than a failed thread. */
+export async function getTimelinePage(
+  conversationId: string,
+  cursor: string | null,
+  fetchImpl: typeof fetch = fetch,
+): Promise<TimelinePageResult> {
+  // The cursor is opaque base64url and is allowed in a query string; nothing
+  // GM-private ever rides in this URL (X-7).
+  const query = cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`
+  let res: Response
+  try {
+    res = await fetchImpl(
+      `/conversations/${encodeURIComponent(conversationId)}/timeline${query}`,
+      { credentials: 'include' },
+    )
+  } catch {
+    return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
+  }
+
+  if (res.status === 401) notifyUnauthorized()
+  if (res.status === 404) return { kind: 'missing' }
+  if (!res.ok) {
+    return { kind: 'error', message: `Message history unavailable (${res.status}).` }
+  }
+
+  const page = parseTimelinePage(await parseJson<unknown>(res))
+  if (page.kind !== 'ok') return { kind: 'error', message: UNREADABLE }
+  return { kind: 'ok', page: page.value }
 }
 
 // ── Throttling (x5bz.3) ──────────────────────────────────────────────────────

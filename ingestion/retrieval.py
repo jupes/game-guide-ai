@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import os
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 import psycopg
 
@@ -72,12 +74,64 @@ def _openai_client():
     return OpenAI(api_key=api_key)
 
 
-def embed_query(text: str, client=None) -> list[float]:
+# --- Embedding attempt capture (agent-forge-harness-yje.5.1.1) --------------
+# Query embeddings are a paid provider call that production measured nowhere.
+# The sink is installed for the duration of one embed by the caller that knows
+# whose turn it is (service/graph.py's embed_node) and read here, at the actual
+# provider boundary — `RagRetriever.embed(prompt)` takes one positional
+# argument in every fake in the suite and cannot grow a parameter, and a
+# per-instance attribute would race (the retriever is a process-wide singleton
+# and /chat is served concurrently). Nothing here knows the record's shape: the
+# sink is handed a token count and an exception class, never text.
+#
+# The sink implementations live in service/usage_capture.py and swallow their
+# own failures; this module calls them plainly.
+class EmbedAttemptSink(Protocol):
+    def attempt_started(self) -> None: ...  # pragma: no cover - structural type
+
+    def record_embedding(
+        self, *, input_tokens: int | None, error: BaseException | None,
+    ) -> None: ...  # pragma: no cover - structural type
+
+
+_EMBED_SINK: ContextVar[EmbedAttemptSink | None] = ContextVar("embed_attempt_sink", default=None)
+
+
+def set_embedding_sink(sink: EmbedAttemptSink):
+    """Install `sink` for this context; returns a token for reset_embedding_sink."""
+    return _EMBED_SINK.set(sink)
+
+
+def reset_embedding_sink(token) -> None:
+    _EMBED_SINK.reset(token)
+
+
+def _embedding_input_tokens(resp) -> int | None:
+    """The provider's own count, or None. Never a guess and never zero-for-
+    unknown: the OpenAI embeddings response carries usage.prompt_tokens."""
+    usage = getattr(resp, "usage", None)
+    return getattr(usage, "prompt_tokens", None) if usage is not None else None
+
+
+def embed_query(text: str, client=None, sink: EmbedAttemptSink | None = None) -> list[float]:
     """Embed one query. `client` lets callers (RagRetriever) reuse a single
-    OpenAI client instead of constructing one per call."""
+    OpenAI client instead of constructing one per call. `sink` (or the scoped
+    one) receives one attempt record; a missing API key raises before any
+    request is sent and is therefore deliberately NOT an attempt."""
     if client is None:
         client = _openai_client()
-    resp = client.embeddings.create(model=EMBED_MODEL, input=[text])
+    if sink is None:
+        sink = _EMBED_SINK.get()
+    if sink is not None:
+        sink.attempt_started()
+    try:
+        resp = client.embeddings.create(model=EMBED_MODEL, input=[text])
+    except BaseException as exc:
+        if sink is not None:
+            sink.record_embedding(input_tokens=None, error=exc)
+        raise
+    if sink is not None:
+        sink.record_embedding(input_tokens=_embedding_input_tokens(resp), error=None)
     return resp.data[0].embedding
 
 

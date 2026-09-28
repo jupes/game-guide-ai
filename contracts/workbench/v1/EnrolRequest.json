@@ -1,6 +1,7 @@
 {
   "schema": "EnrolRequest",
   "direction": "request",
+  "channel": "table",
   "valid": [
     {
       "name": "an enrolment code from a personal link (AUD-4)",
