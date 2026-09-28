@@ -120,6 +120,16 @@ describe('readEarlierTimeline — Load earlier continues the same walk from a ke
     expect(read.cursor).toBe('p1')
   })
 
+  it('follows next_cursor through an empty page: only a null cursor ends the list (review M4)', async () => {
+    const load = pagedTimeline([[chatEntry({ entry_id: 'ent_new' })], [], [chatEntry({ entry_id: 'ent_old' })]])
+    const read = await readEarlierTimeline('cnv_1', 'p1', load)
+    expect(load.cursors).toEqual(['p1', 'p2'])
+    expect(read.kind).toBe('ok')
+    if (read.kind !== 'ok') return
+    expect(ids(read.items)).toEqual(['ent_old'])
+    expect(read.cursor).toBeNull()
+  })
+
   it('passes a failed page through as the error, leaving nothing to merge', async () => {
     const read = await readEarlierTimeline(
       'cnv_1',
@@ -426,5 +436,167 @@ describe('useGmTimeline — Load earlier (1kg.3.6)', () => {
 
     expect(load.cursors).toHaveLength(callsBefore)
     expect(result.current.loadingEarlier).toBe(false)
+  })
+
+  it('walks back a second hop from the cursor the first hop kept (review H1)', async () => {
+    const load = pagedTimeline([
+      manyChatEntries(HYDRATE_TARGET, 9000),
+      manyChatEntries(HYDRATE_TARGET, 9100),
+      [chatEntry({ entry_id: 'ent_oldest' })],
+    ])
+    const { result } = renderHook(() => useGmTimeline('cnv_1', true, load))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => result.current.loadEarlier())
+    await waitFor(() => expect(result.current.items).toHaveLength(2 * HYDRATE_TARGET))
+    expect(result.current.hasEarlier).toBe(true)
+
+    act(() => result.current.loadEarlier())
+    await waitFor(() => expect(result.current.loadingEarlier).toBe(false))
+    // Each hop resumed from where the one before it stopped — never from the
+    // first kept cursor again.
+    expect(load.cursors).toEqual([null, 'p1', 'p2'])
+    expect(result.current.items).toHaveLength(2 * HYDRATE_TARGET + 1)
+    expect(result.current.items[0]).toMatchObject({ value: { entry_id: 'ent_oldest' } })
+    expect(result.current.hasEarlier).toBe(false)
+  })
+
+  it('starts one walk however often it is pressed while one is out (review M3)', async () => {
+    let resolveEarlier: ((r: TimelinePageResult) => void) | null = null
+    const load = vi.fn<LoadTimelinePageFn>(async (conversationId, cursor) => {
+      if (cursor === null) {
+        return { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 9000), next_cursor: 'p1' } }
+      }
+      return new Promise<TimelinePageResult>((resolve) => {
+        resolveEarlier = resolve
+      })
+    })
+    const { result } = renderHook(() => useGmTimeline('cnv_1', true, load))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.loadEarlier()
+      result.current.loadEarlier()
+    })
+    // And again after the rerender, through the freshly bound callback.
+    act(() => result.current.loadEarlier())
+    expect(load.mock.calls.filter(([, cursor]) => cursor === 'p1')).toHaveLength(1)
+
+    await act(async () => {
+      resolveEarlier?.({
+        kind: 'ok',
+        page: { conversation_id: 'cnv_1', items: [chatEntry({ entry_id: 'ent_oldest' })], next_cursor: null },
+      })
+    })
+    expect(result.current.items).toHaveLength(HYDRATE_TARGET + 1)
+  })
+
+  it('keeps the switched-to conversation’s own cursor when an old walk resolves late (review M3)', async () => {
+    let resolveA: ((r: TimelinePageResult) => void) | null = null
+    const loadA: LoadTimelinePageFn = async (conversationId, cursor) => {
+      if (cursor === null) {
+        return { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 9000), next_cursor: 'a1' } }
+      }
+      return new Promise((resolve) => {
+        resolveA = resolve
+      })
+    }
+    const loadB = vi.fn<LoadTimelinePageFn>(async (conversationId, cursor) => ({
+      kind: 'ok',
+      page:
+        cursor === null
+          ? { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 5000), next_cursor: 'b1' }
+          : { conversation_id: conversationId, items: [chatEntry({ entry_id: 'ent_b_oldest' })], next_cursor: null },
+    }))
+    const { result, rerender } = renderHook(
+      ({ id, load }: { id: string; load: LoadTimelinePageFn }) => useGmTimeline(id, true, load),
+      { initialProps: { id: 'cnv_a', load: loadA } },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => result.current.loadEarlier())
+
+    rerender({ id: 'cnv_b', load: loadB })
+    await waitFor(() => expect(ids(result.current.items)).toContain('ent_5000'))
+
+    // cnv_a's walk lands now: a full page, so it stops there, carrying cnv_a's
+    // next cursor.
+    await act(async () => {
+      resolveA?.({
+        kind: 'ok',
+        page: { conversation_id: 'cnv_a', items: manyChatEntries(HYDRATE_TARGET, 7000), next_cursor: 'a2' },
+      })
+    })
+    expect(ids(result.current.items)).not.toContain('ent_7000')
+
+    act(() => result.current.loadEarlier())
+    await waitFor(() => expect(ids(result.current.items)).toContain('ent_b_oldest'))
+    // cnv_b's Load earlier resumed from cnv_b's cursor — cnv_a's never
+    // reached cnv_b's timeline.
+    expect(loadB.mock.calls.map(([, cursor]) => cursor)).toEqual([null, 'b1'])
+  })
+
+  it('drops a walk from an earlier visit once the same conversation is read again (review M1)', async () => {
+    // Visit 1 draws ent_100 (newest) .. ent_199 and keeps p1 behind them. By
+    // visit 2, three newer turns have pushed ent_197..ent_199 out of the
+    // window and behind a new cursor, q1 — reachable only from q1.
+    let visits = 0
+    let resolveStale: ((r: TimelinePageResult) => void) | null = null
+    let resolveFresh: ((r: TimelinePageResult) => void) | null = null
+    const loadA = vi.fn<LoadTimelinePageFn>(async (conversationId, cursor) => {
+      if (cursor === null) {
+        visits += 1
+        return visits === 1
+          ? { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 100), next_cursor: 'p1' } }
+          : { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 97), next_cursor: 'q1' } }
+      }
+      return new Promise<TimelinePageResult>((resolve) => {
+        if (cursor === 'p1') resolveStale = resolve
+        else resolveFresh = resolve
+      })
+    })
+    const loadB = pagedTimeline([[chatEntry({ entry_id: 'ent_b' })]])
+    const { result, rerender } = renderHook(
+      ({ id, load }: { id: string; load: LoadTimelinePageFn }) => useGmTimeline(id, true, load),
+      { initialProps: { id: 'cnv_a', load: loadA as LoadTimelinePageFn } },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => result.current.loadEarlier())
+
+    rerender({ id: 'cnv_b', load: loadB })
+    await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_b']))
+    rerender({ id: 'cnv_a', load: loadA })
+    await waitFor(() => expect(ids(result.current.items)).toContain('ent_97'))
+
+    act(() => result.current.loadEarlier())
+    expect(result.current.loadingEarlier).toBe(true)
+
+    // Visit 1's walk lands now — after visit 2's read, in the same scope.
+    await act(async () => {
+      resolveStale?.({
+        kind: 'ok',
+        page: { conversation_id: 'cnv_a', items: [chatEntry({ entry_id: 'ent_200' })], next_cursor: null },
+      })
+    })
+    expect(result.current.items).toHaveLength(HYDRATE_TARGET)
+    expect(ids(result.current.items)).not.toContain('ent_200')
+    expect(result.current.hasEarlier).toBe(true)
+    // Visit 2's own walk is still out, and still the only one.
+    expect(result.current.loadingEarlier).toBe(true)
+    act(() => result.current.loadEarlier())
+    expect(loadA.mock.calls.filter(([, cursor]) => cursor === 'q1')).toHaveLength(1)
+
+    await act(async () => {
+      resolveFresh?.({
+        kind: 'ok',
+        page: {
+          conversation_id: 'cnv_a',
+          items: [...manyChatEntries(3, 197), chatEntry({ entry_id: 'ent_200' })],
+          next_cursor: null,
+        },
+      })
+    })
+    expect(result.current.items).toHaveLength(HYDRATE_TARGET + 4)
+    expect(ids(result.current.items).slice(0, 4)).toEqual(['ent_200', 'ent_199', 'ent_198', 'ent_197'])
+    expect(result.current.hasEarlier).toBe(false)
   })
 })

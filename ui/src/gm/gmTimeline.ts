@@ -305,18 +305,20 @@ export function useGmTimeline(
   const [state, setState] = useState<TimelineState>({ scopeId: null, ...NO_TIMELINE })
   // Load earlier's cursor and in-flight guard live only in memory (X-7),
   // never in state or persisted — so neither a rerender nor a stale promise
-  // can smear them across a conversation switch. `scopeRef` pins both to the
-  // scope they were read under; the hydrate effect resets all three the
-  // moment a new scope starts reading.
-  const scopeRef = useRef<string | null>(null)
+  // can smear them across a conversation switch. `generationRef` counts the
+  // hydrate effect's reads: each one resets the cursor and the guard, and a
+  // Load earlier walk only lands in the generation it started in. A scope
+  // string is not enough — A → B → A returns to the same string while the
+  // first visit's walk is still out (review M1).
+  const generationRef = useRef(0)
   const cursorRef = useRef<string | null>(null)
   const loadingEarlierRef = useRef(false)
 
   useEffect(() => {
-    if (scope === null) return
-    scopeRef.current = scope
+    generationRef.current += 1
     cursorRef.current = null
     loadingEarlierRef.current = false
+    if (scope === null) return
     let cancelled = false
     void readTimeline(scope, loadPage).then(
       (read) => {
@@ -367,15 +369,18 @@ export function useGmTimeline(
     if (scope === null || loadingEarlierRef.current) return
     const cursor = cursorRef.current
     if (cursor === null) return
+    const generation = generationRef.current
     loadingEarlierRef.current = true
     setState((prev) => (prev.scopeId === scope ? { ...prev, loadingEarlier: true, earlierError: null } : prev))
     void readEarlierTimeline(scope, cursor, loadPage).then(
       (read) => {
+        // Superseded by a newer read (a switch, or a switch and back): the
+        // hydrate effect has already reset the cursor and the guard for it,
+        // and this answer belongs to nothing still on screen. The guard is
+        // left alone — it is the newer read's now, and may be holding a walk
+        // of its own.
+        if (generationRef.current !== generation) return
         loadingEarlierRef.current = false
-        // Superseded by a conversation switch: the hydrate effect above has
-        // already reset the cursor and the guard for the new scope, and this
-        // answer belongs to neither it nor anything still on screen.
-        if (scopeRef.current !== scope) return
         if (read.kind === 'error') {
           setState((prev) => (prev.scopeId === scope ? { ...prev, loadingEarlier: false, earlierError: read.message } : prev))
           return
@@ -394,8 +399,8 @@ export function useGmTimeline(
         )
       },
       (err: unknown) => {
+        if (generationRef.current !== generation) return
         loadingEarlierRef.current = false
-        if (scopeRef.current !== scope) return
         setState((prev) =>
           prev.scopeId === scope
             ? { ...prev, loadingEarlier: false, earlierError: err instanceof Error ? err.message : 'Message history unavailable.' }
