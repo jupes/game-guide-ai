@@ -487,6 +487,30 @@ def test_a_cursor_this_server_did_not_mint_is_refused(world: World) -> None:
         world.conversations.list_for_owner(unit, world.owner, cursor="not-a-cursor")
 
 
+@pytest.mark.parametrize(
+    "character",
+    ["\x00", "\x01", "\n", "\x1f", "\x7f", "\x85", "\x9f", "\ud800"],
+    ids=["nul", "soh", "newline", "us", "del", "nel", "apc", "lone-surrogate"],
+)
+def test_a_cursor_whose_id_carries_a_control_character_is_refused_before_the_statement(
+    world: World, character: str
+) -> None:
+    """agent-forge-harness-kky (PR #127's review, N-1). A cursor is client-held,
+    and JSON carries any character as an escape. A NUL in its id reached
+    PostgreSQL's parameter, where psycopg raised `DataError`, the route's
+    retryable 503 for a value the client itself sent; a lone surrogate raised
+    `UnicodeEncodeError`, a 500. No id the index lists has either, or any other
+    control character, so each is the one refusal, `InvalidCursor`, raised
+    before the statement: the same transaction still reads afterwards."""
+    made = _create(world, now=T0).id
+    payload = json.dumps([(T0 + timedelta(hours=1)).isoformat(), f"cnv_{character}"])
+    forged = base64.urlsafe_b64encode(payload.encode("ascii")).decode("ascii").rstrip("=")
+    with world.db.transaction() as unit:
+        with pytest.raises(InvalidCursor):
+            world.conversations.list_for_owner(unit, world.owner, cursor=forged)
+        assert [row.id for row in world.conversations.list_for_owner(unit, world.owner).items] == [made]
+
+
 def test_the_index_never_lists_an_id_no_cursor_could_carry_so_paging_never_skips_past_one(
     world: World,
 ) -> None:
