@@ -2,6 +2,7 @@ import * as React from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
+import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { AudioCue } from './AudioCue'
 import type { AudioCueProps } from './AudioCue'
 import { AMBIENCE_CUE, ONE_SHOT_CUE } from './audioFixtures'
@@ -169,6 +170,10 @@ export const NotLive: Story = {
     await expect(canvas.queryByText('LIVE')).toBeNull()
     await expect(canvas.getByRole('button', { name: 'Play to table' })).toBeEnabled()
     await expect(canvas.getByRole('button', { name: `Stop ${AMBIENCE_CUE.title}` })).toBeEnabled()
+    // 1dw: "Play to table" is a filled, small ds/Button — the ds/ `Sizes`
+    // story never renders it, so a narrower `gm-audio-cue__table`-scoped rule
+    // could shrink it without that story noticing.
+    await expectTouchTarget(canvas, 'Play to table')
   },
 }
 
@@ -212,6 +217,8 @@ export const ProcessingFailed: Story = {
     const canvas = within(canvasElement)
 
     await expect(canvas.getByRole('status')).toHaveTextContent("This file couldn't be processed")
+    // 1dw: the call-site floor, same rationale as "Play to table" above.
+    await expectTouchTarget(canvas, 'Replace')
     await userEvent.click(canvas.getByRole('button', { name: 'Replace' }))
     await expect(args.onReplace).toHaveBeenCalled()
   },
@@ -224,6 +231,8 @@ export const PushFailed: Story = {
     const canvas = within(canvasElement)
 
     await expect(canvas.getByRole('status')).toHaveTextContent("Couldn't play to the table")
+    // 1dw: the call-site floor, same rationale as "Play to table" above.
+    await expectTouchTarget(canvas, 'Retry')
     await userEvent.click(canvas.getByRole('button', { name: 'Retry' }))
     await expect(args.onRetryPush).toHaveBeenCalled()
   },
