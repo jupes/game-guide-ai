@@ -235,3 +235,52 @@ describe('GmThread — Load earlier (1kg.3.6)', () => {
     expect(screen.queryByRole('button', { name: /Load earlier|Loading/ })).toBeNull()
   })
 })
+
+describe('GmThread — Load earlier hands keyboard focus on (1kg.3.7)', () => {
+  const newer = turnsFromTimeline([chatEntry({ entry_id: 'ent_new', prompt: 'A newer question' })])
+  const older = turnsFromTimeline([chatEntry({ entry_id: 'ent_old', prompt: 'An older question' })])
+
+  /** Presses the control from the keyboard, then plays the walk's renders as ChatPane would. */
+  async function pressAndSettle(hasEarlier: boolean, whileLoading: () => void = () => {}) {
+    const onLoadEarlier = vi.fn()
+    const view = render(<GmThread turns={newer} hasEarlier onLoadEarlier={onLoadEarlier} />)
+    screen.getByRole('button', { name: 'Load earlier' }).focus()
+    await userEvent.keyboard('{Enter}')
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+    view.rerender(<GmThread turns={newer} hasEarlier loadingEarlier onLoadEarlier={onLoadEarlier} />)
+    whileLoading()
+    view.rerender(<GmThread turns={[...older, ...newer]} hasEarlier={hasEarlier} onLoadEarlier={onLoadEarlier} />)
+    return view
+  }
+
+  it('moves focus to the first older turn once the last page lands and the control goes, like VersionList', async () => {
+    const { container } = await pressAndSettle(false)
+    expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
+    const [first] = exchanges(container)
+    expect(first).toHaveTextContent('An older question')
+    expect(first).toHaveAttribute('tabindex', '-1')
+    expect(document.activeElement).toBe(first)
+  })
+
+  it('puts focus back on the control when the browser dropped it while the control was disabled', async () => {
+    // A browser may drop focus to <body> once the button is disabled. jsdom
+    // never does (and ignores blur() on a disabled button), so the test drops
+    // it there itself: focus a stand-in, then remove it.
+    await pressAndSettle(true, () => {
+      const standIn = document.createElement('input')
+      document.body.append(standIn)
+      standIn.focus()
+      standIn.remove()
+      expect(document.activeElement).toBe(document.body)
+    })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Load earlier' }))
+  })
+
+  it('never takes focus from wherever the reader moved it while the walk ran', async () => {
+    const elsewhere = document.createElement('input')
+    document.body.append(elsewhere)
+    await pressAndSettle(false, () => elsewhere.focus())
+    expect(document.activeElement).toBe(elsewhere)
+    elsewhere.remove()
+  })
+})

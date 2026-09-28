@@ -25,6 +25,9 @@
  * a button at the top of the thread, present only while `hasEarlier` is true.
  * It fetches nothing itself — `ChatPane` owns `useGmTimeline` and wires its
  * `loadEarlier`/`loadingEarlier`/`earlierError` straight through as props.
+ * When the last page lands and the control goes, keyboard focus moves to the
+ * first exchange that arrived (tabIndex -1), as VersionList's Load more does
+ * (1kg.3.7).
  */
 
 import * as React from 'react'
@@ -78,13 +81,46 @@ export function GmThread({
   earlierError = null,
   onLoadEarlier,
 }: GmThreadProps): React.JSX.Element {
+  const buttonRef = React.useRef<HTMLButtonElement>(null)
+  const firstExchangeRef = React.useRef<HTMLDivElement>(null)
+  // 1kg.3.7, VersionList's hand-off: a press made here, and whether its walk
+  // has been seen in flight — so focus moves only once that walk settles.
+  const press = React.useRef<'pressed' | 'loading' | null>(null)
+
+  React.useEffect(() => {
+    if (press.current === null) return
+    if (loadingEarlier) {
+      press.current = 'loading'
+      return
+    }
+    if (press.current !== 'loading') return
+    press.current = null
+    // Only focus the walk left nowhere — the control unmounted with the last
+    // page, or a browser dropped it off the disabled button — never focus the
+    // reader has since put somewhere else.
+    const active = document.activeElement
+    if (active !== null && active !== document.body) return
+    const target = hasEarlier ? buttonRef.current : firstExchangeRef.current
+    target?.focus()
+  }, [loadingEarlier, hasEarlier, turns])
+
+  const handleLoadEarlier = React.useCallback(() => {
+    press.current = 'pressed'
+    onLoadEarlier?.()
+  }, [onLoadEarlier])
+
   return (
     <>
       {hasEarlier && onLoadEarlier && (
-        <LoadEarlier loading={loadingEarlier} error={earlierError} onLoadEarlier={onLoadEarlier} />
+        <LoadEarlier loading={loadingEarlier} error={earlierError} onLoadEarlier={handleLoadEarlier} buttonRef={buttonRef} />
       )}
-      {turns.map((turn) => (
-        <div key={turn.key} className="gm-thread__exchange">
+      {turns.map((turn, index) => (
+        <div
+          key={turn.key}
+          className="gm-thread__exchange"
+          tabIndex={-1}
+          ref={index === 0 ? firstExchangeRef : undefined}
+        >
           <Narration turn={turn} />
           <Outcome turn={turn} onOpenDocument={onOpenDocument} />
         </div>
@@ -106,16 +142,19 @@ function LoadEarlier({
   loading,
   error,
   onLoadEarlier,
+  buttonRef,
 }: {
   loading: boolean
   error: string | null
   onLoadEarlier: () => void
+  buttonRef: React.Ref<HTMLButtonElement>
 }): React.JSX.Element {
   return (
     <div className="gm-thread__load-earlier">
       {error !== null && <p className="gm-thread__load-earlier-error">{error}</p>}
       <button
         type="button"
+        ref={buttonRef}
         className="gm-thread__load-earlier-button"
         onClick={onLoadEarlier}
         disabled={loading}

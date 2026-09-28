@@ -427,6 +427,28 @@ describe('ChatPane (GM) — Load earlier (1kg.3.6)', () => {
     expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
   })
 
+  it('keeps keyboard focus on the control while pages remain, then hands it to the oldest turn (1kg.3.7)', async () => {
+    const load = pagedTimeline([
+      manyChatEntries(HYDRATE_TARGET, 9600),
+      manyChatEntries(HYDRATE_TARGET, 9700),
+      [chatEntry({ entry_id: 'ent_oldest', prompt: OLDER_PROMPT })],
+    ])
+    const { container } = render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
+    const button = await screen.findByRole('button', { name: 'Load earlier' })
+    button.focus()
+
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(container.querySelectorAll('.gm-thread__exchange')).toHaveLength(2 * HYDRATE_TARGET))
+    expect(document.activeElement).toBe(button)
+
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(screen.getByText(OLDER_PROMPT)).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
+    const first = container.querySelector('.gm-thread__exchange')
+    expect(first).toHaveTextContent(OLDER_PROMPT)
+    expect(document.activeElement).toBe(first)
+  })
+
   it('announces the start of a Load earlier walk, then its outcome, on the one live region the pane already had', async () => {
     // A promise the test resolves explicitly (review M-2's own pattern,
     // above) — an in-memory fetch that settled on its own microtask could
