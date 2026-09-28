@@ -2,6 +2,7 @@ import * as React from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test'
 
+import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { CanvasPane } from './CanvasPane'
 import type { DocumentVersion } from './contracts'
 
@@ -118,6 +119,9 @@ export const StatusFailed: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('status')).toHaveTextContent("Couldn't save — Retry")
+    // 1dw: this small ds/Button call site is not rendered by the ds/ `Sizes`
+    // story, so a `gm-canvas`-scoped rule could shrink it unnoticed.
+    await expectTouchTarget(canvas, 'Retry')
     await userEvent.click(canvas.getByRole('button', { name: 'Retry' }))
     await expect(args.onRetrySave).toHaveBeenCalledTimes(1)
   },
@@ -142,6 +146,10 @@ export const RevealHidden: Story = {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('button', { name: 'Reveal to party' })).toBeInTheDocument()
     await expect(canvas.queryByRole('button', { name: 'Stop showing' })).not.toBeInTheDocument()
+    // 1dw: the tonal small ds/Button call site (same JSX for both this label
+    // and RevealLive's "Change what the table sees"); not rendered by ds/'s
+    // own `Sizes` story.
+    await expectTouchTarget(canvas, 'Reveal to party')
   },
 }
 
@@ -156,6 +164,9 @@ export const RevealLive: Story = {
     const canvas = within(canvasElement)
     await userEvent.click(canvas.getByText('Revealed · portrait, name & voice'))
     await expect(args.onStopReveal).not.toHaveBeenCalled()
+    // 1dw: the outlined small ds/Button call site, not rendered by ds/'s own
+    // `Sizes` story.
+    await expectTouchTarget(canvas, 'Stop showing')
     await userEvent.click(canvas.getByRole('button', { name: 'Change what the table sees' }))
     await expect(args.onReveal).toHaveBeenCalledTimes(1)
     await userEvent.click(canvas.getByRole('button', { name: 'Stop showing' }))
@@ -275,6 +286,9 @@ export const ChangeArrived: Story = {
   args: { changeHighlight: true, onAcknowledgeChange: fn() },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement)
+    // 1dw: the text-variant small ds/Button call site, not rendered by ds/'s
+    // own `Sizes` story.
+    await expectTouchTarget(canvas, 'Got it')
     await userEvent.click(canvas.getByRole('button', { name: 'Got it' }))
     await expect(args.onAcknowledgeChange).toHaveBeenCalledTimes(1)
   },
@@ -391,6 +405,10 @@ export const Narrow: Story = {
     const canvas = within(canvasElement)
     await expect(canvas.queryByRole('button', { name: 'Close canvas' })).not.toBeInTheDocument()
     await expect(canvas.getByRole('button', { name: 'Back' })).toBeInTheDocument()
+    // 1dw: the text-variant small ds/Button call site, not rendered by ds/'s
+    // own `Sizes` story — and this is the one call site rendered at a 375px
+    // canvas, so it also proves the floor holds at the narrowest width.
+    await expectTouchTarget(canvas, 'Back')
 
     const trigger = canvas.getByRole('button', { name: 'More canvas actions' })
     await userEvent.click(trigger)

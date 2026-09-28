@@ -11,6 +11,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
+import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { AssistantLane } from './AssistantLane'
 import { LANE_COPY } from './laneState'
 import type { LaneTimer } from './laneState'
@@ -64,6 +65,13 @@ export const Working: Story = {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('status')).toHaveTextContent('Writing the dossier…')
     await expect(canvas.getByText('NPC')).toBeVisible()
+
+    // 1dw: every lane action (Cancel here, Try again / Edit brief / Run again /
+    // Check again elsewhere in this file) is the same small Button call site
+    // (`assistant-lane__actions`), so clearing the 44px floor once at this
+    // call site is what a narrower `assistant-lane__actions`-scoped rule
+    // would fail — the ds/Button `Sizes` story does not render this lane.
+    await expectTouchTarget(canvas, 'Cancel')
 
     await userEvent.click(canvas.getByRole('button', { name: 'Cancel' }))
     await expect(args.onCancel).toHaveBeenCalledTimes(1)

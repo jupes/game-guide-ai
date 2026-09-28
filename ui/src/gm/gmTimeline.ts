@@ -12,13 +12,17 @@
  * walk follows the cursor through such pages and only a `null` cursor ends the
  * list. It stops early once it holds a full page's worth of entries — already
  * twice the exchanges `/messages` recalls — and reading further back is
- * **Load earlier**, a follow-up.
+ * **Load earlier** (1kg.3.6): `useGmTimeline` keeps the cursor the initial
+ * read stopped on and continues the same walk from it, prepending what it
+ * finds above what is already drawn. The kept cursor lives only in memory
+ * (X-7) — never in state, so it cannot be inspected between renders, and
+ * never persisted.
  *
  * Privacy (X-7): prompts, briefs and answers are rendered and nothing else. A
  * React key is an entry id or a local counter, never text.
  */
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getTimelinePage } from '../api'
 import type { ChatResponse, TimelinePageResult } from '../api'
 import type { Exchange } from '../useChat'
@@ -149,26 +153,98 @@ export const HYDRATE_TARGET = TIMELINE_PAGE_MAX_ITEMS
 export const MAX_PAGES_PER_READ = 50
 
 export type TimelineRead =
-  | { kind: 'ok'; items: TimelineItem[] }
+  | { kind: 'ok'; items: TimelineItem[]; cursor: string | null }
   | { kind: 'error'; message: string }
 
-/** The newest entries of a conversation, oldest first for display. */
-export async function readTimeline(conversationId: string, loadPage: LoadTimelinePageFn): Promise<TimelineRead> {
+/**
+ * The shared walk (1kg.3.4's initial hydrate and 1kg.3.6's Load earlier are
+ * the same walk from a different starting cursor). Stops at `target` items,
+ * at a `missing` conversation, or once only a `null` cursor is left to try —
+ * never on a short or empty page, which is not the end of the list (the
+ * contract's *Pagination*, the bead's 2026-09-25 note). The returned cursor
+ * is where a later walk should resume: `null` only when the list truly ended
+ * or a server that hands back the same cursor forced the spin guard below.
+ */
+async function walkTimeline(
+  conversationId: string,
+  loadPage: LoadTimelinePageFn,
+  startCursor: string | null,
+  target: number,
+): Promise<TimelineRead> {
   const newestFirst: TimelineItem[] = []
-  let cursor: string | null = null
+  let cursor: string | null = startCursor
   for (let page = 0; page < MAX_PAGES_PER_READ; page += 1) {
     const result = await loadPage(conversationId, cursor)
     // Nothing this user can read yet — a conversation made in the sidebar is
     // not on the server until its first turn.
-    if (result.kind === 'missing') break
+    if (result.kind === 'missing') {
+      cursor = null
+      break
+    }
     if (result.kind === 'error') return result
     newestFirst.push(...result.page.items)
     const next = result.page.next_cursor
-    // Only a null cursor ends the list; a short or empty page does not.
-    if (next === null || next === cursor || newestFirst.length >= HYDRATE_TARGET) break
+    // A server that hands back the cursor it was just given cannot be walked
+    // further; treat it as ended rather than spin against it forever.
+    if (next === cursor) {
+      cursor = null
+      break
+    }
     cursor = next
+    if (cursor === null || newestFirst.length >= target) break
   }
-  return { kind: 'ok', items: newestFirst.reverse() }
+  return { kind: 'ok', items: newestFirst.reverse(), cursor }
+}
+
+/** The newest entries of a conversation, oldest first for display. */
+export async function readTimeline(conversationId: string, loadPage: LoadTimelinePageFn): Promise<TimelineRead> {
+  return walkTimeline(conversationId, loadPage, null, HYDRATE_TARGET)
+}
+
+/** One hop of Load earlier (1kg.3.6): continues the walk from the cursor the
+ * last read (or the last Load earlier) stopped on. */
+export const LOAD_EARLIER_TARGET = HYDRATE_TARGET
+
+export async function readEarlierTimeline(
+  conversationId: string,
+  cursor: string,
+  loadPage: LoadTimelinePageFn,
+): Promise<TimelineRead> {
+  return walkTimeline(conversationId, loadPage, cursor, LOAD_EARLIER_TARGET)
+}
+
+/** An item's stable identity for de-duplication, or `null` when it has none
+ * (an unreadable entry the server never gave an id). */
+function entryKeyOf(item: TimelineItem): string | null {
+  return item.kind === 'ok' ? item.value.entry_id : item.entry_id
+}
+
+/**
+ * Prepends `older` above `existing`, oldest first — and never draws a turn
+ * already on screen (1kg.3.6): correct cursor bookkeeping should already
+ * make the two runs disjoint, but this is the one place that would notice if
+ * it didn't. An item with no id (an unreadable entry) is never treated as a
+ * duplicate of another — there is nothing to compare it by.
+ */
+export function mergeEarlierItems(
+  existing: readonly TimelineItem[],
+  older: readonly TimelineItem[],
+): TimelineItem[] {
+  const seen = new Set<string>()
+  for (const item of existing) {
+    const key = entryKeyOf(item)
+    if (key !== null) seen.add(key)
+  }
+  const deduped: TimelineItem[] = []
+  for (const item of older) {
+    const key = entryKeyOf(item)
+    if (key !== null) {
+      if (seen.has(key)) continue
+      seen.add(key)
+    }
+    deduped.push(item)
+  }
+  return [...deduped, ...existing]
 }
 
 export interface GmTimeline {
@@ -177,14 +253,43 @@ export interface GmTimeline {
   loading: boolean
   /** A failed read: a system message above a thread that still works (§12.2). */
   error: string | null
+  /** An older page exists to walk to (1kg.3.6): the kept cursor is non-null. */
+  hasEarlier: boolean
+  /** A Load earlier walk is in flight. */
+  loadingEarlier: boolean
+  /** A failed Load earlier walk (§12.2). STATE-1: `items` is untouched. */
+  earlierError: string | null
+  /** Continues the walk from the kept cursor, prepending older entries above
+   * what is already drawn. Retries in place on a previous failure (§12.2's
+   * GM-thread row) — a no-op while one is already in flight or none remain. */
+  loadEarlier: () => void
 }
 
-interface TimelineState extends GmTimeline {
+/** The part of `GmTimeline` that is plain state; `loadEarlier` is bound fresh
+ * on every call so it always closes over the current scope. */
+type TimelineSnapshot = Omit<GmTimeline, 'loadEarlier'>
+
+interface TimelineState extends TimelineSnapshot {
   scopeId: string | null
 }
 
-const NO_TIMELINE: GmTimeline = { items: [], loading: false, error: null }
-const LOADING: GmTimeline = { items: [], loading: true, error: null }
+const NO_TIMELINE: TimelineSnapshot = {
+  items: [],
+  loading: false,
+  error: null,
+  hasEarlier: false,
+  loadingEarlier: false,
+  earlierError: null,
+}
+const LOADING: TimelineSnapshot = {
+  items: [],
+  loading: true,
+  error: null,
+  hasEarlier: false,
+  loadingEarlier: false,
+  earlierError: null,
+}
+const NOOP = (): void => {}
 
 /**
  * The stored thread of the open conversation, read when it opens. `enabled` is
@@ -198,17 +303,47 @@ export function useGmTimeline(
 ): GmTimeline {
   const scope = enabled ? conversationId : null
   const [state, setState] = useState<TimelineState>({ scopeId: null, ...NO_TIMELINE })
+  // Load earlier's cursor and in-flight guard live only in memory (X-7),
+  // never in state or persisted — so neither a rerender nor a stale promise
+  // can smear them across a conversation switch. `generationRef` counts the
+  // hydrate effect's reads: each one resets the cursor and the guard, and a
+  // Load earlier walk only lands in the generation it started in. A scope
+  // string is not enough — A → B → A returns to the same string while the
+  // first visit's walk is still out (review M1).
+  const generationRef = useRef(0)
+  const cursorRef = useRef<string | null>(null)
+  const loadingEarlierRef = useRef(false)
 
   useEffect(() => {
+    generationRef.current += 1
+    cursorRef.current = null
+    loadingEarlierRef.current = false
     if (scope === null) return
     let cancelled = false
     void readTimeline(scope, loadPage).then(
       (read) => {
         if (cancelled) return
+        if (read.kind === 'ok') cursorRef.current = read.cursor
         setState(
           read.kind === 'ok'
-            ? { scopeId: scope, items: read.items, loading: false, error: null }
-            : { scopeId: scope, items: [], loading: false, error: read.message },
+            ? {
+                scopeId: scope,
+                items: read.items,
+                loading: false,
+                error: null,
+                hasEarlier: read.cursor !== null,
+                loadingEarlier: false,
+                earlierError: null,
+              }
+            : {
+                scopeId: scope,
+                items: [],
+                loading: false,
+                error: read.message,
+                hasEarlier: false,
+                loadingEarlier: false,
+                earlierError: null,
+              },
         )
       },
       // A rejecting loader degrades like an error result.
@@ -219,6 +354,9 @@ export function useGmTimeline(
           items: [],
           loading: false,
           error: err instanceof Error ? err.message : 'Message history unavailable.',
+          hasEarlier: false,
+          loadingEarlier: false,
+          earlierError: null,
         })
       },
     )
@@ -227,6 +365,51 @@ export function useGmTimeline(
     }
   }, [scope, loadPage])
 
-  if (scope === null) return NO_TIMELINE
-  return state.scopeId === scope ? state : LOADING
+  const loadEarlier = useCallback(() => {
+    if (scope === null || loadingEarlierRef.current) return
+    const cursor = cursorRef.current
+    if (cursor === null) return
+    const generation = generationRef.current
+    loadingEarlierRef.current = true
+    setState((prev) => (prev.scopeId === scope ? { ...prev, loadingEarlier: true, earlierError: null } : prev))
+    void readEarlierTimeline(scope, cursor, loadPage).then(
+      (read) => {
+        // Superseded by a newer read (a switch, or a switch and back): the
+        // hydrate effect has already reset the cursor and the guard for it,
+        // and this answer belongs to nothing still on screen. The guard is
+        // left alone — it is the newer read's now, and may be holding a walk
+        // of its own.
+        if (generationRef.current !== generation) return
+        loadingEarlierRef.current = false
+        if (read.kind === 'error') {
+          setState((prev) => (prev.scopeId === scope ? { ...prev, loadingEarlier: false, earlierError: read.message } : prev))
+          return
+        }
+        cursorRef.current = read.cursor
+        setState((prev) =>
+          prev.scopeId === scope
+            ? {
+                ...prev,
+                items: mergeEarlierItems(prev.items, read.items),
+                hasEarlier: read.cursor !== null,
+                loadingEarlier: false,
+                earlierError: null,
+              }
+            : prev,
+        )
+      },
+      (err: unknown) => {
+        if (generationRef.current !== generation) return
+        loadingEarlierRef.current = false
+        setState((prev) =>
+          prev.scopeId === scope
+            ? { ...prev, loadingEarlier: false, earlierError: err instanceof Error ? err.message : 'Message history unavailable.' }
+            : prev,
+        )
+      },
+    )
+  }, [scope, loadPage])
+
+  if (scope === null) return { ...NO_TIMELINE, loadEarlier: NOOP }
+  return state.scopeId === scope ? { ...state, loadEarlier } : { ...LOADING, loadEarlier }
 }

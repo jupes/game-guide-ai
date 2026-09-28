@@ -9,6 +9,7 @@ import { expect, userEvent, within } from 'storybook/test'
 
 import { tabTo } from '../../.storybook/keyboard'
 import { withShell } from '../../.storybook/shellHarness'
+import { expectTouchTargets } from '../../.storybook/touchTarget'
 import { LeftNav } from './LeftNav'
 
 // Kept under the 40-code-point title cap, so the row labels are the prompts.
@@ -29,7 +30,21 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-export const Playground: Story = {}
+// 1dw: the header's "New conversation" and each row's "Rename …" are both
+// small IconButtons (ds/IconButton's 44px floor, ds/IconButton.stories.tsx
+// `Sizes`/`DarkSizes`) — but that ds/ story never renders LeftNav, so a
+// narrower rule scoped to `.left-nav__conversation-rename` (or any other
+// LeftNav-only selector) could shrink either one without either ds/ story or
+// this file's own jsdom tests ever noticing. Measured here, at the call site.
+export const Playground: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expectTouchTargets(canvas, [
+      'New conversation',
+      'Rename Shield spell: what does it stop?',
+    ])
+  },
+}
 
 /**
  * A fresh account. The header and the New button stay; only the rows are gone,

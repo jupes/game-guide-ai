@@ -167,13 +167,35 @@ function ChatPaneBody({
   // useChat's onTurnSettled seam — never from a recall, a conversation
   // switch or a re-render.
   const [arrival, setArrival] = React.useState('')
+  const handleTurnSettled = React.useCallback(
+    (outcome: 'done' | 'error', _sentFor: string | null, shown: boolean) => {
+      // agent-forge-harness-swg (pr114 M-1, pr129 M-1): this component is
+      // never remounted on a conversation switch (see the comment on the
+      // transcript region below), so a turn can settle after the user left
+      // its conversation — or left and came back, by which time a recall has
+      // replaced the exchange it would have filled. Announce an outcome only
+      // when useChat reports the settle as SHOWN: applied to the exchanges on
+      // screen and drawn there. Comparing conversation ids is not enough.
+      if (shown) {
+        setArrival(outcome === 'done' ? 'Answer received' : 'Answer failed')
+        return
+      }
+      // pr129 M-2: a suppressed settle must not leave its turn's pending
+      // phrase standing — the next send would set the SAME text, the live
+      // region would not change, and that send's pending state would go
+      // unannounced. Clearing to empty is itself silent (a removal from a
+      // live region is not announced). Any other text is left alone.
+      setArrival((current) => (current === PENDING_ANNOUNCEMENT ? '' : current))
+    },
+    [],
+  )
   const { exchanges, send, pending, historyError, loadingHistory } = useChat({
     post,
     loadHistory: gm ? SKIP_RECALL : loadHistory,
     mode,
     conversationId,
     onConversationAdopted: setConversationId,
-    onTurnSettled: (outcome) => setArrival(outcome === 'done' ? 'Answer received' : 'Answer failed'),
+    onTurnSettled: handleTurnSettled,
   })
   // Keeps ChatPane on this side of the GM boundary while a turn is in flight.
   React.useEffect(() => {
@@ -210,6 +232,53 @@ function ChatPaneBody({
   // Autoscroll (pp6q.1.3). A fresh thread starts at the bottom by definition.
   const feedRef = React.useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = React.useState(true)
+
+  // Load earlier (1kg.3.6): the feed's height just before a press, captured
+  // synchronously in the click handler — before React has re-rendered for
+  // either the loading state or the prepended turns. The layout effect below
+  // turns that into a scrollTop adjustment once the older turns land, so the
+  // content the reader was looking at holds still while the thread above it
+  // grows. `null` once consumed, and reset on a conversation switch so a
+  // press that never resolved before the switch cannot misapply itself to a
+  // different conversation's geometry.
+  const earlierScrollAdjustRef = React.useRef<number | null>(null)
+  // The other half of STATE-7's pair (below): whether the settle-announcement
+  // effect just saw a walk that was THIS conversation's, so switching away
+  // mid-walk cannot fire a stale "loaded"/"failed" phrase once the NEW
+  // conversation's own (unrelated) loadingEarlier happens to read false.
+  const wasLoadingEarlierRef = React.useRef(false)
+  React.useEffect(() => {
+    earlierScrollAdjustRef.current = null
+    wasLoadingEarlierRef.current = false
+  }, [conversationId])
+
+  React.useLayoutEffect(() => {
+    const feed = feedRef.current
+    const before = earlierScrollAdjustRef.current
+    earlierScrollAdjustRef.current = null
+    if (feed && before !== null) feed.scrollTop += feed.scrollHeight - before
+  }, [timeline.items])
+
+  const { loadEarlier } = timeline
+  const handleLoadEarlier = React.useCallback(() => {
+    const feed = feedRef.current
+    if (feed) earlierScrollAdjustRef.current = feed.scrollHeight
+    // agent-forge-harness-ekf / agent-forge-harness-4oz: the same single
+    // announcer, not a live region of GmThread's own (STATE-7 rations this
+    // to one announcement now and one when the walk settles, below).
+    setArrival('Loading earlier turns…')
+    loadEarlier()
+  }, [loadEarlier])
+
+  // The other half of STATE-7's pair: once a Load earlier walk settles,
+  // announce how it went. Keyed on the loadingEarlier→settled transition so
+  // this never fires on mount or from an unrelated rerender.
+  React.useEffect(() => {
+    if (wasLoadingEarlierRef.current && !timeline.loadingEarlier) {
+      setArrival(timeline.earlierError !== null ? 'Couldn’t load earlier turns' : 'Earlier turns loaded')
+    }
+    wasLoadingEarlierRef.current = timeline.loadingEarlier
+  }, [timeline.loadingEarlier, timeline.earlierError])
 
   const scrollToLatest = React.useCallback(() => {
     const feed = feedRef.current
@@ -361,13 +430,29 @@ function ChatPaneBody({
         {threadError && <ChatMessage role="system">{threadError}</ChatMessage>}
 
         {threadLength === 0 && threadLoading ? (
-          <p className="chat-pane__empty" role="status">
+          // agent-forge-harness-swg (pr116 M-1): NOT a live region. This node
+          // used to carry `role="status"` mounted together with its own
+          // text — a SECOND live region alongside `.chat-pane__arrival`
+          // below, which is exactly the shape agent-forge-harness-4oz exists
+          // to rule out (see the comment on the transcript region above and
+          // on `.chat-pane__arrival` below). A recall is visible, sighted
+          // text; the pane's one live region stays silent for it, same as
+          // for a conversation switch (E6 in ChatPane.test.tsx: "a recall
+          // announces nothing"). Applies on both sides of the GM boundary —
+          // `threadLoading` is `timeline.loading` on the GM side (1kg.3.4).
+          <p className="chat-pane__empty">
             Recalling the conversation…
           </p>
         ) : threadLength === 0 ? (
           !threadError && <p className="chat-pane__empty">{EMPTY_LABELS[mode]}</p>
         ) : gm ? (
-          <GmThread turns={gmTurns} />
+          <GmThread
+            turns={gmTurns}
+            hasEarlier={timeline.hasEarlier}
+            loadingEarlier={timeline.loadingEarlier}
+            earlierError={timeline.earlierError}
+            onLoadEarlier={handleLoadEarlier}
+          />
         ) : (
           exchanges.map((exchange) => (
             <React.Fragment key={exchange.id}>
@@ -476,9 +561,18 @@ function ChatPaneBody({
           Its text now changes exactly twice per turn THIS pane sent: to
           PENDING_ANNOUNCEMENT the moment the turn is SENT (`handleSend`,
           above), and to the settle outcome the moment the turn SETTLES
-          (`onTurnSettled`, above). Nothing else ever changes it — not a
-          history recall, not a conversation switch. Shape copied from
-          `gm/ToolComposer.tsx`'s own persistent `role="status"` node. */}
+          (`handleTurnSettled`, above) — or, for a settle that is never shown
+          (the user left its conversation), silently back to empty instead
+          (agent-forge-harness-swg, pr129 M-2). Apart from Load earlier
+          (below), nothing else ever changes it — not a history recall, not a
+          conversation switch. Shape copied from `gm/ToolComposer.tsx`'s own
+          persistent `role="status"` node.
+
+          1kg.3.6 (STATE-7) reuses this SAME node, the same way, for Load
+          earlier: exactly twice per press, to a starting phrase in
+          `handleLoadEarlier` and to the outcome once `useGmTimeline`'s
+          `loadingEarlier` settles — never a second `role="status"` inside
+          `GmThread` for it. */}
       <p role="status" className="chat-pane__sr-only chat-pane__arrival">
         {arrival}
       </p>

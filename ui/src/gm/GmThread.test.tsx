@@ -3,8 +3,9 @@
  * lane beneath it, and a reading order that is the visual order.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { GmThread } from './GmThread'
 import { turnsFromTimeline } from './gmTimeline'
 import type { GmTurn } from './gmTimeline'
@@ -168,5 +169,69 @@ describe('GmThread — a turn in flight', () => {
     const lane = container.querySelector('.assistant-lane') as HTMLElement
     expect(lane).toHaveAttribute('data-state', 'error')
     expect(within(lane).getByText('The service is busy.')).toBeInTheDocument()
+  })
+})
+
+describe('GmThread — Load earlier (1kg.3.6)', () => {
+  const turns = turnsFromTimeline([chatEntry()])
+
+  it('draws no control when the thread fits in one page', () => {
+    render(<GmThread turns={turns} />)
+    expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
+  })
+
+  it('offers Load earlier once the server has an older page, before the thread’s own turns', () => {
+    render(<GmThread turns={turns} hasEarlier onLoadEarlier={vi.fn()} />)
+    const button = screen.getByRole('button', { name: 'Load earlier' })
+    const exchange = document.querySelector('.gm-thread__exchange') as HTMLElement
+    expect(precedes(button, exchange)).toBe(true)
+  })
+
+  it('calls onLoadEarlier when pressed', async () => {
+    const onLoadEarlier = vi.fn()
+    render(<GmThread turns={turns} hasEarlier onLoadEarlier={onLoadEarlier} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables the control and swaps its label while a walk is in flight', () => {
+    render(<GmThread turns={turns} hasEarlier loadingEarlier onLoadEarlier={vi.fn()} />)
+    const button = screen.getByRole('button', { name: 'Loading…' })
+    expect(button).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
+  })
+
+  it('shows a failed walk’s message beside the control without blanking the thread (STATE-1)', () => {
+    render(
+      <GmThread
+        turns={turns}
+        hasEarlier
+        earlierError="Message history unavailable (503)."
+        onLoadEarlier={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('Message history unavailable (503).')).toBeInTheDocument()
+    // Retries in place (§12.2): the same control, not a separate Retry button.
+    expect(screen.getByRole('button', { name: 'Load earlier' })).toBeInTheDocument()
+    expect(screen.getByText('Give me a drowned guardian for the marsh.')).toBeInTheDocument()
+  })
+
+  it('carries no live region of its own — the pane’s single announcer speaks for it (ekf/4oz)', () => {
+    render(
+      <GmThread
+        turns={turns}
+        hasEarlier
+        loadingEarlier
+        earlierError="Message history unavailable (503)."
+        onLoadEarlier={vi.fn()}
+      />,
+    )
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('draws nothing when hasEarlier is true but no handler is wired (defensive)', () => {
+    render(<GmThread turns={turns} hasEarlier />)
+    expect(screen.queryByRole('button', { name: /Load earlier|Loading/ })).toBeNull()
   })
 })
