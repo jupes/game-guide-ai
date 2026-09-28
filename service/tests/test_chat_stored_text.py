@@ -96,8 +96,13 @@ def test_a_refused_prompt_never_reaches_the_throttle_or_the_daily_cap(env, monke
     this pins the ordering directly by recording whether either gate ran."""
     service, store = env
     calls: list[str] = []
+
+    def _spent(*_args: object) -> int:
+        calls.append("daily_cap")
+        return 0
+
     monkeypatch.setattr(app_module, "check_chat_request", lambda user_id: calls.append("throttle"))
-    monkeypatch.setattr(store, "calls_today", lambda: calls.append("daily_cap") or 0)
+    monkeypatch.setattr(store, "calls_today", _spent)
 
     response = _ask("Vashti" + chr(0) + "whispers of fireball")
 
