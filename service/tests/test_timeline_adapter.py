@@ -322,11 +322,18 @@ def test_a_cursor_this_server_did_not_mint_is_refused_and_never_guessed_at(text:
 
 def test_every_refusal_body_is_a_fixed_sentence_that_names_no_resource() -> None:
     """X-7 / SEC-20: a refusal presentable as it stands, carrying no id, no
-    prompt and nothing the caller sent."""
+    prompt and nothing the caller sent.
+
+    The NOT_FOUND case is the scaffolding's own sentence
+    (`workbench_api.NOT_FOUND_DETAIL`), not a timeline-module constant: since
+    agent-forge-harness-oqx (#125) the route answers every 404 with that one
+    body, and `timeline.NOT_FOUND_MESSAGE` was retired
+    (agent-forge-harness-53m) once nothing served it any more."""
+    from service.workbench_api import NOT_FOUND_DETAIL
     from service.workbench_contracts import ErrorCode
 
     cases = [
-        (ErrorCode.NOT_FOUND, timeline.NOT_FOUND_MESSAGE, False),
+        (ErrorCode.NOT_FOUND, str(NOT_FOUND_DETAIL["message"]), False),
         (ErrorCode.FORBIDDEN, timeline.FORBIDDEN_MESSAGE, False),
         (ErrorCode.BACKEND_UNAVAILABLE, timeline.UNAVAILABLE_MESSAGE, True),
     ]
