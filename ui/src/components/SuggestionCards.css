@@ -1,0 +1,16 @@
+/* Spell-usage suggestion cards (channel-chats CP-C). Placement belongs to
+   the caller: ChatPane's feed and the GM thread's lane each lay it out. */
+.suggestion-cards__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.suggestion-cards__item {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-3);
+}
