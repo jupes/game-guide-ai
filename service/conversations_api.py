@@ -255,7 +255,15 @@ def _page(rows: list[StoredConversation], next_cursor: str | None) -> Conversati
     """The index page. A row the contract cannot carry — an id outside
     `OpaqueId` that `/chat` accepted once — is left out rather than taking the
     page down, and only the COUNT is logged. The cursor is the store's, passed
-    through unchanged: a page may be short and still not be the last."""
+    through mostly unchanged: a page may be short and still not be the last.
+
+    The store never lists a row whose id could carry its base64 cursor past the
+    wire `Cursor`'s 512 characters (agent-forge-harness-1ag), so every cursor it
+    hands back fits. The check below is defence behind that rule, not the rule:
+    a cursor that did not fit would otherwise reach `ConversationPage`'s own
+    validation as an uncaught error, a 500. Here it ends the walk instead —
+    `next_cursor=None` — and only that fact is logged, never the cursor, which
+    is client-held data that decodes to an id (SEC-20)."""
     items: list[Conversation] = []
     for row in rows:
         try:
@@ -264,6 +272,12 @@ def _page(rows: list[StoredConversation], next_cursor: str | None) -> Conversati
             continue
     if len(items) < len(rows):
         log.warning("conversation index: %d stored rows omitted as unreadable", len(rows) - len(items))
+    if next_cursor is not None:
+        try:
+            _CURSOR.validate_python(next_cursor)
+        except ValidationError:
+            log.warning("conversation index: page cursor exceeded the wire bound, ending the walk")
+            next_cursor = None
     return ConversationPage(schema_version=WIRE_VERSION, items=items, next_cursor=next_cursor)
 
 

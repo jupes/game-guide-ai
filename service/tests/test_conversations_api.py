@@ -38,6 +38,7 @@ from service.app import WORKBENCH_GM, app, get_timeline_database, require_sessio
 from service.campaign_store import InMemoryCampaignStore, Staging
 from service.campaign_store import shared_rows as twin_table
 from service.conversation_store import Conversation as StoredConversation
+from service.conversation_store import ConversationPage as StoredPage
 from service.conversation_store import InMemoryConversationStore
 from service.db import InMemoryDatabase
 from service.invites import Role
@@ -332,6 +333,21 @@ def test_the_reads_check_session_then_role_then_query_then_store(client: TestCli
     assert client.get("/conversations", params={"limit": "0"}).status_code == 422, "the query before the store"
     assert client.get("/conversations").json() == UNAVAILABLE
     assert _read(client, "not an id").json() == UNAVAILABLE, "the store before the path id"
+
+
+def test_the_patch_checks_role_then_store_before_the_path_id(client: TestClient, world: _World) -> None:
+    """A2-3 steps 4-6, pinned past `mine`: PR #100's review (M-2) found that
+    every existing PATCH-order test used an id that IS readable, so a mutant
+    that ran `_readable` before the role gate or before the store-availability
+    check still passed the whole suite (mutant M2b). `not an id` would 404 on
+    its own, so seeing FORBIDDEN_ROLE or UNAVAILABLE instead — never the path
+    id's 404 — proves the order holds for an id the store can never resolve."""
+    _as(OWNER, "player")
+    assert _patch(client, "not an id", archived=True).json() == FORBIDDEN_ROLE, "the role before the path id"
+    _as(OWNER)
+    app.dependency_overrides[get_timeline_database] = lambda: None
+    assert _patch(client, "not an id", archived=True).json() == UNAVAILABLE, "the store before the path id"
+    app.dependency_overrides[get_timeline_database] = lambda: world.db
 
 
 def test_the_path_id_is_checked_after_the_store_and_answers_the_one_404(client: TestClient) -> None:
@@ -637,6 +653,66 @@ def test_a_stored_row_the_wire_cannot_carry_is_left_out_and_the_walk_still_ends(
     # One row per page, so the walk also meets a page whose only row is left
     # out: an empty page with a cursor, which is not the end of the list.
     assert _walk(client, limit="1") == list(reversed(readable))
+
+
+def test_a_legacy_id_no_cursor_could_carry_is_never_listed_and_the_walk_reaches_every_row_past_it(
+    client: TestClient, world: _World, caplog: pytest.LogCaptureFixture
+) -> None:
+    """agent-forge-harness-1ag, and PR #127's review (H-1). `/chat` accepted any
+    string as an id once, and the store's cursor is base64 of `[sort_key, id]`,
+    so a legacy id this long cannot anchor a cursor inside the wire `Cursor`'s
+    512 characters: first that was a 500, then a walk that ended early and
+    skipped every older row. The store never lists such a row, so every page is
+    anchored on an id a cursor can carry and the walk reaches every readable row
+    past it at every page size — the default one too, where the long id could
+    land 100th on a page."""
+    oldest = world.conversation(now=T0).id
+    older = world.legacy("cnv_older_legacy", now=T0 + timedelta(minutes=1))
+    huge = world.legacy("x" * 360, now=T0 + timedelta(minutes=2))
+    newest = world.conversation(now=T0 + timedelta(minutes=3)).id
+    sizes: list[dict[str, str]] = [{"limit": "1"}, {"limit": "2"}, {}]
+    with caplog.at_level(logging.WARNING, logger="service.conversations_api"):
+        walks = [_walk(client, **size) for size in sizes]
+        ours = [r for r in caplog.records if r.name == "service.conversations_api"]
+    assert walks == [[newest, older, oldest]] * len(sizes), "paging skipped rows"
+    assert huge not in {row for walk in walks for row in walk}
+    # Nothing the route cannot carry ever reached it, so it neither counted a
+    # row out nor had to end a walk early.
+    assert [r.getMessage() for r in ours] == []
+
+
+class _OverlongCursor(InMemoryConversationStore):
+    """A store that hands back a page cursor the wire cannot carry. No store of
+    ours mints one any more (see the test above); this pins what the route does
+    if one ever did. The cursor holds the canary, so a log that carried it in
+    any form would show."""
+
+    def list_for_owner(self, *args: Any, **kwargs: Any) -> StoredPage:
+        page = super().list_for_owner(*args, **kwargs)
+        return StoredPage(page.items, CANARY * 47)
+
+
+def test_a_store_cursor_past_the_wire_bound_ends_the_walk_at_200_and_logs_one_fixed_line(
+    client: TestClient, world: _World, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The route's defence behind the store's rule (PR #127's review, M-1): a
+    store cursor past `Cursor`'s 512 characters never reaches
+    `ConversationPage`'s own validation as a 500. The page still answers, the
+    walk ends there, and the one log line is a fixed string whose record carries
+    no argument at all — a cursor is client-held data that decodes to an id
+    (SEC-20), so neither it nor anything read from it may reach a log in any
+    form, raw or encoded."""
+    made = [world.conversation(now=T0 + timedelta(minutes=m)).id for m in range(2)]
+    assert len(CANARY * 47) > 512
+    app.dependency_overrides[conversations_api.get_conversation_store] = lambda: _OverlongCursor(world.db)
+    with caplog.at_level(logging.DEBUG, logger="service"):
+        page = client.get("/conversations", params={"limit": "1"})
+        ours = [r for r in caplog.records if r.name.startswith("service")]
+    assert page.status_code == 200, page.text
+    assert (_ids(page), page.json()["next_cursor"]) == ([made[1]], None)
+    assert [(r.name, r.getMessage(), r.args) for r in ours] == [
+        ("service.conversations_api", "conversation index: page cursor exceeded the wire bound, ending the walk", ())
+    ]
 
 
 def test_every_page_validates_as_the_contracts_page(client: TestClient, world: _World) -> None:
