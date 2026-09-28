@@ -10,8 +10,12 @@
  * **Paging.** A timeline page may be short, or empty, while `next_cursor` is
  * still non-null (the contract's *Pagination*, the bead's 2026-09-25 note): the
  * walk follows the cursor through such pages and only a `null` cursor ends the
- * list. It stops early once it holds a full page's worth of entries — already
- * twice the exchanges `/messages` recalls — and reading further back is
+ * list. It stops early once it holds a full page's worth of entries — 100
+ * (`HYDRATE_TARGET`, below), already about FOUR times the exchanges
+ * `/messages` recalls (that endpoint's `HISTORY_LIMIT` is 50 rows, and one
+ * exchange is a prompt row plus an answer row, so roughly 25 exchanges) —
+ * agent-forge-harness-ffz (pr120 review L-2): this used to say "twice",
+ * which undercounted by half. Reading further back than these 100 is
  * **Load earlier** (1kg.3.6): `useGmTimeline` keeps the cursor the initial
  * read stopped on and continues the same walk from it, prepending what it
  * finds above what is already drawn. The kept cursor lives only in memory
@@ -24,7 +28,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getTimelinePage } from '../api'
-import type { ChatResponse, TimelinePageResult } from '../api'
+import type { ChatMode, ChatResponse, TimelinePageResult } from '../api'
 import type { Exchange } from '../useChat'
 import { TIMELINE_PAGE_MAX_ITEMS } from './contracts'
 import type { ChatAnswer, TimelineItem, ToolInvocation } from './contracts'
@@ -51,8 +55,13 @@ export type AnswerState =
  * member to render.
  */
 export type GmTurn =
-  /** RAIL-14. `prompt` is `null` only for an old answer whose prompt was never recorded. */
-  | { kind: 'chat'; key: string; prompt: string | null; answer: AnswerState }
+  /** RAIL-14. `prompt` is `null` only for an old answer whose prompt was never
+   * recorded. `mode` is the entry's own mode — a chip switch keeps the same
+   * conversation (agent-forge-harness-ffz / pr120 review L-3), so a turn
+   * hydrated into the GM thread can be a stored Sage or Rules entry, not
+   * only a `gm` one; a live turn (`turnFromExchange`) is always `gm`, since
+   * that is the only channel that builds one. */
+  | { kind: 'chat'; key: string; prompt: string | null; answer: AnswerState; mode: ChatMode }
   /** RAIL-9: a tool and a brief, never the slash string. */
   | { kind: 'tool'; key: string; entryId: string; brief: string; invocation: ToolInvocation }
   /** An `opaque` entry or one this client cannot read: RAIL-24's placeholder (X-8). */
@@ -77,6 +86,7 @@ export function turnsFromTimeline(items: readonly TimelineItem[]): GmTurn[] {
           key,
           prompt: entry.prompt,
           answer: entry.answer === null ? { state: 'none' } : { state: 'answered', answer: entry.answer },
+          mode: entry.mode,
         })
         return
       case 'tool':
@@ -106,18 +116,22 @@ export function answerFromResponse(response: ChatResponse): LaneAnswer {
   }
 }
 
-/** A turn this pane sent, at whatever stage it has reached. */
+/** A turn this pane sent, at whatever stage it has reached. Always `gm`: this
+ * is only ever called for the GM channel's own live exchanges (ChatPane.tsx). */
 export function turnFromExchange(exchange: Exchange): GmTurn {
   const key = `live:${exchange.id}`
-  if (exchange.status === 'pending') return { kind: 'chat', key, prompt: exchange.prompt, answer: { state: 'pending' } }
+  if (exchange.status === 'pending') {
+    return { kind: 'chat', key, prompt: exchange.prompt, answer: { state: 'pending' }, mode: 'gm' }
+  }
   if (exchange.status === 'error') {
-    return { kind: 'chat', key, prompt: exchange.prompt, answer: { state: 'failed', message: exchange.error ?? '' } }
+    return { kind: 'chat', key, prompt: exchange.prompt, answer: { state: 'failed', message: exchange.error ?? '' }, mode: 'gm' }
   }
   return {
     kind: 'chat',
     key,
     prompt: exchange.prompt,
     answer: exchange.response ? { state: 'answered', answer: answerFromResponse(exchange.response) } : { state: 'none' },
+    mode: 'gm',
   }
 }
 
