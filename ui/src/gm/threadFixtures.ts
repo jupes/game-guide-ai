@@ -122,6 +122,15 @@ export const OPAQUE_ENTRY: TimelineItem = entry({
 })
 
 /**
+ * `count` chat entries, newest first (`ent_<offset>` .. `ent_<offset + count -
+ * 1>`), for tests that need a full HYDRATE_TARGET-sized page without writing
+ * out each entry by hand (1kg.3.4's original fixture, 1kg.3.6's Load earlier).
+ */
+export function manyChatEntries(count: number, offset = 0): TimelineItem[] {
+  return Array.from({ length: count }, (_, i) => chatEntry({ entry_id: `ent_${offset + i}` }))
+}
+
+/**
  * A loader serving `pages` in order, newest first, each page's cursor leading
  * to the next. Records every cursor it was asked for.
  */

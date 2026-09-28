@@ -4,26 +4,30 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
-import type { ChatResponse } from '../api'
+import { act, renderHook, waitFor } from '@testing-library/react'
+import type { ChatResponse, TimelinePageResult } from '../api'
 import type { Exchange } from '../useChat'
 import {
   HYDRATE_TARGET,
   MAX_PAGES_PER_READ,
   answerFromResponse,
   exchangesForExport,
+  mergeEarlierItems,
+  readEarlierTimeline,
   readTimeline,
   turnFromExchange,
   turnsFromTimeline,
   useGmTimeline,
 } from './gmTimeline'
 import type { LoadTimelinePageFn } from './gmTimeline'
+import type { TimelineItem } from './contracts'
 import {
   CREATIVE_ANSWER,
   DIVIDER_ENTRY,
   EDIT_ENTRY,
   OPAQUE_ENTRY,
   chatEntry,
+  manyChatEntries,
   pagedTimeline,
   toolEntry,
 } from './threadFixtures'
@@ -63,7 +67,7 @@ describe('readTimeline — only a null cursor ends the list (2026-09-25 note)', 
 
   it('reads a conversation the server does not know yet as empty, not as a failure', async () => {
     const read = await readTimeline('cnv_new', async () => ({ kind: 'missing' }))
-    expect(read).toEqual({ kind: 'ok', items: [] })
+    expect(read).toEqual({ kind: 'ok', items: [], cursor: null })
   })
 
   it('passes a failed page through as the error', async () => {
@@ -88,6 +92,60 @@ describe('readTimeline — only a null cursor ends the list (2026-09-25 note)', 
     }))
     await readTimeline('cnv_1', load)
     expect(load).toHaveBeenCalledTimes(MAX_PAGES_PER_READ)
+  })
+})
+
+describe('readEarlierTimeline — Load earlier continues the same walk from a kept cursor (1kg.3.6)', () => {
+  it('starts from the given cursor and keeps following next_cursor through a short page', async () => {
+    const load = pagedTimeline([
+      [chatEntry({ entry_id: 'ent_new' })],
+      [chatEntry({ entry_id: 'ent_mid' })],
+      [chatEntry({ entry_id: 'ent_old' })],
+    ])
+    const read = await readEarlierTimeline('cnv_1', 'p1', load)
+    expect(load.cursors).toEqual(['p1', 'p2'])
+    expect(read.kind).toBe('ok')
+    if (read.kind !== 'ok') return
+    expect(ids(read.items)).toEqual(['ent_old', 'ent_mid'])
+    expect(read.cursor).toBeNull()
+  })
+
+  it('stops once it holds a full page, leaving a cursor to resume the walk from', async () => {
+    const load = pagedTimeline([manyChatEntries(HYDRATE_TARGET, 100), [chatEntry({ entry_id: 'ent_oldest' })]])
+    const read = await readEarlierTimeline('cnv_1', 'p0', load)
+    expect(load.cursors).toEqual(['p0'])
+    expect(read.kind).toBe('ok')
+    if (read.kind !== 'ok') return
+    expect(read.items).toHaveLength(HYDRATE_TARGET)
+    expect(read.cursor).toBe('p1')
+  })
+
+  it('passes a failed page through as the error, leaving nothing to merge', async () => {
+    const read = await readEarlierTimeline(
+      'cnv_1',
+      'p1',
+      async () => ({ kind: 'error', message: 'Message history unavailable (503).' }),
+    )
+    expect(read).toEqual({ kind: 'error', message: 'Message history unavailable (503).' })
+  })
+})
+
+describe('mergeEarlierItems — never draws a turn already on screen (1kg.3.6)', () => {
+  it('prepends older items above what is already drawn, oldest first', () => {
+    const existing = [chatEntry({ entry_id: 'ent_new' })]
+    const older = [chatEntry({ entry_id: 'ent_old' })]
+    expect(ids(mergeEarlierItems(existing, older))).toEqual(['ent_old', 'ent_new'])
+  })
+
+  it('drops an older item that duplicates one already drawn', () => {
+    const existing = [chatEntry({ entry_id: 'ent_dup' }), chatEntry({ entry_id: 'ent_new' })]
+    const older = [chatEntry({ entry_id: 'ent_dup' }), chatEntry({ entry_id: 'ent_old' })]
+    expect(ids(mergeEarlierItems(existing, older))).toEqual(['ent_old', 'ent_dup', 'ent_new'])
+  })
+
+  it('never treats two unreadable entries with no id as duplicates of each other', () => {
+    const noId: TimelineItem = { kind: 'unknown', reason: 'invalid', entry_id: null }
+    expect(mergeEarlierItems([noId], [noId])).toHaveLength(2)
   })
 })
 
@@ -194,7 +252,15 @@ describe('useGmTimeline', () => {
   it('reads nothing outside the GM channel', () => {
     const load = vi.fn<LoadTimelinePageFn>()
     const { result } = renderHook(() => useGmTimeline('cnv_1', false, load))
-    expect(result.current).toEqual({ items: [], loading: false, error: null })
+    expect(result.current).toEqual({
+      items: [],
+      loading: false,
+      error: null,
+      hasEarlier: false,
+      loadingEarlier: false,
+      earlierError: null,
+      loadEarlier: expect.any(Function),
+    })
     expect(load).not.toHaveBeenCalled()
   })
 
@@ -238,7 +304,127 @@ describe('useGmTimeline', () => {
     })
     await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_cnv_a']))
     rerender({ id: 'cnv_b' })
-    expect(result.current).toEqual({ items: [], loading: true, error: null })
+    expect(result.current).toEqual({
+      items: [],
+      loading: true,
+      error: null,
+      hasEarlier: false,
+      loadingEarlier: false,
+      earlierError: null,
+      loadEarlier: expect.any(Function),
+    })
     await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_cnv_b']))
+  })
+})
+
+describe('useGmTimeline — Load earlier (1kg.3.6)', () => {
+  /** A hydrate that stops at HYDRATE_TARGET, leaving `older` behind it. */
+  function longThread(older: readonly (readonly TimelineItem[])[]) {
+    return pagedTimeline([manyChatEntries(HYDRATE_TARGET, 9000), ...older])
+  }
+
+  it('offers nothing to load once a thread fits in one page', async () => {
+    const load = pagedTimeline([[chatEntry()]])
+    const { result } = renderHook(() => useGmTimeline('cnv_1', true, load))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.hasEarlier).toBe(false)
+  })
+
+  it('is true once the initial read stops with entries left behind it', async () => {
+    const load = longThread([[chatEntry({ entry_id: 'ent_oldest' })]])
+    const { result } = renderHook(() => useGmTimeline('cnv_1', true, load))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.hasEarlier).toBe(true)
+  })
+
+  it('prepends older turns above what is already drawn, and clears hasEarlier once the list ends', async () => {
+    const load = longThread([[chatEntry({ entry_id: 'ent_oldest' })]])
+    const { result } = renderHook(() => useGmTimeline('cnv_1', true, load))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.items).toHaveLength(HYDRATE_TARGET)
+
+    act(() => result.current.loadEarlier())
+    expect(result.current.loadingEarlier).toBe(true)
+    await waitFor(() => expect(result.current.loadingEarlier).toBe(false))
+
+    expect(result.current.items).toHaveLength(HYDRATE_TARGET + 1)
+    expect(ids(result.current.items)).toContain('ent_oldest')
+    // Oldest first — the newly-loaded turn leads the thread.
+    expect(result.current.items[0]).toMatchObject({ value: { entry_id: 'ent_oldest' } })
+    expect(result.current.hasEarlier).toBe(false)
+    expect(result.current.earlierError).toBeNull()
+  })
+
+  it('retries in place on a failed walk: the same cursor, and items untouched meanwhile', async () => {
+    let failNext = true
+    const load = vi.fn<LoadTimelinePageFn>(async (conversationId, cursor) => {
+      if (cursor === null) {
+        return { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 9500), next_cursor: 'p1' } }
+      }
+      if (failNext) {
+        failNext = false
+        return { kind: 'error', message: 'Message history unavailable (503).' }
+      }
+      return { kind: 'ok', page: { conversation_id: conversationId, items: [chatEntry({ entry_id: 'ent_oldest' })], next_cursor: null } }
+    })
+    const { result } = renderHook(() => useGmTimeline('cnv_1', true, load))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => result.current.loadEarlier())
+    await waitFor(() => expect(result.current.earlierError).toBe('Message history unavailable (503).'))
+    // STATE-1: a failed Load earlier never blanks what is already on screen.
+    expect(result.current.items).toHaveLength(HYDRATE_TARGET)
+    expect(result.current.hasEarlier).toBe(true)
+
+    act(() => result.current.loadEarlier())
+    await waitFor(() => expect(result.current.items).toHaveLength(HYDRATE_TARGET + 1))
+    expect(result.current.earlierError).toBeNull()
+    // Both attempts resumed from the same kept cursor — a retry, not a
+    // second hop past it.
+    expect(load.mock.calls.filter(([, cursor]) => cursor === 'p1')).toHaveLength(2)
+  })
+
+  it('drops a stale answer once the conversation switches before it resolves', async () => {
+    let resolveEarlier: ((r: TimelinePageResult) => void) | null = null
+    const loadA: LoadTimelinePageFn = async (conversationId, cursor) => {
+      if (cursor === null) {
+        return { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 9800), next_cursor: 'p1' } }
+      }
+      return new Promise((resolve) => {
+        resolveEarlier = resolve
+      })
+    }
+    const loadB = pagedTimeline([[chatEntry({ entry_id: 'ent_b' })]])
+    const { result, rerender } = renderHook(
+      ({ id, load }: { id: string; load: LoadTimelinePageFn }) => useGmTimeline(id, true, load),
+      { initialProps: { id: 'cnv_a', load: loadA as LoadTimelinePageFn } },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => result.current.loadEarlier())
+    expect(result.current.loadingEarlier).toBe(true)
+
+    rerender({ id: 'cnv_b', load: loadB })
+    await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_b']))
+
+    await act(async () => {
+      resolveEarlier?.({
+        kind: 'ok',
+        page: { conversation_id: 'cnv_a', items: [chatEntry({ entry_id: 'ent_old_a' })], next_cursor: null },
+      })
+    })
+    // The stale answer for cnv_a never lands on cnv_b's thread.
+    expect(ids(result.current.items)).toEqual(['ent_b'])
+  })
+
+  it('does nothing while the list has already ended', async () => {
+    const load = pagedTimeline([[chatEntry()]])
+    const { result } = renderHook(() => useGmTimeline('cnv_1', true, load))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    const callsBefore = load.cursors.length
+
+    act(() => result.current.loadEarlier())
+
+    expect(load.cursors).toHaveLength(callsBefore)
+    expect(result.current.loadingEarlier).toBe(false)
   })
 })
