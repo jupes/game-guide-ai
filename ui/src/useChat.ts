@@ -55,8 +55,18 @@ export interface UseChatOptions {
    * result or a rejection. Additive and optional: every existing caller is
    * unaffected. This is the seam a consumer uses to announce arrival without
    * re-deriving it from `exchanges` (a recalled turn and a settled turn both
-   * end up `status: 'done'` with ids the consumer cannot tell apart). */
-  onTurnSettled?: (outcome: 'done' | 'error') => void
+   * end up `status: 'done'` with ids the consumer cannot tell apart).
+   *
+   * The second argument is the conversation id the turn was SENT for — not
+   * necessarily the one this hook is scoped to right now. A consumer whose
+   * own component instance outlives a conversation switch (ChatPane is never
+   * remounted on one) cannot otherwise tell a stale settle apart from a
+   * current one: the state write for a stale turn is already dropped (see
+   * `settle` below, agent-forge-harness-4pg), but the callback itself still
+   * fires, so the consumer must compare this id against whatever conversation
+   * it currently has on screen before treating the outcome as its own
+   * (agent-forge-harness-swg / pr114 M-1). */
+  onTurnSettled?: (outcome: 'done' | 'error', conversationId: string | null) => void
 }
 
 interface ChatState {
@@ -238,8 +248,11 @@ export function useChat({
         })
         // agent-forge-harness-ekf: fires once, here, at the settle — never
         // from a recall or a re-render. `update.status` is always 'done' or
-        // 'error' at this call site (never 'pending').
-        onTurnSettled?.(update.status === 'done' ? 'done' : 'error')
+        // 'error' at this call site (never 'pending'). `conversationId` here
+        // is THIS send's own closure — the conversation the turn was sent
+        // for, unaffected by the hook being re-scoped to another one since
+        // (agent-forge-harness-swg).
+        onTurnSettled?.(update.status === 'done' ? 'done' : 'error', conversationId)
       }
 
       void post(trimmed, mode, conversationId, modelPreference).then(

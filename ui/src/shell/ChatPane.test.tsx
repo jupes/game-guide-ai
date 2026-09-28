@@ -348,14 +348,56 @@ describe('ChatPane — typing indicator (pp6q.1.5)', () => {
     await waitFor(() => expect(announcer.textContent?.trim()).not.toBe(''))
   })
 
-  it('agent-forge-harness-4oz: exactly one live region exists in the pane, at rest and while a reply is pending', async () => {
-    render(<Wrapper post={pendingForever()} />)
-    expect(screen.getAllByRole('status')).toHaveLength(1)
+  // agent-forge-harness-swg (pr116 M-2): counting only `role="status"`
+  // let a live region survive uncounted in any OTHER form — an `aria-live`
+  // span, or `role="alert"`/`role="log"` — so the census below matches every
+  // way a node can be a live region, not just the one shape this pane
+  // currently happens to use. Sampled at rest, pending, settled AND while
+  // history recalls (pr116 M-1's carry item — the old test never sampled
+  // recall, which is exactly where the second live region was hiding).
+  function liveRegions(container: HTMLElement): NodeListOf<Element> {
+    return container.querySelectorAll(
+      '[role="status"],[role="alert"],[role="log"],[aria-live]',
+    )
+  }
+
+  it('agent-forge-harness-4oz / agent-forge-harness-swg: exactly one live region exists in the pane at every state — recall, rest, pending and settled', async () => {
+    let resolveHistory!: (r: MessagesResult) => void
+    const loadHistory: LoadHistoryFn = () =>
+      new Promise<MessagesResult>((res) => {
+        resolveHistory = res
+      })
+    let resolvePost!: (r: ChatResult) => void
+    const post: PostFn = () => new Promise<ChatResult>((res) => {
+      resolvePost = res
+    })
+
+    const { container } = render(
+      <Wrapper navState={{ conversationId: 'conv-1' }} post={post} loadHistory={loadHistory} />,
+    )
+
+    // Recall.
+    expect(liveRegions(container)).toHaveLength(1)
+
+    act(() => resolveHistory({ kind: 'ok', messages: [] }))
+    await waitFor(() => expect(screen.getByText('Ask the Sage…')).toBeInTheDocument())
+
+    // Rest.
+    expect(liveRegions(container)).toHaveLength(1)
 
     await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
     await userEvent.keyboard('{Enter}')
 
-    await waitFor(() => expect(screen.getAllByRole('status')).toHaveLength(1))
+    // Pending.
+    await waitFor(() => expect(liveRegions(container)).toHaveLength(1))
+
+    act(() => resolvePost(GROUNDED))
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
+
+    // Settled.
+    expect(liveRegions(container)).toHaveLength(1)
   })
 
   it('hides the dots once the reply arrives', async () => {
@@ -377,14 +419,24 @@ function storedTurn(id: number, prompt: string, reply: string): StoredMessage[] 
   ]
 }
 
-function StatefulNavWrapper({ loadHistory }: { loadHistory: LoadHistoryFn }): React.JSX.Element {
+function StatefulNavWrapper({
+  loadHistory,
+  post,
+}: {
+  loadHistory: LoadHistoryFn
+  post?: PostFn
+}): React.JSX.Element {
   const [conversationId, setConversationId] = React.useState<string | null>('conv-a')
+  // A fast stub — without it, ChatPane's default falls through to a real
+  // fetch, which jsdom does not short-circuit and which slows (sometimes
+  // flakily) every test built on this wrapper.
+  const getAttachments: GetAttachmentsFn = async () => ({ kind: 'ok', attachments: [] })
   return (
     <ThemeProvider>
       <AppNavContext.Provider value={{ ...makeNavState(), conversationId, setConversationId }}>
         <CurrentUserContext.Provider value={makeUserState()}>
           <ConversationStoreProvider store={new MemoryConversationStore()}>
-            <ChatPane loadHistory={loadHistory} />
+            <ChatPane post={post} loadHistory={loadHistory} getAttachments={getAttachments} />
           </ConversationStoreProvider>
         </CurrentUserContext.Provider>
       </AppNavContext.Provider>
@@ -489,6 +541,52 @@ describe('ChatPane — arrival announcer (agent-forge-harness-ekf)', () => {
     await screen.findByText('Question B')
     expect(arrivalOf(container)).toBe('')
   })
+
+  it('agent-forge-harness-swg (pr114 M-1): a stale turn settling after the user left its conversation does not announce', async () => {
+    // ChatPane is never remounted on a conversation switch (see the comment
+    // on the transcript region), so its `arrival` node is SHARED across
+    // conversations. `onTurnSettled` used to fire unconditionally, so a turn
+    // sent from A that settled after the user switched to B would announce
+    // "Answer received"/"Answer failed" into the pane B is showing, for a
+    // turn B never displayed.
+    //
+    // A generous timeout: this scenario drives two conversations' worth of
+    // effects (recall x2, attachments x2, a real send+settle) through
+    // userEvent, which is consistently slower than this file's other tests
+    // in CI-like sandboxes — confirmed finite (not hung) at ~6s.
+    let resolvePost!: (r: ChatResult) => void
+    const post: PostFn = () => new Promise<ChatResult>((res) => { resolvePost = res })
+    const loadHistory: LoadHistoryFn = async (conversationId) =>
+      conversationId === 'conv-a'
+        ? { kind: 'ok', messages: [] }
+        : { kind: 'ok', messages: storedTurn(1, 'Question B', 'Answer B') }
+
+    const { container } = render(<StatefulNavWrapper post={post} loadHistory={loadHistory} />)
+    await waitFor(() => expect(screen.getByPlaceholderText('Ask…')).toBeInTheDocument())
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'About goblins')
+    await userEvent.keyboard('{Enter}')
+    expect(arrivalOf(container)).toBe('Consulting the tomes…')
+
+    // Switch to B before A's turn settles. A switch alone never changes
+    // `arrival` (agent-forge-harness-ekf/4oz) — it is still announcing A's
+    // now-abandoned pending turn, a pre-existing quirk (pr114.md N-2) this
+    // bead does not touch. Capture that value so the settle assertion below
+    // proves nothing further changed it, rather than asserting a value this
+    // test has no business claiming.
+    await userEvent.click(screen.getByRole('button', { name: /switch to b/i }))
+    await screen.findByText('Question B')
+    const beforeStaleSettle = arrivalOf(container)
+
+    // NOW the stale A turn settles. Without the fix this becomes "Answer
+    // received" — B's pane announcing a turn B never showed.
+    await act(async () => {
+      resolvePost(GROUNDED)
+    })
+    expect(arrivalOf(container)).toBe(beforeStaleSettle)
+    expect(arrivalOf(container)).not.toBe('Answer received')
+    expect(screen.queryByText('A basilisk petrifies with its gaze.')).toBeNull()
+  }, 15000)
 })
 
 describe('ChatPane (#21)', () => {

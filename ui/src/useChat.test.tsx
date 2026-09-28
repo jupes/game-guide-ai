@@ -316,6 +316,47 @@ describe('useChat', () => {
     expect(result.current.exchanges[0]?.prompt).toBe('About dragons')
   })
 
+  // ── onTurnSettled reports the SEND-TIME conversation (agent-forge-harness-swg) ──
+  // pr114 M-1: settle() already drops the state WRITE for a stale turn (the
+  // test above), but `onTurnSettled` used to still fire — and ChatPane has no
+  // other way to tell a stale settle apart from a current one, since it is
+  // never remounted on a conversation switch. Passing the conversation the
+  // turn was actually sent for (not whatever the hook happens to be scoped to
+  // right now) is what lets a consumer make that comparison itself.
+
+  it('passes the send-time conversation id to onTurnSettled, even for a stale settle after the user switched away', async () => {
+    const settled: Array<[string | null, 'done' | 'error']> = []
+    const onTurnSettled = (outcome: 'done' | 'error', conversationId: string | null) =>
+      settled.push([conversationId, outcome])
+
+    const { post, resolve: resolvePost } = deferredPost()
+    const loadHistory: LoadHistoryFn = async () => ({ kind: 'ok', messages: [] })
+
+    const { result, rerender } = renderHook(
+      ({ convId }: { convId: string | null }) =>
+        useChat({ post, loadHistory, mode: 'sage', conversationId: convId, onTurnSettled }),
+      { initialProps: { convId: 'conv-1' as string | null } },
+    )
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+
+    // Sent from conv-1; its post() is still in flight when the user switches.
+    act(() => {
+      result.current.send('About goblins')
+    })
+
+    rerender({ convId: 'conv-2' })
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+    expect(settled).toEqual([]) // nothing settled yet — the switch alone must not fire it
+
+    await act(async () => {
+      resolvePost(GROUNDED)
+    })
+
+    // Settled for conv-1 — the conversation the turn was sent for — not
+    // conv-2, which is merely what the hook is scoped to now.
+    expect(settled).toEqual([['conv-1', 'done']])
+  })
+
   it('degrades to an empty thread with a notice when the history fetch fails', async () => {
     const post: PostFn = async () => GROUNDED
     const loadHistory: LoadHistoryFn = async () => ({
