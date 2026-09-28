@@ -257,12 +257,13 @@ def _page(rows: list[StoredConversation], next_cursor: str | None) -> Conversati
     page down, and only the COUNT is logged. The cursor is the store's, passed
     through mostly unchanged: a page may be short and still not be the last.
 
-    A legacy id long enough turns the store's base64 cursor past the wire
-    `Cursor`'s 512-char bound (agent-forge-harness-1ag). That must never reach
-    `ConversationPage`'s own validation as an uncaught error, so it is checked
-    here first: an unencodable cursor ends the walk — `next_cursor=None` — like
-    reaching the last page, rather than a 500. Only the fact is logged, never
-    the cursor, which is client-held data (SEC-20)."""
+    The store never lists a row whose id could carry its base64 cursor past the
+    wire `Cursor`'s 512 characters (agent-forge-harness-1ag), so every cursor it
+    hands back fits. The check below is defence behind that rule, not the rule:
+    a cursor that did not fit would otherwise reach `ConversationPage`'s own
+    validation as an uncaught error, a 500. Here it ends the walk instead —
+    `next_cursor=None` — and only that fact is logged, never the cursor, which
+    is client-held data that decodes to an id (SEC-20)."""
     items: list[Conversation] = []
     for row in rows:
         try:

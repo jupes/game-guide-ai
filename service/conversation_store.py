@@ -492,6 +492,7 @@ class PostgresConversationStore(ConversationStore):
             f"   AND (%(campaign)s::text IS NULL OR campaign_id = %(campaign)s) "
             f"   AND (%(mode)s::text IS NULL OR started_mode = %(mode)s) "
             f"   AND (%(archived)s OR archived_at IS NULL) "
+            f"   AND conversation_id ~ %(listable)s "
             f"   AND (%(after_at)s::timestamptz IS NULL "
             f"        OR {_SORT_KEY} < %(after_at)s::timestamptz "
             f"        OR ({_SORT_KEY} = %(after_at)s::timestamptz "
@@ -502,6 +503,7 @@ class PostgresConversationStore(ConversationStore):
                 "campaign": campaign_id,
                 "mode": check_started_mode(started_mode),
                 "archived": include_archived,
+                "listable": _LISTABLE_ID_PATTERN,
                 "after_at": None if after is None else after[0],
                 "after_id": None if after is None else after[1],
                 # One more than the page, so "is there another page?" needs no
