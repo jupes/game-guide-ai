@@ -1,6 +1,7 @@
 """Repository-level contract for PR E2E gating and deploy safety."""
 
 import re
+import tomllib
 from pathlib import Path
 
 WORKFLOW = Path(".github/workflows/ci.yml")
@@ -38,6 +39,8 @@ DB_BACKED_TESTS = [
     "tests/test_timeline_db.py",
     "tests/test_document_db.py",
     "tests/test_usage_ledger_db.py",
+    "tests/test_corpus_schema.py",
+    "ingestion/tests/test_scrape_wikidot.py",
 ]
 
 
@@ -52,6 +55,43 @@ def _jobs() -> dict[str, str]:
     body = WORKFLOW.read_text(encoding="utf-8").split("\njobs:\n", 1)[1]
     parts = re.split(r"^ {2}([A-Za-z0-9_-]+):[ \t]*\n", body, flags=re.M)
     return dict(zip(parts[1::2], parts[2::2], strict=True))
+
+
+def _integration_step_run() -> str:
+    """The `run:` block of the PostgreSQL step: the files pytest is actually given.
+
+    Read from the command, not searched for in the job's text, because the
+    comments around the step can name a file the command no longer runs.
+    """
+    step = _python_job().split("- name: Integration tests against real PostgreSQL\n", 1)[1]
+    run = re.search(r"^ {8}run: \|\n((?: {10}.*\n?)+)", step, re.M)
+    assert run, "the integration step must keep its multi-line `run: |` pytest command"
+    return run.group(1)
+
+
+def _database_backed_test_files() -> list[str]:
+    """Every test module under pytest's testpaths that gates on a real database.
+
+    A module is database-backed when it uses the `needs_db` marker or reads
+    DATABASE_URL itself. Discovered, not listed, so the next one cannot be added
+    without CI running it: the seven tests from #53 skipped on every run because
+    nobody added them to a list (agent-forge-harness-5fo).
+    """
+    config = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    testpaths = config["tool"]["pytest"]["ini_options"]["testpaths"]
+    reads_dsn = re.compile(
+        r"""(?:environ\.get|getenv)\(\s*["']DATABASE_URL["']|environ\[\s*["']DATABASE_URL["']\s*\]"""
+    )
+    this_file = Path(__file__).resolve()
+    found: list[str] = []
+    for root in testpaths:
+        for path in sorted(Path(root).rglob("test_*.py")):
+            if path.resolve() == this_file:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if re.search(r"\bneeds_db\b", text) or reads_dsn.search(text):
+                found.append(path.as_posix())
+    return found
 
 
 def _deploy_gates() -> list[str]:
@@ -126,10 +166,26 @@ def test_ci_provides_a_postgres_service_for_the_python_job():
         "python-tests must declare a `services:` block — without a database the "
         "integration tests skip, and a skip looks exactly like a pass"
     )
-    assert re.search(r"image:\s*postgres:", job), "the service must be a postgres image"
+    assert re.search(r"image:\s*(?:postgres|pgvector/pgvector):", job), (
+        "the service must be a postgres image"
+    )
     assert "--health-cmd" in job, (
         "the postgres service needs a health check, or the test step races the "
         "database's startup and fails for a reason that has nothing to do with the code"
+    )
+
+
+def test_ci_postgres_is_the_image_the_stack_runs():
+    """The corpus schema tests apply vector-db/init/, whose first statement is
+    `CREATE EXTENSION vector`. A stock postgres image has no pgvector, so the CI
+    database has to be the one docker-compose.yml runs, major version included."""
+    job_image = re.search(r"^ {8}image:\s*(\S+)\s*$", _python_job(), re.M)
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8")
+    stack_image = re.search(r"^ {2}vector-db:\n(?: {4}.*\n)*? {4}image:\s*(\S+)\s*$", compose, re.M)
+    assert job_image and stack_image, "both the CI service and compose's vector-db must name an image"
+    assert job_image.group(1) == stack_image.group(1), (
+        f"CI's PostgreSQL is {job_image.group(1)} but the stack runs {stack_image.group(1)}; "
+        "the corpus schema needs the pgvector extension the stack's image provides"
     )
 
 
@@ -141,6 +197,26 @@ def test_ci_runs_the_database_backed_tests_with_a_dsn():
     )
     for test in DB_BACKED_TESTS:
         assert test in job, f"CI must invoke {test} (it is skip-only without a DSN)"
+
+
+def test_every_database_backed_test_file_runs_in_the_integration_step():
+    """Self-maintaining: a module that gates on DATABASE_URL skips everywhere
+    but the integration step, so it must be named in that step's command. The
+    list above is checked against the same discovery, so it cannot fall behind
+    either (agent-forge-harness-5fo)."""
+    discovered = _database_backed_test_files()
+    assert set(DB_BACKED_TESTS) <= set(discovered), (
+        "discovery must recognise every known database-backed test, or it is not "
+        f"looking: missed {sorted(set(DB_BACKED_TESTS) - set(discovered))}"
+    )
+    named = set(re.findall(r"[\w./-]+\.py", _integration_step_run()))
+    not_run = [path for path in discovered if path not in named]
+    assert not not_run, (
+        f"{not_run} gate on DATABASE_URL but the integration step does not run them, "
+        "so they skip on every CI run and a skip looks exactly like a pass"
+    )
+    unlisted = [path for path in discovered if path not in DB_BACKED_TESTS]
+    assert not unlisted, f"add {unlisted} to DB_BACKED_TESTS"
 
 
 def test_the_dsn_is_scoped_to_the_integration_step_not_the_whole_job():
