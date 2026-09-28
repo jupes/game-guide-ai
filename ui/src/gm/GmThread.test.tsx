@@ -3,7 +3,8 @@
  * lane beneath it, and a reading order that is the visual order.
  */
 
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
+import type { MockInstance } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { GmThread } from './GmThread'
@@ -240,12 +241,21 @@ describe('GmThread — Load earlier hands keyboard focus on (1kg.3.7)', () => {
   const newer = turnsFromTimeline([chatEntry({ entry_id: 'ent_new', prompt: 'A newer question' })])
   const older = turnsFromTimeline([chatEntry({ entry_id: 'ent_old', prompt: 'An older question' })])
 
-  /** Presses the control from the keyboard, then plays the walk's renders as ChatPane would. */
-  async function pressAndSettle(hasEarlier: boolean, whileLoading: () => void = () => {}) {
+  /** Presses the control (from the keyboard unless told otherwise), then plays the walk's renders as ChatPane would. */
+  async function pressAndSettle(
+    hasEarlier: boolean,
+    whileLoading: () => void = () => {},
+    via: 'keyboard' | 'mouse' = 'keyboard',
+  ) {
     const onLoadEarlier = vi.fn()
     const view = render(<GmThread turns={newer} hasEarlier onLoadEarlier={onLoadEarlier} />)
-    screen.getByRole('button', { name: 'Load earlier' }).focus()
-    await userEvent.keyboard('{Enter}')
+    const button = screen.getByRole('button', { name: 'Load earlier' })
+    if (via === 'mouse') {
+      await userEvent.click(button)
+    } else {
+      button.focus()
+      await userEvent.keyboard('{Enter}')
+    }
     expect(onLoadEarlier).toHaveBeenCalledTimes(1)
     view.rerender(<GmThread turns={newer} hasEarlier loadingEarlier onLoadEarlier={onLoadEarlier} />)
     whileLoading()
@@ -282,5 +292,55 @@ describe('GmThread — Load earlier hands keyboard focus on (1kg.3.7)', () => {
     await pressAndSettle(false, () => elsewhere.focus())
     expect(document.activeElement).toBe(elsewhere)
     elsewhere.remove()
+  })
+
+  describe('without moving the view the reader holds (PR #136 review H1)', () => {
+    // In a real browser focus() scrolls its target into view, which would undo
+    // ChatPane's scroll hold (1kg.3.6). jsdom never scrolls, so these read the
+    // options each focus() call was made with; the real-Chromium half is the
+    // ChatPane story LoadEarlierByMouseHoldsTheReadersPlace.
+    let focusSpy: MockInstance<HTMLElement['focus']>
+    beforeEach(() => {
+      focusSpy = vi.spyOn(HTMLElement.prototype, 'focus')
+    })
+    afterEach(() => focusSpy.mockRestore())
+
+    /** The options of the last focus() call made on `el`. */
+    function lastFocusOptions(el: Element): FocusOptions | undefined {
+      const index = focusSpy.mock.contexts.lastIndexOf(el)
+      expect(index).toBeGreaterThanOrEqual(0)
+      return focusSpy.mock.calls[index][0]
+    }
+
+    /** What Chromium does to a focused button once it is disabled (jsdom never does). */
+    function dropFocusToBody() {
+      const standIn = document.createElement('input')
+      document.body.append(standIn)
+      standIn.focus()
+      standIn.remove()
+      expect(document.activeElement).toBe(document.body)
+    }
+
+    it.each(['keyboard', 'mouse'] as const)('puts focus back on the control without scrolling to it (%s press)', async (via) => {
+      await pressAndSettle(true, dropFocusToBody, via)
+      const button = screen.getByRole('button', { name: 'Load earlier' })
+      expect(document.activeElement).toBe(button)
+      expect(lastFocusOptions(button)).toEqual({ preventScroll: true })
+    })
+
+    it('hands focus to the first older turn without scrolling to it after a mouse press', async () => {
+      const { container } = await pressAndSettle(false, undefined, 'mouse')
+      const [first] = exchanges(container)
+      expect(first).toHaveTextContent('An older question')
+      expect(document.activeElement).toBe(first)
+      expect(lastFocusOptions(first)).toEqual({ preventScroll: true })
+    })
+
+    it('scrolls to the first older turn after a keyboard press, so its focus ring is on screen', async () => {
+      const { container } = await pressAndSettle(false)
+      const [first] = exchanges(container)
+      expect(document.activeElement).toBe(first)
+      expect(lastFocusOptions(first)?.preventScroll ?? false).toBe(false)
+    })
   })
 })

@@ -27,7 +27,8 @@
  * `loadEarlier`/`loadingEarlier`/`earlierError` straight through as props.
  * When the last page lands and the control goes, keyboard focus moves to the
  * first exchange that arrived (tabIndex -1), as VersionList's Load more does
- * (1kg.3.7).
+ * (1kg.3.7). Only a keyboard press scrolls to it; otherwise the reader's place,
+ * which ChatPane holds still as the older turns arrive, stays where it is.
  */
 
 import * as React from 'react'
@@ -83,31 +84,43 @@ export function GmThread({
 }: GmThreadProps): React.JSX.Element {
   const buttonRef = React.useRef<HTMLButtonElement>(null)
   const firstExchangeRef = React.useRef<HTMLDivElement>(null)
-  // 1kg.3.7, VersionList's hand-off: a press made here, and whether its walk
-  // has been seen in flight — so focus moves only once that walk settles.
-  const press = React.useRef<'pressed' | 'loading' | null>(null)
+  // 1kg.3.7, VersionList's hand-off: a press made here, whether its walk has
+  // been seen in flight (so focus moves only once that walk settles), and
+  // whether the keyboard made it.
+  const press = React.useRef<{ stage: 'pressed' | 'loading'; byKeyboard: boolean } | null>(null)
 
   React.useEffect(() => {
-    if (press.current === null) return
+    const pressed = press.current
+    if (pressed === null) return
     if (loadingEarlier) {
-      press.current = 'loading'
+      press.current = { ...pressed, stage: 'loading' }
       return
     }
-    if (press.current !== 'loading') return
+    if (pressed.stage !== 'loading') return
     press.current = null
     // Only focus the walk left nowhere — the control unmounted with the last
     // page, or a browser dropped it off the disabled button — never focus the
     // reader has since put somewhere else.
     const active = document.activeElement
     if (active !== null && active !== document.body) return
-    const target = hasEarlier ? buttonRef.current : firstExchangeRef.current
-    target?.focus()
+    // focus() scrolls its target into view, and ChatPane has just held still
+    // the content the reader was looking at (1kg.3.6), so the hand-off must
+    // not scroll it away (PR #136 review H1). Back on the control, focus only
+    // repairs a browser dropping it off the disabled button: it never scrolls.
+    // On the first turn that arrived, it scrolls there for a keyboard press,
+    // whose reader follows the focus ring, and not for a pointer press.
+    if (hasEarlier) buttonRef.current?.focus({ preventScroll: true })
+    else firstExchangeRef.current?.focus({ preventScroll: !pressed.byKeyboard })
   }, [loadingEarlier, hasEarlier, turns])
 
-  const handleLoadEarlier = React.useCallback(() => {
-    press.current = 'pressed'
-    onLoadEarlier?.()
-  }, [onLoadEarlier])
+  const handleLoadEarlier = React.useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      // A click made by Enter or Space counts no pointer clicks: detail is 0.
+      press.current = { stage: 'pressed', byKeyboard: event.detail === 0 }
+      onLoadEarlier?.()
+    },
+    [onLoadEarlier],
+  )
 
   return (
     <>
@@ -146,7 +159,7 @@ function LoadEarlier({
 }: {
   loading: boolean
   error: string | null
-  onLoadEarlier: () => void
+  onLoadEarlier: (event: React.MouseEvent<HTMLButtonElement>) => void
   buttonRef: React.Ref<HTMLButtonElement>
 }): React.JSX.Element {
   return (
