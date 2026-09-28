@@ -195,6 +195,7 @@ function ChatPaneBody({
   // mirroring the server-side gate in service/app.py::chat().
   const draftLength = codePointLength(draft)
   const overLength = draftLength > CHAT_TEXT_MAX_CHARS
+  const counterId = React.useId()
   // Scoped like useChat's history state: derive "this scope's attachments" from
   // scopeId===conversationId rather than resetting via setState-in-effect (a
   // synchronous setState in an effect body triggers cascading renders).
@@ -518,8 +519,14 @@ function ChatPaneBody({
       </div>
 
       {/* Composer */}
+      {/* agent-forge-harness-764 × agent-forge-harness-4oz: the over-length
+          counter is visible text and the field's accessible description
+          (`aria-describedby`, beside `aria-invalid`), NOT a `role="status"`
+          node. The single `.chat-pane__arrival` node above is this pane's one
+          live region; a second one mounted together with its text is the shape
+          4oz removed (and would not be reliably announced anyway). */}
       {overLength && (
-        <p className="chat-pane__composer-message" role="status">
+        <p id={counterId} className="chat-pane__composer-message">
           {chatPromptCounterMessage(draftLength)}
         </p>
       )}
@@ -561,6 +568,7 @@ function ChatPaneBody({
           placeholder="Ask…"
           disabled={pending}
           aria-invalid={overLength || undefined}
+          aria-describedby={overLength ? counterId : undefined}
           fullWidth
         />
         <IconButton

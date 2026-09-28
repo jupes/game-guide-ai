@@ -305,6 +305,26 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
     expect(ta.value.length).toBe(CHAT_TEXT_MAX_CHARS + 1)
   })
 
+  it('agent-forge-harness-764 × 4oz: the over-length counter describes the field and adds no second live region', () => {
+    const { container } = render(<Wrapper />)
+    // The pane's one announcer, captured at rest (the 4oz tests' own shape).
+    const [announcer] = screen.getAllByRole('status')
+    const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+    // 764: the refusal is still said, and said ON the field it is about.
+    expect(ta).toHaveAttribute('aria-invalid', 'true')
+    expect(ta).toHaveAccessibleDescription(
+      `${CHAT_TEXT_MAX_CHARS + 1} of ${CHAT_TEXT_MAX_CHARS} characters — shorten your message to send it.`,
+    )
+    // 4oz: not by a second live region beside the announcer — counted in every
+    // live-region shape, not role="status" alone — and not by the announcer,
+    // whose text changes only when a turn is sent or settles.
+    const live = container.querySelectorAll(
+      '[role="status"], [role="alert"], [role="log"], [aria-live]:not([aria-live="off"])',
+    )
+    expect(Array.from(live)).toEqual([announcer])
+    expect(announcer.textContent).toBe('')
+  })
 })
 
 describe('ChatPane — one "Attach file" control (agent-forge-harness-vnx)', () => {
