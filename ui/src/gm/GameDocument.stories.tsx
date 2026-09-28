@@ -13,6 +13,7 @@ import * as React from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, waitFor, within } from 'storybook/test'
 
+import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { DOCUMENT_TYPE_IDS } from './contracts'
 import type { Document, FieldValue } from './contracts'
 import { documentFixture } from './documentFixtures'
@@ -265,6 +266,9 @@ export const GoldWash: Story = {
   play: async ({ args, canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getAllByText('Changed')).toHaveLength(2)
+    // 1dw: the small ds/Button call site, not rendered by ds/'s own `Sizes`
+    // story.
+    await expectTouchTarget(canvas, 'Got it')
     await userEvent.click(canvas.getByRole('button', { name: 'Got it' }))
     await expect(args.onAcknowledgeChanges).toHaveBeenCalledTimes(1)
   },
