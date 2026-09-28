@@ -9,21 +9,26 @@ import { LeftNav } from './LeftNav'
 import { TopBar } from './TopBar'
 import { AppHeader } from './AppHeader'
 import { ChatPane } from './ChatPane'
+import { ModelCatalogProvider } from './ModelCatalogContext'
 import './WorkspaceShell.css'
 
 export function WorkspaceShell(): React.JSX.Element {
+  // agent-forge-harness-bta: AppHeader's ModelPicker loads the /models
+  // catalog and ChatPane sends by it, so both read the one copy held here.
   return (
-    <div className="workspace-shell">
-      <TopBar />
-      <AppHeader />
+    <ModelCatalogProvider>
+      <div className="workspace-shell">
+        <TopBar />
+        <AppHeader />
 
-      <div className="workspace-shell__body">
-        <LeftNav />
+        <div className="workspace-shell__body">
+          <LeftNav />
 
-        <main className="workspace-shell__main">
-          <ChatPane />
-        </main>
+          <main className="workspace-shell__main">
+            <ChatPane />
+          </main>
+        </div>
       </div>
-    </div>
+    </ModelCatalogProvider>
   )
 }

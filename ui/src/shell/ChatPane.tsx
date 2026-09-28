@@ -25,6 +25,8 @@ import { exchangesForExport, turnFromExchange, turnsFromTimeline, useGmTimeline 
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { useAppNav } from './AppNav'
 import { useConversationStore } from './ConversationStoreContext'
+import { useModelCatalogState } from './ModelCatalogContext'
+import { preferenceToSend } from './modelPreference'
 import { parseDiceNotation } from './diceNotation'
 import { EMPTY_LABELS } from './modes'
 import {
@@ -159,13 +161,16 @@ function ChatPaneBody({
   const { mode, conversationId, setConversationId } = useAppNav()
   const gm = side === 'gm'
   const conversationStore = useConversationStore()
-  // agent-forge-harness-bta: the conversation's bound preference (a public
-  // /models id per D-9, or, for a conversation started before D-9, the exact
-  // alias it was already bound with — service/app.py's `_pre_d9_binding`,
-  // agent-forge-harness-a6o/#122). Threaded through to `useChat` unchanged —
-  // never rewritten or filtered here — so it is exactly what ModelPicker
-  // shows and exactly what the server already bound this conversation to.
+  // agent-forge-harness-bta: the preference this conversation's next turn
+  // sends, by the one rule ModelPicker shows it by (`preferenceToSend`, read
+  // against the same shared catalog): a started conversation's bound
+  // preference ('auto' for one first sent before bta, whatever it stored),
+  // else a stored id only if the SERVED catalog lists it. Never a raw stored
+  // value — a pre-D-9 alias would be a 422 on every turn. Re-read on every
+  // render (useConversationStore subscribes), so a pick made after mount lands.
+  const [catalog] = useModelCatalogState()
   const conversation = conversationId !== null ? conversationStore.get(conversationId) : undefined
+  const modelPreference = preferenceToSend(conversation, catalog)
   // agent-forge-harness-ekf / agent-forge-harness-4oz: the ONE announcer for
   // the whole pane — 4oz folded the pending announcement into this same node
   // (see its comment below) rather than leaving a second, per-exchange
@@ -201,7 +206,7 @@ function ChatPaneBody({
     loadHistory: gm ? SKIP_RECALL : loadHistory,
     mode,
     conversationId,
-    modelPreference: conversation?.modelPreference,
+    modelPreference,
     onConversationAdopted: setConversationId,
     onTurnSettled: handleTurnSettled,
   })
@@ -319,7 +324,9 @@ function ChatPaneBody({
     const trimmed = draft.trim()
     if (!trimmed || pending || overLength) return
     if (conversationId !== null) {
-      conversationStore.recordFirstPrompt(conversationId, trimmed)
+      // bta: record what this first turn binds the conversation to — the same
+      // value `send` posts below, both read from this render.
+      conversationStore.recordFirstPrompt(conversationId, trimmed, modelPreference)
     }
     // agent-forge-harness-ekf / agent-forge-harness-4oz: nothing else ever
     // changes the announcer — not a recall, not a conversation switch — only
@@ -329,7 +336,7 @@ function ChatPaneBody({
     setArrival(PENDING_ANNOUNCEMENT)
     send(trimmed)
     setDraft('')
-  }, [conversationId, conversationStore, draft, overLength, pending, send])
+  }, [conversationId, conversationStore, draft, modelPreference, overLength, pending, send])
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
