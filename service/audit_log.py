@@ -268,11 +268,7 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     AuditAction.SESSION_EXPIRED: _SESSION_CLOSED,
     AuditAction.SESSION_ROTATED: {**_SESSION_CLOSED, "personal_links_reset": Shape.FLAG},
     AuditAction.PARTICIPANT_ADDED: {"participant_id": _PARTICIPANT},
-    AuditAction.PARTICIPANT_REMOVED: {
-        "participant_id": _PARTICIPANT,
-        "codes_revoked": Shape.WHOLE_NUMBER,
-        "devices_revoked": Shape.WHOLE_NUMBER,
-    },
+    AuditAction.PARTICIPANT_REMOVED: {"participant_id": _PARTICIPANT},
     AuditAction.PARTICIPANT_LINKED: {"participant_id": _PARTICIPANT, "document_id": _DOCUMENT},
     AuditAction.PARTICIPANT_UNLINKED: {"participant_id": _PARTICIPANT, "document_id": _DOCUMENT},
     # The seat, and never the account: "who was seated" is answered by the

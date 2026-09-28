@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -236,6 +237,36 @@ def _decode_cursor(cursor: str) -> tuple[datetime, str]:
     raise InvalidCursor("that page cursor did not come from this server") from None
 
 
+# ── Which rows the index lists ───────────────────────────────────────────────
+#
+# The wire carries a cursor in at most 512 characters (`Cursor`), and `/chat`
+# accepted any string as an id once. A row whose id is long, or whose
+# characters JSON escapes, anchors a cursor the route cannot hand out, and a
+# walk that cannot continue past a row skips every row behind it
+# (agent-forge-harness-1ag; PR #127's review, H-1). So the index lists only a
+# row whose id can anchor a cursor: 1 to 64 printable ASCII characters. The
+# worst of those escapes to 128 characters, which beside a 42-character
+# timestamp is a 236-character cursor.
+#
+# This is wider than the wire's `OpaqueId` on purpose. An id inside it and
+# outside `OpaqueId` (`legacy id 7`) still reaches the route, which leaves it
+# out and logs the count (ruling A2-17). Every id this store mints, and every
+# `randomUUID()` in production, is inside it. A row outside it is never listed
+# and never counted, and is still there for every other method here and for
+# the legacy routes.
+
+#: One spelling for both worlds: PostgreSQL's `~` and Python's `re.fullmatch`
+#: read it alike — a code-point range, no character class, no collation.
+_LISTABLE_ID_PATTERN: Final = r"^[ -~]{1,64}$"
+_LISTABLE_ID: Final = re.compile(_LISTABLE_ID_PATTERN)
+
+
+def _listable(conversation_id: str) -> bool:
+    """Whether the index lists this id: whether a cursor anchored on it always
+    fits the wire's bound."""
+    return _LISTABLE_ID.fullmatch(conversation_id) is not None
+
+
 # ── The store ────────────────────────────────────────────────────────────────
 
 
@@ -288,7 +319,8 @@ class ConversationStore(Protocol):
         """The owner's index, newest metadata first.
 
         A `campaign_id` the caller does not own simply matches no rows, so the
-        page is empty: no 404, no oracle, no second query.
+        page is empty: no 404, no oracle, no second query. A row whose id no
+        cursor could carry is never listed (*Which rows the index lists*).
         """
         ...  # pragma: no cover - structural type
 
@@ -460,6 +492,7 @@ class PostgresConversationStore(ConversationStore):
             f"   AND (%(campaign)s::text IS NULL OR campaign_id = %(campaign)s) "
             f"   AND (%(mode)s::text IS NULL OR started_mode = %(mode)s) "
             f"   AND (%(archived)s OR archived_at IS NULL) "
+            f"   AND conversation_id ~ %(listable)s "
             f"   AND (%(after_at)s::timestamptz IS NULL "
             f"        OR {_SORT_KEY} < %(after_at)s::timestamptz "
             f"        OR ({_SORT_KEY} = %(after_at)s::timestamptz "
@@ -470,6 +503,7 @@ class PostgresConversationStore(ConversationStore):
                 "campaign": campaign_id,
                 "mode": check_started_mode(started_mode),
                 "archived": include_archived,
+                "listable": _LISTABLE_ID_PATTERN,
                 "after_at": None if after is None else after[0],
                 "after_id": None if after is None else after[1],
                 # One more than the page, so "is there another page?" needs no
@@ -656,6 +690,7 @@ class InMemoryConversationStore(ConversationStore):
             and (campaign_id is None or row.campaign_id == campaign_id)
             and (checked_mode is None or row.started_mode == checked_mode)
             and (include_archived or not row.is_archived)
+            and _listable(row.id)
             and (after is None or (row.sort_key, row.id) < after)
         ]
         found.sort(key=lambda row: (row.sort_key, row.id), reverse=True)

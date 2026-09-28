@@ -1,0 +1,57 @@
+/* ── GmThread (1kg.3.4) ───────────────────────────────────────────────────────
+   One exchange per element: the GM's narration, then the assistant lane close
+   beneath it, so the pair reads as one unit and the next exchange starts at the
+   thread's own gap. Nothing here reorders children — visual order is DOM order,
+   which is the reading order. Every value is a token, so both themes follow. */
+
+.gm-thread__exchange {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-2);
+}
+
+.gm-thread__exchange > .assistant-lane {
+  margin-bottom: 0;
+}
+
+/* RAIL-9: the tool's label as a badge on the GM's turn, in the lane badge's
+   voice so the turn and its lane visibly belong to one tool. */
+.gm-thread__tool {
+  display: inline-block;
+  margin-right: var(--aether-space-1);
+  padding: 1px var(--aether-space-2);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: var(--aether-font-mono);
+  font-size: var(--md-sys-typescale-label-small-size);
+  line-height: var(--md-sys-typescale-label-small-line-height);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.gm-thread__creative {
+  margin: 0;
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+  font-style: italic;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-thread__dice {
+  align-self: flex-start;
+}
+
+/* Compact citations: the lane supplies the chrome, so the list drops to the
+   small type role and runs the lane's full width. */
+.gm-thread__sources .sources {
+  max-width: 100%;
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+}
+
+.gm-thread__sources .source-snippet {
+  font-size: var(--md-sys-typescale-body-small-size);
+}

@@ -14,6 +14,8 @@ import { ChatPane } from './ChatPane'
 import type { GetAttachmentsFn } from './ChatPane'
 import type { Attachment, ChatResponse, ChatResult, MessagesResult, Source, StoredMessage } from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
+import type { LoadTimelinePageFn } from '../gm/gmTimeline'
+import { chatEntry, pagedTimeline, toolEntry } from '../gm/threadFixtures'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -86,6 +88,9 @@ function attachment(over: Partial<Attachment> = {}): Attachment {
   }
 }
 
+/** The GM channel's history (1kg.3.4): by default, nothing stored yet. */
+const noTimeline: LoadTimelinePageFn = async () => ({ kind: 'missing' })
+
 const meta = {
   title: 'Shell/ChatPane',
   component: ChatPane,
@@ -94,6 +99,7 @@ const meta = {
   args: {
     post: answers({ kind: 'ok', response: answer() }),
     loadHistory: history([]),
+    loadTimeline: noTimeline,
     getAttachments: attached([]),
     uploadAttachment: async () => ({ kind: 'ok', attachment: attachment() }),
   },
@@ -466,6 +472,25 @@ export const GmCreativeAnswer: Story = {
     field.focus()
     await userEvent.keyboard('Who runs the inn?{Enter}')
     await expect(await canvas.findByText(/Creative — may include invented content/)).toBeInTheDocument()
+  },
+}
+
+/**
+ * A GM thread reopened (1kg.3.4): hydrated from the typed timeline — a plain
+ * turn answered in the assistant lane, with its card compact, and a stored tool
+ * turn whose run is checked on rather than re-run.
+ */
+export const GmThreadHydrated: Story = {
+  decorators: [withShell({ mode: 'gm', conversations: [{ mode: 'gm' }], selected: 0 })],
+  args: {
+    loadTimeline: pagedTimeline([[toolEntry({ entry_id: 'ent_2' }), chatEntry({ entry_id: 'ent_1' })]]),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(await canvas.findByText('Give me a drowned guardian for the marsh.')).toBeVisible()
+    await expect(canvas.getByText(/Creative — may include invented content/)).toBeVisible()
+    await expect(canvas.getByText('AC 16')).toBeVisible()
+    await expect(canvas.getByText('Checking on Monster…')).toBeVisible()
   },
 }
 
