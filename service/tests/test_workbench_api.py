@@ -819,6 +819,21 @@ def test_a_legacy_validation_failure_keeps_fastapis_default(world: _World) -> No
         "input": [_CANARY]}]})
 
 
+def test_a_legacy_validation_failure_that_cannot_be_encoded_is_a_redacted_422(world: _World) -> None:
+    """The test above, with a lone surrogate in what is echoed. FastAPI's
+    default repeats `input`, and UTF-8 cannot carry a lone surrogate, so that
+    default was a 500 (bead 5mj). Such a failure — and only such a failure, the
+    test above keeps the rest — answers `redacted_errors`: the field named, the
+    value not. `ensure_ascii` sends the surrogate the way a browser's
+    `JSON.stringify` does."""
+    client = TestClient(world.probe, raise_server_exceptions=False)
+    body = json.dumps({"title": [_CANARY + chr(0xD800)]}).encode("ascii")
+    r = client.post("/legacy/docs", content=body, headers={"content-type": "application/json"})
+    assert (r.status_code, r.json()) == (422, {"detail": [{
+        "type": "string_type", "loc": ["body", "title"], "msg": "Input should be a valid string"}]})
+    assert _CANARY not in r.text
+
+
 def test_the_validation_log_record_exists_and_is_redacted(world: _World, caplog: pytest.LogCaptureFixture) -> None:
     """In this order: the record exists; its payload equals `redacted_errors`
     by value, with the method and the prefix-joined template; and only then the

@@ -94,13 +94,14 @@
     {
       "name": "trimming removes what JavaScript's trim removes, the byte order mark and the ideographic space included, on both sides",
       "value": { "schema_version": 1, "invocation_id": "inv_1111222233339999", "tool_id": "monster", "brief": "\ufeffCR 5, drowned\u3000", "campaign_id": "cmp_4b1d9e7a", "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d" }
-    },
-    {
-      "name": "NEL is not in that set, so it is kept on both sides: this brief is not empty",
-      "value": { "schema_version": 1, "invocation_id": "inv_111122223333aaaa", "tool_id": "monster", "brief": "\u0085CR 5", "campaign_id": "cmp_4b1d9e7a", "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d" }
     }
   ],
   "invalid": [
+    {
+      "name": "NEL is not in that set, so it is kept on both sides: this brief keeps a C1 control",
+      "why": "Bead 5mj, lead ruling of 2026-09-21: stored text refuses the C0 and C1 controls, NEL (U+0085) among them, and a brief is checked as it is stored, trimmed. JavaScript's trim keeps NEL, so the server must too: a server that trimmed it with str.strip would accept this brief, and must not",
+      "value": { "schema_version": 1, "invocation_id": "inv_111122223333aaaa", "tool_id": "monster", "brief": "\u0085CR 5", "campaign_id": "cmp_4b1d9e7a", "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d" }
+    },
     {
       "name": "a required brief that is empty",
       "why": "RAIL-5: only recap is brief-optional",

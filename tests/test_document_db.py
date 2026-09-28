@@ -639,6 +639,35 @@ def test_an_over_long_summary_is_refused_by_the_application_in_both_worlds(
     assert kept.version.summary == at_the_bound, "the bound itself is accepted"
 
 
+@pytest.mark.parametrize(
+    "refused",
+    [chr(0), chr(0x1B), chr(0x202E), chr(0xD800)],
+    ids=["nul", "esc", "a-bidi-override", "a-lone-surrogate"],
+)
+def test_a_summary_holding_what_stored_text_refuses_is_refused_in_both_worlds(
+    world: World, refused: str
+) -> None:
+    """5mj: `text` refuses U+0000 (SQLSTATE 22021) and UTF-8 cannot carry a lone
+    surrogate, so without this a summary holding either is a driver error at
+    write time — in PostgreSQL only; the twin stored it — rather than a refusal
+    naming the field. ESC and a bidi override are the one rule's too
+    (`check_plain_text`), which is what the summary now goes through."""
+    campaign = _a_campaign(world)
+    made = _a_document(world, campaign)
+    private = f"her wants{refused}at length"
+
+    with pytest.raises(ValueError, match="a version summary must") as refusal:
+        _write(world, campaign, made.id, fields={"voice": "gravel"},
+               author=Author.GM, base_write_revision=None, summary=private)
+
+    assert "her wants" not in f"{refusal.value!s}{refusal.value!r}"
+    assert len(_versions(world, campaign, made.id)) == 1, "nothing was written"
+    joined = "Wren" + chr(0x200D) + "ing, and a tab" + chr(0x09) + "kept"
+    kept = _write(world, campaign, made.id, fields={"voice": "gravel"},
+                  author=Author.GM, base_write_revision=None, summary=joined)
+    assert kept.version.summary == joined, "what the rule allows is stored as written"
+
+
 def test_an_empty_patch_is_a_no_op(world: World) -> None:
     campaign = _a_campaign(world)
     made = _a_document(world, campaign)
