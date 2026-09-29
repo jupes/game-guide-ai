@@ -154,6 +154,10 @@ TEMPERATURE: float = _float("RAG_TEMPERATURE", 0.2)
 # finish, and service/generate.py's three attempts still end within
 # 3 x (5 + 60) + 1.5 s of backoff = 196.5 s, under Cloud Run's 300 s request
 # timeout (scripts/deploy.sh; pinned in service/tests/test_providers.py).
+# Those bounds are per wait, so a provider that trickles a byte at a time would
+# outlast them; the two added together are also each attempt's wall-clock
+# deadline (agent-forge-harness-2bb, service/provider_deadline.py), which keeps
+# that sum true whatever the provider sends.
 LLM_REQUEST_TIMEOUT_S: float = _seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0)
 # Connect bound for the same clients; 5 s is the OpenAI SDK's own default.
 LLM_CONNECT_TIMEOUT_S: float = _seconds("RAG_LLM_CONNECT_TIMEOUT_S", 5.0)

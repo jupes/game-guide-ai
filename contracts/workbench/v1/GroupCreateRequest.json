@@ -1,0 +1,132 @@
+{
+  "schema": "GroupCreateRequest",
+  "direction": "request",
+  "note": "POST /campaigns/{id}/groups: an empty group. Keyed: live names are unique, so an unkeyed retry of a create that landed would be 409 group_name_taken. A repeat of the key answers 201 with the group it made, whatever name the repeat sends. The server's check_group_name (the alias rules) is stricter than this shape and refuses the rest with the same 422.",
+  "valid": [
+    {
+      "name": "a name and a key",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4f1c9a2e7b3d6e8f",
+        "name": "Scouts"
+      }
+    },
+    {
+      "name": "a name trimmed as the client trims",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4f1c9a2e7b3d6e8f",
+        "name": " Scouts "
+      }
+    },
+    {
+      "name": "a key from crypto.randomUUID",
+      "value": {
+        "schema_version": 1,
+        "command_id": "3f2b8c1e-9a4d-4e7f-b6c5-1d2e3f4a5b6c",
+        "name": "Scouts"
+      }
+    },
+    {
+      "name": "a name at 40",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4f1c9a2e7b3d6e8f",
+        "name": "@repeat:a:40"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no command_id",
+      "why": "a create is keyed, so a retried create cannot answer 409 for the group it made",
+      "value": {
+        "schema_version": 1,
+        "name": "Scouts"
+      }
+    },
+    {
+      "name": "a command_id of 15 characters",
+      "why": "a key is 16 to 64 URL-safe characters",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4f1c9a2e7b3",
+        "name": "Scouts"
+      }
+    },
+    {
+      "name": "a command_id with a slash",
+      "why": "a key is URL-safe: [A-Za-z0-9_-]",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4f1c9a2e/b3d6e8f",
+        "name": "Scouts"
+      }
+    },
+    {
+      "name": "no name",
+      "why": "a group has a name",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4f1c9a2e7b3d6e8f"
+      }
+    },
+    {
+      "name": "a name past 40",
+      "why": "0019's CHECK on groups.name: 40 code points after trimming",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4f1c9a2e7b3d6e8f",
+        "name": "@repeat:a:41"
+      }
+    },
+    {
+      "name": "a blank name",
+      "why": "1 to 40 characters after trimming",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4f1c9a2e7b3d6e8f",
+        "name": "   "
+      }
+    },
+    {
+      "name": "a lone surrogate in the name",
+      "why": "JSON allows the escape; UTF-8 does not, so the name could be neither stored nor answered. Refused here it is a 422, not a 500",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4f1c9a2e7b3d6e8f",
+        "name": "Scouts \ud83c"
+      }
+    },
+    {
+      "name": "a bidirectional override in the name",
+      "why": "stored text refuses what changes what a reader sees (lead ruling of 2026-09-21): a GM choosing an audience must read the name that is stored",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4f1c9a2e7b3d6e8f",
+        "name": "Scouts\u202e"
+      }
+    },
+    {
+      "name": "members in the create",
+      "why": "a create makes an empty group; each member is added on its own, each its own locked widening (RQ-4)",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_4f1c9a2e7b3d6e8f",
+        "name": "Scouts",
+        "member_ids": [
+          "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1"
+        ]
+      }
+    },
+    {
+      "name": "a newer schema_version",
+      "why": "the version this contract speaks is 1",
+      "value": {
+        "schema_version": 2,
+        "command_id": "cmd_4f1c9a2e7b3d6e8f",
+        "name": "Scouts"
+      }
+    }
+  ]
+}
