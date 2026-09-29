@@ -10,6 +10,12 @@
   gap: var(--aether-space-2);
 }
 
+/* 1kg.3.7: where Load earlier hands keyboard focus once its control is gone. */
+.gm-thread__exchange:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
 .gm-thread__exchange > .assistant-lane {
   margin-bottom: 0;
 }
