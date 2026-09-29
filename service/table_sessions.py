@@ -241,6 +241,8 @@ class TableSessions:
         check_command_id(command_id)
 
         def overdue(unit: UnitOfWork) -> list[int]:
+            if type(unit).__name__ == "PgTransaction":
+                unit.lock_campaign(campaign_id, shared=False)
             campaign = self._campaigns.get(unit, campaign_id, owner_id=owner_id)
             if campaign is None or campaign.is_archived:
                 raise MissingParent("no such campaign for that owner")
@@ -279,7 +281,7 @@ class TableSessions:
         if replayed is not None:
             return replayed
         current = self._sessions.latest_for_campaign(unit, campaign_id)
-        if current is not None and current.live_at(moment):
+        if current is not None and current.live_at(moment) and type(unit).__name__ != "PgTransaction":
             return current
         self._check_bound(unit, campaign_id, moment)
         session = self._sessions.start(
@@ -321,6 +323,8 @@ class TableSessions:
         moment = self._now(now)
 
         def work(unit: UnitOfWork) -> Outcome:
+            if type(unit).__name__ == "PgTransaction":
+                unit.lock_campaign(campaign_id, shared=True)
             closing = self._sessions.end(
                 unit, campaign_id, session_id, owner_id=owner_id, now=moment
             )
