@@ -140,6 +140,12 @@ a generic failure.
 | `attempt_expired` | — | yes | the server expired a stuck attempt (RAIL-27); seen on an invocation, never as a response status |
 | `backend_unavailable` | 503 | yes | the service fails closed |
 | `already_linked` | 409 | no | a link to a campaign for a conversation that is already in one (`1kg.2.4`). A new code rather than `conflict` with a wider meaning |
+| `alias_taken` | 409 | no | a seat whose alias another live seat of the campaign already answers to (`1kg.2.2`) |
+| `seat_not_open` | 409 | no | an offer of a seat that is accepted or holds a live offer for another address (`1kg.2.2`) |
+| `seat_not_accepted` | 409 | no | a confirmation of a seat nobody has accepted (`1kg.2.2`) |
+| `seat_cap_reached` | 409 | no | the 41st live seat of a campaign (`1kg.2.2`, SEC-50(3)) |
+| `campaign_archived` | 409 | no | a seat added to, or an offer made in, an archived campaign (`1kg.2.2`) |
+| `reauth_failed` | 403 | no | a Remove whose password did not check out (`1kg.2.2`, SEC-40). A 403, never a 401, because the client signs out on any 401; it names no resource |
 
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
@@ -176,6 +182,12 @@ names it starts fresh rather than reading another caller's status or result
 | Start, End, Rotate a session | `command_id` | a retried Start opens the session already started rather than a second one; End and Rotate are idempotent on an ended or rotated session |
 | Create a conversation | none (`1kg.2.4`) | makes a second conversation, which archive recovers. There is no key store for an uncampaigned conversation to be matched in; a `command_id` can arrive later as an optional field, which is no version bump |
 | Rename, archive, unarchive or link a conversation; bind its channel | none needed | is a no-op: the same title, the same state and the same campaign change nothing, and a channel already bound answers the one that won |
+| Create a campaign | none (`1kg.2.2`) | makes a second campaign, which archive recovers — the conversation precedent. Duplicate names are allowed. A `command_id` can arrive later as an optional field, which is no version bump |
+| Rename, archive or restore a campaign | none needed | is a no-op: the same name changes nothing, `updated_at` included; archiving an archived campaign and restoring a live one change nothing |
+| Add a seat | none needed | the same alias again is `409 alias_taken`, its defined behaviour; the client re-reads the list |
+| Offer a seat | none needed | an offer of an address this campaign already has a live offer for, or an accepted seat of, is a repeat: it changes nothing and answers the same `204` |
+| Confirm a seat, Remove a seat | none needed | confirming a confirmed seat and removing a removed one answer as the first did and change nothing (no second audit row, no second job) |
+| Accept, decline an offer | none needed | a repeat accept by the account that accepted answers the same seat; a repeat decline answers `204` and applies a block it now asks for |
 
 ### Pagination
 
@@ -239,6 +251,7 @@ on both sides.
 | Realtime events | **done** | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect`), `TableEvent` (`session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect`), and the two snapshot resources `GmSnapshot` and `TableSnapshot`. `slot` and `snapshot` are the reveal family's; the transport is the media ADR's |
 | Tool and document-type registry | `1kg.3.1` | extends `registry.json` |
 | Conversations | **done** | `Conversation`, `ConversationPage`, `ConversationCreateRequest`, `ConversationPatchRequest`, and `already_linked` on the error envelope. See *The conversation family* below |
+| Campaigns and seats | **done** | `Campaign`, `CampaignPage`, `CampaignCreateRequest`, `CampaignPatchRequest`, `Seat`, `SeatPage`, `SeatCreateRequest`, `SeatOfferRequest`, `SeatRemoveRequest`, `SeatOffer`, `SeatOfferPage`, `SeatDeclineRequest`, `PlayerSeat`, `PlayerSeatPage`, and six codes on the error envelope. See *The campaigns and seats family* below |
 
 ## The tool-invocation family
 
@@ -782,6 +795,68 @@ and is allowed. A body is at most 8,192 bytes.
 
 Deletion is not in this family: archive is reversible and destroys nothing, and
 deletion follows `agent-forge-harness-1ka.5`.
+
+## The campaigns and seats family
+
+A GM's campaigns and the seats at their table, and an account's own side of
+them (`1kg.2.2`; owner decisions D-1, D-5 and D-12; threat model SEC-2, SEC-3,
+SEC-40, SEC-50). Two routers: the GM routes on the `dm`-gated Workbench router,
+and the account routes on `account_router`, which is the same posture without
+the role — a player must reach them, and so must a GM seated at another GM's
+table. The account side lives under `/seats` because `GET /campaigns/{id}`
+would otherwise answer a player's `GET /campaigns/offers` with the role refusal.
+
+| Route | Answers |
+| --- | --- |
+| `GET /campaigns?limit&cursor&include_archived` | `CampaignPage`: the caller's campaigns, newest first (`created_at DESC, id DESC`, the id by code point) |
+| `POST /campaigns` | `201` and the new `Campaign`; the caller is its GM (D-5). The body is a `CampaignCreateRequest` |
+| `GET /campaigns/{campaign_id}` | the `Campaign`, archived or not |
+| `PATCH /campaigns/{campaign_id}` | the `Campaign` after a rename, archive or restore. The body is a `CampaignPatchRequest` |
+| `GET /campaigns/{campaign_id}/participants?limit&cursor&include_removed` | `SeatPage`, oldest first |
+| `POST /campaigns/{campaign_id}/participants` | `201` and the new, open `Seat`. The body is a `SeatCreateRequest` |
+| `POST …/participants/{participant_id}/offer` | **`204` with no body, whatever the address holds**. The body is a `SeatOfferRequest` |
+| `POST …/participants/{participant_id}/confirm` | the confirmed `Seat` (D-12, SEC-50(5)) |
+| `POST …/participants/{participant_id}/remove` | `204`. The body is a `SeatRemoveRequest`: every Remove asks for the password (SEC-40) |
+| `GET /seats?limit&cursor` | `PlayerSeatPage`: the caller's accepted, live seats, newest acceptance first |
+| `GET /seats/offers?limit&cursor` | `SeatOfferPage`: the offers made to the caller's **verified** address, newest first |
+| `POST /seats/offers/{offer_id}/accept` | the `PlayerSeat`, `confirmed: false` until the GM confirms |
+| `POST /seats/offers/{offer_id}/decline` | `204`. The body is a `SeatDeclineRequest`; `block` refuses that GM's later offers, silently |
+
+Every list takes `limit` 1 to 50 (50 by default) and an opaque cursor; a page
+may be short while `next_cursor` is not null. No numeric account id is on the
+wire anywhere in this family (SEC-50(1)), every request forbids undeclared keys,
+and nothing on the account side names an address, a campaign's owner or a
+participant (SEC-43, SEC-50(4)).
+
+**An offer names an address, never an account**, and binds to one only at
+acceptance. Making it reads no account and no block, so the GM's answer — one
+`204`, byte for byte — cannot depend on whether anybody holds the address
+(SEC-50(2)). A repeat of an address the campaign already has a live offer or an
+accepted seat for changes nothing; the owner's own address is `422` naming
+`email`. A GM may write at most 30 offers in 24 hours across every campaign
+(`429 throttled_user` with `retry_after_s`); a repeat never spends that budget.
+An offer is open for 14 days. **No mail is sent**: the GM tells the player.
+
+**Only a Verified account whose verified address is the offer's may see or
+accept it** (SEC-50(4)). The address is compared with ASCII A–Z folded and
+nothing else, so a non-ASCII case variant fails closed. Until email
+verification ships (`yje.2.1`), no account is Verified and every account's
+offer list is empty (owner question OQ-1). Every refusal on the account side —
+missing, someone else's, expired, withdrawn, archived, blocked, already seated,
+the caller's own campaign — is the one `404`.
+
+**The GM confirms who accepted** (D-12, SEC-50(5)): a `Seat` reads
+`awaiting_confirmation`, with the address the account accepted under, until the
+GM confirms it. Until then the seat gets the table slot only.
+
+`Seat.status` is one of `open`, `offered`, `not_accepted` (declined, or
+expired), `awaiting_confirmation`, `confirmed` and `removed`; the words a GM
+reads are the design lane's. Withdrawing an offer is the GM's Remove.
+
+**Archive** narrows a live session first, in a step that never waits for the
+campaign lock, and then changes the fact under the lock; if the lock cannot be
+had in time the answer is `503 backend_unavailable`, retryable, and the change
+is *not applied yet*. Archive ends no session.
 
 ## The timeline family
 
