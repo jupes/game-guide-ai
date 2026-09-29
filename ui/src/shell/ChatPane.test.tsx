@@ -1523,4 +1523,75 @@ describe('ChatPane — model preference wiring (agent-forge-harness-bta)', () =>
     await waitFor(() => expect(post).toHaveBeenCalled())
     expect(sent(post)).toEqual(['traveller'])
   })
+
+  // ── Healing off a retired manual pick (agent-forge-harness-j9w) ───────────
+  // A conversation bound to a manual pick the server has since retired keeps
+  // sending that same public id forever (bta's D6 design, proven above) —
+  // unless the server's heal (routing.fallback_from on the response) moves
+  // the store onto the replacement. These prove the two ends together: the
+  // picker shows the heal, and the NEXT turn stops sending the retired id.
+
+  function healedOnce(fallbackFrom: string, effective: string): PostFn {
+    let calls = 0
+    return async () => {
+      calls += 1
+      return {
+        kind: 'ok',
+        response: {
+          ...(GROUNDED.kind === 'ok' ? GROUNDED.response : {}),
+          routing: {
+            requested: effective, effective, strategy: 'manual',
+            fallback_from: calls === 1 ? fallbackFrom : null,
+          },
+        },
+      } as ChatResult
+    }
+  }
+
+  it('a healed turn updates the picker and the store, without touching other conversations', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    const other = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(other.id, 'Unrelated', 'traveller')
+    const post = vi.fn<PostFn>(healedOnce('traveller', 'adventurer'))
+    const catalog = {
+      default: 'auto',
+      models: [
+        { id: 'auto', display_name: 'Automatic' },
+        { id: 'adventurer', display_name: 'Adventurer', tier: 'adventurer', supports_attachments: true },
+      ],
+    }
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => catalog} />)
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Adventurer' })).toBeInTheDocument())
+
+    await ask('And a cockatrice?')
+
+    await waitFor(() => expect(picker().value).toBe('adventurer'))
+    expect(store.get(conv.id)?.boundPreference).toBe('adventurer')
+    expect(store.get(other.id)?.boundPreference).toBe('traveller')
+  })
+
+  it('stops sending the retired id on the very next turn once healed', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    const post = vi.fn<PostFn>(healedOnce('traveller', 'adventurer'))
+    const catalog = {
+      default: 'auto',
+      models: [
+        { id: 'auto', display_name: 'Automatic' },
+        { id: 'adventurer', display_name: 'Adventurer', tier: 'adventurer', supports_attachments: true },
+      ],
+    }
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => catalog} />)
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Adventurer' })).toBeInTheDocument())
+
+    await ask('And a cockatrice?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    await ask('And a wyvern?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+
+    expect(sent(post)).toEqual(['traveller', 'adventurer'])
+  })
 })

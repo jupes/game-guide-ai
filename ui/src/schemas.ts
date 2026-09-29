@@ -93,6 +93,16 @@ export const StatBlockContentSchema = z.object({
 
 export const ChatModeSchema = z.enum(['sage', 'spell', 'rules', 'gm'])
 
+/** Mirrors service.models.RoutingInfo — only the fields D-9 lets a client
+ * see (`provider` stays server-side, never on the wire; `task_class`/
+ * `reason` are still unused server-side). */
+export const RoutingInfoSchema = z.object({
+  requested: z.string(),
+  effective: z.string(),
+  strategy: z.enum(['auto', 'manual']),
+  fallback_from: z.string().nullish(),
+})
+
 export const ChatResponseSchema = z.object({
   answer: z.string(),
   sources: z.array(SourceSchema),
@@ -102,6 +112,7 @@ export const ChatResponseSchema = z.object({
   conversation_id: z.string().nullish(),
   spell_content: SpellContentSchema.nullish(),
   stat_block: StatBlockContentSchema.nullish(),
+  routing: RoutingInfoSchema.nullish(),
 })
 
 // StoredMessage is created fresh here matching today's persisted shape

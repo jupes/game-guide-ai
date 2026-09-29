@@ -64,6 +64,77 @@ describe('useChat', () => {
     expect(adopted).toEqual([])
   })
 
+  // ── Healing off a retired manual pick (agent-forge-harness-j9w) ───────────
+  // The server rebinds a conversation off a manual pick the catalog has
+  // since retired, and says so via routing.fallback_from. onPreferenceRebound
+  // is the one seam that tells the CLIENT: it is what lets ConversationStore
+  // stop sending the retired id on the very next turn.
+
+  function healedResult(fallbackFrom: string | null, effective: string): ChatResult {
+    return {
+      kind: 'ok',
+      response: {
+        ...(GROUNDED.kind === 'ok' ? GROUNDED.response : {}),
+        conversation_id: 'conv-heal',
+        routing: { requested: effective, effective, strategy: 'manual', fallback_from: fallbackFrom },
+      },
+    } as ChatResult
+  }
+
+  it('reports a heal when the response carries fallback_from', async () => {
+    const rebound: Array<[string, string]> = []
+    const post: PostFn = async () => healedResult('traveller', 'adventurer')
+    const { result } = renderHook(() =>
+      useChat({
+        post, mode: 'sage', conversationId: 'conv-heal',
+        onPreferenceRebound: (id, preference) => rebound.push([id, preference]),
+      }),
+    )
+
+    act(() => { result.current.send('again') })
+    await waitFor(() => expect(rebound).toEqual([['conv-heal', 'adventurer']]))
+  })
+
+  it('never reports a heal on an ordinary turn (fallback_from absent)', async () => {
+    const rebound: Array<[string, string]> = []
+    const post: PostFn = async () => healedResult(null, 'adventurer')
+    const { result } = renderHook(() =>
+      useChat({
+        post, mode: 'sage', conversationId: 'conv-heal',
+        onPreferenceRebound: (id, preference) => rebound.push([id, preference]),
+      }),
+    )
+
+    act(() => { result.current.send('again') })
+    await waitFor(() => expect(result.current.exchanges[0].status).toBe('done'))
+    expect(rebound).toEqual([])
+  })
+
+  it('reports a heal against the server-adopted id when this turn started with none', async () => {
+    // A first-ever turn can't already be a retired binding — but the seam
+    // itself must not assume a non-null conversationId; it uses whatever
+    // this turn actually resolved to.
+    const rebound: Array<[string, string]> = []
+    const post: PostFn = async () => healedResult('traveller', 'adventurer')
+    const { result } = renderHook(() =>
+      useChat({
+        post, mode: 'sage', conversationId: null,
+        onPreferenceRebound: (id, preference) => rebound.push([id, preference]),
+      }),
+    )
+
+    act(() => { result.current.send('hi') })
+    await waitFor(() => expect(rebound).toEqual([['conv-heal', 'adventurer']]))
+  })
+
+  it('does not throw when a heal happens with no onPreferenceRebound handler', async () => {
+    const post: PostFn = async () => healedResult('traveller', 'adventurer')
+    const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: 'conv-heal' }))
+
+    act(() => { result.current.send('again') })
+    await waitFor(() => expect(result.current.exchanges[0].status).toBe('done'))
+  })
+
   // ── Per-conversation model preference (b8o.2) ─────────────────────────────
 
   it('passes the modelPreference option through to post', async () => {
