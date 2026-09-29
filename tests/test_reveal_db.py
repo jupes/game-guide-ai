@@ -12,6 +12,10 @@ and who waits for whom. Every "waits" claim is the server's own account
 (`pg_stat_activity`), and every "does not wait" claim runs under a short
 `lock_timeout` beside a positive control that does wait.
 
+The **service suite** (PR-B) runs `service/reveals.py` in both worlds, with
+every session store built with the production fill, and proves RQ-7 for every
+narrowing already shipped; the **races** after it are PostgreSQL's alone.
+
 Requires DATABASE_URL (CI sets it for this file, `.github/workflows/ci.yml`,
 pinned by `service/tests/test_ci_workflow.py`). From the repo root:
 
@@ -35,17 +39,33 @@ import pytest
 from _pg import connect, needs_db, throwaway_database
 
 from service import migrations as mig
+from service.audit_log import AuditAction, InMemoryAuditLog, PostgresAuditLog
 from service.campaign_store import InMemoryCampaignStore, MissingParent, PostgresCampaignStore, shared_rows
+from service.campaign_summary_store import InMemoryCampaignSummaryStore, PostgresCampaignSummaryStore
+from service.campaigns_api import (
+    CampaignStores,
+    archive,
+    archive_step_one,
+    archive_step_two,
+    confirm_seat,
+    remove_seat,
+)
 from service.db import CampaignLockOrder, CampaignLockSettings, Database, InMemoryDatabase, PoolSettings
 from service.document_store import InMemoryDocumentStore, PostgresDocumentStore
+from service.history import InMemoryMessageStore
+from service.jobs import InMemoryJobQueue, PostgresJobQueue
 from service.participant_store import InMemoryParticipantStore, PostgresParticipantStore
+from service.reconciliation import enqueue_reconciliation, reconcile
 from service.reveal_scope import (
     DocumentCopies,
     EndReason,
+    EveryoneSeated,
     EverySlot,
     NoSlot,
+    ParticipantsAudience,
     ParticipantSlots,
     ParticipantTargets,
+    TableAudience,
     TableTarget,
 )
 from service.reveal_store import (
@@ -53,21 +73,38 @@ from service.reveal_store import (
     AudienceRefused,
     CopyChange,
     Disclosure,
+    DocumentNotDisplayable,
     InMemoryRevealStore,
     MaskRefused,
     PostgresRevealStore,
+    RevealBusy,
     RevealConflict,
+    RevealNotFound,
+    RevealPicture,
     SlotRow,
     StaleSlots,
+    VersionNotDisplayable,
     Written,
     audit_reveal_invariants,
 )
+from service.reveals import (
+    DEADLOCK_ATTEMPTS,
+    DisplayCommand,
+    Displayed,
+    Reveals,
+    StopAll,
+    StopDocument,
+    make_reconcile_slots,
+    slot_clear_for,
+)
+from service.seat_offer_store import InMemorySeatOfferStore, PostgresSeatOfferStore
 from service.table_session_store import (
     InMemoryTableSessionStore,
     PostgresTableSessionStore,
     TableSession,
     no_slots,
 )
+from service.table_sessions import TableSessions
 from service.workbench_contracts import Author, DocumentTypeId
 
 QUICK = CampaignLockSettings(lock_timeout_s=1, transaction_timeout_s=5)
@@ -115,7 +152,9 @@ class World:
             return audit_reveal_invariants(unit, self.reveals if self.kind == "fake" else None)
 
 
-def _pg_world(target: str) -> World:
+def _pg_world(target: str, *, fill: bool = False) -> World:
+    """The PostgreSQL world; `fill` builds the session store with the reveal
+    fill, as production does (the service suite), rather than `no_slots`."""
     with connect(target) as conn:
         ids = [
             int(
@@ -126,14 +165,15 @@ def _pg_world(target: str) -> World:
             )
             for n in range(10)
         ]
+    rows = PostgresRevealStore()
     return World(
         "postgres",
         _database(target),
         PostgresCampaignStore(),
         PostgresParticipantStore(),
-        PostgresTableSessionStore(slot_clear=no_slots),
+        PostgresTableSessionStore(slot_clear=slot_clear_for(rows) if fill else no_slots),
         PostgresDocumentStore(),
-        PostgresRevealStore(),
+        rows,
         owner=ids[0],
         other_owner=ids[1],
         players=tuple(ids[2:]),
@@ -1310,3 +1350,1385 @@ def _referencing_insert_committed(dsn: str | None, campaign: str, session: str, 
                      "WHERE document_id = %s AND ended_at IS NULL", (document,))
         _referencing_insert(conn, campaign, session, document)
         conn.rollback()
+
+
+# ══ PR-B: the reveal service, the fills, and RQ-7 ═══════════════════════════
+#
+# The service suite runs in both worlds, with every session store built with
+# the fill (`reveals.slot_clear_for`), as production builds them. The races
+# after it are PostgreSQL's alone: two connections, explicit interleaving, and
+# the server's own account of who waits (`pg_stat_activity`).
+
+
+class _Recorded:
+    """The world's database, remembering every unit of work it hands out, so a
+    test can read what each of them locked — in either world."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+        self.units: list[Any] = []
+
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        with self._db.transaction() as unit:
+            self.units.append(unit)
+            yield unit
+
+    def locks(self, since: int = 0) -> list[tuple[str, str]]:
+        return [lock for unit in self.units[since:] for lock in unit.campaign_locks]
+
+
+@dataclass
+class Served:
+    """A world whose session store clears what it narrows, and the services
+    over it: the reveal service, the session lifecycle, and the campaign
+    stores the seat and archive functions compose."""
+
+    w: World
+    db: _Recorded
+    reveals: Reveals
+    audit: Any
+    jobs: Any
+    stores: CampaignStores
+    lifecycle: TableSessions
+
+    def over(self, db: Any, *, attempts: int = 1) -> Reveals:
+        """The same stores over another database — the races' second
+        connection, or a paused one. One attempt: a deadlock a retry would
+        hide is seen (critic 10)."""
+        return _reveals_over(self.w, self.audit, db, attempts)
+
+    def lifecycle_over(self, db: Any) -> TableSessions:
+        return _lifecycle_over(self.w, self.audit, self.jobs, db)
+
+
+def _reveals_over(w: World, audit: Any, db: Any, attempts: int) -> Reveals:
+    return Reveals(
+        db,
+        campaigns=w.campaigns,
+        sessions=w.sessions,
+        reveals=w.reveals,
+        documents=w.documents,
+        audit=audit,
+        attempts=attempts,
+    )
+
+
+def _lifecycle_over(w: World, audit: Any, jobs: Any, db: Any) -> TableSessions:
+    return TableSessions(
+        db,
+        campaigns=w.campaigns,
+        sessions=w.sessions,
+        audit=audit,
+        jobs=jobs,
+        reconcile=lambda unit, campaign_id: enqueue_reconciliation(unit, jobs, campaign_id),
+    )
+
+
+def _serve(w: World) -> Served:
+    recorded = _Recorded(w.db)
+    if w.kind == "fake":
+        audit: Any = InMemoryAuditLog()
+        jobs: Any = InMemoryJobQueue(db=w.db)
+        offers: Any = InMemorySeatOfferStore(w.db)
+        summaries: Any = InMemoryCampaignSummaryStore(w.db, messages=InMemoryMessageStore())
+    else:
+        audit, jobs = PostgresAuditLog(), PostgresJobQueue(w.db)
+        offers, summaries = PostgresSeatOfferStore(), PostgresCampaignSummaryStore()
+    return Served(
+        w,
+        recorded,
+        _reveals_over(w, audit, recorded, DEADLOCK_ATTEMPTS),
+        audit,
+        jobs,
+        CampaignStores(w.campaigns, w.participants, w.sessions, offers, audit, summaries),
+        _lifecycle_over(w, audit, jobs, recorded),
+    )
+
+
+def _fake_served() -> Served:
+    db = InMemoryDatabase()
+    rows = InMemoryRevealStore(db)
+    return _serve(
+        World(
+            "fake",
+            db,
+            InMemoryCampaignStore(db),
+            InMemoryParticipantStore(db),
+            InMemoryTableSessionStore(db, slot_clear=slot_clear_for(rows)),
+            InMemoryDocumentStore(db),
+            rows,
+            owner=1,
+            other_owner=2,
+            players=tuple(range(3, 11)),
+        )
+    )
+
+
+@pytest.fixture(params=["fake", pytest.param("postgres", marks=needs_db)])
+def served(request: pytest.FixtureRequest) -> Iterator[Served]:
+    made = _fake_served() if request.param == "fake" else _serve(_pg_world(request.getfixturevalue("dsn"), fill=True))
+    yield made
+    assert made.w.audit() == [], "the invariant auditor found a broken invariant after the test"
+
+
+@pytest.fixture
+def pgs(dsn: str) -> Iterator[Served]:
+    made = _serve(_pg_world(dsn, fill=True))
+    yield made
+    assert made.w.audit() == []
+
+
+# ── Service helpers ──────────────────────────────────────────────────────────
+
+
+REVEAL_ACTIONS = {AuditAction.REVEAL_DISPLAYED, AuditAction.REVEAL_UPDATED, AuditAction.REVEAL_STOPPED}
+A_STATBLOCK = {
+    "name": "Ogre",
+    "ac": 11,
+    "hp": 59,
+    "abilities": {},
+    "xp": None,
+    "traits": [{"name": "Brute", "text": "  "}],
+}
+A_LORE = {"name": "The Drowned Bell", "rumours": ["it rings at low tide", "   "]}
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _epoch(w: World, session: str) -> int:
+    with w.db.transaction() as unit:
+        found = w.sessions.get(unit, session)
+    assert found is not None
+    return int(found.reveal_epoch)
+
+
+def _command_for(
+    campaign: str,
+    session: str,
+    document: str,
+    audience: Any,
+    epoch: int,
+    *,
+    mask: tuple[str, ...] = ("name",),
+    version: int = 1,
+    command: str | None = None,
+) -> DisplayCommand:
+    return DisplayCommand(campaign, session, command or _command(), epoch, document, version, mask, audience)
+
+
+def _confirm(
+    s: Served,
+    campaign: str,
+    session: str,
+    document: str,
+    audience: Any = None,
+    *,
+    mask: tuple[str, ...] = ("name",),
+    version: int = 1,
+    command: str | None = None,
+    epoch: int | None = None,
+    owner: int | None = None,
+    reveals: Reveals | None = None,
+) -> Displayed:
+    composed = _command_for(
+        campaign,
+        session,
+        document,
+        TableAudience() if audience is None else audience,
+        _epoch(s.w, session) if epoch is None else epoch,
+        mask=mask,
+        version=version,
+        command=command,
+    )
+    return (reveals or s.reveals).display(composed, owner_id=s.w.owner if owner is None else owner, now=_now())
+
+
+def _stop(
+    s: Served,
+    campaign: str,
+    scope: Any,
+    *,
+    command: str | None = None,
+    owner: int | None = None,
+    reveals: Reveals | None = None,
+) -> RevealPicture | None:
+    return (reveals or s.reveals).stop(
+        campaign,
+        owner_id=s.w.owner if owner is None else owner,
+        scope=scope,
+        command_id=command or _command(),
+        now=_now(),
+    )
+
+
+def _reveal_rows(s: Served, campaign: str) -> list[Any]:
+    with s.w.db.transaction() as unit:
+        return [e for e in s.audit.for_campaign(unit, campaign) if e.action in REVEAL_ACTIONS]
+
+
+def _revision(w: World, campaign: str) -> int:
+    with w.db.transaction() as unit:
+        if w.kind == "fake":
+            return int(unit.authz_revision(campaign))
+        row = unit.conn.execute(
+            "SELECT authz_revision FROM campaign.authz_state WHERE campaign_id = %s", (campaign,)
+        ).fetchone()
+        return int(row[0])
+
+
+def _queued(s: Served) -> int:
+    if s.w.kind == "fake":
+        return len(s.jobs._rows)
+    with s.w.db.transaction() as unit:
+        return int(unit.conn.execute("SELECT count(*) FROM app.jobs").fetchone()[0])
+
+
+def _state(s: Served, campaign: str, session: str) -> tuple[Any, ...]:
+    """Everything a refused Confirm must leave as it found."""
+    return (
+        _shown(s.w, session),
+        _seqs(s.w, session),
+        [d.id for d in _live(s.w, session)],
+        _epoch(s.w, session),
+        len(_reveal_rows(s, campaign)),
+        _revision(s.w, campaign),
+    )
+
+
+def _doc_of(w: World, campaign: str, doc_type: DocumentTypeId, data: dict[str, Any]) -> str:
+    with w.db.transaction() as unit:
+        made = w.documents.create(unit, campaign, doc_type=doc_type, type_version=1, data=dict(data), author=Author.GM)
+    with w.db.transaction() as unit:
+        w.documents.seal(unit, campaign, made.id)
+    return str(made.id)
+
+
+def _refusal(caught: pytest.ExceptionInfo[BaseException]) -> tuple[Any, ...]:
+    return type(caught.value), str(caught.value), caught.value.args
+
+
+def _entry(picture: RevealPicture, participant: str | None) -> Any:
+    [found] = [e for e in picture.entries if e.participant_id == participant]
+    return found
+
+
+def _empty_sessions(w: World) -> Any:
+    """A session store whose narrowings clear nothing — how a test leaves a
+    display behind in a session that has ended."""
+    if w.kind == "fake":
+        return InMemoryTableSessionStore(w.db, slot_clear=no_slots)
+    return PostgresTableSessionStore(slot_clear=no_slots)
+
+
+def _left_live_in_a_dead_session(w: World, campaign: str, document: str) -> tuple[TableSession, str]:
+    """A session that displayed `document` and then ended without clearing it —
+    what an older build, or a narrowing before this bead, could leave."""
+    dead = _session(w, campaign)
+    command = _command()
+    _write(w, campaign, dead.id, document, TableTarget(), command=command)
+    with w.db.transaction() as unit:
+        _empty_sessions(w).end(unit, campaign, dead.id, owner_id=w.owner)
+    return dead, command
+
+
+# ── T-B1 to T-B9: a Confirm's order and its refusals ─────────────────────────
+
+
+def test_a_strangers_confirm_is_the_one_404_and_takes_no_lock(served: Served) -> None:
+    """T-B1 (SEC-2, SEC-3). Another GM naming my session, me naming another
+    GM's session, a session of another of my campaigns, a document of another
+    campaign and a missing document: one refusal, byte-identical, and no unit
+    of work took the campaign lock or wrote anything."""
+    s, w = served, served.w
+    elsewhere = _campaign(w)
+    old = _ended_session(w, elsewhere)
+    campaign, session, _ = _stage(w, seats=0)
+    document = _document(w, campaign)
+    theirs = _campaign(w, owner=w.other_owner)
+    their_session = _session(w, theirs, owner=w.other_owner)
+    their_document = _document(w, theirs)
+    before, marks = _state(s, campaign, session.id), len(s.db.units)
+
+    cases: list[dict[str, Any]] = [
+        {"owner": w.other_owner},
+        {"campaign": theirs, "session": their_session.id, "document": their_document},
+        {"session": old.id},
+        {"document": their_document},
+        {"document": "doc_" + "z" * 22},
+    ]
+    answers = set()
+    for case in cases:
+        with pytest.raises(RevealNotFound) as caught:
+            _confirm(
+                s,
+                case.get("campaign", campaign),
+                case.get("session", session.id),
+                case.get("document", document),
+                owner=case.get("owner"),
+                epoch=0,
+            )
+        answers.add(_refusal(caught))
+    assert len(answers) == 1, "one answer for every stranger"
+    assert len(s.db.units) - marks == len(cases) and s.db.locks(marks) == [], "no lock before ownership"
+    assert _state(s, campaign, session.id) == before
+
+
+def test_a_replayed_confirm_writes_nothing_even_after_its_own_epoch_advance_and_a_later_stop(
+    served: Served,
+) -> None:
+    """T-B2 (ID-10, critic 5). A retried Confirm whose first attempt committed
+    answers the current picture and writes nothing — though its own write moved
+    the epoch it carries, and though a Stop has since cleared what it showed.
+    Once the session has ended there is no picture: the replay is a conflict."""
+    s, w = served, served.w
+    campaign, session, _ = _stage(w, seats=0)
+    document = _document(w, campaign)
+    command, epoch = _command(), _epoch(w, session.id)
+    first = _confirm(s, campaign, session.id, document, command=command, epoch=epoch)
+    assert not first.replayed and _entry(first.picture, None).live.document_id == document
+
+    after, marks = _state(s, campaign, session.id), len(s.db.units)
+    again = _confirm(s, campaign, session.id, document, command=command, epoch=epoch)
+    assert again == Displayed(first.picture, True)
+    assert _state(s, campaign, session.id) == after and s.db.locks(marks) == []
+
+    _stop(s, campaign, StopAll())
+    stopped = _state(s, campaign, session.id)
+    later = _confirm(s, campaign, session.id, document, command=command, epoch=epoch)
+    assert later.replayed and _entry(later.picture, None).live is None
+    assert later.picture.reveal_epoch == epoch + 2, "the current picture, not a stored one"
+    assert _state(s, campaign, session.id) == stopped
+
+    with w.db.transaction() as unit:
+        w.sessions.end(unit, campaign, session.id, owner_id=w.owner)
+    ended, marks = _state(s, campaign, session.id), len(s.db.units)
+    with pytest.raises(RevealConflict):
+        _confirm(s, campaign, session.id, document, command=command, epoch=epoch)
+    assert _state(s, campaign, session.id) == ended and s.db.locks(marks) == []
+
+
+def test_a_stale_epoch_or_a_dead_session_is_a_conflict_before_the_campaign_lock(served: Served) -> None:
+    """T-B3 (REVEAL-5, RQ-11). An ended session, a session still `live` past
+    its expiry, and an epoch the table has moved past are each refused before
+    any lock is asked for; the Confirm that is current takes the share lock."""
+    s, w = served, served.w
+    campaign = _campaign(w)
+    document = _document(w, campaign)
+    ended = _ended_session(w, campaign)
+    overdue = _session(w, campaign, hours=1, started_ago_h=2)
+    for dead in (ended, overdue):
+        marks = len(s.db.units)
+        with pytest.raises(RevealConflict):
+            _confirm(s, campaign, dead.id, document)
+        assert s.db.locks(marks) == [], "the courtesy check comes before the lock"
+    with w.db.transaction() as unit:
+        w.sessions.expire(unit, overdue.id, campaign, now=_now())
+    session = _session(w, campaign)
+    before, marks = _state(s, campaign, session.id), len(s.db.units)
+    with pytest.raises(RevealConflict):
+        _confirm(s, campaign, session.id, document, epoch=_epoch(w, session.id) + 1)
+    assert s.db.locks(marks) == [] and _state(s, campaign, session.id) == before
+
+    marks = len(s.db.units)
+    _confirm(s, campaign, session.id, document)
+    assert s.db.locks(marks) == [(campaign, "share")], "positive control: a current Confirm does lock"
+
+
+def test_a_mask_holds_only_revealable_present_non_empty_keys(served: Served) -> None:
+    """T-B4 (REVEAL-9, REVEAL-10, ED-5, critic 6). Each mask is refused with
+    exactly the sorted keys at fault, and nothing is written: a key the type
+    does not allow (`tags`, `npc.true_identity`, `all`), a key named twice, a
+    key absent from the pinned version, a text blank after trimming, and the
+    contract's per-kind emptiness — a list with a blank item, an entry with a
+    blank text, an empty abilities block and a null integer."""
+    s, w = served, served.w
+    campaign, session, _ = _stage(w, seats=0)
+    npc = _doc_of(w, campaign, DocumentTypeId.NPC, {**AN_NPC, "attitude": " \t "})
+    lore = _doc_of(w, campaign, DocumentTypeId.LORE, A_LORE)
+    stat = _doc_of(w, campaign, DocumentTypeId.STATBLOCK, A_STATBLOCK)
+    cases = [
+        (npc, ("tags",), ("tags",)),
+        (npc, ("name", "true_identity"), ("true_identity",)),
+        (npc, ("tell",), ("tell",)),
+        (npc, ("attitude",), ("attitude",)),
+        (npc, ("all",), ("all",)),
+        (npc, ("name", "name"), ("name",)),
+        (npc, ("voice", "tags", "tell"), ("tags", "tell")),
+        (lore, ("rumours",), ("rumours",)),
+        (stat, ("name", "traits"), ("traits",)),
+        (stat, ("abilities",), ("abilities",)),
+        (stat, ("xp", "ac"), ("xp",)),
+    ]
+    before = _state(s, campaign, session.id)
+    for document, mask, at_fault in cases:
+        with pytest.raises(MaskRefused) as caught:
+            _confirm(s, campaign, session.id, document, mask=mask)
+        assert caught.value.keys == at_fault, mask
+    assert _state(s, campaign, session.id) == before
+
+    shown = _confirm(s, campaign, session.id, npc, mask=("voice", "name"))
+    assert _entry(shown.picture, None).live.mask == ("name", "voice"), "positive control"
+
+
+def test_an_open_or_missing_version_and_an_archived_document_are_refused(served: Served) -> None:
+    """T-B5 (ED-9). Only a sealed version of a document that is not archived is
+    displayable; the refusal names the version or the document."""
+    s, w = served, served.w
+    campaign, session, _ = _stage(w, seats=0)
+    with w.db.transaction() as unit:
+        open_one = str(
+            w.documents.create(
+                unit, campaign, doc_type=DocumentTypeId.NPC, type_version=1, data=dict(AN_NPC), author=Author.GM
+            ).id
+        )
+    archived = _document(w, campaign)
+    with w.db.transaction() as unit:
+        w.documents.set_archived(unit, campaign, archived, archived=True)
+    before = _state(s, campaign, session.id)
+    for version in (1, 9, 0):
+        with pytest.raises(VersionNotDisplayable):
+            _confirm(s, campaign, session.id, open_one, version=version)
+    with pytest.raises(DocumentNotDisplayable):
+        _confirm(s, campaign, session.id, archived)
+    assert _state(s, campaign, session.id) == before
+
+    with w.db.transaction() as unit:
+        w.documents.seal(unit, campaign, open_one)
+    assert _confirm(s, campaign, session.id, open_one).picture.entries[0].live.version == 1, "positive control"
+
+
+def test_a_removed_foreign_or_unknown_participant_is_one_refusal(served: Served) -> None:
+    """T-B6 (RD-4, critic 17, O-2). A removed seat, another campaign's seat, an
+    id that names nobody, and a list holding any of them: one refusal, nothing
+    written. An open seat is an audience — its copy is held — and any type may
+    go to a participant."""
+    s, w = served, served.w
+    campaign, session, _ = _stage(w, seats=0)
+    open_seat = _seat(w, campaign, "open", w.players[0])
+    removed = _seat(w, campaign, "removed", w.players[1])
+    foreign = _seat(w, _campaign(w, owner=w.other_owner), "open", w.players[2])
+    unknown = "prt_" + "z" * 22
+    document = _document(w, campaign)
+    before = _state(s, campaign, session.id)
+    answers = set()
+    for named in ({removed}, {foreign}, {unknown}, {open_seat, removed}):
+        with pytest.raises(AudienceRefused) as caught:
+            _confirm(s, campaign, session.id, document, ParticipantsAudience(frozenset(named)))
+        answers.add(_refusal(caught))
+    assert len(answers) == 1 and _state(s, campaign, session.id) == before
+
+    shown = _confirm(s, campaign, session.id, document, ParticipantsAudience(frozenset({open_seat})))
+    assert _entry(shown.picture, open_seat).live.held is True
+
+
+def test_everyone_seated_expands_to_confirmed_active_seats_only(served: Served) -> None:
+    """T-B7 (TA-5, ID-12). *Everyone seated* is the accepted, GM-confirmed and
+    not removed seats at the moment of the Confirm, expanded by the server:
+    none is a refusal; a seat confirmed later does not join the display."""
+    s, w = served, served.w
+    campaign, session, _ = _stage(w, seats=0)
+    document = _document(w, campaign)
+    with pytest.raises(AudienceRefused):
+        _confirm(s, campaign, session.id, document, EveryoneSeated())
+    accepted = _seat(w, campaign, "accepted", w.players[2])
+    for state, player in (("offered", w.players[3]), ("open", w.players[4]), ("removed", w.players[5])):
+        _seat(w, campaign, state, player)
+    with pytest.raises(AudienceRefused):
+        _confirm(s, campaign, session.id, document, EveryoneSeated())
+    assert _slots(w, session.id) == {}
+
+    a = _seat(w, campaign, "confirmed", w.players[0])
+    b = _seat(w, campaign, "confirmed", w.players[1])
+    _confirm(s, campaign, session.id, document, EveryoneSeated())
+    [live] = _live(w, session.id)
+    assert _shown(w, session.id) == {a: live.id, b: live.id}
+    assert _reveal_rows(s, campaign)[-1].detail["participant_ids"] == sorted([a, b])
+
+    with w.db.transaction() as unit:
+        w.participants.confirm(unit, campaign, accepted)
+    assert set(_shown(w, session.id)) == {a, b}, "a seat confirmed later does not join a display already made"
+
+
+def test_a_confirm_advances_the_epoch_once_and_never_authz_revision(served: Served) -> None:
+    """T-B8 (RQ-10, I-10). Three recipients, one Confirm: the epoch moves by one,
+    the authorisation revision not at all, and no job is enqueued."""
+    s, w = served, served.w
+    campaign, session, (a, b, c) = _stage(w)
+    document = _document(w, campaign)
+    epoch, revision, queued = _epoch(w, session.id), _revision(w, campaign), _queued(s)
+    _confirm(s, campaign, session.id, document, ParticipantsAudience(frozenset({a, b, c})))
+    assert (_epoch(w, session.id), _revision(w, campaign), _queued(s)) == (epoch + 1, revision, queued)
+    assert _seqs(w, session.id) == {a: 1, b: 1, c: 1}
+
+
+def test_a_copy_to_an_unconfirmed_seat_is_held_and_delivered_by_the_confirmation_alone(served: Served) -> None:
+    """T-B9 (SEC-41, SEC-50(5), D-12, ID-11). A copy for an accepted seat the GM
+    has not confirmed is written and held: the GM sees it waiting, the player's
+    table read does not return it. Confirming the seat delivers it on the next
+    read, with no reveal write in between."""
+    s, w = served, served.w
+    campaign, session, _ = _stage(w, seats=0)
+    player = w.players[0]
+    seat = _seat(w, campaign, "accepted", player)
+    document = _document(w, campaign)
+    shown = _confirm(s, campaign, session.id, document, ParticipantsAudience(frozenset({seat})))
+    assert _entry(shown.picture, seat).live.held is True
+    with w.db.transaction() as unit:
+        view = w.reveals.view_for_account(unit, campaign, user_id=player, now=_now())
+    assert view is not None and (view.own_slot, view.mine) == (False, None)
+
+    written = (_seqs(w, session.id), [d.id for d in _live(w, session.id)], len(_reveal_rows(s, campaign)))
+    confirm_seat(s.db, s.stores, campaign_id=campaign, participant_id=seat, owner_id=w.owner, now=_now())
+    with w.db.transaction() as unit:
+        view = w.reveals.view_for_account(unit, campaign, user_id=player, now=_now())
+    assert view is not None and view.own_slot and view.mine is not None and view.mine.document_id == document
+    assert _entry(s.reveals.picture(campaign, owner_id=w.owner, now=_now()), seat).live.held is False
+    assert (_seqs(w, session.id), [d.id for d in _live(w, session.id)], len(_reveal_rows(s, campaign))) == written
+
+
+# ── T-B10: a Stop ────────────────────────────────────────────────────────────
+
+
+def test_a_stop_clears_every_copy_advances_the_epoch_on_an_empty_session_and_equals_narrow(served: Served) -> None:
+    """T-B10 (ID-13, REVEAL-22, X-3). A Stop of one document takes every copy
+    of it and a Stop-all every slot, leaving exactly the state `narrow` with
+    the same scope leaves on an identical table. A Stop on a session showing
+    nothing still advances the epoch and writes its row; a campaign with no
+    live session answers None and writes nothing; an archived campaign's Stop
+    is not refused."""
+    s, w = served, served.w
+
+    def build(owner: int, players: tuple[int, ...]) -> tuple[str, TableSession, list[str], dict[str, str]]:
+        campaign = _campaign(w, owner=owner)
+        seats = [_seat(w, campaign, "open", p) for p in players]
+        session = _session(w, campaign, owner=owner)
+        x, y, z = (_document(w, campaign) for _ in range(3))
+        commands = {x: _command(), y: _command(), z: _command()}
+        _write(w, campaign, session.id, x, _parts(*seats[:2]), command=commands[x])
+        _write(w, campaign, session.id, y, TableTarget(), command=commands[y])
+        _write(w, campaign, session.id, z, _parts(seats[2]), command=commands[z])
+        return campaign, session, seats, commands
+
+    def picture_of(built: tuple[str, TableSession, list[str], dict[str, str]]) -> tuple[Any, ...]:
+        _, session, seats, commands = built
+        docs = list(commands)
+        live = {d.id: docs.index(d.document_id) for d in _live(w, session.id)}
+        slots = {
+            (None if pid is None else seats.index(pid)): (live.get(row.disclosure_id or ""), row.seq)
+            for pid, row in _slots(w, session.id).items()
+        }
+        ended = [_by_command(w, session.id, commands[d]).ended_reason for d in docs]
+        return slots, ended, _epoch(w, session.id)
+
+    stopped = build(w.owner, w.players[:3])
+    narrowed = build(w.other_owner, w.players[3:6])
+    assert picture_of(stopped) == picture_of(narrowed)
+
+    x_stopped, x_narrowed = list(stopped[3])[0], list(narrowed[3])[0]
+    _stop(s, stopped[0], StopDocument(x_stopped))
+    with w.db.transaction() as unit:
+        w.sessions.narrow(
+            unit, narrowed[0], narrowed[1].id, clears=DocumentCopies(x_narrowed, EndReason.GM_STOP), now=_now()
+        )
+    assert picture_of(stopped) == picture_of(narrowed)
+    assert picture_of(stopped)[1] == [EndReason.GM_STOP, None, None], "every copy of the one document"
+
+    _stop(s, stopped[0], StopAll())
+    with w.db.transaction() as unit:
+        w.sessions.narrow(unit, narrowed[0], narrowed[1].id, clears=EverySlot(EndReason.STOP_ALL), now=_now())
+    assert picture_of(stopped) == picture_of(narrowed)
+    assert picture_of(stopped)[1] == [EndReason.GM_STOP, EndReason.STOP_ALL, EndReason.STOP_ALL]
+
+    campaign, session = stopped[0], stopped[1]
+    epoch, rows = _epoch(w, session.id), len(_reveal_rows(s, campaign))
+    answer = _stop(s, campaign, StopAll())
+    assert answer is not None and answer.reveal_epoch == epoch + 1, "an empty session's epoch still advances"
+    assert len(_reveal_rows(s, campaign)) == rows + 1
+
+    archive(s.db, s.stores, campaign_id=campaign, owner_id=w.owner, now=_now())
+    epoch = _epoch(w, session.id)
+    assert _stop(s, campaign, StopAll()) is not None and _epoch(w, session.id) == epoch + 1, "never refused"
+
+    quiet = _campaign(w)
+    assert _stop(s, quiet, StopAll()) is None and _reveal_rows(s, quiet) == []
+
+
+# ── T-B11: RQ-7, every shipped narrowing clears what it invalidates ──────────
+
+
+NARROWINGS = [
+    "end",
+    "expiry_by_the_job",
+    "expiry_found_by_end",
+    "expiry_finalised_by_start",
+    "rotate",
+    "remove",
+    "archive_step_one",
+    "archive_step_two",
+    "narrow_by_default",
+]
+
+
+@pytest.mark.parametrize("narrowing", NARROWINGS)
+def test_every_shipped_narrowing_clears_exactly_what_it_invalidates(served: Served, narrowing: str) -> None:
+    """T-B11 (RQ-7, RD-3, A-20, critic 9). With the table showing one document
+    and two members holding copies of another, each narrowing already shipped
+    clears — through the production fill — exactly the displays it makes
+    invalid, with its reason and its request's clock: End, expiry (by each of
+    its three paths), Rotate, both archive steps and a scope-less `narrow`
+    clear every slot; Remove clears that member's copy alone. The epoch moves
+    by one, no reveal audit row is written, and a revocation takes no campaign
+    lock."""
+    s, w = served, served.w
+    overdue = narrowing.startswith("expiry")
+    campaign = _campaign(w)
+    a, b = (_seat(w, campaign, "open", w.players[n]) for n in range(2))
+    session = _session(w, campaign, hours=1, started_ago_h=2) if overdue else _session(w, campaign)
+    x, y = _document(w, campaign), _document(w, campaign)
+    cx, cy = _command(), _command()
+    _write(w, campaign, session.id, x, TableTarget(), command=cx)
+    _write(w, campaign, session.id, y, _parts(a, b), command=cy)
+    epoch, marks, now = _epoch(w, session.id), len(s.db.units), _now()
+
+    reasons = {
+        "end": EndReason.GM_END,
+        "rotate": EndReason.LINK_ROTATED,
+        "archive_step_one": EndReason.CAMPAIGN_ARCHIVED,
+        "archive_step_two": EndReason.CAMPAIGN_ARCHIVED,
+        "narrow_by_default": EndReason.NARROWED,
+    }
+    if narrowing == "end" or narrowing == "expiry_found_by_end":
+        s.lifecycle.end(w.owner, campaign, session.id, now=now)
+    elif narrowing == "expiry_by_the_job":
+        s.lifecycle.expire(campaign, session.id, now=now)
+    elif narrowing == "expiry_finalised_by_start":
+        s.lifecycle.start(w.owner, campaign, command_id=_command(), now=now)
+    elif narrowing == "rotate":
+        s.lifecycle.rotate(w.owner, campaign, session.id, command_id=_command(), now=now)
+    elif narrowing == "remove":
+        remove_seat(s.db, s.stores, s.jobs, campaign_id=campaign, participant_id=a, owner_id=w.owner, now=now)
+    elif narrowing == "archive_step_one":
+        archive_step_one(s.db, s.stores, campaign_id=campaign, owner_id=w.owner, now=now)
+    elif narrowing == "archive_step_two":
+        archive_step_two(s.db, s.stores, campaign_id=campaign, owner_id=w.owner, now=now)
+    else:
+        with s.db.transaction() as unit:
+            w.sessions.narrow(unit, campaign, session.id)
+
+    table, copies = _by_command(w, session.id, cx), _by_command(w, session.id, cy)
+    if narrowing == "remove":
+        assert _shown(w, session.id) == {None: table.id, a: None, b: copies.id}, "that member's copy, and only it"
+        assert _seqs(w, session.id) == {None: 1, a: 2, b: 1}
+        assert table.is_live and copies.is_live, "the disclosure stays live while any copy remains"
+    else:
+        reason = EndReason.EXPIRED if overdue else reasons[narrowing]
+        assert _shown(w, session.id) == {None: None, a: None, b: None}
+        assert _seqs(w, session.id) == {None: 2, a: 2, b: 2}
+        assert (table.ended_reason, copies.ended_reason) == (reason, reason)
+        if narrowing != "narrow_by_default":
+            assert table.ended_at == copies.ended_at == now, "the request's clock, not a second reading"
+    assert _epoch(w, session.id) == epoch + 1
+    assert _reveal_rows(s, campaign) == [], "a narrowing writes its own row, never a reveal row"
+    if narrowing == "expiry_finalised_by_start":
+        assert s.db.units[marks].campaign_locks == [], "Start's finalising transaction takes no campaign lock"
+    elif narrowing != "archive_step_two":
+        assert s.db.locks(marks) == [], "a revocation never asks for the campaign lock"
+
+
+def test_the_scopes_later_beads_will_use(served: Served) -> None:
+    """T-B12 (ID-5). Document archive, delete and unlink will each narrow with
+    `DocumentCopies` — every copy of that document, table or member, and
+    nothing else; switching table audio off will narrow with `NoSlot`, which
+    advances the epoch (and the audio epoch when asked) and clears nothing."""
+    w = served.w
+    campaign, session, (a, b) = _stage(w, seats=2)
+    x, y = _document(w, campaign), _document(w, campaign)
+    cy = _command()
+    _write(w, campaign, session.id, y, _parts(a, b), command=cy)
+
+    def narrow(scope: Any, *, audio: bool = False) -> TableSession:
+        with w.db.transaction() as unit:
+            narrowed = w.sessions.narrow(unit, campaign, session.id, clears=scope, audio=audio, now=_now())
+        assert narrowed is not None
+        return narrowed
+
+    for reason in (EndReason.DOCUMENT_ARCHIVED, EndReason.DOCUMENT_DELETED, EndReason.CHARACTER_UNLINKED):
+        command = _command()
+        _write(w, campaign, session.id, x, TableTarget(), command=command)
+        seqs = _seqs(w, session.id)
+        narrow(DocumentCopies(x, reason))
+        assert _by_command(w, session.id, command).ended_reason == reason
+        assert _seqs(w, session.id) == {**seqs, None: seqs[None] + 1}, "the other document's copies untouched"
+        assert _by_command(w, session.id, cy).is_live
+
+    narrow(DocumentCopies(y, EndReason.DOCUMENT_ARCHIVED))
+    assert _shown(w, session.id) == {None: None, a: None, b: None}
+    assert _by_command(w, session.id, cy).ended_reason == EndReason.DOCUMENT_ARCHIVED
+
+    _write(w, campaign, session.id, x, TableTarget())
+    seqs, shown, before = _seqs(w, session.id), _shown(w, session.id), _session_row(w, session.id)
+    after = narrow(NoSlot(), audio=True)
+    assert (_seqs(w, session.id), _shown(w, session.id)) == (seqs, shown), "NoSlot clears no reveal slot"
+    assert (after.reveal_epoch, after.audio_epoch) == (before.reveal_epoch + 1, before.audio_epoch + 1)
+
+
+def _session_row(w: World, session: str) -> TableSession:
+    with w.db.transaction() as unit:
+        found = w.sessions.get(unit, session)
+    assert found is not None
+    return found
+
+
+# ── T-B13: the audit rows ────────────────────────────────────────────────────
+
+
+def test_the_confirm_audit_rows(served: Served) -> None:
+    """T-B13 (ED-18(a), SEC-38, RD-1, critic 3 and 12). Exactly the declared
+    fields, by value: a display; an update is one row; a move is a stop of every
+    old copy then a display; a replacement names the copies it took; a Stop-all
+    of three disclosures is three rows of one command and one epoch; a Stop that
+    took nothing is one row naming its document (or none for a Stop-all); and an
+    End or a Remove writes no reveal row."""
+    s, w = served, served.w
+    campaign, session, (a, b, c) = _stage(w)
+    x, y, z = (_document(w, campaign) for _ in range(3))
+    owner, sid = str(w.owner), session.id
+
+    def detail(command: str, document: str | None, epoch: int, *, audience: str | None = "table",
+               mask: list[str] | None = None, pids: list[str] | None = None, version: int | None = 1) -> dict[str, Any]:
+        return {
+            "session_id": sid,
+            "command_id": command,
+            "document_id": document,
+            "version": version,
+            "mask": ["name"] if mask is None and audience is not None else mask,
+            "audience": audience,
+            "participant_ids": pids,
+            "reveal_epoch": epoch,
+        }
+
+    def rows_since(n: int) -> list[tuple[Any, ...]]:
+        return [
+            (str(e.action), e.reason_code, dict(e.detail))
+            for e in _reveal_rows(s, campaign)[n:]
+        ]
+
+    cx = _command()
+    _confirm(s, campaign, sid, x, mask=("voice", "name"), command=cx)
+    [row] = _reveal_rows(s, campaign)
+    assert (row.actor_kind, row.actor_ref, row.object_kind, row.object_ref, row.decision, row.authz_revision) == (
+        "gm",
+        owner,
+        "table_session",
+        sid,
+        "allowed",
+        None,
+    )
+    assert rows_since(0) == [("reveal.displayed", None, detail(cx, x, 1, mask=["name", "voice"]))]
+
+    cu = _command()
+    _confirm(s, campaign, sid, x, command=cu)
+    assert rows_since(1) == [("reveal.updated", None, detail(cu, x, 2))], "an update is exactly one row"
+
+    cy = _command()
+    _confirm(s, campaign, sid, y, ParticipantsAudience(frozenset({a, b})), command=cy)
+    assert rows_since(2) == [
+        ("reveal.displayed", None, detail(cy, y, 3, audience="participant", pids=sorted([a, b])))
+    ]
+
+    cm = _command()
+    _confirm(s, campaign, sid, y, ParticipantsAudience(frozenset({b, c})), command=cm)
+    assert rows_since(3) == [
+        ("reveal.stopped", "moved", detail(cm, y, 4, audience="participant", pids=sorted([a, b]))),
+        ("reveal.displayed", None, detail(cm, y, 4, audience="participant", pids=sorted([b, c]))),
+    ], "a move stops every old copy, those kept included, then displays"
+
+    cr = _command()
+    _confirm(s, campaign, sid, z, ParticipantsAudience(frozenset({c})), command=cr)
+    assert rows_since(5) == [
+        ("reveal.stopped", "replaced", detail(cr, y, 5, audience="participant", pids=[c])),
+        ("reveal.displayed", None, detail(cr, z, 5, audience="participant", pids=[c])),
+    ]
+
+    cs = _command()
+    _stop(s, campaign, StopAll(), command=cs)
+    stops = rows_since(7)
+    assert len(stops) == 3, "one row per disclosure a Stop-all took copies from"
+    assert {(action, reason, d["command_id"], d["reveal_epoch"]) for action, reason, d in stops} == {
+        ("reveal.stopped", "stop_all", cs, 6)
+    }
+    assert sorted(d["document_id"] for _, _, d in stops) == sorted([x, y, z])
+
+    cn, ca = _command(), _command()
+    _stop(s, campaign, StopDocument(x), command=cn)
+    _stop(s, campaign, StopAll(), command=ca)
+    assert rows_since(10) == [
+        ("reveal.stopped", "gm_stop", detail(cn, x, 7, audience=None, version=None)),
+        ("reveal.stopped", "stop_all", detail(ca, None, 8, audience=None, version=None)),
+    ]
+
+    _confirm(s, campaign, sid, x, ParticipantsAudience(frozenset({a})))
+    remove_seat(s.db, s.stores, s.jobs, campaign_id=campaign, participant_id=a, owner_id=w.owner, now=_now())
+    _confirm(s, campaign, sid, y)
+    s.lifecycle.end(w.owner, campaign, sid, now=_now())
+    assert [action for action, _, _ in rows_since(12)] == ["reveal.displayed", "reveal.displayed"], (
+        "neither the Remove nor the End wrote a reveal row"
+    )
+
+
+# ── T-B15, T-B17, T-B19, T-B20 ───────────────────────────────────────────────
+
+
+def test_the_reconciliation_clears_only_stale_copies(served: Served) -> None:
+    """T-B15 (ID-19, RC-6). A live display left in a dead session and a copy
+    left for a seat removed without a narrowing are cleared as `reconciled`; a
+    valid copy is untouched; the revision advances once and each session
+    narrowed advances its epoch once. A campaign that has gone is a no-op."""
+    s, w = served, served.w
+    campaign = _campaign(w)
+    a, b = (_seat(w, campaign, "open", w.players[n]) for n in range(2))
+    z, x, y = (_document(w, campaign) for _ in range(3))
+    dead, cz = _left_live_in_a_dead_session(w, campaign, z)
+    live = _session(w, campaign)
+    cx, cy = _command(), _command()
+    _write(w, campaign, live.id, x, _parts(a, b), command=cx)
+    _write(w, campaign, live.id, y, TableTarget(), command=cy)
+    with w.db.transaction() as unit:
+        w.participants.remove(unit, campaign, a)
+    revision, dead_epoch, live_epoch = _revision(w, campaign), _epoch(w, dead.id), _epoch(w, live.id)
+    now = _now()
+    fill = make_reconcile_slots(w.sessions, w.reveals, clock=lambda: now)
+
+    assert reconcile(s.db, campaign, slots=fill) is True
+    assert _shown(w, dead.id) == {None: None}
+    assert _by_command(w, dead.id, cz).ended_reason == EndReason.RECONCILED
+    assert _shown(w, live.id) == {None: _by_command(w, live.id, cy).id, a: None, b: _by_command(w, live.id, cx).id}
+    assert _by_command(w, live.id, cx).is_live and _by_command(w, live.id, cy).is_live
+    assert (_revision(w, campaign), _epoch(w, dead.id), _epoch(w, live.id)) == (
+        revision + 1,
+        dead_epoch + 1,
+        live_epoch + 1,
+    )
+
+    assert reconcile(s.db, campaign, slots=fill) is True
+    assert (_epoch(w, dead.id), _epoch(w, live.id)) == (dead_epoch + 1, live_epoch + 1), "nothing stale is left"
+    assert reconcile(s.db, "cmp_" + "z" * 22, slots=fill) is False
+
+
+def test_a_stale_live_disclosure_in_a_dead_session_is_ended_by_the_next_confirm(served: Served) -> None:
+    """T-B17 (ID-15, critic 3). The Confirm ends the display left behind as
+    `reconciled`, rather than tripping the one-live index, and is audited as
+    one `reveal.displayed` — a reconciliation is not a GM's stop."""
+    s, w = served, served.w
+    campaign = _campaign(w)
+    document = _document(w, campaign)
+    dead, left = _left_live_in_a_dead_session(w, campaign, document)
+    session = _session(w, campaign)
+    _confirm(s, campaign, session.id, document)
+    assert _by_command(w, dead.id, left).ended_reason == EndReason.RECONCILED
+    assert _shown(w, dead.id) == {None: None}
+    assert [str(e.action) for e in _reveal_rows(s, campaign)] == ["reveal.displayed"]
+
+
+def test_a_confirm_after_the_campaign_is_archived_is_a_conflict(served: Served) -> None:
+    """T-B19 (critic 1, RQ-4, RC-2). Archive narrows the live session and does
+    not end it, so a Confirm carrying the fresh epoch passes every earlier
+    step; under the row it finds the campaign archived and is refused, having
+    written nothing."""
+    s, w = served, served.w
+    campaign, session, _ = _stage(w, seats=0)
+    document = _document(w, campaign)
+    archive(s.db, s.stores, campaign_id=campaign, owner_id=w.owner, now=_now())
+    before = _state(s, campaign, session.id)
+    with pytest.raises(RevealConflict):
+        _confirm(s, campaign, session.id, document)
+    assert _state(s, campaign, session.id) == before
+
+
+def test_document_writes_display_nothing(served: Served) -> None:
+    """T-B20 (X-2, REVEAL-4, critic 11). Creating, editing, sealing and
+    restoring a document while a session is live write no reveal row and move
+    no epoch: only a GM's Confirm displays anything."""
+    w = served.w
+    campaign, session, _ = _stage(w, seats=0)
+    epoch = _epoch(w, session.id)
+    with w.db.transaction() as unit:
+        made = w.documents.create(
+            unit, campaign, doc_type=DocumentTypeId.NPC, type_version=1, data=dict(AN_NPC), author=Author.GM
+        )
+    with w.db.transaction() as unit:
+        w.documents.write_fields(
+            unit, campaign, made.id, fields={"voice": "hoarse"}, author=Author.GM, base_write_revision=None
+        )
+    with w.db.transaction() as unit:
+        w.documents.seal(unit, campaign, made.id)
+    with w.db.transaction() as unit:
+        w.documents.restore(unit, campaign, made.id, version_number=1)
+    assert (_slots(w, session.id), _live(w, session.id), _epoch(w, session.id)) == ({}, [], epoch)
+
+
+# ══ PR-B: PostgreSQL races ═══════════════════════════════════════════════════
+
+#: A database whose waits outlast the races below: the campaign lock's wait is
+#: bounded at the maximum `CampaignLockSettings` allows, and a transaction at
+#: thirty seconds.
+PATIENT_LOCKS = CampaignLockSettings(lock_timeout_s=4, transaction_timeout_s=30)
+
+
+def _patient(target: str | None) -> Database:
+    assert target is not None
+    return Database(target, PoolSettings(sync_max=4, async_max=0, acquire_timeout_s=10), PATIENT_LOCKS)
+
+
+class _Paused:
+    """A database whose transactions do their work and then hold everything they
+    locked until released — the first of two racers, so that the second can be
+    shown waiting on it (or not)."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+        self.holding = threading.Event()
+        self.release = threading.Event()
+
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        with self._db.transaction() as unit:
+            yield unit
+            self.holding.set()
+            assert self.release.wait(PATIENCE), "the paused transaction was never released"
+
+
+def _race(
+    dsn: str | None, paused: _Paused, first: Callable[[], object], second: Callable[[], object]
+) -> tuple[object, object]:
+    """`first` over the paused database, then `second` while it holds: the
+    server must show `second` waiting; then `first` commits and both finish."""
+    assert dsn is not None
+    one, first_out = _in_background(first)
+    assert paused.holding.wait(PATIENCE), first_out
+    two, second_out = _in_background(second)
+    try:
+        assert _someone_waits_on_a_lock(dsn), "the second racer never waited"
+    finally:
+        paused.release.set()
+        one.join(PATIENCE)
+        two.join(PATIENCE)
+    assert first_out and second_out, "a racer did not finish"
+    return first_out[0], second_out[0]
+
+
+def _alongside(paused: _Paused, first: Callable[[], object], second: Callable[[], object]) -> tuple[object, object]:
+    """`first` holds; `second` must finish while it still holds."""
+    one, first_out = _in_background(first)
+    assert paused.holding.wait(PATIENCE), first_out
+    try:
+        two, second_out = _in_background(second)
+        two.join(8)
+        assert not two.is_alive() and second_out, "the second racer waited for the first"
+    finally:
+        paused.release.set()
+        one.join(PATIENCE)
+    assert first_out
+    return first_out[0], second_out[0]
+
+
+def _deadlocks(dsn: str | None) -> int:
+    assert dsn is not None
+    with connect(dsn) as conn:
+        conn.execute("SELECT pg_stat_force_next_flush()")
+        return int(
+            conn.execute("SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()").fetchone()[0]
+        )
+
+
+def _waiters(dsn: str | None) -> int:
+    assert dsn is not None
+    with connect(dsn) as conn:
+        return int(
+            conn.execute(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            ).fetchone()[0]
+        )
+
+
+@needs_db
+def test_two_confirms_at_one_epoch_make_one_display(pgs: Served) -> None:
+    """T-C1 (RC-4). Two Confirms composed at one epoch, to different audiences:
+    the second waits on the session row, then finds the epoch moved and is a
+    conflict. One disclosure, one `reveal.displayed`, the epoch +1."""
+    s, w = pgs, pgs.w
+    campaign, session, (a,) = _stage(w, seats=1)
+    x, y = _document(w, campaign), _document(w, campaign)
+    epoch, deadlocks = _epoch(w, session.id), _deadlocks(w.dsn)
+    paused = _Paused(w.db)
+    first, second = s.over(paused), s.over(_patient(w.dsn))
+    one, two = _race(
+        w.dsn,
+        paused,
+        lambda: _confirm(s, campaign, session.id, x, epoch=epoch, reveals=first),
+        lambda: _confirm(s, campaign, session.id, y, ParticipantsAudience(frozenset({a})), epoch=epoch, reveals=second),
+    )
+    assert isinstance(one, Displayed) and isinstance(two, RevealConflict)
+    assert [d.document_id for d in _live(w, session.id)] == [x] and _epoch(w, session.id) == epoch + 1
+    assert [str(e.action) for e in _reveal_rows(s, campaign)] == ["reveal.displayed"]
+    assert _deadlocks(w.dsn) == deadlocks
+
+
+@needs_db
+@pytest.mark.parametrize("order", ["stop_first", "confirm_first"])
+def test_a_confirm_and_a_stop_resolve_in_either_order(pgs: Served, order: str) -> None:
+    """T-C2 (RC-1, REVEAL-22). A Stop that commits first makes the waiting
+    Confirm a conflict, because it advanced the epoch; a Confirm that commits
+    first is cleared by the Stop that waited for it."""
+    s, w = pgs, pgs.w
+    campaign, session, _ = _stage(w, seats=0)
+    x, y = _document(w, campaign), _document(w, campaign)
+    _confirm(s, campaign, session.id, x)
+    epoch = _epoch(w, session.id)
+    paused = _Paused(w.db)
+    held, waiting = s.over(paused), s.over(_patient(w.dsn))
+    if order == "stop_first":
+        one, two = _race(
+            w.dsn,
+            paused,
+            lambda: _stop(s, campaign, StopAll(), reveals=held),
+            lambda: _confirm(s, campaign, session.id, y, epoch=epoch, reveals=waiting),
+        )
+        assert isinstance(one, RevealPicture) and isinstance(two, RevealConflict)
+        assert _live(w, session.id) == [] and _epoch(w, session.id) == epoch + 1
+    else:
+        command = _command()
+        one, two = _race(
+            w.dsn,
+            paused,
+            lambda: _confirm(s, campaign, session.id, y, epoch=epoch, command=command, reveals=held),
+            lambda: _stop(s, campaign, StopAll(), reveals=waiting),
+        )
+        assert isinstance(one, Displayed) and isinstance(two, RevealPicture)
+        assert _by_command(w, session.id, command).ended_reason == EndReason.STOP_ALL
+        assert _live(w, session.id) == [] and _epoch(w, session.id) == epoch + 2
+
+
+@needs_db
+def test_two_confirms_with_one_command_id_write_once(pgs: Served) -> None:
+    """T-C3 (ID-10, the *Idempotency* row). The second of two Confirms with one
+    command id waits, then finds the first's disclosure under the row and
+    replays it — never a conflict, never an integrity error."""
+    s, w = pgs, pgs.w
+    campaign, session, _ = _stage(w, seats=0)
+    x = _document(w, campaign)
+    epoch, command = _epoch(w, session.id), _command()
+    paused = _Paused(w.db)
+    one, two = _race(
+        w.dsn,
+        paused,
+        lambda: _confirm(s, campaign, session.id, x, epoch=epoch, command=command, reveals=s.over(paused)),
+        lambda: _confirm(s, campaign, session.id, x, epoch=epoch, command=command, reveals=s.over(_patient(w.dsn))),
+    )
+    assert isinstance(one, Displayed) and not one.replayed
+    assert isinstance(two, Displayed) and two.replayed
+    assert len(_live(w, session.id)) == 1 and len(_reveal_rows(s, campaign)) == 1
+
+
+@needs_db
+@pytest.mark.parametrize("narrowing", ["end", "rotate"])
+@pytest.mark.parametrize("order", ["narrowing_first", "confirm_first"])
+def test_a_confirm_and_an_end_or_a_rotate_resolve_in_either_order(pgs: Served, narrowing: str, order: str) -> None:
+    """T-C4 (RC-5). An End or a Rotate that commits first makes the waiting
+    Confirm a conflict; a Confirm that commits first is cleared by the End
+    (`gm_end`) or the Rotate (`link_rotated`) that waited for it."""
+    s, w = pgs, pgs.w
+    campaign, session, _ = _stage(w, seats=0)
+    x = _document(w, campaign)
+    epoch, command = _epoch(w, session.id), _command()
+    paused = _Paused(w.db)
+
+    def narrow(db: Any) -> Callable[[], object]:
+        lifecycle = s.lifecycle_over(db)
+        if narrowing == "end":
+            return lambda: lifecycle.end(w.owner, campaign, session.id)
+        return lambda: lifecycle.rotate(w.owner, campaign, session.id, command_id=_command())
+
+    if order == "narrowing_first":
+        _, two = _race(
+            w.dsn,
+            paused,
+            narrow(paused),
+            lambda: _confirm(s, campaign, session.id, x, epoch=epoch, reveals=s.over(_patient(w.dsn))),
+        )
+        assert isinstance(two, RevealConflict) and _slots(w, session.id) == {}
+    else:
+        one, _ = _race(
+            w.dsn,
+            paused,
+            lambda: _confirm(s, campaign, session.id, x, epoch=epoch, command=command, reveals=s.over(paused)),
+            narrow(_patient(w.dsn)),
+        )
+        assert isinstance(one, Displayed)
+        reason = EndReason.GM_END if narrowing == "end" else EndReason.LINK_ROTATED
+        assert _by_command(w, session.id, command).ended_reason == reason
+        assert _shown(w, session.id) == {None: None}
+
+
+@needs_db
+@pytest.mark.parametrize("order", ["remove_first", "confirm_first"])
+def test_a_confirm_to_a_member_and_their_removal_never_deadlock(pgs: Served, order: str) -> None:
+    """T-C5 (RC-14, critic 10). With no retry to hide one, a Confirm to Ana and
+    Ben and Ana's removal never deadlock (the server's own count agrees). A
+    Remove first makes the Confirm a conflict; a Confirm first loses Ana's copy
+    to the Remove and keeps Ben's."""
+    s, w = pgs, pgs.w
+    campaign, session, (ana, ben) = _stage(w, seats=2)
+    x = _document(w, campaign)
+    epoch, command, deadlocks = _epoch(w, session.id), _command(), _deadlocks(w.dsn)
+    paused = _Paused(w.db)
+    both = ParticipantsAudience(frozenset({ana, ben}))
+
+    def remove(db: Any) -> Callable[[], object]:
+        return lambda: remove_seat(
+            db, s.stores, s.jobs, campaign_id=campaign, participant_id=ana, owner_id=w.owner, now=_now()
+        )
+
+    if order == "remove_first":
+        _, two = _race(
+            w.dsn,
+            paused,
+            remove(paused),
+            lambda: _confirm(s, campaign, session.id, x, both, epoch=epoch, reveals=s.over(_patient(w.dsn))),
+        )
+        assert isinstance(two, RevealConflict) and _live(w, session.id) == []
+    else:
+        one, two = _race(
+            w.dsn,
+            paused,
+            lambda: _confirm(s, campaign, session.id, x, both, epoch=epoch, command=command, reveals=s.over(paused)),
+            remove(_patient(w.dsn)),
+        )
+        assert isinstance(one, Displayed) and not isinstance(two, BaseException)
+        shown = _by_command(w, session.id, command)
+        assert _shown(w, session.id) == {ana: None, ben: shown.id} and shown.is_live
+    assert _deadlocks(w.dsn) == deadlocks
+
+
+@needs_db
+def test_a_stop_never_waits_for_the_campaign_lock(pgs: Served) -> None:
+    """T-C6 (RQ-6, X-3). While another transaction holds the campaign lock
+    exclusively, a Stop completes; a Confirm does not (positive control)."""
+    s, w = pgs, pgs.w
+    campaign, session, _ = _stage(w, seats=0)
+    x, y = _document(w, campaign), _document(w, campaign)
+    _confirm(s, campaign, session.id, x)
+    assert w.dsn is not None
+    with _holding(w.dsn, "SELECT 1 FROM campaign.authz_state WHERE campaign_id = %s FOR UPDATE", (campaign,)):
+        started = time.monotonic()
+        assert _stop(s, campaign, StopAll()) is not None
+        assert time.monotonic() - started < 1.0 and _live(w, session.id) == []
+        with pytest.raises(RevealBusy):
+            _confirm(s, campaign, session.id, y)
+
+
+@needs_db
+def test_a_confirm_waits_for_the_reconciliation_and_is_busy_when_it_waits_too_long(pgs: Served) -> None:
+    """T-C7 (RQ-4). A Confirm waits for a reconciliation holding the campaign
+    lock exclusively, then proceeds; with the short bound it is `RevealBusy`
+    and writes nothing."""
+    s, w = pgs, pgs.w
+    campaign, session, _ = _stage(w, seats=0)
+    x = _document(w, campaign)
+    paused = _Paused(w.db)
+    fill = make_reconcile_slots(w.sessions, w.reveals, clock=_now)
+    _, two = _race(
+        w.dsn,
+        paused,
+        lambda: reconcile(paused, campaign, slots=fill),
+        lambda: _confirm(s, campaign, session.id, x, reveals=s.over(_patient(w.dsn))),
+    )
+    assert isinstance(two, Displayed)
+
+    y = _document(w, campaign)
+    before = _state(s, campaign, session.id)
+    assert w.dsn is not None
+    with _holding(w.dsn, "SELECT 1 FROM campaign.authz_state WHERE campaign_id = %s FOR UPDATE", (campaign,)):
+        with pytest.raises(RevealBusy):
+            _confirm(s, campaign, session.id, y)
+    assert _state(s, campaign, session.id) == before
+
+
+@needs_db
+def test_a_stranger_waits_for_nothing(pgs: Served) -> None:
+    """T-C8 (SEC-2, the lock-before-ownership pitfall). While a third
+    connection holds the campaign lock exclusively and the session row, a
+    stranger's Confirm and Stop are each the one not-found answer at once, and
+    nobody waits; the owner's Confirm does wait (positive control)."""
+    s, w = pgs, pgs.w
+    campaign, session, _ = _stage(w, seats=0)
+    x = _document(w, campaign)
+    assert w.dsn is not None
+    both = (
+        "WITH a AS (SELECT campaign_id FROM campaign.authz_state WHERE campaign_id = %s FOR UPDATE), "
+        "t AS (SELECT id FROM campaign.table_sessions WHERE id = %s FOR NO KEY UPDATE) "
+        "SELECT (SELECT count(*) FROM a), (SELECT count(*) FROM t)"
+    )
+    with _holding(w.dsn, both, (campaign, session.id)):
+        for stranger in (
+            lambda: _confirm(s, campaign, session.id, x, owner=w.other_owner),
+            lambda: _stop(s, campaign, StopAll(), owner=w.other_owner),
+        ):
+            started = time.monotonic()
+            with pytest.raises(RevealNotFound):
+                stranger()
+            assert time.monotonic() - started < 1.0 and _waiters(w.dsn) == 0
+        owner, answer = _in_background(lambda: _confirm(s, campaign, session.id, x, reveals=s.over(_patient(w.dsn))))
+        assert _someone_waits_on_a_lock(w.dsn), "positive control: the owner's Confirm waits"
+    owner.join(PATIENCE)
+    assert answer and isinstance(answer[0], Displayed)
+
+
+@needs_db
+def test_a_confirm_and_a_document_write_never_wait_for_each_other(pgs: Served) -> None:
+    """T-C9 (RQ-3). A Confirm pinning the sealed version while a write updates
+    and seals the next: the Confirm's key-share checks and the write's
+    no-key-update locks do not conflict, in either order, and the Confirm pins
+    the version it named. Positive control: a real `FOR UPDATE` on the document
+    row does make a Confirm wait."""
+    s, w = pgs, pgs.w
+    campaign, session, _ = _stage(w, seats=0)
+    x = _document(w, campaign)
+
+    def write(db: Any) -> Callable[[], object]:
+        def run() -> object:
+            with db.transaction() as unit:
+                w.documents.write_fields(
+                    unit,
+                    campaign,
+                    x,
+                    fields={"voice": secrets.token_hex(4)},
+                    author=Author.GM,
+                    base_write_revision=None,
+                )
+                return w.documents.seal(unit, campaign, x)
+
+        return run
+
+    paused = _Paused(w.db)
+    _, shown = _alongside(paused, write(paused), lambda: _confirm(s, campaign, session.id, x, version=1))
+    assert isinstance(shown, Displayed) and _entry(shown.picture, None).live.version == 1
+
+    paused = _Paused(w.db)
+    confirmed, written = _alongside(
+        paused, lambda: _confirm(s, campaign, session.id, x, version=1, reveals=s.over(paused)), write(w.db)
+    )
+    assert isinstance(confirmed, Displayed) and not isinstance(written, BaseException)
+
+    assert w.dsn is not None
+    with _holding(w.dsn, "SELECT 1 FROM campaign.documents WHERE id = %s FOR UPDATE", (x,)):
+        waiter, answer = _in_background(lambda: _confirm(s, campaign, session.id, x, reveals=s.over(_patient(w.dsn))))
+        assert _someone_waits_on_a_lock(w.dsn)
+    waiter.join(PATIENCE)
+    assert answer and isinstance(answer[0], Displayed)
+
+
+@needs_db
+def test_a_confirm_and_a_screen_mint_never_wait_for_each_other(pgs: Served) -> None:
+    """T-C10 (RQ-3). A mint's foreign-key check takes key-share on the session
+    row, which a Confirm's no-key-update hold does not conflict with, in either
+    order. Positive control: a `FOR UPDATE` on the session row makes a mint
+    wait."""
+    s, w = pgs, pgs.w
+    campaign, session, _ = _stage(w, seats=0)
+    x, y = _document(w, campaign), _document(w, campaign)
+
+    def mint(db: Any) -> Callable[[], object]:
+        def run() -> object:
+            with db.transaction() as unit:
+                return w.sessions.mint_screen(unit, campaign, session.id, owner_id=w.owner)
+
+        return run
+
+    paused = _Paused(w.db)
+    _, shown = _alongside(paused, mint(paused), lambda: _confirm(s, campaign, session.id, x))
+    assert isinstance(shown, Displayed)
+
+    paused = _Paused(w.db)
+    confirmed, minted = _alongside(
+        paused, lambda: _confirm(s, campaign, session.id, y, reveals=s.over(paused)), mint(w.db)
+    )
+    assert isinstance(confirmed, Displayed) and isinstance(minted, tuple)
+
+    assert w.dsn is not None
+    with _holding(w.dsn, "SELECT 1 FROM campaign.table_sessions WHERE id = %s FOR UPDATE", (session.id,)):
+        waiter, answer = _in_background(mint(_patient(w.dsn)))
+        assert _someone_waits_on_a_lock(w.dsn)
+    waiter.join(PATIENCE)
+    assert answer and isinstance(answer[0], tuple)
+
+
+@needs_db
+@pytest.mark.parametrize("pair", ["stop_stop", "stop_remove", "remove_stop"])
+def test_two_narrowings_both_succeed_and_each_advances_the_epoch_once(pgs: Served, pair: str) -> None:
+    """T-C11. Two Stops, or a Stop and a Remove, in either order: both succeed,
+    no deadlock (the server's count agrees), the epoch moves by exactly two,
+    and the second finds nothing left to clear."""
+    s, w = pgs, pgs.w
+    campaign, session, (a, b) = _stage(w, seats=2)
+    x = _document(w, campaign)
+    _confirm(s, campaign, session.id, x, ParticipantsAudience(frozenset({a, b})))
+    epoch, rows, deadlocks = _epoch(w, session.id), len(_reveal_rows(s, campaign)), _deadlocks(w.dsn)
+    paused, patient = _Paused(w.db), _patient(w.dsn)
+
+    def stop(db: Any) -> Callable[[], object]:
+        return lambda: _stop(s, campaign, StopAll(), reveals=s.over(db))
+
+    def remove(db: Any) -> Callable[[], object]:
+        return lambda: remove_seat(
+            db, s.stores, s.jobs, campaign_id=campaign, participant_id=a, owner_id=w.owner, now=_now()
+        )
+
+    first, second = {"stop_stop": (stop, stop), "stop_remove": (stop, remove), "remove_stop": (remove, stop)}[pair]
+    one, two = _race(w.dsn, paused, first(paused), second(patient))
+    assert not isinstance(one, BaseException) and not isinstance(two, BaseException)
+    assert _epoch(w, session.id) == epoch + 2 and _live(w, session.id) == []
+    added = [dict(e.detail) for e in _reveal_rows(s, campaign)[rows:]]
+    if pair == "stop_stop":
+        assert [d["document_id"] for d in added] == [x, None], "the second Stop found nothing left to clear"
+    elif pair == "stop_remove":
+        assert [d["participant_ids"] for d in added] == [sorted([a, b])]
+    else:
+        assert [d["participant_ids"] for d in added] == [[b]], "the Stop took only what the Remove left"
+    assert _deadlocks(w.dsn) == deadlocks
+
+
+@needs_db
+def test_an_archive_waits_for_a_confirm_and_then_clears_it(pgs: Served) -> None:
+    """T-C12 (critic 1, RC-2's campaign half). (a) A Confirm holding the share
+    lock makes archive step 2 wait; the Confirm commits, and step 2's scan
+    clears its copy as `campaign_archived`. (b) A Confirm composed before the
+    archive and sent after it is a conflict."""
+    s, w = pgs, pgs.w
+    campaign, session, _ = _stage(w, seats=0)
+    x, y = _document(w, campaign), _document(w, campaign)
+    command = _command()
+    paused = _Paused(w.db)
+    patient_stores = s.stores
+    one, two = _race(
+        w.dsn,
+        paused,
+        lambda: _confirm(s, campaign, session.id, x, command=command, reveals=s.over(paused)),
+        lambda: archive_step_two(
+            _patient(w.dsn), patient_stores, campaign_id=campaign, owner_id=w.owner, now=_now()
+        ),
+    )
+    assert isinstance(one, Displayed) and not isinstance(two, BaseException)
+    assert _by_command(w, session.id, command).ended_reason == EndReason.CAMPAIGN_ARCHIVED
+
+    s.lifecycle.end(w.owner, campaign, session.id)
+    campaign, session, _ = _stage(w, seats=0)
+    y = _document(w, campaign)
+    composed = _epoch(w, session.id)
+    archive(s.db, s.stores, campaign_id=campaign, owner_id=w.owner, now=_now())
+    with pytest.raises(RevealConflict):
+        _confirm(s, campaign, session.id, y, epoch=composed)
+
