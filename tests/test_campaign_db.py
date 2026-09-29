@@ -84,7 +84,7 @@ from service.db import (
     PoolSettings,
     TwinWouldBlock,
 )
-from service.jobs import InMemoryJobQueue, Job, JobContext, PostgresJobQueue
+from service.jobs import InMemoryJobQueue, Job, JobContext, JobRunner, PostgresJobQueue
 from service.participant_store import (
     InMemoryParticipantStore,
     Participant,
@@ -4355,6 +4355,60 @@ def test_end_and_rotate_complete_while_the_campaign_lock_is_held(
             assert time.monotonic() - began < PATIENCE / 3, "they waited for the holders"
     assert rotated.session.link_generation == 2 and ended.session.state == "ended"
     assert len(rotated.reconcile_jobs) == len(ended.reconcile_jobs) == 1
+
+
+def _authz_revision(dsn: str) -> int:
+    return int(
+        _scalar(dsn, "SELECT authz_revision FROM campaign.authz_state WHERE campaign_id = %s", (CAMPAIGN,))
+    )
+
+
+@needs_db
+@pytest.mark.parametrize("revocation", ["end", "rotate"])
+@pytest.mark.parametrize("holders", ["exclusive", "two-shared"])
+def test_a_revocations_reconciliation_waits_for_the_campaign_lock_and_runs_once_it_frees(
+    dsn: str, owner: int, holders: str, revocation: str
+) -> None:
+    """RC-8's other half, run by 1kg.2.2's own `campaign.reconcile` handler. End
+    or Rotate commits while the campaign lock is held (exclusively, or by two
+    share holders); the one job it left then waits for that lock — the server
+    shows it waiting — times out, and is kept for a retry with the revision
+    untouched. Once the holders commit, the retry advances the revision exactly
+    once and the job is gone. The holders commit as their blocks end."""
+    db = _database(dsn, PATIENT)
+    service = _pg_lifecycle(db)
+    session = service.start(owner, CAMPAIGN, command_id=_command()).session
+    # The runner's clock runs ahead of `run_after`, so each attempt below can
+    # claim the job without waiting out the retry backoff (1kg.2.2's pattern).
+    clock = [datetime.now(UTC) + timedelta(minutes=1)]
+    runner = JobRunner(
+        PostgresJobQueue(db), {RECONCILE_KIND: handler(db, slots=reconcile_slots)}, clock=lambda: clock[0]
+    )
+    with _a_transaction_holding(db, shared=holders != "exclusive"):
+        with (
+            _a_transaction_holding(db, shared=True)
+            if holders == "two-shared"
+            else nullcontext()
+        ):
+            if revocation == "end":
+                outcome = service.end(owner, CAMPAIGN, session.id)
+            else:
+                outcome = service.rotate(owner, CAMPAIGN, session.id, command_id=_command())
+            [job_id] = outcome.reconcile_jobs
+            revision = _authz_revision(dsn)
+            with _in_a_thread(lambda: runner.run_job(job_id)) as attempts:
+                assert _someone_waits_on_a_lock(dsn), "the reconciliation never waited for the holders"
+            [attempt] = attempts
+            assert not isinstance(attempt, BaseException), attempt
+            assert (attempt.ran, attempt.failed) == (1, 1), "it timed out waiting and is kept for a retry"
+            assert _authz_revision(dsn) == revision, "nothing advanced while the holders held the lock"
+            assert _scalar(dsn, "SELECT attempts FROM app.jobs WHERE id = %s", (job_id,)) == 1
+    clock[0] = clock[0] + timedelta(hours=1)
+    retried = runner.run_job(job_id)
+    assert (retried.ran, retried.failed) == (1, 0), "the retry ran once the holders had committed"
+    assert _authz_revision(dsn) == revision + 1, "the revision advanced exactly once"
+    assert _scalar(dsn, "SELECT count(*) FROM app.jobs WHERE id = %s", (job_id,)) == 0
+    assert _scalar(dsn, "SELECT count(*) FROM app.jobs WHERE kind = %s", (RECONCILE,)) == 0
 
 
 @needs_db
