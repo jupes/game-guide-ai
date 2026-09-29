@@ -78,6 +78,19 @@ class MessageStore(Protocol):
         """`conversation_strategy` plus the catalog revision it was bound under."""
         ...  # pragma: no cover - structural type
 
+    def rebind_conversation_strategy(
+        self, conversation_id: str, *, strategy: str, manual_alias: str | None,
+        catalog_revision: str,
+    ) -> None:
+        """Unconditionally overwrite an existing binding.
+
+        Unlike `claim_conversation_strategy` this is NOT first-writer-wins — it
+        always writes. Used only by the server's own healing of a manual pick
+        the catalog has retired (agent-forge-harness-j9w): the caller already
+        holds the authority to move the conversation off it, never a client
+        request's own (strategy, manual_alias)."""
+        ...  # pragma: no cover - structural type
+
     def has_content(self, conversation_id: str) -> bool:
         ...  # pragma: no cover - structural type
 
@@ -154,6 +167,13 @@ class InMemoryMessageStore:
     ) -> tuple[str, str | None, str | None] | None:
         bound = self._strategies.get(conversation_id)
         return None if bound is None else (*bound, self._revisions.get(conversation_id))
+
+    def rebind_conversation_strategy(
+        self, conversation_id: str, *, strategy: str, manual_alias: str | None,
+        catalog_revision: str,
+    ) -> None:
+        self._strategies[conversation_id] = (strategy, manual_alias)
+        self._revisions[conversation_id] = catalog_revision
 
     def owner_of(self, conversation_id: str) -> int | None:
         return self._owners.get(conversation_id)
@@ -367,6 +387,21 @@ class PostgresMessageStore:
         if row is None or row[0] is None:
             return None
         return (row[0], row[1], row[2])
+
+    def rebind_conversation_strategy(
+        self, conversation_id: str, *, strategy: str, manual_alias: str | None,
+        catalog_revision: str,
+    ) -> None:
+        """Overwrite an existing binding outright — no `WHERE ... IS NULL`
+        gate, because the caller (j9w's retirement heal) is deliberately
+        replacing a binding that already exists."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE chat.conversations "
+                "SET selection_strategy = %s, manual_alias = %s, catalog_revision = %s "
+                "WHERE conversation_id = %s",
+                (strategy, manual_alias, catalog_revision, conversation_id),
+            )
 
     def owner_of(self, conversation_id: str) -> int | None:
         with self._connect() as conn:

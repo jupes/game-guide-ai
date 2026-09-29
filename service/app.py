@@ -60,6 +60,7 @@ from .metrics import (
 from .migrations import MigrationError, Mode, migrate
 from .model_catalog import (
     AUTO_PUBLIC_ENTRY,
+    CATALOG,
     CATALOG_REVISION,
     DEFAULT_ALIAS,
     PRE_D9_CATALOG_REVISION,
@@ -1076,31 +1077,74 @@ def chat(
     # the plan was written), so every request already has a real key to bind
     # against; there's no stateless-single-turn path left to special-case.
     # Before the try for the same reason as ownership (409/422, not 500).
-    # D-9 (au3): the client names a model by its PUBLIC id, never the alias; a
-    # real alias sent here is as unknown as any other string (no oracle), save
-    # on a conversation bound by that alias before D-9 (a6o, _pre_d9_binding).
-    requested = req.model_preference
-    requested_profile = None if requested == "auto" else get_profile_by_public_id(requested)
-    if requested != "auto" and requested_profile is None:
-        requested_profile = _pre_d9_binding(store, conversation_id, requested)
-        if requested_profile is None:
-            raise HTTPException(
-                status_code=422, detail=f"unknown or disabled model: {requested!r}",
-            )
-        requested = public_model_id(requested_profile.alias)
-    strategy: Literal["auto", "manual"] = "auto" if requested == "auto" else "manual"
-    manual_alias = None if requested_profile is None else requested_profile.alias
-    if store is not None:
-        bound_strategy, bound_alias = store.claim_conversation_strategy(
+    #
+    # Retired-binding recovery (agent-forge-harness-j9w): a conversation
+    # already bound to a manual pick the catalog no longer serves (disabled or
+    # removed since) gets ONE defined outcome — rebound to that pick's own
+    # configured successor (`fallback_alias`) if THAT is itself enabled, else
+    # to auto — instead of a 422/409 on every further turn. Keyed only on the
+    # EXISTING binding, never on what this request happens to send, because
+    # the client that bound it (D6's conversation affinity) never resends
+    # anything else: posting the retired id is the model-preference 422
+    # below, and posting anything different is the mismatch 409 below — both
+    # forever, with no recovery, unless the server heals it here.
+    existing_binding = store.conversation_binding(conversation_id) if store is not None else None
+    strategy: Literal["auto", "manual"]
+    manual_alias: str | None
+    requested: str
+    retired_public_id: str | None = None
+    retired_alias = (
+        existing_binding[1]
+        if existing_binding is not None and existing_binding[0] == "manual"
+        and existing_binding[1] is not None
+        # A pre-D-9 (v1) binding to a never-served alias is _pre_d9_binding's
+        # own refusal below (test_legacy_model_preference.py's "any other
+        # pre-D-9 binding" row) — never this healing, which is only for a
+        # D-9-era manual pick that WAS served and has since been retired.
+        and existing_binding[2] != PRE_D9_CATALOG_REVISION
+        and get_profile(existing_binding[1]) is None
+        else None
+    )
+    if retired_alias is not None:
+        assert store is not None  # existing_binding only comes from a real store
+        retired_public_id = public_model_id(retired_alias)
+        successor = CATALOG.get(retired_alias)
+        successor_alias = successor.fallback_alias if successor is not None else None
+        if successor_alias is not None and get_profile(successor_alias) is not None:
+            strategy, manual_alias = "manual", successor_alias
+        else:
+            strategy, manual_alias = "auto", None
+        store.rebind_conversation_strategy(
             conversation_id, strategy=strategy, manual_alias=manual_alias,
             catalog_revision=CATALOG_REVISION,
         )
-        if (bound_strategy, bound_alias) != (strategy, manual_alias):
-            raise HTTPException(
-                status_code=409,
-                detail="this conversation is bound to a different model preference; "
-                       "start a new conversation to change it",
+        requested = public_model_id(manual_alias) if manual_alias is not None else "auto"
+    else:
+        # D-9 (au3): the client names a model by its PUBLIC id, never the alias; a
+        # real alias sent here is as unknown as any other string (no oracle), save
+        # on a conversation bound by that alias before D-9 (a6o, _pre_d9_binding).
+        requested = req.model_preference
+        requested_profile = None if requested == "auto" else get_profile_by_public_id(requested)
+        if requested != "auto" and requested_profile is None:
+            requested_profile = _pre_d9_binding(store, conversation_id, requested)
+            if requested_profile is None:
+                raise HTTPException(
+                    status_code=422, detail=f"unknown or disabled model: {requested!r}",
+                )
+            requested = public_model_id(requested_profile.alias)
+        strategy = "auto" if requested == "auto" else "manual"
+        manual_alias = None if requested_profile is None else requested_profile.alias
+        if store is not None:
+            bound_strategy, bound_alias = store.claim_conversation_strategy(
+                conversation_id, strategy=strategy, manual_alias=manual_alias,
+                catalog_revision=CATALOG_REVISION,
             )
+            if (bound_strategy, bound_alias) != (strategy, manual_alias):
+                raise HTTPException(
+                    status_code=409,
+                    detail="this conversation is bound to a different model preference; "
+                           "start a new conversation to change it",
+                )
     # Effective model resolution: Checkpoint 4 (b8o.4) adds the real per-turn
     # Auto classifier; until then 'auto' resolves to the catalog default and a
     # manual alias resolves to itself (already validated enabled above).
@@ -1112,8 +1156,12 @@ def chat(
     assert get_profile(effective_alias) is not None  # validated above; DEFAULT_ALIAS is always enabled
     # The alias and provider stay server-side (logs, traces and usage records
     # take them from generate.py); the client is told the public id only.
+    # `fallback_from` carries the retired public id ONLY when this turn was
+    # healed above — the one signal a client needs to stop sending it (never
+    # the alias itself, D-9).
     routing = RoutingInfo(
         requested=requested, effective=public_model_id(effective_alias), strategy=strategy,
+        fallback_from=retired_public_id,
     )
 
     # yje.5.1.1: one usage-capture operation per turn, created AFTER every gate
