@@ -663,6 +663,41 @@ names the campaign, so a live grant read under another campaign is the one
 and `version` are GM-side and never reach a table client; `1kg.7.2` builds the
 projection from them with its one builder.
 
+### Who may see what: the decision point and the principals
+
+`1ir.2.2` adds `service/policy.py`, pure functions over facts one snapshot read
+(read in SQL, decide in Python; the loaders, one statement each and no lock,
+follow in its PR-2 and PR-3). **Two functions, never one** (ED-25):
+`eligible_for_audience(facts, document, key, audience)` on identities (the
+table is `None`, else a participant id), first match deciding: a participant
+not active -> no; a key off the type version's allowlist -> no (an orphan row
+is never read); unclassified, gm_only -> no; public -> yes; the table -> no
+(TP-1: public-only); campaign -> yes; `participants`, `characters` (linked
+now), `groups` (a member now) -> by the list, an id that resolves to nothing
+admitting nobody. `ineligible_keys` (all or nothing over the audience) and
+`ineligible_copies` (ED-12's scan) compose it. `entitled(outcome, slot)`
+reads only the principal: every principal reads the table slot, a confirmed
+seat also its own, any other slot is `ABSENT`, exactly an empty table.
+
+`decide_table` follows the threat model's 15.2: a live screen grant decides
+alone (`SCREEN`, or `inactive` for another campaign's); then no account is
+401; then one live, unexpired session; then the owner (`OWNER_VIEWER`, a table
+viewer, never the GM) or one accepted, not-removed seat (`SEATED_AWAITING`, or
+`SEATED_CONFIRMED` once the GM confirmed it). Only a confirmed seat has a
+`scope`, sheets and groups (SEC-50(5)). `decide_gm` answers `GmPrincipal` for
+the owner, else the one `MissingParent`. A broken invariant denies. The
+registry seam is `registry_revealable`, the function `classifiable_keys` uses.
+
+`TablePrincipal` and `GmPrincipal` are **sealed**: built only inside the
+deciders, and `service/tests/test_policy.py` pins who may call them or build
+their facts. A principal is evidence of standing at the moment it was
+resolved; it authorises no content read by itself. A content read re-asserts
+the session, generation, seat, confirmation and grant in the query that reads
+(SEC-41, SEC-16); `participant_id` is never an entitlement, only `entitled()`
+or `scope` is. Consumers: `1kg.7.2` and `1kg.7.5` (table routes, streams),
+`1ir.2.3` (the transaction helper takes a principal, never loose ids),
+`1ir.2.5` (fingerprints over its carried revisions), `1ir.11.1` (the Confirm).
+
 ## Media assets (GM Workbench)
 
 Storage for a GM's images and audio, added by `1kg.8.1.1` (slice a of `1kg.8.1`):
