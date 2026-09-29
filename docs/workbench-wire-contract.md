@@ -145,8 +145,9 @@ a generic failure.
 | `seat_not_accepted` | 409 | no | a confirmation of a seat nobody has accepted (`1kg.2.2`) |
 | `seat_cap_reached` | 409 | no | the 41st live seat of a campaign (`1kg.2.2`, SEC-50(3)) |
 | `campaign_archived` | 409 | no | a seat added to, or an offer made in, an archived campaign (`1kg.2.2`) |
-| `reauth_failed` | 403 | no | a Remove whose password did not check out (`1kg.2.2`, SEC-40). A 403, never a 401, because the client signs out on any 401; it names no resource |
+| `reauth_failed` | 403 | no | a Remove, or a document delete, whose password did not check out (`1kg.2.2`, `1kg.5.2`, SEC-40). A 403, never a 401, because the client signs out on any 401; it names no resource |
 | `document_unsupported` | 409 | no | a stored document this build cannot read, or cannot write over: an unknown stored type, a stored type version this build does not write, stored data that is not an object or fails the tolerant read, or — for a patch or a restore — a stored key or sub-key this build does not declare (`1kg.5.2`). Fail closed; only the document's owner can reach it |
+| `document_not_archived` | 409 | no | a delete of a document that is not archived (`1kg.5.2`, LIB-18: delete is offered only from the Archived filter). Refused before anything narrows; only the document's owner can reach it |
 
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
@@ -174,7 +175,9 @@ names it starts fresh rather than reading another caller's status or result
 | Field patch | the document's base **write revision** | conflicts only if a field it touches changed since (CANVAS-19, CANVAS-34). Under the row lock the server compares each touched field's stored value with the one sent, canonically: a patch whose every field already holds what it sends answers `200` with the document and writes nothing — no revision, no version, no `updated_at` — so a repeat of a patch that already landed is a no-op, not a conflict. A patch that lands partly equal writes, and judges staleness on, only the fields that differ |
 | AI edit after a conflict | the same `invocation_id`, a fresh `base_write_revision` | starts a new attempt on the new base; the body of a replay is otherwise ignored |
 | Create a document | `command_id`, minted by the client, scoped to the campaign | answers `201` with the document that key already made, as it is now, whatever the repeat's body says, instead of making a second *Untitled NPC*. The same key in another campaign is another key; a key whose document was deleted makes a new one |
-| Restore, archive, unarchive | none needed | restoring what the document already equals changes nothing and creates no version, and a restore that changes content always appends one sealed version; the others set a state |
+| Restore a document's version | none needed | restoring what the document already equals changes nothing and creates no version, and a restore that changes content always appends one sealed version |
+| Archive, unarchive a document | none needed | the state the document is already in answers `204` and changes nothing: no narrowing, no revision advance, no audit row — and, for unarchive, no lock |
+| Delete a document | none needed | a deleted document is a missing one, so a repeat is the one `404`; a client treats a `404` after a delete it sent as done |
 | Seal a document's open version | none needed | a document with no open version is answered as it is: nothing is sealed and nothing advances |
 | Create an asset, create a cue | `command_id`, minted by the client | opens the asset or cue already made; a retried upload sends its bytes to the same asset |
 | Play a cue | `command_id`, and the audio epoch it was issued under (AUDIO-28) | replays the first outcome; a stale epoch is `409 conflict` and is never retried automatically |
@@ -245,7 +248,7 @@ on both sides.
 | Card payloads | `stat_block` **done**, reusing the `/chat` stat-block contract | loot, names, rules and hooks are `1kg.4.3`'s; until they exist those tools cannot produce a valid card, by design |
 | Legacy guards | **done** | today's `/chat` and message-history responses, validated by the existing models |
 | Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The attached-cue entry arrives with the cue family; until v1 is declared complete, adding it is not a version bump |
-| Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, and `conflict` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
+| Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `DocumentDeleteRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, and `conflict`, `document_unsupported` and `document_not_archived` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
 | Per-type document fields | **done** | All eight types declare their fields, rules, reveal groups and default reveals (`1kg.5.3`). A key a type does not name fails closed — the same posture as card kinds |
 | Reveal | **done** | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealLive`, `RevealState`, `TableProjection`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
@@ -692,9 +695,12 @@ one 401, the `dm` gate and the one 404.
 | `GET …/documents/{document_id}/versions/{number}` | — | `200 DocumentVersionSnapshot` |
 | `POST …/documents/{document_id}/restore` | `RestoreRequest` | `200 Document` |
 | `POST …/documents/{document_id}/seal` | none; one sent is not read | `200 Document` |
+| `POST …/documents/{document_id}/archive` | none; one sent is not read | `204` |
+| `POST …/documents/{document_id}/unarchive` | none; one sent is not read | `204` |
+| `POST …/documents/{document_id}/delete` | `DocumentDeleteRequest` | `204` |
 
-There is no list route beside the library and no `DELETE` method. Archive,
-unarchive and delete arrive with the rest of `1kg.5.2`.
+There is no list route beside the library and no `DELETE` method: a delete is a
+body-carrying `POST`, as a seat's Remove is.
 
 **The order of checks.** Origin (403), authentication (401), role (403); then
 the body and the query, each validated on nothing but itself (422); the
@@ -720,8 +726,9 @@ for their transaction, so two autosaves of one document are serialised and the
 second reads what the first committed. None of them takes the campaign lock or
 advances the campaign's authorisation revision: a content write changes no fact
 a display's preconditions read. **No document route consults the campaign's
-archived state**: reads, create, patch, restore, seal and the library all work in
-an archived campaign and on an archived document. That differs, deliberately,
+archived state**: reads, create, patch, restore, seal, the library, archive,
+unarchive and delete all work in an archived campaign, and every content write
+works on an archived document. That differs, deliberately,
 from `campaign_archived` on seats and from conversation create's 404: refusing
 would strand an open canvas's autosave when another tab archives.
 
@@ -742,6 +749,30 @@ largest valid document (a stat block at every bound, in four-byte code points)
 is about 5.2 MB of UTF-8; nginx's `/campaigns` location lets that through. Every
 other body on these routes stays at 8 KiB. A larger body is `422` with no
 `field`, refused as soon as it is known to be too long.
+
+**Archive, unarchive and delete** (LIB-16 to LIB-18) answer `204`, never a
+`Document`, so a document this build cannot render can still be archived and
+deleted. Archive and delete are fact-changing narrowings in two steps (RQ-5,
+RC-15): first, without the campaign lock, the campaign's live table is narrowed
+and that commits; then, under the campaign's exclusive lock, ownership is read
+again, the document changes, a table that went live in between is narrowed
+too, and the campaign's authorisation revision advances. When the lock cannot
+be had in time the answer is a retryable `503` whose message says the change
+is **not applied yet** — the display has already stopped — and the client
+retries; nothing is left to a background job. Unarchive takes the lock only
+when the document is archived. Each change writes one audit row naming the
+document by its id and nothing else; a repeat changes nothing and writes none.
+
+**Delete** takes only an archived document (`409 document_not_archived`
+otherwise, refused before anything narrows) and asks for the password again
+(SEC-40): its `DocumentDeleteRequest` is read first, then the database is
+checked, then the password — before any transaction opens and before the path
+ids are looked at — so a wrong password is `403 reauth_failed` and an outage
+of the check a retryable `503`. The check spends the **same attempt budget as
+signing in** — 10 per account in any 5 minutes, right or wrong — so the
+eleventh delete in five minutes is `429 throttled_user` with `retry_after_s`,
+and the account's sign-in waits with it. A delete dialog says so rather than
+retrying. The document goes with its whole history; its audit rows stay.
 
 ### AI edits
 
