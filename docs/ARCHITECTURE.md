@@ -1188,3 +1188,65 @@ none today, and the test asserts that count.
 **Contract parity gates deploy.** The timeline route serves the Workbench
 contract, so `contract-parity` is now one of `deploy`'s `needs` and a
 top-level clause of its `if:` (see `docs/ci.md`).
+
+## GM tool invocations (GM Workbench)
+
+Bead `1kg.4.1`. A GM asks for a tool with a brief; the answer is a
+`ToolInvocation` (`docs/workbench-wire-contract.md`, *The tool-invocation
+family*). The rows are `service/tool_invocation_store.py`'s
+(`campaign.tool_invocations`, and `campaign.tool_attempts`, **the admission
+record**: one row per attempt, written before any provider work, holding no
+token, price, alias or provider). The rules are `service/tool_invocations.py`'s;
+the three routes are `service/tool_invocations_api.py`'s, on the Workbench
+scaffolding.
+
+**Off by default.** A tool runs only when `WORKBENCH_ENABLED_TOOLS` names it,
+its registry capability is in `WORKBENCH_CAPABILITIES`, and an executor is
+registered for it — and none is registered yet (`1kg.4.3`, `1kg.4.4` and
+`1kg.8.3` add theirs). Availability is decided in one function,
+`tool_availability`, which `1kg.9.6` replaces. Setting `WORKBENCH_ENABLED_TOOLS`
+in production needs E-8's owner-chosen limits, the tool's `1kg.4.6` threshold
+and the SEC-39 terms record; `portrait` and `map` are paid under D-3, so
+`WORKBENCH_CAPABILITIES=image_generation` stays unset in production until
+`yje.4.1`'s entitlement gate covers them. An unknown id in either variable
+fails startup.
+
+**Lifecycle.** A POST runs three steps. **T1** takes the GM's
+`WORKBENCH_IN_FLIGHT` advisory lock first, decides ownership once (campaign,
+conversation-in-campaign, source entry: any miss is the one 404), answers an
+existing `invocation_id` by its stored state, then runs the guards — archived,
+enabled, the model allowlist, the executor's precheck, the X-5 cap, the pilot
+day, the per-user window, in that order, so no refused request spends a token
+— and writes the timeline entry, the invocation and its attempt row. The
+executor then runs with no connection held. **T2** takes the fence (still
+`working`, still this attempt, before its deadline) and only through it stores
+the outcome and runs the executor's `finish`, rewriting the entry in the same
+transaction. A row past its deadline is settled by whichever path meets it
+next (lazy expiry; there is no sweeper): `cancelled` if a cancel was asked for,
+else `failed attempt_expired`. An attempt's deadline is 150 s from its start,
+and every provider call an executor makes is bounded by what is left of it.
+
+**One clock.** Every time the service writes or compares is the route's clock,
+passed into SQL; no statement calls `now()`. The pilot day's chat half is
+`calls_today()`'s own database day, so the two agree except within seconds of
+UTC midnight.
+
+**Cost guards.** The X-5 cap is two in-flight tool invocations per GM across
+every campaign and instance, counted in PostgreSQL under the advisory lock;
+`/chat` turns are not counted. The hourly window is `/chat`'s own per-user
+window, so a GM who spends it on tools is throttled on `/chat` too. The pilot
+day counts today's chat turns plus every GM's tool attempts against
+`CHAT_DAILY_CAP`, while `/chat`'s own daily check is unchanged and does not
+count tools. Two residuals follow, acceptable only because E-8 forbids enabling
+any tool before the owner chooses the limits: once a tool is enabled, the
+pilot's daily total can reach twice `CHAT_DAILY_CAP`; and admissions from
+different GMs at the edge can overshoot, because the day check is serialised
+per GM only. Each provider attempt is recorded in the cost ledger under the
+operation `tool_invocation`, with the attempt row's `operation_id`.
+
+**The model.** `resolve_tool_model` is the one place the server chooses the
+model (D-8; bead `iov` gives it the tier mapping), and the client can send none.
+`model_catalog.WORKBENCH_PROVIDERS` is the provider allowlist (SEC-39, S-5:
+OpenAI only), enforced at admission and on the one client an executor can ask
+for. No answer, entry or log line of these routes names a model or a provider
+(D-9), and no tracing callback rides on a tool call (SEC-24).

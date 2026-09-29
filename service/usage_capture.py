@@ -93,6 +93,10 @@ RECORD_MESSAGE = "provider attempt"
 RECORD_SEVERITY = "INFO"
 
 OPERATION_CHAT_TURN = "chat_turn"
+#: One attempt of a GM tool invocation (agent-forge-harness-1kg.4.1). Its
+#: `operation_id` is the attempt's own, minted before any provider work and
+#: stored on `campaign.tool_attempts`, which is how the ledger links to it.
+OPERATION_TOOL_INVOCATION = "tool_invocation"
 
 PURPOSE_EMBEDDING = "embedding"
 PURPOSE_ANSWER = "answer"
@@ -335,20 +339,25 @@ def _warn(stage: str, exc: BaseException) -> None:
 def begin_operation(
     *, mode: str, billed_account_id: int, actor_kind: str = ACTOR_ACCOUNT,
     campaign_id: str | None = None, request: Any = None,
+    operation: str = OPERATION_CHAT_TURN, operation_id: str | None = None,
 ) -> Token[Operation | None] | None:
     """Start one turn's capture context. Called from `chat()` OUTSIDE its try,
-    so it must not be able to raise — that is the mechanism, not a hope."""
+    so it must not be able to raise — that is the mechanism, not a hope.
+
+    `operation` and `operation_id` default to what `/chat` has always recorded,
+    a `chat_turn` under a fresh id. A GM tool attempt passes its own kind and
+    the id its admission record already holds (1kg.4.1)."""
     try:
-        operation = Operation(
-            operation_id=uuid.uuid4().hex,
-            operation=OPERATION_CHAT_TURN,
+        record = Operation(
+            operation_id=operation_id if operation_id is not None else uuid.uuid4().hex,
+            operation=operation,
             mode=mode,
             billed_account_id=billed_account_id,
             actor_kind=actor_kind,
             campaign_id=campaign_id,
             request=request if request is not None else _NoHeaders(),
         )
-        return _CURRENT.set(operation)
+        return _CURRENT.set(record)
     except Exception as exc:
         _warn("begin_operation", exc)
         return None

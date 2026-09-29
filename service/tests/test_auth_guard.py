@@ -140,6 +140,14 @@ PROTECTED_ROUTES: list[Route] = [
     # (a live screen grant decides without it, SEC-44), so the dependency walk
     # below cannot see it as guarded; it is listed so both halves run on it.
     ("POST", "/table/screen", "/table/screen", {"schema_version": 1, "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa"}),
+    # 1kg.4.1 slice B: the GM's tool invocations.
+    ("POST", "/campaigns/{campaign_id}/tool-invocations", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations",
+     {"schema_version": 1, "invocation_id": "inv_guard_0000000001", "tool_id": "npc", "brief": "a smith",
+      "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa", "conversation_id": "cnv_aaaaaaaaaaaaaaaaaaaaaa"}),
+    ("GET", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations/inv_guard_0000000001", None),
+    ("POST", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations/inv_guard_0000000001/cancel", None),
 ]
 
 #: Deliberately unguarded, and asserted so that a blanket "guard everything"
