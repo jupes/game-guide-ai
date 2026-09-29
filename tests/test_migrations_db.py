@@ -269,7 +269,7 @@ def test_the_database_refuses_a_campaign_row_the_application_would_never_mint(ds
             )
 
 
-#: Every table 0004 hangs off a campaign that 0009 and 0012 kept, with the column that
+#: Every table 0004 hangs off a campaign that 0009 and 0013 kept, with the column that
 #: reaches a user, and 0008's two document tables (1kg.5.1): a document hangs
 #: off its campaign and a version off its document, both ON DELETE CASCADE.
 CAMPAIGN_TABLES = (
@@ -921,7 +921,11 @@ def test_a_seat_holds_one_open_offer_by_the_partial_unique_index(dsn):
             )
 
 
-# ── 0012: the table session without a link or a join (1kg.2.3) ──────────────
+# ── 0013: the table session without a link or a join (1kg.2.3) ──────────────
+
+#: Found by name, like 1kg.2.2's `SEAT_OFFERS`: every migration before it.
+SESSION_ACCESS = next(m for m in PACKAGED if m.name == "table_session_access")
+_BEFORE_SESSION_ACCESS = tuple(m for m in PACKAGED if m.version < SESSION_ACCESS.version)
 
 
 def _actor_kind_check(dsn: str) -> list[tuple[str, str]]:
@@ -936,11 +940,11 @@ def _actor_kind_check(dsn: str) -> list[tuple[str, str]]:
 
 
 @needs_db
-def test_the_actor_kind_check_0012_replaces_is_the_one_0005_created(dsn):
-    """0012 drops a constraint by name, so the name is read off a database
-    migrated to 0011 rather than assumed — and after 0012 there is still exactly
+def test_the_actor_kind_check_0013_replaces_is_the_one_0005_created(dsn):
+    """0013 drops a constraint by name, so the name is read off a database
+    migrated to 0012 rather than assumed — and after 0013 there is still exactly
     one such CHECK, under the same name, with `screen` where `guest` was."""
-    mig.migrate(dsn, packaged=PACKAGED[:11])
+    mig.migrate(dsn, packaged=_BEFORE_SESSION_ACCESS)
     [(name, definition)] = _actor_kind_check(dsn)
     assert name == "events_actor_kind_check" and "guest" in definition
 
@@ -1001,7 +1005,7 @@ def test_the_ledger_refuses_a_guest_and_accepts_a_screen(dsn):
 
 @needs_db
 def test_a_command_id_column_holds_the_contracts_shape_or_nothing(dsn):
-    """0012's two CHECKs, and the start index: one session per command per
+    """0013's two CHECKs, and the start index: one session per command per
     campaign, while any number of sessions have none."""
     import psycopg
 

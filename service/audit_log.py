@@ -144,7 +144,7 @@ class AuditAction(str, Enum):
 
 
 class ActorKind(str, Enum):
-    """Who acted, as `0012_table_session_access.sql`'s CHECK has it. There are
+    """Who acted, as `0013_table_session_access.sql`'s CHECK has it. There are
     no guests (D-1); a table screen acts only to leave, and its `actor_ref` is
     its own grant's id (SEC-38)."""
 
