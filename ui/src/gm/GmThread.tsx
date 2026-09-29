@@ -41,6 +41,7 @@ import { parseDiceNotation } from '../shell/diceNotation'
 import { AssistantLane } from './AssistantLane'
 import { AssistantText } from './AssistantText'
 import { toSpellCardProps, toStatBlockCardProps } from './adapters'
+import type { ChatMode } from '../api'
 import type { DocumentLink } from './contracts'
 import type { AnswerState, GmTurn, LaneAnswer } from './gmTimeline'
 import { LANE_COPY } from './laneState'
@@ -205,7 +206,7 @@ function Outcome({
 }): React.JSX.Element | null {
   switch (turn.kind) {
     case 'chat':
-      return <AnswerLane answer={turn.answer} />
+      return <AnswerLane answer={turn.answer} mode={turn.mode} />
     case 'tool':
       return (
         <AssistantLane
@@ -242,7 +243,7 @@ function LaneFrame({ state, children }: { state: string; children: React.ReactNo
 }
 
 /** RAIL-14: a plain GM turn is answered, and the answer sits in the lane. */
-function AnswerLane({ answer }: { answer: AnswerState }): React.JSX.Element | null {
+function AnswerLane({ answer, mode }: { answer: AnswerState; mode: ChatMode }): React.JSX.Element | null {
   switch (answer.state) {
     case 'none':
       return null
@@ -273,7 +274,7 @@ function AnswerLane({ answer }: { answer: AnswerState }): React.JSX.Element | nu
     case 'answered':
       return (
         <LaneFrame state="done">
-          <AnswerBody answer={answer.answer} />
+          <AnswerBody answer={answer.answer} mode={mode} />
         </LaneFrame>
       )
   }
@@ -283,8 +284,16 @@ function AnswerLane({ answer }: { answer: AnswerState }): React.JSX.Element | nu
  * Prose, then what was lifted out of it, then the notice, then the evidence —
  * the order a GM reads, and the order it is announced. `answerable` of `null`
  * (not recorded) earns neither the creative notice nor citations.
+ *
+ * agent-forge-harness-ffz (pr120 review L-3): the creative notice is the GM
+ * channel's own wording for the GM's own improvisation — it does not fit a
+ * Sage or Rules entry hydrated into this thread (a mode chip keeps the same
+ * conversation, so those entries can land here too). Neither Sage nor Rules
+ * shows any such notice for an unanswerable reply (ChatPane.tsx), so a
+ * non-`gm` entry gets the same silent treatment here, matching `answerable
+ * === null`'s "no claim either way" rather than mislabeling it as invented.
  */
-function AnswerBody({ answer }: { answer: LaneAnswer }): React.JSX.Element {
+function AnswerBody({ answer, mode }: { answer: LaneAnswer; mode: ChatMode }): React.JSX.Element {
   const grounded = answer.answerable === true
   const dice = grounded ? parseDiceNotation(answer.text) : null
   return (
@@ -292,7 +301,7 @@ function AnswerBody({ answer }: { answer: LaneAnswer }): React.JSX.Element {
       {answer.text.trim() !== '' && <AssistantText source={answer.text} />}
       {answer.spell_content && <SpellCard {...toSpellCardProps(answer.spell_content)} density="compact" />}
       {answer.stat_block && <StatBlockCard {...toStatBlockCardProps(answer.stat_block)} density="compact" />}
-      {answer.answerable === false && <p className="gm-thread__creative">{CREATIVE_NOTICE}</p>}
+      {mode === 'gm' && answer.answerable === false && <p className="gm-thread__creative">{CREATIVE_NOTICE}</p>}
       {dice && (
         <div className="gm-thread__dice">
           <DiceRoll die={dice.die} value={dice.value} modifier={dice.modifier} />

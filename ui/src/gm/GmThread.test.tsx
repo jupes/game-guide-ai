@@ -80,11 +80,71 @@ describe('GmThread — three lanes', () => {
     expect(screen.getByText(/Creative — may include invented content/)).toBeVisible()
   })
 
+  // agent-forge-harness-ffz (pr120 review L-3): a mode chip keeps the same
+  // conversation, so a Sage or Rules entry can land in the GM thread too. The
+  // creative notice is the GM's own wording for the GM's own improvisation —
+  // Sage and Rules show no such notice for an unanswerable reply anywhere
+  // else in the app (ChatPane.tsx) — so it must not be pinned on their entries.
+  it('does not label a Sage entry\'s unanswerable reply as "Creative", unlike a GM one (review L-3)', () => {
+    renderThread(
+      turnsFromTimeline([
+        chatEntry({
+          mode: 'sage',
+          prompt: 'What is the range of fireball?',
+          answer: { text: 'The sources do not cover that.', answerable: false, sources: [] },
+        }),
+      ]),
+    )
+    expect(screen.getByText('The sources do not cover that.')).toBeInTheDocument()
+    expect(screen.queryByText(/Creative —/)).toBeNull()
+  })
+
+  it('does not label a Rules entry\'s unanswerable reply as "Creative" either (review L-3)', () => {
+    renderThread(
+      turnsFromTimeline([
+        chatEntry({
+          mode: 'rules',
+          prompt: 'Can a rogue sneak attack twice in one turn?',
+          answer: { text: 'The sources do not cover that.', answerable: false, sources: [] },
+        }),
+      ]),
+    )
+    expect(screen.queryByText(/Creative —/)).toBeNull()
+  })
+
   it('makes no claim either way when groundedness was never recorded', () => {
     renderThread(turnsFromTimeline([chatEntry({ answer: { text: 'An old answer.', answerable: null, sources: null } })]))
     expect(screen.getByText('An old answer.')).toBeInTheDocument()
     expect(screen.queryByText(/Creative —/)).toBeNull()
     expect(screen.queryByText(/source/)).toBeNull()
+  })
+
+  // agent-forge-harness-ffz (pr120 review L-4, surviving mutant M13): dice is
+  // parsed out of the answer text only when the answer is grounded
+  // (`answerable === true`) — an invented (creative) answer that happens to
+  // contain dice-shaped text must not get a dice chip, because nothing
+  // vouches for that number the way a real roll would be.
+  it('never shows a dice roll under a creative (non-grounded) answer, even when its text carries dice notation (review L-4)', () => {
+    const { container } = renderThread(
+      turnsFromTimeline([
+        chatEntry({
+          answer: { text: 'You roll 1d20+5=18 to swim through the current.', answerable: false, sources: [] },
+        }),
+      ]),
+    )
+    expect(screen.getByText(/You roll/)).toBeInTheDocument()
+    expect(container.querySelector('.gm-thread__dice')).toBeNull()
+  })
+
+  it('shows a dice roll under a grounded answer whose text carries dice notation (review L-4, positive case)', () => {
+    const { container } = renderThread(
+      turnsFromTimeline([
+        chatEntry({
+          answer: { text: 'The trap deals 1d20+5=18 damage.', answerable: true, sources: [] },
+        }),
+      ]),
+    )
+    expect(container.querySelector('.gm-thread__dice')).not.toBeNull()
   })
 
   it('renders citations compactly inside the lane, after the prose', () => {
@@ -153,7 +213,7 @@ describe('GmThread — entries it cannot draw here', () => {
 describe('GmThread — a turn in flight', () => {
   it('shows the lane working, with decorative dots and no live region of its own', () => {
     const { container } = renderThread([
-      { kind: 'chat', key: 'live:1', prompt: 'Who runs the inn?', answer: { state: 'pending' } },
+      { kind: 'chat', key: 'live:1', prompt: 'Who runs the inn?', answer: { state: 'pending' }, mode: 'gm' },
     ])
     const lane = container.querySelector('.assistant-lane') as HTMLElement
     expect(within(lane).getByText('Consulting the tomes…')).toBeInTheDocument()
@@ -165,7 +225,7 @@ describe('GmThread — a turn in flight', () => {
 
   it('shows a failed turn’s message in the lane', () => {
     const { container } = renderThread([
-      { kind: 'chat', key: 'live:1', prompt: 'Who runs the inn?', answer: { state: 'failed', message: 'The service is busy.' } },
+      { kind: 'chat', key: 'live:1', prompt: 'Who runs the inn?', answer: { state: 'failed', message: 'The service is busy.' }, mode: 'gm' },
     ])
     const lane = container.querySelector('.assistant-lane') as HTMLElement
     expect(lane).toHaveAttribute('data-state', 'error')

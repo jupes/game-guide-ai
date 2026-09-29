@@ -5,16 +5,25 @@
  * shared ds/Button.css and ds/IconButton.css stylesheets, and ds/Button
  * .stories.tsx + ds/IconButton.stories.tsx already assert it there (`Sizes` /
  * `DarkSizes`). But a call site can beat that floor rule with a narrower
- * selector of its own — a component-scoped class, a later stylesheet, an
- * `!important` — without either of those two ds/ stories ever noticing: the
- * floor rule is still in the CSSOM, just outranked by specificity at that one
- * usage. Two survived mutants proved exactly this (LeftNav's IconButtons,
- * DocumentField's small Buttons): every ds/ story and every jsdom test for
- * those files stayed green while the call site's rendered target shrank.
+ * selector of its own — a component-scoped class, an `!important` — without
+ * either of those two ds/ stories ever noticing: the floor rule is still in
+ * the CSSOM, just outranked by specificity at that one usage. Two survived
+ * mutants proved exactly this (LeftNav's IconButtons, DocumentField's small
+ * Buttons): every ds/ story and every jsdom test for those files stayed green
+ * while the call site's rendered target shrank.
  *
  * This re-asserts the floor at the rendered call site, by accessible name, so
  * a shrink there fails the story that renders that call site — not just the
  * shared ds/ stories.
+ *
+ * agent-forge-harness-hxq (pr128 F1): this does NOT cover every shrinking
+ * rule "a later stylesheet" could write. Each story's iframe loads only the
+ * CSS its own component imports, so a rule written for `.aether-btn` /
+ * `.aether-icon-btn` in a stylesheet the rendered story never imports (e.g. a
+ * leak from an unrelated component, only loaded together with this one in
+ * the real composed app) is invisible here too — this helper only catches a
+ * shrink in CSS the story ALREADY loads. The cross-stylesheet case is
+ * covered separately by the static guard in src/ds/touchTargetLeak.test.ts.
  */
 import { expect, within } from 'storybook/test'
 

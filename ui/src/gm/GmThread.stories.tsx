@@ -66,8 +66,14 @@ export const RecapWithNoBrief: Story = {
 export const LiveStages: Story = {
   args: {
     turns: [
-      { kind: 'chat', key: 'live:1', prompt: 'Who runs the inn?', answer: { state: 'pending' } },
-      { kind: 'chat', key: 'live:2', prompt: 'And the stables?', answer: { state: 'failed', message: 'The service is busy right now — try again in a moment.' } },
+      { kind: 'chat', key: 'live:1', prompt: 'Who runs the inn?', answer: { state: 'pending' }, mode: 'gm' },
+      {
+        kind: 'chat',
+        key: 'live:2',
+        prompt: 'And the stables?',
+        answer: { state: 'failed', message: 'The service is busy right now — try again in a moment.' },
+        mode: 'gm',
+      },
     ],
   },
   play: async ({ canvasElement }) => {

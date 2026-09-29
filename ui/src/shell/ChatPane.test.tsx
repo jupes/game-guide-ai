@@ -26,6 +26,28 @@ import type { GetAttachmentsFn, UploadAttachmentFn } from './ChatPane'
 
 // ── CP-F5.3 — ChatPane behaviors (#21) ────────────────────────────────────────
 
+// agent-forge-harness-frc (pr126 M1): explicit ARIA roles that mark a node as
+// a live region. A plain `[role="status"]`-style selector only catches a
+// role written on the element — it misses a role an element carries
+// IMPLICITLY, such as <output> (implicit role="status"). screen.queryAllByRole
+// resolves implicit roles the same way Testing Library's underlying
+// accessibility-tree computation (and real assistive tech) does, so pairing
+// it with the explicit `[aria-live]` selector below counts every shape.
+const LIVE_REGION_ROLES = ['status', 'alert', 'log', 'marquee', 'timer'] as const
+
+// Census of every live region in `container`, regardless of whether the role
+// is written explicitly (`role="…"`) or carried implicitly by the element
+// (e.g. <output>), and regardless of whether it announces via a role or via a
+// bare `aria-live` attribute. Deduped, because an element can match both a
+// role query and the aria-live selector (e.g. role="status" aria-live="polite").
+function queryAllLiveRegions(container: HTMLElement): Element[] {
+  const byRole = LIVE_REGION_ROLES.flatMap((role) => screen.queryAllByRole(role))
+  const byAriaLive = Array.from(
+    container.querySelectorAll('[aria-live]:not([aria-live="off"])'),
+  )
+  return Array.from(new Set<Element>([...byRole, ...byAriaLive]))
+}
+
 function makeNavState(overrides: Partial<AppNavState> = {}): AppNavState {
   return {
     screen: 'workspace',
@@ -317,7 +339,7 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
     expect(ta.value.length).toBe(CHAT_TEXT_MAX_CHARS + 1)
   })
 
-  it('agent-forge-harness-764 × 4oz: the over-length counter describes the field and adds no second live region', () => {
+  it('agent-forge-harness-764 × 4oz × agent-forge-harness-frc: the over-length counter describes the field and adds no second live region, counted by every live-region shape including implicit roles', () => {
     const { container } = render(<Wrapper />)
     // The pane's one announcer, captured at rest (the 4oz tests' own shape).
     const [announcer] = screen.getAllByRole('status')
@@ -329,12 +351,12 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
       `${CHAT_TEXT_MAX_CHARS + 1} of ${CHAT_TEXT_MAX_CHARS} characters — shorten your message to send it.`,
     )
     // 4oz: not by a second live region beside the announcer — counted in every
-    // live-region shape, not role="status" alone — and not by the announcer,
-    // whose text changes only when a turn is sent or settles.
-    const live = container.querySelectorAll(
-      '[role="status"], [role="alert"], [role="log"], [aria-live]:not([aria-live="off"])',
-    )
-    expect(Array.from(live)).toEqual([announcer])
+    // live-region shape (explicit role, aria-live, OR an implicit role such
+    // as <output>'s implicit role="status" — see queryAllLiveRegions above),
+    // and not by the announcer, whose text changes only when a turn is sent
+    // or settles.
+    const live = queryAllLiveRegions(container)
+    expect(live).toEqual([announcer])
     expect(announcer.textContent).toBe('')
   })
 })
