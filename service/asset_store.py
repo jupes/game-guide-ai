@@ -426,6 +426,8 @@ def _row_problem(row: AssetRow) -> str | None:
     return None
 
 
+# justification: the adapter is one of two differently annotated types (AltText,
+# CommandId), and this only asks whether a value validates, never for the result.
 def _valid(adapter: TypeAdapter[Any], value: object) -> bool:
     try:
         adapter.validate_python(value)
@@ -683,6 +685,9 @@ def _deadline_of(state: str) -> timedelta:
     return UPLOADING_BOUND if state == _UPLOADING else PROCESSING_BOUND
 
 
+# justification: the keywords are AssetRow fields of differing types, forwarded
+# to dataclasses.replace; every written row then passes the schema's rules
+# (check_row in the twin, the CHECKs in PostgreSQL).
 def _entered(row: AssetRow, state: str, moment: datetime, **changes: Any) -> AssetRow:
     return replace(row, state=state, updated_at=moment, state_changed_at=moment, **changes)
 
@@ -996,6 +1001,8 @@ class PostgresAssetStore(_Transitions):
         self._seed_sweep(unit, created)
         return record_of(created)
 
+    # justification: psycopg's Connection is generic over its row factory, and
+    # this reads plain tuples through it (service/db.py's own note).
     def _replay_or_refuse(self, conn: Any, params: Mapping[str, object]) -> AssetRecord:
         """Why the insert made nothing (document_store._replay_or_refuse's
         shape), asked through the GM fragment, so it can only ever describe the
