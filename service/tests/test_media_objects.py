@@ -724,7 +724,7 @@ import service.media_gcs
 by_the_module = "google.cloud.storage" in sys.modules
 import importlib
 importlib.import_module("google.cloud.storage")
-print(repr(untouched), by_the_module, "google.cloud.storage" in sys.modules)
+sys.stdout.write(" ".join([repr(untouched), str(by_the_module), str("google.cloud.storage" in sys.modules)]))
 """
 
 
