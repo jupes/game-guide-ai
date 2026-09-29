@@ -571,10 +571,11 @@ projection from them with its one builder.
 
 Storage for a GM's images and audio, added by `1kg.8.1.1` (slice a of `1kg.8.1`):
 the media migration (`*_media_assets.sql`), the asset store in `service/asset_store.py`
-and the object store in `service/media_objects.py`. **It ships dark.** No route
-exists, nothing in `service/app.py` builds a store or registers a job kind, and
-nothing in the running service reads the media settings: slice b (`1kg.8.1.2`)
-wires them. Switching the capability on is the owner's decision (Q-5).
+and the object store in `service/media_objects.py`; then the upload routes of
+`1kg.8.1.2` (slice b, below). **It ships dark.** The routes match nothing while
+`WORKBENCH_MEDIA_ENABLED` is off (the default), and no store is built or job
+kind registered unless `WORKBENCH_MEDIA_STORE` names one. Switching the
+capability on is the owner's decision (Q-5), and the $10 cap must rise first.
 
 ### The tables
 
@@ -651,9 +652,10 @@ asset row remains.
 
 ### The three jobs (`service/asset_jobs.py`)
 
-`register_jobs(runner, ...)` registers all three kinds, and nothing calls it in
-the running service until slice b wires it into `_build_stores` when a store is
-configured; with no store configured nothing is registered. Every handler
+`register_jobs(runner, ...)` registers all three kinds; `_build_stores` calls it
+when a store is configured, whatever the capability switch says (a deployment
+switched off still owes its deletions), and with no store configured nothing is
+registered. Every handler
 re-reads current state and uses nothing from its payload beyond the ids and keys
 it names. **No handler holds a database connection while it calls the object
 store**, and every call goes through `via_store`. A handler whose advisory
@@ -690,13 +692,53 @@ by default, meaning no store is built; `filesystem` with an absolute
 in code only). "Off" means no route, no store, no bucket and no cost; the store
 setting is separate from `enabled` because a deployment switched off must still
 finish the deletions it owes. Every refusal names the variable, never its value.
-Every object-store call outside `service/media_objects.py` goes through
+The running service reads them once, at startup, through `startup_settings`,
+which adds one rule: the capability cannot be on with no store (refused by
+name, so startup fails loudly). Every object-store call outside `service/media_objects.py` goes through
 `via_store`, where slice c puts the thread limiter. The store's health signal
 for `1kg.9.2` is the read-only `reachable()`.
 
 **Table reads never use this store** (SEC-44(2)). A table's slot resolver finds
 its asset in its own `table_principal` query (SEC-16, SEC-41, `1kg.7.x`); the
 asset store is GM-side and system-side only.
+
+### Uploading (`service/assets_api.py`, `service/media_processing.py`)
+
+Two Workbench routes on `workbench_router`, each a `MediaRoute` whose `matches`
+answers `Match.NONE` while the capability is off, so the router goes on exactly
+as for a path that does not exist, in every topology (`SchedulerRoute`'s
+precedent; no catch-all). Serving the bytes and deleting an asset are slice c's.
+
+| Route | Answers |
+|---|---|
+| `POST /campaigns/{campaign_id}/assets` | `201`, the `Asset`, `uploading`: the contract's caps checked and the declared size reserved against the quota before a byte is accepted; `409 cap_reached` when it does not fit; a replayed `command_id` answers the asset it made |
+| `PUT /campaigns/{campaign_id}/assets/{asset_id}/bytes` | one raw body, `Content-Type` the declared type, `Content-Length` required (`411`). The answer is the `Asset` once processing has ended: `200` `ready`, or `failed` with its reason — `415` `unsupported_type`, `413` `too_large`, `422` any other |
+
+**The bytes request, in order.** Ownership in the statement (the one 404), the
+state (`409` unless `uploading`), the `Content-Type` against the declared type
+(`415`). Then, with **no connection held**, the body streams to the asset's
+`tmp/` key, counted: the first byte past `ASSET_MAX_BYTES[kind]` ends it
+(`too_large`), a body longer or shorter than its `Content-Length` is
+`unreadable`, and the first 16 bytes are judged by magic number before anything
+is written (`unsupported_type`; SVG and GIF are refused). Then `processing`,
+committed; a wait of at most 60 s for the one processing slot per instance, and
+past it `503` with `Retry-After` while the asset returns to `uploading`; then the
+processing itself in a subprocess (60 s wall clock, `RLIMIT_AS` 512 MB on POSIX,
+an environment of `PATH` alone): images header-first against the pixel and side
+caps and re-encoded within their family from the pixels alone, audio probed
+(one audio stream; cover art dropped, other video refused; at most
+`AMBIENCE_MAX_MS` — a one-shot's 30 s is the cue route's) and transcoded to MP3
+with every tag, chapter and picture dropped. The processed object is written to
+`assets/<hex>`, then `ready` or `failed` committed, then the `tmp/` object
+deleted. When the final transition loses (the sweep or a tombstone won), the
+object it wrote is deleted too.
+
+**The proxies.** `ui/nginx.conf` gives the bytes path alone a regex location
+with `client_max_body_size 20m`, `proxy_request_buffering off` and
+`proxy_read_timeout 180s` (RT-10), and no `add_header`; every other
+`/campaigns` request keeps the prefix location's settings. Production has no
+nginx; Cloud Run's settings, ffmpeg and Pillow in both images, and the bucket are
+`1kg.9.5`'s. CI installs ffmpeg for the tests (`.github/workflows/ci.yml`).
 
 ## Running it
 
