@@ -156,13 +156,12 @@ export const DarkWithError: Story = {
 // screen are. What this pins is the reflow and the 44px floors at the widths
 // every player signs in at (owner decision D-1).
 
-async function expectPhoneSignIn(canvasElement: HTMLElement, viewport: ViewportName): Promise<void> {
+async function expectPhoneSignInCore(canvasElement: HTMLElement, viewport: ViewportName): Promise<HTMLElement> {
   await expectViewport(viewport)
   const canvas = within(canvasElement)
   await expectNoPageOverflow()
   const card = canvasElement.querySelector('.auth-screen__card')
   if (!(card instanceof HTMLElement)) throw new Error('no sign-in card')
-  await expectLeftEdge(card, 16)
   await expectTouchTarget(canvas, 'Sign in')
   await expectSpans(canvas.getByRole('button', { name: 'Sign in' }), card)
   const rows = Array.from(canvasElement.querySelectorAll('.aether-field__row'))
@@ -170,6 +169,14 @@ async function expectPhoneSignIn(canvasElement: HTMLElement, viewport: ViewportN
   for (const row of rows) {
     await expect(row.getBoundingClientRect().height).toBeGreaterThanOrEqual(44)
   }
+  return card
+}
+
+/** Below the card's 360px max-width (<= 392px total: 360 + the 16px gutter on
+ * each side), the card fills the row and sits flush at the gutter. */
+async function expectPhoneSignIn(canvasElement: HTMLElement, viewport: ViewportName): Promise<void> {
+  const card = await expectPhoneSignInCore(canvasElement, viewport)
+  await expectLeftEdge(card, 16)
 }
 
 export const Phone390: Story = {
@@ -180,6 +187,24 @@ export const Phone390: Story = {
 export const Phone320: Story = {
   ...atViewport('phone320'),
   play: async ({ canvasElement }) => expectPhoneSignIn(canvasElement, 'phone320'),
+}
+
+/** agent-forge-harness-zh9 L-1: AC-1's own width list (320/375/390/599) had
+ * no Login story at 375 or 599. */
+export const Phone375: Story = {
+  ...atViewport('phone375'),
+  play: async ({ canvasElement }) => expectPhoneSignIn(canvasElement, 'phone375'),
+}
+
+/** Above 392px the 360px max-width binds: the card is centred, not flush to
+ * the gutter, so this pins equal margins instead of `expectLeftEdge`. */
+export const Edge599: Story = {
+  ...atViewport('edge599'),
+  play: async ({ canvasElement }) => {
+    const card = await expectPhoneSignInCore(canvasElement, 'edge599')
+    const box = card.getBoundingClientRect()
+    await expect(Math.abs(box.left - (window.innerWidth - box.right))).toBeLessThanOrEqual(1)
+  },
 }
 
 /** The error message is the longest line on the card; it wraps, not scrolls. */

@@ -1,0 +1,79 @@
+{
+  "schema": "ScreenMintAnswer",
+  "direction": "response",
+  "channel": "table",
+  "note": "What a new screen is told: when its grant ends, with its session. No id, no generation and no session id (SEC-15); the grant itself is in the answer's Set-Cookie and nowhere else (SEC-48).",
+  "valid": [
+    {
+      "name": "when the grant ends",
+      "value": {
+        "schema_version": 1,
+        "ends_at": "2026-09-17T07:31:02Z"
+      }
+    },
+    {
+      "name": "an additive field from a newer server is tolerated by the client",
+      "applies_to": [
+        "client"
+      ],
+      "value": {
+        "schema_version": 1,
+        "ends_at": "2026-09-17T07:31:02Z",
+        "future_field": 1
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "the grant in the body",
+      "why": "SEC-48: the grant leaves in its cookie alone",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "ends_at": "2026-09-17T07:31:02Z",
+        "grant": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8"
+      }
+    },
+    {
+      "name": "the grant's id",
+      "why": "SEC-15: a table client gets no id it has no use for",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "ends_at": "2026-09-17T07:31:02Z",
+        "screen_id": "tcr_7Hq2mW9xLp4sT8uY1zA3bC"
+      }
+    },
+    {
+      "name": "the session id",
+      "why": "SEC-15: a table client gets no id it has no use for",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "ends_at": "2026-09-17T07:31:02Z",
+        "session_id": "ses_0c1d2e3f"
+      }
+    },
+    {
+      "name": "no end",
+      "why": "the screen is told when its grant ends",
+      "value": {
+        "schema_version": 1
+      }
+    },
+    {
+      "name": "an end that is not a timestamp",
+      "why": "one grammar for every timestamp (CANVAS-27)",
+      "value": {
+        "schema_version": 1,
+        "ends_at": "tomorrow"
+      }
+    }
+  ]
+}

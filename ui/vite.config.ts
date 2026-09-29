@@ -24,7 +24,11 @@ export default defineConfig({
       '/auth': 'http://localhost:8000',
       '/models': 'http://localhost:8000',
       '/campaigns': 'http://localhost:8000',
-      '/seats': 'http://localhost:8000'
+      '/seats': 'http://localhost:8000',
+      // The table API routes, /table/screen and /table/leave (1kg.2.3). This key
+      // proxies every dev path under /table while no table page exists;
+      // 1kg.7.4 narrows it when it adds one. nginx names the two exactly.
+      '/table': 'http://localhost:8000'
     }
   },
   test: {
