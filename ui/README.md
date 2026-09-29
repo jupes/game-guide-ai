@@ -39,7 +39,10 @@ Landing ── "Enter the Tavern" ─▶ Workspace                    Profile (s
     disables zoom.
   - Phone stories set their size with `.storybook/viewports.ts` (`atViewport`) and start
     with `expectViewport`, because the Storybook vitest plugin skips a viewport it cannot
-    apply without failing.
+    apply without failing (it also waits for the webfonts before anything is measured).
+    Dark phone stories add `expectTheme('dark')`. `expectNoPageOverflow` cannot see
+    inside the workspace, whose boxes are `overflow: hidden`, so workspace stories also
+    call `expectWorkspaceFits`: nothing clipped, and the composer and Send on screen.
 - **Profile page** (swe1.7): editable display name + avatar tone, persisted to
   `localStorage` **per account** via `currentUser.tsx`. The DM/player role is shown
   read-only — it is fixed by the invite that created the account and enforced by the

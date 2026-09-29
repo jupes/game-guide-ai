@@ -10,7 +10,7 @@ import { expect, userEvent, within } from 'storybook/test'
 
 import { json, pending, stubFetch, withShell } from '../../.storybook/shellHarness'
 import { expectTouchTarget } from '../../.storybook/touchTarget'
-import { atViewport, expectLeftEdge, expectNoPageOverflow, expectSpans, expectViewport, type ViewportName } from '../../.storybook/viewports'
+import { atViewport, expectLeftEdge, expectNoPageOverflow, expectSpans, expectTheme, expectViewport, type ViewportName } from '../../.storybook/viewports'
 import { Login } from './Login'
 
 const meta = {
@@ -188,6 +188,7 @@ export const DarkPhone320WithError: Story = {
   beforeEach: stubFetch(() => json({ detail: 'Email or password is incorrect.' }, 401)),
   play: async ({ canvasElement }) => {
     await expectViewport('phone320')
+    await expectTheme('dark')
     const canvas = within(canvasElement)
     canvas.getByRole('textbox', { name: 'Email' }).focus()
     await userEvent.keyboard('alanna@aetheril.test')

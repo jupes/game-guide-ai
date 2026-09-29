@@ -15,7 +15,9 @@ import {
   atViewport,
   expectLeftEdge,
   expectNoPageOverflow,
+  expectTheme,
   expectViewport,
+  expectWorkspaceFits,
   type ViewportName,
 } from '../../.storybook/viewports'
 import { WorkspaceShell } from './WorkspaceShell'
@@ -212,6 +214,8 @@ async function expectClosedPhone(canvasElement: HTMLElement, viewport: ViewportN
   const canvas = within(canvasElement)
   await canvas.findByText(/magic missile/)
   await expectNoPageOverflow()
+  // The page check cannot see inside the workspace (its boxes clip): this can.
+  await expectWorkspaceFits(canvasElement)
   const menu = canvas.getByRole('button', { name: 'Open navigation' })
   await expectTouchTarget(canvas, 'Open navigation')
   await expect(menu.getBoundingClientRect().left).toBeLessThan(60)
@@ -249,7 +253,10 @@ export const PhoneClosed320: Story = {
 
 export const DarkPhoneClosed390: Story = {
   ...atViewport('phone390', 'dark'),
-  play: async ({ canvasElement }) => expectClosedPhone(canvasElement, 'phone390'),
+  play: async ({ canvasElement }) => {
+    await expectTheme('dark')
+    await expectClosedPhone(canvasElement, 'phone390')
+  },
 }
 
 async function openDrawer(canvasElement: HTMLElement): Promise<HTMLElement> {
@@ -297,6 +304,7 @@ async function expectOpenDrawer(canvasElement: HTMLElement, viewport: ViewportNa
   const canvas = within(canvasElement)
   const drawer = await openDrawer(canvasElement)
   await expectDrawerOverScrim(drawer)
+  await expectWorkspaceFits(canvasElement)
   // Every query about the open drawer is scoped to it: dom-testing-library
   // does not treat `inert` as hidden, so the header's chips would match too.
   const inDrawer = within(drawer)
@@ -327,7 +335,10 @@ export const PhoneDrawerOpens320: Story = {
 
 export const DarkPhoneDrawerOpens390: Story = {
   ...atViewport('phone390', 'dark'),
-  play: async ({ canvasElement }) => expectOpenDrawer(canvasElement, 'phone390'),
+  play: async ({ canvasElement }) => {
+    await expectTheme('dark')
+    await expectOpenDrawer(canvasElement, 'phone390')
+  },
 }
 
 /** A folding phone's 280px cover screen: the only width where the drawer's
@@ -339,6 +350,7 @@ export const PhoneDrawerOpens280: Story = {
     const drawer = await openDrawer(canvasElement)
     await expect(drawer.getBoundingClientRect().right).toBeLessThanOrEqual(232)
     await expectDrawerOverScrim(drawer)
+    await expectWorkspaceFits(canvasElement)
   },
 }
 
@@ -413,6 +425,7 @@ export const Narrow767: Story = {
     await canvas.findByText(/magic missile/)
     await expect(canvas.getByRole('button', { name: 'Open navigation' })).toBeVisible()
     await expect(canvasElement.querySelector('.left-nav')).not.toBeVisible()
+    await expectWorkspaceFits(canvasElement)
   },
 }
 
@@ -430,6 +443,35 @@ export const Wide768: Story = {
     const channels = canvas.getByRole('navigation', { name: 'Channels' })
     await expect(within(channels).getByRole('combobox', { name: 'Model' })).toBeVisible()
   },
+}
+
+/**
+ * The desktop workspace's tab stops, in order, as the base
+ * (integration/1kg-workbench before agent-forge-harness-0rn) walks them.
+ * ShellTabOrder pins one pair (transcript before composer); this pins the
+ * whole walk, so an added, dropped or reordered stop at wide is red. The
+ * channel chips appear twice: AppHeader's strip, then LeftNav's.
+ */
+function wideTabStops(canvasElement: HTMLElement): ReadonlyArray<readonly [string, Element]> {
+  const canvas = within(canvasElement)
+  const header = within(canvas.getByRole('navigation', { name: 'Channels' }))
+  const nav = within(canvas.getByRole('navigation', { name: 'Main navigation' }))
+  return [
+    ...CHANNELS.map((name) => [`header ${name}`, header.getByRole('button', { name })] as const),
+    ['Model', header.getByRole('combobox', { name: 'Model' })],
+    ['Dark theme', canvas.getByRole('switch', { name: 'Dark theme' })],
+    ...CHANNELS.map((name) => [`nav ${name}`, nav.getByRole('button', { name })] as const),
+    ['New conversation', nav.getByRole('button', { name: 'New conversation' })],
+    [FIRST, nav.getByRole('button', { name: FIRST })],
+    [`Rename ${FIRST}`, nav.getByRole('button', { name: `Rename ${FIRST}` })],
+    [SECOND, nav.getByRole('button', { name: SECOND })],
+    [`Rename ${SECOND}`, nav.getByRole('button', { name: `Rename ${SECOND}` })],
+    ['Open user menu', nav.getByRole('button', { name: 'Open user menu' })],
+    ['Conversation', canvas.getByRole('region', { name: 'Conversation' })],
+    ['Export chat', canvas.getByRole('button', { name: 'Export chat' })],
+    ['Attach file', canvas.getByRole('button', { name: 'Attach file' })],
+    ['composer', canvas.getByPlaceholderText('Ask…')],
+  ]
 }
 
 /** The desktop workspace, measured: nothing about it moved. */
@@ -451,5 +493,30 @@ export const Wide1280Unchanged: Story = {
     await expect(box('main').left).toBe(268)
     await expect(canvas.queryByRole('dialog')).toBeNull()
     await expect(canvasElement.querySelectorAll('[inert]')).toHaveLength(0)
+
+    // Stacked as on the base: TopBar, then AppHeader across the full width,
+    // then the nav and the chat side by side beneath it.
+    const header = box('.app-header')
+    await expect(header.top).toBe(box('.top-bar').bottom)
+    await expect(header.left).toBe(0)
+    await expect(header.width).toBe(window.innerWidth)
+    await expect(box('.left-nav').top).toBe(header.bottom)
+    await expect(box('main').top).toBe(header.bottom)
+    await expect(box('main').width).toBe(window.innerWidth - 268)
+
+    // The whole tab walk, stop by stop. A stop the pin does not know is
+    // named by its tag and class, so the failure says what appeared.
+    const stops = wideTabStops(canvasElement)
+    const walked: string[] = []
+    const seen: Element[] = []
+    for (let i = 0; i < 40; i += 1) {
+      await userEvent.tab()
+      const el = document.activeElement
+      if (!el || !canvasElement.contains(el) || seen.includes(el)) break
+      seen.push(el)
+      const stop = stops.find(([, element]) => element === el)
+      walked.push(stop === undefined ? `unexpected <${el.tagName.toLowerCase()} class="${el.className}">` : stop[0])
+    }
+    await expect(walked).toEqual(stops.map(([label]) => label))
   },
 }

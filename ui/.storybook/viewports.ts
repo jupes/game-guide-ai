@@ -15,7 +15,7 @@
  * phone's 280 px cover screen, and a phone in landscape (667x375), which is
  * narrow by width but short.
  */
-import { expect } from 'storybook/test'
+import { expect, within } from 'storybook/test'
 
 const SIZES = {
   fold280: [280, 653],
@@ -53,17 +53,68 @@ export function atViewport(name: ViewportName, theme: 'light' | 'dark' = 'light'
   }
 }
 
-/** The canary: the page really is the size the story asked for. */
+/** The canary: the page really is the size the story asked for.
+ *
+ * It also waits for the webfonts. Until Material Symbols loads, an icon's
+ * ligature lays out as its word ("chat_bubble"), which is wider than the
+ * glyph, so a box measured before then is the fallback font's box. Every
+ * phone story measures boxes after this call. */
 export async function expectViewport(name: ViewportName): Promise<void> {
   const [width, height] = SIZES[name]
   await expect({ width: window.innerWidth, height: window.innerHeight }).toEqual({ width, height })
+  await document.fonts.ready
+}
+
+/** The theme canary: `atViewport(name, 'dark')` really rendered the dark
+ * theme. preview.tsx sets `data-theme="dark"` for dark and removes it for
+ * light, so a dropped `globals.theme` would run a "dark" story in light. */
+export async function expectTheme(theme: 'light' | 'dark'): Promise<void> {
+  await expect(document.documentElement.getAttribute('data-theme')).toBe(theme === 'dark' ? 'dark' : null)
 }
 
 /** WCAG 1.4.10: no page-level horizontal scroll. Internal scrollers (the
- * channel strip, a code block) are allowed; the document is not. */
+ * channel strip, a code block) are allowed; the document is not.
+ *
+ * Blind inside the workspace: `.workspace-shell`, its body and `<main>` are
+ * all `overflow: hidden`, so anything too wide in there is clipped before it
+ * reaches the document. The workspace stories add expectWorkspaceFits. */
 export async function expectNoPageOverflow(): Promise<void> {
   const root = document.documentElement
   await expect(root.scrollWidth).toBeLessThanOrEqual(root.clientWidth)
+}
+
+/** The workspace's clipping boxes, outermost first. */
+const WORKSPACE_CLIPS = ['.workspace-shell', '.workspace-shell__body', '.workspace-shell__main'] as const
+
+/**
+ * The workspace fits the viewport, measured where expectNoPageOverflow cannot
+ * see. Each clipping box clips nothing (scrollWidth is never less than
+ * clientWidth, so "clips nothing" is a difference of 0), and the composer,
+ * its box and "Send message" lie inside the viewport from edge to edge. Each
+ * failure names the box or control that broke, not just a number.
+ */
+export async function expectWorkspaceFits(canvasElement: HTMLElement): Promise<void> {
+  await document.fonts.ready
+  const clipped = WORKSPACE_CLIPS.map((selector) => {
+    const box = canvasElement.querySelector(selector)
+    if (box === null) throw new Error(`no ${selector}`)
+    return { selector, clipped: box.scrollWidth - box.clientWidth }
+  })
+  await expect(clipped).toEqual(WORKSPACE_CLIPS.map((selector) => ({ selector, clipped: 0 })))
+
+  const composerBox = canvasElement.querySelector('.chat-pane__composer')
+  if (composerBox === null) throw new Error('no .chat-pane__composer')
+  const canvas = within(canvasElement)
+  const controls: ReadonlyArray<readonly [string, Element]> = [
+    ['composer box', composerBox],
+    ['composer', canvas.getByPlaceholderText('Ask…')],
+    ['Send message', canvas.getByRole('button', { name: 'Send message' })],
+  ]
+  const offScreen = controls.map(([name, element]) => {
+    const { left, right } = element.getBoundingClientRect()
+    return { name, pastLeft: Math.max(0, -left), pastRight: Math.max(0, right - window.innerWidth) }
+  })
+  await expect(offScreen).toEqual(controls.map(([name]) => ({ name, pastLeft: 0, pastRight: 0 })))
 }
 
 /** One column: each element starts at or below the bottom of the one before. */

@@ -6,7 +6,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, within } from 'storybook/test'
 
 import { withShell } from '../../.storybook/shellHarness'
-import { atViewport, expectLeftEdge, expectNoPageOverflow, expectSpans, expectStacked, expectViewport, type ViewportName } from '../../.storybook/viewports'
+import { atViewport, expectLeftEdge, expectNoPageOverflow, expectSpans, expectStacked, expectTheme, expectViewport, type ViewportName } from '../../.storybook/viewports'
 import { Landing } from './Landing'
 
 const meta = {
@@ -143,6 +143,8 @@ export const Edge600: Story = {
 export const DarkPhonePlayer390: Story = {
   ...atViewport('phone390', 'dark'),
   decorators: [withShell({ screen: 'landing', role: 'player' })],
-  play: async ({ canvasElement }) =>
-    expectStackedCardActions(canvasElement, 'phone390', ['Sage', 'Spell', 'Rules']),
+  play: async ({ canvasElement }) => {
+    await expectTheme('dark')
+    await expectStackedCardActions(canvasElement, 'phone390', ['Sage', 'Spell', 'Rules'])
+  },
 }

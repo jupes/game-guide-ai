@@ -7,7 +7,7 @@ import { expect, userEvent, within } from 'storybook/test'
 
 import { tabTo } from '../../.storybook/keyboard'
 import { withShell } from '../../.storybook/shellHarness'
-import { atViewport, expectLeftEdge, expectNoPageOverflow, expectSpans, expectViewport } from '../../.storybook/viewports'
+import { atViewport, expectLeftEdge, expectNoPageOverflow, expectSpans, expectViewport, type ViewportName } from '../../.storybook/viewports'
 import { ProfilePage } from './ProfilePage'
 
 const meta = {
@@ -119,24 +119,43 @@ export const DarkVerdigris: Story = {
 /**
  * agent-forge-harness-0rn: Profile on a phone. The page's side padding drops
  * to the gutter, "Back to chat" spans the card, and each avatar-tone
- * swatch keeps its 44px target.
+ * swatch keeps its 44px target. `gutterEdge` is false where the card has
+ * reached its own max-width and is centred instead.
  */
+async function expectPhoneProfile(
+  canvasElement: HTMLElement,
+  viewport: ViewportName,
+  gutterEdge = true,
+): Promise<void> {
+  await expectViewport(viewport)
+  const canvas = within(canvasElement)
+  await expectNoPageOverflow()
+  const card = canvasElement.querySelector('.profile-page__card')
+  if (!(card instanceof HTMLElement)) throw new Error('no profile card')
+  if (gutterEdge) await expectLeftEdge(card, 16)
+  await expectSpans(canvas.getByRole('button', { name: 'Back to chat' }), card)
+  const swatches = Array.from(canvasElement.querySelectorAll('.profile-page__tone'))
+  await expect(swatches.length).toBeGreaterThan(0)
+  for (const swatch of swatches) {
+    const box = swatch.getBoundingClientRect()
+    await expect(box.width).toBeGreaterThanOrEqual(44)
+    await expect(box.height).toBeGreaterThanOrEqual(44)
+  }
+}
+
 export const Phone390: Story = {
   ...atViewport('phone390'),
-  play: async ({ canvasElement }) => {
-    await expectViewport('phone390')
-    const canvas = within(canvasElement)
-    await expectNoPageOverflow()
-    const card = canvasElement.querySelector('.profile-page__card')
-    if (!(card instanceof HTMLElement)) throw new Error('no profile card')
-    await expectLeftEdge(card, 16)
-    await expectSpans(canvas.getByRole('button', { name: 'Back to chat' }), card)
-    const swatches = Array.from(canvasElement.querySelectorAll('.profile-page__tone'))
-    await expect(swatches.length).toBeGreaterThan(0)
-    for (const swatch of swatches) {
-      const box = swatch.getBoundingClientRect()
-      await expect(box.width).toBeGreaterThanOrEqual(44)
-      await expect(box.height).toBeGreaterThanOrEqual(44)
-    }
-  },
+  play: async ({ canvasElement }) => expectPhoneProfile(canvasElement, 'phone390'),
+}
+
+/** AC-1's narrowest phone. */
+export const Phone320: Story = {
+  ...atViewport('phone320'),
+  play: async ({ canvasElement }) => expectPhoneProfile(canvasElement, 'phone320'),
+}
+
+/** One pixel inside the phone rule: "Back to chat" still spans the card. */
+export const Edge599: Story = {
+  ...atViewport('edge599'),
+  play: async ({ canvasElement }) => expectPhoneProfile(canvasElement, 'edge599', false),
 }

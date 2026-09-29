@@ -11,7 +11,13 @@ import { expect, fn, userEvent, within } from 'storybook/test'
 
 import { json, stubFetch, withShell } from '../.storybook/shellHarness'
 import { expectTouchTarget } from '../.storybook/touchTarget'
-import { atViewport, expectNoPageOverflow, expectStacked, expectViewport } from '../.storybook/viewports'
+import {
+  atViewport,
+  expectNoPageOverflow,
+  expectStacked,
+  expectViewport,
+  expectWorkspaceFits,
+} from '../.storybook/viewports'
 import App from './App'
 
 const CATALOG = { default: 'auto', models: [{ id: 'auto', display_name: 'Automatic' }] }
@@ -190,12 +196,31 @@ export const SessionCheckUnavailablePhone320: Story = {
   },
 }
 
+/** agent-forge-harness-0rn: the session-check hold on a 320px phone. A
+ * regression pin for AC-1's list of states: one short line, which fits with
+ * or without the phone rule. */
+export const CheckingTheSessionPhone320: Story = {
+  ...atViewport('phone320'),
+  decorators: [withShell({ authStatus: 'checking' })],
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone320')
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('status')).toHaveTextContent('Loading…')
+    await expectNoPageOverflow()
+    const box = canvas.getByRole('status').getBoundingClientRect()
+    await expect(box.left).toBeGreaterThanOrEqual(0)
+    await expect(box.right).toBeLessThanOrEqual(window.innerWidth)
+  },
+}
+
 /**
  * agent-forge-harness-0rn: the phone sign-in path, composed. App imports every
  * shell stylesheet, so this is the one local story where all of the shell's
  * CSS runs together: Landing, then the workspace, then the drawer, with no
- * page-level overflow at any step. (The e2e spec `phone.spec.ts` runs the
- * same path against the real stack in CI.)
+ * page-level overflow at any step, and (where the page check is blind, inside
+ * the workspace's clipping boxes) nothing clipped and the composer and "Send
+ * message" on screen. (The e2e spec `phone.spec.ts` runs the same path
+ * against the real stack in CI.)
  */
 export const SignedInPhone390: Story = {
   ...atViewport('phone390'),
@@ -207,11 +232,14 @@ export const SignedInPhone390: Story = {
     await userEvent.click(canvas.getByRole('button', { name: /enter the tavern/i }))
     const menu = await canvas.findByRole('button', { name: 'Open navigation' })
     await expectNoPageOverflow()
+    await expectWorkspaceFits(canvasElement)
     await userEvent.click(menu)
     const drawer = canvas.getByRole('dialog', { name: 'Navigation' })
     await expectNoPageOverflow()
+    await expectWorkspaceFits(canvasElement)
     await userEvent.click(within(drawer).getByRole('button', { name: 'New conversation' }))
     await expect(canvas.queryByRole('dialog', { name: 'Navigation' })).toBeNull()
     await expectNoPageOverflow()
+    await expectWorkspaceFits(canvasElement)
   },
 }
