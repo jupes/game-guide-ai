@@ -1121,6 +1121,8 @@ def test_j1_untrusted_text_lives_only_inside_the_one_data_block(
     assert human.count(opening) == 1 and human.count(closing) == 1
     head, body, tail, closing_line = human.split("\n")
     assert (head, tail) == (opening, closing) and "{" not in closing_line
+    doc = REGISTRY.document_type(doc_type.value)
+    assert doc is not None and closing_line == f"Write the {doc.label} the brief describes."
     assert json.loads(body) == _expected_payload(request)
 
 

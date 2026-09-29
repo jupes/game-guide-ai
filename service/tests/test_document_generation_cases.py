@@ -21,6 +21,7 @@ from service import document_generation as dg
 from service.models import Source
 from service.tests import document_generation_fixtures as fx
 from service.workbench_contracts import DocumentTypeId
+from service.workbench_registry import REGISTRY
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES = ROOT / "ingestion" / "eval_data" / "document_generation" / "cases.jsonl"
@@ -180,8 +181,10 @@ def test_l4_every_case_builds_offline_with_its_untrusted_text_inside_the_block(c
     system_message, human_message = dg.build_messages(request, new_nonce=lambda: "9" * 24)
     system, human = str(system_message.content), str(human_message.content)
     opening, closing = dg.data_tags("9" * 24)
-    head, body, tail, _ = human.split("\n")
+    head, body, tail, closing_line = human.split("\n")
     assert (head, tail) == (opening, closing) and json.loads(body)["brief"] == request.brief.strip()
+    doc = REGISTRY.document_type(case.doc_type)
+    assert doc is not None and closing_line == f"Write the {doc.label} the brief describes."
     if case.category == "injection":
         planted = [text for text in _case_text(case).split("\n") if text]
         assert not [text for text in planted if text[:30] in system]
