@@ -16,8 +16,8 @@ import pytest
 
 from ingestion import decision_bench as db
 
-FAKE_OPENAI_KEY = "sk-test-not-a-real-key-4f1d"
-FAKE_TYPESAFE_KEY = "ts-test-not-a-real-key-9c2e"
+FAKE_OPENAI_KEY = "fake-openai-key-for-tests-4f1d"
+FAKE_TYPESAFE_KEY = "fake-typesafe-key-for-tests-9c2e"
 
 
 @pytest.fixture(autouse=True)
