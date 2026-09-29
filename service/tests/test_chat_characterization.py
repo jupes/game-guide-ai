@@ -5,11 +5,14 @@ Characterization of `POST /chat` before the additive-retrieval refactor
 WHAT THIS PINS. Current behaviour, not desired behaviour: the strict Sage /
 Spell / Rules refusal, the GM empty-result refusal, the attachment bypass in
 `gate_node`, the reranker's gating and ordering, every retrieval failure
-boundary (a missing embedding key is a 503; OpenAI embedding API errors come
-out through the generation-error branch as 429 / 502 / 422; PostgreSQL errors
-are a 503), the history-write and attachment-fetch failures that already do not
-fail the answer, and the pre-retrieval authentication, authorization and budget
-gates, which refuse before anything is spent.
+boundary (since agent-forge-harness-xiu.2.3 every stage fault is typed: an
+embedding fault, a missing key included, is the embedding backend's 503, or
+the existing 422 `invalid_request` when the provider rejects the request, never
+the generation-error branch; a PostgreSQL retrieval error is the retrieval
+backend's 503; a reranker fault keeps the vector order), the history-write and
+attachment-fetch failures that already do not fail the answer, and the
+pre-retrieval authentication, authorization and budget gates, which refuse
+before anything is spent (a routing-store outage among them, a handled 503).
 
 HOW. Every test posts to `/chat` through the REAL `RagService`, the real
 compiled LangGraph pipeline and the real `RagRetriever` stage methods. Fakes sit
@@ -39,11 +42,14 @@ the ownership claim and the strategy binding were committed before the `try:`
 and stay. When both branches of the GM fan-out fail, which error wins is
 nondeterministic and deliberately not pinned. Error bodies are asserted
 content-free (a canary token in the prompt and in every injected fault, and the
-model / provider / secret names of D-9); log text is not asserted.
+model / provider / secret names of D-9). Log text is asserted only where a pin
+says so, and then as content-free: the class and the stage or category, never
+the canary.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections import Counter
@@ -87,26 +93,20 @@ FLAG_DEFAULT: frozenset[str] = frozenset({
     "test_attachment_bypasses_the_gate",
     "test_attachment_fetch_failure_falls_back_to_the_strict_refusal",
     "test_answerability_is_decided_before_rerank",
+    "test_embedding_api_errors_are_typed_embed_faults",
+    "test_embedding_and_generation_failures_are_distinguishable",
 })
 
 SLATED: dict[str, str] = {
-    "test_reranker_failure_is_an_internal_error":
-        "agent-forge-harness-xiu.2.3: a reranker fault degrades to the vector order instead of a 500",
     "test_missing_embedding_key_is_a_503":
         "agent-forge-harness-xiu.2.3: a missing embedding key becomes a typed embed fault that degrades",
-    "test_embedding_api_errors_surface_through_the_generation_error_branch":
-        "agent-forge-harness-xiu.2.3: embedding API errors become typed embed faults, not provider 429/502/422",
-    "test_embedding_and_generation_failures_are_indistinguishable":
-        "agent-forge-harness-xiu.2.3: an embed failure becomes distinguishable from a generation failure",
     "test_retrieval_database_errors_are_a_503":
         "agent-forge-harness-xiu.2.3: vector-search and fetch faults degrade to generation instead of a 503",
     "test_gm_secondary_failure_fails_the_turn":
         "agent-forge-harness-xiu.2.3: a secondary-retriever fault degrades to the primary result",
     "test_history_write_failure_does_not_fail_the_answer":
-        "agent-forge-harness-xiu.2.3: the persistence consistency policy (plan, Failure contract, "
-        "'Message persistence failure') may change the status or the partial rows",
-    "test_strategy_claim_failure_status":
-        "agent-forge-harness-xiu.2.3: a strategy-claim outage gets a handled status instead of Starlette's raw 500",
+        "agent-forge-harness-ul21: the message-persistence consistency policy may change the status or the "
+        "partial rows",
     "test_gm_channel_refuses_a_non_dm_session_before_retrieval":
         "agent-forge-harness-ubw: the dm-role check becomes campaign ownership plus tier (TA-3); "
         "any caller still refused must still spend nothing",
@@ -139,6 +139,8 @@ _PINNED_KEYS = ("answer", "sources", "answerable", "mode", "conversation_id", "s
                 "spell_content", "stat_block")
 _SOURCE_FIELDS = ("book", "chapter", "section", "entity", "page", "snippet")
 _RETRIEVAL_DOWN = {"detail": "retrieval backend unavailable"}
+_EMBED_DOWN = {"detail": "embedding backend unavailable"}
+_ROUTING_DOWN = {"detail": "authorization backend unavailable"}
 _INTERNAL = {"detail": "internal error"}
 
 
@@ -409,6 +411,18 @@ class ProbedStore(InMemoryMessageStore):
             conversation_id, strategy=strategy, manual_alias=manual_alias, catalog_revision=catalog_revision,
         )
 
+    def conversation_binding(self, conversation_id: str) -> tuple[str, str | None, str | None] | None:
+        self._enter("conversation_binding")
+        return super().conversation_binding(conversation_id)
+
+    def rebind_conversation_strategy(
+        self, conversation_id: str, *, strategy: str, manual_alias: str | None, catalog_revision: str,
+    ) -> None:
+        self._enter("rebind_conversation_strategy")
+        super().rebind_conversation_strategy(
+            conversation_id, strategy=strategy, manual_alias=manual_alias, catalog_revision=catalog_revision,
+        )
+
 
 # ── Harness ───────────────────────────────────────────────────────────────────
 
@@ -614,6 +628,19 @@ def _timeout() -> openai.APITimeoutError:
     return exc
 
 
+def _d4(category: str, retryable: bool) -> dict[str, object]:
+    """The D4 provider-error body, as the generation branch answers it."""
+    return {"detail": {"category": category, "retryable": retryable,
+                       "message": service_app._ERROR_DETAIL[category]}}
+
+
+def assert_logs_content_free(caplog: pytest.LogCaptureFixture, *present: str) -> None:
+    """The log lines name the class and the stage or category, never the canary."""
+    for word in present:
+        assert word in caplog.text, word
+    assert CANARY not in caplog.text
+
+
 # ── Grounded routes and the strict gate ───────────────────────────────────────
 
 
@@ -791,15 +818,43 @@ def test_answerability_is_decided_before_rerank(post_chat: Callable[..., ChatRun
 
 
 @pytest.mark.parametrize("exc_type", [RuntimeError, OSError])
-def test_reranker_failure_is_an_internal_error(
-    post_chat: Callable[..., ChatRun], exc_type: type[Exception],
+def test_reranker_failure_degrades_to_the_vector_order(
+    post_chat: Callable[..., ChatRun], caplog: pytest.LogCaptureFixture, exc_type: type[Exception],
 ) -> None:
+    # Flipped by xiu.2.3 from a 500: ranking is garnish and the evidence is intact.
+    caplog.set_level(logging.WARNING)
     reranker = CountingReranker(exc_type(f"cross-encoder failed {CANARY}"))
     run = post_chat(FAILING_PROMPT, rows=HIT, reranker=reranker)
-    assert (run.response.status_code, run.response.json()) == (500, _INTERNAL)
-    assert (reranker.calls, run.llm.calls, run.rows()) == (1, 0, [])
-    assert_failure_metrics(run, "handler")
-    assert_content_free(run, fault=True)
+    assert_answer(run, answer=FAKE_ANSWER, answerable=True, sources=[corpus_source(r) for r in HIT], mode="sage")
+    assert (reranker.calls, run.llm.calls) == (1, 1)
+    assert run.rows() == [("user", FAILING_PROMPT), ("assistant", FAKE_ANSWER)]
+    assert_gate_metric(run, True, "sage")
+    assert [CANARY in str(exc) for exc in reranker.raised] == [True]
+    assert_logs_content_free(caplog, "stage=rerank", f"error={exc_type.__name__}")
+
+
+class FixedOrderReranker(CountingReranker):
+    """Answers a fixed order, a permutation or not."""
+
+    def __init__(self, order: list[int]) -> None:
+        super().__init__()
+        self.order = order
+
+    def rerank(self, query: str, texts: list[str]) -> list[int]:
+        self._fire()
+        return list(self.order)
+
+
+def test_an_invalid_rerank_order_keeps_the_vector_order(
+    post_chat: Callable[..., ChatRun], caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A duplicate index used to answer 200 with the Cockatrice chunk silently gone (V-8).
+    caplog.set_level(logging.WARNING)
+    reranker = FixedOrderReranker([0, 0])
+    run = post_chat(PROSE, rows=HIT, reranker=reranker)
+    assert_answer(run, answer=FAKE_ANSWER, answerable=True, sources=[corpus_source(r) for r in HIT], mode="sage")
+    assert (reranker.calls, run.llm.calls) == (1, 1)
+    assert_logs_content_free(caplog, "stage=rerank", "error=RerankOrderInvalid")
 
 
 # ── Embedding failures ────────────────────────────────────────────────────────
@@ -819,58 +874,65 @@ def test_missing_embedding_key_is_a_503(
 
 
 _EMBED_ERRORS = [
-    pytest.param(_rate_limit, 429, "rate_limit", True, "unknown", id="rate_limit"),
-    pytest.param(_timeout, 502, "timeout", True, "dependency", id="timeout"),
+    pytest.param(_rate_limit, retrieval.EMBED_MAX_ATTEMPTS, 503, "dependency", id="rate_limit"),
+    pytest.param(_timeout, retrieval.EMBED_MAX_ATTEMPTS, 503, "dependency", id="timeout"),
     pytest.param(lambda: openai.APIConnectionError(message=f"Connection error. {CANARY}", request=_EMBED_REQUEST),
-                 502, "upstream_unavailable", True, "dependency", id="connection"),
+                 retrieval.EMBED_MAX_ATTEMPTS, 503, "dependency", id="connection"),
     pytest.param(lambda: _status_error(openai.InternalServerError, 500),
-                 502, "upstream_unavailable", True, "dependency", id="server_error"),
-    pytest.param(lambda: _status_error(openai.AuthenticationError, 401),
-                 502, "authentication", False, "dependency", id="authentication"),
-    pytest.param(lambda: _status_error(openai.PermissionDeniedError, 403),
-                 502, "quota", False, "dependency", id="permission"),
-    pytest.param(lambda: _status_error(openai.BadRequestError, 400),
-                 422, "invalid_request", False, "validation", id="bad_request"),
+                 retrieval.EMBED_MAX_ATTEMPTS, 503, "dependency", id="server_error"),
+    pytest.param(lambda: _status_error(openai.AuthenticationError, 401), 1, 503, "dependency", id="authentication"),
+    pytest.param(lambda: _status_error(openai.PermissionDeniedError, 403), 1, 503, "dependency", id="permission"),
+    pytest.param(lambda: _status_error(openai.BadRequestError, 400), 1, 422, "validation", id="bad_request"),
 ]
 
 
-@pytest.mark.parametrize(("make_exc", "status", "category", "retryable", "metric"), _EMBED_ERRORS)
-def test_embedding_api_errors_surface_through_the_generation_error_branch(
-    post_chat: Callable[..., ChatRun], make_exc: Callable[[], BaseException], status: int, category: str,
-    retryable: bool, metric: str,
+@pytest.mark.parametrize(("make_exc", "embed_calls", "status", "metric"), _EMBED_ERRORS)
+def test_embedding_api_errors_are_typed_embed_faults(
+    post_chat: Callable[..., ChatRun], make_exc: Callable[[], BaseException], embed_calls: int, status: int,
+    metric: str,
 ) -> None:
+    # Flipped by xiu.2.3 from the generation branch's 429/502: an embed fault is
+    # the embedding backend's 503, or the existing 422 when the provider rejects
+    # the request (a retry cannot help it). The service-owned embed retry tries
+    # a transient fault EMBED_MAX_ATTEMPTS times, anything else once.
     run = post_chat(FAILING_PROMPT, rows=HIT, emb_exc=make_exc())
-    detail = {"category": category, "retryable": retryable, "message": service_app._ERROR_DETAIL[category]}
-    assert (run.response.status_code, run.response.json()) == (status, {"detail": detail})
-    assert run.response.headers.get("retry-after") == ("7" if category == "rate_limit" else None)
+    body = _EMBED_DOWN if status == 503 else _d4("invalid_request", False)
+    assert (run.response.status_code, run.response.json()) == (status, body)
+    cause = run.emb.raised[0]
+    if isinstance(cause, openai.RateLimitError):
+        assert cause.response.headers["retry-after"] == "7"  # on the cause, never forwarded
+    assert "retry-after" not in run.response.headers
     assert "x-chat-throttled" not in run.response.headers
-    # The service-owned embed retry (xiu.2.3) tries a transient fault twice, anything else once.
-    embed_calls = retrieval.EMBED_MAX_ATTEMPTS if category in ("rate_limit", "timeout", "upstream_unavailable") else 1
     assert (run.emb.calls, run.searches, run.llm.calls, run.rows()) == (embed_calls, 0, 0, [])
     assert_failure_metrics(run, metric)
     assert_content_free(run, fault=True)
-    if category == "authentication":
+    if isinstance(cause, openai.AuthenticationError):
         # Committed before the handler's try: the failed turn leaves them in place.
         assert run.store.owner_of(CONV) == 1
         assert run.store.conversation_strategy(CONV) == ("auto", None)
 
 
-@pytest.mark.parametrize(("make_exc", "embed_calls", "llm_calls"), [
-    pytest.param(lambda: _status_error(openai.AuthenticationError, 401), 1, 1, id="authentication"),
-    pytest.param(_rate_limit, retrieval.EMBED_MAX_ATTEMPTS, generate_module._MAX_ATTEMPTS, id="rate_limit"),
+@pytest.mark.parametrize(("make_exc", "embed_calls", "llm_calls", "at_generation"), [
+    pytest.param(lambda: _status_error(openai.AuthenticationError, 401), 1, 1,
+                 (502, _d4("authentication", False), None), id="authentication"),
+    pytest.param(_rate_limit, retrieval.EMBED_MAX_ATTEMPTS, generate_module._MAX_ATTEMPTS,
+                 (429, _d4("rate_limit", True), "7"), id="rate_limit"),
 ])
-def test_embedding_and_generation_failures_are_indistinguishable(
+def test_embedding_and_generation_failures_are_distinguishable(
     post_chat: Callable[..., ChatRun], make_exc: Callable[[], BaseException], embed_calls: int, llm_calls: int,
+    at_generation: tuple[int, dict[str, object], str | None],
 ) -> None:
-    at_embed = post_chat(FAILING_PROMPT, rows=HIT, emb_exc=make_exc())
-    at_generation = post_chat(FAILING_PROMPT, rows=HIT, llm_exc=make_exc())
-    assert (at_embed.emb.calls, at_embed.llm.calls) == (embed_calls, 0)
-    assert (at_generation.emb.calls, at_generation.llm.calls) == (1, llm_calls)
+    # Flipped by xiu.2.3: the same class at embed and at generation used to answer identically.
+    embed_run = post_chat(FAILING_PROMPT, rows=HIT, emb_exc=make_exc())
+    generation_run = post_chat(FAILING_PROMPT, rows=HIT, llm_exc=make_exc())
+    assert (embed_run.emb.calls, embed_run.llm.calls) == (embed_calls, 0)
+    assert (generation_run.emb.calls, generation_run.llm.calls) == (1, llm_calls)
     seen = [(r.response.status_code, r.response.json(), r.response.headers.get("retry-after"))
-            for r in (at_embed, at_generation)]
-    assert seen[0] == seen[1]
-    assert seen[0][0] in (429, 502)
-    for run in (at_embed, at_generation):
+            for r in (embed_run, generation_run)]
+    assert seen[0] == (503, _EMBED_DOWN, None)
+    assert seen[1] == at_generation  # generation keeps its D4 answer exactly
+    assert seen[0] != seen[1]
+    for run in (embed_run, generation_run):
         assert_content_free(run, fault=True)
 
 
@@ -1096,10 +1158,62 @@ def test_strategy_claim_failure_spends_nothing(post_chat: Callable[..., ChatRun]
 
 
 def test_strategy_claim_failure_status(post_chat: Callable[..., ChatRun]) -> None:
+    # Flipped by xiu.2.3 (N-6) from Starlette's raw 500: a handled 503, so the
+    # response carries a JSON body, the security headers and the chat metrics.
     run = _strategy_claim_outage(post_chat)
-    # Unhandled: outside the handler's try, so Starlette answers (N-6).
-    assert (run.response.status_code, run.response.text) == (500, "Internal Server Error")
+    assert (run.response.status_code, run.response.json()) == (503, _ROUTING_DOWN)
+    assert "content-security-policy" in run.response.headers
+    assert_failure_metrics(run, "dependency")
     assert_content_free(run, fault=True)
+
+
+RETIRED_ALIAS = "kimi-k3"  # disabled, with no configured successor: a binding to it heals to auto
+
+
+@pytest.mark.parametrize("method", ["conversation_binding", "claim_conversation_strategy",
+                                    "rebind_conversation_strategy"], ids=["binding", "claim", "rebind"])
+def test_a_routing_store_outage_fails_closed_with_a_handled_503(
+    post_chat: Callable[..., ChatRun], caplog: pytest.LogCaptureFixture, method: str,
+) -> None:
+    caplog.set_level(logging.WARNING)
+    store = ProbedStore()
+    if method == "rebind_conversation_strategy":
+        # A D-9-era manual pick the catalog has since retired; posting "auto",
+        # the successor the server names, makes the turn rebind (j9w).
+        assert get_profile(RETIRED_ALIAS) is None
+        store.claim_conversation(CONV, 1)
+        store.claim_conversation_strategy(CONV, strategy="manual", manual_alias=RETIRED_ALIAS,
+                                          catalog_revision=CATALOG_REVISION)
+    store.faults[method] = db_down("conversation routing")
+    run = post_chat(FAILING_PROMPT, rows=HIT, store=store)
+    assert store.calls[method] == 1  # the faulted call ran (for rebind: the heal branch was reached)
+    assert (run.response.status_code, run.response.json()) == (503, _ROUTING_DOWN)
+    assert "content-security-policy" in run.response.headers
+    assert_failure_metrics(run, "dependency")
+    assert_no_spend(run)
+    assert_content_free(run, fault=True)
+    assert_logs_content_free(caplog, "conversation routing store unavailable", "error=OperationalError")
+
+
+_LOG_CASES = [
+    pytest.param(lambda: {"llm_exc": _rate_limit()}, 429, ("error=RateLimitError", "category=rate_limit"),
+                 id="generation"),
+    pytest.param(lambda: {"emb_exc": _timeout()}, 503, ("error=APITimeoutError", "stage=embed"), id="embed_typed"),
+    pytest.param(lambda: {"corpus_fail": {"search": db_down("vector search")}}, 503,
+                 ("error=OperationalError", "stage=vector_search"), id="corpus_typed"),
+]
+
+
+@pytest.mark.parametrize(("arrange", "status", "present"), _LOG_CASES)
+def test_chat_error_logs_carry_the_class_never_the_message(
+    post_chat: Callable[..., ChatRun], caplog: pytest.LogCaptureFixture,
+    arrange: Callable[[], dict[str, object]], status: int, present: tuple[str, ...],
+) -> None:
+    caplog.set_level(logging.WARNING)
+    run = post_chat(FAILING_PROMPT, rows=HIT, **arrange())
+    assert run.response.status_code == status
+    assert_content_free(run, fault=True)  # the fault fired, and it carried the canary
+    assert_logs_content_free(caplog, *present)
 
 
 # ── The registries themselves ─────────────────────────────────────────────────
@@ -1114,11 +1228,22 @@ def test_characterization_registries_name_real_tests() -> None:
     assert all(_SLATED_VALUE.match(owner) for owner in SLATED.values()), SLATED
     # The split pins: the slated halves are owned as recorded, the invariant halves are unregistered.
     assert SLATED["test_gm_channel_refuses_a_non_dm_session_before_retrieval"].startswith("agent-forge-harness-ubw: ")
-    for slated_half in ("test_history_write_failure_does_not_fail_the_answer", "test_strategy_claim_failure_status"):
-        assert SLATED[slated_half].startswith("agent-forge-harness-xiu.2.3: ")
+    assert SLATED["test_history_write_failure_does_not_fail_the_answer"].startswith("agent-forge-harness-ul21: ")
+    # After xiu.2.3 PR-2: what the flag-free changes flipped, and what its PR-3 still owns.
+    assert {"test_embedding_api_errors_are_typed_embed_faults",
+            "test_embedding_and_generation_failures_are_distinguishable"} <= FLAG_DEFAULT
+    assert {name for name, owner in SLATED.items() if owner.startswith("agent-forge-harness-xiu.2.3: ")} == {
+        "test_missing_embedding_key_is_a_503", "test_retrieval_database_errors_are_a_503",
+        "test_gm_secondary_failure_fails_the_turn",
+    }
     for invariant in ("test_history_write_failure_is_not_reported_as_a_retrieval_failure",
                       "test_strategy_claim_failure_spends_nothing",
+                      "test_strategy_claim_failure_status",
                       "test_pre_retrieval_gates_fail_closed_without_spending_retrieval",
-                      "test_the_service_embedding_client_is_bounded"):
+                      "test_the_service_embedding_client_is_bounded",
+                      "test_reranker_failure_degrades_to_the_vector_order",
+                      "test_an_invalid_rerank_order_keeps_the_vector_order",
+                      "test_a_routing_store_outage_fails_closed_with_a_handled_503",
+                      "test_chat_error_logs_carry_the_class_never_the_message"):
         assert invariant in defined
         assert invariant not in registered
