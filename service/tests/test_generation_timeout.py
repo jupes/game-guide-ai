@@ -485,31 +485,56 @@ def test_a_turn_whose_answer_trickles_ends_at_its_budget_with_the_existing_timeo
     assert svc.elapsed < TURN_S + TURN_SLACK_S
 
 
-def test_an_attempt_ends_at_the_turn_deadline_when_that_comes_before_its_own(
-    stalled: Callable[..., StalledProvider], turn: None, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    short_turn_s = DEADLINE_S / 4
-    monkeypatch.setattr(provider_deadline, "TURN_BUDGET_S", short_turn_s)
-    provider = stalled(_JSON_HEADERS, drip_s=DRIP_S)
-    client = ProviderClientFactory().client_for(DEFAULT_ALIAS)
+SHORT_TURN_S = DEADLINE_S / 4  # a turn that ends well before an attempt's own deadline
 
-    def one_attempt_in_a_turn() -> object:
+
+def _in_a_turn(call: Callable[[], object]) -> Callable[[], object]:
+    def within() -> object:
         token = provider_deadline.begin_turn()
         try:
-            return generate_module.generate_result(
-                [HumanMessage(content="hi")], alias=DEFAULT_ALIAS, client=client, max_attempts=1,
-            )
+            return call()
         finally:
             provider_deadline.end_turn(token)
 
+    return within
+
+
+def test_an_attempt_ends_at_the_turn_deadline_when_that_comes_before_its_own(
+    stalled: Callable[..., StalledProvider], turn: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(provider_deadline, "TURN_BUDGET_S", SHORT_TURN_S)
+    provider = stalled(_JSON_HEADERS, drip_s=DRIP_S)
+    client = ProviderClientFactory().client_for(DEFAULT_ALIAS)
     began = time.monotonic()
-    raised = on_own_thread(one_attempt_in_a_turn)
+    raised = on_own_thread(_in_a_turn(lambda: generate_module.generate_result(
+        [HumanMessage(content="hi")], alias=DEFAULT_ALIAS, client=client, max_attempts=1,
+    )))
     elapsed = time.monotonic() - began
     # Made and cut short, not refused; nearer the turn's deadline than its own.
     assert isinstance(raised, openai.APITimeoutError)
     assert not isinstance(raised, generate_module.TurnBudgetExhausted)
-    assert short_turn_s - CLOCK_SLACK_S <= elapsed < (short_turn_s + DEADLINE_S) / 2
+    assert SHORT_TURN_S - CLOCK_SLACK_S <= elapsed < (SHORT_TURN_S + DEADLINE_S) / 2
     assert provider.hung_up_on(1)
+
+
+def test_a_request_queued_in_a_turn_ends_at_the_turn_deadline(
+    stalled: Callable[..., StalledProvider], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(provider_deadline, "TURN_BUDGET_S", SHORT_TURN_S)
+    provider = stalled(_JSON_HEADERS, drip_s=DRIP_S)
+    transport = provider_deadline.AttemptDeadlineTransport(DEADLINE_S, limits=httpx.Limits(max_connections=1))
+    waited: list[float] = []
+
+    def queue_behind_the_only_connection() -> object:
+        with httpx.Client(transport=transport, timeout=None) as client, client.stream("POST", provider.url):
+            began = time.monotonic()
+            try:
+                return _in_a_turn(lambda: client.post(provider.url))()
+            finally:
+                waited.append(time.monotonic() - began)
+
+    assert isinstance(on_own_thread(queue_behind_the_only_connection), httpx.PoolTimeout)
+    assert waited[0] < (SHORT_TURN_S + DEADLINE_S) / 2
 
 
 def test_a_call_the_turn_cannot_afford_is_refused_before_it_starts(monkeypatch: pytest.MonkeyPatch) -> None:
