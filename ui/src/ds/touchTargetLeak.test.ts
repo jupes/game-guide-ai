@@ -13,12 +13,25 @@
  * `.aether-icon-btn[data-size="small"]` to shell/ChatPane.css left the full
  * storybook project at 44 files / 404 passed.
  *
- * This is the static guard for that gap: no *.css file OUTSIDE src/ds/ (the
- * one place the 44px floor is allowed to be declared) may set min-height,
- * min-width, height or width on a selector that names `.aether-btn` or
- * `.aether-icon-btn`. jsdom does not evaluate CSS or load stylesheets
- * together the way a real page does, so — like audioStyles.test.ts — this
- * reads the files directly instead of rendering them.
+ * This is the static guard for that gap: no *.css file outside `ds/Button.css`
+ * and `ds/IconButton.css` (the only two places the 44px floor is allowed to be
+ * declared) may set a physical or logical min/size property on a selector
+ * that names `.aether-btn`/`.aether-icon-btn`, a bare `button` type selector,
+ * or `[data-size`. jsdom does not evaluate CSS or load stylesheets together
+ * the way a real page does, so — like audioStyles.test.ts — this reads the
+ * files directly instead of rendering them.
+ *
+ * agent-forge-harness-opn (#138 M-1): the original guard only matched
+ * `.aether-btn`/`.aether-icon-btn` by name and only the four physical size
+ * properties, and exempted every file under src/ds/, not just the two that
+ * actually own the floor. `.left-nav button[data-size="small"] { min-height:
+ * 0 }` shrinks the exact same rendered elements the class-name check protects
+ * — Button/IconButton stamp `data-size` on themselves and are real `<button>`
+ * elements — but named neither `.aether-btn` nor `.aether-icon-btn`, so it
+ * passed; so did the same shrink written with `min-block-size`/
+ * `min-inline-size` instead of `min-height`/`min-width`; so would a shrink
+ * written into any other src/ds/*.css file, since the whole directory was
+ * exempt rather than just the two files the floor belongs in.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -28,22 +41,24 @@ import { dirname, join, relative } from 'node:path'
 
 const SRC_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
 
-/** Every *.css file under src/, outside src/ds/ (the floor's one legitimate home). */
-function cssFilesOutsideDs(dir: string): string[] {
+/** The only two files the 44px floor is allowed to live in. */
+const FLOOR_OWNERS = [join(SRC_DIR, 'ds', 'Button.css'), join(SRC_DIR, 'ds', 'IconButton.css')]
+
+/** Every *.css file under src/, outside the floor's two legitimate owners. */
+function cssFilesOutsideFloorOwners(dir: string): string[] {
   const found: string[] = []
   for (const name of readdirSync(dir)) {
     const full = join(dir, name)
     if (statSync(full).isDirectory()) {
-      if (relative(SRC_DIR, full) === 'ds') continue
-      found.push(...cssFilesOutsideDs(full))
-    } else if (name.endsWith('.css')) {
+      found.push(...cssFilesOutsideFloorOwners(full))
+    } else if (name.endsWith('.css') && !FLOOR_OWNERS.includes(full)) {
       found.push(full)
     }
   }
   return found
 }
 
-const GUARDED_FILES = cssFilesOutsideDs(SRC_DIR)
+const GUARDED_FILES = cssFilesOutsideFloorOwners(SRC_DIR)
 
 /** CSS comments hold prose, not declarations. */
 const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, ' ')
@@ -52,7 +67,33 @@ const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, ' ')
  * of them, such as `.aether-btn__state` or `.aether-icon-btn__label`. */
 const NAMES_GUARDED_CLASS = /\.aether-(?:icon-)?btn(?![\w-])/
 
-const SIZE_PROPERTIES = ['min-height', 'min-width', 'height', 'width']
+/** A bare `button` type selector, e.g. `.left-nav button[data-size="small"]`
+ * or `.foo > button:hover` — not a class whose name merely contains the
+ * substring, such as `.send-button` (a hyphen still starts a word boundary,
+ * so this must additionally require what follows "button" to end the token:
+ * whitespace, a combinator, or a compounding `.`/`[`/`:`, never `-`). */
+const NAMES_BUTTON_ELEMENT = /(?:^|[\s,>+~(])button(?=[\s,>+~).:[\],]|$)/
+
+/** Button/IconButton stamp their own size tier on themselves as `data-size`;
+ * nothing else in this design system uses that attribute. */
+const NAMES_DATA_SIZE_ATTR = /\[data-size\b/
+
+const isGuardedSelector = (selector: string): boolean =>
+  NAMES_GUARDED_CLASS.test(selector) || NAMES_BUTTON_ELEMENT.test(selector) || NAMES_DATA_SIZE_ATTR.test(selector)
+
+/** Physical and logical size properties both floor or shrink a target; a
+ * writing-mode-aware shrink through min-block-size/min-inline-size is exactly
+ * as real as one through min-height/min-width (#138 M-1). */
+const SIZE_PROPERTIES = [
+  'min-height',
+  'min-width',
+  'height',
+  'width',
+  'min-block-size',
+  'min-inline-size',
+  'block-size',
+  'inline-size',
+]
 
 interface Block {
   selector: string
@@ -74,21 +115,25 @@ it('found the files it is meant to guard', () => {
   expect(GUARDED_FILES.length).toBeGreaterThanOrEqual(30)
   expect(GUARDED_FILES.some((f) => f.endsWith('ChatPane.css'))).toBe(true)
   expect(GUARDED_FILES.some((f) => f.endsWith('LeftNav.css'))).toBe(true)
-  expect(GUARDED_FILES.every((f) => !relative(SRC_DIR, f).startsWith('ds' + '\\') && !relative(SRC_DIR, f).startsWith('ds/'))).toBe(true)
+  expect(GUARDED_FILES).not.toContain(join(SRC_DIR, 'ds', 'Button.css'))
+  expect(GUARDED_FILES).not.toContain(join(SRC_DIR, 'ds', 'IconButton.css'))
+  // #138 M-1: the exclusion is narrowed to the floor's two owners, not the
+  // whole ds/ directory — every other src/ds/*.css file is guarded too.
+  expect(GUARDED_FILES.some((f) => f.endsWith(join('ds', 'Chip.css')))).toBe(true)
 })
 
-describe('touch-target floor cannot be beaten outside ds/ (agent-forge-harness-hxq / pr128 F1)', () => {
-  it('sets no min-height/min-width/height/width on .aether-btn or .aether-icon-btn from any stylesheet outside src/ds/', () => {
+describe('touch-target floor cannot be beaten outside ds/Button.css or ds/IconButton.css (agent-forge-harness-hxq / pr128 F1, broadened by agent-forge-harness-opn / #138 M-1)', () => {
+  it('sets no size property on .aether-btn/.aether-icon-btn, a bare button selector, or [data-size from any other stylesheet', () => {
     for (const file of GUARDED_FILES) {
       const css = stripComments(readFileSync(file, 'utf8'))
       for (const { selector, body } of blocks(css)) {
-        if (!NAMES_GUARDED_CLASS.test(selector)) continue
+        if (!isGuardedSelector(selector)) continue
         for (const property of SIZE_PROPERTIES) {
           expect(
             new RegExp(`(^|;)\\s*${property}\\s*:`).test(body),
             `${relative(SRC_DIR, file)}: selector "${selector.trim()}" sets ${property} on a button ` +
-              'class the ds/ 44px touch floor already governs — this can shrink the rendered ' +
-              'target below 44px in the real app even though no single storybook story sees it.',
+              'element/class/attribute the ds/ 44px touch floor already governs — this can shrink the ' +
+              'rendered target below 44px in the real app even though no single storybook story sees it.',
           ).toBe(false)
         }
       }

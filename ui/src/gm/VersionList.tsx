@@ -22,6 +22,12 @@
  *
  * Privacy (X-7): summaries and titles are GM-private. They are rendered and
  * nothing else — never an id, a class, a data attribute or a stored value.
+ *
+ * Focus while paging (agent-forge-harness-alf): while the button survives
+ * another page, focus normally stays where the reader put it — but if a real
+ * browser (Chromium does; jsdom never does) dropped it to `<body>` while the
+ * disabled button was loading, it is restored there without scrolling. Focus
+ * the reader has since moved elsewhere is never taken.
  */
 
 import * as React from 'react'
@@ -92,8 +98,18 @@ export function VersionList({
     const pending = awaitingPage.current
     if (pending === null || loadingMore || versions.length <= pending) return
     awaitingPage.current = null
-    // The button survives another page: leave focus where the reader put it.
-    if (hasMore && loadMoreRef.current !== null) return
+    if (hasMore && loadMoreRef.current !== null) {
+      // The button survives another page: leave focus where the reader put
+      // it — unless a real browser (Chromium does; jsdom never does) already
+      // dropped it to <body> while the button was disabled during the load,
+      // in which case restore it there without scrolling (agent-forge-harness-alf,
+      // same class of bug as GmThread's Load earlier, 1kg.3.7 / PR #136).
+      const active = document.activeElement
+      if (active === null || active === document.body) {
+        loadMoreRef.current.focus({ preventScroll: true })
+      }
+      return
+    }
     const arrived = versions[pending]
     if (arrived === undefined) return
     rowRefs.current.get(arrived.number)?.focus()
