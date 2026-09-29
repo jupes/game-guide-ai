@@ -1,0 +1,198 @@
+{
+  "schema": "Group",
+  "direction": "response",
+  "note": "A GM's named group of seats (btb, owner decision O-3). GM-only: never on a table channel (SEC-44). member_ids are the seats in it that are not removed, distinct and ascending by code point; they include seats not yet confirmed, so they are not recipients (SEC-50(5)). A removed group is never listed, so there is no removed state and no campaign id.",
+  "valid": [
+    {
+      "name": "two members",
+      "value": {
+        "schema_version": 1,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "Scouts",
+        "member_ids": [
+          "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+          "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+        ],
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a new group, empty",
+      "value": {
+        "schema_version": 1,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "Scouts",
+        "member_ids": [],
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:20:11Z"
+      }
+    },
+    {
+      "name": "a name at 40",
+      "value": {
+        "schema_version": 1,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "@repeat:a:40",
+        "member_ids": [
+          "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+          "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+        ],
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "every seat a campaign can hold",
+      "value": {
+        "schema_version": 1,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "Scouts",
+        "member_ids": [
+          "prt_member01", "prt_member02", "prt_member03", "prt_member04",
+          "prt_member05", "prt_member06", "prt_member07", "prt_member08",
+          "prt_member09", "prt_member10", "prt_member11", "prt_member12",
+          "prt_member13", "prt_member14", "prt_member15", "prt_member16",
+          "prt_member17", "prt_member18", "prt_member19", "prt_member20",
+          "prt_member21", "prt_member22", "prt_member23", "prt_member24",
+          "prt_member25", "prt_member26", "prt_member27", "prt_member28",
+          "prt_member29", "prt_member30", "prt_member31", "prt_member32",
+          "prt_member33", "prt_member34", "prt_member35", "prt_member36",
+          "prt_member37", "prt_member38", "prt_member39", "prt_member40"
+        ],
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a name past 40",
+      "why": "0019's CHECK on groups.name and check_group_name's bound: 40 code points",
+      "value": {
+        "schema_version": 1,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "@repeat:a:41",
+        "member_ids": [
+          "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+          "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+        ],
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "an empty name",
+      "why": "a stored name is 1 to 40 characters",
+      "value": {
+        "schema_version": 1,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "",
+        "member_ids": [
+          "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+          "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+        ],
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a seat twice",
+      "why": "a group holds a seat once; a repeat is always a server bug",
+      "value": {
+        "schema_version": 1,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "Scouts",
+        "member_ids": [
+          "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+          "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1"
+        ],
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "more members than a campaign has seats",
+      "why": "CAMPAIGN_SEATS_MAX (SEC-50(3)): 41 distinct seats cannot exist, so a group cannot hold them",
+      "value": {
+        "schema_version": 1,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "Scouts",
+        "member_ids": [
+          "prt_member01", "prt_member02", "prt_member03", "prt_member04",
+          "prt_member05", "prt_member06", "prt_member07", "prt_member08",
+          "prt_member09", "prt_member10", "prt_member11", "prt_member12",
+          "prt_member13", "prt_member14", "prt_member15", "prt_member16",
+          "prt_member17", "prt_member18", "prt_member19", "prt_member20",
+          "prt_member21", "prt_member22", "prt_member23", "prt_member24",
+          "prt_member25", "prt_member26", "prt_member27", "prt_member28",
+          "prt_member29", "prt_member30", "prt_member31", "prt_member32",
+          "prt_member33", "prt_member34", "prt_member35", "prt_member36",
+          "prt_member37", "prt_member38", "prt_member39", "prt_member40",
+          "prt_member41"
+        ],
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a member that is not an opaque id",
+      "why": "a member is a seat's participant id, never an alias (AUD-11)",
+      "value": {
+        "schema_version": 1,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "Scouts",
+        "member_ids": [
+          "Rook the Bold"
+        ],
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "no member_ids key",
+      "why": "every key is present; an empty group is []",
+      "value": {
+        "schema_version": 1,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "Scouts",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a removed state",
+      "why": "a removed group is never listed and never restored (I-2, I-8); a client strips what a newer server adds",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "Scouts",
+        "member_ids": [
+          "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+          "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+        ],
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "removed_at": null
+      }
+    },
+    {
+      "name": "a newer schema_version",
+      "why": "the version this contract speaks is 1",
+      "value": {
+        "schema_version": 2,
+        "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+        "name": "Scouts",
+        "member_ids": [
+          "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+          "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+        ],
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    }
+  ]
+}

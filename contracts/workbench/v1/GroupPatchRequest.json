@@ -1,0 +1,79 @@
+{
+  "schema": "GroupPatchRequest",
+  "direction": "request",
+  "note": "PATCH /campaigns/{id}/groups/{group_id}: a rename, and only that. The same name again changes nothing and answers 200. Removal is POST .../remove, is permanent, and has no archive (I-2).",
+  "valid": [
+    {
+      "name": "a rename",
+      "value": {
+        "schema_version": 1,
+        "name": "Watch"
+      }
+    },
+    {
+      "name": "a rename trimmed as the client trims",
+      "value": {
+        "schema_version": 1,
+        "name": " Watch "
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no name",
+      "why": "a rename is the only change a patch makes",
+      "value": {
+        "schema_version": 1
+      }
+    },
+    {
+      "name": "a null name",
+      "why": "a group always has a name",
+      "value": {
+        "schema_version": 1,
+        "name": null
+      }
+    },
+    {
+      "name": "a blank name",
+      "why": "1 to 40 characters after trimming",
+      "value": {
+        "schema_version": 1,
+        "name": " "
+      }
+    },
+    {
+      "name": "a name past 40",
+      "why": "0019's CHECK on groups.name",
+      "value": {
+        "schema_version": 1,
+        "name": "@repeat:a:41"
+      }
+    },
+    {
+      "name": "a lone surrogate in the name",
+      "why": "JSON allows the escape; UTF-8 does not. Refused on both sides, so it is a 422",
+      "value": {
+        "schema_version": 1,
+        "name": "Watch \ud83c"
+      }
+    },
+    {
+      "name": "an archive flag",
+      "why": "removing a group is its own route and cannot be undone; there is no archive (I-2)",
+      "value": {
+        "schema_version": 1,
+        "name": "Watch",
+        "archived": true
+      }
+    },
+    {
+      "name": "a newer schema_version",
+      "why": "the version this contract speaks is 1",
+      "value": {
+        "schema_version": 2,
+        "name": "Watch"
+      }
+    }
+  ]
+}
