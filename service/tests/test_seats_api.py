@@ -164,6 +164,39 @@ def test_accepting_binds_the_seat_to_the_caller_unconfirmed_and_a_repeat_changes
     assert client.get("/seats").json()["items"][0]["confirmed"] is True
 
 
+def test_a_seat_is_a_tavern_card_of_the_tables_facts_and_nothing_about_other_players(
+    client: TestClient, world: _World
+) -> None:
+    """Bead cfx, SEC-43: the seated card carries the GM's tone line and system,
+    the avatar, Concluded, when the table last met and whether it is live — and
+    no participant id, no seat count and no signal of the GM's prep."""
+    campaign = world.campaign()
+    client.patch(f"/campaigns/{campaign}", json={"schema_version": 1, "tone": "Grim"})
+    world.accepted(campaign, "Rook", PLAYER, "wren@example.com")
+    world.accepted(campaign, "Moth", 5, "moth@example.com")
+    world.seat(campaign, "Open")
+    with world.db.transaction() as unit:
+        world.stores.sessions.start(
+            unit, campaign, owner_id=GM_A, expires_at=T0 + timedelta(hours=12), now=T0
+        )
+    _as(PLAYER, "player")
+    items = client.get("/seats").json()["items"]
+    assert len(items) == 1
+    card = PlayerSeat.model_validate(items[0])
+    assert (card.tone, card.game_system.value, card.live, card.concluded) == ("Grim", "dnd5e", True, False)
+    assert card.last_played_at == T0
+    assert set(items[0]) == {
+        "schema_version", "campaign_id", "campaign_name", "alias", "accepted_at", "confirmed",
+        "tone", "game_system", "avatar_icon", "avatar_tone", "concluded", "last_played_at", "live",
+    }
+    _as(GM_A)
+    assert client.post(f"/campaigns/{campaign}/conclude").status_code == 200
+    _as(PLAYER, "player")
+    assert client.get("/seats").json()["items"][0]["concluded"] is True
+    _as(GM_B)
+    assert client.get("/seats").json()["items"] == [], "a GM who holds no seat there sees no card"
+
+
 # ── Decline and block ────────────────────────────────────────────────────────
 
 

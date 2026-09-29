@@ -12,8 +12,9 @@ reviewer sees, not a string a caller invents, so the ledger cannot quietly grow
 a vocabulary nobody agreed to. Reveal's three actions and the export ones are
 not here: ED-18(a) makes the table shared, and those belong to `1kg.7.1` and
 `1kg.5.2`, which add their own members without a migration. Nor is there a
-writer in this bead for the sixteen that are here — their callers are
-`1kg.2.2`'s and `1kg.2.3`'s routes. The reason is ownership, not use.
+writer in this bead for the eighteen that are here — their callers are
+`1kg.2.2`'s and `1kg.2.3`'s routes, and the tavern's Conclude and Reopen (bead
+cfx). The reason is ownership, not use.
 
 **A row carries identifiers, never content** (SEC-20, ED-26) — and no hash of
 any content either: ED-26 is explicit that no value derived from field text may
@@ -131,6 +132,10 @@ class AuditAction(str, Enum):
     SEAT_CONFIRMED = "seat.confirmed"
     CAMPAIGN_ARCHIVED = "campaign.archived"
     CAMPAIGN_RESTORED = "campaign.restored"
+    #: The GM marked the campaign concluded, or reopened it (actor `gm`; bead
+    #: cfx). Not an authorisation fact, so neither row carries a revision.
+    CAMPAIGN_CONCLUDED = "campaign.concluded"
+    CAMPAIGN_REOPENED = "campaign.reopened"
     CAMPAIGN_DELETED = "campaign.deleted"
     JOIN_BURST_REFUSED = "join.burst_refused"
 
@@ -145,7 +150,7 @@ class ActorKind(str, Enum):
 
 
 class ObjectKind(str, Enum):
-    """What the decision was **about** — one of the three things the sixteen
+    """What the decision was **about** — one of the three things the eighteen
     actions act on, and nothing else.
 
     Closed for the same reason `AuditAction` is, and for one more: a lower-case
@@ -286,6 +291,8 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     AuditAction.SEAT_CONFIRMED: {"participant_id": _PARTICIPANT},
     AuditAction.CAMPAIGN_ARCHIVED: {"campaign_id": _CAMPAIGN},
     AuditAction.CAMPAIGN_RESTORED: {"campaign_id": _CAMPAIGN},
+    AuditAction.CAMPAIGN_CONCLUDED: {"campaign_id": _CAMPAIGN},
+    AuditAction.CAMPAIGN_REOPENED: {"campaign_id": _CAMPAIGN},
     AuditAction.CAMPAIGN_DELETED: {
         "campaign_id": _CAMPAIGN,
         "participants": Shape.WHOLE_NUMBER,
@@ -323,6 +330,8 @@ ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
     AuditAction.SEAT_CONFIRMED: frozenset(),
     AuditAction.CAMPAIGN_ARCHIVED: frozenset(),
     AuditAction.CAMPAIGN_RESTORED: frozenset(),
+    AuditAction.CAMPAIGN_CONCLUDED: frozenset(),
+    AuditAction.CAMPAIGN_REOPENED: frozenset(),
     AuditAction.CAMPAIGN_DELETED: frozenset(),
     AuditAction.JOIN_BURST_REFUSED: frozenset(JOIN_BOUND.codes),
 }

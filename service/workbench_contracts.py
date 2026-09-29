@@ -3321,6 +3321,11 @@ EMAIL_MIN_CHARS = 3
 EMAIL_MAX_CHARS = 254
 #: `service/models.py`'s `MAX_PASSWORD_LENGTH`.
 PASSWORD_MAX_CHARS = 1024
+#: 0013's CHECK on `campaigns.tone`, the card's tone line (bead cfx).
+CAMPAIGN_TONE_MAX_CHARS = 80
+#: The most seats a campaign holds, open, offered and accepted alike: the cap
+#: `service/campaigns_api.py` enforces under the campaign lock (SEC-50(3)).
+CAMPAIGN_SEATS_MAX = 40
 
 
 def is_email_shaped(value: str) -> bool:
@@ -3346,6 +3351,10 @@ def _stored_request_text(value: str, *, low: int, high: int, what: str) -> str:
 
 def _a_campaign_name(value: str) -> str:
     return _stored_request_text(value, low=1, high=CAMPAIGN_NAME_MAX_CHARS, what="a campaign name")
+
+
+def _a_campaign_tone(value: str) -> str:
+    return _stored_request_text(value, low=1, high=CAMPAIGN_TONE_MAX_CHARS, what="a tone line")
 
 
 def _a_seat_alias(value: str) -> str:
@@ -3374,6 +3383,13 @@ def _a_password(value: SecretStr) -> SecretStr:
 #: read as stored — bounded, with no trim rule.
 CampaignNameRequest = Annotated[WireText, AfterValidator(_a_campaign_name)]
 CampaignName = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=CAMPAIGN_NAME_MAX_CHARS)]
+CampaignToneRequest = Annotated[WireText, AfterValidator(_a_campaign_tone)]
+CampaignTone = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=CAMPAIGN_TONE_MAX_CHARS)]
+#: A Material Symbols name, the tool registry's icon rule. The server picks one
+#: per campaign from a palette it may extend, so the wire bounds the shape and
+#: names no list (`service/campaign_summary_store.py`, AVATAR_ICONS).
+AvatarIcon = Annotated[str, StringConstraints(strict=True, pattern=r"^[a-z0-9_]{1,40}$")]
+SeatCount = Annotated[WireInt, Field(ge=0, le=CAMPAIGN_SEATS_MAX)]
 SeatAliasRequest = Annotated[WireText, AfterValidator(_a_seat_alias)]
 SeatAlias = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=SEAT_ALIAS_MAX_CHARS)]
 EmailAddress = Annotated[WireText, AfterValidator(_an_email_address)]
@@ -3395,10 +3411,41 @@ class SeatStatus(str, Enum):
     REMOVED = "removed"
 
 
+class GameSystem(str, Enum):
+    """The rules a campaign is played under: the card's system chip. One value,
+    because the service answers from the D&D 5e books alone (0013's CHECK)."""
+
+    DND5E = "dnd5e"
+
+
+class AvatarTone(str, Enum):
+    """A campaign avatar's colour family: the spec's two card tones."""
+
+    EMBER = "ember"
+    GOLD = "gold"
+
+
+class CampaignBadge(str, Enum):
+    """The one badge a card carries, or none — which means idle (bead cfx).
+    ``live``: a table session is running now. ``ready``: the next session has
+    prepared material waiting (interactions ADR §19 A-30)."""
+
+    LIVE = "live"
+    READY = "ready"
+
+
 class Campaign(_Contract):
     """One of the GM's campaigns. Every key is present; ``archived_at`` is
     ``null`` for a campaign in use. The owner is the session and is never on the
-    wire."""
+    wire.
+
+    The card's facts (bead cfx) ride on every answer that carries a campaign:
+    what the GM states — ``tone`` (optional), ``game_system``, ``concluded_at``
+    — and what the server derives at read time: the avatar, the badge, the seat
+    count, ``last_activity_at`` (the latest of a session played, a document
+    edited and a GM turn, never before ``created_at``), ``last_played_at``
+    (``null`` until the table first meets) and ``dormant``. Concluded is not
+    archived: a concluded campaign keeps its seats, documents and table."""
 
     schema_version: SchemaVersion
     campaign_id: OpaqueId
@@ -3406,6 +3453,16 @@ class Campaign(_Contract):
     created_at: Timestamp
     updated_at: Timestamp
     archived_at: Timestamp | None
+    concluded_at: Timestamp | None
+    tone: CampaignTone | None
+    game_system: GameSystem
+    avatar_icon: AvatarIcon
+    avatar_tone: AvatarTone
+    badge: CampaignBadge | None
+    seat_count: SeatCount
+    last_activity_at: Timestamp
+    last_played_at: Timestamp | None
+    dormant: StrictBool
 
 
 class CampaignPage(_Contract):
@@ -3419,19 +3476,23 @@ class CampaignPage(_Contract):
 
 class CampaignCreateRequest(_Contract):
     """``POST /campaigns``: the caller becomes its GM (D-5). No ``command_id``:
-    a retried create makes a second campaign, which archive recovers."""
+    a retried create makes a second campaign, which archive recovers. Only a
+    name is required (§12.2); a tone line is optional (§19 A-30)."""
 
     schema_version: SchemaVersion
     name: CampaignNameRequest
+    tone: CampaignToneRequest | None = None
 
 
 class CampaignPatchRequest(_Contract):
-    """``PATCH /campaigns/{id}``: rename, archive, restore. At least one key, and
-    none is nullable."""
+    """``PATCH /campaigns/{id}``: rename, archive, restore, and set the tone
+    line. At least one key. ``name`` and ``archived`` are never ``null``;
+    ``tone: null`` clears the tone line, which is how a line is removed."""
 
     schema_version: SchemaVersion
     name: CampaignNameRequest | None = None
     archived: StrictBool | None = None
+    tone: CampaignToneRequest | None = None
 
     @field_validator("name", "archived", mode="before")
     @classmethod
@@ -3443,7 +3504,7 @@ class CampaignPatchRequest(_Contract):
     @model_validator(mode="after")
     def _changes_something(self) -> Self:
         if not self.model_fields_set - {"schema_version"}:
-            raise ValueError("a patch names at least one of name and archived")
+            raise ValueError("a patch names at least one of name, archived and tone")
         return self
 
     @model_serializer(mode="wrap")
@@ -3534,7 +3595,13 @@ class SeatDeclineRequest(_Contract):
 
 class PlayerSeat(_Contract):
     """One of the caller's own seats. ``campaign_id`` is what the table address
-    will name (SEC-43); a participant id never reaches a table client."""
+    will name (SEC-43); a participant id never reaches a table client.
+
+    The seated card's facts (bead cfx) are the table's and nothing more: the
+    GM's tone line and system, the avatar, whether the campaign is concluded,
+    when the table last met and whether it is meeting now. Nothing about other
+    players — no seat count, no other seat — and no signal of the GM's private
+    prep: no READY, no last-edit time."""
 
     schema_version: SchemaVersion
     campaign_id: OpaqueId
@@ -3542,6 +3609,13 @@ class PlayerSeat(_Contract):
     alias: SeatAlias
     accepted_at: Timestamp
     confirmed: StrictBool
+    tone: CampaignTone | None
+    game_system: GameSystem
+    avatar_icon: AvatarIcon
+    avatar_tone: AvatarTone
+    concluded: StrictBool
+    last_played_at: Timestamp | None
+    live: StrictBool
 
 
 class PlayerSeatPage(_Contract):

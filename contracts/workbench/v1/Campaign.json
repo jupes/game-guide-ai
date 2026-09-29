@@ -1,7 +1,7 @@
 {
   "schema": "Campaign",
   "direction": "response",
-  "note": "One of the GM's campaigns (1kg.2.2). Every key is present; archived_at is null for a campaign in use. The owner is the session and is never on the wire.",
+  "note": "One of the GM's campaigns (1kg.2.2), with its tavern card's facts (bead cfx). Every key is present; archived_at and concluded_at are null for a campaign in use. tone, game_system and concluded_at are the GM's; the avatar, badge (live, ready or null), seat_count, last_activity_at, last_played_at and dormant are derived by the server. The owner is the session and is never on the wire.",
   "valid": [
     {
       "name": "a campaign in use",
@@ -11,7 +11,17 @@
         "name": "The Nocturne Heist",
         "created_at": "2026-09-16T19:20:11Z",
         "updated_at": "2026-09-16T19:31:24Z",
-        "archived_at": null
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
       }
     },
     {
@@ -22,7 +32,17 @@
         "name": "The Nocturne Heist",
         "created_at": "2026-09-16T19:20:11Z",
         "updated_at": "2026-09-16T19:31:24Z",
-        "archived_at": "2026-09-16T19:31:24Z"
+        "archived_at": "2026-09-16T19:31:24Z",
+        "concluded_at": null,
+        "tone": null,
+        "game_system": "dnd5e",
+        "avatar_icon": "castle",
+        "avatar_tone": "gold",
+        "badge": null,
+        "seat_count": 0,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": null,
+        "dormant": false
       }
     },
     {
@@ -33,7 +53,101 @@
         "name": " Nocturne ",
         "created_at": "2026-09-16T19:20:11Z",
         "updated_at": "2026-09-16T19:31:24Z",
-        "archived_at": null
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "a campaign at the table now",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "live",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-16T19:00:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "a dormant campaign",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": null,
+        "seat_count": 4,
+        "last_activity_at": "2026-03-04T21:00:00Z",
+        "last_played_at": "2026-03-04T21:00:00Z",
+        "dormant": true
+      }
+    },
+    {
+      "name": "a concluded campaign",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": "2026-09-16T19:31:24Z",
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": null,
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "a new campaign: no tone, never played, no seats",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": null,
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": null,
+        "seat_count": 0,
+        "last_activity_at": "2026-09-16T19:20:11Z",
+        "last_played_at": null,
+        "dormant": false
       }
     }
   ],
@@ -51,7 +165,17 @@
         "created_at": "2026-09-16T19:20:11Z",
         "updated_at": "2026-09-16T19:31:24Z",
         "archived_at": null,
-        "owner_id": 7
+        "owner_id": 7,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
       }
     },
     {
@@ -62,7 +186,17 @@
         "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
         "name": "The Nocturne Heist",
         "created_at": "2026-09-16T19:20:11Z",
-        "updated_at": "2026-09-16T19:31:24Z"
+        "updated_at": "2026-09-16T19:31:24Z",
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
       }
     },
     {
@@ -74,7 +208,17 @@
         "name": "",
         "created_at": "2026-09-16T19:20:11Z",
         "updated_at": "2026-09-16T19:31:24Z",
-        "archived_at": null
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
       }
     },
     {
@@ -86,7 +230,258 @@
         "name": "@repeat:n:121",
         "created_at": "2026-09-16T19:20:11Z",
         "updated_at": "2026-09-16T19:31:24Z",
-        "archived_at": null
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "a badge that is not one",
+      "why": "live, ready or null; idle is null (bead cfx)",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "idle",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "a missing badge",
+      "why": "every key is present; no badge is null, never absent",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "a seat count past the cap",
+      "why": "SEC-50(3): a campaign seats at most 40",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 41,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "a negative seat count",
+      "why": "a count",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": -1,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "a tone line past 80",
+      "why": "0013's CHECK",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "@repeat:t:81",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "an empty tone line",
+      "why": "no tone line is null, never empty",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "a system the service does not answer from",
+      "why": "0013's CHECK: dnd5e alone",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "pf2e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "an avatar tone off the palette",
+      "why": "ember or gold",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "blue",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "an avatar icon that is not an icon name",
+      "why": "a Material Symbols name",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "Sailing Ship",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
+      }
+    },
+    {
+      "name": "dormant as text",
+      "why": "no coercion",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": "2026-09-16T19:31:24Z",
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": "false"
+      }
+    },
+    {
+      "name": "no last activity",
+      "why": "a campaign has been active at least since it was made",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "concluded_at": null,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "badge": "ready",
+        "seat_count": 4,
+        "last_activity_at": null,
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "dormant": false
       }
     }
   ]
