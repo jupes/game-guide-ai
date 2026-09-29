@@ -13,6 +13,7 @@ Run from repo root:
 
 from __future__ import annotations
 
+import inspect
 import re
 from pathlib import Path
 
@@ -58,6 +59,17 @@ def test_live_openai_client_construction_disables_sdk_retries(monkeypatch):
     factory = ProviderClientFactory()
     client = factory.client_for("gpt-4o-mini")
     assert client.max_retries == 0
+
+
+@pytest.mark.parametrize("generation", [
+    generate.generate_answer, generate.generate_suggestions,
+    generate.generate_spell_content, generate.generate_stat_block,
+])
+def test_no_generation_call_can_build_its_own_client(generation):
+    # Each used to build a bare ChatOpenAI when handed client=None: no timeout,
+    # no attempt deadline, the SDK's retries on top of generate_result's
+    # (agent-forge-harness-7gf). The factory is the only way in.
+    assert inspect.signature(generation).parameters["client"].default is inspect.Parameter.empty
 
 
 def test_client_for_disabled_alias_raises_identically_to_unknown():
