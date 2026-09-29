@@ -2418,6 +2418,14 @@ export const SEAT_ALIAS_MAX_CHARS = 40
 export const EMAIL_MIN_CHARS = 3
 export const EMAIL_MAX_CHARS = 254
 export const PASSWORD_MAX_CHARS = 1024
+/** 0013's CHECK on a campaign's tone line (bead cfx). */
+export const CAMPAIGN_TONE_MAX_CHARS = 80
+/** The most seats a campaign holds (SEC-50(3)): the bound on a card's seat count. */
+export const CAMPAIGN_SEATS_MAX = 40
+export const GAME_SYSTEMS = ['dnd5e'] as const
+export const AVATAR_TONES = ['ember', 'gold'] as const
+/** A card's one badge; no badge (`null`) means idle. */
+export const CAMPAIGN_BADGES = ['live', 'ready'] as const
 export const SEAT_STATUSES = [
   'open', 'offered', 'not_accepted', 'awaiting_confirmation', 'confirmed', 'removed',
 ] as const
@@ -2446,13 +2454,19 @@ function storedRequestText(min: number, max: number, what: string) {
 }
 
 const CampaignNameRequestSchema = storedRequestText(1, CAMPAIGN_NAME_MAX_CHARS, 'a campaign name')
+const CampaignToneRequestSchema = storedRequestText(1, CAMPAIGN_TONE_MAX_CHARS, 'a tone line')
+/** A Material Symbols name: the server picks from a palette it may extend. */
+const AvatarIconSchema = z.string().regex(/^[a-z0-9_]{1,40}$/)
 const SeatAliasRequestSchema = storedRequestText(1, SEAT_ALIAS_MAX_CHARS, 'an alias')
 const EmailAddressSchema = storedRequestText(EMAIL_MIN_CHARS, EMAIL_MAX_CHARS, 'an address').refine(
   (value) => isEmailShaped(trimWire(value)),
   { message: 'an address has an @ that is neither first nor last, and no space' },
 )
 
-/** One of the GM's campaigns. The owner is the session and never on the wire. */
+/** One of the GM's campaigns. The owner is the session and never on the wire.
+ * The tavern card's facts (bead cfx): `tone`, `game_system` and `concluded_at`
+ * are the GM's; the avatar, `badge`, `seat_count`, `last_activity_at`,
+ * `last_played_at` and `dormant` are derived by the server. */
 export const CampaignSchema = z.object({
   schema_version: z.literal(CONTRACT_VERSION),
   campaign_id: OpaqueIdSchema,
@@ -2460,6 +2474,16 @@ export const CampaignSchema = z.object({
   created_at: TimestampSchema,
   updated_at: TimestampSchema,
   archived_at: TimestampSchema.nullable(),
+  concluded_at: TimestampSchema.nullable(),
+  tone: text(1, CAMPAIGN_TONE_MAX_CHARS).nullable(),
+  game_system: z.enum(GAME_SYSTEMS),
+  avatar_icon: AvatarIconSchema,
+  avatar_tone: z.enum(AVATAR_TONES),
+  badge: z.enum(CAMPAIGN_BADGES).nullable(),
+  seat_count: z.number().int().min(0).max(CAMPAIGN_SEATS_MAX),
+  last_activity_at: TimestampSchema,
+  last_played_at: TimestampSchema.nullable(),
+  dormant: z.boolean(),
 })
 export type Campaign = z.infer<typeof CampaignSchema>
 
@@ -2470,22 +2494,29 @@ export const CampaignPageSchema = z.object({
 })
 export type CampaignPage = z.infer<typeof CampaignPageSchema>
 
-/** `POST /campaigns`. No `command_id`: a retried create makes a second campaign. */
+/** `POST /campaigns`. No `command_id`: a retried create makes a second campaign.
+ * Only a name is required; a tone line is optional (bead cfx). */
 export const CampaignCreateRequestSchema = refusingProtoKeys(
-  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), name: CampaignNameRequestSchema }),
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    name: CampaignNameRequestSchema,
+    tone: CampaignToneRequestSchema.nullish(),
+  }),
 )
 export type CampaignCreateRequest = z.infer<typeof CampaignCreateRequestSchema>
 
-/** `PATCH /campaigns/{id}`: rename, archive, restore. At least one key; none is nullable. */
+/** `PATCH /campaigns/{id}`: rename, archive, restore, set or clear the tone line.
+ * At least one key; `name` and `archived` are never null, and `tone: null` clears. */
 export const CampaignPatchRequestSchema = refusingProtoKeys(
   z
     .strictObject({
       schema_version: z.literal(CONTRACT_VERSION),
       name: CampaignNameRequestSchema.optional(),
       archived: z.boolean().optional(),
+      tone: CampaignToneRequestSchema.nullable().optional(),
     })
-    .refine((patch) => patch.name !== undefined || patch.archived !== undefined, {
-      message: 'a patch names at least one of name and archived',
+    .refine((patch) => patch.name !== undefined || patch.archived !== undefined || patch.tone !== undefined, {
+      message: 'a patch names at least one of name, archived and tone',
     }),
 )
 export type CampaignPatchRequest = z.infer<typeof CampaignPatchRequestSchema>
@@ -2553,7 +2584,9 @@ export const SeatDeclineRequestSchema = refusingProtoKeys(
 )
 export type SeatDeclineRequest = z.infer<typeof SeatDeclineRequestSchema>
 
-/** One of the caller's own seats: the campaign's id, never the participant's (SEC-43). */
+/** One of the caller's own seats: the campaign's id, never the participant's (SEC-43).
+ * Its card's facts are the table's alone (bead cfx): no seat count, no other
+ * player and no signal of the GM's prep. */
 export const PlayerSeatSchema = z.object({
   schema_version: z.literal(CONTRACT_VERSION),
   campaign_id: OpaqueIdSchema,
@@ -2561,6 +2594,13 @@ export const PlayerSeatSchema = z.object({
   alias: text(1, SEAT_ALIAS_MAX_CHARS),
   accepted_at: TimestampSchema,
   confirmed: z.boolean(),
+  tone: text(1, CAMPAIGN_TONE_MAX_CHARS).nullable(),
+  game_system: z.enum(GAME_SYSTEMS),
+  avatar_icon: AvatarIconSchema,
+  avatar_tone: z.enum(AVATAR_TONES),
+  concluded: z.boolean(),
+  last_played_at: TimestampSchema.nullable(),
+  live: z.boolean(),
 })
 export type PlayerSeat = z.infer<typeof PlayerSeatSchema>
 

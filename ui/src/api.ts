@@ -103,6 +103,24 @@ export interface StatBlockContent {
   legendary_actions?: StatBlockEntry[] | null
 }
 
+/** service.models.RoutingInfo, as the client may know it (D-9): `requested`/
+ * `effective`/`fallback_from` are public model ids or 'auto', never a catalog
+ * alias or provider — see service/model_catalog.py's PUBLIC_MODELS. */
+export interface RoutingInfo {
+  requested: string
+  effective: string
+  strategy: 'auto' | 'manual'
+  /** Set only when this turn's conversation was bound to a manual pick the
+   * catalog has since retired and the server healed it
+   * (agent-forge-harness-j9w) — the retired pick's public id (or, for one
+   * the catalog dropped entirely, the preference this turn sent), so a
+   * client can tell a heal just happened. The client then sends `requested`
+   * from its next turn on — never `effective`, which after a heal to 'auto'
+   * is the model that answered, not the binding. Absent/null on every
+   * ordinary turn. */
+  fallback_from?: string | null
+}
+
 export interface ChatResponse {
   answer: string
   sources: Source[]
@@ -117,6 +135,10 @@ export interface ChatResponse {
   /** GM/Sage only, and only when the answer looked like a stat block;
    * null/absent otherwise or when structuring failed. */
   stat_block?: StatBlockContent | null
+  /** Which model answered, as the client may know it (b8o.2, D-9).
+   * None only when routing can't be resolved — never expected on a
+   * successful response. */
+  routing?: RoutingInfo | null
 }
 
 export type ChatResult =
