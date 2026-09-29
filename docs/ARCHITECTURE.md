@@ -784,6 +784,30 @@ below it. A page may therefore hold fewer entries than asked for â€” even none â
 with a non-null `next_cursor`; the walk still ends, and it never loses, repeats
 or reorders an entry.
 
+**Session dividers** (`agent-forge-harness-1kg.3.5`). A `session_divider` entry
+marks where a live table session started or ended in a thread, and `/recap`
+reads a thread from its latest start. The server writes every divider; no client
+and no route can. A Start that opened a session, and a closing whose outcome is
+`ended` or `expired` (an End, an expiry, or a Rotate or End of an overdue
+session), each enqueue one `timeline.session_divider` job `{session_id,
+boundary}`, last in the transaction that made the transition, so End, Rotate
+and expiry gain no lock, wait or refusal. A Rotate that rotated moves neither
+boundary (REVEAL-17), and a replayed Start or a repeated End enqueues nothing.
+The job (`service/session_dividers.py`, statements in
+`service/session_divider_store.py`) writes one divider into each conversation of
+the session's owner that is linked to the session's campaign, not archived and
+created by the boundary's time: the newest 100. A divider's `created_at` is the
+boundary's own time (`started_at`, or `ended_at`, which an expiry sets to
+`expires_at`), however late the job runs. `0017`'s partial unique index and the
+insert's matching conflict target keep one divider per thread, session and
+boundary under every job repeat. Dividers are ordinary stored entries: they
+page, reload and cascade like every other. Two consequences follow. A thread is
+only a divider target once it is linked to a campaign, and nothing in the client
+links one yet (`1kg.2.5`), so production writes no divider until it does; there
+is no backfill. And a thread created or linked mid-session gets the `end`
+without the `start`, so its recap reads from its beginning, which is not all
+play when the thread was created before the Start and linked after it.
+
 ## Workbench routes: the posture every new route inherits
 
 `service/workbench_api.py` (agent-forge-harness-oe6) is the seam every Workbench
