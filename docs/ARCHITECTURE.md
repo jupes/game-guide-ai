@@ -513,6 +513,105 @@ only read the seat. **None of these takes the campaign lock or advances
 (`narrow`, then the exclusive lock, the re-scan and the advance) belongs to the
 routes that call them, `1kg.5.2` for documents and `1kg.2.2` for participants.
 
+## Media assets (GM Workbench)
+
+Storage for a GM's images and audio, added by `1kg.8.1.1` (slice a of `1kg.8.1`):
+the media migration (`*_media_assets.sql`), the asset store in `service/asset_store.py`
+and the object store in `service/media_objects.py`. **It ships dark.** No route
+exists, nothing in `service/app.py` builds a store or registers a job kind, and
+nothing in the running service reads the media settings: slice b (`1kg.8.1.2`)
+wires them. Switching the capability on is the owner's decision (Q-5).
+
+### The tables
+
+| Table | Holds | The rule that shapes it |
+|---|---|---|
+| `campaign.assets` | one asset: its kind, what was declared (type, size, alt text), what the server measured (type, size, and dimensions or duration), a state, a failure reason, the command id that created it, and two object keys | never bytes and never a filename; `campaign_id` is **`ON DELETE NO ACTION`**; every CHECK mirrors the wire `Asset` validator, so every row a GM can read converts to a valid `Asset`; one index, `(campaign_id, state)`, and a partial unique index on `(campaign_id, created_command_id)` |
+| `campaign.media_usage` | per campaign, `bytes_reserved` and `asset_count` | a table of its own so that quota writes never contend on the campaign row; an `AFTER INSERT` trigger on `campaigns` writes it, and the migration backfilled every existing campaign; cascades with its campaign |
+
+**The states** (MS-3): `uploading` -> `processing` -> `ready` or `failed`;
+`processing` may return to `uploading` (MS-6's retry after a queue timeout); any
+of those four -> `deleted`, a storage-only **tombstone** the wire contract never
+carries. A tombstone keeps no alt text and no measured value, by the database's
+own CHECK. The machine is the store's and it is total: a mutator holds its row
+(`FOR NO KEY UPDATE`), then decides. Anything that is not the caller's live
+asset (missing, another owner's, another campaign's, or a tombstone) is one
+`MissingParent` with one fixed message; `IllegalTransition` is raised only for
+the caller's own live asset in the wrong state. Every entry into `uploading` or
+`processing` enqueues that state's deadline sweep (`asset.sweep_stuck`).
+
+**A key** is `tmp/<32 hex>` for an upload in flight, `assets/<32 hex>` for the
+processed original, or `assets/<32 hex>/<name>` for a derivative (`1kg.8.2`).
+The hex is 16 CSPRNG bytes minted independently of every input and of the other
+key, at insert, and never updated (a column of a non-partial unique index is a
+key column, so an update would take `FOR UPDATE`). A key is **not** a name, an
+owner, a campaign or a capability: the asset row is the only map from an owner
+to a key (MS-2), and no job payload carries a campaign id. The object store
+checks one key grammar before any I/O and refuses everything else with one
+fixed message.
+
+**The usage invariant**, after every write: `bytes_reserved` is the sum of the
+campaign's reservations (the declared size while `uploading` or `processing`,
+the real size once `ready`, nothing once `failed` or `deleted`), and
+`asset_count` counts the rows in `uploading`, `processing` or `ready`. Every
+write to it is one conditional `UPDATE` or an exact subtraction. A create
+inserts its row first, inside a savepoint, and only then reserves, so a replayed
+command returns its first asset without reserving anything even when the quota
+is now full, and a quota refusal rolls back to the savepoint and leaves the
+caller's transaction usable. The loser of two racing reservations changes
+nothing only because `Database.transaction()` runs READ COMMITTED.
+
+### Locks, ownership and deletion
+
+**The lock order**, which every path keeps: (0) `create` only, the campaign row
+`FOR KEY SHARE` in its ownership check, so a create that loses to the campaign's
+deletion answers `MissingParent` rather than a foreign-key violation; (1) the
+asset row or rows; (2) `media_usage`; (3) the outbox enqueue, **always last**,
+because a dedupe-keyed enqueue waits on another transaction's uncommitted job of
+the same key. Every path calls `note_row_lock()` and bounds its transaction
+before its first lock. Nothing takes `authz_state` or advances `authz_revision`
+(an asset has no eligibility of its own, ED-19), and no statement takes
+`FOR UPDATE`.
+
+**Two ownership fragments.** Every GM statement names its campaign and, through
+`GM_CAMPAIGNS`, the caller as its owner; `yje.2.1` adds the identity ADR's
+section 8.1 conjunct (the owner is Verified) there. The campaign primitive alone
+uses `OWNER_CAMPAIGNS`, which must **never** gain that conjunct: once a Deleted
+GM's campaigns are unavailable, a primitive scoped by the GM fragment would
+match nothing and `NO ACTION` would refuse that GM's erasure (`zkc`) for ever.
+`tests/test_asset_db.py` checks every statement by the fragment's name, since
+the two are the same text until then.
+
+**Deletion.** A GM's delete writes the tombstone, releases the reservation and,
+last, enqueues `asset.delete` with `{asset_id, object_key, tmp_key}` and the
+asset id as its dedupe key; it returns the job id, and the route (slice c)
+hands it to `job_driver.run_after_response`. The handler deletes the objects
+and then purges the row. **A campaign's deletion** (`1kg.2.6`) must stop
+creates first (the store's docstring names one way: lock the campaign row after
+`lock_campaign(exclusive)`), then call `delete_campaign_assets`, the primitive:
+one owner-scoped `DELETE ... RETURNING` removes every row, the usage is reduced
+by exactly what it returned (never zeroed), and one `asset.delete` is enqueued
+per removed row that was not already a tombstone. Only then can the campaign row
+go; PostgreSQL refuses it, directly or through the account cascade, while any
+asset row remains.
+
+### Settings, health, and what the table side does not do
+
+`MediaSettings.from_env` reads `WORKBENCH_MEDIA_ENABLED` (strictly `true`,
+`false`, `1`, `0` or unset; off by default) and `WORKBENCH_MEDIA_STORE` (unset
+by default, meaning no store is built; `filesystem` with an absolute
+`WORKBENCH_MEDIA_DIR`; `gcs` is refused by name until slice d; `memory` is built
+in code only). "Off" means no route, no store, no bucket and no cost; the store
+setting is separate from `enabled` because a deployment switched off must still
+finish the deletions it owes. Every refusal names the variable, never its value.
+Every object-store call outside `service/media_objects.py` goes through
+`via_store`, where slice c puts the thread limiter. The store's health signal
+for `1kg.9.2` is the read-only `reachable()`.
+
+**Table reads never use this store** (SEC-44(2)). A table's slot resolver finds
+its asset in its own `table_principal` query (SEC-16, SEC-41, `1kg.7.x`); the
+asset store is GM-side and system-side only.
+
 ## Running it
 
 ```bash

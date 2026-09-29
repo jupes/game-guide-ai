@@ -54,6 +54,9 @@ DOCUMENT: Final = "doc_"
 #: An offer of a seat to an address (1kg.2.2, D-12). It names a seat and an
 #: address, never an account: an offer binds to an account only at acceptance.
 SEAT_OFFER: Final = "sof_"
+#: SEC-4 names this one too: a GM-side media asset (1kg.8.1.1). The row holds
+#: object keys, never bytes, and a table client never sees this id (SEC-15).
+ASSET: Final = "ast_"
 
 PREFIXES: Final[tuple[str, ...]] = (
     CAMPAIGN,
@@ -64,6 +67,7 @@ PREFIXES: Final[tuple[str, ...]] = (
     TABLE_CREDENTIAL,
     DOCUMENT,
     SEAT_OFFER,
+    ASSET,
 )
 
 #: What each prefix is called in a refusal. Never the value, only the kind (SEC-20).
@@ -76,6 +80,7 @@ _KINDS: Final[dict[str, str]] = {
     TABLE_CREDENTIAL: "table-credential identifier",
     DOCUMENT: "document identifier",
     SEAT_OFFER: "seat-offer identifier",
+    ASSET: "asset identifier",
 }
 
 #: 16 bytes = 128 bits, SEC-4's floor, which `token_urlsafe` renders as 22 characters.

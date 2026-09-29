@@ -117,7 +117,7 @@ def test_the_action_set_is_closed_and_a_caller_cannot_invent_one():
             assert value not in str(refused.value), "a refusal never repeats what it refused"
 
 
-def test_the_eighteen_actions_that_ship_are_sec38s_and_the_tavern_s_two():
+def test_the_nineteen_actions_that_ship_are_sec38s_the_tavern_s_two_and_the_media_delete():
     """Reveal's three and the export ones are not here: ED-18(a) makes the table
     shared, and they belong to the beads that will write them (1kg.7.1, 1kg.5.2),
     which add their own members without a migration.
@@ -137,7 +137,7 @@ def test_the_eighteen_actions_that_ship_are_sec38s_and_the_tavern_s_two():
         "seat.declined", "seat.confirmed",
         "campaign.archived", "campaign.restored", "campaign.deleted",
         "campaign.concluded", "campaign.reopened",
-        "join.burst_refused",
+        "join.burst_refused", "asset.deleted",
     }
     assert not [a for a in AuditAction if a.value.startswith(("reveal.", "export."))]
     assert not [a for a in AuditAction if a.value.startswith(("code.", "device."))], "retired"
@@ -156,7 +156,7 @@ def test_a_seat_row_carries_the_seat_and_nothing_else():
             check_detail(action, {"user_id": 7})
 
 
-_WORDS = {3: "three", 14: "fourteen", 16: "sixteen", 18: "eighteen"}
+_WORDS = {3: "three", 4: "four", 14: "fourteen", 16: "sixteen", 18: "eighteen", 19: "nineteen"}
 
 
 def test_the_module_docstrings_count_what_the_enums_hold():
@@ -418,7 +418,7 @@ def test_every_kind_the_ledger_knows_is_a_thing_the_schema_mints_an_id_for():
     member together with its action, as `AuditAction`'s docstring says."""
     minted = {audit_log.ObjectKind(kind) for kind in ("campaign", "participant", "table_session")}
     assert minted <= set(ObjectKind)
-    assert {kind.value for kind in ObjectKind} == {"campaign", "table_session", "participant"}
+    assert {kind.value for kind in ObjectKind} == {"campaign", "table_session", "participant", "asset"}
     assert len(ObjectKind) < len(ident.PREFIXES), "table_credential has no action yet"
 
 
@@ -584,3 +584,45 @@ def test_a_decline_and_a_confirmation_carry_the_seat_and_nothing_else():
             check_detail(action, {"address": "wren@example.com"})
     check_detail(AuditAction.SEAT_DECLINED, {"participant_id": "prt_" + "a" * 22, "blocked": True})
     assert "seat.withdrawn" not in {a.value for a in AuditAction}, "participant.removed is the withdrawal record"
+
+
+# ── asset.deleted (agent-forge-harness-1kg.8.1.1, L-14) ──────────────────────
+
+
+def test_an_asset_deletion_row_carries_the_asset_and_nothing_else():
+    """The asset by its minted id: never its alt text (private), never a key
+    (a map to the bytes) and never the campaign, which the row's own
+    `campaign_id_tombstone` already names."""
+    assert AuditAction.ASSET_DELETED.value == "asset.deleted"
+    assert ObjectKind.ASSET.value == "asset"
+    assert ACTION_DETAIL[AuditAction.ASSET_DELETED] == {"asset_id": MintedId(ident.ASSET)}
+    assert ACTION_REASONS[AuditAction.ASSET_DELETED] == frozenset()
+    asset_id = "ast_" + "a" * 22
+    assert check_detail(AuditAction.ASSET_DELETED, {"asset_id": asset_id}) == {"asset_id": asset_id}
+    for refused in (
+        {"alt": "The villain's portrait"},
+        {"campaign_id": "cmp_" + "a" * 22},
+        {"object_key": "assets/" + "0" * 32},
+        {"asset_id": "doc_" + "a" * 22},
+        {"asset_id": "The villain's portrait"},
+    ):
+        with pytest.raises(ValueError) as caught:
+            check_detail(AuditAction.ASSET_DELETED, refused)
+        for value in refused.values():
+            assert value not in str(caught.value), "a refusal never repeats what it refused"
+
+
+def test_an_asset_deletion_is_recorded_about_an_asset():
+    log, db = InMemoryAuditLog(), InMemoryDatabase()
+    with db.transaction() as unit:
+        event = log.append(
+            unit,
+            campaign_id=CAMPAIGN,
+            actor_kind=ActorKind.GM,
+            action=AuditAction.ASSET_DELETED,
+            object_kind=ObjectKind.ASSET,
+            decision=Decision.ALLOWED,
+            object_ref="ast_" + "b" * 22,
+            detail={"asset_id": "ast_" + "b" * 22},
+        )
+    assert (event.action, event.object_kind) == ("asset.deleted", "asset")
