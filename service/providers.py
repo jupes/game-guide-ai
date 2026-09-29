@@ -75,7 +75,7 @@ class ProviderClientFactory:
         from langchain_openai import ChatOpenAI
         from pydantic import SecretStr
 
-        from config import LLM_CONNECT_TIMEOUT_S, LLM_REQUEST_TIMEOUT_S, TEMPERATURE
+        from config import LLM_CONNECT_TIMEOUT_S, LLM_MAX_OUTPUT_TOKENS, LLM_REQUEST_TIMEOUT_S, TEMPERATURE
 
         from .provider_deadline import AttemptDeadlineTransport
 
@@ -101,12 +101,16 @@ class ProviderClientFactory:
         # service/provider_deadline.py). follow_redirects=False keeps an attempt
         # to that one request: each hop httpx follows is a request of its own,
         # with a fresh deadline, and a provider POST is never redirected.
+        # max_completion_tokens (the field max_tokens, by its alias): every
+        # call's output cap (agent-forge-harness-nz78), so an answer ends inside
+        # its attempt's deadline instead of being billed, timed out and failed;
+        # a call that sets its own (document_generation) overrides it.
         http_client = openai.DefaultHttpxClient(transport=AttemptDeadlineTransport(
             LLM_CONNECT_TIMEOUT_S + LLM_REQUEST_TIMEOUT_S, limits=openai.DEFAULT_CONNECTION_LIMITS,
         ), follow_redirects=False)
         return ChatOpenAI(
             model=profile.api_model, temperature=TEMPERATURE, max_retries=0,
-            base_url=profile.base_url, api_key=api_key,
+            max_completion_tokens=LLM_MAX_OUTPUT_TOKENS, base_url=profile.base_url, api_key=api_key,
             timeout=httpx.Timeout(LLM_REQUEST_TIMEOUT_S, connect=LLM_CONNECT_TIMEOUT_S),
             http_client=http_client,
         )

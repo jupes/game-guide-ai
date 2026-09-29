@@ -115,12 +115,29 @@ def _usage_from_message(message: Any) -> GenerationUsage:
 # rate_limit/timeout/content_filter/invalid_request/upstream_unavailable/
 # unknown, D4) is Checkpoint 2's job — this is not that taxonomy.
 _RETRYABLE_EXCEPTIONS: tuple[type[BaseException], ...] = (
-    openai.APIConnectionError,  # covers APITimeoutError (its subclass)
+    openai.APIConnectionError,  # covers APITimeoutError (its subclass); see _retryable
     openai.RateLimitError,
     openai.InternalServerError,
 )
 _MAX_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 0.5
+#: The timeouts that end an attempt before its request reached the provider:
+#: waiting for a pooled connection, or opening one. Any later timeout may have
+#: left a request the provider finishes and bills, so it is never retried
+#: (agent-forge-harness-nz78), and neither is one whose cause is unknown.
+_UNSENT_TIMEOUTS: tuple[type[BaseException], ...] = (httpx.PoolTimeout, httpx.ConnectTimeout)
+
+
+def _retryable(exc: BaseException) -> bool:
+    """Whether the attempt that raised `exc` may be made again. The SDK raises
+    APITimeoutError from httpx's own timeout; a streamed body raises httpx's."""
+    error = _as_sdk_timeout(exc)
+    if not isinstance(error, _RETRYABLE_EXCEPTIONS):
+        return False
+    if not isinstance(error, openai.APITimeoutError):
+        return True
+    cause = exc if isinstance(exc, httpx.TimeoutException) else exc.__cause__
+    return isinstance(cause, _UNSENT_TIMEOUTS)
 
 
 def _as_sdk_timeout(exc: BaseException) -> BaseException:
@@ -155,7 +172,9 @@ def generate_result(
 ) -> GenerationResult:
     """Invoke `client`, retrying transient failures up to `max_attempts` times,
     and return everything the provider boundary reports, not just the answer
-    text. Records one attempt with `observer` per actual call — success or
+    text. A timeout is retried only when its request never left: one that may
+    have reached the provider may have been billed (`_retryable`,
+    agent-forge-harness-nz78). Records one attempt with `observer` per actual call — success or
     failure — including every retried attempt, so every attempt, latency, and
     charge stays attributable. The final failure re-raises unchanged after
     being recorded, except that httpx's own timeout becomes the SDK's
@@ -180,10 +199,7 @@ def generate_result(
             error = _as_sdk_timeout(exc)
             obs.record(alias=alias, result=None, error=error)
             backoff = _RETRY_BACKOFF_SECONDS * attempt
-            if (
-                isinstance(error, _RETRYABLE_EXCEPTIONS) and attempt < max_attempts
-                and provider_deadline.turn_affords(backoff)
-            ):
+            if _retryable(exc) and attempt < max_attempts and provider_deadline.turn_affords(backoff):
                 sleep(backoff)
                 continue
             if error is exc:
