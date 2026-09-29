@@ -1,6 +1,7 @@
 /**
- * campaignApi -- the client's campaign calls and the restore-time conversation
- * read (agent-forge-harness-1kg.2.5, PR-1a; brief section 7.2).
+ * campaignApi -- the client's campaign calls, the restore-time conversation
+ * read and a campaign's GM-thread calls (agent-forge-harness-1kg.2.5, PR-1a and
+ * PR-2; brief section 7.2 as amended by its Critic's item 17).
  *
  * Every call sends the session cookie and nothing else that identifies anyone.
  * A path id is checked against `OPAQUE_ID` before it enters a path (SEC-4) and
@@ -25,7 +26,10 @@ import {
   CampaignPageSchema,
   CampaignSchema,
   CONTRACT_VERSION,
+  ConversationCreateRequestSchema,
+  ConversationPatchRequestSchema,
   parseConversation,
+  parseConversationPage,
   type Campaign,
   type Conversation,
 } from '../gm/contracts'
@@ -191,4 +195,97 @@ export async function getConversation(
   if (!res.ok) return { kind: 'failed' }
   const conversation = parseConversation(await bodyOf(res))
   return conversation.kind === 'ok' ? { kind: 'ok', conversation: conversation.value } : { kind: 'failed' }
+}
+
+export type ThreadPageResult =
+  | { readonly kind: 'ok'; readonly items: readonly Conversation[]; readonly nextCursor: string | null }
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'unauthorized' }
+
+export type ThreadCreateResult =
+  | { readonly kind: 'created'; readonly conversation: Conversation }
+  /** 403 or 404: the campaign itself is missing, foreign or archived. */
+  | { readonly kind: 'unavailable' }
+  /** Anything else. Never retried here: a create has no idempotency key. */
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'unauthorized' }
+
+export type ThreadRenameResult =
+  | { readonly kind: 'renamed'; readonly conversation: Conversation }
+  /** A title the contract refuses (no request is made) or the server's 422. */
+  | { readonly kind: 'invalid' }
+  /** 403 or 404: the thread is not there for this account. */
+  | { readonly kind: 'gone' }
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'unauthorized' }
+
+/** `GET /conversations?campaign_id=…[&cursor=…]`: a campaign's threads, newest
+ * first. No `started_mode` filter (critic 17): a campaign thread whose mode is
+ * still `null` is one too. A row this client cannot read, or that names another
+ * campaign, is left out; it never empties the page. */
+export async function listCampaignThreads(
+  campaignId: string,
+  cursor: string | null,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ThreadPageResult> {
+  if (!isOpaqueId(campaignId)) return { kind: 'failed' }
+  const more = cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`
+  const res = await send(fetchImpl, `/conversations?campaign_id=${encodeURIComponent(campaignId)}${more}`)
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (!res.ok) return { kind: 'failed' }
+  const page = parseConversationPage(await bodyOf(res))
+  if (page.kind !== 'ok') return { kind: 'failed' }
+  const items: Conversation[] = []
+  for (const row of page.value.items) {
+    if (row.kind === 'ok' && row.value.campaign_id === campaignId) items.push(row.value)
+  }
+  return { kind: 'ok', items, nextCursor: page.value.next_cursor }
+}
+
+/** `POST /conversations` for a new GM thread in a campaign -- with NO title
+ * (RAIL-26: a prompt never becomes a campaign thread's title). */
+export async function createCampaignThread(
+  campaignId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ThreadCreateResult> {
+  const request = ConversationCreateRequestSchema.safeParse({
+    schema_version: CONTRACT_VERSION, started_mode: 'gm', campaign_id: campaignId,
+  })
+  if (!request.success) return { kind: 'failed' }
+  const res = await sendJson(fetchImpl, '/conversations', 'POST', request.data)
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (res.status === FORBIDDEN || res.status === NOT_FOUND) return { kind: 'unavailable' }
+  if (!res.ok) return { kind: 'failed' }
+  const conversation = parseConversation(await bodyOf(res))
+  return conversation.kind === 'ok' ? { kind: 'created', conversation: conversation.value } : { kind: 'failed' }
+}
+
+/** `PATCH /conversations/{id}` with a new title; the answer's title is the one to show. */
+export async function renameThread(
+  conversationId: string,
+  title: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ThreadRenameResult> {
+  if (!isOpaqueId(conversationId)) return { kind: 'gone' }
+  const request = ConversationPatchRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, title })
+  if (!request.success) return { kind: 'invalid' }
+  const res = await sendJson(fetchImpl, `/conversations/${encodeURIComponent(conversationId)}`, 'PATCH', request.data)
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (res.status === FORBIDDEN || res.status === NOT_FOUND) return { kind: 'gone' }
+  if (res.status === UNPROCESSABLE) return { kind: 'invalid' }
+  if (!res.ok) return { kind: 'failed' }
+  const conversation = parseConversation(await bodyOf(res))
+  return conversation.kind === 'ok' ? { kind: 'renamed', conversation: conversation.value } : { kind: 'failed' }
 }
