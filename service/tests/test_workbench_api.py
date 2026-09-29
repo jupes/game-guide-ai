@@ -958,12 +958,14 @@ EXPECTED_LEGACY_ROUTES = {
 #: PR #98), 1kg.4.2 B's timeline route, moved from the set above by oqx, and
 #: 1kg.2.2's campaign and seat routes: nine on `workbench_router`, four on
 #: `account_router`; then bead cfx's Conclude and Reopen, two more on
-#: `workbench_router`; then 1kg.2.3 PR-B (agent-forge-harness-1kg.2.10): the
-#: GM's table session, three more on `workbench_router`, and the first two
-#: table routes, on the table router, whose route class is a `WorkbenchRoute`;
-#: then 1kg.4.1 slice B: the GM's tool invocations, three more on
-#: `workbench_router`; then btb PR-2: the GM's named groups, six more on
-#: `workbench_router`. No exemption list and nothing pending.
+#: `workbench_router`; then 1kg.5.2's eleven document routes, eight in
+#: `documents_api` and three in `document_lifecycle_api`; then 1kg.2.3 PR-B
+#: (agent-forge-harness-1kg.2.10): the GM's table session, three more on
+#: `workbench_router`, and the first two table routes, on the table router,
+#: whose route class is a `WorkbenchRoute`; then 1kg.4.1 slice B: the GM's
+#: tool invocations, three more on `workbench_router`; then btb PR-2: the GM's
+#: named groups, six more on `workbench_router`. No exemption list and nothing
+#: pending.
 EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/conversations"), ("POST", "/conversations"),
     ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
@@ -984,6 +986,9 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/campaigns/{campaign_id}/documents/{document_id}/versions/{number}"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/restore"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/seal"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/archive"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unarchive"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/delete"),
     # 1kg.8.1.2's media upload: two on `workbench_router`, which match nothing
     # while the media capability is off (`service/assets_api.py`).
     ("POST", "/campaigns/{campaign_id}/assets"), ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes"),
@@ -1299,6 +1304,7 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "campaigns_api.py").resolve(),
         (REPO_ROOT / "service" / "seats_api.py").resolve(),
         (REPO_ROOT / "service" / "documents_api.py").resolve(),
+        (REPO_ROOT / "service" / "document_lifecycle_api.py").resolve(),
         (REPO_ROOT / "service" / "assets_api.py").resolve(),
         (REPO_ROOT / "service" / "table_session_api.py").resolve(),
         (REPO_ROOT / "service" / "table_api.py").resolve(),

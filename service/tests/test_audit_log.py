@@ -122,7 +122,7 @@ def test_the_action_set_is_closed_and_a_caller_cannot_invent_one():
             assert value not in str(refused.value), "a refusal never repeats what it refused"
 
 
-def test_the_twenty_eight_actions_that_ship_include_reveals_three_and_the_group_routes_five():
+def test_the_thirty_one_actions_that_ship_include_reveals_three_a_documents_three_and_the_group_routes_five():
     """The export actions are not here: ED-18(a) makes the table shared, and they
     belong to the bead that will write them (1kg.5.2), which adds its own members
     without a migration. `1kg.7.1` adds reveal's three — displayed, updated and
@@ -144,6 +144,8 @@ def test_the_twenty_eight_actions_that_ship_include_reveals_three_and_the_group_
     `1kg.8.1.1` adds `asset.deleted`: deletion is the irreversible act, and
     uploads are not audited (ruling 8.1#4).
 
+    `1kg.5.2` adds a document's three: archived, unarchived and deleted.
+
     `btb` adds the group routes' five: created, renamed, removed, and a member
     added or removed."""
     assert {a.value for a in AuditAction} == {
@@ -155,6 +157,7 @@ def test_the_twenty_eight_actions_that_ship_include_reveals_three_and_the_group_
         "campaign.concluded", "campaign.reopened",
         "screen.minted", "screen.revoked", "asset.deleted",
         "reveal.displayed", "reveal.updated", "reveal.stopped",
+        "document.archived", "document.unarchived", "document.deleted",
         "group.created", "group.renamed", "group.removed", "group.member_added", "group.member_removed",
     }
     assert "join.burst_refused" not in {a.value for a in AuditAction}, "retired with the join"
@@ -180,7 +183,7 @@ def test_a_seat_row_carries_the_seat_and_nothing_else():
 
 _WORDS = {
     3: "three", 4: "four", 5: "five", 6: "six", 14: "fourteen", 16: "sixteen", 18: "eighteen", 19: "nineteen",
-    20: "twenty", 23: "twenty-three", 28: "twenty-eight",
+    7: "seven", 20: "twenty", 23: "twenty-three", 26: "twenty-six", 28: "twenty-eight", 31: "thirty-one",
 }
 
 
@@ -451,11 +454,12 @@ def test_every_kind_the_ledger_knows_is_a_thing_the_schema_mints_an_id_for():
         audit_log.ObjectKind.TABLE_SESSION: ident.TABLE_SESSION,
         audit_log.ObjectKind.TABLE_SCREEN: ident.TABLE_CREDENTIAL,
         audit_log.ObjectKind.ASSET: ident.ASSET,
+        audit_log.ObjectKind.DOCUMENT: ident.DOCUMENT,
         audit_log.ObjectKind.GROUP: ident.GROUP,
     }
     assert set(minted_as) == set(ObjectKind)
     assert {kind.value for kind in ObjectKind} == {
-        "campaign", "participant", "table_session", "table_screen", "asset", "group"
+        "campaign", "participant", "table_session", "table_screen", "asset", "document", "group"
     }
     assert all(prefix in ident.PREFIXES for prefix in minted_as.values())
 
@@ -730,3 +734,34 @@ def test_the_audit_vocabulary_holds_the_three_reveal_actions_and_their_exact_det
     assert "Rook" not in str(refused_text.value)
     with pytest.raises(ValueError, match="never text"):
         check_reason_code(AuditAction.REVEAL_STOPPED, "reconciled")
+
+
+# ── A document's archive, unarchive and delete (1kg.5.2) ─────────────────────
+
+
+def test_a_document_lifecycle_row_carries_the_document_and_nothing_else():
+    """B-5's vocabulary half. The document by its minted id: never its name, a
+    field value, a summary or its type label — a name is field text, and the
+    ledger outlives the campaign (ED-26). No reason codes: each is the GM's
+    allowed decision."""
+    lifecycle = (AuditAction.DOCUMENT_ARCHIVED, AuditAction.DOCUMENT_UNARCHIVED, AuditAction.DOCUMENT_DELETED)
+    assert [a.value for a in lifecycle] == ["document.archived", "document.unarchived", "document.deleted"]
+    assert ObjectKind.DOCUMENT.value == "document"
+    document_id = ident.new_id(ident.DOCUMENT)
+    for action in lifecycle:
+        assert ACTION_DETAIL[action] == {"document_id": MintedId(ident.DOCUMENT)}, action
+        assert ACTION_REASONS[action] == frozenset(), action
+        assert check_detail(action, {"document_id": document_id}) == {"document_id": document_id}
+        for refused in (
+            {"name": "The Hooded Stranger"},
+            {"type": "npc"},
+            {"summary": "archived the villain"},
+            {"document_id": "The Hooded Stranger"},
+            {"document_id": ident.new_id(ident.CAMPAIGN)},
+        ):
+            with pytest.raises(ValueError) as caught:
+                check_detail(action, refused)
+            for value in refused.values():
+                assert value not in str(caught.value), "a refusal never repeats what it refused"
+        with pytest.raises(ValueError, match="never text"):
+            check_reason_code(action, "gm_removed")
