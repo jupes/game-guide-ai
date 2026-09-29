@@ -1195,6 +1195,16 @@ def test_a_routing_store_outage_fails_closed_with_a_handled_503(
     assert_logs_content_free(caplog, "conversation routing store unavailable", "error=OperationalError")
 
 
+def test_a_routing_store_bug_is_not_relabelled_an_outage(post_chat: Callable[..., ChatRun]) -> None:
+    # Only backend outages become the 503: a bug in a store call stays a 500.
+    store = ProbedStore(faults={"claim_conversation_strategy": RuntimeError(f"store bug {CANARY}")})
+    run = post_chat(FAILING_PROMPT, rows=HIT, store=store)
+    assert store.calls["claim_conversation_strategy"] == 1
+    assert run.response.status_code == 500
+    assert_no_spend(run)
+    assert_content_free(run, fault=True)
+
+
 _LOG_CASES = [
     pytest.param(lambda: {"llm_exc": _rate_limit()}, 429, ("error=RateLimitError", "category=rate_limit"),
                  id="generation"),
@@ -1244,6 +1254,7 @@ def test_characterization_registries_name_real_tests() -> None:
                       "test_reranker_failure_degrades_to_the_vector_order",
                       "test_an_invalid_rerank_order_keeps_the_vector_order",
                       "test_a_routing_store_outage_fails_closed_with_a_handled_503",
+                      "test_a_routing_store_bug_is_not_relabelled_an_outage",
                       "test_chat_error_logs_carry_the_class_never_the_message"):
         assert invariant in defined
         assert invariant not in registered

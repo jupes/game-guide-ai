@@ -500,3 +500,22 @@ def test_the_untyped_chat_branches_log_the_class_never_the_message(
     assert line in caplog.text
     assert f"error={type(exc).__name__}" in caplog.text
     assert CANARY not in caplog.text
+
+
+def test_the_typed_chat_branch_logs_every_attempt_it_carries(
+    stub_chat: Callable[[BaseException], tuple[httpx.Response, _RaisingService]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING)
+    embed = attempt_for_fault("embed", _status(openai.RateLimitError, 429))
+    secondary = attempt_for_fault("secondary", PoolTimeout(CANARY))
+    response, svc = stub_chat(RetrievalStageError.from_attempt(embed, (embed, secondary)))
+    assert svc.calls == 1
+    assert (response.status_code, response.json()) == (503, {"detail": "embedding backend unavailable"})
+    _assert_response_content_free(response)
+    lines = [r.getMessage() for r in caplog.records if r.name == "service.app" and "retrieval stage" in r.getMessage()]
+    assert len(lines) == 2, lines
+    assert all(word in lines[0] for word in ("stage=embed", "outcome=unavailable", "error=RateLimitError"))
+    assert all(word in lines[1] for word in ("stage=secondary", "source=secondary", "outcome=timeout",
+                                             "error=PoolTimeout"))
+    assert CANARY not in caplog.text
