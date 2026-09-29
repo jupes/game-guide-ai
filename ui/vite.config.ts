@@ -22,7 +22,9 @@ export default defineConfig({
       '/conversations': 'http://localhost:8000',
       '/metrics': 'http://localhost:8000',
       '/auth': 'http://localhost:8000',
-      '/models': 'http://localhost:8000'
+      '/models': 'http://localhost:8000',
+      '/campaigns': 'http://localhost:8000',
+      '/seats': 'http://localhost:8000'
     }
   },
   test: {

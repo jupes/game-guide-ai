@@ -931,7 +931,8 @@ def test_the_spa_parity_walk_still_reserves_every_prefix_it_reserved_before() ->
     """Moving the walk onto `api_routes()` dropped nothing: FastAPI's own
     documentation routes stay reserved though they are not API routes."""
     assert _live_api_prefixes() == {"/openapi.json", "/docs", "/redoc", "/healthz", "/models", "/chat",
-                                    "/metrics", "/conversations", "/auth", "/internal"}
+                                    "/metrics", "/conversations", "/auth", "/internal",
+                                    "/campaigns", "/seats"}
 
 
 # ── A10: the route census ────────────────────────────────────────────────────
@@ -952,12 +953,21 @@ EXPECTED_LEGACY_ROUTES = {
     ("POST", "/internal/jobs"),
 }
 #: 1kg.2.4 A2's routes, moved onto `workbench_router` by oe6 (lead ruling on
-#: PR #98), and 1kg.4.2 B's timeline route, moved from the set above by oqx.
-#: No exemption list and nothing pending.
+#: PR #98), 1kg.4.2 B's timeline route, moved from the set above by oqx, and
+#: 1kg.2.2's campaign and seat routes: nine on `workbench_router`, four on
+#: `account_router`. No exemption list and nothing pending.
 EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/conversations"), ("POST", "/conversations"),
     ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
     ("GET", "/conversations/{conversation_id}/timeline"),
+    ("GET", "/campaigns"), ("POST", "/campaigns"),
+    ("GET", "/campaigns/{campaign_id}"), ("PATCH", "/campaigns/{campaign_id}"),
+    ("GET", "/campaigns/{campaign_id}/participants"), ("POST", "/campaigns/{campaign_id}/participants"),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/offer"),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/confirm"),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/remove"),
+    ("GET", "/seats"), ("GET", "/seats/offers"),
+    ("POST", "/seats/offers/{offer_id}/accept"), ("POST", "/seats/offers/{offer_id}/decline"),
 }
 
 
@@ -1256,5 +1266,7 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
     assert modules == {  # a route bead adds its module
         (REPO_ROOT / "service" / "conversations_api.py").resolve(),
         (REPO_ROOT / "service" / "timeline_api.py").resolve(),
+        (REPO_ROOT / "service" / "campaigns_api.py").resolve(),
+        (REPO_ROOT / "service" / "seats_api.py").resolve(),
     }
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []
