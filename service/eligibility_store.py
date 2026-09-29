@@ -298,11 +298,19 @@ def classifiable_keys(document: DocumentRecord) -> frozenset[str]:
     """The keys of this document a GM may classify: its type's revealable
     allowlist (ED-5) — or nothing, for a type or type version this build does
     not know (I-20)."""
+    return revealable_keys_of(document.type, document.type_version)
+
+
+def revealable_keys_of(type_id: str, type_version: int) -> frozenset[str]:
+    """One type version's revealable allowlist (ED-5, ED-24), or nothing for a
+    type or type version this build does not know (I-20). The one allowlist
+    rule: `classifiable_keys` and the decision point (`service/policy.py`)
+    both answer through it."""
     try:
-        doc_type = DocumentTypeId(document.type)
+        doc_type = DocumentTypeId(type_id)
     except ValueError:
         return frozenset()
-    if document.type_version != DOC_TYPE_VERSION[doc_type]:
+    if type_version != DOC_TYPE_VERSION[doc_type]:
         return frozenset()
     return frozenset(revealable_fields(doc_type))
 
