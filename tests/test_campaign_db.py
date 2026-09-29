@@ -3578,7 +3578,7 @@ def test_the_invitee_page_is_newest_first_and_walks_once(world: World) -> None:
     # (a hand-written `__repr__` would pass the first check but not this one).
     assert {f.name for f in fields(found) if not f.repr} >= {"campaign_name", "alias"}
     rendered = repr(found).replace(repr(found.offer), "")
-    assert "C0" not in rendered and "Rook0" not in rendered
+    assert "C0" not in rendered and "Rook" not in rendered
 
 
 def test_decline_block_and_the_repeat_readers(world: World) -> None:
