@@ -28,7 +28,7 @@ session row alone: never the campaign lock, never a `lock_timeout` of their own.
 The row is held with the owner in the locking statement (the system's `expire`
 names no owner and acts only on a session already due). Under it: the slots and
 both epochs, every screen grant, the state or the generation, the audit row, and
-`authz.reconcile` `{campaign_id}` enqueued **last**, with no dedupe key (RQ-12);
+`campaign.reconcile` `{campaign_id}` enqueued **last**, with no dedupe key (RQ-12);
 the route runs it after its response (`job_driver.run_after_response`), so the
 acknowledgement never waits for it. A deadlock victim is retried by the server,
 in a fresh transaction, up to three attempts; then `BackendUnavailable`, which
@@ -115,9 +115,9 @@ DEADLOCK_ATTEMPTS = 3
 EXPIRE_KIND = "table_session.expire"
 
 #: Enqueue the reconciliation of a campaign's authorisation inside the unit —
-#: `authz.reconcile` `{campaign_id}`, no dedupe key — and return the job's id.
-#: `service/authz_reconcile.py` (`1kg.2.2`) owns that kind; `service/app.py`
-#: passes its enqueue in, and this module never names it.
+#: `campaign.reconcile` `{campaign_id}`, no dedupe key — and return the job's id.
+#: `service/reconciliation.py` (`1kg.2.2`) owns that kind; `service/app.py`
+#: passes its `enqueue_reconciliation` in, and this module never names it.
 EnqueueReconcile = Callable[[UnitOfWork, str], int]
 
 _T = TypeVar("_T")
@@ -156,7 +156,7 @@ class BackendUnavailable(TableSessionRefusal):
 
 @dataclass(frozen=True)
 class Outcome:
-    """A session as a route answers it, and the `authz.reconcile` jobs this call
+    """A session as a route answers it, and the `campaign.reconcile` jobs this call
     enqueued, which the route runs after its response."""
 
     session: TableSession

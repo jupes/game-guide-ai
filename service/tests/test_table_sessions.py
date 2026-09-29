@@ -24,11 +24,11 @@ from typing import Any
 import psycopg
 import pytest
 
-from service import authz_reconcile
 from service.audit_log import InMemoryAuditLog
 from service.campaign_store import InMemoryCampaignStore, MissingParent
 from service.db import InMemoryDatabase
 from service.jobs import InMemoryJobQueue, Job, JobContext
+from service.reconciliation import RECONCILE_KIND, enqueue_reconciliation
 from service.table_session_store import InMemoryTableSessionStore, Liveness, no_slots
 from service.table_sessions import (
     EXPIRE_KIND,
@@ -63,7 +63,7 @@ class _Twin:
             sessions=self.sessions,
             audit=self.audit,
             jobs=self.jobs,
-            reconcile=lambda unit, campaign_id: authz_reconcile.enqueue(self.jobs, unit, campaign_id),
+            reconcile=lambda unit, campaign_id: enqueue_reconciliation(unit, self.jobs, campaign_id),
             clock=clock,
         )
 
@@ -149,7 +149,7 @@ def test_a_deadlock_victim_is_retried_in_a_fresh_transaction_and_succeeds(how: s
     assert flaky.opened == 2, "the victim's work was done again in a transaction of its own"
     assert len(outcome.reconcile_jobs) == 1
     assert len(twin.ledger(campaign)) == before + 1, "one decision recorded, not two"
-    assert twin.queued().count("authz.reconcile") == 1
+    assert twin.queued().count(RECONCILE_KIND) == 1
 
 
 @pytest.mark.parametrize("how", _REVOCATIONS)
@@ -167,7 +167,7 @@ def test_three_deadlocks_are_the_database_unavailable_and_nothing_is_half_writte
     assert flaky.opened == 3
     with twin.db.transaction() as unit:
         untouched = twin.sessions.get(unit, session_id)
-        assert untouched.is_live and untouched.link_generation == 1
+        assert untouched is not None and untouched.is_live and untouched.link_generation == 1
         assert (untouched.reveal_epoch, untouched.audio_epoch) == (0, 0)
     assert len(twin.ledger(campaign)) == ledger and twin.queued() == queued
 

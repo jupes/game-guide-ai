@@ -48,7 +48,6 @@ import pytest
 from _pg import connect, needs_db, throwaway_database
 from fastapi import HTTPException
 
-from service import authz_reconcile
 from service import migrations as mig
 from service.audit_log import (
     ActorKind,
@@ -142,8 +141,9 @@ CAMPAIGN = "cmp_" + "a" * 22
 OTHER_CAMPAIGN = "cmp_" + "b" * 22
 PARTICIPANT = "prt_" + "a" * 22
 SESSION = "ses_" + "a" * 22
-#: `1kg.2.2`'s reconciliation kind, by value: what End, Rotate and expiry enqueue.
-RECONCILE = authz_reconcile.KIND
+#: `1kg.2.2`'s reconciliation kind, imported from its module (never a second
+#: literal): what End, Rotate and expiry enqueue.
+RECONCILE = RECONCILE_KIND
 
 #: A second is long enough that a lock taken first is always taken first, and
 #: short enough that a test which should time out does not hold the job up.
@@ -3754,9 +3754,9 @@ def test_every_new_refusal_message_is_fixed_and_carries_no_identifier() -> None:
 
 
 def _reconciliation(jobs: Any) -> Callable[[Any, str], int]:
-    """How the lifecycle enqueues `authz.reconcile` — `1kg.2.2`'s helper, the
+    """How the lifecycle enqueues `campaign.reconcile` — `1kg.2.2`'s helper, the
     one `service/app.py` wires in, and never a second kind."""
-    return lambda unit, campaign_id: authz_reconcile.enqueue(jobs, unit, campaign_id)
+    return lambda unit, campaign_id: enqueue_reconciliation(unit, jobs, campaign_id)
 
 
 def _lifecycle(
@@ -3933,7 +3933,7 @@ def test_end_revokes_everything_and_enqueues_its_reconciliation_last_without_the
 ) -> None:
     """L-5 and RQ-5's first step. Every grant of every generation revoked, both
     epochs advanced, the slots cleared once, `session.ended` recorded — and only
-    then, last, one `authz.reconcile` `{campaign_id}` with no dedupe key. None
+    then, last, one `campaign.reconcile` `{campaign_id}` with no dedupe key. None
     of it asks for the campaign lock, in any unit of work End opens."""
     campaign = _a_campaign(world)
     session = _a_session(world, campaign)

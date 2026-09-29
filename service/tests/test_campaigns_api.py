@@ -472,7 +472,12 @@ def test_remove_narrows_withdraws_audits_and_leaves_one_reconciliation(client: T
     assert _offer(client, campaign, seat, "wren@example.com").status_code == 204
     with world.db.transaction() as unit:
         session = world.stores.sessions.start(
-            unit, campaign, owner_id=GM_A, expires_at=T0 + timedelta(hours=12), command_id="remove-narrows-start", now=T0
+            unit,
+            campaign,
+            owner_id=GM_A,
+            expires_at=T0 + timedelta(hours=12),
+            command_id="remove-narrows-start",
+            now=T0,
         )
     removed = _remove(client, campaign, seat)
     assert (removed.status_code, removed.content) == (204, b"")

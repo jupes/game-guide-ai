@@ -303,9 +303,8 @@ def _build_stores(db: Database) -> None:
     # leaves behind (1kg.2.2, RQ-5), its slot step `reconcile_slots` passed by
     # name and empty until 1kg.7.1 gives it a body; and `table_session.expire`
     # (1kg.2.3), the delayed job a Start enqueues at `expires_at`. End, Rotate and
-    # expiry enqueue their reconciliation through 1kg.2.2's module, never naming
+    # expiry enqueue their reconciliation through 1kg.2.2's helper, never naming
     # the kind here.
-    from . import authz_reconcile
     from .audit_log import PostgresAuditLog
     from .campaign_store import PostgresCampaignStore
     from .table_session_store import PostgresTableSessionStore, no_slots
@@ -321,7 +320,7 @@ def _build_stores(db: Database) -> None:
         sessions=PostgresTableSessionStore(slot_clear=no_slots),
         audit=PostgresAuditLog(),
         jobs=queue,
-        reconcile=lambda unit, campaign_id: authz_reconcile.enqueue(queue, unit, campaign_id),
+        reconcile=lambda unit, campaign_id: reconciliation.enqueue_reconciliation(unit, queue, campaign_id),
     )
     runner.register(EXPIRE_KIND, table_sessions.expire_handler())
     _state["jobs"] = job_driver.JobDriver(runner, healthy=_schema_understood)
