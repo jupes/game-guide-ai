@@ -1382,7 +1382,8 @@ def test_the_eleventh_delete_in_a_window_is_throttled_like_a_login_and_deletes_n
         assert _delete(client, campaign, document).status_code == 204
     opened = len(world.db.units)
     last = _delete(client, campaign, documents[-1])
-    assert (last.status_code, last.json()["detail"]["code"]) == (429, "throttled_user")
+    assert last.status_code == 429, "the eleventh check in the window is refused"
+    assert last.json()["detail"]["code"] == "throttled_user"
     assert len(world.db.units) == opened and life.archived(campaign, documents[-1])
 
 
