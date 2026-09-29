@@ -86,6 +86,9 @@ from .job_driver import JobDriver, run_after_response
 from .jobs import JobQueue
 from .participant_store import Participant, ParticipantStore, PostgresParticipantStore, check_alias
 from .reconciliation import enqueue_reconciliation
+from .reveal_scope import EndReason, EverySlot, ParticipantSlots
+from .reveal_store import PostgresRevealStore
+from .reveals import slot_clear_for
 from .seat_offer_store import (
     THROTTLE_LIMIT,
     PostgresSeatOfferStore,
@@ -96,7 +99,7 @@ from .seat_offer_store import (
     throttle_wait_s,
 )
 from .session import SessionData
-from .table_session_store import PostgresTableSessionStore, TableSessionStore, no_slots
+from .table_session_store import PostgresTableSessionStore, TableSessionStore
 from .workbench_api import SessionDependency, not_found, workbench_router
 from .workbench_contracts import (
     CAMPAIGN_PAGE_MAX_ITEMS,
@@ -165,12 +168,13 @@ class CampaignStores:
 
 
 def get_campaign_stores() -> CampaignStores:
-    """The stores every route uses. Tests override this dependency. The slot
-    clear is `no_slots` until `1kg.7.1` gives it a body."""
+    """The stores every route uses. Tests override this dependency. The session
+    store's slot clear is the reveal fill (`reveals.slot_clear_for`), so a
+    Remove or an archive clears what it invalidates (RQ-7, 1kg.7.1)."""
     return CampaignStores(
         PostgresCampaignStore(),
         PostgresParticipantStore(),
-        PostgresTableSessionStore(slot_clear=no_slots),
+        PostgresTableSessionStore(slot_clear=slot_clear_for(PostgresRevealStore())),
         PostgresSeatOfferStore(),
         PostgresAuditLog(),
         PostgresCampaignSummaryStore(),
@@ -452,15 +456,23 @@ def archive(
     tone: ToneChange | None = None,
 ) -> StoredCampaign:
     """Archive is a fact-changing narrowing in RQ-5's two steps (L-4)."""
-    archive_step_one(db, stores, campaign_id=campaign_id, owner_id=owner_id)
+    archive_step_one(db, stores, campaign_id=campaign_id, owner_id=owner_id, now=now)
     return archive_step_two(db, stores, campaign_id=campaign_id, owner_id=owner_id, now=now, name=name, tone=tone)
 
 
-def archive_step_one(db: TransactionalDatabase, stores: CampaignStores, *, campaign_id: str, owner_id: int) -> None:
+def archive_step_one(
+    db: TransactionalDatabase,
+    stores: CampaignStores,
+    *,
+    campaign_id: str,
+    owner_id: int,
+    now: datetime | None = None,
+) -> None:
     """Its own transaction, which NEVER calls `lock_campaign` and is never
     refused on state: the campaign with its owner in the statement, then — if
     it is not archived yet — narrow its live session (the session row, the
-    reveal epoch, the slots). Committed before step 2 asks for the lock."""
+    reveal epoch, every slot, as `campaign_archived`, stamped with the request's
+    clock). Committed before step 2 asks for the lock."""
     with db.transaction() as unit:
         campaign = stores.campaigns.get(unit, campaign_id, owner_id=owner_id)
         if campaign is None:
@@ -469,7 +481,9 @@ def archive_step_one(db: TransactionalDatabase, stores: CampaignStores, *, campa
             return
         live = stores.sessions.live_session_for_campaign(unit, campaign_id)
         if live is not None:
-            stores.sessions.narrow(unit, campaign_id, live.id)
+            stores.sessions.narrow(
+                unit, campaign_id, live.id, clears=EverySlot(EndReason.CAMPAIGN_ARCHIVED), now=now
+            )
 
 
 def archive_step_two(
@@ -496,7 +510,9 @@ def archive_step_two(
         if not campaign.is_archived:
             live = stores.sessions.live_session_for_campaign(unit, campaign_id)
             if live is not None:
-                stores.sessions.narrow(unit, campaign_id, live.id)
+                stores.sessions.narrow(
+                    unit, campaign_id, live.id, clears=EverySlot(EndReason.CAMPAIGN_ARCHIVED), now=now
+                )
             stores.campaigns.set_archived(unit, campaign_id, owner_id=owner_id, archived=True, now=now)
             revision = unit.advance_authz_revision(campaign_id)
             _audit(
@@ -744,8 +760,8 @@ def remove_seat(
 ) -> int | None:
     """Remove is a revocation (RQ-5): effective at once, in a transaction that
     NEVER calls `lock_campaign`, in RQ-3's order — the seat's row, the live
-    session's row (narrowed), the seat's open offer (withdrawn), the outbox
-    last. Returns the reconciliation job's id, or None when the seat was
+    session's row (narrowed: that seat's copy cleared, and nothing else, A-20),
+    the seat's open offer (withdrawn), the outbox last. Returns the reconciliation job's id, or None when the seat was
     already removed, which changes nothing and enqueues nothing."""
     with db.transaction() as unit:
         if stores.campaigns.get(unit, campaign_id, owner_id=owner_id) is None:
@@ -757,7 +773,13 @@ def remove_seat(
             return None
         live = stores.sessions.live_session_for_campaign(unit, campaign_id)
         if live is not None:
-            stores.sessions.narrow(unit, campaign_id, live.id)
+            stores.sessions.narrow(
+                unit,
+                campaign_id,
+                live.id,
+                clears=ParticipantSlots(frozenset({participant_id}), EndReason.PARTICIPANT_REMOVED),
+                now=now,
+            )
         stores.participants.remove(unit, campaign_id, participant_id, now=now)
         stores.offers.withdraw_open(unit, campaign_id, participant_id, now=now)
         _audit(
@@ -900,7 +922,7 @@ def build_router(
         owner = user.user_id
         tone = ToneChange(patch.tone) if "tone" in patch.model_fields_set else None
         if patch.archived is True:
-            guarded(lambda: archive_step_one(live_db, stores, campaign_id=campaign_id, owner_id=owner))
+            guarded(lambda: archive_step_one(live_db, stores, campaign_id=campaign_id, owner_id=owner, now=now))
             final = guarded(
                 lambda: archive_step_two(
                     live_db, stores, campaign_id=campaign_id, owner_id=owner, now=now, name=patch.name, tone=tone

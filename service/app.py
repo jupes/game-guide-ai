@@ -303,8 +303,9 @@ def _build_stores(db: Database) -> None:
     # The job outbox's drivers (1kg.2.7), and the kinds this build registers,
     # each retried until it succeeds (registering one turns the request hook on
     # for every signed-in request): `campaign.reconcile`, which every revocation
-    # leaves behind (1kg.2.2, RQ-5), its slot step `reconcile_slots` passed by
-    # name and empty until 1kg.7.1 gives it a body; `table_session.expire`
+    # leaves behind (1kg.2.2, RQ-5), its slot step the reveal fill (1kg.7.1:
+    # `reveals.make_reconcile_slots`, which clears a dead session's slots and a
+    # removed seat's copy); `table_session.expire`
     # (1kg.2.3), the delayed job a Start enqueues at `expires_at`; and
     # `timeline.session_divider` (1kg.3.5), which a Start and an ending leave
     # behind to write the session's dividers. End, Rotate and expiry enqueue their
@@ -312,16 +313,25 @@ def _build_stores(db: Database) -> None:
     # through 1kg.3.5's enqueuer, never naming either kind here.
     from .audit_log import PostgresAuditLog
     from .campaign_store import PostgresCampaignStore
+    from .reveal_store import PostgresRevealStore
+    from .reveals import make_reconcile_slots, slot_clear_for
     from .session_divider_store import PostgresSessionDividerStore
     from .session_dividers import DIVIDER_KIND, SessionDividers, enqueuer
-    from .table_session_store import PostgresTableSessionStore, no_slots
+    from .table_session_store import PostgresTableSessionStore
     from .table_sessions import EXPIRE_KIND, TableSessions
 
     queue = PostgresJobQueue(db)
     runner = JobRunner(queue, single_flight=job_driver.JOB_LOCK)
-    runner.register(reconciliation.RECONCILE_KIND, reconciliation.handler(db, slots=reconciliation.reconcile_slots))
+    # Every session store here clears what its narrowing invalidates (RQ-7).
+    reveal_rows = PostgresRevealStore()
+    sessions = PostgresTableSessionStore(slot_clear=slot_clear_for(reveal_rows))
+    runner.register(
+        reconciliation.RECONCILE_KIND,
+        reconciliation.handler(
+            db, slots=make_reconcile_slots(sessions, reveal_rows, clock=lambda: datetime.now(UTC))
+        ),
+    )
     _state["job_queue"] = queue
-    sessions = PostgresTableSessionStore(slot_clear=no_slots)
     table_sessions = TableSessions(
         db,
         campaigns=PostgresCampaignStore(),
