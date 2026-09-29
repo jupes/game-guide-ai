@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -24,6 +25,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
 from fastapi import HTTPException
@@ -59,6 +61,7 @@ from service.documents_api import (
     seal_document,
 )
 from service.table_session_store import PostgresTableSessionStore, TableSession, no_slots
+from service.workbench_api import NOT_FOUND_DETAIL
 from service.workbench_contracts import (
     Document,
     DocumentCreateRequest,
@@ -551,3 +554,127 @@ def test_a_delete_cascades_the_history_and_leaves_the_ledger(dsn: str, owner: in
         with pytest.raises(HTTPException) as missing:
             read()
         assert missing.value.status_code == 404
+
+
+# ── A-18 and A-21 for R9 to R11, against PostgreSQL (review pr180-l H-1) ────
+# The twin's matrices (`service/tests/test_documents_api.py`) run again over the
+# real stores. Ownership is in the statement, so a request for what is not the
+# caller's locks nothing, narrows nothing and answers the one 404.
+
+SECOND = "cmp_" + "e" * 22
+THEIRS = "cmp_" + "f" * 22
+CANARY = "Zq7Canary"
+
+
+def _stranger(dsn: str, owner: int) -> int:
+    """Another GM, who owns `THEIRS`; and `SECOND`, the owner's other campaign."""
+    with connect(dsn) as conn:
+        other = int(conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES ('b@example.com', 'x') RETURNING id"
+        ).fetchone()[0])
+        conn.execute("INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Second'), "
+                     "(%s, %s, 'Theirs')", (SECOND, owner, THEIRS, other))
+    return other
+
+
+def _lifecycle_calls(db: Database, stores: LifecycleStores, campaign: str, document: str,
+                     caller: int) -> list[Callable[[], object]]:
+    """R9 to R11 as their routes run them, for one caller."""
+    return [
+        lambda: archive_document(db, stores, campaign_id=campaign, document_id=document, owner_id=caller, now=NOW),
+        lambda: guarded(lambda: unarchive_document(db, stores, campaign_id=campaign, document_id=document,
+                                                   owner_id=caller, now=NOW)),
+        lambda: delete_document(db, stores, campaign_id=campaign, document_id=document, owner_id=caller, now=NOW),
+    ]
+
+
+def test_every_lifecycle_composition_answers_whatever_is_not_the_callers_the_one_404(dsn: str, owner: int) -> None:
+    """A-18 (T-2) for R9 to R11. Each case is tried with the document as it
+    is, not archived (what provokes the owner's `409 document_not_archived`),
+    and then archived. Every answer is the one 404, and nothing is archived,
+    deleted, narrowed, advanced or recorded."""
+    db, stores = _database(dsn), _lifecycle_stores()
+    document = _create(db, _stores(), owner).document_id
+    stranger = _stranger(dsn, owner)
+    session = _live_session(db, owner)
+    cases = [
+        (CAMPAIGN, document, stranger),
+        (THEIRS, document, stranger),
+        (SECOND, document, owner),
+        (CAMPAIGN, "doc_" + "z" * 22, owner),
+        ("cmp_" + "z" * 22, document, owner),
+    ]
+    for archived in (False, True):
+        for campaign, target, caller in cases:
+            for route, call in zip(("archive", "unarchive", "delete"),
+                                   _lifecycle_calls(db, stores, campaign, target, caller), strict=True):
+                with pytest.raises(HTTPException) as refused:
+                    call()
+                assert (refused.value.status_code, refused.value.detail, refused.value.headers) == (
+                    404, dict(NOT_FOUND_DETAIL), None), (archived, route, campaign, target, caller)
+        if not archived:
+            _archived(db, document)
+    assert _count(dsn, "SELECT count(*) FROM campaign.documents WHERE id = %s AND archived_at IS NOT NULL",
+                  (document,)) == 1
+    assert _count(dsn, "SELECT count(*) FROM campaign.document_versions WHERE document_id = %s", (document,)) == 1
+    assert _epoch(dsn, session) == session.reveal_epoch, "no refused step one narrowed the owner's table"
+    assert _count(dsn, "SELECT coalesce(sum(authz_revision), 0) FROM campaign.authz_state") == 0
+    assert _count(dsn, "SELECT count(*) FROM audit.events") == 0
+
+
+def test_no_private_text_reaches_a_lifecycle_refusal_a_log_line_or_an_audit_row(
+    dsn: str, owner: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A-21 for R9 to R11. The documents carry canaries. The 409, a stranger's
+    404s, the lock timeouts' 503s, and a server error whose own message quotes
+    the row: none answers, chains or logs a canary, and no ledger row holds one."""
+    caplog.set_level(logging.DEBUG)
+    db, stores = _database(dsn, QUICK), _lifecycle_stores()
+    stranger = _stranger(dsn, owner)
+    private = {"name": CANARY, "voice": CANARY, "notes": CANARY}
+    kept = _create(db, _stores(), owner, private).document_id
+    other = _create(db, _stores(), owner, private).document_id
+    refusals: list[HTTPException] = []
+
+    def refused(call: Callable[[], object]) -> int:
+        with pytest.raises(HTTPException) as caught:
+            call()
+        refusals.append(caught.value)
+        return caught.value.status_code
+
+    assert refused(lambda: delete_document(db, stores, campaign_id=CAMPAIGN, document_id=kept, owner_id=owner,
+                                           now=NOW)) == 409
+    assert [refused(call) for call in _lifecycle_calls(db, stores, CAMPAIGN, kept, stranger)] == [404] * 3
+    with _holding_the_campaign(dsn):
+        assert refused(_lifecycle_calls(db, stores, CAMPAIGN, kept, owner)[0]) == 503
+    archive_document(db, stores, campaign_id=CAMPAIGN, document_id=kept, owner_id=owner, now=NOW)
+    with _holding_the_campaign(dsn):
+        assert [refused(call) for call in _lifecycle_calls(db, stores, CAMPAIGN, kept, owner)[1:]] == [503] * 2
+
+    with connect(dsn) as conn:
+        conn.execute("CREATE FUNCTION public.quote_the_row() RETURNS trigger LANGUAGE plpgsql AS "
+                     "$$ BEGIN RAISE EXCEPTION 'refused %', OLD.data::text; END $$")
+        conn.execute("CREATE TRIGGER quote_the_row BEFORE UPDATE OR DELETE ON campaign.documents "
+                     "FOR EACH ROW EXECUTE FUNCTION public.quote_the_row()")
+        with pytest.raises(psycopg.errors.RaiseException) as quoted:
+            conn.execute("UPDATE campaign.documents SET data = data WHERE id = %s", (other,))
+    assert CANARY in str(quoted.value), "the server's own message quotes the row"
+    assert refused(_lifecycle_calls(db, stores, CAMPAIGN, other, owner)[0]) == 503
+    assert [refused(call) for call in _lifecycle_calls(db, stores, CAMPAIGN, kept, owner)[1:]] == [503] * 2
+    with connect(dsn) as conn:
+        conn.execute("DROP TRIGGER quote_the_row ON campaign.documents")
+    delete_document(db, stores, campaign_id=CAMPAIGN, document_id=kept, owner_id=owner, now=NOW)
+
+    for refusal in refusals:
+        assert CANARY.lower() not in (str(refusal) + json.dumps(refusal.detail)).lower()
+        assert (refusal.__cause__, refusal.__context__) == (None, None), "no driver error is chained"
+    assert CANARY.lower() not in caplog.text.lower()
+    assert all(CANARY.lower() not in record.getMessage().lower() for record in caplog.records)
+    lines = [r.getMessage() for r in caplog.records if r.name == "service.document_lifecycle_api"]
+    assert any("LockNotAvailable, 55P03" in line for line in lines), lines
+    assert sum("RaiseException, P0001" in line for line in lines) == 3, lines
+    with connect(dsn) as conn:
+        rows = [text for (text,) in conn.execute("SELECT to_jsonb(e)::text FROM audit.events e ORDER BY id")]
+    assert len(rows) == 2 and all(CANARY.lower() not in row.lower() for row in rows), rows
+    assert _count(dsn, "SELECT count(*) FROM campaign.documents WHERE id = %s AND archived_at IS NULL",
+                  (other,)) == 1
