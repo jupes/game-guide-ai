@@ -37,7 +37,7 @@ import traceback
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -3357,7 +3357,13 @@ def test_the_invitee_page_is_newest_first_and_walks_once(world: World) -> None:
     with world.db.transaction() as unit:
         found = offers.find_for_invitee(unit, made[0], key, world.players[0], now=T0)
     assert found is not None and (found.campaign_name, found.alias) == ("C0", "Rook")
-    assert "C0" not in repr(found) and "Rook" not in repr(found)
+    # Structural check, not a substring-of-repr check: `repr(found)` also holds
+    # SeatOffer's random ids (secrets.token_urlsafe), so asserting a short name
+    # like "C0" is absent from that soup is flaky — it can appear there by
+    # chance. Assert instead, on the dataclass's own field metadata, that
+    # `campaign_name` and `alias` are exactly the fields hidden from repr.
+    hidden_fields = {f.name for f in fields(found) if not f.repr}
+    assert hidden_fields == {"campaign_name", "alias"}
 
 
 def test_decline_block_and_the_repeat_readers(world: World) -> None:
