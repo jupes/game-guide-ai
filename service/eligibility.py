@@ -478,4 +478,3 @@ class EligibilityMutations:
             lambda unit: remove_group_step_two(unit, self._stores, campaign_id, group_id, now=now),
             campaign_id,
         )
-

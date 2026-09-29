@@ -92,7 +92,7 @@ CREATE TABLE campaign.groups (
   id                 TEXT PRIMARY KEY CHECK (id ~ '^grp_[A-Za-z0-9_-]{22,60}$'),
   campaign_id        TEXT NOT NULL REFERENCES campaign.campaigns (id) ON DELETE CASCADE,
   name               TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 40),
-  name_fold           TEXT NOT NULL CHECK (length(name_fold) BETWEEN 1 AND 200),
+  name_fold          TEXT NOT NULL CHECK (length(name_fold) BETWEEN 1 AND 200),
   created_command_id TEXT CHECK (created_command_id IS NULL OR created_command_id ~ '^[A-Za-z0-9_-]{16,64}$'),
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),

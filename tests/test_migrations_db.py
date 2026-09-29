@@ -1355,13 +1355,27 @@ def _two_campaigns(conn) -> None:
     )
 
 
+def _eligibility_installed(dsn: str) -> tuple[bool, bool]:
+    """Whether `campaign.groups` exists, and whether `authz_state` has `projection_revision`."""
+    with connect(dsn) as conn:
+        [columns] = conn.execute(
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'campaign' "
+            "AND table_name = 'authz_state' AND column_name = 'projection_revision'"
+        ).fetchone()
+    return _exists(dsn, "campaign.groups"), columns == 1
+
+
 def test_a_database_upgraded_across_the_eligibility_migration_converges_on_a_fresh_one(dsn):
     """T-A2: an existing campaign keeps its revision and reads projection 0 —
     'revision ahead, queue empty', no backfill (I-6) — its seat and sheet are
     untouched, the shape equals a fresh database's, and a second run applies
     nothing. Kills a backfill (M-A2) and a nullable or default-less column
-    (M-A3)."""
+    (M-A3). It first proves the file it crosses is the eligibility one: before
+    it neither the groups table nor the column exists, and that one file adds
+    both, so a locator pointing at another migration goes red (review L-2 of
+    the first conflict resolution, whose mutant pinned `PACKAGED[16]`)."""
     mig.migrate(dsn, packaged=_BEFORE_ELIGIBILITY)
+    assert _eligibility_installed(dsn) == (False, False), "the pre-state predates the eligibility migration"
     with connect(dsn) as conn:
         owner = _one_user(conn)
         conn.execute(
@@ -1379,6 +1393,7 @@ def test_a_database_upgraded_across_the_eligibility_migration_converges_on_a_fre
             (DOCUMENT_ID, CAMPAIGN_ID, '{"name": "Rook"}', '{"name": 1}', PARTICIPANT_ID),
         )
     assert mig.migrate(dsn, packaged=_THROUGH_ELIGIBILITY).applied == (ELIGIBILITY.filename,)
+    assert _eligibility_installed(dsn) == (True, True), "the file crossed is the one that adds eligibility"
     mig.migrate(dsn)
     with connect(dsn) as conn:
         assert conn.execute(
@@ -1403,6 +1418,61 @@ def test_a_database_upgraded_across_the_eligibility_migration_converges_on_a_fre
     with throwaway_database("fresh") as fresh:
         mig.migrate(fresh)
         assert _shape(dsn) == _shape(fresh)
+
+
+#: Every index on the eligibility migration's four tables, as `pg_indexes`
+#: spells it (the DOCUMENT_INDEXES precedent in tests/test_document_db.py).
+#: `projection_queue_document_idx` exists only for the scan a document delete
+#: makes through the queue's foreign key, so no other test fails without it.
+ELIGIBILITY_INDEXES = {
+    "field_eligibility_campaign_idx": (
+        "CREATE INDEX field_eligibility_campaign_idx ON campaign.field_eligibility USING btree (campaign_id)"
+    ),
+    "field_eligibility_pkey": (
+        "CREATE UNIQUE INDEX field_eligibility_pkey ON campaign.field_eligibility USING btree (document_id, field_key)"
+    ),
+    "group_members_participant_idx": (
+        "CREATE INDEX group_members_participant_idx ON campaign.group_members USING btree (participant_id)"
+    ),
+    "group_members_pkey": (
+        "CREATE UNIQUE INDEX group_members_pkey ON campaign.group_members USING btree (group_id, participant_id)"
+    ),
+    "groups_command_uidx": (
+        "CREATE UNIQUE INDEX groups_command_uidx ON campaign.groups USING btree "
+        "(campaign_id, created_command_id) WHERE (created_command_id IS NOT NULL)"
+    ),
+    "groups_id_campaign_key": (
+        "CREATE UNIQUE INDEX groups_id_campaign_key ON campaign.groups USING btree (id, campaign_id)"
+    ),
+    "groups_live_name_uidx": (
+        "CREATE UNIQUE INDEX groups_live_name_uidx ON campaign.groups USING btree "
+        "(campaign_id, name_fold) WHERE (removed_at IS NULL)"
+    ),
+    "groups_pkey": "CREATE UNIQUE INDEX groups_pkey ON campaign.groups USING btree (id)",
+    "projection_queue_campaign_idx": (
+        "CREATE INDEX projection_queue_campaign_idx ON campaign.projection_queue USING btree (campaign_id, id)"
+    ),
+    "projection_queue_document_idx": (
+        "CREATE INDEX projection_queue_document_idx ON campaign.projection_queue USING btree (document_id)"
+    ),
+    "projection_queue_pkey": "CREATE UNIQUE INDEX projection_queue_pkey ON campaign.projection_queue USING btree (id)",
+}
+
+
+def test_the_eligibility_tables_carry_exactly_their_indexes(dsn):
+    """Review M-2 of PR #176. T-A1 checks the tables exist and T-A2 compares an
+    upgraded database with a fresh one, so an index missing from both passed
+    them. This pins the catalog: a dropped, added or reshaped index on any of
+    the four tables turns it red."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        found = dict(
+            conn.execute(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'campaign' "
+                "AND tablename IN ('groups', 'group_members', 'field_eligibility', 'projection_queue')"
+            ).fetchall()
+        )
+    assert found == ELIGIBILITY_INDEXES
 
 
 def test_the_database_refuses_a_projection_revision_ahead_of_the_authorisation_revision(dsn):
