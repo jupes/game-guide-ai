@@ -207,6 +207,8 @@ fails CI if either front end is missing one; see also the proxy invariant in
 | `RAG_SNIPPET_MAX` | `240` | display-snippet length |
 | `RAG_ANSWERABLE_DISTANCE` | `0.50` | koz grounding gate (top-1 cosine distance) |
 | `RAG_FALLBACK_DISTANCE` | `0.42` | ipl filtered→unfiltered retry — **eval-only**, never used live |
+| `RAG_EMBED_REQUEST_TIMEOUT_S` | `10` | per-wait bound on one query-embedding attempt; the service makes 2 attempts on a transient fault, no SDK retries (30.5 s worst case against a silent provider) |
+| `RAG_EMBED_CONNECT_TIMEOUT_S` | `5` | connect bound for the same embeddings client |
 | `RAG_DEFAULT_MODEL` | `gpt-4o-mini` | generation model |
 | `RAG_TEMPERATURE` | `0.2` | generation temperature |
 | `RAG_HISTORY_LIMIT` | `50` | messages returned per conversation |
