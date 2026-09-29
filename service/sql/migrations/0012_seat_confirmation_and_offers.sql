@@ -97,3 +97,14 @@ CREATE TABLE campaign.seat_blocks (
   PRIMARY KEY (blocker_user_id, blocked_owner_id),
   CHECK (blocker_user_id <> blocked_owner_id)
 );
+
+ALTER TABLE campaign.participants DROP CONSTRAINT IF EXISTS participants_confirmed_is_accepted_chk;
+ALTER TABLE campaign.seat_offers DROP CONSTRAINT IF EXISTS seat_offers_participant_id_campaign_id_fkey;
+ALTER TABLE campaign.seat_offers DROP CONSTRAINT IF EXISTS seat_offers_campaign_id_offered_by_fkey;
+ALTER TABLE campaign.seat_offers DROP CONSTRAINT IF EXISTS seat_offers_id_check;
+ALTER TABLE campaign.seat_offers DROP CONSTRAINT IF EXISTS seat_offers_address_check;
+ALTER TABLE campaign.seat_offers DROP CONSTRAINT IF EXISTS seat_offers_address_key_check;
+ALTER TABLE campaign.seat_offers DROP CONSTRAINT IF EXISTS seat_offers_outcome_check;
+DROP INDEX campaign.seat_offers_one_open_per_seat_uidx;
+ALTER TABLE campaign.seat_blocks DROP CONSTRAINT IF EXISTS seat_blocks_blocker_user_id_fkey;
+ALTER TABLE campaign.seat_blocks DROP CONSTRAINT IF EXISTS seat_blocks_check;

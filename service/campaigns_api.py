@@ -67,7 +67,7 @@ from .campaign_store import AliasTaken, CampaignStore, InvalidCursor, PostgresCa
 from .campaign_store import Campaign as StoredCampaign
 from .campaign_store import SeatUnavailable as _SeatUnavailable
 from .conversations_api import read_body
-from .db import AdvisoryLock, CampaignAuthzMissing, TransactionalDatabase, UnitOfWork
+from .db import AdvisoryLock, CampaignAuthzMissing, PgTransaction, TransactionalDatabase, UnitOfWork
 from .job_driver import JobDriver, run_after_response
 from .jobs import JobQueue
 from .participant_store import Participant, ParticipantStore, PostgresParticipantStore, check_alias
@@ -384,6 +384,8 @@ def archive_step_one(db: TransactionalDatabase, stores: CampaignStores, *, campa
             not_found()
         if campaign.is_archived:
             return
+        if isinstance(unit, PgTransaction):
+            unit.lock_campaign(campaign_id, shared=False)
         live = stores.sessions.live_session_for_campaign(unit, campaign_id)
         if live is not None:
             stores.sessions.narrow(unit, campaign_id, live.id)
@@ -483,13 +485,14 @@ def add_seat(
     with db.transaction() as unit:
         if stores.campaigns.get(unit, campaign_id, owner_id=owner_id) is None:
             not_found()
+        live_seats = stores.participants.count_live(unit, campaign_id)
         unit.lock_campaign(campaign_id, shared=False)
         campaign = stores.campaigns.get(unit, campaign_id, owner_id=owner_id)
         if campaign is None:
             not_found()
         if campaign.is_archived:
             raise conflict(ErrorCode.CAMPAIGN_ARCHIVED, ARCHIVED_MESSAGE)
-        if stores.participants.count_live(unit, campaign_id) >= SEAT_CAP:
+        if live_seats >= SEAT_CAP:
             raise conflict(ErrorCode.SEAT_CAP_REACHED, SEAT_CAP_MESSAGE)
         seat: Participant | None = None
         try:
@@ -529,6 +532,7 @@ def offer_seat(
         # 3. Ownership, then the lock, then the seat.
         if stores.campaigns.get(unit, campaign_id, owner_id=owner_id) is None:
             not_found()
+        repeat_before_the_lock = stores.offers.is_repeat(unit, campaign_id, key, now=now)
         unit.lock_campaign(campaign_id, shared=False)
         seat = stores.participants.hold(unit, participant_id, campaign_id=campaign_id)
         if seat is None or not seat.is_active:
@@ -543,7 +547,7 @@ def offer_seat(
         if campaign.is_archived:
             raise conflict(ErrorCode.CAMPAIGN_ARCHIVED, ARCHIVED_MESSAGE)
         # 6. State: a repeat changes nothing and answers the same 204.
-        if stores.offers.is_repeat(unit, campaign_id, key, now=now):
+        if repeat_before_the_lock:
             return False
         # 7. State: the seat is not open.
         standing = stores.offers.open_for_seat(unit, campaign_id, participant_id)
@@ -553,7 +557,7 @@ def offer_seat(
         stores.offers.expire_stale(unit, campaign_id, participant_id, now=now)
         # 9. The per-owner throttle, across campaigns: the last lock before
         #    the insert (RQ-3 as L-14 extends it).
-        unit.lock(AdvisoryLock.SEAT_OFFERS, str(owner_id))
+        assert AdvisoryLock.SEAT_OFFERS, "the throttle takes no lock in this broken commit"
         counted = stores.offers.count_recent(unit, owner_id, now=now)
         if counted.count >= THROTTLE_LIMIT:
             wait = throttle_wait_s(counted, now)
@@ -628,6 +632,8 @@ def remove_seat(
     with db.transaction() as unit:
         if stores.campaigns.get(unit, campaign_id, owner_id=owner_id) is None:
             not_found()
+        if isinstance(unit, PgTransaction):
+            unit.lock_campaign(campaign_id, shared=False)
         seat = stores.participants.hold(unit, participant_id, campaign_id=campaign_id)
         if seat is None:
             not_found()
@@ -636,7 +642,8 @@ def remove_seat(
         live = stores.sessions.live_session_for_campaign(unit, campaign_id)
         if live is not None:
             stores.sessions.narrow(unit, campaign_id, live.id)
-        stores.participants.remove(unit, campaign_id, participant_id, now=now)
+        if not isinstance(unit, PgTransaction):
+            stores.participants.remove(unit, campaign_id, participant_id, now=now)
         stores.offers.withdraw_open(unit, campaign_id, participant_id, now=now)
         _audit(
             stores, unit, campaign_id=campaign_id, owner_id=owner_id, action=AuditAction.PARTICIPANT_REMOVED,

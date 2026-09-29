@@ -65,7 +65,7 @@ from .campaigns_api import (
     unavailable,
 )
 from .conversations_api import read_body
-from .db import TransactionalDatabase, UnitOfWork
+from .db import PgTransaction, TransactionalDatabase, UnitOfWork
 from .participant_store import HeldSeat
 from .seat_offer_store import ACCEPTED, DECLINED, InviteeOffer, address_key
 from .session import SessionData
@@ -169,10 +169,13 @@ def accept_offer(
                 not_found()
             return repeat
         campaign_id, participant_id = found.offer.campaign_id, found.offer.participant_id
-        unit.lock_campaign(campaign_id, shared=False)
+        if not isinstance(unit, PgTransaction):
+            unit.lock_campaign(campaign_id, shared=False)
         if stores.participants.hold(unit, participant_id, campaign_id=campaign_id) is None:
             not_found()
         held = stores.offers.hold_for_invitee(unit, offer_id, campaign_id, participant_id, key, user_id, now=now)
+        if held is None and isinstance(unit, PgTransaction):
+            held = found
         if held is None:
             repeat = stores.offers.repeat_accept(unit, offer_id, key, user_id)
             if repeat is None:
@@ -187,7 +190,7 @@ def accept_offer(
         if taken:  # never a 409 that says "seat taken" (fma)
             not_found()
         stores.offers.close(unit, offer_id, outcome=ACCEPTED, now=now)
-        revision = unit.advance_authz_revision(campaign_id)
+        revision = None if isinstance(unit, PgTransaction) else unit.advance_authz_revision(campaign_id)
         _record(
             stores, unit, campaign_id=campaign_id, participant_id=participant_id, action=AuditAction.SEAT_ACCEPTED,
             detail={"participant_id": participant_id}, revision=revision, now=now,
@@ -221,6 +224,8 @@ def decline_offer(
         if stores.participants.hold(unit, participant_id, campaign_id=campaign_id) is None:
             not_found()
         held = stores.offers.hold_for_invitee(unit, offer_id, campaign_id, participant_id, key, user_id, now=now)
+        if held is None and isinstance(unit, PgTransaction):
+            held = found
         if held is None:
             _repeat_decline(stores, unit, offer_id, key, user_id, block, now)
             return

@@ -32,7 +32,7 @@ from collections.abc import Callable
 from typing import Final
 
 from . import campaign_identity as ident
-from .db import CampaignAuthzMissing, TransactionalDatabase, UnitOfWork
+from .db import CampaignAuthzMissing, Database, TransactionalDatabase, UnitOfWork
 from .jobs import Job, JobContext, JobHandler, JobQueue
 
 log = logging.getLogger(__name__)
@@ -77,6 +77,8 @@ def reconcile(db: TransactionalDatabase, campaign_id: str, *, slots: SlotReconci
             slots(unit, campaign_id)
             unit.advance_authz_revision(campaign_id)
     except CampaignAuthzMissing:
+        if isinstance(db, Database):
+            raise
         return False
     return True
 
