@@ -52,6 +52,13 @@ export interface PendingEntry {
   readonly invocation: ToolInvocation | null
   /** A start the server refused before any attempt existed (never `cap_reached`). */
   readonly refusal: ErrorInfo | null
+  /**
+   * The last send has had no answer yet: no `answered` accepted and no
+   * `refused` since the last `submitted`. A Try again is therefore a run in
+   * flight — drawn working, watched, cancellable — never the failure it
+   * retries (RAIL-15, RAIL-21, RAIL-23).
+   */
+  readonly awaiting: boolean
   /** RAIL-21: the answer was lost, or the client waited past `LOST_AFTER_MS`. */
   readonly lost: boolean
   /** RAIL-23: a cancel was asked for and no terminal state has been seen. */
@@ -112,9 +119,10 @@ function isTerminal(invocation: ToolInvocation): boolean {
   return invocation.status !== 'working'
 }
 
-/** Nothing of this run is still going as far as this client knows: it was
- * refused, or its answer is terminal. */
+/** Nothing of this run is still going as far as this client knows: no send
+ * awaits an answer, and it was refused or its answer is terminal. */
 function settled(entry: PendingEntry): boolean {
+  if (entry.awaiting) return false
   return entry.refusal !== null || (entry.invocation !== null && isTerminal(entry.invocation))
 }
 
@@ -156,10 +164,12 @@ function submitted(state: PendingWork, request: ToolInvocationRequest, at: numbe
   if (held !== undefined) {
     // A Try again. The held request stays exactly as it was: a body that
     // differs is not adopted, because the key names the request (RAIL-18).
-    return put(state, id, { ...held, submittedAt: at, lost: false, refusal: null })
+    // Its answer and refusal stay too, only hidden while `awaiting`: a
+    // `cap_reached` answer to this send leaves the lane as it was (critic 16).
+    return put(state, id, { ...held, submittedAt: at, lost: false, awaiting: true })
   }
   const entries = new Map(state.entries)
-  entries.set(id, { request, invocation: null, refusal: null, lost: false, cancelling: false, submittedAt: at })
+  entries.set(id, { request, invocation: null, refusal: null, awaiting: true, lost: false, cancelling: false, submittedAt: at })
   return withEntries(state, entries, [...state.order, id])
 }
 
@@ -173,12 +183,16 @@ function answered(state: PendingWork, invocation: ToolInvocation): PendingWork {
   }
   if (invocation.tool_id !== held.request.tool_id || !supersedes(held.invocation, invocation)) return state
   const newAttempt = held.invocation !== null && invocation.attempt > held.invocation.attempt
+  // A new attempt is watched afresh — unless it is the one a Try again in
+  // flight was waiting on: the wait and a cancel asked for it are its own.
+  const sameWatch = held.awaiting || !newAttempt
   const next = put(state, id, {
     ...held,
     invocation,
     refusal: null,
-    lost: held.lost && !newAttempt,
-    cancelling: held.cancelling && !newAttempt && !isTerminal(invocation),
+    awaiting: false,
+    lost: held.lost && sameWatch,
+    cancelling: held.cancelling && sameWatch && !isTerminal(invocation),
   })
   return isTerminal(invocation) ? { ...next, ...CAP_CLEAR } : next
 }
@@ -186,19 +200,22 @@ function answered(state: PendingWork, invocation: ToolInvocation): PendingWork {
 function refused(state: PendingWork, id: string, error: ErrorInfo, at: number): PendingWork {
   const held = state.entries.get(id)
   if (held === undefined) return state
+  // A refusal answers the send, whatever else it changes.
+  const heard = { ...held, awaiting: false }
   if (error.code === 'cap_reached') {
     const blocked = { ...state, capBlockedUntil: at + CAP_RECHECK_MS, capInFlight: error.in_flight ?? [] }
     // A first submit that never got anything leaves no lane: its draft is the
-    // controller's to restore. A Try again keeps its failed lane (critic 16).
-    if (held.invocation !== null || held.refusal !== null) return blocked
+    // controller's to restore. A Try again keeps the lane it was sent from —
+    // a failed run's, or a refused start's (critic 16).
+    if (held.invocation !== null || held.refusal !== null) return put(blocked, id, heard)
     const entries = new Map(state.entries)
     entries.delete(id)
     return withEntries(blocked, entries, state.order.filter((other) => other !== id))
   }
   // A refusal ends only a start: over a run that is working, done or
   // cancelled it is not the lane's news.
-  if (held.invocation !== null && held.invocation.status !== 'failed') return state
-  return put(state, id, { ...held, refusal: error, cancelling: false })
+  if (held.invocation !== null && held.invocation.status !== 'failed') return held.awaiting ? put(state, id, heard) : state
+  return put(state, id, { ...heard, refusal: error, cancelling: false })
 }
 
 function markLost(state: PendingWork, id: string): PendingWork {
@@ -259,8 +276,10 @@ function instant(ms: number): string {
  * The invocation a lane is drawn from — for rendering only, never stored and
  * never compared, so a client clock can never beat a server `updated_at`. The
  * fresher of the stored copy and the held one; a refusal as a failed run; a
- * run with no answer yet as working; and a cancel asked for as
- * `cancel_requested` until the server says how it ended (RAIL-23).
+ * run with no answer yet as working; a Try again in flight as working, as the
+ * attempt it starts (so `Still working…` times it afresh), never as the
+ * failure it retries; and a cancel asked for as `cancel_requested` until the
+ * server says how it ended (RAIL-23).
  */
 function drawnInvocation(entry: PendingEntry, stored: ToolInvocation | null = null): ToolInvocation {
   const held = stored !== null && supersedes(entry.invocation, stored) ? stored : entry.invocation
@@ -276,15 +295,19 @@ function drawnInvocation(entry: PendingEntry, stored: ToolInvocation | null = nu
     result: null,
     error: null,
   }
-  if (entry.refusal !== null && (held === null || held.status === 'failed')) {
+  if (entry.awaiting) {
+    if (base.status === 'failed') {
+      return { ...base, status: 'working', attempt: base.attempt + 1, cancel_requested: entry.cancelling, result: null, error: null }
+    }
+  } else if (entry.refusal !== null && (held === null || held.status === 'failed')) {
     return { ...base, status: 'failed', result: null, error: entry.refusal }
   }
   if (entry.cancelling && base.status === 'working') return { ...base, cancel_requested: true }
   return base
 }
 
-function laneOf(entry: PendingEntry): LaneView {
-  return normaliseLane(drawnInvocation(entry), { lost: entry.lost })
+function laneOf(entry: PendingEntry, stored: ToolInvocation | null): LaneView {
+  return normaliseLane(drawnInvocation(entry, stored), { lost: entry.lost })
 }
 
 /**
@@ -293,11 +316,20 @@ function laneOf(entry: PendingEntry): LaneView {
  * does not hold the run. Nothing here returns a `start` except Try again, and
  * Try again returns the held request unchanged: same id, same brief, same ids
  * (RAIL-18, X-1).
+ *
+ * `stored` is the run's stored copy when the thread holds one — the turn's
+ * invocation as `turnsWithPendingWork` was given it — so the answer is for the
+ * lane as drawn, which may be that fresher copy.
  */
-export function intentFor(state: PendingWork, invocationId: string, action: LaneActionId): LaneIntent | null {
+export function intentFor(
+  state: PendingWork,
+  invocationId: string,
+  action: LaneActionId,
+  stored: ToolInvocation | null = null,
+): LaneIntent | null {
   const entry = state.entries.get(invocationId)
   if (entry === undefined) return null
-  const view = laneOf(entry)
+  const view = laneOf(entry, stored)
   if (view.state === 'done' || view.state === 'unreadable' || !view.actions.includes(action)) return null
   switch (action) {
     case 'try-again':

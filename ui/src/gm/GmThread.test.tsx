@@ -14,13 +14,14 @@ import { GmThread } from './GmThread'
 import { DIVIDER_COPY, collapseSessionSpans, formatDividerTime, turnsFromTimeline } from './gmTimeline'
 import type { GmTurn } from './gmTimeline'
 import { LANE_COPY } from './laneState'
-import { emptyPendingWork, reducePendingWork, turnsWithPendingWork } from './pendingWork'
+import { emptyPendingWork, reducePendingWork, requestFromEntry, turnsWithPendingWork } from './pendingWork'
 import type { PendingEvent } from './pendingWork'
 import { toolById } from './registry'
 import {
   DIVIDER_ENTRY,
   EDIT_ENTRY,
   END_DIVIDER_ENTRY,
+  LIVE_CAMPAIGN,
   LIVE_CONVERSATION,
   OPAQUE_ENTRY,
   QUIET_SESSION,
@@ -628,6 +629,25 @@ describe('GmThread — a run this client is watching (1kg.3.5)', () => {
     expect(rest).toEqual([])
     expect(only).toHaveAttribute('data-state', 'working')
     expect(within(only).getByText('Building the stat block…')).toBeInTheDocument()
+  })
+
+  it('draws a Try again of a stored failure as a run in flight where it is stored, never as that failure', () => {
+    const failure = toolEntry({}, {
+      status: 'failed',
+      error: { code: 'backend_unavailable', message: 'The library went quiet.', retryable: true },
+      updated_at: '2026-09-16T19:36:00Z',
+    })
+    if (failure.kind !== 'ok' || failure.value.entry_kind !== 'tool') throw new Error('expected a stored tool entry')
+    const request = requestFromEntry(failure.value, { conversationCampaignId: LIVE_CAMPAIGN, conversationId: LIVE_CONVERSATION })
+    const state = reducePendingWork(emptyPendingWork(), { type: 'submitted', request, at: 0 })
+    const { turns, liveTools } = turnsWithPendingWork(turnsFromTimeline([failure]), state, LIVE_CONVERSATION)
+    expect(liveTools).toEqual([])
+    const { container } = renderThread(turns)
+    const [only, ...rest] = lanes(container)
+    expect(rest).toEqual([])
+    expect(only).toHaveAttribute('data-state', 'working')
+    expect(within(only).getByText('Building the stat block…')).toBeInTheDocument()
+    expect(within(only).queryByText('The library went quiet.')).toBeNull()
   })
 
   it('reads Cancelling… once a cancel is asked for, until the server says how it ended', () => {

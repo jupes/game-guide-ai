@@ -554,6 +554,128 @@ describe('pendingWork — the thread it draws', () => {
   })
 })
 
+describe('pendingWork — a Try again in flight is a run, not the failure it retries (RAIL-15, RAIL-21, RAIL-23)', () => {
+  const RETRIED_AT = T0 + 60_000
+  /** The real order: start, a retryable failure, then Try again — before the server answers it. */
+  const retrying = () => run(start(), answer(A, failed(RETRYABLE)), start(A, {}, RETRIED_AT))
+  const attemptTwo = (overrides: Record<string, unknown> = {}) => answer(A, { attempt: 2, updated_at: '2026-09-16T19:32:00Z', ...overrides })
+
+  it('is RAIL-15’s working lane, as the attempt it starts, with Cancel and never a second Try again', () => {
+    const state = retrying()
+    expect(lane(state)).toMatchObject({ state: 'working', status: 'Writing the dossier…', cancelling: false, actions: ['cancel'] })
+    // The attempt it starts, so `Still working…` times it afresh.
+    expect(liveTurn(state).invocation).toMatchObject({ status: 'working', attempt: 2, cancel_requested: false, result: null, error: null })
+    // A view only: the failure it retries is still what the model holds.
+    expect(state.entries.get(A)).toMatchObject({ awaiting: true, invocation: { status: 'failed', attempt: 1 } })
+    expect(intentFor(state, A, 'try-again')).toBeNull()
+    expect(intentFor(state, A, 'cancel')).toEqual({ type: 'cancel', invocationId: A })
+  })
+
+  it('restarts the wait: overdue lists it 120 s after the Try again, and lost is checking', () => {
+    const state = retrying()
+    expect(overdue(state, RETRIED_AT + LOST_AFTER_MS)).toEqual([])
+    expect(overdue(state, RETRIED_AT + LOST_AFTER_MS + 1)).toEqual([A])
+    const lost = then(state, { type: 'lost', invocationId: A })
+    expect(lost.entries.get(A)?.lost).toBe(true)
+    expect(lane(lost)).toMatchObject({ state: 'checking', status: 'Checking on NPC…', actions: ['check-again', 'cancel'] })
+    expect(intentFor(lost, A, 'check-again')).toEqual({ type: 'status', invocationId: A })
+    expect(intentFor(lost, A, 'try-again')).toBeNull()
+    // The attempt the Try again started is the one that was lost, so its working answer stays checked on (D-4).
+    expect(lane(then(lost, attemptTwo()))).toMatchObject({ state: 'checking' })
+  })
+
+  it('can be cancelled, and the cancel holds across the attempt it started until that attempt ends', () => {
+    const asked = then(retrying(), { type: 'cancel-requested', invocationId: A })
+    expect(asked.entries.get(A)?.cancelling).toBe(true)
+    expect(lane(asked)).toMatchObject({ state: 'working', status: LANE_COPY.cancelling, cancelling: true })
+    const started = then(asked, attemptTwo())
+    expect(lane(started)).toMatchObject({ state: 'working', status: LANE_COPY.cancelling, cancelling: true })
+    const ended = then(started, attemptTwo({ ...CANCELLED, updated_at: '2026-09-16T19:32:10Z' }))
+    expect(lane(ended)).toMatchObject({ state: 'cancelled', actions: ['run-again'] })
+    expect(ended.entries.get(A)?.cancelling).toBe(false)
+  })
+
+  it('ends with an answer to it, and a stale answer does not end it', () => {
+    const done = then(retrying(), attemptTwo(DONE))
+    expect(done.entries.get(A)?.awaiting).toBe(false)
+    expect(lane(done)).toMatchObject({ state: 'done' })
+    expect(overdue(done, RETRIED_AT + LOST_AFTER_MS + 1)).toEqual([])
+    expect(lane(then(retrying(), attemptTwo(failed(RETRYABLE))))).toMatchObject({ state: 'error', actions: ['try-again'] })
+    // D-8: a status read that still shows the failure it retried means the Try again never started.
+    expect(lane(then(retrying(), answer(A, failed(RETRYABLE))))).toMatchObject({ state: 'error', actions: ['try-again'] })
+    // Older than the failure held: not an answer to anything.
+    const state = retrying()
+    expect(then(state, answer(A, failed(RETRYABLE, { updated_at: '2026-09-16T19:31:30Z' })))).toBe(state)
+    // A refusal answers it too.
+    const throttled = then(retrying(), refuse(A, THROTTLED_USER))
+    expect(throttled.entries.get(A)?.awaiting).toBe(false)
+    expect(lane(throttled)).toMatchObject({ state: 'error', actions: ['try-again'] })
+    expect(statusOf(lane(throttled))).toMatch(/^That's a lot at once/)
+  })
+
+  it('a refused start’s Try again that the cap refuses keeps the lane it was sent from, in the real order', () => {
+    const sent = run(start(), refuse(A, RETRYABLE), start(A, {}, RETRIED_AT))
+    expect(lane(sent)).toMatchObject({ state: 'working', actions: ['cancel'] })
+    const capped = then(sent, refuse(A, { code: 'cap_reached', message: 'Two tools are already running.', retryable: true, in_flight: [B] }, RETRIED_AT + 1_000))
+    // H-2: the entry, its brief and its refusal stay; only the cap block is new.
+    expect(capped.order).toEqual([A])
+    expect(capped.entries.get(A)).toMatchObject({ awaiting: false, refusal: { code: 'backend_unavailable' }, request: toolRequest() })
+    expect(lane(capped)).toMatchObject({ state: 'error', actions: ['try-again'] })
+    expect(intentFor(capped, A, 'try-again')).toEqual({ type: 'start', request: toolRequest() })
+    expect(composerGate(capped, { chatInFlight: false, now: RETRIED_AT + 1_001 }).workbenchBusy).toBe(true)
+  })
+
+  it('a refusal answers a send over a working run and changes nothing else', () => {
+    const resent = run(start(), answer(), start(A, {}, T0 + 5_000))
+    expect(resent.entries.get(A)?.awaiting).toBe(true)
+    const refusedAgain = then(resent, refuse(A, RETRYABLE))
+    expect(refusedAgain.entries.get(A)).toMatchObject({ awaiting: false, refusal: null, invocation: { status: 'working', attempt: 1 } })
+    expect(lane(refusedAgain)).toMatchObject({ state: 'working', actions: ['cancel'] })
+  })
+})
+
+describe('pendingWork — a lane action answers the lane as drawn from a stored copy', () => {
+  const STORED_ID = 'inv_0a1b2c3d4e5f6a7b'
+  /** A stored `/monster` failure, a minute after the held run's last answer. */
+  const storedItem = () => toolEntry({ entry_id: 'ent_7001' }, failed(RETRYABLE, { updated_at: '2026-09-16T19:36:00Z' }))
+  const storedFailure = () => {
+    const item = storedItem()
+    if (item.kind !== 'ok' || item.value.entry_kind !== 'tool') throw new Error('expected a stored tool entry')
+    return item.value
+  }
+  const drawnLane = (state: PendingWork) => {
+    const [turn] = turnsWithPendingWork(turnsFromTimeline([storedItem()]), state, LIVE_CONVERSATION).turns
+    if (turn.kind !== 'tool') throw new Error('expected a tool turn')
+    return { invocation: turn.invocation, view: normaliseLane(turn.invocation, { lost: turn.live?.lost === true }) }
+  }
+
+  it('a reloaded failure’s Try again is drawn in flight where it is stored, never as that failure', () => {
+    const entry = storedFailure()
+    const request = requestFromEntry(entry, { conversationCampaignId: LIVE_CAMPAIGN, conversationId: LIVE_CONVERSATION })
+    const state = run({ type: 'submitted', request, at: T0 })
+    const { invocation, view } = drawnLane(state)
+    expect(invocation).toMatchObject({ status: 'working', attempt: 2 })
+    expect(view).toMatchObject({ state: 'working', status: 'Building the stat block…', actions: ['cancel'] })
+    expect(intentFor(state, STORED_ID, 'cancel', entry.invocation)).toEqual({ type: 'cancel', invocationId: STORED_ID })
+    expect(intentFor(state, STORED_ID, 'try-again', entry.invocation)).toBeNull()
+    expect(overdue(state, T0 + LOST_AFTER_MS + 1)).toEqual([STORED_ID])
+  })
+
+  it('offers exactly what the drawn lane offers when the stored copy is the fresher', () => {
+    const entry = storedFailure()
+    const request = toolRequest({ invocation_id: STORED_ID, tool_id: 'monster', brief: 'CR 5, drowned' })
+    const held = run({ type: 'submitted', request, at: T0 }, answer(STORED_ID, { tool_id: 'monster', updated_at: '2026-09-16T19:35:00Z' }))
+    const { view } = drawnLane(held)
+    expect(view).toMatchObject({ state: 'error', actions: ['try-again'] })
+    // M-1: the lane as drawn, not the model's own copy.
+    expect(ACTIONS.filter((action) => intentFor(held, STORED_ID, action, entry.invocation) !== null)).toEqual(['try-again'])
+    expect(intentFor(held, STORED_ID, 'try-again', entry.invocation)).toEqual({ type: 'start', request })
+    expect(intentFor(held, STORED_ID, 'cancel', entry.invocation)).toBeNull()
+    // With no stored copy it answers for the run it holds, which is working.
+    expect(intentFor(held, STORED_ID, 'cancel')).toEqual({ type: 'cancel', invocationId: STORED_ID })
+  })
+})
+
 describe('pendingWork — X-7', () => {
   afterEach(() => {
     vi.restoreAllMocks()
