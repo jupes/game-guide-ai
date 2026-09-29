@@ -763,6 +763,7 @@ def submit(
 # ── T2: complete ─────────────────────────────────────────────────────────────
 
 
+# justification: the answer is a validated result's JSON dump, the `result` column's value.
 def _finished(
     unit: UnitOfWork, executor: ToolExecutor, ctx: ExecutionContext,
     result: CardResult | DocumentResult | MediaResult,
