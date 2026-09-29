@@ -1767,6 +1767,10 @@ def test_ending_a_session_revokes_its_screens_and_advances_both_epochs(world: Wo
         assert again.session.ended_at == ended.ended_at
 
 
+#: The secret whose digest `_a_stray_grant_of_the_retired_generation` stores.
+STRAY_SECRET = "a grant of the retired generation"
+
+
 def _a_stray_grant_of_the_retired_generation(world: World, unit: Any, session_id: str) -> str:
     """The row a mint racing a Rotate leaves behind: unrevoked, and of the
     generation the Rotate has just retired.
@@ -1775,7 +1779,7 @@ def _a_stray_grant_of_the_retired_generation(world: World, unit: Any, session_id
     — `mint_screen` reads the session's *current* generation — which is exactly
     why an ending that revoked only the current generation would look right."""
     stray = "tcr_" + "s" * 22
-    digest = _digest("a grant of the retired generation")
+    digest = _digest(STRAY_SECRET)
     if world.kind == "fake":
         world.db.tables["table_credentials"].add(
             unit, stray, ScreenGrant(stray, session_id, 1, digest, datetime.now(UTC))
@@ -4261,6 +4265,68 @@ def test_a_screen_revoke_and_a_leave_are_recorded_once_and_touch_nothing_else(wo
         assert (after.reveal_epoch, after.audio_epoch, after.link_generation) == (0, 0, 1)
 
 
+def _screens_revoked(world: World, campaign: str) -> list[Any]:
+    return [e for e in _ledger_rows(world, campaign) if e.action == "screen.revoked"]
+
+
+def test_a_stray_grant_of_a_retired_generation_is_live_to_no_reader(world: World) -> None:
+    """L-9, L-10 (review M-2): the grant a mint loses to a Rotate is unrevoked
+    and of the generation the Rotate retired. Validity is the reader's test, so
+    every reader refuses it: the resolver, the GM's status read, the per-frame
+    read, the screen bound, and Leave, which revokes only a live grant. A screen
+    of the current generation is the positive control for each."""
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    t0 = datetime.now(UTC)
+    session = service.start(world.owner, campaign, command_id=_command(), now=t0).session
+    service.rotate(world.owner, campaign, session.id, command_id=_command(), now=t0)
+    with world.db.transaction() as unit:
+        stray = _a_stray_grant_of_the_retired_generation(world, unit, session.id)
+    later = t0 + timedelta(seconds=1)
+    current = service.mint_screen(world.owner, campaign, now=later)
+    with world.db.transaction() as unit:
+        held = {g.id: g for g in world.sessions.screens(unit, session.id)}
+    assert (held[stray].revoked_at, held[stray].link_generation) == (None, 1), "unrevoked and retired"
+    assert current.grant.link_generation == 2
+
+    assert service.resolve_screen(STRAY_SECRET, now=later) is None
+    assert service.resolve_screen(current.secret, now=later) is not None
+    status = service.status(world.owner, campaign, now=later)
+    assert status is not None and [g.id for g in status.screens] == [current.grant.id]
+    assert service.liveness([session.id])[session.id].live_screens == frozenset({current.grant.id})
+
+    for _ in range(SCREENS_PER_SESSION - 1):
+        service.mint_screen(world.owner, campaign, now=later)
+    with pytest.raises(ScreenLimit):
+        service.mint_screen(world.owner, campaign, now=later)
+
+    assert service.leave(STRAY_SECRET, now=later) is False
+    assert _screens_revoked(world, campaign) == [], "a Leave of a dead grant records nothing"
+    with world.db.transaction() as unit:
+        assert {g.id: g for g in world.sessions.screens(unit, session.id)}[stray].revoked_at is None
+
+
+def test_a_leave_after_the_session_expired_revokes_and_records_nothing(world: World) -> None:
+    """L-17, SEC-49 (review M-3): once its session is past `expires_at` — with
+    nothing having ended it — a grant is dead, so its Leave changes nothing and
+    the route answers by deleting the cookie alone. Just before the expiry the
+    same Leave revokes it, which is the positive control."""
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    t0 = datetime.now(UTC)
+    session = service.start(world.owner, campaign, command_id=_command(), now=t0).session
+    minted = service.mint_screen(world.owner, campaign, now=t0)
+
+    assert service.leave(minted.secret, now=session.expires_at + timedelta(seconds=1)) is False
+    assert _screens_revoked(world, campaign) == []
+    with world.db.transaction() as unit:
+        assert world.sessions.get(unit, session.id).state == "live", "expiry alone, no End"
+        assert {g.id: g for g in world.sessions.screens(unit, session.id)}[minted.grant.id].revoked_at is None
+
+    assert service.leave(minted.secret, now=session.expires_at - timedelta(seconds=1)) is True
+    assert [e.object_ref for e in _screens_revoked(world, campaign)] == [minted.grant.id]
+
+
 # ── 1kg.2.3 on a real server: who waits for whom ─────────────────────────────
 #
 # Each race below is explicit: one transaction is held open at a known point,
@@ -4419,6 +4485,34 @@ def test_a_revocations_reconciliation_waits_for_the_campaign_lock_and_runs_once_
     assert _authz_revision(dsn) == revision + 1, "the revision advanced exactly once"
     assert _scalar(dsn, "SELECT count(*) FROM app.jobs WHERE id = %s", (job_id,)) == 0
     assert _scalar(dsn, "SELECT count(*) FROM app.jobs WHERE kind = %s", (RECONCILE,)) == 0
+
+
+@needs_db
+def test_the_apps_own_expiry_handler_leaves_one_reconciliation(
+    dsn: str, owner: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RQ-5, review M-4: the suite above wires its own `reconcile` lambda, so
+    nothing there would notice `service/app.py`'s going missing. This drives
+    the composition production runs — `_build_stores` on a real database, and
+    the driver it leaves — through one due `table_session.expire`, and asks for
+    exactly one `campaign.reconcile` `{campaign_id}` behind it."""
+    from service import app as appmod
+
+    monkeypatch.setattr(appmod, "_state", {"migrations": "current"})
+    db = _database(dsn, PATIENT)
+    appmod._build_stores(db)
+    started_at = datetime.now(UTC) - SESSION_LIFETIME - timedelta(minutes=1)
+    session = _pg_lifecycle(db).start(owner, CAMPAIGN, command_id=_command(), now=started_at).session
+    assert _scalar(dsn, "SELECT count(*) FROM app.jobs WHERE kind = %s", (RECONCILE,)) == 0
+
+    ran = appmod._state["jobs"].run_hook()
+    assert ran is not None and (ran.ran, ran.failed) == (1, 0), ran
+    assert _scalar(dsn, "SELECT state FROM campaign.table_sessions WHERE id = %s", (session.id,)) == "expired"
+    with connect(dsn) as conn:
+        queued = conn.execute(
+            "SELECT kind, payload, dedupe_key FROM app.jobs WHERE kind <> %s ORDER BY id", (EXPIRE_KIND,)
+        ).fetchall()
+    assert queued == [(RECONCILE, {"campaign_id": CAMPAIGN}, None)]
 
 
 @needs_db
