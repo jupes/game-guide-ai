@@ -239,6 +239,19 @@ def test_each_attempt_gets_a_deadline_of_its_own(stalled: Callable[..., StalledP
     assert ask() == "Hello"
 
 
+def test_a_request_queued_for_a_busy_connection_ends_at_its_deadline(
+    stalled: Callable[..., StalledProvider],
+) -> None:
+    provider = stalled(_JSON_HEADERS, drip_s=DRIP_S)
+    transport = provider_deadline.AttemptDeadlineTransport(DEADLINE_S, limits=httpx.Limits(max_connections=1))
+
+    def queue_behind_the_only_connection() -> object:
+        with httpx.Client(transport=transport, timeout=None) as client, client.stream("POST", provider.url):
+            return client.post(provider.url)
+
+    assert isinstance(on_own_thread(queue_behind_the_only_connection), httpx.PoolTimeout)
+
+
 class _TlsRecorder(httpcore.NetworkStream):
     def __init__(self) -> None:
         self.timeouts: list[float | None] = []
