@@ -178,10 +178,11 @@ def test_a_silent_provider_times_out_and_releases_the_thread(stalled: Callable[.
     assert provider.hung_up_on(1)
 
 
+@pytest.mark.parametrize("drip_s", [None, DRIP_S], ids=["silent", "trickling"])
 def test_a_stream_that_stalls_midway_is_retried_and_recorded_as_a_timeout(
-    stalled: Callable[..., StalledProvider],
+    stalled: Callable[..., StalledProvider], drip_s: float | None,
 ) -> None:
-    provider = stalled(_FIRST_CHUNK)
+    provider = stalled(_FIRST_CHUNK, drip_s)  # trickling: each attempt ends at its deadline
     seen = _Recorded()
     client = _Streamed(ProviderClientFactory().client_for(DEFAULT_ALIAS))
     raised = on_own_thread(lambda: generate_module.generate_result(
@@ -205,23 +206,6 @@ def test_a_trickling_provider_ends_at_the_attempt_deadline(stalled: Callable[...
     assert isinstance(raised, openai.APITimeoutError)
     assert time.monotonic() - began >= DEADLINE_S  # the drip beat every read bound; the deadline ended it
     assert provider.hung_up_on(1)
-
-
-def test_a_stream_that_keeps_trickling_ends_at_each_attempts_deadline(
-    stalled: Callable[..., StalledProvider],
-) -> None:
-    provider = stalled(_FIRST_CHUNK, drip_s=DRIP_S)
-    seen = _Recorded()
-    client = _Streamed(ProviderClientFactory().client_for(DEFAULT_ALIAS))
-    raised = on_own_thread(lambda: generate_module.generate_result(
-        [HumanMessage(content="hi")], alias=DEFAULT_ALIAS, client=client, config={"callbacks": [seen]},
-        observer=seen,
-    ))
-    assert seen.tokens == ["Hel"] * ATTEMPTS
-    assert isinstance(raised, openai.APITimeoutError)
-    assert isinstance(raised.__cause__, httpx.ReadTimeout)
-    assert seen.errors == [openai.APITimeoutError] * ATTEMPTS
-    assert provider.hung_up_on(ATTEMPTS)
 
 
 def test_each_attempt_gets_a_deadline_of_its_own(stalled: Callable[..., StalledProvider]) -> None:

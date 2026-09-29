@@ -1,26 +1,18 @@
 """
 A wall-clock deadline on every provider attempt (agent-forge-harness-2bb).
 
-The ihz timeouts bound each connect, write and read on its own. A provider that
-sends anything (a token, an SSE keep-alive, the newlines some providers send
-while they generate a non-streamed answer) more often than every
-RAG_LLM_REQUEST_TIMEOUT_S seconds restarts the read bound each time, so an
-attempt, and the synchronous /chat worker thread under it, had no upper bound.
-A slow legitimate stream did the same.
-
-`AttemptDeadlineTransport` stamps a deadline when an attempt's request reaches
-it (one request per attempt: the factory's clients have max_retries=0) and caps
-every network wait after that at what is left: the pool wait, connect, TLS,
-each write, each read of the headers or the body. The attempt therefore ends AT
-its deadline whatever the provider sends. Checking the clock only as each chunk
-arrives would leave a tail of one more read timeout after it, which the retry
-budget pinned in service/tests/test_providers.py has no room for.
-
-A cut-short wait raises httpcore's own timeout, which httpx turns into its
-ReadTimeout (or ConnectTimeout, WriteTimeout, PoolTimeout). The SDK makes that
-APITimeoutError while it sends a request, and generate._as_sdk_timeout does the
-same for a streamed body read afterwards, so a deadline is recorded, retried
-and answered (/chat's timeout 502, retryable) exactly as a silent provider is.
+The ihz timeouts bound each wait on its own, so a provider that sends a byte (a
+token, an SSE keep-alive, a newline while it generates) more often than every
+RAG_LLM_REQUEST_TIMEOUT_S seconds kept an attempt, and the synchronous /chat
+worker thread under it, alive without limit. `AttemptDeadlineTransport` stamps
+a deadline when an attempt's request arrives (one request per attempt: the
+factory's clients have max_retries=0) and caps every wait after it (pool,
+connect, TLS, writes, header and body reads) at what is left, so the attempt
+ends AT the deadline; a check as each chunk arrives would leave a tail of one
+more read timeout, which the retry budget in test_providers.py cannot absorb.
+A cut-short wait is httpcore's own timeout: httpx's ReadTimeout and kin, which
+the SDK (non-streamed) and generate._as_sdk_timeout (streamed) already turn
+into APITimeoutError, recorded, retried and answered like a silent provider.
 """
 
 from __future__ import annotations
@@ -34,11 +26,9 @@ from typing import Any
 import httpcore
 import httpx
 
-# The running attempt's deadline on time.monotonic's clock, None between
-# attempts. A context variable, not state on a connection: a pooled connection
-# outlives the attempt that opened it, while each attempt's reads, streamed or
-# not, run in the context that sent it (httpx's sync client), which is also the
-# one that closes its body and so ends it.
+# The running attempt's deadline (time.monotonic), None between attempts. Not
+# state on a connection, which outlives its attempt in the pool: httpx's sync
+# client reads and closes a body in the context that sent its request.
 _attempt_deadline: ContextVar[float | None] = ContextVar("provider_attempt_deadline", default=None)
 
 
@@ -77,6 +67,8 @@ class _DeadlineStream(httpcore.NetworkStream):
 
 
 class _DeadlineBackend(httpcore.NetworkBackend):
+    """TCP only: the provider transports never set uds, and the base class refuses one."""
+
     def __init__(self, inner: httpcore.NetworkBackend) -> None:
         self._inner = inner
 
@@ -87,16 +79,6 @@ class _DeadlineBackend(httpcore.NetworkBackend):
         timeout = _capped(timeout, httpcore.ConnectTimeout)
         return _DeadlineStream(self._inner.connect_tcp(host, port, timeout, local_address, socket_options))
 
-    def connect_unix_socket(  # pragma: no cover - the provider transports never set uds
-        self, path: str, timeout: float | None = None,
-        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
-    ) -> httpcore.NetworkStream:
-        timeout = _capped(timeout, httpcore.ConnectTimeout)
-        return _DeadlineStream(self._inner.connect_unix_socket(path, timeout, socket_options))
-
-    def sleep(self, seconds: float) -> None:  # pragma: no cover - only httpcore's connect retries sleep
-        self._inner.sleep(seconds)
-
 
 class AttemptDeadlineTransport(httpx.HTTPTransport):
     """httpx's own transport, with every request ending `deadline_s` after it starts."""
@@ -104,11 +86,9 @@ class AttemptDeadlineTransport(httpx.HTTPTransport):
     def __init__(self, deadline_s: float, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._deadline_s = deadline_s
-        # httpx takes no network backend, so the httpcore pool's own is wrapped
-        # in place (httpcore's public NetworkBackend interface, reached through
-        # two private attributes). A future httpx or httpcore that renames them
-        # fails here, at client construction; one that stops using the backend
-        # fails the trickling-provider tests in test_generation_timeout.py.
+        # httpx takes no network backend, so the pool's own is wrapped in place
+        # through two private attributes: a rename fails here, at construction;
+        # a pool that stops using it fails the trickling-provider tests.
         self._pool._network_backend = _DeadlineBackend(self._pool._network_backend)
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
