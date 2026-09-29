@@ -731,8 +731,8 @@ class PostgresParticipantStore:
             f"WHERE p.user_id = %(user)s AND p.removed_at IS NULL AND p.accepted_at IS NOT NULL "
             f"AND c.archived_at IS NULL "
             f"AND (%(at)s::timestamptz IS NULL OR p.accepted_at < %(at)s::timestamptz "
-            f'OR (p.accepted_at = %(at)s::timestamptz AND p.id COLLATE "C" > %(campaign)s)) '
-            f'ORDER BY p.accepted_at DESC, p.id COLLATE "C" LIMIT %(limit)s',
+            f'OR (p.accepted_at = %(at)s::timestamptz AND p.campaign_id COLLATE "C" > %(campaign)s)) '
+            f'ORDER BY p.accepted_at DESC, p.campaign_id COLLATE "C" LIMIT %(limit)s',
             {
                 "user": user_id,
                 "at": None if after is None else after[0],
