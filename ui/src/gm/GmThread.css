@@ -121,3 +121,54 @@
     transition: none;
   }
 }
+
+/* Session dividers (1kg.3.5, I-10, I-11) — a line of text between two rules,
+   drawn between exchanges and never inside one. The rules are borders, so
+   forced colours keep them. On a phone the row wraps and the label may break
+   anywhere, so a long "… to …" never scrolls the page sideways. Nothing here
+   animates or transitions. */
+.gm-thread__divider {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--aether-space-2);
+  margin: var(--aether-space-1) 0;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* Load earlier's hand-off (1kg.3.7) may land here when a divider comes first. */
+.gm-thread__divider:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.gm-thread__divider-rule {
+  flex: 1 1 var(--aether-space-6);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.gm-thread__divider-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: center;
+  font-family: var(--aether-font-ui);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+/* Visually hidden, still read: the "to" of a span, whose dash is aria-hidden.
+   The same clip technique as ChatPane.css's .chat-pane__sr-only. */
+.gm-thread__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}

@@ -68,8 +68,69 @@ export type GmTurn =
   | { kind: 'unreadable'; key: string }
   /** An AI edit. Known, but its lane is 1kg.6.5's, so it says so rather than guessing. */
   | { kind: 'unsupported'; key: string }
+  /** A session boundary (1kg.3.5): not an exchange, drawn between them. */
+  | DividerTurn
 
-/** The stored entries, oldest first, as turns. Session dividers are 1kg.3.5's to label. */
+/**
+ * A session boundary in the thread (1kg.3.5). The server writes one stored
+ * `session_divider` entry per boundary into every live thread of the
+ * session's campaign; its `created_at` is the boundary's own time, so it
+ * sorts where the session started or ended, whenever the job ran. `span` is
+ * a start and its own end with nothing drawn between them (I-10), keyed by
+ * the start. `at` is always the ISO instant the entry carries.
+ */
+export type DividerTurn =
+  | { kind: 'divider'; key: string; sessionId: string; boundary: 'start' | 'end'; at: string }
+  | { kind: 'divider'; key: string; sessionId: string; boundary: 'span'; at: string; endedAt: string }
+
+/** Every turn that is an exchange: the GM's turn, then its outcome. */
+export type ExchangeTurn = Exclude<GmTurn, DividerTurn>
+
+/** The divider's words, in one place for the design lane (agent-forge-harness-cub). */
+export const DIVIDER_COPY = { start: 'Session started', end: 'Session ended', span: 'Session played' } as const
+
+const DIVIDER_TIME = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+
+/** A boundary's instant in the reader's own locale and zone (`GmThread`'s
+ * default `formatTime`); the ISO string itself if it is not a date this
+ * browser can read. */
+export function formatDividerTime(iso: string): string {
+  const date = new Date(iso)
+  return Number.isFinite(date.getTime()) ? DIVIDER_TIME.format(date) : iso
+}
+
+/**
+ * I-10: a `start` immediately followed by an `end` of the SAME session — a
+ * session that left nothing in this thread — becomes one `span`, keyed by the
+ * start. Nothing else collapses: not across a turn, not across two sessions,
+ * and not a lone end (a thread created mid-session) or a lone start (a session
+ * still live). Pure, and applied over the whole drawn list rather than a page,
+ * so it re-derives correctly once Load earlier prepends the other half.
+ */
+export function collapseSessionSpans(turns: readonly GmTurn[]): GmTurn[] {
+  const out: GmTurn[] = []
+  for (let index = 0; index < turns.length; index += 1) {
+    const turn = turns[index]
+    const next = turns[index + 1]
+    if (
+      turn.kind === 'divider' &&
+      turn.boundary === 'start' &&
+      next !== undefined &&
+      next.kind === 'divider' &&
+      next.boundary === 'end' &&
+      next.sessionId === turn.sessionId
+    ) {
+      out.push({ kind: 'divider', key: turn.key, sessionId: turn.sessionId, boundary: 'span', at: turn.at, endedAt: next.at })
+      index += 1
+      continue
+    }
+    out.push(turn)
+  }
+  return out
+}
+
+/** The stored entries, oldest first, as turns. A session divider is a divider
+ * turn keyed by its entry id; `collapseSessionSpans` pairs a quiet session. */
 export function turnsFromTimeline(items: readonly TimelineItem[]): GmTurn[] {
   const turns: GmTurn[] = []
   items.forEach((item, index) => {
@@ -99,6 +160,7 @@ export function turnsFromTimeline(items: readonly TimelineItem[]): GmTurn[] {
         turns.push({ kind: 'unreadable', key })
         return
       case 'session_divider':
+        turns.push({ kind: 'divider', key, sessionId: entry.session_id, boundary: entry.boundary, at: entry.created_at })
         return
     }
   })

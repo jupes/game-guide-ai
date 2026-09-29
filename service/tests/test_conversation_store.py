@@ -230,11 +230,11 @@ def test_the_conversation_prefix_never_joins_the_constrained_registry() -> None:
     adding `cnv_` there turns three tests red and the only fix is an edit to a
     released migration."""
     assert store.CONVERSATION_PREFIX not in ident.PREFIXES
-    # Eleven since `1kg.7.1` added `dsc_` and `rsl_` (after `1kg.8.1.1`'s `ast_` and `1kg.2.2`'s
-    # `sof_`). The number is a tripwire on the registry growing by accident, so it
-    # is meant to be edited deliberately by whichever bead adds a prefix — and
-    # never by this one.
-    assert len(ident.PREFIXES) == 11
+    # Twelve since `1ir.2.1` added `grp_` (after `1kg.7.1`'s `dsc_` and `rsl_`, `1kg.8.1.1`'s
+    # `ast_` and `1kg.2.2`'s `sof_`). The number is a tripwire on the registry growing by
+    # accident, so it is meant to be edited deliberately by whichever bead adds a prefix —
+    # and never by this one.
+    assert len(ident.PREFIXES) == 12
 
 
 def test_a_client_minted_uuid_is_still_a_shaped_conversation_id() -> None:
