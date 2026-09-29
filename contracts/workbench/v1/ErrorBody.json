@@ -200,6 +200,16 @@
       }
     },
     {
+      "name": "a delete of a document that is not archived (1kg.5.2, LIB-18): archive it first, not retryable",
+      "value": {
+        "detail": {
+          "code": "document_not_archived",
+          "message": "Archive this document before deleting it.",
+          "retryable": false
+        }
+      }
+    },
+    {
       "name": "the per-owner offer throttle (1kg.2.2, SEC-50(3)) with its wait",
       "value": {
         "detail": {

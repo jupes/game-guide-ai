@@ -120,6 +120,7 @@ export const KNOWN_ERROR_CODES = [
   'cap_reached', 'throttled_user', 'throttled_daily', 'provider_failed', 'provider_timeout',
   'attempt_expired', 'backend_unavailable', 'already_linked', 'alias_taken', 'seat_not_open',
   'seat_not_accepted', 'seat_cap_reached', 'campaign_archived', 'reauth_failed', 'document_unsupported',
+  'document_not_archived',
 ] as const
 export type KnownErrorCode = (typeof KNOWN_ERROR_CODES)[number]
 
@@ -2561,6 +2562,15 @@ export const SeatRemoveRequestSchema = refusingProtoKeys(
 )
 export type SeatRemoveRequest = z.infer<typeof SeatRemoveRequestSchema>
 
+/**
+ * SEC-40: deleting a document, and its whole history, asks for the password
+ * again. Only an archived document can be deleted. Never logged or echoed.
+ */
+export const DocumentDeleteRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), password: text(1, PASSWORD_MAX_CHARS) }),
+)
+export type DocumentDeleteRequest = z.infer<typeof DocumentDeleteRequestSchema>
+
 /** An offer as its invitee sees it: the GM's own words and the dates (SEC-50(4)). */
 export const SeatOfferSchema = z.object({
   schema_version: z.literal(CONTRACT_VERSION),
@@ -2628,6 +2638,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   FieldPatchRequest: FieldPatchRequestSchema,
   DocumentCreateRequest: DocumentCreateRequestSchema,
   RestoreRequest: RestoreRequestSchema,
+  DocumentDeleteRequest: DocumentDeleteRequestSchema,
   EditRequest: EditRequestSchema,
   EditInvocation: EditInvocationSchema,
   LibraryQuery: LibraryQuerySchema,
