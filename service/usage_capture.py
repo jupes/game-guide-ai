@@ -103,9 +103,13 @@ PURPOSE_ANSWER = "answer"
 PURPOSE_SUGGESTIONS = "suggestions"
 PURPOSE_SPELL_STRUCTURING = "spell_structuring"
 PURPOSE_STATBLOCK_STRUCTURING = "statblock_structuring"
+#: A GM tool's generated document (`1kg.5.4`, `service/document_generation.py`):
+#: both a provider-attempt purpose and a structuring-outcome purpose.
+PURPOSE_DOCUMENT_GENERATION = "document_generation"
 PURPOSES = frozenset({
     PURPOSE_EMBEDDING, PURPOSE_ANSWER, PURPOSE_SUGGESTIONS,
     PURPOSE_SPELL_STRUCTURING, PURPOSE_STATBLOCK_STRUCTURING,
+    PURPOSE_DOCUMENT_GENERATION,
 })
 
 ACTOR_ACCOUNT = "account"
@@ -156,6 +160,7 @@ OUTCOMES = frozenset({
 #: `embedding` or `answer`.
 STRUCTURING_PURPOSES = frozenset({
     PURPOSE_SUGGESTIONS, PURPOSE_SPELL_STRUCTURING, PURPOSE_STATBLOCK_STRUCTURING,
+    PURPOSE_DOCUMENT_GENERATION,
 })
 
 #: A structuring-outcome record has exactly these keys, in every branch,
