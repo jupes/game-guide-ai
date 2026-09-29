@@ -58,6 +58,7 @@ from service.reveal_store import (
     PostgresRevealStore,
     RevealConflict,
     SlotRow,
+    StaleSlots,
     Written,
     audit_reveal_invariants,
 )
@@ -353,6 +354,26 @@ def test_a_new_audience_ends_the_previous_disclosure_entirely(world: World) -> N
     assert [c.reason for c in third.taken] == [EndReason.MOVED]
     assert _shown(world, session.id) == {a: None, b: None, c: None, None: third.disclosure.id}
     assert _live(world, session.id) == [third.disclosure]
+
+
+@pytest.mark.parametrize("change", ["shrink", "grow"])
+def test_a_smaller_or_larger_audience_is_a_move_not_an_update(world: World, change: str) -> None:
+    """T-A15 (Move), the subset and superset cases: only the SAME set is an
+    Update (ID-6). Shrinking (a, b) to (a) or growing (a) to (a, b) is a Move:
+    `displayed`, the old disclosure ended `moved`, and every one of its old
+    copies listed, so each is audited as stopped (SEC-38, ED-18)."""
+    campaign, session, (a, b, _) = _stage(world)
+    document = _document(world, campaign)
+    before, after = ((a, b), (a,)) if change == "shrink" else ((a,), (a, b))
+    first_command = _command()
+    first = _write(world, campaign, session.id, document, _parts(*before), command=first_command)
+    second = _write(world, campaign, session.id, document, _parts(*after))
+
+    assert second.kind == "displayed" and second.reconciled == ()
+    assert second.taken == (CopyChange(first.disclosure, tuple(sorted(before)), True, EndReason.MOVED),)
+    assert _by_command(world, session.id, first_command).ended_reason == EndReason.MOVED
+    assert _shown(world, session.id) == {pid: second.disclosure.id if pid in after else None for pid in (a, b)}
+    assert _live(world, session.id) == [second.disclosure]
 
 
 def test_the_same_audience_is_an_update_with_a_new_disclosure_and_the_same_slots(world: World) -> None:
@@ -685,6 +706,10 @@ def test_who_sees_which_slot(world: World) -> None:
         with world.db.transaction() as unit:
             return world.reveals.view_for_screen(unit, where, grant, now=datetime.now(UTC))
 
+    def picture() -> Any:
+        with world.db.transaction() as unit:
+            return world.reveals.picture(unit, campaign, owner_id=world.owner, now=datetime.now(UTC))
+
     owner = account(world.owner)
     assert (owner.is_owner, owner.own_slot, owner.mine, owner.participant_id) == (True, False, None, None)
     assert owner.table.document_id == table_doc and owner.table.document_type == "npc"
@@ -720,10 +745,51 @@ def test_who_sees_which_slot(world: World) -> None:
         screen(fresh.id, elsewhere),  # a live grant, read under another campaign
     ]
     assert nobody == [None] * len(nobody)
+    assert picture() is not None, "the positive control: the owner's picture of the live session"
     with world.db.transaction() as unit:
         world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
     assert screen(fresh.id) is None, "a grant of an ended session"
     assert account(p[0]) is None and account(world.owner) is None
+    assert picture() is None, "an ended session has no picture before its expires_at (I-11's state half)"
+
+
+def test_a_private_copy_never_reads_as_the_table_slot(world: World) -> None:
+    """T-A24, the table slot is the slot with no participant (TP-1, SEC-48):
+    a confirmed seat's private copy, written before the session has a table
+    slot row and still there once one is written after it, never reads as the
+    table for the owner, another seat or a screen, whatever order the rows
+    were written in."""
+    campaign = _campaign(world)
+    p = world.players
+    holder = _seat(world, campaign, "confirmed", p[0])
+    _seat(world, campaign, "confirmed", p[1])
+    session = _session(world, campaign)
+    private_doc, table_doc = _document(world, campaign), _document(world, campaign)
+    _write(world, campaign, session.id, private_doc, _parts(holder))
+    with world.db.transaction() as unit:
+        grant, _ = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner, now=datetime.now(UTC))
+
+    def views() -> dict[str, Any]:
+        now = datetime.now(UTC)
+        with world.db.transaction() as unit:
+            return {
+                "owner": world.reveals.view_for_account(unit, campaign, user_id=world.owner, now=now),
+                "holder": world.reveals.view_for_account(unit, campaign, user_id=p[0], now=now),
+                "other seat": world.reveals.view_for_account(unit, campaign, user_id=p[1], now=now),
+                "screen": world.reveals.view_for_screen(unit, campaign, grant.id, now=now),
+            }
+
+    assert set(_slots(world, session.id)) == {holder}, "no table slot row yet"
+    before = views()
+    assert {who: view.table for who, view in before.items()} == dict.fromkeys(before, EMPTY_SLOT)
+    assert before["holder"].mine is not None and before["holder"].mine.document_id == private_doc
+    assert before["other seat"].mine == EMPTY_SLOT
+
+    _write(world, campaign, session.id, table_doc, TableTarget())
+    after = views()
+    assert {who: view.table.document_id for who, view in after.items()} == dict.fromkeys(after, table_doc)
+    assert after["holder"].mine is not None and after["holder"].mine.document_id == private_doc
+    assert after["other seat"].mine == EMPTY_SLOT
 
 
 def _retire_generation(w: World, session: str) -> None:
@@ -784,6 +850,26 @@ def test_the_stale_slots_are_a_dead_sessions_copies_and_a_live_sessions_removed_
     }
     assert [s.session_id for s in stale] == sorted(expected)
     assert {s.session_id: s.scope for s in stale} == expected
+
+
+def test_a_session_still_live_past_its_expiry_is_stale(world: World) -> None:
+    """ID-19, the clock's half: a session whose row still says `live` after its
+    `expires_at` is dead to the reconciliation, so every live copy it holds is
+    stale, judged by the clock the caller passes. The same read at a clock
+    before its expiry finds nothing (the positive control)."""
+    campaign = _campaign(world)
+    seat = _seat(world, campaign, "confirmed", world.players[0])
+    overdue = _session(world, campaign, hours=1, started_ago_h=2)
+    before = overdue.started_at + timedelta(minutes=30)
+    _write(world, campaign, overdue.id, _document(world, campaign), TableTarget(), now=before)
+    _write(world, campaign, overdue.id, _document(world, campaign), _parts(seat), now=before)
+
+    def stale(at: datetime) -> list[StaleSlots]:
+        with world.db.transaction() as unit:
+            return world.reveals.stale_slots(unit, campaign, now=at)
+
+    assert stale(before) == [], "live, with no removed seat, at a clock before its expiry"
+    assert stale(datetime.now(UTC)) == [StaleSlots(overdue.id, EverySlot(EndReason.RECONCILED))]
 
 
 def test_everyone_seated_is_the_confirmed_active_seats_only(world: World) -> None:

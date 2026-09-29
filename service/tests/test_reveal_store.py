@@ -36,6 +36,7 @@ from service.reveal_store import (
     Disclosure,
     DocumentNotDisplayable,
     MaskRefused,
+    PictureEntry,
     RevealBusy,
     RevealConflict,
     RevealNotFound,
@@ -45,6 +46,7 @@ from service.reveal_store import (
     check_stored_mask,
     check_targets,
 )
+from service.workbench_contracts import REVEAL_MAX_SLOTS
 
 SERVICE = Path(__file__).resolve().parents[1]
 COMMAND = "Rook-saw-the-card-0123456789"
@@ -187,6 +189,23 @@ def test_no_record_shows_the_command_id_and_no_refusal_carries_an_identifier() -
 def test_a_disclosure_is_live_until_it_ends() -> None:
     assert _disclosure().is_live
     assert not _disclosure(ended_at=datetime.now(UTC), ended_reason=EndReason.GM_STOP).is_live
+
+
+def test_the_picture_refuses_rather_than_truncates_past_reveal_max_slots() -> None:
+    """ID-16 (critic 13): the table entry and `REVEAL_MAX_SLOTS - 1` participant
+    entries are listed whole, and one participant more is `RevealBusy`, never a
+    picture cut short (PostgreSQL's LIMIT reads one row past the bound so that
+    this guard can see it)."""
+    seats = sorted(ident.new_id(ident.PARTICIPANT) for _ in range(REVEAL_MAX_SLOTS))
+    entries = [PictureEntry("participant", pid, 1, None) for pid in seats]
+    session, campaign = ident.new_id(ident.TABLE_SESSION), ident.new_id(ident.CAMPAIGN)
+
+    whole = reveal_store._picture(session, campaign, 1, 0, entries[:-1])
+    assert len(whole.entries) == REVEAL_MAX_SLOTS
+    assert whole.entries[0] == PictureEntry("table", None, 0, None)
+    assert [e.participant_id for e in whole.entries[1:]] == seats[:-1]
+    with pytest.raises(RevealBusy):
+        reveal_store._picture(session, campaign, 1, 0, entries)
 
 
 # ── Source scans ─────────────────────────────────────────────────────────────
