@@ -27,6 +27,7 @@ CASES = ROOT / "ingestion" / "eval_data" / "document_generation" / "cases.jsonl"
 LICENCE = "Original to this repository (synthetic); contains no licensed book text"
 TYPES = tuple(t.value for t in dg.GENERATION_SPECS)
 SHINGLE_WORDS = 12
+I16_MARKERS = ("://", "![", "](", "<img", "<a ", "<iframe", "<script", "href=", "src=")
 
 
 class _Strict(BaseModel):
@@ -83,7 +84,7 @@ class EvalCase(_Strict):
         assert self.injection_family is None or self.injection_family in fx.INJECTION_FAMILIES
         spec = dg.spec_for(self.doc_type)
         assert set(self.expect.must_fill) >= spec.must_fill
-        assert set(self.expect.forbid_substrings) >= set(dg.REMOTE_REFERENCE_MARKERS)
+        assert set(self.expect.forbid_substrings) >= set(I16_MARKERS)
         assert self.expect.max_cited <= len(self.request.corpus)
         return self
 

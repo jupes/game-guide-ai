@@ -707,7 +707,16 @@ REMOTE_PLACES: list[tuple[DocumentTypeId, Callable[[str], dict[str, Any]]]] = [
 ]
 
 
-@pytest.mark.parametrize("marker", [m.upper() for m in dg.REMOTE_REFERENCE_MARKERS] + list(dg.REMOTE_REFERENCE_MARKERS))
+#: I-16's list, written out here rather than read from the module: a marker
+#: removed there must turn this suite red, not remove its own test case.
+I16_MARKERS = ("://", "![", "](", "<img", "<a ", "<iframe", "<script", "href=", "src=")
+
+
+def test_d8_the_scan_covers_every_i16_marker() -> None:
+    assert set(dg.REMOTE_REFERENCE_MARKERS) >= set(I16_MARKERS)
+
+
+@pytest.mark.parametrize("marker", [m.upper() for m in I16_MARKERS] + list(I16_MARKERS))
 @pytest.mark.parametrize("place", range(len(REMOTE_PLACES)))
 def test_d8_a_remote_reference_anywhere_is_refused(marker: str, place: int) -> None:
     """Kills a pattern removed from the scan, or a scan that is not recursive."""
