@@ -860,7 +860,9 @@ def test_the_seat_migration_adopts_an_accepted_seat_as_not_confirmed(dsn):
             "VALUES (%s, %s, 'Rook', 'rook', %s, now())",
             (PARTICIPANT_ID, CAMPAIGN_ID, player),
         )
-    assert mig.migrate(dsn).applied[-1] == SEAT_OFFERS.filename
+    # Through the seat migration and no further: a later migration is not the
+    # expansion under test, so it neither runs here nor stands in the report.
+    assert mig.migrate(dsn, packaged=(*before, SEAT_OFFERS)).applied == (SEAT_OFFERS.filename,)
     with connect(dsn) as conn:
         row = conn.execute(
             "SELECT accepted_at IS NOT NULL, confirmed_at FROM campaign.participants WHERE id = %s",
