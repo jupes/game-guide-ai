@@ -537,6 +537,14 @@ store over them (`1kg.5.1`). Eight Workbench routes in `service/documents_api.py
 version's content, restore and seal — under `/campaigns/{campaign_id}`, each
 reading ownership first in its transaction and none taking the campaign lock;
 the pure rules between the store and the wire are `service/document_wire.py`.
+Three more, in `service/document_lifecycle_api.py`, archive, unarchive and
+delete a document, and every one of their changes takes the lock: archive and
+delete narrow the campaign's live table in a first transaction that never
+takes it, then take it exclusively first in a second, re-read ownership under
+it, change the document, narrow again, advance the authorisation revision and
+write a content-free audit row (RQ-5; a lock timeout is "not applied yet",
+never a job). Delete takes only an archived document and asks for the
+password first, through the same re-authentication as a seat's Remove.
 
 `campaign.documents` holds one document's **live** content as flat JSON, one
 value per field key its type declares, plus the two counters. `campaign.document_versions`
