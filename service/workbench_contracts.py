@@ -3428,7 +3428,7 @@ class AvatarTone(str, Enum):
 class CampaignBadge(str, Enum):
     """The one badge a card carries, or none — which means idle (bead cfx).
     ``live``: a table session is running now. ``ready``: the next session has
-    prepared material waiting (interactions ADR §19 A-30)."""
+    prepared material waiting (interactions ADR §19 A-31)."""
 
     LIVE = "live"
     READY = "ready"
@@ -3477,7 +3477,7 @@ class CampaignPage(_Contract):
 class CampaignCreateRequest(_Contract):
     """``POST /campaigns``: the caller becomes its GM (D-5). No ``command_id``:
     a retried create makes a second campaign, which archive recovers. Only a
-    name is required (§12.2); a tone line is optional (§19 A-30)."""
+    name is required (§12.2); a tone line is optional (§19 A-31)."""
 
     schema_version: SchemaVersion
     name: CampaignNameRequest

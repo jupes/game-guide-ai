@@ -866,7 +866,7 @@ Every answer that carries a `Campaign` carries its card's facts, and every
 `PlayerSeat` carries the seated card's. Three are the GM's to state — stored by
 migration 0013 — and the rest are derived by the server at read time, never
 stored (`service/campaign_summary_store.py`). The rules the server applies are
-interactions ADR §19 A-30, which the owner may override.
+interactions ADR §19 A-31, which the owner may override.
 
 | Key | `Campaign` | `PlayerSeat` | Meaning |
 | --- | --- | --- | --- |

@@ -7,7 +7,7 @@ touches — is asserted of both. The `postgres` parameter carries `needs_db` and
 skips without a server; CI runs this file with DATABASE_URL set.
 
 What is derived and why lives in `service/campaign_summary_store.py`; the
-inferred decisions are interactions ADR §19 A-30. From the repo root:
+inferred decisions are interactions ADR §19 A-31. From the repo root:
 
     DATABASE_URL=postgresql://... uv run python -m pytest tests/test_campaign_summary_db.py -q
 """

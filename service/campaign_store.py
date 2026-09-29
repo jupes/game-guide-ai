@@ -336,7 +336,7 @@ class Campaign:
     archived_at: datetime | None = None
     #: The GM's "this story is finished" (bead cfx, migration 0013). Not
     #: `archived_at`: archive is an authorisation fact, and this is a label that
-    #: narrows and widens nothing (interactions ADR §19 A-30).
+    #: narrows and widens nothing (interactions ADR §19 A-31).
     concluded_at: datetime | None = None
     #: The card's tone line — optional (§12.2: "only a name is required") and
     #: private text, hidden from `repr()` for the reason `name` is.

@@ -1,7 +1,7 @@
 {
   "schema": "CampaignCreateRequest",
   "direction": "request",
-  "note": "POST /campaigns: the caller becomes its GM (D-5). No command_id: a retried create makes a second campaign, which archive recovers. Duplicate names are allowed. Only a name is required (interactions ADR 12.2); a tone line is optional (19 A-30), trimmed as a name is.",
+  "note": "POST /campaigns: the caller becomes its GM (D-5). No command_id: a retried create makes a second campaign, which archive recovers. Duplicate names are allowed. Only a name is required (interactions ADR 12.2); a tone line is optional (19 A-31), trimmed as a name is.",
   "valid": [
     {
       "name": "a name",

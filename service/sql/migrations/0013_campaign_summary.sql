@@ -10,7 +10,7 @@
 -- be wrong, and keeping one current would put a write on every chat turn and
 -- every document save.
 --
--- CONCLUDED is its own column, not `archived_at` (interactions ADR §19 A-30).
+-- CONCLUDED is its own column, not `archived_at` (interactions ADR §19 A-31).
 -- Archive is an AUTHORISATION fact: it narrows the live session, advances
 -- `authz_revision`, and refuses new seats and offers. Concluded is the GM saying
 -- "this story is finished" — it narrows nothing, widens nothing, and a concluded

@@ -40,7 +40,7 @@ offer takes the exclusive lock only to serialise its repeat check and advances
 nothing; Remove is a revocation that NEVER asks for the campaign lock and
 leaves `campaign.reconcile` behind (`service/reconciliation.py`). A lock timeout
 or a deadlock victim is one retryable `503`, with only its SQLSTATE logged.
-Conclude and Reopen are a rename's kind of write (interactions ADR §19 A-30):
+Conclude and Reopen are a rename's kind of write (interactions ADR §19 A-31):
 one statement with the owner in it, no lock and no revision, because concluded
 narrows and widens nothing — but each change is audited, in its transaction.
 
@@ -578,7 +578,7 @@ def set_concluded(
 ) -> StoredCampaign:
     """Mark concluded or reopen (bead cfx), in one transaction: the change in
     one statement with the owner in it, then its audit row. Concluded is not an
-    authorisation fact (interactions ADR §19 A-30) — seats, sessions, documents
+    authorisation fact (interactions ADR §19 A-31) — seats, sessions, documents
     and reveals are untouched — so there is no lock and no revision. A repeat
     changes nothing and writes no audit row; a campaign that is not the
     caller's is the one 404, from the read that follows."""
@@ -843,7 +843,7 @@ def build_router(
     ) -> Campaign:
         """A new campaign, the caller its GM (D-5). Duplicate names are allowed,
         and a retried create makes a second campaign, which archive recovers.
-        Only a name is required; a tone line is optional (§19 A-30)."""
+        Only a name is required; a tone line is optional (§19 A-31)."""
         request = parse_body(CampaignCreateRequest, raw)
         live_db = _database(db)
 

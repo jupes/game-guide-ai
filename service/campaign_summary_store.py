@@ -39,7 +39,7 @@ campaign until a column holds a choice). A turn is counted from `chat.messages`,
 so a GM turn in a conversation that was never linked to the campaign is not
 the campaign's activity.
 
-**The inferred decisions** (interactions ADR §19 A-30, the owner may override):
+**The inferred decisions** (interactions ADR §19 A-31, the owner may override):
 READY is `ready`'s rule below; a campaign is dormant after `DORMANT_AFTER`
 without activity, with no band between active and dormant; and a tone line is
 optional.
@@ -141,7 +141,7 @@ def last_activity(campaign: Campaign, facts: OwnerFacts) -> datetime:
 
 
 def ready(campaign: Campaign, facts: OwnerFacts) -> bool:
-    """READY (INFERRED, A-30): the next session has prepared material waiting.
+    """READY (INFERRED, A-31): the next session has prepared material waiting.
 
     An unarchived document was edited after the table last met — or, for a
     campaign that has never met, one exists at all — and the campaign is in
@@ -159,7 +159,7 @@ def badge(campaign: Campaign, facts: OwnerFacts) -> str | None:
 
 
 def dormant(campaign: Campaign, facts: OwnerFacts, now: datetime) -> bool:
-    """E-4 (INFERRED, A-30): no activity for longer than `DORMANT_AFTER`, and
+    """E-4 (INFERRED, A-31): no activity for longer than `DORMANT_AFTER`, and
     the campaign is in play — a concluded or archived one is neither active nor
     dormant, and a live one is active by definition."""
     if facts.live or campaign.is_concluded or campaign.is_archived:
