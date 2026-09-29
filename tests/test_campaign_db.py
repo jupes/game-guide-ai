@@ -69,6 +69,7 @@ from service.campaign_store import (
     check_name,
     encode_cursor,
 )
+from service.campaign_summary_store import InMemoryCampaignSummaryStore, PostgresCampaignSummaryStore
 from service.campaigns_api import CampaignStores, archive, archive_step_one, archive_step_two, restore
 from service.db import (
     CampaignAuthzMissing,
@@ -80,6 +81,7 @@ from service.db import (
     PoolSettings,
     TwinWouldBlock,
 )
+from service.history import InMemoryMessageStore
 from service.jobs import InMemoryJobQueue, Job, JobContext, PostgresJobQueue
 from service.participant_store import (
     InMemoryParticipantStore,
@@ -2924,8 +2926,16 @@ def _job_queue(world: World) -> Any:
     return InMemoryJobQueue(world.db) if world.kind == "fake" else PostgresJobQueue(world.db)
 
 
+def _summary_store(world: World) -> Any:
+    if world.kind == "fake":
+        return InMemoryCampaignSummaryStore(world.db, messages=InMemoryMessageStore())
+    return PostgresCampaignSummaryStore()
+
+
 def _stores(world: World) -> CampaignStores:
-    return CampaignStores(world.campaigns, world.participants, world.sessions, _offer_store(world), world.audit)
+    return CampaignStores(
+        world.campaigns, world.participants, world.sessions, _offer_store(world), world.audit, _summary_store(world)
+    )
 
 
 class _Recording:
