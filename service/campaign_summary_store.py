@@ -19,11 +19,14 @@ read, and nothing here is an authorisation fact.
 
 **What each derived fact reads**
 
-- *Last played*: `campaign.table_sessions` — an ended session's `ended_at`, an
-  expired one's `LEAST(ended_at, expires_at)` (the sweep that marks it runs
-  later than the table stopped), a live one's `started_at` while it is live,
-  and a `live` row already past its expiry the expiry it passed: the sweep is
-  lazy, so the same history reads the same before it runs as after.
+- *Last played*: `campaign.table_sessions` — an ended or expired session's
+  `LEAST(ended_at, expires_at)`, a live one's `started_at` while it is live, and
+  a `live` row already past its expiry the expiry it passed. A table cannot
+  meet past its expiry, and what finalises an overdue row — the lazy sweep, or
+  the GM's End pressed days late — runs later than the table stopped, so the
+  same history reads the same before either runs as after. End already records
+  an overdue session as `expired` at its expiry (`1kg.2.3`); the `LEAST` on an
+  `ended` row keeps that true of any writer.
 - *LIVE*: a `live` session whose `expires_at` is still ahead.
 - *Last edited* and *last prepared*: `max(campaign.documents.updated_at)`, over
   every document and over the unarchived ones. Archiving a document does not
@@ -60,7 +63,7 @@ from .conversation_store import Conversation
 from .db import InMemoryDatabase, InMemoryTransaction, UnitOfWork
 from .history import MessageStore
 from .participant_store import Participant
-from .table_session_store import TableSession
+from .table_session_store import ENDED, EXPIRED, TableSession
 
 #: A campaign with no activity for longer than this is dormant (E-4). The spec's
 #: "active" is activity within 30 days, and it says the number is "a dial, not a
@@ -190,12 +193,12 @@ class CampaignSummaryStore(Protocol):
 
 
 #: One ended, expired or live session's moment, as the module docstring says.
-#: A `live` row is the only state left for the ELSE (0004's CHECK); one whose
-#: expiry has passed is what an unswept expired one is.
+#: An ended or expired row has an `ended_at` (0004's CHECK) and is dated no
+#: later than its expiry. A `live` row is the only state left for the ELSE;
+#: one whose expiry has passed is what an unswept expired one is.
 _SESSION_MOMENT = (
-    "CASE s.state WHEN 'ended' THEN s.ended_at "
-    "WHEN 'expired' THEN LEAST(s.ended_at, s.expires_at) "
-    "ELSE CASE WHEN s.expires_at <= %(now)s THEN s.expires_at ELSE s.started_at END END"
+    "CASE WHEN s.state IN ('ended', 'expired') THEN LEAST(s.ended_at, s.expires_at) "
+    "WHEN s.expires_at <= %(now)s THEN s.expires_at ELSE s.started_at END"
 )
 _LAST_PLAYED = f"(SELECT max({_SESSION_MOMENT}) FROM campaign.table_sessions s WHERE s.campaign_id = c.id)"
 _LIVE = (
@@ -246,9 +249,7 @@ class PostgresCampaignSummaryStore:
 
 
 def _session_moment(session: TableSession, now: datetime) -> datetime:
-    if session.state == "ended" and session.ended_at is not None:
-        return session.ended_at
-    if session.state == "expired" and session.ended_at is not None:
+    if session.state in (ENDED, EXPIRED) and session.ended_at is not None:
         return min(session.ended_at, session.expires_at)
     return session.expires_at if session.expires_at <= now else session.started_at
 
