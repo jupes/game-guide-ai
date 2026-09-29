@@ -241,6 +241,8 @@ retired, and `0009` drops their tables.
 | `campaign.participants` | a seat: alias, `alias_key`, created, `removed_at`, and (`0009`) the account it is offered to (`user_id`) and when that account accepted it (`accepted_at`) | marked removed, never deleted; the alias is unique within the campaign among seats that are not removed, compared over an `alias_key` the **application** computes (NFKC then `casefold`) so that PostgreSQL's `lower()` and Python's cannot disagree; an account holds at most one live seat per campaign (a partial unique index); `user_id` is `ON DELETE NO ACTION`, so deleting an account that holds a seat, removed or not, is refused until account deletion handles seats (`agent-forge-harness-zkc`); a CHECK keeps an accepted seat from having no account |
 | `campaign.table_sessions` | a GM running a table now | at most one `live` session **per GM across campaigns** (a partial unique index), both epochs, and `link_generation`, which **is the admission generation** (SEC-42; renamed in prose only); `start_command_id` (one session per start command per campaign, a partial unique index, so a retried Start answers its session) and `rotate_command_id` (no index: it is read from the row its Rotate already holds, and an index would make Rotate block every screen-grant insert, RQ-3), both from `0016`; `(campaign_id, gm_user_id)` references `campaigns (id, owner_id)`, so the GM **is** the owner (AUD-1); `state` and `ended_at` are kept in step by a CHECK, and a row still `live` past `expires_at` is dead to every reader |
 | `campaign.table_credentials` | a **screen grant**: a browser the owner made a table screen (SEC-48, D-13) | bound to the admission generation it was minted in; live only while unrevoked, its session live and unexpired, and its generation the session's current one — the reader's test, never `revoked_at` alone (`1kg.2.3`). The table link and the join are gone (threat model section 15), and `0012` dropped the join counter |
+| `campaign.reveal_disclosures` | one Confirm's worth of display: a document, the version it pins, a sorted mask of field keys and the audience kind (`0017`, `1kg.7.1`) | at most one **live** disclosure per document (a partial unique index); `(session_id, command_id)` unique, the Confirm's replay key; its session and its document are both of its campaign and its version is one of its document's (composite keys); `ended_at`/`ended_reason` set together, from a closed set; ended rows are kept for replay only |
+| `campaign.reveal_slots` | one audience slot of one session: the table slot or one participant's, and the disclosure it shows (`0017`) | one row per slot per session; one pointer, so a slot shows at most one live projection; it points only at a disclosure of its own session and audience kind; `seq` rises by one each time its content changes; no delete action toward the disclosure, so a shown document cannot be deleted until it is narrowed |
 | `audit.events` | one recorded decision | append-only; `campaign_id_tombstone` has **no** foreign key, so rows outlive their campaign |
 
 ### The uncampaigned state
@@ -513,6 +515,57 @@ only read the seat. **None of these takes the campaign lock or advances
 `authz_revision`**: the two-step orchestration around archive, delete and unlink
 (`narrow`, then the exclusive lock, the re-scan and the advance) belongs to the
 routes that call them, `1kg.5.2` for documents and `1kg.2.2` for participants.
+
+### What the table may see: disclosures and slots
+
+`1kg.7.1` makes what the table may see **explicit server state**
+(`service/reveal_store.py`, `service/reveal_scope.py`, migration `0017`). A
+Confirm persists a **disclosure** — one Confirm's worth of display: a document,
+the version it pins, the sorted mask of field keys and the kind of audience —
+and points **slot rows** at it: the table slot, or one slot per participant
+(owner decision O-3: a group display is per-recipient copies of one
+disclosure). Nothing about visibility is on a document or a version (ED-6); the
+pin is reached slot -> disclosure -> (document, version).
+
+A Confirm is an **update** when the targets are exactly the slots the
+document's live disclosure has (the old one ends `updated`), a **move**
+otherwise (it ends `moved` and every copy outside the new set is cleared), and
+it **replaces** another document's copy in each target slot (that disclosure
+ends `replaced` only with its last copy). A target slot is re-pointed, never
+cleared and then pointed, so its `seq` rises by exactly one. A narrowing clears
+by **scope** (`reveal_scope`): every slot (End, expiry, Rotate, archive,
+Stop-all), one member's slots (Remove, A-20), one document's copies (a Stop,
+and later a document's archive, deletion or unlink), or none (audio off); the
+default is every slot, so a caller that forgets over-clears. Wiring the clear
+into `narrow`, the service that orders a Confirm and a Stop, and the
+reconciliation's fill are the bead's second change.
+
+| Invariant | Held by |
+|---|---|
+| I-1 a slot shows at most one live content | one pointer column; `UNIQUE NULLS NOT DISTINCT (session_id, participant_id)` |
+| I-2 a document has at most one live disclosure | a partial unique index; the twin refuses too |
+| I-3 a disclosure is the table slot or participant slots, never both | `audience_kind` in the slot -> disclosure key |
+| I-4 every copy is in its disclosure's session and campaign | composite foreign keys |
+| I-5 no slot points at an ended disclosure; a live disclosure has a copy | the store's writers; the test-only auditor `audit_reveal_invariants` |
+| I-6 every write of a reveal row holds the session row | each writer takes it itself, `FOR NO KEY UPDATE`; none calls `lock_campaign` |
+| I-7 every explicit lock is `FOR NO KEY UPDATE`; no UPDATE changes a key column | only `seq`, `disclosure_id`, `updated_at`, `ended_at`, `ended_reason` are updated |
+| I-8 no visibility column on `documents` or `document_versions` | the schema test reads `information_schema` |
+| I-9 no reveal row, `repr()` or refusal carries text | ids, versions, mask keys and codes only; the command id is hidden from `repr()` |
+| I-10 a slot's `seq` rises by one exactly when its content changes | the shared write and clear |
+| I-11 `picture` and both views gate on `state = 'live' AND expires_at > :now` | the application's clock; `by_command`, `live_for_document`, `live_disclosures` and `stale_slots` read dead sessions by design |
+| I-12 an own slot is read only for an accepted, confirmed, not-removed seat | `view_for_account`, in the query that finds the session (SEC-41) |
+| I-13 **ended disclosures are read by replay only** (`by_command`) | a source scan; never to seed a mask (REVEAL-4), never as a ledger (ED-18) |
+| I-14 no default mask is read | a source scan |
+
+A copy for a seat that is not yet confirmed is **held, not stored as held**: it
+is written like any copy, the GM's picture marks it `held`, and
+`view_for_account` never returns it, because the own slot is joined only for a
+confirmed seat. Confirming the seat delivers it from the next read (D-12,
+SEC-50(5)). A screen sees the table slot only (SEC-48), and `view_for_screen`
+names the campaign, so a live grant read under another campaign is the one
+`None` (SEC-46). `participant_id`, `slot_id`, `disclosure_id`, `document_id`
+and `version` are GM-side and never reach a table client; `1kg.7.2` builds the
+projection from them with its one builder.
 
 ## Media assets (GM Workbench)
 
