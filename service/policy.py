@@ -18,9 +18,12 @@ module decides from it, so it can be compared with the policy oracle at scale.
 
 **Sealed principals.** `TablePrincipal` and `GmPrincipal` are built only while
 `decide_table` or `decide_gm` builds them; construction or `dataclasses.replace`
-anywhere else is a `TypeError`. Who may call the deciders or build their facts
-is pinned by `service/tests/test_policy.py` (T-P18): the seal alone cannot tell
-a loader's facts from forged ones.
+anywhere else is a `TypeError`. No other function here opens the seal, and each
+decider opens it around its constructor alone, after refusing facts of any other
+type (T-P14). Who may call the deciders or build their facts, and that no other
+production module names anything private here, is pinned by
+`service/tests/test_policy.py` (T-P18): the seal alone cannot tell a loader's
+facts from forged ones.
 """
 
 from __future__ import annotations
@@ -330,8 +333,60 @@ def _open(session: SessionFacts, now: datetime) -> bool:
     return session.state == "live" and session.expires_at > now
 
 
+@dataclass(frozen=True)
+class _Standing:
+    """What `_standing` decided: a plain record, never a principal. Only
+    `decide_table` turns one into a `TablePrincipal`."""
+
+    kind: TableKind
+    session: SessionFacts
+    revisions: tuple[int, int]
+    account_id: int | None
+    grant_id: str | None = None
+    participant_id: str | None = None
+
+
 def decide_table(facts: TableFacts, *, account_id: int | None, grant_id: str | None, now: datetime) -> TableOutcome:
-    """Threat model 15.2 `table_principal`, in order (critic item 6)."""
+    """Threat model 15.2 `table_principal`, in order (critic item 6).
+
+    The one place a `TablePrincipal` is built. It refuses anything that is not
+    `TableFacts` (duck-typed facts never reach the seal), computes every field
+    before the seal opens, and runs nothing but the constructor inside it, so
+    no value the facts hold runs while it is open."""
+    if not isinstance(facts, TableFacts):
+        raise TypeError("decide_table reads only TableFacts")
+    standing = _standing(facts, account_id=account_id, grant_id=grant_id, now=now)
+    if isinstance(standing, TableRefusal):
+        return standing
+    kind, session, participant = standing.kind, standing.session, standing.participant_id
+    # Only a GM-confirmed seat has a scope, sheets and groups; an awaiting one reads the table (I-9, SEC-50(5)).
+    scope = participant if kind is TableKind.SEATED_CONFIRMED else None
+    characters = frozenset(facts.sheets.get(scope, ())) if scope is not None else frozenset[str]()
+    groups = frozenset(facts.groups.get(scope, ())) if scope is not None else frozenset[str]()
+    campaign_id, session_id, generation = facts.campaign_id, session.id, session.generation
+    account, grant = standing.account_id, standing.grant_id
+    authz_revision, projection_revision = standing.revisions
+    with _minting():
+        return TablePrincipal(
+            kind=kind,
+            campaign_id=campaign_id,
+            session_id=session_id,
+            generation=generation,
+            account_id=account,
+            grant_id=grant,
+            participant_id=participant,
+            scope=scope,
+            characters=characters,
+            groups=groups,
+            authz_revision=authz_revision,
+            projection_revision=projection_revision,
+        )
+
+
+def _standing(
+    facts: TableFacts, *, account_id: int | None, grant_id: str | None, now: datetime
+) -> _Standing | TableRefusal:
+    """`table_principal`'s decision, as data: pure, and mints nothing."""
     now = aware(now, "now")
     grant, revisions = facts.grant, facts.revisions
     if (
@@ -347,7 +402,7 @@ def decide_table(facts: TableFacts, *, account_id: int | None, grant_id: str | N
             return TableRefusal.INACTIVE
         if len(facts.live_sessions) != 1 or facts.live_sessions[0].id != grant.session.id:
             return _invariant_broken("live_sessions")
-        return _mint(facts, TableKind.SCREEN, grant.session, revisions, None, grant_id=grant.id)
+        return _Standing(TableKind.SCREEN, grant.session, revisions, None, grant_id=grant.id)
     if account_id is None:
         return TableRefusal.UNAUTHENTICATED
     if facts.owner_id is None:
@@ -362,58 +417,34 @@ def decide_table(facts: TableFacts, *, account_id: int | None, grant_id: str | N
     if session.campaign_id != facts.campaign_id or not _open(session, now):
         return TableRefusal.INACTIVE
     if account_id == facts.owner_id:
-        return _mint(facts, TableKind.OWNER_VIEWER, session, revisions, account_id)
+        return _Standing(TableKind.OWNER_VIEWER, session, revisions, account_id)
     live = [seat for seat in facts.seats if seat.accepted and not seat.removed]
     if len(live) > 1:
         return _invariant_broken("live_seats")
     if not live:
         return TableRefusal.INACTIVE
     kind = TableKind.SEATED_CONFIRMED if live[0].confirmed else TableKind.SEATED_AWAITING
-    return _mint(facts, kind, session, revisions, account_id, participant_id=live[0].participant_id)
-
-
-def _mint(
-    facts: TableFacts,
-    kind: TableKind,
-    session: SessionFacts,
-    revisions: tuple[int, int],
-    account_id: int | None,
-    *,
-    grant_id: str | None = None,
-    participant_id: str | None = None,
-) -> TablePrincipal:
-    # Only a GM-confirmed seat has a scope, sheets and groups; an awaiting one reads the table (I-9, SEC-50(5)).
-    own = participant_id if kind is TableKind.SEATED_CONFIRMED else None
-    with _minting():
-        return TablePrincipal(
-            kind=kind,
-            campaign_id=facts.campaign_id,
-            session_id=session.id,
-            generation=session.generation,
-            account_id=account_id,
-            grant_id=grant_id,
-            participant_id=participant_id,
-            scope=own,
-            characters=facts.sheets.get(own, frozenset()) if own is not None else frozenset(),
-            groups=facts.groups.get(own, frozenset()) if own is not None else frozenset(),
-            authz_revision=revisions[0],
-            projection_revision=revisions[1],
-        )
+    return _Standing(kind, session, revisions, account_id, participant_id=live[0].participant_id)
 
 
 def decide_gm(facts: GmFacts | None, *, campaign_id: str, account_id: int) -> GmPrincipal:
     """The owner, or the one `MissingParent` (SEC-2, SEC-3): a missing, foreign
     or unreadable campaign are one answer. The loader's query holds the owner
-    predicate too; this compare is the second, independent check."""
+    predicate too; this compare is the second, independent check. The one place
+    a `GmPrincipal` is built; as in `decide_table`, only the constructor runs
+    while the seal is open."""
+    if facts is not None and not isinstance(facts, GmFacts):
+        raise TypeError("decide_gm reads only GmFacts")
     if facts is None or facts.owner_id != account_id:
         raise MissingParent("no campaign of that owner's")
+    archived, authz_revision, projection_revision = facts.archived, facts.authz_revision, facts.projection_revision
     with _minting():
         return GmPrincipal(
             campaign_id=campaign_id,
             account_id=account_id,
-            archived=facts.archived,
-            authz_revision=facts.authz_revision,
-            projection_revision=facts.projection_revision,
+            archived=archived,
+            authz_revision=authz_revision,
+            projection_revision=projection_revision,
         )
 
 

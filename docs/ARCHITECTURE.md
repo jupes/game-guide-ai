@@ -741,8 +741,10 @@ the owner, else the one `MissingParent`. A broken invariant denies. The
 registry seam is `registry_revealable`, the function `classifiable_keys` uses.
 
 `TablePrincipal` and `GmPrincipal` are **sealed**: built only inside the
-deciders, and `service/tests/test_policy.py` pins who may call them or build
-their facts. A principal is evidence of standing at the moment it was
+deciders, which refuse facts of any other type. `service/tests/test_policy.py`
+pins who may call them or build their facts, and that no other production
+module names anything private to `service/policy.py`. A principal is evidence
+of standing at the moment it was
 resolved; it authorises no content read by itself. A content read re-asserts
 the session, generation, seat, confirmation and grant in the query that reads
 (SEC-41, SEC-16); `participant_id` is never an entitlement, only `entitled()`

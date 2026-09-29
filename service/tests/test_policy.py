@@ -14,7 +14,8 @@ import dataclasses
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final
+from types import SimpleNamespace
+from typing import Final, cast
 
 import pytest
 
@@ -253,16 +254,20 @@ SCREEN, INACTIVE, UNAUTH = TableKind.SCREEN, TableRefusal.INACTIVE, TableRefusal
         (table(grant=grant(generation=2)), None, GRANT, UNAUTH),  # M-P12
         (table(grant=grant(of=session(state="ended"))), None, GRANT, UNAUTH),
         (table(grant=grant(of=EXPIRED)), None, GRANT, UNAUTH),  # M-P15
+        (table(grant=grant(of=session(expires=NOW))), None, GRANT, UNAUTH),  # MX6: expiring now is expired
         (table(grant=grant(gid=_id("tcr_", "other"))), None, GRANT, UNAUTH),
         (table(), None, GRANT, UNAUTH),
         (table(grant=grant(of=session(campaign=C2))), None, GRANT, INACTIVE),
         (table(grant=grant(), revisions=None), None, GRANT, INACTIVE),
+        (table(grant=grant(), owner_id=None), None, GRANT, INACTIVE),  # MX2: no campaign, even for a live grant
         (table(grant=grant(), live_sessions=TWO_LIVE), None, GRANT, INACTIVE),
+        (table(grant=grant(of=session(SES2))), None, GRANT, INACTIVE),  # MX1: not the campaign's live session
         (table(), None, None, UNAUTH),
         (table(owner_id=None), 1, None, INACTIVE),
         (table(revisions=None), 1, None, INACTIVE),
         (table(live_sessions=()), 1, None, INACTIVE),
         (table(live_sessions=(EXPIRED,)), 1, None, INACTIVE),  # M-P15
+        (table(live_sessions=(session(expires=NOW),)), 1, None, INACTIVE),  # MX6: expiring now is expired
         (table(live_sessions=TWO_LIVE), 1, None, INACTIVE),  # M-P22
         (table(live_sessions=(session(state="ended"),)), 1, None, INACTIVE),
         (table(live_sessions=(session(campaign=C2),)), 1, None, INACTIVE),
@@ -383,6 +388,63 @@ def test_principals_are_sealed() -> None:
     assert copy.copy(principal) == principal and copy.copy(gm) == gm
 
 
+def test_the_deciders_refuse_facts_that_are_not_facts() -> None:
+    """T-P14 (H-1): the review's forgery, duck-typed facts handed to the minting path, never reaches the
+    seal. Both deciders refuse anything that is not their own facts type."""
+    loaded = table(seats=(seat(),))
+    forged = SimpleNamespace(**{f.name: getattr(loaded, f.name) for f in dataclasses.fields(TableFacts)})
+    with pytest.raises(TypeError):
+        decide(cast(TableFacts, forged), 2)
+    gm = SimpleNamespace(owner_id=1, archived=False, authz_revision=0, projection_revision=0)
+    with pytest.raises(TypeError):
+        policy.decide_gm(cast(policy.GmFacts, gm), campaign_id=C, account_id=1)
+
+
+def _minted_in(tree: ast.Module, names: set[str]) -> dict[str, set[str]]:
+    """Each of `names` -> the top-level definitions of `tree` that call it."""
+    where: dict[str, set[str]] = {}
+    for top in tree.body:
+        for node in ast.walk(top):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in names:
+                where.setdefault(node.func.id, set()).add(getattr(top, "name", "<module>"))
+    return where
+
+
+def test_the_seal_opens_only_inside_the_two_deciders_around_one_constructor() -> None:
+    """T-P14 (H-1, L-4): minting is unreachable except through `decide_table` and `decide_gm`. No other
+    function of `service/policy.py` opens the seal or builds a principal, so no helper exists that mints
+    from arguments the deciders never checked. `_MINTING` is touched only by the seal itself. While the
+    seal is open, only the constructor runs, on locals computed before it opened, so nothing the facts
+    hold (a crafted `Mapping.get`, a property) ever runs with the seal open."""
+    tree = ast.parse((ROOT / "service" / "policy.py").read_text(encoding="utf-8"))
+    assert _minted_in(tree, {"_minting", "TablePrincipal", "GmPrincipal", "_sealed"}) == {
+        "_minting": {"decide_table", "decide_gm"},
+        "TablePrincipal": {"decide_table"},
+        "GmPrincipal": {"decide_gm"},
+        "_sealed": {"TablePrincipal", "GmPrincipal"},
+    }
+    touches = {
+        getattr(top, "name", "<module>")
+        for top in tree.body
+        for node in ast.walk(top)
+        if isinstance(node, ast.Name) and node.id in {"_MINTING", "_minting"} and isinstance(node.ctx, ast.Load)
+    }
+    assert touches == {"_minting", "_sealed", "decide_table", "decide_gm"}
+    sealed_blocks = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.With) and any(ast.unparse(item.context_expr) == "_minting()" for item in node.items)
+    ]
+    assert len(sealed_blocks) == 2
+    for block in sealed_blocks:
+        assert len(block.items) == 1 and len(block.body) == 1, ast.unparse(block)
+        (only,) = block.body
+        assert isinstance(only, ast.Return) and isinstance(only.value, ast.Call), ast.unparse(block)
+        call = only.value
+        assert ast.unparse(call.func) in {"TablePrincipal", "GmPrincipal"} and not call.args, ast.unparse(block)
+        assert all(isinstance(k.value, ast.Name) and k.arg for k in call.keywords), ast.unparse(block)
+
+
 def test_repr_hides_the_account() -> None:
     """T-P15 (M-P24)."""
     principal = decide(table(owner_id=424242), 424242)
@@ -462,38 +524,75 @@ _CALLED_ONLY_IN: Final = {
 _PINNED: Final = {**_REFERENCED_ONLY_IN, **_CALLED_ONLY_IN}
 
 
+_POLICY: Final = "service/policy.py"
+#: Reflection that reaches a module's attributes by string, around the name rules below.
+_REFLECTION: Final = frozenset({"getattr", "setattr", "delattr", "vars"})
+
+
 def minting_violations(path: str, source: str) -> list[str]:
-    """What a production module at `path` does that only the allowlisted modules may do."""
+    """What a production module at `path` does that only the allowlisted modules may do.
+
+    Outside `service/policy.py`, beyond the pinned names: any `_`-prefixed name of the policy module
+    (H-1: the seal, and any helper that builds or decides, present or future), reflection on the
+    module or on a name imported from it, an assignment into either, `object.__setattr__`, and any
+    `replace(` at all in a module that imports the policy module (M-1: facts a consumer holds are
+    widened by a `replace` whatever it imported to read them)."""
     tree, found = ast.parse(source), list[str]()
     local: dict[str, str] = {}
     replacers, copy_modules = set[str](), set[str]()
+    policy_modules, from_policy = set[str](), set[str]()  # what names the policy module; names bound from it
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
+            of_policy = node.module == "service.policy" or (node.level > 0 and node.module == "policy")
+            of_package = node.module == "service" or (node.level > 0 and node.module is None)
             for a in node.names:
                 local[a.asname or a.name] = a.name
                 if node.module in ("dataclasses", "copy") and a.name == "replace":
                     replacers.add(a.asname or a.name)
+                if of_package and a.name == "policy":
+                    policy_modules.add(a.asname or a.name)
+                if of_policy:
+                    from_policy.add(a.asname or a.name)
+                    if a.name.startswith("_") and path != _POLICY:
+                        found.append(f"{path}: {a.name} is private to {_POLICY}")
         elif isinstance(node, ast.Import):
             copy_modules |= {a.asname or a.name for a in node.names if a.name in ("dataclasses", "copy")}
+            policy_modules |= {a.asname or a.name for a in node.names if a.name == "service.policy"}
     imported = set(local.values())
+    reaches = policy_modules | from_policy
+    imports_policy = bool(reaches) and path != _POLICY
 
     def name_of(node: ast.AST) -> str | None:
         if isinstance(node, ast.Name):
             return local.get(node.id, node.id)
         return node.attr if isinstance(node, ast.Attribute) else None
 
+    def into_policy(node: ast.expr) -> bool:
+        text = ast.unparse(node)
+        return any(text == m or text.startswith(m + ".") for m in reaches)
+
     for node in ast.walk(tree):
         named = [a.name for a in node.names] if isinstance(node, ast.ImportFrom) else [name_of(node)]
         found += [f"{path}: {n}" for n in named if n in _REFERENCED_ONLY_IN and path not in _REFERENCED_ONLY_IN[n]]
+        if isinstance(node, ast.Attribute) and imports_policy and into_policy(node.value):
+            if node.attr.startswith("_"):
+                found.append(f"{path}: {ast.unparse(node)} is private to {_POLICY}")
+            if not isinstance(node.ctx, ast.Load):
+                found.append(f"{path}: {ast.unparse(node)} assigned")
         if not isinstance(node, ast.Call):
             continue
         callee = name_of(node.func)
         if callee in _CALLED_ONLY_IN and path not in _CALLED_ONLY_IN[callee]:
             found.append(f"{path}: {callee}(")
+        if imports_policy and isinstance(node.func, ast.Name) and node.func.id in _REFLECTION:
+            if node.args and into_policy(node.args[0]):
+                found.append(f"{path}: {node.func.id}( on {_POLICY}")
+        if imports_policy and ast.unparse(node.func) in ("object.__setattr__", "object.__delattr__"):
+            found.append(f"{path}: {ast.unparse(node.func)}(")
         via_module = isinstance(node.func, ast.Attribute) and ast.unparse(node.func.value) in copy_modules
         direct = isinstance(node.func, ast.Name) and node.func.id in replacers
-        if (direct or (callee == "replace" and via_module)) and any(
-            n in imported and path not in _PINNED[n] for n in _PINNED
+        if (direct or (callee == "replace" and via_module)) and (
+            imports_policy or any(n in imported and path not in _PINNED[n] for n in _PINNED)
         ):
             found.append(f"{path}: replace( of a pinned type")
         # The registry seam is a callable; `FieldRule(revealable=True)` is the registry's own bool flag.
@@ -505,11 +604,24 @@ def minting_violations(path: str, source: str) -> list[str]:
 
 def test_minting_is_reachable_only_from_the_loaders() -> None:
     """T-P18: the seal cannot tell a loader's facts from forged ones, so who may decide and who may
-    build facts is pinned over every production module (M-P28, M-P29, M-F11)."""
+    build facts is pinned over every production module (M-P28, M-P29, M-F11), and no production module
+    may name anything private to `service/policy.py`, reflect on it, or assign into it (H-1).
+
+    Out of this scan's reach, as of any AST tripwire (review N-1): a dynamic import (`importlib`,
+    `__import__`, `sys.modules`); reflection on an object that is not named by an import from the
+    policy module (a principal passed in as an argument, a function's `__globals__` or `__closure__`);
+    and a `replace(` in a module that never imports the policy module but is handed facts by one that
+    does. Review is the control for those."""
     files = [p for p in (ROOT / "service").rglob("*.py") if "tests" not in p.relative_to(ROOT / "service").parts]
     assert len(files) > 50
     violations = [v for p in files for v in minting_violations(p.relative_to(ROOT).as_posix(), p.read_text("utf-8"))]
     assert violations == []
+
+
+#: The review's H-1 plant: a confirmed seat forged by a private helper of the policy module.
+REVIEW_PLANT: Final = (
+    "from service import policy as _p\n_p._mint(f, _p.TableKind.SEATED_CONFIRMED, s, (0, 0), 99, participant_id=pid)"
+)
 
 
 @pytest.mark.parametrize(
@@ -526,6 +638,24 @@ def test_minting_is_reachable_only_from_the_loaders() -> None:
         "from .policy import _minting",
         "from . import policy\npolicy.PolicyFacts(c, {}, {}, {}, frozenset(), {})",
         "import dataclasses as d\nd.replace(facts, revealable=lambda t, v: frozenset({'secret'}))",
+        # H-1: the review's plant, and every other way to reach the seal from outside the module.
+        REVIEW_PLANT,
+        "from .policy import _mint",
+        "import service.policy\nwith service.policy._minting():\n    pass",
+        "import service.policy as sp\nsp._MINTING.set(True)",
+        "from service import policy\ngetattr(policy, 'decide_gm')(None, campaign_id=c, account_id=1)",
+        "from service import policy\nsetattr(policy, '_sealed', lambda kind: None)",
+        "from . import policy\npolicy._sealed = lambda kind: None",
+        "from service import policy\npolicy.TablePrincipal = dict",
+        "from .policy import TablePrincipal\nTablePrincipal.__post_init__ = lambda self: None",
+        "from service import policy\nvars(policy)['_MINTING'].set(True)",
+        "from service import policy\npolicy.__dict__['_mint']",
+        "import copy\nfrom .policy import entitled\nobject.__setattr__(copy.copy(p), 'participant_id', pid)",
+        # M-1: a `replace(` in any module that imports the policy module, whatever it imports from it.
+        "from dataclasses import replace\nfrom .policy import eligible_for_audience\nreplace(f, active_participants=a)",
+        "import dataclasses\nfrom service import policy\ndataclasses.replace(facts, classes={})",
+        "import copy as c\nimport service.policy\nc.replace(facts, sheet_links={})",
+        "from dataclasses import replace as r\nfrom .policy import eligible_for_audience\nr(f, **{'revealable': fn})",
     ],
 )
 def test_the_minting_scan_flags_each_planted_violation(planted: str) -> None:
@@ -534,3 +664,59 @@ def test_the_minting_scan_flags_each_planted_violation(planted: str) -> None:
         "from .policy import decide_table, TableFacts\ndecide_table(TableFacts(), account_id=1, grant_id=None, now=n)"
     )
     assert minting_violations("service/principals.py", allowed) == []
+
+
+def test_a_consumer_of_the_public_decisions_is_not_flagged() -> None:
+    """The scan refuses reach into the module, not use of it: public calls and enum reads pass."""
+    consumer = (
+        "from dataclasses import dataclass\nfrom service import policy\nfrom .policy import TableKind, entitled\n"
+        "entitled(p, None)\npolicy.eligible_for_audience(f, d, k, None).allowed\nTableKind.SCREEN.value\n"
+        "policy.ineligible_keys(f, d, m, (None,))\n"
+    )
+    assert minting_violations("service/workbench_consumer.py", consumer) == []
+
+
+def _private_names_of_policy() -> set[str]:
+    tree = ast.parse((ROOT / "service" / "policy.py").read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return {n for n in names if n.startswith("_")}
+
+
+#: Every way a production module can name something in `service.policy`.
+_REACH: Final = (
+    "from service.policy import {name}",
+    "from .policy import {name} as x",
+    "from service import policy\npolicy.{name}",
+    "from . import policy as p\np.{name}()",
+    "import service.policy as sp\nsp.{name}",
+    "import service.policy\nservice.policy.{name}",
+    "from service import policy\ngetattr(policy, '{name}')",
+)
+
+
+def test_every_private_name_of_policy_is_refused_outside_it() -> None:
+    """T-P18 (H-1): not a list of today's private helpers but all of them, now and later. A private name
+    of `service/policy.py` referenced from any other production module, by any import form or by
+    reflection, is a violation; so is one the module no longer defines (the review's `_mint`)."""
+    private = _private_names_of_policy()
+    assert {"_minting", "_MINTING", "_sealed"} <= private
+    for name in sorted(private | {"_mint"}):
+        for form in _REACH:
+            planted = form.format(name=name)
+            assert minting_violations("service/workbench_planted_api.py", planted), planted
+
+
+def test_the_reviews_plant_in_table_api_fails_the_scan() -> None:
+    """T-P18 (H-1), as the review ran it: a `_mint` call appended to `service/table_api.py` is flagged,
+    and the module as committed is not."""
+    path = "service/table_api.py"
+    source = (ROOT / path).read_text(encoding="utf-8")
+    assert minting_violations(path, source) == []
+    assert minting_violations(path, f"{source}\n{REVIEW_PLANT}\n")
