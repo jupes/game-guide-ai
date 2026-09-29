@@ -955,13 +955,15 @@ EXPECTED_LEGACY_ROUTES = {
 #: 1kg.2.4 A2's routes, moved onto `workbench_router` by oe6 (lead ruling on
 #: PR #98), 1kg.4.2 B's timeline route, moved from the set above by oqx, and
 #: 1kg.2.2's campaign and seat routes: nine on `workbench_router`, four on
-#: `account_router`. No exemption list and nothing pending.
+#: `account_router`; then bead cfx's Conclude and Reopen, two more on
+#: `workbench_router`. No exemption list and nothing pending.
 EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/conversations"), ("POST", "/conversations"),
     ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
     ("GET", "/conversations/{conversation_id}/timeline"),
     ("GET", "/campaigns"), ("POST", "/campaigns"),
     ("GET", "/campaigns/{campaign_id}"), ("PATCH", "/campaigns/{campaign_id}"),
+    ("POST", "/campaigns/{campaign_id}/conclude"), ("POST", "/campaigns/{campaign_id}/reopen"),
     ("GET", "/campaigns/{campaign_id}/participants"), ("POST", "/campaigns/{campaign_id}/participants"),
     ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/offer"),
     ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/confirm"),

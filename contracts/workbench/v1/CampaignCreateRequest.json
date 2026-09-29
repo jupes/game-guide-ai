@@ -1,7 +1,7 @@
 {
   "schema": "CampaignCreateRequest",
   "direction": "request",
-  "note": "POST /campaigns: the caller becomes its GM (D-5). No command_id: a retried create makes a second campaign, which archive recovers. Duplicate names are allowed.",
+  "note": "POST /campaigns: the caller becomes its GM (D-5). No command_id: a retried create makes a second campaign, which archive recovers. Duplicate names are allowed. Only a name is required (interactions ADR 12.2); a tone line is optional (19 A-31), trimmed as a name is.",
   "valid": [
     {
       "name": "a name",
@@ -22,6 +22,30 @@
       "value": {
         "schema_version": 1,
         "name": "@repeat:n:120"
+      }
+    },
+    {
+      "name": "a name and a tone line",
+      "value": {
+        "schema_version": 1,
+        "name": "The Nocturne Heist",
+        "tone": "Mystery \u00b7 Low magic"
+      }
+    },
+    {
+      "name": "a null tone line",
+      "value": {
+        "schema_version": 1,
+        "name": "Aubade",
+        "tone": null
+      }
+    },
+    {
+      "name": "a tone line of 80 characters",
+      "value": {
+        "schema_version": 1,
+        "name": "Aubade",
+        "tone": "@repeat:t:80"
       }
     }
   ],
@@ -73,6 +97,44 @@
         "schema_version": 1,
         "name": "Mine",
         "user_id": 7
+      }
+    },
+    {
+      "name": "a tone line past 80",
+      "why": "0013's CHECK",
+      "value": {
+        "schema_version": 1,
+        "name": "Aubade",
+        "tone": "@repeat:t:81"
+      }
+    },
+    {
+      "name": "a tone line that trims to nothing",
+      "why": "1 to 80 characters after trimming",
+      "value": {
+        "schema_version": 1,
+        "name": "Aubade",
+        "tone": "   "
+      }
+    },
+    {
+      "name": "a control character in a tone line",
+      "why": "stored text is plain text (check_plain_text)",
+      "value": {
+        "schema_version": 1,
+        "name": "Aubade",
+        "tone": "Mys\u0007tery"
+      }
+    },
+    {
+      "name": "a tone line as a list",
+      "why": "no coercion",
+      "value": {
+        "schema_version": 1,
+        "name": "Aubade",
+        "tone": [
+          "Mystery"
+        ]
       }
     }
   ]

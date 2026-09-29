@@ -32,8 +32,10 @@ from service.app import app, get_auth_store, get_timeline_database, require_sess
 from service.audit_log import InMemoryAuditLog
 from service.auth_store import InMemoryAuthStore, User
 from service.campaign_store import InMemoryCampaignStore
+from service.campaign_summary_store import InMemoryCampaignSummaryStore, avatar_for
 from service.db import InMemoryDatabase
 from service.hashing import HashingCapacityError, hash_password
+from service.history import InMemoryMessageStore
 from service.invites import Role
 from service.jobs import InMemoryJobQueue
 from service.participant_store import InMemoryParticipantStore
@@ -125,6 +127,7 @@ def world() -> Iterator[_World]:
         InMemoryTableSessionStore(db, slot_clear=no_slots),
         InMemorySeatOfferStore(db),
         InMemoryAuditLog(),
+        InMemoryCampaignSummaryStore(db, messages=InMemoryMessageStore()),
     )
     auth = InMemoryAuthStore()
     for user_id in (GM_A, GM_B):
@@ -214,7 +217,94 @@ def test_a_created_campaign_is_the_callers_and_duplicate_names_make_two(client: 
     listed = client.get("/campaigns").json()
     assert [c["campaign_id"] for c in listed["items"]] == [second.json()["campaign_id"], first.json()["campaign_id"]]
     assert client.get(f"/campaigns/{body.campaign_id}").json() == first.json()
-    assert set(first.json()) == {"schema_version", "campaign_id", "name", "created_at", "updated_at", "archived_at"}
+    assert set(first.json()) == {
+        "schema_version", "campaign_id", "name", "created_at", "updated_at", "archived_at",
+        # bead cfx: the tavern card's facts, and still no owner.
+        "concluded_at", "tone", "game_system", "avatar_icon", "avatar_tone", "badge", "seat_count",
+        "last_activity_at", "last_played_at", "dormant",
+    }
+
+
+def test_a_card_carries_its_facts_on_every_answer(client: TestClient, world: _World) -> None:
+    """Bead cfx: the create, the read, the list and a patch all answer the
+    tavern card's facts, derived by the one rule each."""
+    created = client.post("/campaigns", json={"schema_version": 1, "name": "Crown", "tone": "  Mystery · Low magic "})
+    assert created.status_code == 201, created.text
+    card = created.json()
+    campaign = card["campaign_id"]
+    assert card["tone"] == "Mystery · Low magic", "trimmed as a name is"
+    assert (card["game_system"], card["badge"], card["seat_count"], card["last_played_at"], card["dormant"]) == (
+        "dnd5e", None, 0, None, False,
+    )
+    assert card["last_activity_at"] == card["created_at"] and card["concluded_at"] is None
+    assert (card["avatar_icon"], card["avatar_tone"]) == avatar_for(campaign)
+    assert client.get(f"/campaigns/{campaign}").json() == card
+
+    world.seat(campaign, "Rook")
+    world.accepted(campaign, "Wren", PLAYER, "wren@example.com")
+    world.now[0] = T0 + timedelta(hours=1)
+    with world.db.transaction() as unit:
+        world.stores.sessions.start(
+            unit, campaign, owner_id=GM_A, expires_at=world.now[0] + timedelta(hours=12), now=world.now[0]
+        )
+    live = client.get(f"/campaigns/{campaign}").json()
+    assert (live["badge"], live["seat_count"], live["last_played_at"]) == ("live", 2, "2026-09-01T13:00:00Z")
+    assert live["last_activity_at"] == "2026-09-01T13:00:00Z"
+    assert client.get("/campaigns").json()["items"] == [live], "the list answers the same card"
+
+    cleared = client.patch(f"/campaigns/{campaign}", json={"schema_version": 1, "tone": None})
+    assert cleared.status_code == 200 and cleared.json()["tone"] is None
+    assert cleared.json()["badge"] == "live", "a patch answers the facts too"
+    retoned = client.patch(f"/campaigns/{campaign}", json={"schema_version": 1, "tone": "Grim", "name": "Crowns"})
+    assert (retoned.json()["tone"], retoned.json()["name"]) == ("Grim", "Crowns")
+
+
+def test_a_tone_line_rides_an_archive_and_a_restore_in_their_own_transaction(
+    client: TestClient, world: _World
+) -> None:
+    campaign = world.campaign()
+    archived = client.patch(f"/campaigns/{campaign}", json={"schema_version": 1, "archived": True, "tone": "Grim"})
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"] is not None and archived.json()["tone"] == "Grim"
+    restored = client.patch(f"/campaigns/{campaign}", json={"schema_version": 1, "archived": False, "tone": None})
+    assert restored.json()["archived_at"] is None and restored.json()["tone"] is None
+    refused = client.patch(f"/campaigns/{campaign}", json={"schema_version": 1, "tone": "t" * 81})
+    assert refused.status_code == 422 and "t" * 81 not in refused.text
+
+
+def test_conclude_and_reopen_are_idempotent_audited_once_each_and_not_an_authorisation_fact(
+    client: TestClient, world: _World
+) -> None:
+    campaign = world.campaign()
+    seat = world.seat(campaign)
+    revision = world.revision(campaign)
+    world.now[0] = T0 + timedelta(days=1)
+    concluded = client.post(f"/campaigns/{campaign}/conclude")
+    assert concluded.status_code == 200, concluded.text
+    body = Campaign.model_validate(concluded.json())
+    assert body.concluded_at == world.now[0] and body.archived_at is None
+    world.now[0] = T0 + timedelta(days=2)
+    assert client.post(f"/campaigns/{campaign}/conclude").json() == concluded.json(), "a repeat changes nothing"
+    assert [c["campaign_id"] for c in client.get("/campaigns").json()["items"]] == [campaign], "not archived"
+    assert [s["participant_id"] for s in _seats(client, campaign)] == [seat], "the table keeps its seats"
+
+    reopened = client.post(f"/campaigns/{campaign}/reopen")
+    assert reopened.status_code == 200 and reopened.json()["concluded_at"] is None
+    assert client.post(f"/campaigns/{campaign}/reopen").json() == reopened.json()
+    assert world.ledger(campaign) == ["campaign.concluded", "campaign.reopened"], "one row per change"
+    assert world.revision(campaign) == revision, "concluded narrows and widens nothing"
+
+
+def test_a_campaign_untouched_for_thirty_days_is_dormant_until_it_is_concluded(
+    client: TestClient, world: _World
+) -> None:
+    campaign = world.campaign()
+    world.now[0] = T0 + timedelta(days=30)
+    assert client.get(f"/campaigns/{campaign}").json()["dormant"] is False, "thirty days is still active"
+    world.now[0] = T0 + timedelta(days=31)
+    assert client.get(f"/campaigns/{campaign}").json()["dormant"] is True
+    concluded = client.post(f"/campaigns/{campaign}/conclude").json()
+    assert (concluded["dormant"], concluded["badge"]) == (False, None)
 
 
 def test_rename_archive_and_restore_through_patch(client: TestClient, world: _World) -> None:
@@ -509,6 +599,9 @@ def _every_gm_route(campaign: str, seat: str) -> list[tuple[str, str, dict[str, 
         ("PATCH", base, {"schema_version": 1, "archived": True}),
         ("PATCH", base, {"schema_version": 1, "name": "Mine"}),
         ("PATCH", base, {"schema_version": 1, "archived": False}),
+        ("PATCH", base, {"schema_version": 1, "tone": "Grim"}),
+        ("POST", f"{base}/conclude", None),
+        ("POST", f"{base}/reopen", None),
         ("GET", f"{base}/participants", None),
         ("POST", f"{base}/participants", {"schema_version": 1, "alias": "Rook"}),
         ("POST", f"{base}/participants/{seat}/offer", {"schema_version": 1, "email": "x@example.com"}),
@@ -598,7 +691,8 @@ def test_a_driver_error_is_a_503_that_logs_its_type_only(
             raise psycopg.OperationalError("statement quoting " + CANARY)
 
     app.dependency_overrides[campaigns_api.get_campaign_stores] = lambda: campaigns_api.CampaignStores(
-        _Broken(), world.stores.participants, world.stores.sessions, world.stores.offers, world.stores.audit  # type: ignore[arg-type]
+        _Broken(), world.stores.participants, world.stores.sessions, world.stores.offers, world.stores.audit,  # type: ignore[arg-type]
+        world.stores.summaries,
     )
     with caplog.at_level(logging.DEBUG):
         answer = client.get("/campaigns")
@@ -612,7 +706,8 @@ def test_a_driver_error_is_a_503_that_logs_its_type_only(
 def test_the_openapi_models_of_this_family_expose_no_secret(client: TestClient) -> None:
     document = app.openapi()
     family = {path: spec for path, spec in document["paths"].items() if path.startswith(("/campaigns", "/seats"))}
-    assert len(family) == 10
+    # 1kg.2.2's ten, and bead cfx's conclude and reopen.
+    assert len(family) == 12
     schemas = document["components"]["schemas"]
     answered = {"Campaign", "CampaignPage", "Seat", "SeatPage", "SeatOffer", "SeatOfferPage", "PlayerSeat",
                 "PlayerSeatPage"}
@@ -622,6 +717,11 @@ def test_the_openapi_models_of_this_family_expose_no_secret(client: TestClient) 
     assert not every & {"password", "user_id", "owner_id", "gm_email", "offered_by"}
     for account_side in ("SeatOffer", "SeatOfferPage", "PlayerSeat", "PlayerSeatPage"):
         assert not fields[account_side] & {"address", "email", "participant_id"}, account_side
+    # bead cfx: a seated card says nothing about other players and nothing of
+    # the GM's private prep, which the owner's card does.
+    private = {"seat_count", "badge", "last_activity_at", "dormant", "concluded_at"}
+    assert private <= fields["Campaign"]
+    assert not fields["PlayerSeat"] & private
     remove = SeatRemoveRequest.model_json_schema()["properties"]["password"]
     assert remove.get("writeOnly") is True
 

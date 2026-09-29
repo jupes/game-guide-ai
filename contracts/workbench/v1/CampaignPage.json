@@ -14,7 +14,17 @@
             "name": "The Nocturne Heist",
             "created_at": "2026-09-16T19:20:11Z",
             "updated_at": "2026-09-16T19:31:24Z",
-            "archived_at": null
+            "archived_at": null,
+            "concluded_at": null,
+            "tone": "Mystery \u00b7 Low magic",
+            "game_system": "dnd5e",
+            "avatar_icon": "sailing",
+            "avatar_tone": "ember",
+            "badge": "ready",
+            "seat_count": 4,
+            "last_activity_at": "2026-09-16T19:31:24Z",
+            "last_played_at": "2026-09-12T23:05:00Z",
+            "dormant": false
           },
           {
             "schema_version": 1,
@@ -22,7 +32,17 @@
             "name": "Aubade",
             "created_at": "2026-09-16T19:20:11Z",
             "updated_at": "2026-09-16T19:31:24Z",
-            "archived_at": null
+            "archived_at": null,
+            "concluded_at": null,
+            "tone": "Mystery \u00b7 Low magic",
+            "game_system": "dnd5e",
+            "avatar_icon": "sailing",
+            "avatar_tone": "ember",
+            "badge": "ready",
+            "seat_count": 4,
+            "last_activity_at": "2026-09-16T19:31:24Z",
+            "last_played_at": "2026-09-12T23:05:00Z",
+            "dormant": false
           }
         ],
         "next_cursor": "WyIyMDI2LTA5LTE2VDE5OjIwOjExKzAwOjAwIiwiY21wXzRiMWQ5ZTdhUXgyTG04UnQ1VnczWmMiXQ"
@@ -39,7 +59,17 @@
             "name": "The Nocturne Heist",
             "created_at": "2026-09-16T19:20:11Z",
             "updated_at": "2026-09-16T19:31:24Z",
-            "archived_at": null
+            "archived_at": null,
+            "concluded_at": null,
+            "tone": "Mystery \u00b7 Low magic",
+            "game_system": "dnd5e",
+            "avatar_icon": "sailing",
+            "avatar_tone": "ember",
+            "badge": "ready",
+            "seat_count": 4,
+            "last_activity_at": "2026-09-16T19:31:24Z",
+            "last_played_at": "2026-09-12T23:05:00Z",
+            "dormant": false
           }
         ],
         "next_cursor": "WyIyMDI2LTA5LTE2VDE5OjIwOjExKzAwOjAwIiwiY21wXzRiMWQ5ZTdhUXgyTG04UnQ1VnczWmMiXQ"

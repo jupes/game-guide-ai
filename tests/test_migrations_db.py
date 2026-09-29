@@ -851,6 +851,9 @@ def test_the_seat_migration_adopts_an_accepted_seat_as_not_confirmed(dsn):
     """0012's CHECK is safe because `confirmed_at` is new: a seat the previous
     build accepted survives the expansion, and reads as not confirmed."""
     before = tuple(m for m in PACKAGED if m.version < SEAT_OFFERS.version)
+    # Up to and including 0012, so that a later migration (0013, bead cfx)
+    # cannot be the one this run applies last.
+    through = tuple(m for m in PACKAGED if m.version <= SEAT_OFFERS.version)
     mig.migrate(dsn, packaged=before)
     with connect(dsn) as conn:
         owner, player = _one_user(conn), _one_user(conn, "wren@example.com")
@@ -862,7 +865,7 @@ def test_the_seat_migration_adopts_an_accepted_seat_as_not_confirmed(dsn):
             "VALUES (%s, %s, 'Rook', 'rook', %s, now())",
             (PARTICIPANT_ID, CAMPAIGN_ID, player),
         )
-    assert mig.migrate(dsn).applied[0] == SEAT_OFFERS.filename
+    assert mig.migrate(dsn, packaged=through).applied[-1] == SEAT_OFFERS.filename
     with connect(dsn) as conn:
         row = conn.execute(
             "SELECT accepted_at IS NOT NULL, confirmed_at FROM campaign.participants WHERE id = %s",
@@ -875,6 +878,30 @@ def test_the_seat_migration_adopts_an_accepted_seat_as_not_confirmed(dsn):
                 "VALUES (%s, %s, 'Wren', 'wren', now())",
                 ("prt_" + "b" * 22, CAMPAIGN_ID),
             )
+
+
+#: Found by name, like SEAT_OFFERS, so a renumbering at merge is an edit elsewhere.
+CAMPAIGN_SUMMARY = next(m for m in PACKAGED if m.name == "campaign_summary")
+
+
+def test_the_card_migration_adopts_an_existing_campaign_as_untoned_5e_and_not_concluded(dsn):
+    """0013 (bead cfx) adds three columns to a table that already holds rows,
+    one NOT NULL: a campaign the previous build made survives the expansion
+    with no tone line, as D&D 5e, and not concluded."""
+    before = tuple(m for m in PACKAGED if m.version < CAMPAIGN_SUMMARY.version)
+    through = tuple(m for m in PACKAGED if m.version <= CAMPAIGN_SUMMARY.version)
+    mig.migrate(dsn, packaged=before)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')", (CAMPAIGN_ID, owner)
+        )
+    assert mig.migrate(dsn, packaged=through).applied[-1] == CAMPAIGN_SUMMARY.filename
+    with connect(dsn) as conn:
+        row = conn.execute(
+            "SELECT tone, game_system, concluded_at FROM campaign.campaigns WHERE id = %s", (CAMPAIGN_ID,)
+        ).fetchone()
+        assert row == (None, "dnd5e", None)
 
 
 @pytest.mark.parametrize(

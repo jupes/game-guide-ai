@@ -117,7 +117,7 @@ def test_the_action_set_is_closed_and_a_caller_cannot_invent_one():
             assert value not in str(refused.value), "a refusal never repeats what it refused"
 
 
-def test_the_seventeen_actions_sec38_names_are_the_ones_that_ship():
+def test_the_nineteen_actions_that_ship_are_sec38s_the_tavern_s_two_and_the_media_delete():
     """Reveal's three and the export ones are not here: ED-18(a) makes the table
     shared, and they belong to the beads that will write them (1kg.7.1, 1kg.5.2),
     which add their own members without a migration.
@@ -126,13 +126,17 @@ def test_the_seventeen_actions_sec38_names_are_the_ones_that_ship():
     credential (D-1, D-4), so their four actions went with them, and a seat is
     now offered to an account and accepted by it. There is deliberately no
     `seat.removed`: `participant.removed` already records a seat's removal, and
-    two words for one event is the drift a closed vocabulary exists to stop."""
+    two words for one event is the drift a closed vocabulary exists to stop.
+
+    Bead cfx adds `campaign.concluded` and `campaign.reopened`: the GM's Mark
+    concluded and its reversal, which are not archive and restore."""
     assert {a.value for a in AuditAction} == {
         "session.started", "session.ended", "session.expired", "session.rotated",
         "participant.added", "participant.removed", "participant.linked",
         "participant.unlinked", "seat.offered", "seat.accepted",
         "seat.declined", "seat.confirmed",
         "campaign.archived", "campaign.restored", "campaign.deleted",
+        "campaign.concluded", "campaign.reopened",
         "join.burst_refused", "asset.deleted",
     }
     assert not [a for a in AuditAction if a.value.startswith(("reveal.", "export."))]
@@ -152,7 +156,7 @@ def test_a_seat_row_carries_the_seat_and_nothing_else():
             check_detail(action, {"user_id": 7})
 
 
-_WORDS = {3: "three", 4: "four", 14: "fourteen", 16: "sixteen", 17: "seventeen"}
+_WORDS = {3: "three", 4: "four", 14: "fourteen", 16: "sixteen", 18: "eighteen", 19: "nineteen"}
 
 
 def test_the_module_docstrings_count_what_the_enums_hold():
