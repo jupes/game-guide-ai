@@ -16,8 +16,10 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import config
+from service import app as appmod
 from service.app import app, get_auth_store, get_service, require_session
 from service.auth_store import InMemoryAuthStore
+from service.media_objects import MediaSettings
 from service.models import ChatMode, ChatResponse
 from service.workbench_api import api_route_dependants
 
@@ -33,6 +35,9 @@ class _FakeService:
 
 @pytest.fixture
 def store(monkeypatch):
+    # 1kg.8.1.2's media routes match nothing while the capability is off, which
+    # it is by default; the matrix must see them live to test their guard.
+    monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate-at-least-32-chars")
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", False)
     s = InMemoryAuthStore()
@@ -119,6 +124,12 @@ PROTECTED_ROUTES: list[Route] = [
      {"schema_version": 1, "version_number": 1}),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/seal",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/seal", None),
+    # 1kg.8.1.2, live for this module only (the `store` fixture switches media on).
+    ("POST", "/campaigns/{campaign_id}/assets", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets",
+     {"schema_version": 1, "command_id": "cmd-guard-000000001", "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "audio", "media_type": "audio/mpeg", "size_bytes": 10}),
+    ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa/bytes", None),
 ]
 
 #: Deliberately unguarded, and asserted so that a blanket "guard everything"

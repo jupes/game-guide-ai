@@ -34,11 +34,14 @@ import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
 from . import (
+    asset_jobs,
+    assets_api,
     campaigns_api,
     conversations_api,
     documents_api,
     gcp_logging,
     job_driver,
+    media_objects,
     reconciliation,
     seats_api,
     timeline_api,
@@ -336,6 +339,16 @@ def _build_stores(db: Database) -> None:
     runner.register(
         DIVIDER_KIND, SessionDividers(db, sessions=sessions, store=PostgresSessionDividerStore()).handler()
     )
+    # Media (1kg.8.1.2): an object store only when the settings name one, and
+    # then its three job kinds whatever the capability switch says — a
+    # deployment switched off still owes the deletions it enqueued (MS-3). With
+    # none named nothing is built or registered: no bucket, no client, no cost.
+    objects = media_objects.build_object_store(_state.get("media_settings", media_objects.MediaSettings()))
+    if objects is not None:
+        from .asset_store import PostgresAssetStore
+
+        asset_jobs.register_jobs(runner, db=db, queue=queue, objects=objects)
+        _state["media"] = assets_api.MediaRuntime(objects, PostgresAssetStore(queue))
     _state["jobs"] = job_driver.JobDriver(runner, healthy=_schema_understood)
 
 
@@ -403,6 +416,9 @@ def recover_database() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # A media setting that cannot be used stops startup, like a migration
+    # verdict (1kg.8.1.2): retrying cannot change it. Off by default (Q-5).
+    _state["media_settings"] = media_objects.startup_settings()
     app.state.metrics_sink = build_metrics_sink()
     db = prepare_database()
     _state["db"] = db
@@ -1576,6 +1592,20 @@ def _job_queue() -> PostgresJobQueue | None:
     return _state.get("job_queue")
 
 
+def _media() -> assets_api.MediaRuntime | None:
+    """The media runtime, once a store exists (1kg.8.1.2); None otherwise."""
+    if "jobs" not in _state:
+        recover_database()
+    return _state.get("media")
+
+
+def _media_enabled() -> bool:
+    """The capability switch the media routes consult on every match: off
+    unless startup read it on (Q-5), so a test app with no lifespan is dark."""
+    settings = _state.get("media_settings")
+    return isinstance(settings, media_objects.MediaSettings) and settings.enabled
+
+
 #: The Workbench envelope of the auth throttle's 429 and of a hashing outage,
 #: for the one Workbench route that checks a password (Remove, SEC-40).
 REAUTH_THROTTLED_MESSAGE = "Too many attempts. Wait, then try again."
@@ -1653,6 +1683,7 @@ app.include_router(
 )
 app.include_router(seats_api.build_router(require_session, get_timeline_database))
 app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
+app.include_router(assets_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled))
 
 
 app.include_router(job_driver.build_router(_job_driver))

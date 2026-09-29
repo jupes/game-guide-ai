@@ -80,6 +80,12 @@ jobs:
       # dependency on each run, so a green build says nothing about what ships.
       - name: Install from the lockfile
         run: uv sync --frozen --extra dev
+      # ffmpeg and ffprobe for the media upload's audio half (1kg.8.1.2, MS-6):
+      # a system package, not a Python one. Without them the audio tests FAIL
+      # in CI rather than skip (service/tests/test_assets_api.py). The images
+      # are 1kg.9.5's to change (media ADR section 8.3), not this workflow's.
+      - name: Install ffmpeg (media processing)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Lint (ruff)
         run: uv run --frozen --no-sync ruff check .
       - name: Typecheck (mypy — service/ + config.py)
@@ -110,7 +116,7 @@ jobs:
             tests/test_retired_model_binding_db.py \
             tests/test_corpus_schema.py ingestion/tests/test_scrape_wikidot.py \
             tests/test_asset_db.py tests/test_session_dividers_db.py \
-            tests/test_reveal_db.py
+            tests/test_reveal_db.py tests/test_assets_api_db.py
 
   ui-tests:
     runs-on: ubuntu-24.04

@@ -977,6 +977,9 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/campaigns/{campaign_id}/documents/{document_id}/versions/{number}"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/restore"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/seal"),
+    # 1kg.8.1.2's media upload: two on `workbench_router`, which match nothing
+    # while the media capability is off (`service/assets_api.py`).
+    ("POST", "/campaigns/{campaign_id}/assets"), ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes"),
 }
 
 
@@ -1278,6 +1281,7 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "campaigns_api.py").resolve(),
         (REPO_ROOT / "service" / "seats_api.py").resolve(),
         (REPO_ROOT / "service" / "documents_api.py").resolve(),
+        (REPO_ROOT / "service" / "assets_api.py").resolve(),
     }
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []
 
