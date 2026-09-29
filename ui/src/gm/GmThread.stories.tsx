@@ -5,12 +5,23 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, within } from 'storybook/test'
+import { expect, fn, within } from 'storybook/test'
 
+import { atViewport, expectNoPageOverflow, expectTheme, expectViewport } from '../../.storybook/viewports'
+import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { GmThread } from './GmThread'
-import { turnsFromTimeline } from './gmTimeline'
+import { collapseSessionSpans, turnsFromTimeline } from './gmTimeline'
 import { LANE_COPY } from './laneState'
-import { EDIT_ENTRY, OPAQUE_ENTRY, SOURCED_ANSWER, chatEntry, toolEntry } from './threadFixtures'
+import {
+  DIVIDER_ENTRY,
+  EDIT_ENTRY,
+  END_DIVIDER_ENTRY,
+  OPAQUE_ENTRY,
+  QUIET_SESSION,
+  SOURCED_ANSWER,
+  chatEntry,
+  toolEntry,
+} from './threadFixtures'
 
 const meta = {
   title: 'Aetheril/GmThread',
@@ -100,4 +111,152 @@ export const DarkTavern: Story = {
     await expect(canvas.getByText('AC 16')).toBeVisible()
     await expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
   },
+}
+
+// ── Session dividers (1kg.3.5) ───────────────────────────────────────────────
+// Each story runs in both themes through the addon-a11y gate. A divider is
+// text between the exchanges (I-11): no role, no live region, not in the Tab
+// order, and a `<time>` for every instant it names.
+
+/** A played session (start, a turn, end), a quiet one collapsed to one line, then play resumes. */
+const SESSIONS = collapseSessionSpans(
+  turnsFromTimeline([
+    DIVIDER_ENTRY,
+    chatEntry({ entry_id: 'ent_1' }),
+    END_DIVIDER_ENTRY,
+    ...QUIET_SESSION,
+    chatEntry({ entry_id: 'ent_2', prompt: "How does a basilisk's gaze work?", answer: SOURCED_ANSWER }),
+  ]),
+)
+
+/** The dividers drawn, in order, each checked for what I-11 requires. */
+async function expectDividers(canvasElement: HTMLElement, boundaries: readonly string[]): Promise<HTMLElement[]> {
+  const found = [...canvasElement.querySelectorAll<HTMLElement>('.gm-thread__divider')]
+  await expect(found.map((divider) => divider.dataset.boundary)).toEqual(boundaries)
+  for (const divider of found) {
+    await expect(divider).toBeVisible()
+    await expect(divider.tabIndex).toBe(-1)
+    await expect(divider.hasAttribute('role')).toBe(false)
+    await expect(divider.querySelector('[aria-live],[role]')).toBeNull()
+    await expect(divider.closest('.gm-thread__exchange')).toBeNull()
+    for (const time of divider.querySelectorAll('time')) {
+      await expect(Number.isFinite(Date.parse(time.dateTime))).toBe(true)
+    }
+  }
+  return found
+}
+
+/** A played session between its two dividers, then a quiet week drawn as one line. */
+export const WithSessionDividers: Story = {
+  args: { turns: SESSIONS },
+  globals: { theme: 'light' },
+  play: async ({ canvasElement }) => {
+    await expectTheme('light')
+    const canvas = within(canvasElement)
+    const [start, end, span] = await expectDividers(canvasElement, ['start', 'end', 'span'])
+    await expect(within(start).getByText(/Session started/)).toBeVisible()
+    await expect(within(end).getByText(/Session ended/)).toBeVisible()
+    await expect(within(span).getByText(/Session played/)).toBeVisible()
+    await expect(span.querySelectorAll('time')).toHaveLength(2)
+    // Reading order is visual order: the played session's turn sits between its dividers.
+    const turn = canvas.getByText('Give me a drowned guardian for the marsh.')
+    await expect(start.compareDocumentPosition(turn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await expect(turn.compareDocumentPosition(end) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  },
+}
+
+export const WithSessionDividersDark: Story = {
+  ...WithSessionDividers,
+  globals: { theme: 'dark' },
+  play: async ({ canvasElement }) => {
+    await expectTheme('dark')
+    await expectDividers(canvasElement, ['start', 'end', 'span'])
+  },
+}
+
+/** I-10: a session that left nothing in this thread is one quiet line, "… to …". */
+export const AQuietSession: Story = {
+  args: { turns: collapseSessionSpans(turnsFromTimeline([...QUIET_SESSION])) },
+  globals: { theme: 'light' },
+  play: async ({ canvasElement }) => {
+    await expectTheme('light')
+    const [span] = await expectDividers(canvasElement, ['span'])
+    // The dash is drawn and hidden from assistive technology; "to" is read and not drawn.
+    await expect(within(span).getByText('–')).toHaveAttribute('aria-hidden', 'true')
+    const to = within(span).getByText('to')
+    await expect(to.getBoundingClientRect().width).toBeLessThanOrEqual(1)
+  },
+}
+
+export const AQuietSessionDark: Story = {
+  ...AQuietSession,
+  globals: { theme: 'dark' },
+  play: async ({ canvasElement }) => {
+    await expectTheme('dark')
+    await expectDividers(canvasElement, ['span'])
+  },
+}
+
+/** A thread whose oldest drawn item is a divider, with older turns still to load:
+ * the divider is where Load earlier's hand-off lands (1kg.3.7), so it takes
+ * focus from a script (tabIndex -1) and shows the ring, but never from Tab. */
+export const DividerFirst: Story = {
+  args: {
+    turns: turnsFromTimeline([DIVIDER_ENTRY, chatEntry({ entry_id: 'ent_1' })]),
+    hasEarlier: true,
+    onLoadEarlier: fn(),
+  },
+  globals: { theme: 'light' },
+  play: async ({ canvasElement }) => {
+    await expectTheme('light')
+    const [divider] = await expectDividers(canvasElement, ['start'])
+    const button = within(canvasElement).getByRole('button', { name: 'Load earlier' })
+    await expect(button.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await expect(canvasElement.querySelector('.gm-thread__divider, .gm-thread__exchange')).toBe(divider)
+    divider.focus()
+    await expect(document.activeElement).toBe(divider)
+  },
+}
+
+export const DividerFirstDark: Story = {
+  ...DividerFirst,
+  globals: { theme: 'dark' },
+  play: async ({ canvasElement }) => {
+    await expectTheme('dark')
+    await expectDividers(canvasElement, ['start'])
+  },
+}
+
+/** agent-forge-harness-0rn: on a 320px phone the divider's row wraps and its
+ * label breaks anywhere, so the page never scrolls sideways; Load earlier keeps
+ * the 44px touch floor. */
+async function playOnAPhone(canvasElement: HTMLElement, theme: 'light' | 'dark'): Promise<void> {
+  await expectViewport('phone320')
+  await expectTheme(theme)
+  const [start, span] = await expectDividers(canvasElement, ['start', 'span'])
+  await expectNoPageOverflow()
+  for (const divider of [start, span]) {
+    await expect(divider.scrollWidth).toBeLessThanOrEqual(divider.clientWidth)
+  }
+  // The long "… to …" label wraps onto more than one line rather than overflowing.
+  const label = span.querySelector('.gm-thread__divider-label') as HTMLElement
+  const lineHeight = Number.parseFloat(getComputedStyle(label).lineHeight)
+  await expect(label.getBoundingClientRect().height).toBeGreaterThan(lineHeight * 1.5)
+  await expectTouchTarget(within(canvasElement), 'Load earlier')
+}
+
+const PHONE_TURNS = collapseSessionSpans(
+  turnsFromTimeline([DIVIDER_ENTRY, chatEntry({ entry_id: 'ent_1', answer: null }), ...QUIET_SESSION]),
+)
+
+export const DividersOnAPhone320: Story = {
+  args: { turns: PHONE_TURNS, hasEarlier: true, onLoadEarlier: fn() },
+  ...atViewport('phone320'),
+  play: async ({ canvasElement }) => playOnAPhone(canvasElement, 'light'),
+}
+
+export const DividersOnAPhone320Dark: Story = {
+  args: { turns: PHONE_TURNS, hasEarlier: true, onLoadEarlier: fn() },
+  ...atViewport('phone320', 'dark'),
+  play: async ({ canvasElement }) => playOnAPhone(canvasElement, 'dark'),
 }
