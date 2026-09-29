@@ -130,12 +130,19 @@ Totals:
   reaches about 0.95 macro-F1 on this set. Absolute scores therefore flatter every learned arm.
   The set is fit for comparing arms against the heuristic and for exercising the benchmark end
   to end. It cannot predict production accuracy.
-- **Groups are per instance, not per template.** Near-duplicates from one template family (for
-  example the 8 `prose_ac_hp` items about objects, which share one sentence apart from the
-  object's name and numbers) land in different folds. The embedding arm therefore trains on siblings of each adversarial template, and the
-  zero-shot arms (`llm`, `jev`) do not. On the adversarial and hard-positive subsets, the
-  embedding arm's score favours it over the zero-shot arms. A template-grouped score is bead
-  `agent-forge-harness-69h`, which blocks Pilot 1 (`agent-forge-harness-dvy`).
+- **The committed `adversarial` and `hard_positive` report sections group by instance, not by
+  template.** Near-duplicates from one template family (for example the 8 `prose_ac_hp` items
+  about objects, which share one sentence apart from the object's name and numbers) can land in
+  different folds there. The embedding arm therefore trains on siblings of each adversarial or
+  hard-positive template, while the zero-shot arms (`llm`, `jev`) do not, so those two sections
+  favour the embedding arm over the zero-shot arms.
+
+  `decision_bench.py` also runs the embedding arm a second time grouped by `category` — the
+  template family — so no fold trains on a near-duplicate of what it scores, and reports that
+  pass beside the per-instance one, as `adversarial_template_grouped` and
+  `hard_positive_template_grouped`. **Pilot 1 test 3 (`agent-forge-harness-dvy`) must read the
+  `_template_grouped` score for the adversarial and hard-positive subsets, not the per-instance
+  `adversarial`/`hard_positive` score.** (`agent-forge-harness-69h`.)
 - The adversarial subset is 60 items, so one item moves a share by about 1.7 points.
 
 ## Running the benchmark (`ingestion/decision_bench.py`)
@@ -167,7 +174,9 @@ sends nothing, because the owner's terms review comes first.
 - ECE over 10 bins;
 - coverage and precision at 0.90, 0.95 and 0.99;
 - the `none` veto on heuristic positives (Pilot 1 test 2);
-- the share of adversarial items held to `none` (Pilot 1 test 3);
+- the share of adversarial items held to `none` (Pilot 1 test 3) and the hard-positive subset's
+  accuracy, each both per instance and, for the embedding arm, template-grouped (see
+  Limitations — Pilot 1 test 3 reads the template-grouped score);
 - p50 and p95 latency;
 - cost per 1,000 decisions;
 - structuring calls, wasted calls and missed cards per 1,000.

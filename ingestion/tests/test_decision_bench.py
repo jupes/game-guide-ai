@@ -33,9 +33,9 @@ def no_keys_no_network(monkeypatch):
 
 
 def _item(i: int, label: str, group: str | None = None, mode: str = "gm", answer: str | None = None,
-          subset: str = "core") -> db.Item:
+          subset: str = "core", category: str = "test") -> db.Item:
     return db.Item(id=f"t-{i}", mode=mode, query=f"q{i}", answer=answer or f"answer {i}", label=label,
-                   subset=subset, category="test", group=group or f"g{i}")
+                   subset=subset, category=category, group=group or f"g{i}")
 
 
 # ── heuristic arm ───────────────────────────────────────────────────────────────────────────
@@ -196,6 +196,35 @@ def test_embedding_arm_never_fits_or_tunes_on_a_group_it_scores(monkeypatch):
     assert len(result.decisions) == len(items)
 
 
+def test_run_embedding_rejects_an_unknown_group_field():
+    with pytest.raises(ValueError):
+        db.run_embedding([], {}, group_field="template")
+
+
+def test_run_embedding_grouped_by_category_keeps_a_template_family_in_one_fold():
+    """Every item here has its OWN `group` (so grouping by `group` would happily split a
+    template family across folds), but items share a `category` in pairs. Asking for
+    group_field="category" must still keep each pair on one side of every fold."""
+    items, emb = [], {}
+    axes = {"stat_block": [1.0, 0.0, 0.0], "spell_card": [0.0, 1.0, 0.0], "none": [0.0, 0.0, 1.0]}
+    for g in range(15):
+        label = db.LABELS[g % 3]
+        for j in range(2):
+            it = _item(g * 2 + j, label, group=f"solo{g}-{j}", category=f"cat{g}")
+            items.append(it)
+            vec = [x + 0.01 * ((g + j) % 5) for x in axes[label]]
+            emb[it.id] = db.Embedding(vec, tokens=100, latency_ms=200.0 + g)
+    result = db.run_embedding(items, emb, k=5, seed=3, group_field="category")
+    assert result.extra["group_field"] == "category"
+    tested: list[str] = []
+    for fold in result.extra["fold_log"]:
+        assert not set(fold["train_groups"]) & set(fold["test_groups"])
+        tested += fold["test_groups"]
+    # Every category scored exactly once: had the code fallen back to per-instance `group`
+    # fields (each item's own, unique group), this would instead list 30 one-item groups.
+    assert sorted(tested) == sorted({it.category for it in items})
+
+
 def _fake_openai_embeddings(dim: int = 4):
     calls: list[list[str]] = []
 
@@ -344,8 +373,68 @@ def test_evaluate_scores_only_the_adversarial_subset_as_adversarial():
         {"n": 2, "held_to_none_at_0.90": 0.5, "held_to_none_at_0.95": 0.5, "held_to_none_at_0.99": 0.5})
 
 
+def test_evaluate_template_grouped_score_comes_from_the_template_run_not_the_committed_one():
+    """Pins agent-forge-harness-69h: the report's `_template_grouped` sections must come from
+    the `template` ArmResult's own decisions. A regression that silently reused the committed
+    (per-instance) run's decisions instead would make every assertion below fail, because the
+    two runs are built here to disagree on every item."""
+    items = [
+        _item(0, "none", subset="adversarial", category="prose_ac_hp"),
+        _item(1, "none", subset="adversarial", category="prose_ac_hp"),
+        _item(2, "stat_block", subset="hard_positive", category="abbreviated_block"),
+    ]
+    committed = db.ArmResult("embedding", "ok", decisions=[
+        db.Decision("t-0", "none", {"none": 1.0}, 1.0),  # held
+        db.Decision("t-1", "none", {"none": 1.0}, 1.0),  # held
+        db.Decision("t-2", "stat_block", {"stat_block": 1.0}, 1.0),  # correct
+    ], extra={"group_field": "group"})
+    template = db.ArmResult("embedding", "ok", decisions=[
+        db.Decision("t-0", "stat_block", {"stat_block": 0.995}, 1.0),  # category held out: not held
+        db.Decision("t-1", "none", {"none": 1.0}, 1.0),  # still held
+        db.Decision("t-2", "none", {"none": 0.995}, 1.0),  # category held out: wrong
+    ], extra={"group_field": "category"})
+    report = db.evaluate(items, committed, {it.id: "none" for it in items}, template=template)
+    assert report["adversarial"]["held_to_none_at_0.99"] == pytest.approx(1.0)
+    assert report["hard_positive"]["accuracy"] == pytest.approx(1.0)
+    assert report["adversarial_template_grouped"] == pytest.approx(
+        {"n": 2, "group_field": "category", "held_to_none_at_0.90": 0.5,
+         "held_to_none_at_0.95": 0.5, "held_to_none_at_0.99": 0.5})
+    assert report["hard_positive_template_grouped"] == pytest.approx(
+        {"n": 1, "group_field": "category", "accuracy": 0.0})
+
+
+def test_evaluate_omits_template_grouped_sections_without_a_template_run():
+    items = [_item(0, "none", subset="adversarial")]
+    result = db.ArmResult("embedding", "ok", decisions=[db.Decision("t-0", "none", {"none": 1.0}, 1.0)])
+    report = db.evaluate(items, result, {"t-0": "none"})
+    assert "adversarial_template_grouped" not in report and "hard_positive_template_grouped" not in report
+
+
+def test_run_wires_a_category_grouped_pass_for_the_embedding_arm(tmp_path):
+    items = [
+        _item(0, "none", subset="adversarial", category="adv_a"),
+        _item(1, "none", subset="adversarial", category="adv_a"),
+        _item(2, "none", subset="adversarial", category="adv_b"),
+        _item(3, "stat_block", subset="hard_positive", category="hp_a"),
+        _item(4, "stat_block", subset="hard_positive", category="hp_a"),
+        _item(5, "spell_card"), _item(6, "stat_block"), _item(7, "none"),
+    ]
+    embed, _ = _fake_openai_embeddings()
+    client = SimpleNamespace(embeddings=embed.embeddings)
+    [report] = db.run(["embedding"], items, tmp_path, offline=False, folds=3, seed=1,
+                      client_factory=lambda _offline: client, env={})
+    assert report["group_field"] == "group"  # the committed, per-instance run
+    assert report["adversarial_template_grouped"]["group_field"] == "category"
+    assert report["hard_positive_template_grouped"]["group_field"] == "category"
+    assert report["adversarial_template_grouped"]["n"] == 3
+    assert report["hard_positive_template_grouped"]["n"] == 2
+
+
 def test_run_prices_each_arm_by_its_own_tokens(tmp_path):
-    items = [_item(i, db.LABELS[i % 3]) for i in range(6)]
+    # Distinct categories: db.run() now also groups the embedding arm by category (agent-forge-
+    # harness-69h), and every item sharing one category (the `_item` default) would collapse
+    # every fold's training set for that pass — unrelated to what this test prices.
+    items = [_item(i, db.LABELS[i % 3], category=f"c{i}") for i in range(6)]
     chat, _ = _fake_openai_chat({"B": math.log(0.9), "C": math.log(0.1)})
     embed, _ = _fake_openai_embeddings()
     client = SimpleNamespace(chat=chat.chat, embeddings=embed.embeddings)
