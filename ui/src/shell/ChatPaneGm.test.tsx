@@ -19,7 +19,7 @@ import { ChatPane } from './ChatPane'
 import type { ChatPaneProps } from './ChatPane'
 import type { ChatMode, ChatResponse, StoredMessage, TimelinePageResult } from '../api'
 import type { Exchange, LoadHistoryFn, PostFn } from '../useChat'
-import { HYDRATE_TARGET } from '../gm/gmTimeline'
+import { HYDRATE_TARGET, MAX_PAGES_PER_READ } from '../gm/gmTimeline'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { CREATIVE_ANSWER, chatEntry, manyChatEntries, pagedTimeline } from '../gm/threadFixtures'
 
@@ -426,6 +426,79 @@ describe('ChatPane (GM) — Load earlier (1kg.3.6)', () => {
     expect(container.querySelectorAll('.gm-thread__exchange')[0]).toHaveTextContent(OLDER_PROMPT)
     expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
   })
+
+  it('keeps keyboard focus on the control while pages remain, then hands it to the oldest turn (1kg.3.7)', async () => {
+    const load = pagedTimeline([
+      manyChatEntries(HYDRATE_TARGET, 9600),
+      manyChatEntries(HYDRATE_TARGET, 9700),
+      [chatEntry({ entry_id: 'ent_oldest', prompt: OLDER_PROMPT })],
+    ])
+    const { container } = render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
+    const button = await screen.findByRole('button', { name: 'Load earlier' })
+    button.focus()
+
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(container.querySelectorAll('.gm-thread__exchange')).toHaveLength(2 * HYDRATE_TARGET))
+    expect(document.activeElement).toBe(button)
+
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(screen.getByText(OLDER_PROMPT)).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
+    const first = container.querySelector('.gm-thread__exchange')
+    expect(first).toHaveTextContent(OLDER_PROMPT)
+    expect(document.activeElement).toBe(first)
+  })
+
+  it('offers Load earlier when the first window holds only empty pages (1kg.3.8 L3)', async () => {
+    // The walk's page bound can stop on nothing but empty pages with a cursor
+    // still left; the control must still be there to follow it.
+    const empties = Array.from({ length: MAX_PAGES_PER_READ }, () => [])
+    const load = pagedTimeline([...empties, [chatEntry({ entry_id: 'ent_past_empties', prompt: OLDER_PROMPT })]])
+    render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Load earlier' }))
+    expect(await screen.findByText(OLDER_PROMPT)).toBeInTheDocument()
+  })
+
+  it('says so, rather than "loaded", when a walk ends without finding a turn (1kg.3.8 L4)', async () => {
+    const load = pagedTimeline([manyChatEntries(HYDRATE_TARGET, 9800), [], []])
+    render(<Pane nav={{ conversationId: 'cnv_1' }} loadTimeline={load} />)
+    const button = await screen.findByRole('button', { name: 'Load earlier' })
+    const announcer = screen.getByRole('status')
+
+    await userEvent.click(button)
+    await waitFor(() => expect(announcer).toHaveTextContent('No earlier turns found'))
+    expect(load.cursors).toEqual([null, 'p1', 'p2'])
+  })
+
+  it.each(['pending', 'failed'] as const)(
+    'never moves a switched-to conversation’s scroll position after a %s press (1kg.3.8 L2)',
+    async (outcome) => {
+      const loadA: LoadTimelinePageFn = async (conversationId, cursor) => {
+        if (cursor === null) {
+          return { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 9900), next_cursor: 'p1' } }
+        }
+        return outcome === 'failed' ? { kind: 'error', message: 'Message history unavailable (503).' } : new Promise(() => {})
+      }
+      const loadB = pagedTimeline([[chatEntry({ entry_id: 'ent_b_scroll', prompt: 'A question about cnv_b' })]])
+      const { container, rerender } = render(<Pane nav={{ conversationId: 'cnv_a' }} loadTimeline={loadA} />)
+      const feed = container.querySelector('.chat-pane__exchanges')!
+      const geo = stubGeometry(feed, { scrollHeight: 5000, clientHeight: 400, scrollTop: 0 })
+      await waitFor(() => expect(container.querySelectorAll('.gm-thread__exchange')).toHaveLength(HYDRATE_TARGET))
+      await waitFor(() => expect(geo.scrollTop).toBe(5000))
+      geo.scrollTop = 30
+      fireEvent.scroll(feed)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Load earlier' }))
+      if (outcome === 'failed') await screen.findByText('Message history unavailable (503).')
+      // cnv_b's thread is shorter than cnv_a's was when the press measured it.
+      geo.scrollHeight = 800
+      rerender(<Pane nav={{ conversationId: 'cnv_b' }} loadTimeline={loadB} />)
+      await screen.findByText('A question about cnv_b')
+
+      expect(geo.scrollTop).toBe(30)
+    },
+  )
 
   it('announces the start of a Load earlier walk, then its outcome, on the one live region the pane already had', async () => {
     // A promise the test resolves explicitly (review M-2's own pattern,

@@ -599,4 +599,60 @@ describe('useGmTimeline — Load earlier (1kg.3.6)', () => {
     expect(ids(result.current.items).slice(0, 4)).toEqual(['ent_200', 'ent_199', 'ent_198', 'ent_197'])
     expect(result.current.hasEarlier).toBe(false)
   })
+
+  it('drops a walk from an earlier visit that rejects once the same conversation is read again (PR #136 review L1)', async () => {
+    // The same A→B→A shape, but visit 1's walk rejects (an injected loader can
+    // throw; getTimelinePage never does). Its failure is not visit 2's: no
+    // error, and visit 2's walk keeps the guard it holds.
+    let visits = 0
+    let rejectStale: ((reason: Error) => void) | null = null
+    let resolveFresh: ((r: TimelinePageResult) => void) | null = null
+    const loadA = vi.fn<LoadTimelinePageFn>(async (conversationId, cursor) => {
+      if (cursor === null) {
+        visits += 1
+        return visits === 1
+          ? { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 100), next_cursor: 'p1' } }
+          : { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 97), next_cursor: 'q1' } }
+      }
+      return new Promise<TimelinePageResult>((resolve, reject) => {
+        if (cursor === 'p1') rejectStale = reject
+        else resolveFresh = resolve
+      })
+    })
+    const loadB = pagedTimeline([[chatEntry({ entry_id: 'ent_b' })]])
+    const { result, rerender } = renderHook(
+      ({ id, load }: { id: string; load: LoadTimelinePageFn }) => useGmTimeline(id, true, load),
+      { initialProps: { id: 'cnv_a', load: loadA as LoadTimelinePageFn } },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => result.current.loadEarlier())
+
+    rerender({ id: 'cnv_b', load: loadB })
+    await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_b']))
+    rerender({ id: 'cnv_a', load: loadA })
+    await waitFor(() => expect(ids(result.current.items)).toContain('ent_97'))
+
+    act(() => result.current.loadEarlier())
+    expect(result.current.loadingEarlier).toBe(true)
+
+    // Visit 1's walk fails now — after visit 2's read, in the same scope.
+    await act(async () => {
+      rejectStale?.(new Error('Visit 1 lost its connection.'))
+    })
+    expect(result.current.earlierError).toBeNull()
+    expect(result.current.loadingEarlier).toBe(true)
+    act(() => result.current.loadEarlier())
+    expect(loadA.mock.calls.filter(([, cursor]) => cursor === 'q1')).toHaveLength(1)
+
+    await act(async () => {
+      resolveFresh?.({
+        kind: 'ok',
+        page: { conversation_id: 'cnv_a', items: [...manyChatEntries(3, 197), chatEntry({ entry_id: 'ent_200' })], next_cursor: null },
+      })
+    })
+    expect(result.current.items).toHaveLength(HYDRATE_TARGET + 4)
+    expect(ids(result.current.items).slice(0, 4)).toEqual(['ent_200', 'ent_199', 'ent_198', 'ent_197'])
+    expect(result.current.earlierError).toBeNull()
+    expect(result.current.hasEarlier).toBe(false)
+  })
 })
