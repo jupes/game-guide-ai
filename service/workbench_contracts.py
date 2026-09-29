@@ -437,8 +437,8 @@ class ErrorCode(str, Enum):
     SEAT_NOT_ACCEPTED = "seat_not_accepted"
     SEAT_CAP_REACHED = "seat_cap_reached"
     CAMPAIGN_ARCHIVED = "campaign_archived"
-    #: A Remove whose password did not check out (SEC-40). A 403, never a 401:
-    #: the client signs out on any 401.
+    #: A Remove or a document delete whose password did not check out (SEC-40).
+    #: A 403, never a 401: the client signs out on any 401.
     REAUTH_FAILED = "reauth_failed"
     #: A stored document this build cannot read or write over (1kg.5.2): an
     #: unknown stored type, a stored type version this build does not write,
@@ -446,6 +446,10 @@ class ErrorCode(str, Enum):
     #: write that merges over it — a stored key or sub-key this build does not
     #: declare. Reachable only by the document's owner; fail closed, not retryable.
     DOCUMENT_UNSUPPORTED = "document_unsupported"
+    #: A delete of a document that is not archived (1kg.5.2, LIB-18: delete is
+    #: offered only from the Archived filter). Refused before anything narrows;
+    #: reachable only by the document's owner; not retryable.
+    DOCUMENT_NOT_ARCHIVED = "document_not_archived"
     #: The table-session family (1kg.2.3). ``inactive`` is SEC-46's one table
     #: answer — a 404 for every signed-in caller not entitled, whatever the
     #: reason; ``cross_site`` is SEC-45's Fetch Metadata refusal, a 403 that
@@ -3608,6 +3612,16 @@ class SeatRemoveRequest(_Contract):
     password: Annotated[SecretStr, Field(min_length=1, max_length=PASSWORD_MAX_CHARS), AfterValidator(_a_password)]
 
 
+class DocumentDeleteRequest(_Contract):
+    """``POST /campaigns/{id}/documents/{id}/delete``: deleting a document takes
+    its whole history with it and cannot be undone, so it asks for the password
+    again (SEC-40; the 1kg.5.2 brief's I-13). Write-only, hidden from ``repr``,
+    never echoed."""
+
+    schema_version: SchemaVersion
+    password: Annotated[SecretStr, Field(min_length=1, max_length=PASSWORD_MAX_CHARS), AfterValidator(_a_password)]
+
+
 class SeatOffer(_Contract):
     """An offer as its invitee sees it: what the GM wrote and chose to send, and
     nothing that names the GM's account, the campaign's id or the seat's
@@ -3770,6 +3784,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "FieldPatchRequest": TypeAdapter(FieldPatchRequest),
     "DocumentCreateRequest": TypeAdapter(DocumentCreateRequest),
     "RestoreRequest": TypeAdapter(RestoreRequest),
+    "DocumentDeleteRequest": TypeAdapter(DocumentDeleteRequest),
     "EditRequest": TypeAdapter(EditRequest),
     "EditInvocation": TypeAdapter(EditInvocation),
     "LibraryQuery": TypeAdapter(LibraryQuery),

@@ -11,11 +11,13 @@ than trusting it.
 reviewer sees, not a string a caller invents, so the ledger cannot quietly grow
 a vocabulary nobody agreed to. The export actions are not here: ED-18(a) makes
 the table shared, and they belong to `1kg.5.2`, which adds its own members
-without a migration. Nor is there one writer for the twenty-three that are here:
+without a migration. Nor is there one writer for the twenty-six that are here:
 the session and screen rows are written by `service/table_sessions.py`
 (`1kg.2.3`), the campaign's Conclude and Reopen by the tavern's route (bead cfx),
 `asset.deleted` by the media bead's delete route (`1kg.8.1.3`), reveal's three
-by `1kg.7.1`'s reveal service, the rest by `1kg.2.2`'s campaign and seat routes.
+by `1kg.7.1`'s reveal service, a document's archive, unarchive and delete by
+`service/document_lifecycle_api.py` (`1kg.5.2`), the rest by `1kg.2.2`'s
+campaign and seat routes.
 The reason is ownership, not use.
 
 **A row carries identifiers, never content** (SEC-20, ED-26) — and no hash of
@@ -172,6 +174,16 @@ class AuditAction(str, Enum):
     #: Narrowings (End, expiry, Rotate, Remove, archive) write none: each has its
     #: own row, and the disclosure keeps its `ended_reason`.
     REVEAL_STOPPED = "reveal.stopped"
+    #: The GM archived a document, unarchived it, or deleted it with its whole
+    #: history (actor `gm`; `1kg.5.2`, SEC-38, LIB-16 to LIB-18). Each row names
+    #: the document by its id and nothing else — never its name, a field value
+    #: or its type — and carries the authorisation revision the change
+    #: advanced to. A version restore and a field patch are content edits and
+    #: write no row (the brief's I-15); "unarchive" keeps a second meaning of
+    #: "restore" out of the ledger.
+    DOCUMENT_ARCHIVED = "document.archived"
+    DOCUMENT_UNARCHIVED = "document.unarchived"
+    DOCUMENT_DELETED = "document.deleted"
 
 
 class ActorKind(str, Enum):
@@ -186,9 +198,9 @@ class ActorKind(str, Enum):
 
 
 class ObjectKind(str, Enum):
-    """What the decision was **about** — one of the five things the twenty-three
+    """What the decision was **about** — one of the six things the twenty-six
     actions act on, and nothing else. A table screen's `object_ref` is its
-    grant's `tcr_` id.
+    grant's `tcr_` id, and a document's its `doc_` id.
 
     Closed for the same reason `AuditAction` is, and for one more: a lower-case
     key is a *shape*, so `rook` and `the_hooded_stranger_is_ondrey` both passed
@@ -202,6 +214,7 @@ class ObjectKind(str, Enum):
     PARTICIPANT = "participant"
     TABLE_SCREEN = "table_screen"
     ASSET = "asset"
+    DOCUMENT = "document"
 
 
 class Decision(str, Enum):
@@ -315,7 +328,8 @@ def _describes(kind: Kind) -> str:
 _CAMPAIGN = MintedId(ident.CAMPAIGN)
 _PARTICIPANT = MintedId(ident.PARTICIPANT)
 _SESSION = MintedId(ident.TABLE_SESSION)
-#: The character sheet a link or unlink row names (SEC-38). An id, never a
+#: The character sheet a link or unlink row names, and the document an archive,
+#: unarchive or delete row names (SEC-38). An id, never a
 #: title: a document's name is field text, and nothing derived from field text
 #: may outlive it in a ledger that survives the campaign (ED-26).
 _DOCUMENT = MintedId(ident.DOCUMENT)
@@ -380,6 +394,9 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     AuditAction.REVEAL_DISPLAYED: _REVEAL,
     AuditAction.REVEAL_UPDATED: _REVEAL,
     AuditAction.REVEAL_STOPPED: _REVEAL,
+    AuditAction.DOCUMENT_ARCHIVED: {"document_id": _DOCUMENT},
+    AuditAction.DOCUMENT_UNARCHIVED: {"document_id": _DOCUMENT},
+    AuditAction.DOCUMENT_DELETED: {"document_id": _DOCUMENT},
 }
 
 #: The closed set of reason codes **per action**, beside `ACTION_DETAIL` and
@@ -416,6 +433,9 @@ ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
     AuditAction.REVEAL_DISPLAYED: frozenset(),
     AuditAction.REVEAL_UPDATED: frozenset(),
     AuditAction.REVEAL_STOPPED: frozenset({"gm_stop", "stop_all", "replaced", "moved"}),
+    AuditAction.DOCUMENT_ARCHIVED: frozenset(),
+    AuditAction.DOCUMENT_UNARCHIVED: frozenset(),
+    AuditAction.DOCUMENT_DELETED: frozenset(),
 }
 
 
