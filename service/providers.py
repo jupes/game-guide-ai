@@ -98,10 +98,12 @@ class ProviderClientFactory:
         # a byte at a time outlasted them; the sync client's transport also
         # ends every attempt connect + request seconds after it starts, the
         # per-attempt cost the retry budget assumes (agent-forge-harness-2bb,
-        # service/provider_deadline.py).
+        # service/provider_deadline.py). follow_redirects=False keeps an attempt
+        # to that one request: each hop httpx follows is a request of its own,
+        # with a fresh deadline, and a provider POST is never redirected.
         http_client = openai.DefaultHttpxClient(transport=AttemptDeadlineTransport(
             LLM_CONNECT_TIMEOUT_S + LLM_REQUEST_TIMEOUT_S, limits=openai.DEFAULT_CONNECTION_LIMITS,
-        ))
+        ), follow_redirects=False)
         return ChatOpenAI(
             model=profile.api_model, temperature=TEMPERATURE, max_retries=0,
             base_url=profile.base_url, api_key=api_key,

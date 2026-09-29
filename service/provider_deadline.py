@@ -62,6 +62,7 @@ class _DeadlineStream(httpcore.NetworkStream):
         tls = self._inner.start_tls(ssl_context, server_hostname, _capped(timeout, httpcore.ConnectTimeout))
         return _DeadlineStream(tls)
 
+    # justification: Any is httpcore.NetworkStream.get_extra_info's own return type, passed through.
     def get_extra_info(self, info: str) -> Any:
         return self._inner.get_extra_info(info)
 
@@ -83,6 +84,7 @@ class _DeadlineBackend(httpcore.NetworkBackend):
 class AttemptDeadlineTransport(httpx.HTTPTransport):
     """httpx's own transport, with every request ending `deadline_s` after it starts."""
 
+    # justification: forwards httpx.HTTPTransport's keyword arguments, which it types itself.
     def __init__(self, deadline_s: float, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._deadline_s = deadline_s

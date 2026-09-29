@@ -23,6 +23,7 @@ import pytest
 import config
 from service import generate
 from service.model_catalog import CATALOG
+from service.provider_deadline import AttemptDeadlineTransport
 from service.providers import ProviderClientFactory, UnknownOrDisabledModelError
 
 
@@ -155,6 +156,20 @@ def test_every_alias_client_carries_the_configured_timeouts(monkeypatch, alias):
     assert client.request_timeout == expected
     assert client.root_client.timeout == expected
     assert client.root_async_client.timeout == expected
+
+
+@pytest.mark.parametrize("alias", sorted(CATALOG))
+def test_every_alias_client_ends_each_attempt_at_connect_plus_request(monkeypatch, alias):
+    # The per-attempt cost the budget test below charges is the deadline the
+    # sync client's transport enforces (agent-forge-harness-2bb): any other sum
+    # could let the attempts overrun the platform timeout unseen.
+    profile = CATALOG[alias]
+    monkeypatch.setenv(profile.secret_env, "sk-test-not-a-real-key")
+    monkeypatch.setattr(config, "LLM_REQUEST_TIMEOUT_S", 42.0)
+    monkeypatch.setattr(config, "LLM_CONNECT_TIMEOUT_S", 3.0)
+    transport = ProviderClientFactory()._build(profile).root_client._client._transport
+    assert isinstance(transport, AttemptDeadlineTransport)
+    assert transport._deadline_s == 45.0
 
 
 def test_the_timeouts_fit_the_retry_budget_inside_the_platform_request_timeout():

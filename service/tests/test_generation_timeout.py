@@ -37,9 +37,11 @@ from service.model_catalog import DEFAULT_ALIAS
 from service.providers import ProviderClientFactory
 from service.rag import RagService
 
-TIMEOUT_S = 0.3
+TIMEOUT_S = 0.3  # the request (read) timeout
+CONNECT_S = 0.5  # unlike TIMEOUT_S, so a deadline summing the wrong bounds shows
 DRIP_S = TIMEOUT_S / 2
-DEADLINE_S = 2 * TIMEOUT_S  # connect + request, both TIMEOUT_S here
+DEADLINE_S = CONNECT_S + TIMEOUT_S
+CLOCK_SLACK_S = 0.05  # time.monotonic ticks every 15.6 ms on Windows
 BOUND_S = 15.0  # loose for a loaded CI box; the point is "ends", against "never"
 ATTEMPTS = generate_module._MAX_ATTEMPTS
 _FIRST_CHUNK = (
@@ -56,6 +58,10 @@ _ANSWER = json.dumps({
 }).encode()
 _ANSWERED = (b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: %d\r\n"
              b"connection: close\r\n\r\n%s" % (len(_ANSWER), _ANSWER))
+# A redirect back to the endpoint just asked: followed, every hop is a request
+# of its own, under a fresh deadline.
+_REDIRECTED = (b"HTTP/1.1 307 Temporary Redirect\r\nlocation: /v1/chat/completions\r\n"
+               b"content-length: 0\r\nconnection: close\r\n\r\n")
 
 
 class StalledProvider:
@@ -63,7 +69,7 @@ class StalledProvider:
     sending one more byte every `drip_s` seconds meanwhile when that is set."""
 
     def __init__(self, preamble: bytes, drip_s: float | None = None) -> None:
-        self.preamble, self.drip_s, self.accepted, self.hung_up = preamble, drip_s, 0, 0
+        self.preamble, self.drip_s, self.accepted, self.sent, self.hung_up = preamble, drip_s, 0, 0, 0
         self._changed = threading.Condition()
         self._conns: list[socket.socket] = []
         self._listener = socket.create_server(("127.0.0.1", 0))
@@ -85,6 +91,9 @@ class StalledProvider:
         try:
             conn.recv(65536)
             conn.sendall(self.preamble)
+            with self._changed:
+                self.sent += 1
+                self._changed.notify_all()
             conn.settimeout(self.drip_s)  # None: block until the hang-up
             while True:
                 try:
@@ -102,6 +111,10 @@ class StalledProvider:
         with self._changed:
             return self._changed.wait_for(lambda: self.hung_up >= count, timeout=BOUND_S)
 
+    def sent_to(self, count: int) -> bool:
+        with self._changed:
+            return self._changed.wait_for(lambda: self.sent >= count, timeout=BOUND_S)
+
     def close(self) -> None:
         self._listener.close()
         for conn in self._conns:
@@ -115,7 +128,7 @@ def stalled(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., StalledPr
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
     monkeypatch.setattr(config, "LLM_REQUEST_TIMEOUT_S", TIMEOUT_S)
-    monkeypatch.setattr(config, "LLM_CONNECT_TIMEOUT_S", TIMEOUT_S)
+    monkeypatch.setattr(config, "LLM_CONNECT_TIMEOUT_S", CONNECT_S)
     monkeypatch.setattr(generate_module, "_RETRY_BACKOFF_SECONDS", 0)
     started: list[StalledProvider] = []
 
@@ -203,8 +216,10 @@ def test_a_trickling_provider_ends_at_the_attempt_deadline(stalled: Callable[...
     raised = on_own_thread(lambda: generate_module.generate_result(
         [HumanMessage(content="hi")], alias=DEFAULT_ALIAS, client=client, max_attempts=1,
     ))
+    elapsed = time.monotonic() - began
     assert isinstance(raised, openai.APITimeoutError)
-    assert time.monotonic() - began >= DEADLINE_S  # the drip beat every read bound; the deadline ended it
+    # The drip beat every read bound; the deadline, connect + request, ended it, and only once.
+    assert DEADLINE_S - CLOCK_SLACK_S <= elapsed < 2 * DEADLINE_S
     assert provider.hung_up_on(1)
 
 
@@ -236,11 +251,49 @@ def test_a_request_queued_for_a_busy_connection_ends_at_its_deadline(
     assert isinstance(on_own_thread(queue_behind_the_only_connection), httpx.PoolTimeout)
 
 
+def test_an_attempt_on_another_thread_neither_extends_nor_ends_this_ones_deadline(
+    stalled: Callable[..., StalledProvider],
+) -> None:
+    # One client serves every /chat thread. A short answer on a second thread
+    # starts and closes its own attempt in the middle of a trickling one.
+    trickling, answering = stalled(_JSON_HEADERS, drip_s=DRIP_S), stalled(_ANSWERED)
+    transport = provider_deadline.AttemptDeadlineTransport(DEADLINE_S)
+    client = httpx.Client(transport=transport, timeout=httpx.Timeout(TIMEOUT_S, connect=CONNECT_S))
+    answers: list[bytes] = []
+
+    def answer_meanwhile() -> None:
+        if trickling.sent_to(1):
+            answers.append(client.post(answering.url).content)
+
+    meanwhile = threading.Thread(target=answer_meanwhile, daemon=True)
+    meanwhile.start()
+    began = time.monotonic()
+    raised = on_own_thread(lambda: client.post(trickling.url))
+    elapsed = time.monotonic() - began
+    meanwhile.join(BOUND_S)
+    client.close()
+    assert answers == [_ANSWER]
+    assert isinstance(raised, httpx.ReadTimeout)
+    assert elapsed >= DEADLINE_S - CLOCK_SLACK_S
+
+
+def test_an_attempt_is_one_request_and_follows_no_redirect(stalled: Callable[..., StalledProvider]) -> None:
+    provider = stalled(_REDIRECTED)
+    client = ProviderClientFactory().client_for(DEFAULT_ALIAS)
+    raised = on_own_thread(lambda: generate_module.generate_result(
+        [HumanMessage(content="hi")], alias=DEFAULT_ALIAS, client=client, max_attempts=1,
+    ))
+    assert isinstance(raised, openai.APIStatusError)
+    assert raised.status_code == 307
+    assert provider.hung_up_on(1)
+    assert provider.accepted == 1
+
+
 class _TlsRecorder(httpcore.NetworkStream):
     def __init__(self) -> None:
         self.timeouts: list[float | None] = []
 
-    def start_tls(self, ssl_context: Any, server_hostname: str | None = None,
+    def start_tls(self, ssl_context: ssl.SSLContext, server_hostname: str | None = None,
                   timeout: float | None = None) -> httpcore.NetworkStream:
         self.timeouts.append(timeout)
         return self
@@ -262,6 +315,26 @@ def test_a_wait_is_cut_to_what_is_left_of_the_attempt_and_refused_past_it() -> N
     assert inner.timeouts[0] == 5.0
     assert 0 < (inner.timeouts[1] or 0) <= 1.0
     assert len(inner.timeouts) == 2  # the expired wait never reached the network
+
+
+@pytest.mark.parametrize(("wait", "expired"), [
+    (lambda: provider_deadline._DeadlineStream(httpcore.NetworkStream()).read(1, timeout=5.0),
+     httpcore.ReadTimeout),
+    (lambda: provider_deadline._DeadlineStream(httpcore.NetworkStream()).write(b"x", timeout=5.0),
+     httpcore.WriteTimeout),
+    (lambda: provider_deadline._DeadlineBackend(httpcore.SyncBackend()).connect_tcp("127.0.0.1", 9, timeout=5.0),
+     httpcore.ConnectTimeout),
+], ids=["read", "write", "connect"])
+def test_a_wait_past_the_deadline_raises_the_timeout_of_its_kind(
+    wait: Callable[[], object], expired: type[httpcore.TimeoutException],
+) -> None:
+    # Each is the kind httpx maps to its own, so the attempt stays a `timeout`.
+    token = provider_deadline._attempt_deadline.set(time.monotonic() - 0.001)
+    try:
+        with pytest.raises(expired, match="passed its deadline"):
+            wait()
+    finally:
+        provider_deadline._attempt_deadline.reset(token)
 
 
 def test_a_timeout_raised_without_its_request_still_converts() -> None:
