@@ -215,10 +215,18 @@ NOTHING` locks nothing, so between the absorb and the enqueuer's commit another
 instance could claim the job, run it and delete it, and the enqueuer's change was
 never processed (W-1, proven against PostgreSQL 17 in CI before it was fixed). The
 absorb now reads the row `FOR SHARE`, which a claim's `FOR UPDATE SKIP LOCKED`
-skips until every absorber has committed. Share locks are compatible, so
-concurrent enqueuers never wait for each other. **What an enqueue can wait for:**
-only a claim's own transaction on that row — one short statement under the queue's
-bounds below — and if the claim wins, the enqueue inserts a row of its own. No
+skips until every absorber has committed. Share locks are compatible, so two
+enqueuers that both absorb into a committed job never wait for each other. **What
+an enqueue can wait for:** a claim's own transaction on that row — one short
+statement under the queue's bounds below — and if the claim wins, the enqueue
+inserts a row of its own. It can **also** wait for another open transaction that
+has enqueued the same kind and key and not yet committed: the unique index makes
+the insert wait for that transaction's outcome. If that transaction rolled back,
+the enqueue inserts its own row. If it committed, the enqueue absorbs into its job,
+unless a claim has taken the job in the meantime: a claimed job has left the index,
+so the enqueue then inserts a row of its own, as it does when a claim wins. Both
+outcomes with no claim in between are proven against PostgreSQL in
+`tests/test_db_postgres.py`. Nothing in the queue bounds that wait. No
 timeout is set in the caller's transaction: that would re-time the rest of the
 caller's work. Many concurrent share holders make a multixact, and in principle
 could keep a claim off that one row for as long as absorbers keep arriving; each
