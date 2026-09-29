@@ -37,8 +37,11 @@ import { parseDiceNotation } from './diceNotation'
 import { EMPTY_LABELS } from './modes'
 import {
   getAttachments as defaultGetAttachments,
+  postChat,
   uploadAttachment as defaultUploadAttachment,
 } from '../api'
+import { useCampaign } from './campaignContext'
+import { useCampaignThreads } from './campaignThreads'
 import type {
   Attachment,
   AttachmentsResult,
@@ -123,6 +126,23 @@ const UNDER_LIMIT_ANNOUNCEMENT = 'Message is back under the character limit.'
 function chatPromptCounterMessage(length: number): string {
   return `${length} of ${CHAT_TEXT_MAX_CHARS} characters — shorten your message to send it.`
 }
+
+// ── Campaign GM threads (agent-forge-harness-1kg.2.5, PR-2) ──────────────────
+// In the GM channel with a campaign in any state, a turn is the campaign's
+// (brief section 7.7, critic 5). A campaign that is not usable yet sends
+// nothing -- no /chat, no thread -- and says what to do next; the prompt stays
+// on screen as the failed exchange (STATE-1), announced by the pane's one
+// announcer like any failed turn. Copy constants `cub` may replace.
+const CAMPAIGN_NOT_READY = {
+  restoring: 'The campaign is still loading. Nothing was sent — try again in a moment.',
+  failed: "Couldn't load the campaign. Nothing was sent — use Retry, or Continue without a campaign.",
+  unavailable: "That campaign isn't available. Nothing was sent — choose Continue without a campaign to use GM chat.",
+} as const
+const THREAD_NOT_STARTED = "Couldn't start a GM thread. Nothing was sent — try again."
+
+/** `useChat`'s own default turn, for the campaign wrapper to post through. */
+const postTurn: PostFn = (prompt, mode, conversationId, modelPreference) =>
+  postChat(prompt, mode, conversationId, undefined, modelPreference)
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -218,8 +238,26 @@ function ChatPaneBody({
     },
     [],
   )
+  // A campaign thread is created on its first send, with no title, and reused
+  // by the next send until a turn in it is opened (I-12); the id the turn went
+  // to is the one useChat adopts. A campaign thread's prompt never reaches the
+  // local store (RAIL-26: `handleSend` below).
+  const { selection } = useCampaign()
+  const { ensureThread } = useCampaignThreads()
+  const campaignPost = React.useMemo<PostFn | undefined>(() => {
+    if (mode !== 'gm' || selection.kind === 'none') return undefined
+    const base = post ?? postTurn
+    const state = selection.kind
+    return async (prompt, turnMode, id, preference) => {
+      if (state !== 'selected') return { kind: 'error', message: CAMPAIGN_NOT_READY[state] }
+      const thread = id ?? (await ensureThread())
+      if (thread === null) return { kind: 'error', message: THREAD_NOT_STARTED }
+      const result = await base(prompt, turnMode, thread, preference)
+      return result.kind === 'ok' ? { ...result, response: { ...result.response, conversation_id: thread } } : result
+    }
+  }, [mode, selection.kind, post, ensureThread])
   const { exchanges, send, pending, inFlight, historyError, loadingHistory } = useChat({
-    post,
+    post: campaignPost ?? post,
     loadHistory: gm ? SKIP_RECALL : loadHistory,
     mode,
     conversationId,
@@ -405,9 +443,10 @@ function ChatPaneBody({
     // The same gate as Send's `disabled`, so Enter never clears a draft that
     // `send` would refuse (1kg.3.5, I-14).
     if (!trimmed || sendBlocked || overLength) return
-    if (conversationId !== null) {
+    if (conversationId !== null && campaignPost === undefined) {
       // bta: record what this first turn binds the conversation to — the same
-      // value `send` posts below, both read from this render.
+      // value `send` posts below, both read from this render. Never for a
+      // campaign's turn (RAIL-26): its prompt stays out of web storage.
       conversationStore.recordFirstPrompt(conversationId, trimmed, modelPreference)
     }
     // agent-forge-harness-ekf / agent-forge-harness-4oz: nothing else ever
@@ -418,7 +457,7 @@ function ChatPaneBody({
     setArrival(PENDING_ANNOUNCEMENT)
     send(trimmed)
     setDraft('')
-  }, [conversationId, conversationStore, draft, modelPreference, overLength, sendBlocked, send])
+  }, [campaignPost, conversationId, conversationStore, draft, modelPreference, overLength, sendBlocked, send])
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
