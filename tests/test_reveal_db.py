@@ -1775,6 +1775,36 @@ def test_a_mask_holds_only_revealable_present_non_empty_keys(served: Served) -> 
     assert _entry(shown.picture, None).live.mask == ("name", "voice"), "positive control"
 
 
+def test_a_masks_presence_is_read_from_the_pinned_version_never_the_head(served: Served) -> None:
+    """T-B4, the pinned version (REVEAL-9, ED-9; fg7k M1). Presence and
+    emptiness are judged on the version the Confirm pins: version 1 sealed with
+    a blank `attitude` stays refused while an open version 2 fills it, and
+    version 1 sealed with it filled is displayable while an open version 2
+    blanks it — otherwise a pinned version could be shown that the projection
+    cannot read."""
+    s, w = served, served.w
+    campaign, session, _ = _stage(w, seats=0)
+    filled_later = _doc_of(w, campaign, DocumentTypeId.NPC, {**AN_NPC, "attitude": " \t "})
+    blanked_later = _doc_of(w, campaign, DocumentTypeId.NPC, {**AN_NPC, "attitude": "friendly"})
+    for document, head in ((filled_later, "friendly"), (blanked_later, " \t ")):
+        with w.db.transaction() as unit:
+            w.documents.write_fields(
+                unit, campaign, document, fields={"attitude": head}, author=Author.GM, base_write_revision=None
+            )
+        with w.db.transaction() as unit:
+            record = w.documents.get(unit, campaign, document)
+        assert record is not None and record.data["attitude"] == head, "the head is an open version 2"
+
+    before = _state(s, campaign, session.id)
+    with pytest.raises(MaskRefused) as caught:
+        _confirm(s, campaign, session.id, filled_later, mask=("attitude",), version=1)
+    assert caught.value.keys == ("attitude",)
+    assert _state(s, campaign, session.id) == before
+
+    live = _entry(_confirm(s, campaign, session.id, blanked_later, mask=("attitude",), version=1).picture, None).live
+    assert live is not None and (live.document_id, live.version, live.mask) == (blanked_later, 1, ("attitude",))
+
+
 def test_an_open_or_missing_version_and_an_archived_document_are_refused(served: Served) -> None:
     """T-B5 (ED-9). Only a sealed version of a document that is not archived is
     displayable; the refusal names the version or the document."""
@@ -1855,15 +1885,18 @@ def test_everyone_seated_expands_to_confirmed_active_seats_only(served: Served) 
 
 
 def test_a_confirm_advances_the_epoch_once_and_never_authz_revision(served: Served) -> None:
-    """T-B8 (RQ-10, I-10). Three recipients, one Confirm: the epoch moves by one,
-    the authorisation revision not at all, and no job is enqueued."""
+    """T-B8 (RQ-10, I-10; fg7k M2). Three recipients, one Confirm: the epoch
+    moves by one, the audio epoch and the authorisation revision not at all,
+    and no job is enqueued."""
     s, w = served, served.w
     campaign, session, (a, b, c) = _stage(w)
     document = _document(w, campaign)
     epoch, revision, queued = _epoch(w, session.id), _revision(w, campaign), _queued(s)
+    audio = _session_row(w, session.id).audio_epoch
     _confirm(s, campaign, session.id, document, ParticipantsAudience(frozenset({a, b, c})))
     assert (_epoch(w, session.id), _revision(w, campaign), _queued(s)) == (epoch + 1, revision, queued)
     assert _seqs(w, session.id) == {a: 1, b: 1, c: 1}
+    assert _session_row(w, session.id).audio_epoch == audio, "a Confirm never narrows table audio"
 
 
 def test_a_copy_to_an_unconfirmed_seat_is_held_and_delivered_by_the_confirmation_alone(served: Served) -> None:
@@ -1900,7 +1933,7 @@ def test_a_stop_clears_every_copy_advances_the_epoch_on_an_empty_session_and_equ
     the same scope leaves on an identical table. A Stop on a session showing
     nothing still advances the epoch and writes its row; a campaign with no
     live session answers None and writes nothing; an archived campaign's Stop
-    is not refused."""
+    is not refused. No Stop moves the audio epoch (fg7k M2)."""
     s, w = served, served.w
 
     def build(owner: int, players: tuple[int, ...]) -> tuple[str, TableSession, list[str], dict[str, str]]:
@@ -1930,6 +1963,7 @@ def test_a_stop_clears_every_copy_advances_the_epoch_on_an_empty_session_and_equ
     assert picture_of(stopped) == picture_of(narrowed)
 
     x_stopped, x_narrowed = list(stopped[3])[0], list(narrowed[3])[0]
+    audio = _session_row(w, stopped[1].id).audio_epoch
     _stop(s, stopped[0], StopDocument(x_stopped))
     with w.db.transaction() as unit:
         w.sessions.narrow(
@@ -1949,6 +1983,7 @@ def test_a_stop_clears_every_copy_advances_the_epoch_on_an_empty_session_and_equ
     answer = _stop(s, campaign, StopAll())
     assert answer is not None and answer.reveal_epoch == epoch + 1, "an empty session's epoch still advances"
     assert len(_reveal_rows(s, campaign)) == rows + 1
+    assert _session_row(w, session.id).audio_epoch == audio, "three Stops, and table audio never narrowed"
 
     archive(s.db, s.stores, campaign_id=campaign, owner_id=w.owner, now=_now())
     epoch = _epoch(w, session.id)
