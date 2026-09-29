@@ -210,18 +210,25 @@ def test_a_repeat_decline_applies_a_block_it_now_asks_for(client: TestClient, wo
 
 def test_every_account_refusal_is_one_identical_404(client: TestClient, world: _World) -> None:
     """Missing, someone else's, expired, withdrawn, archived, blocked, already
-    seated, and the caller being the campaign's owner."""
+    seated, and the caller being the campaign's owner.
+
+    Only the expired offer has expired (R145-M1): it is made a week before the
+    others, and the clock stops a week short of theirs running out. So each
+    invitee predicate — archived, the owner, blocked, already seated — refuses
+    an offer that is still live, and dropping any one of them fails here."""
     refused: dict[str, str] = {"missing": OFFER}
-    _, theirs = _offered(client, world, "finch@example.com", name="Someone else's")
-    refused["someone else's"] = _offer_id(world, theirs)
     _, expiring = _offered(client, world, name="Expired")
     refused["expired"] = _offer_id(world, expiring)
+    world.now[0] = T0 + timedelta(days=7)
+    _, theirs = _offered(client, world, "finch@example.com", name="Someone else's")
+    refused["someone else's"] = _offer_id(world, theirs)
     withdrawn_campaign, withdrawn = _offered(client, world, name="Withdrawn")
     refused["withdrawn"] = _offer_id(world, withdrawn)
     assert _remove(client, withdrawn_campaign, withdrawn).status_code == 204
     archived_campaign, archived = _offered(client, world, name="Archived")
     refused["archived"] = _offer_id(world, archived)
-    client.patch(f"/campaigns/{archived_campaign}", json={"schema_version": 1, "archived": True})
+    archiving = client.patch(f"/campaigns/{archived_campaign}", json={"schema_version": 1, "archived": True})
+    assert archiving.status_code == 200, archiving.text
     _, blocked = _offered(client, world, owner=GM_B, name="Blocked")
     refused["blocked"] = _offer_id(world, blocked)
     with world.db.transaction() as unit:
@@ -236,6 +243,12 @@ def test_every_account_refusal_is_one_identical_404(client: TestClient, world: _
     refused["the owner"] = _offer_id(world, own)
     world.now[0] = T0 + timedelta(days=14)
     _, fresh = _offered(client, world, name="Fresh")
+    offers = {o.id: o for o in world.offers()}
+    live = {reason for reason, offer in refused.items() if offer in offers and offers[offer].is_live(world.now[0])}
+    assert live == {"someone else's", "archived", "blocked", "already seated", "the owner"}, "a predicate refuses these"
+    lapsed = offers[refused["expired"]]
+    assert (lapsed.outcome, lapsed.expires_at <= world.now[0]) == (None, True), "only time refuses the expired one"
+    assert offers[refused["withdrawn"]].outcome == "withdrawn"
     shapes = set()
     for reason, offer in refused.items():
         address = {"already seated": "wren.alt@example.com", "the owner": "gm.alt@example.com"}.get(reason, WREN)
