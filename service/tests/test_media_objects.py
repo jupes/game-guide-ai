@@ -695,17 +695,21 @@ def test_gcs_on_a_build_without_the_client_is_refused_by_name(monkeypatch: pytes
     assert "my-project-workbench-media" not in str(caught.value)
 
 
+@pytest.mark.parametrize("missing", ["google.cloud.storage", "google.cloud"])
 def test_startup_refuses_gcs_on_a_build_without_the_client_before_any_store_is_built(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, missing: str
 ) -> None:
     """AC 11(ii) at startup, where slice b's `startup_settings` meets slice d.
     The factory refuses a build without the client only when the stores are
     built, and a database that is away at startup defers that to recovery,
     inside a request. So startup asks as well, without importing the client:
-    a build without it never starts, whatever the database is doing."""
+    a build without it never starts, whatever the database is doing. Missing
+    `google.cloud` is a build with no Google Cloud library at all, where even
+    looking for the client fails to import its parent."""
     env = {"WORKBENCH_MEDIA_STORE": "gcs", "WORKBENCH_MEDIA_BUCKET": "my-project-workbench-media"}
     assert mo.startup_settings(env) == mo.MediaSettings(store="gcs", bucket="my-project-workbench-media")
-    monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
+    monkeypatch.delitem(sys.modules, "google.cloud.storage", raising=False)
+    monkeypatch.setitem(sys.modules, missing, None)
     with pytest.raises(mo.MediaStoreNotBuilt) as caught:
         mo.startup_settings(env)
     assert "my-project-workbench-media" not in str(caught.value)
