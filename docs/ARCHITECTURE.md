@@ -614,8 +614,11 @@ module only; they name an asset by its globally unique id.
 
 **Why the reconcile chain ends.** The listing's bound counts objects examined,
 not matches, so its cursor moves on even when every examined object is still
-referenced; a pass over N objects is at most ceil(N / `RECONCILE_BATCH`) runs, and
-a new pass starts only when someone calls `enqueue_reconcile`. No key is ever
+referenced; a pass over N objects is at most floor(N / `RECONCILE_BATCH`) + 1 runs,
+because every run but the last examines exactly `RECONCILE_BATCH` objects (when
+`assets/` ends exactly at the budget, one more run follows to look at `tmp/`,
+even if it finds nothing there), and a new pass starts only when someone calls
+`enqueue_reconcile`. No key is ever
 reused, so an object no live row names now will never be named again, and the
 lookup and the delete need no lock between them. Until `1kg.9.5` schedules it,
 the bucket's own lifecycle rule for `tmp/` is production's backstop

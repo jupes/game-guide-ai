@@ -31,7 +31,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -46,6 +46,7 @@ from service import asset_jobs, asset_store
 from service import migrations as mig
 from service.asset_jobs import (
     RECONCILE_JOB,
+    AssetSystem,
     InMemoryAssetSystem,
     JobOutOfTime,
     PostgresAssetSystem,
@@ -70,9 +71,16 @@ from service.asset_store import (
     visible_rows,
 )
 from service.campaign_store import InMemoryCampaignStore, MissingParent, PostgresCampaignStore
-from service.db import CampaignLockOrder, CampaignLockSettings, Database, InMemoryDatabase, PoolSettings
-from service.jobs import InMemoryJobQueue, JobRunner, PostgresJobQueue, check_payload
-from service.media_objects import InMemoryObjectStore, ObjectStoreUnavailable
+from service.db import (
+    CampaignLockOrder,
+    CampaignLockSettings,
+    Database,
+    InMemoryDatabase,
+    PoolSettings,
+    UnitOfWork,
+)
+from service.jobs import InMemoryJobQueue, JobRunner, JobRunResult, PostgresJobQueue, check_payload
+from service.media_objects import InMemoryObjectStore, ObjectPage, ObjectStat, ObjectStoreUnavailable
 from service.workbench_contracts import Asset, AssetFailure, AssetKind, AssetState
 
 SERVICE = Path(__file__).resolve().parents[1] / "service"
@@ -167,7 +175,7 @@ class World:
     campaigns: Any
     assets: Any
     queue: Any
-    system: Any
+    system: AssetSystem
     owner: int
     other_owner: int
     dsn: str | None
@@ -944,27 +952,30 @@ def test_the_enqueue_is_last_in_every_method_that_enqueues() -> None:
 
 class Recording:
     """An object store that says what it was asked, may fail on cue, and
-    refuses to be called while a database transaction is open."""
+    refuses to be called while a database transaction is open. Each listing is
+    also kept as (prefix, start_after, examined), so a test can count what one
+    reconcile run examined and see which prefixes it walked."""
 
     def __init__(self, inner: InMemoryObjectStore, watched: Watched) -> None:
         self.inner = inner
         self.watched = watched
         self.calls: list[tuple[str, str]] = []
+        self.listed: list[tuple[str, str | None, int]] = []
         self.fail_deletes = 0
 
     def _check(self, name: str, key: str) -> None:
         assert self.watched.open == 0, f"{name} was called with a database transaction open"
         self.calls.append((name, key))
 
-    def put_stream(self, key: str, chunks: Any, *, max_bytes: int) -> int:
+    def put_stream(self, key: str, chunks: Iterable[bytes], *, max_bytes: int) -> int:
         self._check("put_stream", key)
         return self.inner.put_stream(key, chunks, max_bytes=max_bytes)
 
-    def get_stream(self, key: str, *, offset: int = 0, length: int | None = None) -> Any:
+    def get_stream(self, key: str, *, offset: int = 0, length: int | None = None) -> Iterator[bytes]:
         self._check("get_stream", key)
         return self.inner.get_stream(key, offset=offset, length=length)
 
-    def stat_object(self, key: str) -> Any:
+    def stat_object(self, key: str) -> ObjectStat | None:
         self._check("stat_object", key)
         return self.inner.stat_object(key)
 
@@ -975,9 +986,13 @@ class Recording:
             raise ObjectStoreUnavailable()
         self.inner.delete_object(key)
 
-    def list_objects(self, prefix: str, **listing: Any) -> Any:
+    def list_objects(
+        self, prefix: str, *, older_than: datetime, start_after: str | None = None, limit: int
+    ) -> ObjectPage:
         self._check("list_objects", prefix)
-        return self.inner.list_objects(prefix, **listing)
+        page = self.inner.list_objects(prefix, older_than=older_than, start_after=start_after, limit=limit)
+        self.listed.append((prefix, start_after, page.examined))
+        return page
 
     def reachable(self) -> bool:
         return self.inner.reachable()
@@ -1000,7 +1015,7 @@ class Jobs:
     def keys(self) -> set[str]:
         return set(self.memory._objects)
 
-    def run(self, until: datetime | None = None) -> Any:
+    def run(self, until: datetime | None = None) -> JobRunResult:
         if until is not None:
             self.clock.now = until
         return self.runner.run_due(limit=100)
@@ -1019,8 +1034,8 @@ def _jobs(world: World, *, between_read_and_fence: Callable[[], None] | None = N
     return Jobs(runner, clock, objects, memory)
 
 
-def _ready_with_objects(world: World, jobs: Jobs, campaign: str, **create: Any) -> asset_store.AssetRecord:
-    record = _in_state(world, campaign, "ready", **create)
+def _ready_with_objects(world: World, jobs: Jobs, campaign: str) -> asset_store.AssetRecord:
+    record = _in_state(world, campaign, "ready")
     jobs.put(record.tmp_key)
     jobs.put(record.object_key)
     return record
@@ -1125,6 +1140,31 @@ def test_the_purge_removes_only_a_tombstone(world: World) -> None:
     assert _states(world, DELETE_JOB) == [], "the job completed"
     assert world.rows()[record.id].state == "ready", "the live row was never purged"
     assert world.usage(campaign) == (900, 1)
+
+
+def test_the_jobs_statements_that_lock_bound_their_transaction_first(world: World) -> None:
+    """AC-13 bullet 1 for the jobs module's two locking statements, in both
+    worlds: `fail_timed_out` and `purge` bound the transaction before their
+    first lock, and say a row lock is coming, so a later campaign lock in the
+    same unit is refused. `Database.transaction()` sets no lock bound of its
+    own, so without these the only bound is the lock holder's."""
+    campaign = _campaign(world)
+    stuck = _create(world, campaign)
+    read_at = world.rows()[stuck.id].state_changed_at
+    gone = _in_state(world, campaign, "deleted")
+    calls: list[tuple[str, Callable[[UnitOfWork], bool]]] = [
+        ("fail_timed_out", lambda u: world.system.fail_timed_out(
+            u, stuck.id, state="uploading", state_changed_at=read_at, now=T0 + timedelta(hours=2))),
+        ("purge", lambda u: world.system.purge(u, gone.id)),
+    ]
+    for name, call in calls:
+        with world.db.transaction() as unit:
+            assert call(unit), f"{name} changed its row, so it really locked one"
+            assert unit.transaction_bounds, f"{name} took a lock with no transaction bound"
+            with pytest.raises(CampaignLockOrder):
+                unit.lock_campaign(campaign, shared=True)
+    rows = world.rows()
+    assert (rows[stuck.id].state, gone.id in rows) == ("failed", False)
 
 
 @pytest.mark.parametrize(("state", "bound"), [("uploading", timedelta(hours=1)), ("processing", timedelta(minutes=10))])
@@ -1233,6 +1273,31 @@ def test_a_row_that_failed_quota_on_its_way_to_ready_loses_its_processed_object_
     assert record.object_key not in jobs.keys()
 
 
+def test_a_sweep_whose_store_failed_after_its_fence_deletes_both_objects_on_retry(world: World) -> None:
+    """The fence won, then the store failed on the first delete (`tmp/`). The
+    attempt fails by class alone, and the retry reads `failed`: a failed row's
+    objects — the `tmp/` object as well as the original — are its to delete, so
+    nothing is left for the reconcile or the bucket's lifecycle rule."""
+    jobs = _jobs(world)
+    campaign = _campaign(world)
+    record = _in_state(world, campaign, "uploading")
+    jobs.put(record.tmp_key)
+    jobs.put(record.object_key)
+    jobs.objects.fail_deletes = 1
+    due = T0 + timedelta(hours=1, seconds=1)
+    result = jobs.run(due)
+    assert (result.ran, result.failed) == (1, 1)
+    assert _states(world, SWEEP_JOB) == [(SWEEP_JOB, 1, ObjectStoreUnavailable.__name__, False)]
+    swept = world.rows()[record.id]
+    assert (swept.state, swept.failure) == ("failed", AssetFailure.TIMED_OUT)
+    assert world.usage(campaign) == (0, 0), "the fence released the reservation"
+    assert {record.tmp_key, record.object_key} <= jobs.keys(), "the failed attempt deleted nothing"
+    jobs.run(due + timedelta(minutes=5))
+    assert _states(world, SWEEP_JOB) == [], "the retry completed"
+    assert jobs.keys() == set()
+    assert world.usage(campaign) == (0, 0), "and released nothing a second time"
+
+
 def _ready_rows(world: World, count: int) -> list[asset_store.AssetRecord]:
     campaign = _campaign(world)
     return [_in_state(world, campaign, "ready") for _ in range(count)]
@@ -1288,6 +1353,79 @@ def test_a_successor_resumes_strictly_after_its_cursor(world: World) -> None:
         world.queue.enqueue(unit, RECONCILE_JOB, {"after": cursor}, now=T0)
     jobs.run(T0 + timedelta(seconds=1))
     assert jobs.keys() == {before, cursor}, "left for the next pass"
+
+
+Listing = tuple[str, str | None, int]
+
+
+def _reconcile_chain(world: World, jobs: Jobs, *, most: int = 20) -> list[tuple[str | None, list[Listing]]]:
+    """Run the reconcile chain one run at a time, at most `most` runs, and give
+    each run's cursor with the listings it made. Every run, however it ends,
+    examines at most `RECONCILE_BATCH` objects and chains at most one
+    successor; the chain has ended when no reconcile job remains."""
+    runs: list[tuple[str | None, list[Listing]]] = []
+    for _ in range(most):
+        pending = [payload for _, kind, payload, _, _ in world.jobs() if kind == RECONCILE_JOB]
+        if not pending:
+            return runs
+        assert len(pending) == 1, "one run chains at most one successor"
+        jobs.objects.listed.clear()
+        result = jobs.runner.run_due(limit=1)
+        assert (result.ran, result.failed) == (1, 0)
+        listed = list(jobs.objects.listed)
+        examined = sum(count for _, _, count in listed)
+        assert examined <= asset_jobs.RECONCILE_BATCH, f"one run examined {examined} objects: {listed}"
+        after = pending[0].get("after")
+        runs.append((after if isinstance(after, str) else None, listed))
+    raise AssertionError(f"the reconcile chain did not end within {most} runs")
+
+
+def test_the_reconcile_walks_assets_then_tmp_once_and_the_chain_ends(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L-10(b): a pass examines every object exactly once, `assets/` then
+    `tmp/`; a successor whose cursor is in `tmp/` never walks `assets/` again;
+    and the chain ends within floor(N / RECONCILE_BATCH) + 1 runs. Every object
+    here is too young to be an orphan, so no delete moves the cursor along."""
+    monkeypatch.setattr(asset_jobs, "RECONCILE_BATCH", 4)
+    batch = asset_jobs.RECONCILE_BATCH
+    jobs = _jobs(world)
+    young = {f"assets/{n:032x}" for n in range(batch + 1)} | {f"tmp/{n:032x}" for n in range(batch + 1)}
+    for key in young:
+        jobs.put(key, at=T0)
+    with world.db.transaction() as unit:
+        enqueue_reconcile(unit, world.queue, now=T0)
+    runs = _reconcile_chain(world, jobs)
+    assert sum(count for _, listed in runs for _, _, count in listed) == len(young), "each examined once"
+    assert len(runs) <= len(young) // batch + 1
+    in_tmp = [listed for after, listed in runs if after is not None and after.startswith("tmp/")]
+    assert in_tmp, "the pass reached a cursor in tmp/"
+    assert all([prefix for prefix, _, _ in listed] == ["tmp/"] for listed in in_tmp), (
+        "a cursor in tmp/ never walks assets/ again"
+    )
+    assert jobs.objects.deleted() == [] and jobs.keys() == young
+
+
+def test_a_tmp_orphan_is_reached_when_assets_exactly_fills_a_batch(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `assets/` ends exactly at the budget the run cannot know whether
+    `tmp/` is empty, so it chains one successor, and that successor reaches the
+    `tmp/` orphan: the "+ 1" run the architecture doc counts."""
+    monkeypatch.setattr(asset_jobs, "RECONCILE_BATCH", 4)
+    jobs = _jobs(world)
+    old = T0 - timedelta(days=2)
+    records = _ready_rows(world, asset_jobs.RECONCILE_BATCH)
+    for record in records:
+        jobs.put(record.object_key, at=old)
+    orphan = "tmp/" + "e" * 32
+    jobs.put(orphan, at=old)
+    with world.db.transaction() as unit:
+        enqueue_reconcile(unit, world.queue, now=T0)
+    runs = _reconcile_chain(world, jobs)
+    assert [after for after, _ in runs] == [None, max(r.object_key for r in records)]
+    assert jobs.objects.deleted() == [orphan]
+    assert jobs.keys() == {record.object_key for record in records}
 
 
 def test_dedupe_keys_and_payloads_are_exactly_what_the_rulings_say(world: World) -> None:
