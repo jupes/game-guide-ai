@@ -10,6 +10,7 @@ import { expect, fn, userEvent, waitFor, within } from 'storybook/test'
 
 import { tabTo } from '../../.storybook/keyboard'
 import { withShell } from '../../.storybook/shellHarness'
+import { atViewport, expectViewport } from '../../.storybook/viewports'
 import { ChatPane } from './ChatPane'
 import type { GetAttachmentsFn } from './ChatPane'
 import type { Attachment, ChatResponse, ChatResult, MessagesResult, Source, StoredMessage } from '../api'
@@ -746,5 +747,26 @@ export const DarkAnswerFailed: Story = {
     field.focus()
     await userEvent.keyboard('Anything?{Enter}')
     await expect(await canvas.findByText('Network unreachable.')).toBeInTheDocument()
+  },
+}
+
+/**
+ * agent-forge-harness-0rn: "Jump to latest" was 36px tall, under the 44px
+ * floor at every width. Measured here on a phone, where it is tapped.
+ */
+export const ScrolledAwayFromLatestPhone390: Story = {
+  ...ScrolledAwayFromLatest,
+  ...atViewport('phone390'),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone390')
+    const canvas = within(canvasElement)
+    await canvas.findByText(/Answer 10\./)
+    const feed = canvasElement.querySelector('.chat-pane__exchanges')
+    if (feed instanceof HTMLElement) {
+      feed.scrollTop = 0
+      feed.dispatchEvent(new Event('scroll'))
+    }
+    const jump = await canvas.findByRole('button', { name: /jump to latest/i })
+    await expect(jump.getBoundingClientRect().height).toBeGreaterThanOrEqual(44)
   },
 }

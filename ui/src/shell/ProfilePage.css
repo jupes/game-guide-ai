@@ -4,7 +4,7 @@
    ─────────────────────────────────────────────────────────────────────────── */
 
 .profile-page {
-  min-height: 100vh;
+  min-height: 100dvh; /* LAYOUT-8 */
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -113,4 +113,17 @@
 
 .profile-page__back {
   align-self: flex-start;
+}
+
+/* ── Phone (agent-forge-harness-0rn) ─────────────────────────────────────────
+   One column under 600px: the side padding drops to the phone gutter, and
+   "Back to chat" (the card's action) spans the card. */
+@media (width < 600px) {
+  .profile-page {
+    padding: var(--aether-space-6) var(--aether-gutter);
+  }
+
+  .profile-page__back {
+    align-self: stretch;
+  }
 }

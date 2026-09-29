@@ -2,3 +2,6 @@
 # stable regardless of the invoking cwd. The actual sys.path entry that makes
 # `import service` / `import ingestion` resolve without an install is the
 # `[tool.pytest.ini_options] pythonpath = ["."]` setting in pyproject.toml.
+
+# The canary leak-test harness's fixtures, for every test directory (agent-forge-harness-1ir.1.10).
+pytest_plugins = ["service.tests.canary.plugin"]

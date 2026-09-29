@@ -7,9 +7,9 @@ manager / script runner; state is plain React context + hooks (no router, no sta
 
 ```text
 Landing ── "Enter the Tavern" ─▶ Workspace                    Profile (swe1.7)
-                                   ├─ TopBar     brand only     edit display name
-                                   ├─ AppHeader  channel switcher (accented chips)
-                                   └─ body       ├─ LeftNav   conversations · UserMenu
+                                   ├─ TopBar     brand (+ menu button, narrow)   edit display name
+                                   ├─ AppHeader  channel switcher (accented chips) · model · theme
+                                   └─ body       ├─ LeftNav   conversations · UserMenu (a drawer, narrow)
                                                  └─ ChatPane  composer · exchanges · attachments
 ```
 
@@ -18,8 +18,36 @@ Landing ── "Enter the Tavern" ─▶ Workspace                    Profile (s
 - **Channel switching** lives in the **AppHeader** band (swe1.4), not the LeftNav; each
   channel has a distinct accent color (swe1.3, `modes.ts` + `modeAccents.css`). The header
   reserves an empty slot for future note-taking / GM-lore nav (swe1.5).
-- **Theme toggle** (light Parchment / dark Tavern) sits in the **UserMenu** popover
-  (swe1.11), persisted to `localStorage`.
+- **Model picker and theme toggle** (light Parchment / dark Tavern) sit at the right of
+  the **AppHeader** band on the wide layout, and in the LeftNav drawer on the narrow one
+  (below). The theme is persisted to `localStorage`.
+- **Phone layout** (agent-forge-harness-0rn). Two breakpoints, both exclusive upper
+  bounds, in `src/shell/breakpoints.ts`:
+  - **Below 768px** (`NARROW_MEDIA`, the interactions ADR's LAYOUT-3) the workspace is
+    one column. `useShellLayout()` sets `data-layout="narrow"` on the shell; LeftNav
+    becomes an off-canvas **modal drawer** behind the TopBar's "Open navigation" button
+    (focus moves in, Tab wraps, Escape and the scrim close it, the chrome and the chat
+    are `inert` behind it). The model picker and theme toggle move into the drawer as a
+    "Settings" group; the AppHeader keeps only the channels. The drawer closes on
+    navigation (a mode, a conversation, New conversation), never on a setting, and its
+    open state is never stored anywhere.
+  - **Below 600px** (`PHONE_MEDIA`, the bead's phone rule) every in-scope surface is one
+    column with 44px targets: the auth screens stack, card actions span the card, and
+    page padding drops to the phone gutter. Every width media query under `src/shell/`
+    must be written as exactly `PHONE_MEDIA`; `breakpoints.test.ts` fails any other
+    spelling, any `100vh` (heights use `100dvh`, LAYOUT-8), and a viewport meta that
+    disables zoom.
+  - Phone stories set their size with `.storybook/viewports.ts` (`atViewport`) and start
+    with `expectViewport`, because the Storybook vitest plugin skips a viewport it cannot
+    apply without failing (it also waits for the webfonts before anything is measured).
+    Dark phone stories add `expectTheme('dark')`. The document's `scrollWidth` cannot see
+    inside a box that clips (the ds Card, the transcript, the workspace's boxes, the open
+    drawer), so `expectNoPageOverflow` also runs `expectNothingClipped` over the page:
+    every element and line of text lies inside its nearest clipping box, on both sides.
+    The channel strip, code blocks, tables, ellipsised titles and visually hidden labels
+    are the only exemptions. Workspace stories also call `expectWorkspaceFits` (the
+    composer and Send on screen, then the same walk), and the open drawer's `scrollWidth`
+    equals its `clientWidth`.
 - **Profile page** (swe1.7): editable display name + avatar tone, persisted to
   `localStorage` **per account** via `currentUser.tsx`. The DM/player role is shown
   read-only — it is fixed by the invite that created the account and enforced by the
@@ -193,7 +221,7 @@ the keyboard to force the result.
 | Path | Purpose |
 | --- | --- |
 | `src/ds/` | Aetheril design system (tokens + components + stories + theme) |
-| `src/shell/` | App shell: AppNav, Landing, WorkspaceShell, TopBar, AppHeader, LeftNav, ChatPane, UserMenu, ProfilePage, modes, currentUser, conversationStore, diceNotation |
+| `src/shell/` | App shell: AppNav, Landing, WorkspaceShell, TopBar, AppHeader, LeftNav, NavSettings, ChatPane, UserMenu, ProfilePage, breakpoints, focusTrap, modes, currentUser, conversationStore, diceNotation |
 | `src/components/` | `SourceList` (legacy utility, still used by ChatPane) |
 | `src/api.ts` | Typed service client: chat, message history, attachments |
 | `src/useChat.ts` | Exchange state + history recall hook |

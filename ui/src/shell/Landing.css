@@ -4,7 +4,7 @@
    ─────────────────────────────────────────────────────────────────────────── */
 
 .landing {
-  min-height: 100vh;
+  min-height: 100dvh; /* LAYOUT-8: a phone's collapsing toolbar overflows 100vh */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -55,4 +55,29 @@
 .landing__cta-button,
 .landing__mode-chip {
   min-height: 44px;
+}
+
+/* ── Phone (agent-forge-harness-0rn) ─────────────────────────────────────────
+   One column under 600px: the card's actions — the CTA and the mode chips,
+   each of which enters the workspace — stack and span the card. The media
+   condition is PHONE_MEDIA (shell/breakpoints.ts); breakpoints.test.ts fails
+   any other spelling of it. */
+@media (width < 600px) {
+  .landing {
+    padding: var(--aether-gutter);
+  }
+
+  .landing__cta-button {
+    width: 100%;
+  }
+
+  .landing__modes {
+    flex-direction: column;
+  }
+
+  /* A column stretches each chip to the card's width; its icon and label
+     then centre in it, as the CTA's do. */
+  .landing__mode-chip {
+    justify-content: center;
+  }
 }
