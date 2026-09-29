@@ -16,6 +16,7 @@ pinned by `service/tests/test_ci_workflow.py`). Without it every test skips.
 from __future__ import annotations
 
 import itertools
+import json
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -349,3 +350,33 @@ def test_the_twin_pages_the_library_and_history_exactly_as_postgresql_does(
 
     assert postgres == in_memory
     assert sorted(i for page in postgres[:3] for i in page) == sorted(_IDS), "the Recent walk saw every row once"
+
+
+# ── Bead ssr (PR #173 review M-1): restoring a version this build refuses ────
+
+
+def test_restoring_a_damaged_version_is_document_unsupported_and_writes_nothing(dsn: str, owner: int) -> None:
+    """The chosen version fails the whole-document validation in the store:
+    `409 document_unsupported`, and the transaction that held the row appends
+    no version and changes neither the data nor the write revision."""
+    db, stores = _database(dsn), _stores()
+    made = _create(db, stores, owner)
+    later = NOW + timedelta(seconds=SEAL_IDLE_S)
+    moved = _patch(db, stores, owner, made.document_id, made.write_revision, {"voice": "low"}, later)
+    assert moved.version.number == 2
+    with connect(dsn) as conn:
+        conn.execute(
+            "UPDATE campaign.document_versions SET data = %s::jsonb WHERE document_id = %s AND number = 1",
+            (json.dumps({"name": "Mira", "secret_ally": "x"}), made.document_id),
+        )
+    with pytest.raises(HTTPException) as refused:
+        restore_document(db, stores, campaign_id=CAMPAIGN, document_id=made.document_id, owner_id=owner,
+                         version_number=1, now=later + timedelta(seconds=1))
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "document_unsupported"  # type: ignore[index]
+    assert _count(dsn, "SELECT count(*) FROM campaign.document_versions WHERE document_id = %s",
+                  (made.document_id,)) == 2
+    with connect(dsn) as conn:
+        stored = conn.execute("SELECT data, write_revision, updated_at FROM campaign.documents WHERE id = %s",
+                              (made.document_id,)).fetchone()
+    assert stored == ({"name": "Mira", "voice": "low"}, moved.write_revision, later)

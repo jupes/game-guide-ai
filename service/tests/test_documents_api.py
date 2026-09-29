@@ -45,6 +45,7 @@ from service.document_store import (
     InMemoryDocumentStore,
     StaleTypeVersion,
     UnknownWriteRevision,
+    _version_key,
 )
 from service.document_wire import encode_history_cursor, encode_library_cursor
 from service.session import SessionData
@@ -168,6 +169,13 @@ class _World:
     def revision(self, campaign: str) -> int | None:
         with self.db.transaction() as unit:
             return self.stores.campaigns.authz_revision(unit, campaign)
+
+    def damage_version(self, document: str, number: int, data: dict[str, Any]) -> None:
+        """Damage a stored version's content, as `inject` damages a document."""
+        table: Any = shared_rows(self.db, "document_versions")
+        key = _version_key(document, number)
+        with self.db.transaction() as unit:
+            table.replace(unit, key, replace(table.visible(unit)[key], data=data))
 
     def spy(self, **overrides: dict[str, Callable[..., Any]]) -> None:
         inner = self.stores
@@ -627,6 +635,28 @@ def test_restore_refuses_a_document_it_would_lose_a_key_of(client: TestClient, w
     assert len(_versions(client, campaign, document)) == 2
 
 
+def test_restoring_a_version_this_build_cannot_validate_is_document_unsupported(
+    client: TestClient, world: _World
+) -> None:
+    """Bead ssr (PR #173 review M-1). The chosen version fails the whole-document
+    validation: that is the stored content's defect, never the request's, so the
+    answer is `409 document_unsupported` (the brief's R7) and not a patch's 422
+    — and nothing is appended or changed."""
+    campaign = world.campaign()
+    document = world.document(campaign)
+    world.grow(campaign, document, 2)
+    world.damage_version(document, 1, {"name": "Mira", "secret_ally": CANARY})
+    before = world.record(campaign, document)
+    refused = _restore(client, campaign, document, 1)
+    assert (refused.status_code, refused.json()["detail"]) == (409, {
+        "code": "document_unsupported", "message": documents_api.UNSUPPORTED_MESSAGE, "retryable": False})
+    assert CANARY not in refused.text
+    after = world.record(campaign, document)
+    assert (after.data, after.write_revision, after.version, after.updated_at) == (
+        before.data, before.write_revision, before.version, before.updated_at)
+    assert len(_versions(client, campaign, document)) == 2, "no version appended"
+
+
 def test_seal_closes_the_open_version_once(client: TestClient, world: _World) -> None:
     campaign = world.campaign()
     made = _create(client, campaign).json()
@@ -690,6 +720,20 @@ def test_a_row_the_contract_cannot_carry_is_skipped_counted_and_paged_past(
             pages.append(_library(client, campaign, sort="name", limit=1, cursor=pages[-1].json()["next_cursor"]))
     assert [[i["document_id"] for i in p.json()["items"]] for p in pages] == [[first], [], [last], []]
     assert "1 library row(s) could not be listed" in caplog.text
+
+
+def test_a_library_query_without_a_limit_answers_twenty_five_rows(client: TestClient, world: _World) -> None:
+    """Bead ssr (PR #173 review M-2): LIB-23's twenty-five, the wire contract's
+    "default 25" — the page a client gets when it sends no `limit`."""
+    campaign = world.campaign()
+    for number in range(26):
+        world.document(campaign, data={"name": f"Npc {number:02d}"})
+    page = _library(client, campaign, sort="name")
+    assert page.status_code == 200, page.text
+    assert [item["title"] for item in page.json()["items"]] == [f"Npc {number:02d}" for number in range(25)]
+    assert page.json()["next_cursor"] is not None
+    rest = _library(client, campaign, sort="name", cursor=page.json()["next_cursor"]).json()
+    assert ([item["title"] for item in rest["items"]], rest["next_cursor"]) == (["Npc 25"], None)
 
 
 def test_a_library_cursor_of_another_campaign_or_a_deleted_anchor_is_a_422(
