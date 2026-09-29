@@ -100,6 +100,24 @@ def test_the_headers_are_exactly_sec_19s() -> None:
     partial = ms.byte_headers(ByteWindow(10, 10, partial=True), SIZE)
     assert (partial["content-range"], partial["content-length"]) == ("bytes 10-19/1000", "10")
     assert ms.unsatisfiable_headers(SIZE)["content-range"] == "bytes */1000"
+    # A part and a refusal are exactly as uncacheable as the whole (AC 21).
+    assert partial == {
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; sandbox",
+        "content-disposition": "inline",
+        "cache-control": "no-store",
+        "accept-ranges": "bytes",
+        "content-length": "10",
+        "content-range": "bytes 10-19/1000",
+    }
+    assert ms.unsatisfiable_headers(SIZE) == {
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; sandbox",
+        "content-disposition": "inline",
+        "cache-control": "no-store",
+        "accept-ranges": "bytes",
+        "content-range": "bytes */1000",
+    }
     for headers in (partial, ms.unsatisfiable_headers(SIZE)):
         assert not {"etag", "last-modified"} & set(headers)
         assert "filename" not in headers["content-disposition"]

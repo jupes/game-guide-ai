@@ -10,8 +10,11 @@ cannot pass while the request holds a gate permit: one probe would find the
 pool one short and time out. The twin has no permits, so this is PostgreSQL's.
 
 AC 23 on PostgreSQL: an asset that is not `ready` is the one 404 on the byte
-route. And the delete's one transaction on PostgreSQL: the tombstone, its job
-and its `asset.deleted` row commit together.
+route. The route's authorisation on PostgreSQL: another GM's `ready` asset, and
+the GM's own under another of their campaigns, are the same 404 on the read and
+on the delete, with no byte read, no job and no audit row. And the delete's one
+transaction on PostgreSQL: the tombstone, its job and its `asset.deleted` row
+commit together.
 
 Requires DATABASE_URL (CI sets it for this file, `.github/workflows/ci.yml`,
 pinned by `service/tests/test_ci_workflow.py`). Without it every test skips.
@@ -27,6 +30,7 @@ from typing import Any, cast
 import pytest
 from _pg import connect, needs_db, throwaway_database
 from fastapi.testclient import TestClient
+from httpx import Response
 
 from service import app as appmod
 from service import assets_api
@@ -42,9 +46,13 @@ from service.session import SessionData
 pytestmark = needs_db
 
 # justification: `cast(Any, ...)` hands the probing double to a Protocol-typed
-# parameter, and reads the unit's connection without narrowing its type.
+# parameter, and reads the unit's connection without narrowing its type;
+# `_shape`'s tuple holds a response's status, body and headers side by side.
 
 CAMPAIGN = "cmp_" + "s" * 22
+#: The same GM's second campaign, and another GM's.
+SECOND = "cmp_" + "t" * 22
+THEIRS = "cmp_" + "u" * 22
 T0 = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 #: `docs/migrations.md` section 5: the gate's permits and how long a request
 #: waits for one. The route's own database is built with exactly these.
@@ -159,31 +167,40 @@ def served(dsn: str, owner: int, monkeypatch: pytest.MonkeyPatch) -> Iterator[tu
         db.close()
 
 
-def _asset(db: Database, objects: Probing, owner: int, state: str) -> str:
-    """An image in `state`, made through the PostgreSQL store; its bytes in the
-    store once it is `ready`."""
+def _asset(db: Database, objects: Probing, owner: int, state: str, campaign: str = CAMPAIGN) -> str:
+    """An image in `state` in `campaign`, made through the PostgreSQL store; its
+    bytes in the store once it is `ready`."""
     assets = PostgresAssetStore(PostgresJobQueue(db))
     with db.transaction() as unit:
-        made = assets.create(unit, CAMPAIGN, owner_id=owner, kind="image", media_type="image/png",
+        made = assets.create(unit, campaign, owner_id=owner, kind="image", media_type="image/png",
                              size_bytes=len(IMAGE), alt="A test card", now=T0)
     if state == "uploading":
         return made.id
     with db.transaction() as unit:
-        assets.start_processing(unit, CAMPAIGN, made.id, owner_id=owner, now=T0)
+        assets.start_processing(unit, campaign, made.id, owner_id=owner, now=T0)
     if state == "processing":
         return made.id
     if state == "failed":
         with db.transaction() as unit:
-            assets.mark_failed(unit, CAMPAIGN, made.id, owner_id=owner, failure="unreadable", now=T0)
+            assets.mark_failed(unit, campaign, made.id, owner_id=owner, failure="unreadable", now=T0)
         return made.id
     objects.inner.put_stream(made.object_key, iter([IMAGE]), max_bytes=len(IMAGE))
     with db.transaction() as unit:
-        assets.mark_ready(unit, CAMPAIGN, made.id, owner_id=owner, measured=Measured("image/png", len(IMAGE), 40, 30),
+        assets.mark_ready(unit, campaign, made.id, owner_id=owner, measured=Measured("image/png", len(IMAGE), 40, 30),
                           now=T0)
     if state == "deleted":
         with db.transaction() as unit:
-            assets.delete(unit, CAMPAIGN, made.id, owner_id=owner, now=T0)
+            assets.delete(unit, campaign, made.id, owner_id=owner, now=T0)
     return made.id
+
+
+def _shape(response: Response) -> tuple[Any, ...]:
+    headers = tuple(sorted((k.lower(), v) for k, v in response.headers.items() if k.lower() != "date"))
+    return response.status_code, response.content, headers
+
+
+def _as(user_id: int) -> None:
+    app.dependency_overrides[require_session] = lambda: SessionData(user_id=user_id, role="dm")
 
 
 def test_no_connection_is_held_while_the_byte_route_moves_bytes(
@@ -212,6 +229,52 @@ def test_nothing_resolves_on_postgresql_unless_it_is_ready(
     assert missing.status_code == 404
     assert (answer.status_code, answer.content) == (missing.status_code, missing.content)
     assert objects.probes == 0, "no read ever reached the store"
+
+
+def test_another_gms_ready_asset_or_mine_under_my_other_campaign_is_the_one_404_on_postgresql(
+    served: tuple[Database, Probing, Driver], owner: int, dsn: str
+) -> None:
+    """The read's and the delete's authorisation is their one statement: the
+    caller's campaigns and the path's campaign, both in it. Every asset here is
+    `ready`, so no state check can stand in for the owner check."""
+    db, objects, driver = served
+    with connect(dsn) as conn:
+        other = int(conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES ('other-gm@example.com', 'x') RETURNING id"
+        ).fetchone()[0])
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Second'), (%s, %s, 'Theirs')",
+            (SECOND, owner, THEIRS, other),
+        )
+    mine = _asset(db, objects, owner, "ready")
+    theirs = _asset(db, objects, other, "ready", campaign=THEIRS)
+    cases = [
+        ("another GM's, asked by me", owner, THEIRS, theirs),
+        ("mine, asked by another GM", other, CAMPAIGN, mine),
+        ("mine, under my other campaign", owner, SECOND, mine),
+        ("theirs, under my campaign", owner, CAMPAIGN, theirs),
+    ]
+    client = TestClient(app)
+    for method in ("GET", "DELETE"):
+        for label, caller, campaign, asset in cases:
+            _as(caller)
+            reference = _shape(client.request(method, f"/campaigns/{campaign}/assets/ast_{'q' * 22}"))
+            assert reference[0] == 404
+            assert _shape(client.request(method, f"/campaigns/{campaign}/assets/{asset}")) == reference, (
+                label, method)
+    assert objects.probes == 0, "no read ever reached the store"
+    assert driver.ran == [], "no delete job was handed on"
+    with connect(dsn) as conn:
+        states = dict(conn.execute("SELECT id, state FROM campaign.assets").fetchall())
+        jobs = conn.execute("SELECT count(*) FROM app.jobs WHERE kind = %s", (DELETE_JOB,)).fetchone()[0]
+        audit = conn.execute("SELECT count(*) FROM audit.events WHERE action = 'asset.deleted'").fetchone()[0]
+    assert (states, jobs, audit) == ({mine: "ready", theirs: "ready"}, 0, 0)
+    # Asked by its owner under its own campaign, each is served: the refusals
+    # above were the owner and campaign checks, not a route that serves nothing.
+    for caller, campaign, asset in ((owner, CAMPAIGN, mine), (other, THEIRS, theirs)):
+        _as(caller)
+        answer = client.get(f"/campaigns/{campaign}/assets/{asset}")
+        assert (answer.status_code, answer.content == IMAGE) == (200, True)
 
 
 def test_a_delete_commits_its_tombstone_job_and_audit_row_together(

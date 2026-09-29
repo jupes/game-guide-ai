@@ -312,6 +312,11 @@ def test_a_range_is_206_and_a_range_past_the_end_is_416(client: TestClient, worl
     assert (first.status_code, first.content) == (206, IMAGE[:100])
     assert (first.headers["content-range"], first.headers["content-length"]) == (f"bytes 0-99/{size}", "100")
     assert first.headers.get_list("content-security-policy") == [POLICY]
+    # A part carries exactly the whole's policy: nothing may cache it (AC 21).
+    assert (first.headers["content-type"], first.headers["cache-control"]) == ("image/png", "no-store")
+    assert (first.headers["x-content-type-options"], first.headers["content-disposition"]) == ("nosniff", "inline")
+    assert first.headers["accept-ranges"] == "bytes"
+    assert "etag" not in first.headers and "last-modified" not in first.headers
     last = client.get(_path(campaign, asset), headers={"range": f"bytes={size - 1}-{size - 1}"})
     assert (last.status_code, last.content) == (206, IMAGE[-1:])
     tail = client.get(_path(campaign, asset), headers={"range": f"bytes={size - 300_000}-"})
