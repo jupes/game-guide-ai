@@ -119,6 +119,13 @@ PROTECTED_ROUTES: list[Route] = [
      {"schema_version": 1, "version_number": 1}),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/seal",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/seal", None),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/archive",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/archive", None),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unarchive",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/unarchive", None),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/delete",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/delete",
+     {"schema_version": 1, "password": "password123"}),
 ]
 
 #: Deliberately unguarded, and asserted so that a blanket "guard everything"

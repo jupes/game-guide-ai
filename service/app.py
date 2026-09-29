@@ -36,6 +36,7 @@ from ingestion.retrieval import EmbeddingUnavailableError
 from . import (
     campaigns_api,
     conversations_api,
+    document_lifecycle_api,
     documents_api,
     gcp_logging,
     job_driver,
@@ -1577,16 +1578,18 @@ def _job_queue() -> PostgresJobQueue | None:
 
 
 #: The Workbench envelope of the auth throttle's 429 and of a hashing outage,
-#: for the one Workbench route that checks a password (Remove, SEC-40).
+#: for the Workbench routes that check a password (a seat's Remove and a
+#: document's delete, SEC-40).
 REAUTH_THROTTLED_MESSAGE = "Too many attempts. Wait, then try again."
 REAUTH_BUSY_MESSAGE = "That can't be checked right now. Try again."
 
 
 def reauthenticator(request: Request, store: AuthStore = Depends(get_auth_store)) -> Callable[[str], None]:
-    """Remove's re-authentication (SEC-40), as a dependency: it hands the route
-    a `check(password)` bound to this request's account and auth store. The
-    store is the one `require_session` already resolved for this request, so
-    declaring it here adds no lookup and no outage path of its own."""
+    """The re-authentication of a seat's Remove and a document's delete
+    (SEC-40), as a dependency: it hands the route a `check(password)` bound to
+    this request's account and auth store. The store is the one
+    `require_session` already resolved for this request, so declaring it here
+    adds no lookup and no outage path of its own."""
 
     def check(password: str) -> None:
         reauthenticate(request, store, password)
@@ -1596,8 +1599,8 @@ def reauthenticator(request: Request, store: AuthStore = Depends(get_auth_store)
 
 def reauthenticate(request: Request, store: AuthStore, password: str) -> None:
     """SEC-40: the password of the account this request signed in as, checked
-    again before a Remove — BEFORE any transaction opens, because argon2 never
-    runs while a lock is held (bead 1kg.2.2, L-12).
+    again before a Remove or a document delete — BEFORE any transaction
+    opens, because argon2 never runs while a lock is held (bead 1kg.2.2, L-12).
 
     In order: the auth attempt budget (`_throttle_auth`), whose legacy 429 is
     answered in the Workbench envelope with both of its headers; the
@@ -1653,6 +1656,7 @@ app.include_router(
 )
 app.include_router(seats_api.build_router(require_session, get_timeline_database))
 app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
+app.include_router(document_lifecycle_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator))
 
 
 app.include_router(job_driver.build_router(_job_driver))

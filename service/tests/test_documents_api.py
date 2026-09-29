@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import functools
 import itertools
 import json
 import logging
@@ -34,9 +35,14 @@ from fastapi import HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from httpx import Response
+from pydantic import ValidationError
 
-from service import documents_api
-from service.app import app, get_timeline_database, require_session
+import config
+from service import app as appmod
+from service import document_lifecycle_api, documents_api
+from service.app import app, get_auth_store, get_timeline_database, require_session
+from service.audit_log import AuditEvent, InMemoryAuditLog
+from service.auth_store import InMemoryAuthStore, User
 from service.campaign_store import InMemoryCampaignStore, MissingParent, shared_rows
 from service.db import InMemoryDatabase, InMemoryTransaction
 from service.document_store import (
@@ -48,15 +54,25 @@ from service.document_store import (
     _version_key,
 )
 from service.document_wire import encode_history_cursor, encode_library_cursor
+from service.hashing import HashingCapacityError, hash_password
+from service.ratelimit import RateLimited
 from service.session import SessionData
-from service.workbench_api import FORBIDDEN_ORIGIN_DETAIL, FORBIDDEN_ROLE_DETAIL, NOT_FOUND_DETAIL
+from service.table_session_store import InMemoryTableSessionStore, TableSession, no_slots
+from service.workbench_api import (
+    FORBIDDEN_ORIGIN_DETAIL,
+    FORBIDDEN_ROLE_DETAIL,
+    NOT_FOUND_DETAIL,
+    REAUTH_FAILED_DETAIL,
+)
 from service.workbench_contracts import (
     INTEGER_FIELD_MIN,
     Author,
     Document,
+    DocumentDeleteRequest,
     DocumentHistoryPage,
     DocumentTypeId,
     DocumentVersionSnapshot,
+    ErrorBody,
     LibraryPage,
 )
 
@@ -900,7 +916,7 @@ def test_no_private_text_reaches_a_refusal_or_a_log_line(
 
 def test_the_openapi_of_the_document_routes_names_no_owner() -> None:
     paths = {path: item for path, item in app.openapi()["paths"].items() if "/documents" in path or "/library" in path}
-    assert len(paths) == 7
+    assert len(paths) == 10
     text = json.dumps(paths)
     assert "owner_id" not in text and "password" not in text
 
@@ -999,3 +1015,505 @@ def test_the_stores_named_refusals_are_answered_and_roll_back(
     assert (answer.status_code, answer.json()["detail"]["code"], answer.json()["detail"].get("field")) == (
         status, code, field)
     assert world.record(campaign, made["document_id"]).write_revision == made["write_revision"]
+
+
+# ── PR-B: archive, unarchive and delete (R9 to R11; bead 1kg.5.8) ───────────
+# Who waits for the campaign lock, and RC-15's "not applied yet" under a held
+# one, are `tests/test_documents_api_db.py`'s. What a client observes is here.
+
+PASSWORD = {GM_A: "correct horse battery", GM_B: "another good passphrase"}
+EMAIL = {GM_A: "gm.a@example.com", GM_B: "gm.b@example.com", PLAYER: "wren@example.com"}
+
+
+@functools.cache
+def _hash(user_id: int) -> str:
+    return hash_password(PASSWORD[user_id])
+
+
+# justification: as `_Wrapped`, a stand-in for a Protocol it does not name.
+class _Traced:
+    """A lifecycle store that records every call as (unit, "kind.method",
+    owner_id, the campaign locks the unit held at that moment), and lets a test
+    replace one method."""
+
+    def __init__(self, inner: Any, kind: str, calls: list[tuple[int, str, Any, tuple[Any, ...]]],
+                 overrides: dict[str, Callable[..., Any]] | None = None) -> None:
+        self._inner, self._kind, self._calls = inner, kind, calls
+        self._overrides = overrides or {}
+
+    def __getattr__(self, name: str) -> Any:
+        target = getattr(self._inner, name)
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            unit = args[0] if args else None
+            held = tuple(getattr(unit, "campaign_locks", ()))
+            self._calls.append((id(unit), f"{self._kind}.{name}", kwargs.get("owner_id"), held))
+            if name in self._overrides:
+                return self._overrides[name](target, *args, **kwargs)
+            return target(*args, **kwargs)
+
+        return call
+
+
+@dataclass
+class _Life:
+    world: _World
+    stores: document_lifecycle_api.LifecycleStores
+    auth: InMemoryAuthStore
+    calls: list[tuple[int, str, Any, tuple[Any, ...]]] = field(default_factory=list)
+
+    def session(self, campaign: str, owner: int = GM_A) -> TableSession:
+        with self.world.db.transaction() as unit:
+            return self.stores.sessions.start(unit, campaign, owner_id=owner, expires_at=T0 + timedelta(hours=12),
+                                              command_id=_command(), now=T0)
+
+    def epoch(self, session_id: str) -> int:
+        with self.world.db.transaction() as unit:
+            found = self.stores.sessions.get(unit, session_id)
+        assert found is not None
+        return found.reveal_epoch
+
+    def ledger(self, campaign: str) -> list[AuditEvent]:
+        with self.world.db.transaction() as unit:
+            return self.stores.audit.for_campaign(unit, campaign)
+
+    def archived(self, campaign: str, document: str) -> bool:
+        return self.world.record(campaign, document).is_archived
+
+    def archive(self, campaign: str, document: str) -> None:
+        """Archive through the store, as another tab's archive left it."""
+        with self.world.db.transaction() as unit:
+            assert self.world.stores.documents.set_archived(unit, campaign, document, archived=True, now=T0)
+
+    def spy(self, **overrides: dict[str, Callable[..., Any]]) -> None:
+        inner = self.stores
+        self.stores = document_lifecycle_api.LifecycleStores(*(
+            cast(Any, _Traced(getattr(inner, kind), kind, self.calls, overrides.get(kind)))
+            for kind in ("campaigns", "documents", "sessions", "audit")
+        ))
+
+
+def _account(user_id: int, role: str = "dm") -> None:
+    """`_as`, with the account stashed on the request as `require_session`
+    stashes it — what the delete's password check reads."""
+
+    def session(request: Request) -> SessionData:
+        request.state.auth_user = User(id=user_id, email=EMAIL.get(user_id, "x@example.com"), role=cast(Any, role),
+                                       created_at=T0)
+        return SessionData(user_id=user_id, role=cast(Any, role))
+
+    app.dependency_overrides[require_session] = session
+
+
+@pytest.fixture
+def life(world: _World) -> Iterator[_Life]:
+    auth = InMemoryAuthStore()
+    for user_id in (GM_A, GM_B):
+        auth._users.append(User(id=user_id, email=EMAIL[user_id], role="dm", created_at=T0))
+        auth._hashes[user_id] = _hash(user_id)
+    made = _Life(world, document_lifecycle_api.LifecycleStores(
+        world.stores.campaigns, world.stores.documents, InMemoryTableSessionStore(world.db, slot_clear=no_slots),
+        InMemoryAuditLog(),
+    ), auth)
+    app.dependency_overrides[document_lifecycle_api.get_lifecycle_stores] = lambda: made.stores
+    app.dependency_overrides[get_auth_store] = lambda: made.auth
+    _account(GM_A)
+    yield made
+    for dependency in (document_lifecycle_api.get_lifecycle_stores, get_auth_store):
+        app.dependency_overrides.pop(dependency, None)
+
+
+def _archive(client: TestClient, campaign: str, document: str) -> Response:
+    return client.post(_doc(campaign, document, "/archive"))
+
+
+def _unarchive(client: TestClient, campaign: str, document: str) -> Response:
+    return client.post(_doc(campaign, document, "/unarchive"))
+
+
+def _delete(client: TestClient, campaign: str, document: str, password: str = PASSWORD[GM_A]) -> Response:
+    return client.post(_doc(campaign, document, "/delete"), json={"schema_version": 1, "password": password})
+
+
+def _lifecycle(campaign: str, document: str) -> list[tuple[str, str, Any]]:
+    """R9 to R11, each with a body valid for it."""
+    return [
+        ("POST", _doc(campaign, document, "/archive"), None),
+        ("POST", _doc(campaign, document, "/unarchive"), None),
+        ("POST", _doc(campaign, document, "/delete"), {"schema_version": 1, "password": PASSWORD[GM_A]}),
+    ]
+
+
+def _trail(rows: list[AuditEvent]) -> list[tuple[Any, ...]]:
+    return [(r.action, r.object_ref, dict(r.detail), r.authz_revision) for r in rows]
+
+
+# A-1, for R9 to R11
+
+
+def test_the_lifecycle_routes_answer_the_scaffoldings_401_403_and_503(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    campaign = world.campaign()
+    document = world.document(campaign)
+    life.archive(campaign, document)
+    routes = _lifecycle(campaign, document)
+    _account(PLAYER, "player")
+    for method, path, body in routes:
+        answer = _send(client, method, path, body)
+        assert (answer.status_code, answer.json()) == (403, {"detail": dict(FORBIDDEN_ROLE_DETAIL)}), path
+    _account(GM_A)
+    for method, path, body in routes:
+        refused = _send(client, method, path, body, headers={"origin": "https://evil.example"})
+        assert (refused.status_code, refused.json()) == (403, {"detail": dict(FORBIDDEN_ORIGIN_DETAIL)}), path
+    _signed_out()
+    for method, path, body in routes:
+        assert _send(client, method, path, body).json() == UNAUTHENTICATED, path
+    _account(GM_A)
+    app.dependency_overrides[get_timeline_database] = lambda: None
+    for method, path, body in routes:
+        answer = _send(client, method, path, body)
+        assert (answer.status_code, answer.json()["detail"]["code"]) == (503, "backend_unavailable"), path
+        assert answer.json()["detail"]["retryable"] is True
+    app.dependency_overrides[get_timeline_database] = lambda: world.db
+    assert life.archived(campaign, document) and life.ledger(campaign) == [], "no refusal changed anything"
+
+
+def test_a_delete_body_is_read_first_and_echoes_nothing(client: TestClient, world: _World, life: _Life) -> None:
+    """B-6 through the route: the body before the database and before the
+    password, and a 422 that repeats none of it."""
+    campaign = world.campaign()
+    document = world.document(campaign)
+    life.archive(campaign, document)
+    opened = len(world.db.units)
+    app.dependency_overrides[get_timeline_database] = lambda: None
+    for body in ({"schema_version": 1, "password": CANARY, "document_id": document}, {"schema_version": 1},
+                 {"schema_version": 1, "password": ""}, {"schema_version": 1, "password": 1234}):
+        refused = client.post(_doc(campaign, document, "/delete"), json=body)
+        assert (refused.status_code, refused.json()["detail"]["code"]) == (422, "validation_failed"), body
+        assert CANARY not in refused.text and document not in refused.text
+    malformed = client.post(_doc(campaign, document, "/delete"), headers={"content-type": "application/json"},
+                            content=b'{"schema_version": 1, "password": "' + CANARY.encode() + b'", ')
+    assert malformed.status_code == 422 and CANARY not in malformed.text
+    app.dependency_overrides[get_timeline_database] = lambda: world.db
+    assert len(world.db.units) == opened and life.archived(campaign, document)
+
+
+def test_the_delete_request_is_write_only_and_hidden_from_repr() -> None:
+    """B-6: `SeatRemoveRequest`'s field, with its own model and fixture file."""
+    request = DocumentDeleteRequest.model_validate({"schema_version": 1, "password": CANARY})
+    assert CANARY not in repr(request) and CANARY not in str(request)
+    assert request.password.get_secret_value() == CANARY
+    assert DocumentDeleteRequest.model_json_schema()["properties"]["password"]["writeOnly"] is True
+    with pytest.raises(ValidationError) as refused:
+        DocumentDeleteRequest.model_validate({"schema_version": 1, "password": CANARY, "extra": CANARY})
+    assert CANARY not in str(refused.value)
+    fixture = json.loads((REPO_ROOT / "contracts" / "workbench" / "v1" / "DocumentDeleteRequest.json").read_text(
+        encoding="utf-8"))
+    assert fixture["schema"] == "DocumentDeleteRequest" and fixture["valid"] and fixture["invalid"]
+
+
+# B-1 and B-2: archive and unarchive
+
+
+def test_archive_narrows_without_the_lock_then_archives_once_under_it(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    campaign = world.campaign()
+    document, other = world.document(campaign), world.document(campaign)
+    session = life.session(campaign)
+    opened = len(world.db.units)
+    answer = _archive(client, campaign, document)
+    assert (answer.status_code, answer.content) == (204, b"")
+    step_one, step_two = world.db.units[opened:]
+    assert step_one.campaign_locks == [], "step one never takes the campaign lock"
+    assert step_two.campaign_locks == [(campaign, "exclusive")], "step two takes it, exclusively, as its first lock"
+    assert life.archived(campaign, document)
+    assert world.revision(campaign) == 1
+    assert life.epoch(session.id) == session.reveal_epoch + 2, "narrowed in step one, and again under the lock"
+    assert _trail(life.ledger(campaign)) == [("document.archived", document, {"document_id": document}, 1)]
+
+    again = _archive(client, campaign, document)
+    assert again.status_code == 204
+    assert (world.revision(campaign), len(life.ledger(campaign))) == (1, 1), "no second row, no advance"
+    assert life.epoch(session.id) == session.reveal_epoch + 2, "an archived document narrows nothing"
+
+    document_lifecycle_api.archive_step_one(world.db, life.stores, campaign_id=campaign, document_id=other,
+                                            owner_id=GM_A)
+    assert life.epoch(session.id) == session.reveal_epoch + 3, "step one alone has stopped the display"
+    assert not life.archived(campaign, other) and world.revision(campaign) == 1
+
+
+def test_unarchive_takes_the_lock_only_for_an_archived_document(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    campaign = world.campaign()
+    document = world.document(campaign)
+    session = life.session(campaign)
+    opened = len(world.db.units)
+    assert _unarchive(client, campaign, document).status_code == 204
+    (only,) = world.db.units[opened:]
+    assert only.campaign_locks == [], "a document that is not archived takes no lock"
+    assert (world.revision(campaign), life.ledger(campaign)) == (0, [])
+    life.archive(campaign, document)
+    opened = len(world.db.units)
+    answer = _unarchive(client, campaign, document)
+    assert (answer.status_code, answer.content) == (204, b"")
+    (only,) = world.db.units[opened:]
+    assert only.campaign_locks == [(campaign, "exclusive")]
+    assert not life.archived(campaign, document)
+    assert world.revision(campaign) == 1
+    assert _trail(life.ledger(campaign)) == [("document.unarchived", document, {"document_id": document}, 1)]
+    assert life.epoch(session.id) == session.reveal_epoch, "a widening narrows nothing"
+
+
+# B-3: delete, behind the password and the Archived filter
+
+
+def test_delete_asks_for_the_password_first_and_takes_only_an_archived_document(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    mine, theirs = world.campaign(), world.campaign(GM_B)
+    document, foreign = world.document(mine), world.document(theirs)
+    world.grow(mine, document, 3)
+    session = life.session(mine)
+
+    opened = len(world.db.units)
+    wrong = _delete(client, mine, document, password="wrong " + CANARY)
+    assert (wrong.status_code, wrong.json()) == (403, {"detail": dict(REAUTH_FAILED_DETAIL)})
+    assert CANARY not in wrong.text
+    assert len(world.db.units) == opened, "no transaction opens before the password checks out"
+
+    live = _delete(client, mine, document)
+    assert (live.status_code, live.json()) == (409, {"detail": {
+        "code": "document_not_archived", "message": document_lifecycle_api.NOT_ARCHIVED_MESSAGE,
+        "retryable": False}})
+    assert life.epoch(session.id) == session.reveal_epoch, "refused before anything narrows"
+    assert (world.revision(mine), life.ledger(mine)) == (0, [])
+    assert world.record(mine, document).version.number == 3
+
+    life.archive(mine, document)
+    deleted = _delete(client, mine, document)
+    assert (deleted.status_code, deleted.content) == (204, b"")
+    with world.db.transaction() as unit:
+        assert world.stores.documents.get(unit, mine, document) is None
+    for path in (_doc(mine, document), _doc(mine, document, "/versions"), _doc(mine, document, "/versions/1")):
+        assert client.get(path).json() == NOT_FOUND, path
+    assert world.revision(mine) == 1
+    assert _trail(life.ledger(mine)) == [("document.deleted", document, {"document_id": document}, 1)]
+    assert life.epoch(session.id) == session.reveal_epoch + 2, "narrowed in each step"
+
+    assert _delete(client, mine, document).json() == NOT_FOUND, "a deleted document is a missing one"
+    life.archive(theirs, foreign)
+    assert _delete(client, theirs, foreign).json() == NOT_FOUND, "the caller's right password, another GM's document"
+    assert world.record(theirs, foreign).is_archived
+
+
+def test_the_password_check_answers_the_throttle_and_a_hashing_outage_in_the_envelope(
+    client: TestClient, world: _World, life: _Life, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = world.campaign()
+    document = world.document(campaign)
+    life.archive(campaign, document)
+    opened = len(world.db.units)
+
+    def throttle(request: object, account: str) -> None:
+        raise RateLimited(42)
+
+    monkeypatch.setattr(appmod, "check_auth_attempt", throttle)
+    throttled = _delete(client, campaign, document)
+    body = ErrorBody.model_validate(throttled.json())
+    assert throttled.status_code == 429 and body.detail.code.value == "throttled_user" and body.detail.retryable
+    assert body.detail.retry_after_s == 42 and throttled.headers["retry-after"] == "42"
+    assert throttled.headers["x-auth-throttled"] == "1"
+    monkeypatch.undo()
+
+    def busy(stored: str, password: str) -> bool:
+        raise HashingCapacityError("busy")
+
+    monkeypatch.setattr(appmod, "verify_password", busy)
+    shed = _delete(client, campaign, document)
+    assert (shed.status_code, shed.json()["detail"]["code"]) == (503, "backend_unavailable")
+    monkeypatch.undo()
+    assert len(world.db.units) == opened and life.archived(campaign, document), "nothing opened, nothing deleted"
+
+
+def test_the_eleventh_delete_in_a_window_is_throttled_like_a_login_and_deletes_nothing(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    """Critic item 14: the password spends the login budget —
+    `AUTH_RATE_LIMIT_PER_ACCOUNT` (10) a `AUTH_RATE_LIMIT_WINDOW_S` (300 s),
+    right or wrong — so the eleventh delete in five minutes is a `429`, before
+    any transaction. `1kg.6.4`'s delete dialog is told so."""
+    campaign = world.campaign()
+    budget = config.AUTH_RATE_LIMIT_PER_ACCOUNT
+    documents = [world.document(campaign, data={"name": f"Doc {n}"}) for n in range(budget + 1)]
+    for document in documents:
+        life.archive(campaign, document)
+    for document in documents[:budget]:
+        assert _delete(client, campaign, document).status_code == 204
+    opened = len(world.db.units)
+    last = _delete(client, campaign, documents[-1])
+    assert (last.status_code, last.json()["detail"]["code"]) == (429, "throttled_user")
+    assert len(world.db.units) == opened and life.archived(campaign, documents[-1])
+
+
+# B-4 and B-5
+
+
+def test_a_stored_document_this_build_cannot_render_is_still_archived_and_deleted(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    """I-12: the lifecycle answers 204 and never builds a `Document`."""
+    campaign = world.campaign()
+    for damage in ({"data": {"name": "Mira", "secret_ally": CANARY}}, {"type_version": 2}):
+        document = world.document(campaign)
+        world.inject(document, **damage)
+        unwritable = _patch(client, campaign, document, 1, {"voice": "low"})
+        assert unwritable.json()["detail"]["code"] == "document_unsupported", damage
+        for answer in (_archive(client, campaign, document), _unarchive(client, campaign, document),
+                       _archive(client, campaign, document), _delete(client, campaign, document)):
+            assert (answer.status_code, answer.content) == (204, b""), damage
+        assert client.get(_doc(campaign, document)).json() == NOT_FOUND
+
+
+def test_every_lifecycle_audit_row_names_the_document_by_id_and_nothing_else(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    campaign = world.campaign()
+    document = world.document(campaign, data={"name": CANARY, "qualifier": CANARY, "voice": CANARY,
+                                              "tags": [CANARY]})
+    for answer in (_archive(client, campaign, document), _unarchive(client, campaign, document),
+                   _archive(client, campaign, document), _delete(client, campaign, document)):
+        assert answer.status_code == 204
+    rows = life.ledger(campaign)
+    assert [(r.action, r.authz_revision) for r in rows] == [
+        ("document.archived", 1), ("document.unarchived", 2), ("document.archived", 3), ("document.deleted", 4)]
+    for row in rows:
+        assert (row.campaign_id_tombstone, row.actor_kind, row.actor_ref, row.object_kind, row.object_ref,
+                row.decision, row.reason_code) == (campaign, "gm", str(GM_A), "document", document, "allowed", None)
+        assert dict(row.detail) == {"document_id": document}
+        assert CANARY.lower() not in (repr(row) + json.dumps(dict(row.detail))).lower()
+
+
+# A-18, for R9 to R11: the one 404, and ownership first
+
+
+def test_every_lifecycle_route_answers_the_one_404_for_whatever_is_not_the_callers(
+    client: TestClient, world: _World, life: _Life, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each foreign document is tried first as it is — not archived, which is
+    what provokes the owner's `409 document_not_archived` — and then archived.
+    The attempt budget is the password tests'; this matrix sends more deletes
+    than one window allows, so it is set aside here."""
+    monkeypatch.setattr(appmod, "check_auth_attempt", lambda request, account: None)
+    mine, second, theirs = world.campaign(), world.campaign(name="Second"), world.campaign(GM_B)
+    elsewhere, foreign = world.document(second), world.document(theirs)
+    reference = _shape(client.get(_doc(mine, MISSING_DOC)))
+    cases = [(theirs, foreign), (mine, foreign), (mine, elsewhere), (mine, MISSING_DOC), ("cmp_bad", "doc_bad"),
+             (MISSING_CAMPAIGN, foreign), (mine, "doc_bad")]
+    for archived in (False, True):
+        for campaign, document in cases:
+            for method, path, body in _lifecycle(campaign, document):
+                assert _shape(_send(client, method, path, body)) == reference, (archived, method, path)
+        if not archived:
+            life.archive(theirs, foreign)
+            life.archive(second, elsewhere)
+    assert world.record(theirs, foreign).is_archived and life.ledger(theirs) == [] and world.revision(theirs) == 0
+    assert world.record(second, elsewhere).is_archived and life.ledger(second) == []
+
+
+def test_every_lifecycle_transaction_reads_ownership_first_and_under_the_lock_in_step_two(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    """M-A18b and critic item 16: the first store call of every transaction is
+    the ownership read with the caller in it; in step two it is made with the
+    exclusive lock already held, so step two never trusts step one's read."""
+    campaign = world.campaign()
+    kept, idle, gone = world.document(campaign), world.document(campaign), world.document(campaign)
+    life.session(campaign)
+    life.spy()
+    for answer in (_archive(client, campaign, kept), _unarchive(client, campaign, kept),
+                   _unarchive(client, campaign, idle), _archive(client, campaign, gone),
+                   _delete(client, campaign, gone)):
+        assert answer.status_code == 204
+    firsts: dict[int, tuple[str, Any, tuple[Any, ...]]] = {}
+    for unit, call, owner, held in life.calls:
+        firsts.setdefault(unit, (call, owner, held))
+    assert len(firsts) == 8
+    assert {(call, owner) for call, owner, _ in firsts.values()} == {("campaigns.get", GM_A)}
+    assert [held for _, _, held in firsts.values() if held] == [((campaign, "exclusive"),)] * 3, (
+        "archive's and delete's step two read ownership under the lock")
+
+
+def test_a_document_or_campaign_gone_between_reads_is_the_one_404(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    """Critic item 5 for step one's unlocked read, and a campaign whose
+    authorisation row is gone by step two's lock: both the one 404, never a 500."""
+    campaign = world.campaign()
+    document = world.document(campaign)
+    life.archive(campaign, document)
+    reference = _shape(client.get(_doc(campaign, MISSING_DOC)))
+    world.db.authz_state.pop(campaign)
+    for method, path, body in _lifecycle(campaign, document):
+        assert _shape(_send(client, method, path, body)) == reference, path
+    assert life.archived(campaign, document)
+
+    def gone(real: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        raise MissingParent("that document has no version")
+
+    life.spy(documents={"get": gone})
+    for method, path, body in _lifecycle(campaign, document):
+        assert _shape(_send(client, method, path, body)) == reference, path
+
+
+# A-21 and A-22, for R9 to R11
+
+
+def test_no_private_text_reaches_a_lifecycle_refusal_or_a_log_line(
+    client: TestClient, world: _World, life: _Life, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    campaign = world.campaign()
+    document = world.document(campaign, data={"name": CANARY, "voice": CANARY, "notes": CANARY})
+    refusals = [
+        _delete(client, campaign, document, password=CANARY),
+        _delete(client, campaign, document),
+        client.post(_doc(campaign, document, "/delete"), json={"schema_version": 1, "password": CANARY,
+                                                               CANARY: CANARY}),
+        client.post(_doc(campaign, document, "/delete"), headers={"content-type": "application/json"},
+                    content=b'{"password": "' + CANARY.encode() + b'", '),
+        _delete(client, campaign, MISSING_DOC, password=CANARY),
+    ]
+    assert [r.status_code for r in refusals] == [403, 409, 422, 422, 403]
+
+    def outage(real: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        raise psycopg.OperationalError(f"server said {CANARY}")
+
+    life.archive(campaign, document)
+    life.spy(documents={"get": outage})
+    outages = [_archive(client, campaign, document), _unarchive(client, campaign, document),
+               _delete(client, campaign, document)]
+    assert [r.status_code for r in outages] == [503, 503, 503]
+    for answer in [*refusals, *outages]:
+        assert CANARY.lower() not in answer.text.lower()
+    ours = [r for r in caplog.records if r.name.startswith("service")]
+    assert any(r.name == "service.document_lifecycle_api" for r in ours), "the outages were logged"
+    assert all(CANARY.lower() not in r.getMessage().lower() for r in ours)
+    assert "OperationalError" in caplog.text
+    assert life.ledger(campaign) == []
+
+
+def test_the_openapi_of_the_lifecycle_routes_names_no_password_and_no_owner() -> None:
+    paths = {path: item for path, item in app.openapi()["paths"].items()
+             if path.endswith(("/archive", "/unarchive", "/delete")) and "/documents/" in path}
+    assert sorted(paths) == [
+        "/campaigns/{campaign_id}/documents/{document_id}/archive",
+        "/campaigns/{campaign_id}/documents/{document_id}/delete",
+        "/campaigns/{campaign_id}/documents/{document_id}/unarchive",
+    ]
+    for item in paths.values():
+        assert set(item) == {"post"} and "204" in item["post"]["responses"]
+    text = json.dumps(paths)
+    assert "owner_id" not in text and "password" not in text

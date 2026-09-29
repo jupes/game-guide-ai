@@ -30,19 +30,35 @@ from fastapi import HTTPException
 
 from service import campaign_identity as ident
 from service import migrations as mig
+from service.audit_log import PostgresAuditLog
 from service.campaign_store import InMemoryCampaignStore, PostgresCampaignStore
 from service.db import CampaignLockSettings, Database, InMemoryDatabase, PoolSettings
+from service.document_lifecycle_api import (
+    NOT_APPLIED_MESSAGE,
+    LifecycleStores,
+    archive_document,
+    archive_step_one,
+    archive_step_two,
+    delete_document,
+    delete_step_one,
+    delete_step_two,
+    guarded,
+    unarchive_document,
+)
 from service.document_store import SEAL_IDLE_S, InMemoryDocumentStore, PostgresDocumentStore
 from service.document_wire import decode_history_cursor, decode_library_cursor
 from service.documents_api import (
+    UNAVAILABLE_MESSAGE,
     DocumentStores,
     create_document,
     patch_document,
     query_library,
     read_history,
+    read_snapshot,
     restore_document,
     seal_document,
 )
+from service.table_session_store import PostgresTableSessionStore, TableSession, no_slots
 from service.workbench_contracts import (
     Document,
     DocumentCreateRequest,
@@ -380,3 +396,158 @@ def test_restoring_a_damaged_version_is_document_unsupported_and_writes_nothing(
         stored = conn.execute("SELECT data, write_revision, updated_at FROM campaign.documents WHERE id = %s",
                               (made.document_id,)).fetchone()
     assert stored == ({"name": "Mira", "voice": "low"}, moved.write_revision, later)
+
+
+# ── PR-B (bead 1kg.5.8): archive, unarchive and delete under the campaign lock ─
+# RC-15 (the shared ADR, section 9.1): step one narrows and commits without the
+# lock; step two, unable to have it in time, answers "not applied yet" — and the
+# display is already stopped. Each race holds the lock on a third connection and
+# asks the server, not a clock, whether step two is really waiting.
+
+
+def _lifecycle_stores() -> LifecycleStores:
+    return LifecycleStores(PostgresCampaignStore(), PostgresDocumentStore(),
+                           PostgresTableSessionStore(slot_clear=no_slots), PostgresAuditLog())
+
+
+def _live_session(db: Database, owner: int) -> TableSession:
+    """`TableSessionStore.start` through this one place (the brief's P-9)."""
+    with db.transaction() as unit:
+        return PostgresTableSessionStore(slot_clear=no_slots).start(
+            unit, CAMPAIGN, owner_id=owner, expires_at=datetime.now(UTC) + timedelta(hours=12),
+            command_id=_command(),
+        )
+
+
+def _holding_the_campaign(dsn: str) -> Any:
+    return _holding(dsn, "SELECT 1 FROM campaign.authz_state WHERE campaign_id = %s FOR UPDATE", (CAMPAIGN,))
+
+
+def _epoch(dsn: str, session: TableSession) -> int:
+    return _count(dsn, "SELECT reveal_epoch FROM campaign.table_sessions WHERE id = %s", (session.id,))
+
+
+def _revision(dsn: str) -> int:
+    return _count(dsn, "SELECT authz_revision FROM campaign.authz_state WHERE campaign_id = %s", (CAMPAIGN,))
+
+
+def _archived(db: Any, document: str) -> None:
+    """Archived, as another tab's archive left it."""
+    with db.transaction() as unit:
+        assert PostgresDocumentStore().set_archived(unit, CAMPAIGN, document, archived=True, now=NOW)
+
+
+def _not_applied(work: Callable[[], object]) -> None:
+    with pytest.raises(HTTPException) as refused:
+        work()
+    assert refused.value.status_code == 503
+    assert refused.value.detail == {  # type: ignore[comparison-overlap]
+        "code": "backend_unavailable", "message": NOT_APPLIED_MESSAGE, "retryable": True}
+
+
+def test_archive_under_a_held_lock_has_stopped_the_display_and_is_not_applied_yet(dsn: str, owner: int) -> None:
+    """P-6. The retry archives, advances once and writes exactly one row."""
+    db, stores = _database(dsn, QUICK), _lifecycle_stores()
+    document = _create(db, _stores(), owner).document_id
+    session = _live_session(db, owner)
+    with _holding_the_campaign(dsn):
+        _not_applied(lambda: archive_document(db, stores, campaign_id=CAMPAIGN, document_id=document,
+                                              owner_id=owner, now=NOW))
+        assert _count(dsn, "SELECT count(*) FROM campaign.documents WHERE archived_at IS NULL") == 1
+        assert _epoch(dsn, session) == session.reveal_epoch + 1, "step one committed"
+        assert _revision(dsn) == 0
+    archive_document(db, stores, campaign_id=CAMPAIGN, document_id=document, owner_id=owner, now=NOW)
+    assert _count(dsn, "SELECT count(*) FROM campaign.documents WHERE archived_at IS NOT NULL") == 1
+    assert _revision(dsn) == 1
+    assert _count(dsn, "SELECT count(*) FROM audit.events WHERE action = 'document.archived'") == 1
+
+
+def test_delete_under_a_held_lock_has_stopped_the_display_and_deleted_nothing_yet(dsn: str, owner: int) -> None:
+    """P-7. After the 503 the document and its versions are all there; the retry
+    deletes them, and the ledger's rows survive them."""
+    db, stores = _database(dsn, QUICK), _lifecycle_stores()
+    made = _create(db, _stores(), owner)
+    _patch(db, _stores(), owner, made.document_id, made.write_revision, {"voice": "low"},
+           NOW + timedelta(seconds=SEAL_IDLE_S))
+    archive_document(db, stores, campaign_id=CAMPAIGN, document_id=made.document_id, owner_id=owner, now=NOW)
+    session = _live_session(db, owner)
+    versions = "SELECT count(*) FROM campaign.document_versions WHERE document_id = %s"
+    with _holding_the_campaign(dsn):
+        _not_applied(lambda: delete_document(db, stores, campaign_id=CAMPAIGN, document_id=made.document_id,
+                                             owner_id=owner, now=NOW))
+        assert _epoch(dsn, session) == session.reveal_epoch + 1, "step one committed"
+        assert _count(dsn, "SELECT count(*) FROM campaign.documents") == 1
+        assert _count(dsn, versions, (made.document_id,)) == 2
+    delete_document(db, stores, campaign_id=CAMPAIGN, document_id=made.document_id, owner_id=owner, now=NOW)
+    assert _count(dsn, "SELECT count(*) FROM campaign.documents") == 0
+    assert _count(dsn, versions, (made.document_id,)) == 0
+    assert _count(dsn, "SELECT count(*) FROM audit.events WHERE object_ref = %s", (made.document_id,)) == 2
+
+
+def test_unarchive_under_a_held_lock_is_briefly_unavailable_and_changes_nothing(dsn: str, owner: int) -> None:
+    """P-8. A locked widening that cannot have the lock answers the generic,
+    retryable 503; the document stays archived and nothing advances."""
+    db, stores = _database(dsn, QUICK), _lifecycle_stores()
+    document = _create(db, _stores(), owner).document_id
+    _archived(db, document)
+    with _holding_the_campaign(dsn), pytest.raises(HTTPException) as refused:
+        guarded(lambda: unarchive_document(db, stores, campaign_id=CAMPAIGN, document_id=document,
+                                           owner_id=owner, now=NOW))
+    assert refused.value.status_code == 503
+    assert refused.value.detail == {  # type: ignore[comparison-overlap]
+        "code": "backend_unavailable", "message": UNAVAILABLE_MESSAGE, "retryable": True}
+    assert _count(dsn, "SELECT count(*) FROM campaign.documents WHERE archived_at IS NOT NULL") == 1
+    assert (_revision(dsn), _count(dsn, "SELECT count(*) FROM audit.events")) == (0, 0)
+
+
+def test_step_two_narrows_a_session_started_after_step_one(dsn: str, owner: int) -> None:
+    """P-9: the scan is made again under the lock, so a table that went live
+    between the two steps is narrowed too."""
+    db, stores = _database(dsn), _lifecycle_stores()
+    document = _create(db, _stores(), owner).document_id
+    archive_step_one(db, stores, campaign_id=CAMPAIGN, document_id=document, owner_id=owner)
+    session = _live_session(db, owner)
+    archive_step_two(db, stores, campaign_id=CAMPAIGN, document_id=document, owner_id=owner, now=NOW)
+    assert _epoch(dsn, session) == session.reveal_epoch + 1
+    other = _create(db, _stores(), owner, {"name": "Rook"}).document_id
+    _archived(db, other)
+    delete_step_one(db, stores, campaign_id=CAMPAIGN, document_id=other, owner_id=owner)
+    assert _epoch(dsn, session) == session.reveal_epoch + 2
+    delete_step_two(db, stores, campaign_id=CAMPAIGN, document_id=other, owner_id=owner, now=NOW)
+    assert _epoch(dsn, session) == session.reveal_epoch + 3
+
+
+def test_a_delete_cascades_the_history_and_leaves_the_ledger(dsn: str, owner: int) -> None:
+    """P-10: the versions go by the foreign key's cascade; the audit rows that
+    name the document stay, the delete's carrying the revision it advanced to;
+    the history and a version's content are then the one 404."""
+    db, stores = _database(dsn), _lifecycle_stores()
+    made = _create(db, _stores(), owner)
+    base = made.write_revision
+    for step in range(1, 4):
+        base = _patch(db, _stores(), owner, made.document_id, base, {"voice": f"take {step}"},
+                      NOW + timedelta(seconds=SEAL_IDLE_S * step)).write_revision
+    archive_document(db, stores, campaign_id=CAMPAIGN, document_id=made.document_id, owner_id=owner, now=NOW)
+    assert _count(dsn, "SELECT count(*) FROM campaign.document_versions WHERE document_id = %s",
+                  (made.document_id,)) == 4
+    delete_document(db, stores, campaign_id=CAMPAIGN, document_id=made.document_id, owner_id=owner, now=NOW)
+    assert _count(dsn, "SELECT count(*) FROM campaign.document_versions WHERE document_id = %s",
+                  (made.document_id,)) == 0
+    with connect(dsn) as conn:
+        rows = conn.execute(
+            "SELECT action, object_kind, object_ref, actor_ref, authz_revision, detail FROM audit.events "
+            "WHERE campaign_id_tombstone = %s ORDER BY id", (CAMPAIGN,)).fetchall()
+    assert rows == [
+        ("document.archived", "document", made.document_id, str(owner), 1, {"document_id": made.document_id}),
+        ("document.deleted", "document", made.document_id, str(owner), 2, {"document_id": made.document_id}),
+    ]
+    assert _revision(dsn) == 2
+    for read in (
+        lambda: read_history(db, _stores(), campaign_id=CAMPAIGN, document_id=made.document_id, owner_id=owner,
+                             before_number=None, limit=20),
+        lambda: read_snapshot(db, _stores(), campaign_id=CAMPAIGN, document_id=made.document_id, owner_id=owner,
+                              number=1),
+    ):
+        with pytest.raises(HTTPException) as missing:
+            read()
+        assert missing.value.status_code == 404
