@@ -1111,6 +1111,22 @@ def test_a_delete_after_the_primitive_still_deletes_every_object(world: World) -
     assert _states(world, DELETE_JOB) == []
 
 
+def test_the_purge_removes_only_a_tombstone(world: World) -> None:
+    """MS-3: the row is purged once its bytes are gone, and only while it is
+    still the tombstone. A delete job that meets a live row (a stray payload)
+    completes without ever removing that row."""
+    jobs = _jobs(world)
+    campaign = _campaign(world)
+    record = _ready_with_objects(world, jobs, campaign)
+    stray = asset_store.delete_payload(world.rows()[record.id])
+    with world.db.transaction() as unit:
+        world.queue.enqueue(unit, DELETE_JOB, stray, dedupe_key=record.id, now=T0)
+    jobs.run(T0 + timedelta(seconds=1))
+    assert _states(world, DELETE_JOB) == [], "the job completed"
+    assert world.rows()[record.id].state == "ready", "the live row was never purged"
+    assert world.usage(campaign) == (900, 1)
+
+
 @pytest.mark.parametrize(("state", "bound"), [("uploading", timedelta(hours=1)), ("processing", timedelta(minutes=10))])
 def test_the_sweep_fails_a_stuck_row_timed_out_releases_and_deletes(
     world: World, state: str, bound: timedelta
