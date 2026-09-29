@@ -468,7 +468,7 @@ class PostgresTableSessionStore:
             f"WHERE c.id = %s AND c.owner_id = %s AND c.archived_at IS NULL "
             f"AND NOT EXISTS (SELECT 1 FROM campaign.table_sessions t "
             f"WHERE t.campaign_id = c.id AND t.start_command_id = %s) "
-            f"RETURNING {_S_COLUMNS}",
+            f"ON CONFLICT (gm_user_id) WHERE state = 'live' DO NOTHING RETURNING {_S_COLUMNS}",
             (
                 ident.new_id(ident.TABLE_SESSION),
                 moment,
@@ -571,7 +571,7 @@ class PostgresTableSessionStore:
         else:
             row = transaction.conn.execute(
                 f"SELECT {_S_COLUMNS} FROM campaign.table_sessions "
-                f"WHERE id = %s AND campaign_id = %s AND gm_user_id = %s",
+                f"WHERE id = %s AND campaign_id = %s AND gm_user_id = %s FOR NO KEY UPDATE",
                 (session_id, campaign_id, owner_id),
             ).fetchone()
         return None if row is None else _session(row)
@@ -612,7 +612,7 @@ class PostgresTableSessionStore:
             for row in conn.execute(
                 'SELECT id FROM campaign.table_credentials '
                 'WHERE session_id = %s AND revoked_at IS NULL '
-                'ORDER BY id COLLATE "C" FOR NO KEY UPDATE SKIP LOCKED',
+                'ORDER BY id COLLATE "C" FOR NO KEY UPDATE',
                 (session_id,),
             ).fetchall()
         ]
@@ -737,6 +737,7 @@ class PostgresTableSessionStore:
         ).fetchone()
         if theirs is None:
             raise MissingParent("no such table session for that owner")
+        unit.lock(AdvisoryLock.TABLE_SESSION, session_id)
         live = conn.execute(
             f"SELECT count(*) FROM campaign.table_credentials g "
             f"JOIN campaign.table_sessions s ON s.id = g.session_id "
