@@ -1293,8 +1293,12 @@ def test_delete_asks_for_the_password_first_and_takes_only_an_archived_document(
     assert world.record(mine, document).version.number == 3
 
     life.archive(mine, document)
+    opened = len(world.db.units)
     deleted = _delete(client, mine, document)
     assert (deleted.status_code, deleted.content) == (204, b"")
+    step_one, step_two = world.db.units[opened:]
+    assert step_one.campaign_locks == [], "delete's step one never takes the campaign lock"
+    assert step_two.campaign_locks == [(mine, "exclusive")], "step two takes it, exclusively, as its first lock"
     with world.db.transaction() as unit:
         assert world.stores.documents.get(unit, mine, document) is None
     for path in (_doc(mine, document), _doc(mine, document, "/versions"), _doc(mine, document, "/versions/1")):
@@ -1335,6 +1339,59 @@ def test_step_two_decides_again_under_the_lock(client: TestClient, world: _World
                                                 owner_id=GM_A, now=T0)
     assert missing.value.status_code == 404
     assert world.revision(campaign) == 1
+
+
+def test_a_change_between_the_plain_read_and_the_lock_is_decided_again_under_it(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    """Review pr180-l M-1. Unarchive reads the document without a lock and only
+    then locks and holds it: one another tab unarchived in between changes
+    nothing more (no second `document.unarchived`, no advance), and one it
+    deleted in between is the one 404. Delete's step two, finding the document
+    gone since step one, is the one 404 as well."""
+    campaign = world.campaign()
+    raced, removed, gone = world.document(campaign), world.document(campaign), world.document(campaign)
+    for document in (raced, removed, gone):
+        life.archive(campaign, document)
+    plain = life.stores
+
+    # justification: a `_Traced` override, which takes the wrapped store method
+    # and its arguments as `_Traced` passes them, untyped.
+    def meanwhile(change: Callable[[InMemoryTransaction], object]) -> Callable[..., Any]:
+        """`documents.get`, and then another tab's change, committed before the
+        caller asks for the lock."""
+
+        def get(real: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+            found = real(*args, **kwargs)
+            with world.db.transaction() as other:
+                assert change(other)
+            return found
+
+        return get
+
+    life.spy(documents={"get": meanwhile(lambda unit: world.stores.documents.set_archived(
+        unit, campaign, raced, archived=False, now=T0))})
+    answer = _unarchive(client, campaign, raced)
+    assert (answer.status_code, answer.content) == (204, b"")
+    assert not life.archived(campaign, raced)
+    assert (world.revision(campaign), life.ledger(campaign)) == (0, []), "nothing changed under the lock"
+
+    life.stores = plain
+    life.spy(documents={"get": meanwhile(lambda unit: world.stores.documents.delete(unit, campaign, removed))})
+    refused = _unarchive(client, campaign, removed)
+    assert refused.status_code == 404 and refused.json() == NOT_FOUND
+    life.stores = plain
+    assert (world.revision(campaign), life.ledger(campaign)) == (0, [])
+
+    document_lifecycle_api.delete_step_one(world.db, life.stores, campaign_id=campaign, document_id=gone,
+                                           owner_id=GM_A)
+    with world.db.transaction() as unit:
+        assert world.stores.documents.delete(unit, campaign, gone)
+    with pytest.raises(HTTPException) as missing:
+        document_lifecycle_api.delete_step_two(world.db, life.stores, campaign_id=campaign, document_id=gone,
+                                               owner_id=GM_A, now=T0)
+    assert (missing.value.status_code, missing.value.detail) == (404, NOT_FOUND["detail"])
+    assert (world.revision(campaign), life.ledger(campaign)) == (0, [])
 
 
 def test_the_password_check_answers_the_throttle_and_a_hashing_outage_in_the_envelope(
