@@ -33,8 +33,10 @@ the upload into the object that will be served:
 
 **Bounded** (MS-6, SEC-27). One job at a time per instance (`GATE`); a wall
 clock of `WALL_CLOCK_S` over the whole job; an address-space limit of
-`ADDRESS_SPACE_BYTES` on every child on POSIX, set by the child itself before it
-decodes anything (never a `preexec_fn`, which is unsafe in a threaded server);
+`ADDRESS_SPACE_BYTES` on every child on POSIX — the image child that runs
+Pillow over the hostile bytes as well as `ffprobe` and `ffmpeg` — set by one
+launcher that limits itself and then becomes the child (`exec`) before a byte
+is read (never a `preexec_fn`, which is unsafe in a threaded server);
 a scratch directory the caller deletes; and an environment carrying nothing
 but `PATH`, so the process that parses hostile bytes holds no credential.
 Cloud Run offers no network namespace; the tools are kept off the network by
@@ -305,7 +307,7 @@ def _run(argv: Sequence[str], deadline: float) -> subprocess.CompletedProcess[by
     failure: Exception | None = None
     try:
         outcome = subprocess.run(
-            argv if argv[0] == sys.executable else limited(argv),
+            limited(argv),
             stdin=subprocess.DEVNULL, capture_output=True, timeout=remaining, cwd=_ROOT, env=child_env(), check=False,
         )
     except subprocess.TimeoutExpired:
@@ -339,6 +341,16 @@ def limit_address_space() -> None:
         return
     resource = importlib.import_module("resource")
     resource.setrlimit(resource.RLIMIT_AS, (ADDRESS_SPACE_BYTES, ADDRESS_SPACE_BYTES))
+
+
+def address_space_limit() -> int | None:
+    """This process's `RLIMIT_AS` soft limit on POSIX, None elsewhere. The image
+    child reports it, so the limit its decode ran under is observable."""
+    if os.name != "posix":
+        return None
+    resource = importlib.import_module("resource")
+    soft: int = resource.getrlimit(resource.RLIMIT_AS)[0]
+    return soft
 
 
 def configure_pillow() -> int:
@@ -381,14 +393,17 @@ def image_child(pillow_format: str, source: str, target: str) -> dict[str, objec
 
 
 def main(argv: Sequence[str]) -> int:  # pragma: no cover - runs only as a child process
-    """`exec <tool> ...` becomes the tool under the limit; `image <format>
-    <source> <target>` is the image child. Each limits itself first."""
+    """`exec <argv> ...` is the launcher: it limits itself and becomes `argv`,
+    which inherits the limit (`_run` starts every child this way, `limited`).
+    `image <format> <source> <target>` is the image child: it reports what it
+    made and the address-space limit it ran under."""
     if len(argv) >= 2 and argv[0] == "exec":
         limit_address_space()
         os.execvp(argv[1], list(argv[1:]))
     if len(argv) == 4 and argv[0] == "image":
-        limit_address_space()
-        sys.stdout.write(json.dumps(image_child(argv[1], argv[2], argv[3])) + "\n")
+        report = image_child(argv[1], argv[2], argv[3])
+        report["address_space"] = address_space_limit()
+        sys.stdout.write(json.dumps(report) + "\n")
         return 0
     return 2
 

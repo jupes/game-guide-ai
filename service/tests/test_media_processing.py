@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import zlib
 from pathlib import Path
 from typing import Any
@@ -184,6 +185,43 @@ def test_a_child_really_runs_under_the_address_space_limit() -> None:
     done = subprocess.run(mp.limited(probe), capture_output=True, cwd=Path(mp.__file__).parents[1], check=True,
                           env=mp.child_env(), timeout=60)
     assert int(done.stdout) == mp.ADDRESS_SPACE_BYTES == 512 * 1024 * 1024
+
+
+def test_every_child_is_started_behind_the_limiting_launcher(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """AC 15: the image child that decodes the hostile bytes is limited like
+    `ffprobe` and `ffmpeg`; no argv reaches `subprocess.run` but `limited`'s."""
+    started: list[list[str]] = []
+
+    def launched(argv: Any, **kwargs: Any) -> Any:
+        started.append(list(argv))
+        output = b""
+        if "image" in argv:
+            output = b'{"width": 1, "height": 1}'
+        elif "ffprobe" in argv:
+            output = report(AUDIO)
+        if "ffprobe" not in argv:
+            Path(argv[-1]).write_bytes(b"made")
+        return subprocess.CompletedProcess(argv, 0, output, b"")
+
+    monkeypatch.setattr(mp, "limited", lambda argv: ["LIMITED", *argv])
+    monkeypatch.setattr(mp.subprocess, "run", launched)
+    source = tmp_path / "in"
+    source.write_bytes(b"")
+    mp.process(AssetKind.IMAGE, "image/png", source, tmp_path)
+    mp.process(AssetKind.AUDIO, "audio/mpeg", source, tmp_path)
+    children = [["LIMITED", sys.executable], ["LIMITED", "ffprobe"], ["LIMITED", "ffmpeg"]]
+    assert [argv[:2] for argv in started] == children
+
+
+@pytest.mark.skipif(os.name != "posix" and not os.environ.get("CI"), reason="RLIMIT_AS is POSIX; CI runs Linux")
+def test_the_image_child_decodes_under_the_address_space_limit(tmp_path: Path) -> None:
+    """AC 15, end to end on Linux in CI: the real image child, started as
+    `process` starts it, reports the limit its Pillow decode ran under."""
+    source, target = tmp_path / "in", tmp_path / "out"
+    source.write_bytes(encoded("PNG"))
+    done = mp._run(mp.image_argv("PNG", source, target), time.monotonic() + mp.WALL_CLOCK_S)
+    made = json.loads(done.stdout)
+    assert (made["width"], made["address_space"]) == (24, mp.ADDRESS_SPACE_BYTES)
 
 
 def test_the_wall_clock_is_sixty_seconds_and_a_child_past_it_is_timed_out(
