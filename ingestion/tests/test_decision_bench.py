@@ -32,9 +32,10 @@ def no_keys_no_network(monkeypatch):
     monkeypatch.setattr(socket, "create_connection", refuse)
 
 
-def _item(i: int, label: str, group: str | None = None, mode: str = "gm", answer: str | None = None) -> db.Item:
+def _item(i: int, label: str, group: str | None = None, mode: str = "gm", answer: str | None = None,
+          subset: str = "core") -> db.Item:
     return db.Item(id=f"t-{i}", mode=mode, query=f"q{i}", answer=answer or f"answer {i}", label=label,
-                   subset="core", category="test", group=group or f"g{i}")
+                   subset=subset, category="test", group=group or f"g{i}")
 
 
 # ── heuristic arm ───────────────────────────────────────────────────────────────────────────
@@ -116,7 +117,9 @@ def _clustered_items(n_groups: int = 15):
     return items, emb
 
 
-def test_embedding_arm_is_out_of_fold_with_no_group_leakage():
+def test_embedding_arm_fold_log_scores_every_group_once():
+    # The fold log is built from the train/test lists, so it cannot show what the classifier
+    # was fitted on; test_embedding_arm_never_fits_or_tunes_on_a_group_it_scores does that.
     items, emb = _clustered_items()
     result = db.run_embedding(items, emb, k=5, seed=3)
     assert result.status == "ok" and len(result.decisions) == len(items)
@@ -128,6 +131,69 @@ def test_embedding_arm_is_out_of_fold_with_no_group_leakage():
     assert all(d.label == it.label for d, it in zip(result.decisions, items, strict=True))
     assert result.decisions[0].input_tokens == 100
     assert result.decisions[0].latency_ms >= 200.0  # recorded embedding latency + classifier time
+
+
+def test_embedding_arm_never_fits_or_tunes_on_a_group_it_scores(monkeypatch):
+    """Checks what each classifier was given, not what the fold log says. For every
+    NearestCentroid that run_embedding builds, no group it scores was among the vectors
+    its centroids were fitted on or its temperature was tuned on. Its temperature is also
+    tuned on groups the centroids fitted just before had not seen."""
+    items, base = _clustered_items()
+    # A fourth coordinate unique to each item, so that a vector identifies its item.
+    emb = {it.id: db.Embedding([*base[it.id].vector, 0.001 * (i + 1)], base[it.id].tokens, base[it.id].latency_ms)
+           for i, it in enumerate(items)}
+    item_of = {tuple(emb[it.id].vector): it for it in items}
+    log: dict[db.NearestCentroid, list[tuple[str, set[str]]]] = {}
+    tuning = [False]
+    real_fit = db.NearestCentroid.fit
+    real_tune = db.NearestCentroid.fit_temperature
+    real_predict = db.NearestCentroid.predict_proba
+
+    def groups(vectors):
+        return {item_of[tuple(v)].group for v in vectors}
+
+    def fit(self, vectors, labels):
+        log.setdefault(self, []).append(("fit", groups(vectors)))
+        return real_fit(self, vectors, labels)
+
+    def fit_temperature(self, vectors, labels):
+        log.setdefault(self, []).append(("tune", groups(vectors)))
+        tuning[0] = True  # the grid search calls predict_proba; that is tuning, not scoring
+        try:
+            return real_tune(self, vectors, labels)
+        finally:
+            tuning[0] = False
+
+    def predict_proba(self, vector):
+        if not tuning[0]:
+            log.setdefault(self, []).append(("score", groups([vector])))
+        return real_predict(self, vector)
+
+    monkeypatch.setattr(db.NearestCentroid, "fit", fit)
+    monkeypatch.setattr(db.NearestCentroid, "fit_temperature", fit_temperature)
+    monkeypatch.setattr(db.NearestCentroid, "predict_proba", predict_proba)
+
+    result = db.run_embedding(items, emb, k=5, seed=3)
+
+    scored: list[str] = []
+    tuned = 0
+    for events in log.values():
+        seen: set[str] = set()  # every group this classifier's centroids or temperature used
+        last_fit: set[str] = set()
+        for kind, gs in events:
+            if kind == "score":
+                assert not gs & seen, f"scored {gs} with a classifier fitted or tuned on it"
+                scored += gs
+            elif kind == "tune":
+                assert not gs & last_fit, f"temperature tuned on {gs & last_fit}, which the centroids had seen"
+                tuned += 1
+                seen |= gs
+            else:
+                last_fit = gs
+                seen |= gs
+    assert sorted(scored) == sorted(it.group for it in items)  # every item scored exactly once
+    assert tuned == 5  # the temperature really was tuned in every fold, so the check above ran
+    assert len(result.decisions) == len(items)
 
 
 def _fake_openai_embeddings(dim: int = 4):
@@ -261,6 +327,35 @@ def test_evaluate_reports_every_headline_metric():
         assert key in report
     assert report["macro_f1"] == pytest.approx((1.0 + 0.0 + 1.0) / 3)  # spell_card has no support
     assert set(report["coverage"]) == {"0.90", "0.95", "0.99"}
+
+
+def test_evaluate_scores_only_the_adversarial_subset_as_adversarial():
+    items = [_item(0, "none", subset="adversarial"), _item(1, "none", subset="adversarial"), _item(2, "none")]
+    card = {"stat_block": 0.995, "spell_card": 0.004, "none": 0.001}
+    decisions = [
+        db.Decision("t-0", "none", {"none": 1.0}, 1.0),  # adversarial, held: says none
+        db.Decision("t-1", "stat_block", card, 1.0),  # adversarial, not held: a card at 0.995
+        db.Decision("t-2", "stat_block", card, 1.0),  # core: must not count as adversarial
+    ]
+    report = db.evaluate(items, db.ArmResult("embedding", "ok", decisions=decisions), {it.id: "none" for it in items})
+    # Adversarial items 0 and 1: one held at every threshold (0.995 clears 0.99) → 1/2.
+    # Were the core item scored instead, n would be 1 and the share 0.
+    assert report["adversarial"] == pytest.approx(
+        {"n": 2, "held_to_none_at_0.90": 0.5, "held_to_none_at_0.95": 0.5, "held_to_none_at_0.99": 0.5})
+
+
+def test_run_prices_each_arm_by_its_own_tokens(tmp_path):
+    items = [_item(i, db.LABELS[i % 3]) for i in range(6)]
+    chat, _ = _fake_openai_chat({"B": math.log(0.9), "C": math.log(0.1)})
+    embed, _ = _fake_openai_embeddings()
+    client = SimpleNamespace(chat=chat.chat, embeddings=embed.embeddings)
+    prices = {**db.PRICES, "embedding": (0.5, 0.0), "llm": (2.0, 8.0)}
+    reports = db.run(["embedding", "llm"], items, tmp_path, offline=False, folds=2, seed=0,
+                     client_factory=lambda _offline: client, env={}, prices=prices)
+    cost = {r["arm"]: r["cost_per_1000_usd"] for r in reports}
+    # embedding: 42 input tokens × 0.5 per 1M = 0.000021 a decision → 0.021 per 1,000.
+    # llm: 310 × 2.0 + 1 × 8.0 = 628 per 1M = 0.000628 a decision → 0.628 per 1,000.
+    assert cost == pytest.approx({"embedding": 0.021, "llm": 0.628})
 
 
 def test_evaluate_passes_a_skipped_arm_through_without_scores():

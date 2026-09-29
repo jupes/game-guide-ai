@@ -59,6 +59,14 @@ def test_ece_two_bins_by_hand():
     assert ece == pytest.approx(0.45)
 
 
+def test_ece_weights_each_bin_by_its_size():
+    # bin 9: three at 0.95, two right → |2/3 - 0.95| × 3/4 = 0.2125
+    # bin 5: one at 0.55, right → |1.0 - 0.55| × 1/4 = 0.1125; total 0.325.
+    # (An unweighted mean over the two bins would give (0.28333 + 0.45) / 2 = 0.36667.)
+    ece = dm.expected_calibration_error([0.95, 0.95, 0.95, 0.55], [True, True, False, True])
+    assert ece == pytest.approx(0.325)
+
+
 def test_ece_is_zero_when_confidence_matches_accuracy():
     assert dm.expected_calibration_error([0.8] * 5, [True, True, True, True, False]) == pytest.approx(0.0)
 
@@ -109,9 +117,20 @@ def test_none_veto_without_vetoes_or_false_positives_reports_none():
         "vetoes": 0.0, "precision": None, "coverage": None}
 
 
+def test_none_veto_counts_a_none_exactly_at_the_threshold():
+    # One baseline positive, truly none, vetoed at exactly 0.99: the threshold is inclusive.
+    assert dm.none_veto(["none"], ["stat_block"], ["none"], [0.99], 0.99) == {
+        "vetoes": 1.0, "precision": 1.0, "coverage": 1.0}
+
+
 def test_held_to_none_counts_none_or_below_threshold():
     # none ✓, stat_block at 0.5 (below) ✓, stat_block at 0.995 ✗ → 2/3
     assert dm.held_to_none(["none", "stat_block", "stat_block"], [0.5, 0.5, 0.995], 0.99) == pytest.approx(2 / 3)
+
+
+def test_held_to_none_does_not_hold_a_card_exactly_at_the_threshold():
+    # A card at exactly 0.99 fires at the 0.99 threshold, so it is not held.
+    assert dm.held_to_none(["stat_block"], [0.99], 0.99) == 0.0
 
 
 def test_percentile_linear_interpolation():
