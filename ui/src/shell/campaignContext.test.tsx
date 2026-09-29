@@ -354,6 +354,41 @@ describe('create', () => {
     expect(await run(() => live.c.createCampaign('Other'))).toEqual({ kind: 'vetoed' })
     expect(server.lines().filter((l) => l.startsWith('POST'))).toHaveLength(1)
   })
+
+  it('while a create is in flight a select, a clear and a campaign link are refused before any guard or request (P-F, decision 4)', async () => {
+    const { server } = await mount({
+      hash: '#campaign=cmp_A', restore: { campaignId: 'cmp_A', conversationId: null },
+      route: (call) => (call.method === 'POST' ? 'defer' : defaultRoute(call)),
+    })
+    await waitFor(() => expect(live.c.selection).toEqual({ kind: 'selected', campaign: A }))
+    await loaded()
+    const guard = vi.fn(() => true)
+    act(() => { live.c.registerSwitchGuard(guard) })
+    const link = (hash: string) => {
+      window.history.replaceState(null, '', `/workspace${hash}`)
+      act(() => { window.dispatchEvent(new HashChangeEvent('hashchange')) })
+    }
+    let created: Promise<unknown> = Promise.resolve()
+    act(() => { created = live.c.createCampaign('Named') })
+    await waitFor(() => expect(server.lines()).toContain('POST /campaigns'))
+    const key = live.c.scope?.key
+    expect(await run(() => live.c.selectCampaign(B))).toBe('vetoed')
+    expect(await run(() => live.c.clearCampaign())).toBe('vetoed')
+    link('#campaign=cmp_B')
+    await flush()
+    expect(window.location.hash).toBe('#campaign=cmp_A')
+    expect([live.c.selection, live.c.scope?.key]).toEqual([{ kind: 'selected', campaign: A }, key])
+    expect(guard.mock.calls).toEqual([[{ campaignId: null }]])
+    expect(server.lines()).toEqual(['GET /campaigns/cmp_A', 'GET /campaigns', 'POST /campaigns'])
+    act(() => server.calls.find((c) => c.method === 'POST')?.reply({ status: 201, body: NEW }))
+    expect(await created).toEqual({ kind: 'created', campaign: NEW })
+    expect(live.c.selection).toEqual({ kind: 'selected', campaign: NEW })
+    expect(await run(() => live.c.selectCampaign(B))).toBe('switched')
+    link('#campaign=cmp_A')
+    await waitFor(() => expect(live.c.selection).toEqual({ kind: 'selected', campaign: A }))
+    expect(server.lines()).toEqual(['GET /campaigns/cmp_A', 'GET /campaigns', 'POST /campaigns', 'GET /campaigns/cmp_A'])
+    expect(await run(() => live.c.clearCampaign())).toBe('switched')
+  })
 })
 
 // ── Restore at the provider (section 7.4, critic 3, 6, 7) ─────────────────────
@@ -557,6 +592,36 @@ describe('identity transitions', () => {
     await flush()
     expect(live.c.list).toEqual({ kind: 'ready', items: [A], nextCursor: 'c2', loadingMore: false, moreFailed: false })
   })
+
+  it.each([
+    ['a direct switch through the identity signal', (signal: ReturnType<typeof channels>) => switchAccount(signal, BOB)],
+    ['a sign-out and then a sign-in as bob', async () => {
+      await signOut()
+      act(() => live.user.signIn({ email: BOB, role: 'dm' }))
+    }],
+  ] as Array<[string, (signal: ReturnType<typeof channels>) => Promise<void>]>)(
+    "ada's restore read answered after %s is aborted and never reaches bob's state, renders, URL or requests (P-A1, P-A2)",
+    async (_label, toBob) => {
+      const { server, signal } = await mount({
+        hash: '#campaign=cmp_A&conversation=cnv_1', restore: { campaignId: 'cmp_A', conversationId: 'cnv_1' },
+        route: (call) => (call.url === '/campaigns/cmp_A' ? 'defer' : defaultRoute(call)),
+      })
+      await waitFor(() => expect(server.lines()).toEqual(['GET /campaigns/cmp_A']))
+      expect(live.c.selection).toEqual({ kind: 'restoring', campaignId: 'cmp_A' })
+      await toBob(signal)
+      const held = server.calls[0]
+      expect(held.signal?.aborted).toBe(true)
+      act(() => held.reply({ status: 200, body: A }))
+      await flush()
+      expect(live.user.user.id).toBe(BOB)
+      expect([live.c.selection, live.c.scope, live.nav.conversationId, window.location.hash]).toEqual([{ kind: 'none' }, null, null, ''])
+      const bob = rendered.filter((r) => r.account === BOB)
+      expect(bob.length).toBeGreaterThan(0)
+      expect(bob.filter((r) => r.selection !== 'none' || r.id !== null)).toEqual([])
+      await loaded()
+      expect(server.lines()).toEqual(['GET /campaigns/cmp_A', 'GET /campaigns'])
+    },
+  )
 
   it("a direct switch from ada to bob never commits a render that carries ada's state (7.5, snapshotFor)", async () => {
     const { signal } = await mount({ hash: '#campaign=cmp_A&conversation=cnv_1', restore: { campaignId: 'cmp_A', conversationId: 'cnv_1' } })

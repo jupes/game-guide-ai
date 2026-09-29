@@ -39,6 +39,7 @@ import {
   DOC_TYPE_LIBRARY_CATEGORY,
   DOC_TYPE_VERSION,
   DocumentCreateRequestSchema,
+  DocumentDeleteRequestSchema,
   DocumentSchema,
   DocumentVersionSnapshotSchema,
   EditRequestSchema,
@@ -1891,6 +1892,16 @@ describe('campaigns and seats (1kg.2.2)', () => {
 
   it('knows the unsupported-document code of the document family (1kg.5.2)', () => {
     expect(isKnownErrorCode('document_unsupported')).toBe(true)
+  })
+
+  it('knows the not-archived code and asks a document delete for a password (1kg.5.2 PR-B)', () => {
+    expect(isKnownErrorCode('document_not_archived')).toBe(true)
+    const body = { schema_version: 1, password: 'secret' }
+    expect(DocumentDeleteRequestSchema.safeParse(body).success).toBe(true)
+    expect(DocumentDeleteRequestSchema.safeParse({ ...body, document_id: 'doc_aaaaaaaaaaaaaaaaaaaaaa' }).success)
+      .toBe(false)
+    expect(DocumentDeleteRequestSchema.safeParse({ schema_version: 1, password: '' }).success).toBe(false)
+    expect(DocumentDeleteRequestSchema.safeParse({ schema_version: 1 }).success).toBe(false)
   })
 })
 
