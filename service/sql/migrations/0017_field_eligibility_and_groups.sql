@@ -43,7 +43,7 @@
 --    CHECK that evaluates to NULL passes, so a NULL here must become false.
 --
 -- 4. campaign.groups: a GM's named group of seats (ED-4, owner decision O-3).
---    The name is private GM text (SEC-20), bounded as an alias is; name_key is
+--    The name is private GM text (SEC-20), bounded as an alias is; name_fold is
 --    the application's alias_key. A group is marked removed, never deleted,
 --    because a disclosure will remember the group it came from. created_command_id
 --    is NULL or the wire contract's CommandId shape.
@@ -97,17 +97,17 @@ CREATE TABLE campaign.groups (
   id                 TEXT PRIMARY KEY CHECK (id ~ '^grp_[A-Za-z0-9_-]{22,60}$'),
   campaign_id        TEXT NOT NULL REFERENCES campaign.campaigns (id) ON DELETE CASCADE,
   name               TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 40),
-  name_key           TEXT NOT NULL CHECK (length(name_key) BETWEEN 1 AND 200),
+  name_fold           TEXT NOT NULL CHECK (length(name_fold) BETWEEN 1 AND 200),
   created_command_id TEXT CHECK (created_command_id IS NULL OR created_command_id ~ '^[A-Za-z0-9_-]{16,64}$'),
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   removed_at         TIMESTAMPTZ,
   CONSTRAINT groups_id_campaign_key UNIQUE (id, campaign_id)
 );
--- Partial: a removed group frees its name. name_key is updated by a rename, so
+-- Partial: a removed group frees its name. name_fold is updated by a rename, so
 -- the index MUST stay partial (a non-partial unique index makes its columns key
 -- columns, and a rename would then take FOR UPDATE: the 0004/0008 rule).
-CREATE UNIQUE INDEX groups_live_name_uidx ON campaign.groups (campaign_id, name_key) WHERE removed_at IS NULL;
+CREATE UNIQUE INDEX groups_live_name_uidx ON campaign.groups (campaign_id, name_fold) WHERE removed_at IS NULL;
 CREATE UNIQUE INDEX groups_command_uidx ON campaign.groups (campaign_id, created_command_id)
   WHERE created_command_id IS NOT NULL;
 

@@ -762,7 +762,7 @@ def test_the_bounds_the_eligibility_migration_checks_are_the_modules():
     assert eligibility_store.PRINCIPAL_IDS_MAX == workbench_contracts.PRESENCE_MAX_PARTICIPANTS
     assert f"cardinality(ids) BETWEEN 1 AND {eligibility_store.PRINCIPAL_IDS_MAX}" in ELIGIBILITY_SQL
     assert f"length(name) BETWEEN 1 AND {participant_store.ALIAS_MAX_CHARS}" in ELIGIBILITY_SQL
-    assert f"length(name_key) BETWEEN 1 AND {participant_store.ALIAS_KEY_MAX}" in ELIGIBILITY_SQL
+    assert f"length(name_fold) BETWEEN 1 AND {participant_store.ALIAS_KEY_MAX}" in ELIGIBILITY_SQL
     assert db.PROJECTION_ITEMS_MAX == workbench_contracts.MAX_CHANGED_FIELDS
 
 

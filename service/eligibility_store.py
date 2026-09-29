@@ -510,7 +510,7 @@ class PostgresEligibilityStore:
         check_types(campaign_id=campaign_id)
         rows = pg(unit).conn.execute(
             f'SELECT {_G_COLUMNS} FROM campaign.groups WHERE campaign_id = %s AND removed_at IS NULL '
-            f'ORDER BY name_key COLLATE "C", id COLLATE "C" LIMIT %s',
+            f'ORDER BY name_fold COLLATE "C", id COLLATE "C" LIMIT %s',
             (campaign_id, GROUPS_PER_CAMPAIGN_MAX),
         ).fetchall()
         return [_group(row) for row in rows]
@@ -656,7 +656,7 @@ class PostgresEligibilityStore:
             # a UniqueViolation would otherwise abort the caller's transaction.
             with conn.transaction():
                 row = conn.execute(
-                    f"INSERT INTO campaign.groups (id, campaign_id, name, name_key, created_command_id, "
+                    f"INSERT INTO campaign.groups (id, campaign_id, name, name_fold, created_command_id, "
                     f"created_at, updated_at) SELECT %s, %s, %s, %s, %s, %s, %s "
                     f"WHERE EXISTS (SELECT 1 FROM campaign.campaigns WHERE id = %s) RETURNING {_G_COLUMNS}",
                     (
@@ -712,7 +712,7 @@ class PostgresEligibilityStore:
         try:
             with conn.transaction():
                 row = conn.execute(
-                    f"UPDATE campaign.groups SET name = %s, name_key = %s, updated_at = %s "
+                    f"UPDATE campaign.groups SET name = %s, name_fold = %s, updated_at = %s "
                     f"WHERE id = %s AND campaign_id = %s RETURNING {_G_COLUMNS}",
                     (named, alias_key(named), now_or(now), group_id, campaign_id),
                 ).fetchone()
@@ -801,7 +801,7 @@ class _EligibilityRow:
 @dataclass(frozen=True)
 class _GroupRow:
     group: Group
-    name_key: str = field(repr=False)
+    name_fold: str = field(repr=False)
     created_command_id: str | None
 
 
@@ -884,7 +884,7 @@ class InMemoryEligibilityStore:
 
     def list_groups(self, unit: UnitOfWork, campaign_id: str) -> list[Group]:
         check_types(campaign_id=campaign_id)
-        rows = sorted(self._live_groups(fake(unit), campaign_id), key=lambda row: (row.name_key, row.group.id))
+        rows = sorted(self._live_groups(fake(unit), campaign_id), key=lambda row: (row.name_fold, row.group.id))
         return [row.group for row in rows[:GROUPS_PER_CAMPAIGN_MAX]]
 
     def _live_seat(self, twin: InMemoryTransaction, campaign_id: str, participant_id: str) -> bool:
@@ -1005,7 +1005,7 @@ class InMemoryEligibilityStore:
         live = self._live_groups(twin, campaign_id)
         if len(live) >= GROUPS_PER_CAMPAIGN_MAX:
             raise GroupLimit()
-        if any(row.name_key == alias_key(named) for row in live):
+        if any(row.name_fold == alias_key(named) for row in live):
             raise GroupNameTaken()
         if campaign_id not in self._campaigns.visible(twin):
             raise MissingParent("no such campaign")
@@ -1034,11 +1034,11 @@ class InMemoryEligibilityStore:
             return held
         twin = fake(unit)
         key = alias_key(named)
-        if any(row.name_key == key and row.group.id != group_id for row in self._live_groups(twin, campaign_id)):
+        if any(row.name_fold == key and row.group.id != group_id for row in self._live_groups(twin, campaign_id)):
             raise GroupNameTaken()
         current = self._groups.visible(twin)[group_id]
         renamed = replace(current.group, name=named, updated_at=now_or(now))
-        self._groups.replace(twin, group_id, replace(current, group=renamed, name_key=key))
+        self._groups.replace(twin, group_id, replace(current, group=renamed, name_fold=key))
         return renamed
 
     def remove_group(

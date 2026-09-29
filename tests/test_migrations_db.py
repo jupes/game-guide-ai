@@ -350,7 +350,7 @@ def _eligibility_rows(conn, campaign: str = CAMPAIGN_ID, document: str = DOCUMEN
     """0017's four tables, one row each: a group with the campaign's seat in it,
     a field classified for that group, and a queued projection of it."""
     conn.execute(
-        "INSERT INTO campaign.groups (id, campaign_id, name, name_key) VALUES (%s, %s, 'Scouts', 'scouts')",
+        "INSERT INTO campaign.groups (id, campaign_id, name, name_fold) VALUES (%s, %s, 'Scouts', 'scouts')",
         (GROUP_ID, campaign),
     )
     conn.execute(
@@ -1550,15 +1550,15 @@ def test_deleting_a_document_takes_its_eligibility_rows_and_queue_items(dsn):
         pytest.param("id", "group_" + "a" * 22, id="no-prefix"),
         pytest.param("name", "", id="empty-name"),
         pytest.param("name", "n" * 41, id="41-character-name"),
-        pytest.param("name_key", "", id="empty-key"),
-        pytest.param("name_key", "k" * 201, id="201-character-key"),
+        pytest.param("name_fold", "", id="empty-key"),
+        pytest.param("name_fold", "k" * 201, id="201-character-key"),
         pytest.param("created_command_id", "short", id="malformed-command-id"),
     ],
 )
 def test_the_database_refuses_a_group_row_the_application_would_never_mint(dsn, column, value):
     """T-A9: kills a loosened group CHECK (M-A14)."""
     mig.migrate(dsn)
-    row = {"id": GROUP_ID, "name": "Scouts", "name_key": "scouts", "created_command_id": None} | {column: value}
+    row = {"id": GROUP_ID, "name": "Scouts", "name_fold": "scouts", "created_command_id": None} | {column: value}
     with connect(dsn) as conn:
         owner = _one_user(conn)
         conn.execute(
@@ -1566,9 +1566,9 @@ def test_the_database_refuses_a_group_row_the_application_would_never_mint(dsn, 
         )
         with pytest.raises(psycopg.errors.CheckViolation):
             conn.execute(
-                "INSERT INTO campaign.groups (id, campaign_id, name, name_key, created_command_id) "
+                "INSERT INTO campaign.groups (id, campaign_id, name, name_fold, created_command_id) "
                 "VALUES (%s, %s, %s, %s, %s)",
-                (row["id"], CAMPAIGN_ID, row["name"], row["name_key"], row["created_command_id"]),
+                (row["id"], CAMPAIGN_ID, row["name"], row["name_fold"], row["created_command_id"]),
             )
 
 
