@@ -29,7 +29,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -39,7 +39,7 @@ from _pg import connect, needs_db, throwaway_database
 
 from service import migrations as mig
 from service import tool_invocation_store
-from service.campaign_store import InMemoryCampaignStore, PostgresCampaignStore
+from service.campaign_store import InMemoryCampaignStore, PostgresCampaignStore, shared_rows
 from service.conversation_store import InMemoryConversationStore, PostgresConversationStore
 from service.db import (
     AdvisoryLock,
@@ -51,6 +51,8 @@ from service.db import (
     advisory_key,
 )
 from service.history import InMemoryMessageStore, PostgresMessageStore
+from service.providers import ProviderClientFactory
+from service.session import SessionData
 from service.timeline_store import InMemoryTimelineStore, PostgresTimelineStore, new_entry_id
 from service.tool_invocation_store import (
     InMemoryToolInvocationStore,
@@ -59,7 +61,9 @@ from service.tool_invocation_store import (
     InvocationRow,
     PostgresToolInvocationStore,
 )
-from service.workbench_contracts import CONTRACT_VERSION
+from service import tool_invocations
+from service.tool_invocations import InvocationStores, ToolSettings
+from service.workbench_contracts import CONTRACT_VERSION, ToolId, ToolInvocationRequest
 
 T0 = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
 TTL = timedelta(seconds=150)
@@ -264,7 +268,7 @@ def test_a_named_source_entry_of_the_same_conversation_is_accepted(world: World)
 REFUSED_PARENTS = [
     "foreign_campaign", "foreign_conversation", "another_campaigns_conversation", "uncampaigned_conversation",
     "archived_campaign", "missing_campaign", "source_of_another_conversation", "missing_source",
-    "entry_of_another_conversation", "chat_entry_as_carrier",
+    "entry_of_another_conversation", "chat_entry_as_carrier", "cross_linked_conversation",
 ]
 
 
@@ -280,6 +284,8 @@ def test_the_creating_statement_refuses_every_parent_that_is_not_the_callers(wor
     if case == "archived_campaign":
         with world.db.transaction() as unit:
             assert world.campaigns.set_archived(unit, mine.campaign, owner_id=mine.owner, archived=True)
+    if case == "cross_linked_conversation":
+        _link_into(world, mine.conversation, theirs.campaign)
     with world.db.transaction() as unit:
         entry_here = _entry_in(world, unit, mine.conversation, mine.owner)
         kwargs: dict[str, Any] = {
@@ -293,6 +299,7 @@ def test_the_creating_statement_refuses_every_parent_that_is_not_the_callers(wor
             "missing_source": {"source": new_entry_id()},
             "entry_of_another_conversation": {},
             "chat_entry_as_carrier": {},
+            "cross_linked_conversation": {"campaign": theirs.campaign},
         }[case]
         carrier = entry_here
         if case == "foreign_conversation":
@@ -308,10 +315,25 @@ def test_the_creating_statement_refuses_every_parent_that_is_not_the_callers(wor
         with pytest.raises(InvocationNotStored):
             _create(world, unit, mine, carrier, **kwargs)
         assert world.store.get_for_update(unit, mine.owner, mine.campaign, INV) is None, "still usable"
-    for owner, campaign in ((mine.owner, mine.campaign), (world.other, mine.campaign), (mine.owner, MISSING_CAMPAIGN)):
+    for owner, campaign in ((mine.owner, mine.campaign), (world.other, mine.campaign), (mine.owner, MISSING_CAMPAIGN),
+                            (mine.owner, theirs.campaign)):
         with world.db.transaction() as unit:
             assert world.store.get_for_update(unit, owner, campaign, INV) is None
             assert world.store.attempts(unit, owner, campaign, INV) == []
+
+
+def _link_into(world: World, conversation: str, campaign: str) -> None:
+    """F-1: a row no route can write — the caller's conversation pointing at
+    another GM's campaign (0006's edge is to `campaigns (id)` alone) — so only
+    the campaign's owner predicate stands between the two."""
+    if world.dsn is not None:
+        with connect(world.dsn) as conn:
+            conn.execute("UPDATE chat.conversations SET campaign_id = %s WHERE conversation_id = %s",
+                         (campaign, conversation))
+        return
+    rows = shared_rows(world.db, "conversations")
+    with world.db.transaction() as unit:
+        rows.replace(unit, conversation, replace(rows.visible(unit)[conversation], campaign_id=campaign))
 
 
 def test_a_refused_create_takes_the_entry_appended_before_it_with_it(world: World) -> None:
@@ -404,6 +426,22 @@ def test_no_repr_carries_the_brief_the_result_or_the_invocation_id(world: World)
 
 
 # ── The X-5 count and the pilot day ──────────────────────────────────────────
+
+
+def test_in_flight_ids_of_one_instant_are_in_byte_order_in_both_worlds(world: World) -> None:
+    """F-3: the tie-break is `COLLATE "C"`, as the twin's Python sort is — a
+    linguistic collation would put `a` before `B`, and the two worlds would
+    list a `cap_reached`'s ids in different orders."""
+    table = a_table(world)
+    ids = ["inv_suite_a000000001", "inv_suite_B000000001", "inv_suite_Z000000001", "inv_suite_b000000001"]
+    with world.db.transaction() as unit:
+        for invocation_id in ids:
+            entry_id = _entry_in(world, unit, table.conversation, table.owner, invocation_id)
+            _create(world, unit, table, entry_id, invocation_id)
+        listed = world.store.in_flight_ids(unit, table.owner, now=T0)
+    assert listed == sorted(ids) == ["inv_suite_B000000001", "inv_suite_Z000000001", "inv_suite_a000000001",
+                                     "inv_suite_b000000001"]
+
 
 
 def test_in_flight_counts_this_gms_working_rows_before_their_deadline_oldest_first(world: World) -> None:
@@ -1083,3 +1121,135 @@ def test_a_late_completion_during_and_after_the_next_attempts_admission_is_fence
     final = held(world, table)
     assert final is not None and (final.status, final.attempt, final.result) == ("working", 2, None)
     assert [a.outcome for a in attempts(world, table)] == ["expired", None]
+
+
+# ── The service over both worlds (slice B) ───────────────────────────────────
+#
+# The route suite runs the service on the twin; these run the same three steps
+# against PostgreSQL too, so the statements the service composes — the entry
+# append, the guarded create, the fence, the settle and the entry rewrite in
+# one transaction — are proved on the real database.
+
+NPC_RESULT = {
+    "tool_id": "npc", "result_kind": "document", "prose": "Here she is.", "suggestions": [],
+    "document": {"document_id": "doc_" + "m" * 22, "type": "npc", "title": "Mira", "library_category": "npcs"},
+}
+
+
+class _Npc:
+    tool_id = ToolId.NPC
+
+    def __init__(self) -> None:
+        self.failure: BaseException | None = None
+        self.finishes = 0
+
+    def precheck(self, unit: Any, target: Any) -> None:
+        return None
+
+    def run(self, ctx: Any) -> Any:
+        if self.failure is not None:
+            raise self.failure
+        return NPC_RESULT
+
+    def finish(self, unit: Any, ctx: Any, result: Any) -> Any:
+        self.finishes += 1
+        return result
+
+
+def _service(world: World) -> tuple[InvocationStores, dict[ToolId, _Npc], ToolSettings]:
+    stores = InvocationStores(world.store, world.campaigns, world.conversations, world.timeline)
+    return stores, {ToolId.NPC: _Npc()}, ToolSettings(frozenset({ToolId.NPC}))
+
+
+def _attempt(world: World, table: Table, now: datetime) -> Any:
+    """One POST's three steps: submit, execute, complete."""
+    stores, executors, settings = _service(world)
+    return _attempt_with(world, table, now, stores, executors, settings)
+
+
+def _attempt_with(world: World, table: Table, now: datetime, stores: InvocationStores,
+                  executors: dict[ToolId, _Npc], settings: ToolSettings) -> Any:
+    request = ToolInvocationRequest.model_validate({
+        "schema_version": 1, "invocation_id": INV, "tool_id": "npc", "brief": "A smith",
+        "campaign_id": table.campaign, "conversation_id": table.conversation,
+    })
+    admitted = tool_invocations.submit(
+        world.db, stores, executors, settings, SessionData(user_id=table.owner, role="dm"), request,
+        now=now, chat_turns_today=0,
+    )
+    if isinstance(admitted, tool_invocations.Replay):
+        return admitted.invocation
+    clock = lambda: now + timedelta(seconds=5)  # noqa: E731 - one expression, read twice
+    ctx = tool_invocations.ExecutionContext(
+        admitted, clock=clock, factory=ProviderClientFactory(client_builders={}),
+        probe=tool_invocations.cancellation_probe(world.db, stores, admitted, clock),
+    )
+    executor = executors[ToolId.NPC]
+    outcome = tool_invocations.execute(executor, ctx, available=lambda tool: True)
+    return tool_invocations.complete(world.db, stores, executor, admitted, outcome, ctx, now=clock())
+
+
+def test_the_service_admits_runs_and_completes_and_its_reads_agree(world: World) -> None:
+    table = a_table(world)
+    stores, _, _ = _service(world)
+    done = _attempt(world, table, T0)
+    assert (done.status.value, done.attempt, done.result.model_dump(mode="json")) == ("done", 1, NPC_RESULT)
+    assert tool_invocations.read(world.db, stores, table.owner, table.campaign, INV, now=T0) == done
+    with world.db.transaction() as unit:
+        [entry] = world.timeline.entry_window(unit, table.conversation, before=None, limit=10)
+    assert entry.payload["invocation"] == done.model_dump(mode="json")
+    assert _attempt(world, table, T0 + timedelta(seconds=30)) == done, "a repeat of done replays it"
+    flagged = tool_invocations.cancel(world.db, stores, table.owner, table.campaign, INV, now=T0)
+    assert (flagged.status.value, flagged.cancel_requested) == ("done", True)
+    assert [a.outcome for a in attempts(world, table)] == ["done"]
+
+
+def test_a_failed_attempt_is_retried_as_the_next_attempt_of_one_entry(world: World) -> None:
+    import httpx
+    import openai
+
+    table = a_table(world)
+    stores, executors, settings = _service(world)
+    executors[ToolId.NPC].failure = openai.APITimeoutError(request=httpx.Request("POST", "https://x.invalid"))
+    failed = _attempt_with(world, table, T0, stores, executors, settings)
+    assert (failed.status.value, failed.error.code.value, failed.error.retryable) == (
+        "failed", "provider_timeout", True)
+    executors[ToolId.NPC].failure = None
+    done = _attempt_with(world, table, T0 + timedelta(seconds=30), stores, executors, settings)
+    assert (done.status.value, done.attempt) == ("done", 2)
+    assert len(_entry_ids(world, table.conversation)) == 1
+    assert [a.outcome for a in attempts(world, table)] == ["failed", "done"]
+    assert executors[ToolId.NPC].finishes == 1
+
+
+def test_an_unread_attempt_past_its_deadline_is_ended_by_the_next_read(world: World) -> None:
+    table = a_table(world)
+    stores, _, _ = _service(world)
+    admit(world, table)
+    expired = tool_invocations.read(world.db, stores, table.owner, table.campaign, INV, now=T0 + TTL)
+    assert (expired.status.value, expired.error.code.value) == ("failed", "attempt_expired")
+    assert [a.outcome for a in attempts(world, table)] == ["expired"]
+
+
+@needs_db
+def test_a_completion_whose_conversation_was_deleted_is_the_one_404(dsn: str) -> None:
+    """C-6: the row is gone with its conversation, so the POST answers 404."""
+    world = _pg_world(dsn, Database(dsn, PoolSettings(sync_max=4, async_max=0, acquire_timeout_s=5)))
+    table = a_table(world)
+    stores, executors, settings = _service(world)
+    request = ToolInvocationRequest.model_validate({
+        "schema_version": 1, "invocation_id": INV, "tool_id": "npc", "brief": "A smith",
+        "campaign_id": table.campaign, "conversation_id": table.conversation,
+    })
+    admitted = tool_invocations.submit(world.db, stores, executors, settings,
+                                       SessionData(user_id=table.owner, role="dm"), request, now=T0,
+                                       chat_turns_today=0)
+    assert isinstance(admitted, tool_invocations.Admission)
+    with connect(dsn) as conn:
+        conn.execute("DELETE FROM chat.conversations WHERE conversation_id = %s", (table.conversation,))
+    ctx = tool_invocations.ExecutionContext(admitted, clock=lambda: T0, factory=ProviderClientFactory(),
+                                            probe=lambda: None)
+    with pytest.raises(tool_invocations.NotFound):
+        tool_invocations.complete(world.db, stores, executors[ToolId.NPC], admitted,
+                                  tool_invocations.Outcome(cancelled=True), ctx, now=T0)
+    assert executors[ToolId.NPC].finishes == 0

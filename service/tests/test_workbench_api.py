@@ -977,6 +977,9 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/campaigns/{campaign_id}/documents/{document_id}/versions/{number}"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/restore"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/seal"),
+    ("POST", "/campaigns/{campaign_id}/tool-invocations"),
+    ("GET", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}"),
+    ("POST", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel"),
 }
 
 
@@ -1278,6 +1281,7 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "campaigns_api.py").resolve(),
         (REPO_ROOT / "service" / "seats_api.py").resolve(),
         (REPO_ROOT / "service" / "documents_api.py").resolve(),
+        (REPO_ROOT / "service" / "tool_invocations_api.py").resolve(),
     }
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []
 

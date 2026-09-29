@@ -42,6 +42,7 @@ from . import (
     reconciliation,
     seats_api,
     timeline_api,
+    tool_invocations_api,
     usage_capture,
 )
 from .attachments import UnsupportedAttachmentError, extract_text
@@ -1653,6 +1654,7 @@ app.include_router(
 )
 app.include_router(seats_api.build_router(require_session, get_timeline_database))
 app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
+app.include_router(tool_invocations_api.build_router(WORKBENCH_GM, get_timeline_database, get_message_store))
 
 
 app.include_router(job_driver.build_router(_job_driver))
