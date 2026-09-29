@@ -23,6 +23,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX
 from ingestion.retrieval import RetrievalResult
 
+from . import provider_deadline
 from .attachments import cap_text
 from .models import Source, SpellContent, StatBlockContent, Suggestion, SuggestionStyle
 
@@ -137,6 +138,16 @@ def _as_sdk_timeout(exc: BaseException) -> BaseException:
     return openai.APITimeoutError(request=request)
 
 
+class TurnBudgetExhausted(openai.APITimeoutError):
+    """A provider call refused before it started: what is left of the /chat
+    turn's budget cannot afford it (agent-forge-harness-0u02). A timeout, so an
+    answer ends as /chat's 502 timeout (retryable) and a structuring call
+    degrades to None, like any timeout; no attempt is recorded, none was made."""
+
+    def __init__(self) -> None:
+        super().__init__(request=httpx.Request("POST", "https://provider.invalid"))
+
+
 def generate_result(
     messages: list[Any], *, alias: str, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
@@ -150,8 +161,13 @@ def generate_result(
     being recorded, except that httpx's own timeout becomes the SDK's
     APITimeoutError (`_as_sdk_timeout`). `alias` identifies which catalog
     entry made the call; Checkpoint 1 has no per-request routing yet, so
-    callers pass the service's current model alias."""
+    callers pass the service's current model alias. Inside a /chat turn, a
+    call the turn's budget can no longer afford raises TurnBudgetExhausted
+    before any attempt, and a retry it cannot afford is not made: the last
+    attempt's own error re-raises instead."""
     obs = observer or NullAttemptObserver()
+    if not provider_deadline.turn_affords():
+        raise TurnBudgetExhausted()
     for attempt in range(1, max_attempts + 1):
         # Immediately before the call, and therefore AFTER the previous
         # attempt's backoff sleep below — which is what keeps the backoff out
@@ -163,8 +179,12 @@ def generate_result(
         except BaseException as exc:
             error = _as_sdk_timeout(exc)
             obs.record(alias=alias, result=None, error=error)
-            if isinstance(error, _RETRYABLE_EXCEPTIONS) and attempt < max_attempts:
-                sleep(_RETRY_BACKOFF_SECONDS * attempt)
+            backoff = _RETRY_BACKOFF_SECONDS * attempt
+            if (
+                isinstance(error, _RETRYABLE_EXCEPTIONS) and attempt < max_attempts
+                and provider_deadline.turn_affords(backoff)
+            ):
+                sleep(backoff)
                 continue
             if error is exc:
                 raise
