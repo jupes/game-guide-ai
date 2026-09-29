@@ -943,7 +943,7 @@ interactions ADR §19 A-31, which the owner may override.
 | `game_system` | yes | yes | `dnd5e`, the one system the service answers from |
 | `avatar_icon`, `avatar_tone` | yes | yes | a Material Symbols name and `ember` or `gold`: stable per campaign, the same for the owner and every seated player, until a GM can choose one |
 | `concluded_at` / `concluded` | timestamp or `null` | boolean | the GM's Mark concluded. **Not archive**: a concluded campaign keeps its seats, documents and table, stays in the list, and narrows or widens nothing |
-| `last_played_at` | yes | yes | when the table last met — an ended session's end, an expired one's expiry (whether or not the sweep has marked it yet), a live one's start — or `null` |
+| `last_played_at` | yes | yes | when the table last met — an ended session's end, an expired one's expiry (whether or not the sweep has marked it yet), a live one's start — or `null`. Never later than the session's expiry: an End pressed after it is not a later meeting |
 | `live` | as `badge` | yes | a table session is running now |
 | `badge` | `live`, `ready` or `null` | — | LIVE wins; READY is prepared material waiting (an unarchived document edited after the table last met, or any, for a campaign that has never met); `null` means idle |
 | `seat_count` | 0 to 40 | — | seats not removed, open, offered and accepted alike |

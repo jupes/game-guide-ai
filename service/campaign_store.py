@@ -513,6 +513,13 @@ class CampaignStore(Protocol):
         lock. It is written only by `UnitOfWork.advance_authz_revision`."""
         ...  # pragma: no cover - structural type
 
+    def projection_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
+        """The authorisation revision the table namespace was last projected
+        at (1ir.2.1), or None when the campaign has no authorisation row.
+        Written by `UnitOfWork.advance_authz_revision` (rule 3) and, from
+        `1ir.2.3`, by the projector — never by anything else."""
+        ...  # pragma: no cover - structural type
+
 
 _COLUMNS = "id, owner_id, name, created_at, updated_at, archived_at, concluded_at, tone, game_system"
 
@@ -665,6 +672,13 @@ class PostgresCampaignStore:
         ).fetchone()
         return None if row is None else int(row[0])
 
+    def projection_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
+        row = pg(unit).conn.execute(
+            "SELECT projection_revision FROM campaign.authz_state WHERE campaign_id = %s",
+            (campaign_id,),
+        ).fetchone()
+        return None if row is None else int(row[0])
+
 
 class InMemoryCampaignStore:
     """The twin. Its `create` **stages** the `authz_state` entry, standing in for
@@ -808,3 +822,6 @@ class InMemoryCampaignStore:
 
     def authz_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
         return fake(unit).authz_revision(campaign_id)
+
+    def projection_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
+        return fake(unit).projection_revision(campaign_id)
