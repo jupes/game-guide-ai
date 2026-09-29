@@ -713,9 +713,10 @@ def test_a_driver_error_is_a_503_that_logs_its_type_only(
 def test_the_openapi_models_of_this_family_expose_no_secret(client: TestClient) -> None:
     document = app.openapi()
     family = {path: spec for path, spec in document["paths"].items() if path.startswith(("/campaigns", "/seats"))}
-    # 1kg.2.2's ten, bead cfx's conclude and reopen, and 1kg.5.2's seven
-    # document paths nested under a campaign.
-    assert len(family) == 19
+    # 1kg.2.2's ten, bead cfx's conclude and reopen, 1kg.5.2's seven
+    # document paths and 1kg.4.1's three tool-invocation paths nested under a
+    # campaign.
+    assert len(family) == 22
     schemas = document["components"]["schemas"]
     answered = {"Campaign", "CampaignPage", "Seat", "SeatPage", "SeatOffer", "SeatOfferPage", "PlayerSeat",
                 "PlayerSeatPage"}
