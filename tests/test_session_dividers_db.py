@@ -58,7 +58,14 @@ from service.session_divider_store import (
 from service.session_dividers import DIVIDER_KIND, SessionDividers, divider_entry, enqueuer
 from service.table_session_store import InMemoryTableSessionStore, PostgresTableSessionStore, no_slots
 from service.table_sessions import FANOUT_BOUND, SESSION_LIFETIME, FanOutBound, TableSessions
-from service.timeline_store import EntryInvalid, InMemoryTimelineStore, PostgresTimelineStore, new_entry_id
+from service.timeline_store import (
+    EntryInvalid,
+    InMemoryTimelineStore,
+    PostgresTimelineStore,
+    fake,
+    new_entry_id,
+    pg,
+)
 from service.workbench_contracts import CONTRACT_VERSION, SessionBoundary, SessionDividerEntry, entry_or_opaque
 
 START, END = SessionBoundary.START, SessionBoundary.END
@@ -718,6 +725,76 @@ def test_the_divider_job_logs_no_private_text(
     assert "reached its bound" in text and "skipped" in text and "no-op" in text, "every path was logged"
     for secret in (CANARY_NAME, CANARY_TITLE, unreadable, *threads):
         assert secret not in text
+
+
+# ── The job bounds its own transaction (agent-forge-harness-6up) ─────────────
+
+
+class _BoundProbe:
+    """The world's divider store, reporting how the job's own transaction is
+    bounded: once as `divider_targets` is called, and again as each insert is
+    about to run (the insert's foreign-key `FOR KEY SHARE` is what can wait).
+    The twin's answer is the unit's `transaction_bounds`; PostgreSQL's is what
+    the server holds in force inside that very transaction."""
+
+    def __init__(self, world: DividerWorld) -> None:
+        self._world = world
+        self.at_targets: list[tuple[str, ...]] = []
+        self.at_insert: list[tuple[str, ...]] = []
+
+    def _bounds(self, unit: Any) -> tuple[str, ...]:
+        if self._world.kind == "fake":
+            return tuple(fake(unit).transaction_bounds)
+        found = pg(unit).conn.execute(
+            "SELECT current_setting('transaction_timeout'), current_setting('lock_timeout')"
+        ).fetchone()
+        return (str(found[0]), str(found[1]))
+
+    def divider_targets(self, unit: Any, **kwargs: Any) -> list[str]:
+        self.at_targets.append(self._bounds(unit))
+        found: list[str] = self._world.store.divider_targets(unit, **kwargs)
+        return found
+
+    def append_divider(self, unit: Any, conversation_id: str, entry: Any, **kwargs: Any) -> bool:
+        self.at_insert.append(self._bounds(unit))
+        stored: bool = self._world.store.append_divider(unit, conversation_id, entry, **kwargs)
+        return stored
+
+
+def test_the_divider_job_bounds_its_own_transaction(world: DividerWorld) -> None:
+    """6up (PR #174 review M-1; the critic's item 8, until now half proved: the
+    locked-target test below shows only `lock_timeout`). The divider JOB, run by
+    the runner through its handler, bounds its own transaction, and the divider
+    store is what bounds it: nothing is in force when `divider_targets` is
+    called, and the configured transaction bound is in force at every insert.
+
+    - *fake:* the job transaction's `transaction_bounds` is empty, then holds
+      the configured default (`5s`) exactly once;
+    - *postgres:* `current_setting('transaction_timeout')` inside the job's
+      transaction is `0` (none), then `5s`, beside BRISK's `1s` lock timeout.
+
+    Kills M1: the PostgreSQL `set_config('transaction_timeout', ...)` and the
+    twin's `transaction_bound(None)` dropped."""
+    campaign = _campaign(world)
+    now = datetime.now(UTC)
+    threads = [_thread(world, campaign, now - timedelta(hours=h)) for h in (1, 2)]
+    session = _lifecycle(world).start(world.owner, campaign, command_id=_command()).session
+    probe = _BoundProbe(world)
+    runner = JobRunner(
+        world.jobs,
+        {DIVIDER_KIND: SessionDividers(world.db, sessions=world.sessions, store=probe).handler()},
+        clock=lambda: datetime.now(UTC) + timedelta(days=2),
+    )
+    result = runner.run_due(limit=200)
+    assert result.failed == 0 and not result.remaining, result
+    for thread in threads:
+        assert _dividers(world, thread) == [(session.id, "start", session.started_at)]
+    if world.kind == "fake":
+        assert probe.at_targets == [()], "nothing bounded the job's transaction before the store"
+        assert probe.at_insert == [("5s",), ("5s",)], "the store bounds the job's transaction, once"
+    else:
+        assert probe.at_targets == [("0", "0")], "nothing bounded the job's transaction before the store"
+        assert probe.at_insert == [("5s", "1s"), ("5s", "1s")], "the bound is in force at every insert"
 
 
 # ── PostgreSQL only: who waits for whom ──────────────────────────────────────
