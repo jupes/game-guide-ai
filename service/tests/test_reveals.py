@@ -302,11 +302,12 @@ def test_every_production_narrow_names_its_scope_and_every_store_gets_the_fill()
     registers the reconciliation fill and never the empty `reconcile_slots`.
 
     Positive controls: the scan must find the named sites it exists for —
-    `remove_seat`, both archive steps, the reconciliation fill and both steps
-    of `1ir.2.1`'s group narrowings, and `narrow`, `_close` and `rotate` in
-    each world — so an empty or mis-rooted scan fails. A bead that adds a
-    narrowing (`1kg.5.2`'s document archive and delete) must choose its scope
-    here too."""
+    `remove_seat`, both archive steps, the reconciliation fill, both steps of
+    `1ir.2.1`'s group narrowings, the one narrowing every step of `1kg.5.2`'s
+    document archive and delete goes through (`_narrow_live`), and `narrow`,
+    `_close` and `rotate` in each world — and the fill in every module that
+    builds a production session store, so an empty or mis-rooted scan fails.
+    A bead that adds a narrowing must choose its scope here too."""
     modules = sorted(p.name for p in SERVICE.glob("*.py"))
     assert "campaigns_api.py" in modules and "reveals.py" in modules, "the scan is rooted at service/"
     narrows: list[tuple[str, str, set[str]]] = []
@@ -322,6 +323,7 @@ def test_every_production_narrow_names_its_scope_and_every_store_gets_the_fill()
         ("reveals.py", "reconcile_slots"),
         ("eligibility.py", "narrow_step_one"),
         ("eligibility.py", "_narrow_again_and_advance"),
+        ("document_lifecycle_api.py", "_narrow_live"),
     } <= sites
     missing = [(name, owner) for name, owner, keywords in narrows if not {"clears", "now"} <= keywords]
     assert missing == [], "every production narrow passes clears= and now="
@@ -338,7 +340,11 @@ def test_every_production_narrow_names_its_scope_and_every_store_gets_the_fill()
                 assert not (isinstance(value, ast.Name) and value.id == "no_slots"), f"{name} passes no_slots"
                 if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
                     fills.append((name, value.func.id))
-    assert {("app.py", "slot_clear_for"), ("campaigns_api.py", "slot_clear_for")} <= set(fills)
+    assert {
+        ("app.py", "slot_clear_for"),
+        ("campaigns_api.py", "slot_clear_for"),
+        ("document_lifecycle_api.py", "slot_clear_for"),
+    } <= set(fills)
 
     app = (SERVICE / "app.py").read_text(encoding="utf-8")
     assert [owner for owner, _ in _calls_in_functions(_tree("app.py"), "make_reconcile_slots")] == ["_build_stores"]

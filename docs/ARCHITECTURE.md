@@ -543,7 +543,9 @@ delete narrow the campaign's live table in a first transaction that never
 takes it, then take it exclusively first in a second, re-read ownership under
 it, change the document, narrow again, advance the authorisation revision and
 write a content-free audit row (RQ-5; a lock timeout is "not applied yet",
-never a job). Delete takes only an archived document and asks for the
+never a job). Each narrowing clears that document's copies
+(`reveal_scope.DocumentCopies`) at the request's one clock, and a delete
+narrows before it deletes. Delete takes only an archived document and asks for the
 password first, through the same re-authentication as a seat's Remove.
 
 `campaign.documents` holds one document's **live** content as flat JSON, one
@@ -631,14 +633,15 @@ ends `replaced` only with its last copy). A target slot is re-pointed, never
 cleared and then pointed, so its `seq` rises by exactly one. A narrowing clears
 by **scope** (`reveal_scope`): every slot (End, expiry, Rotate, archive,
 Stop-all), one member's slots (Remove, A-20), one document's copies (a Stop,
-and later a document's archive, deletion or unlink), or none (audio off); the
+a document's archive or deletion, and later its unlink), or none (audio off); the
 default is every slot, so a caller that forgets over-clears.
 
 **The fills and the service** (`service/reveals.py`). `narrow` and its
 extension point carry a scope and the request's clock (`SlotClear = (unit,
 session_id, scope, now)`), and **every production session store is built with
-the fill** `reveals.slot_clear_for(PostgresRevealStore())` — `app.py`'s and
-`campaigns_api.get_campaign_stores`'s — so every narrowing already shipped
+the fill** `reveals.slot_clear_for(PostgresRevealStore())` — `app.py`'s,
+`campaigns_api.get_campaign_stores`'s and
+`document_lifecycle_api.get_lifecycle_stores`'s — so every narrowing already shipped
 clears exactly the displays it invalidates (RQ-7). `no_slots` stays, as the
 empty one tests pass. `campaign.reconcile` is registered with
 `reveals.make_reconcile_slots(...)`, which, under the exclusive campaign lock,
@@ -659,7 +662,9 @@ Every production `narrow(` names `clears=` and `now=`, and
 | Stop-all | every slot | `stop_all` | never |
 | The reconciliation | a dead session's every slot; a live session's removed seats | `reconciled` | exclusive |
 | `narrow` naming no scope | every slot (fail closed) | `narrowed` | — |
-| Later: document archive, delete, unlink (`1kg.5.2`) | that document's copies | `document_archived`, `document_deleted`, `character_unlinked` | — |
+| Document archive (`1kg.5.2`), step 1 and step 2 | that document's copies | `document_archived` | step 2 only, exclusive |
+| Document delete (`1kg.5.2`), step 1 and step 2 — narrowed **before** the row is deleted, as a slot still showing one of its disclosures would refuse the cascade | that document's copies | `document_deleted` | step 2 only, exclusive |
+| Later: character unlink (`1kg.5.2`) | that document's copies | `character_unlinked` | — |
 | Later: table audio off (`1kg.8.6`, `1kg.8.7`) | no reveal slot | — | — |
 
 A **Confirm** (`Reveals.display`) is a locked widening in a fixed order:

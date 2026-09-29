@@ -38,6 +38,7 @@ import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
 
+from service import document_lifecycle_api
 from service import migrations as mig
 from service.audit_log import AuditAction, InMemoryAuditLog, PostgresAuditLog
 from service.campaign_store import InMemoryCampaignStore, MissingParent, PostgresCampaignStore, shared_rows
@@ -2146,6 +2147,110 @@ def test_a_group_narrowing_clears_every_slot_in_each_step_at_the_requests_clock(
     if narrowing == "step_one_alone":
         assert (_epoch(w, session.id), locks) == (epoch + 1, [[]]), "step 1 never asks for the campaign lock"
     elif narrowing == "step_two_alone":
+        assert (_epoch(w, session.id), locks) == (epoch + 1, [[(campaign, "exclusive")]])
+    else:
+        assert _epoch(w, session.id) == epoch + 2, "step 1 and step 2 each advance it once"
+        assert locks == [[], [(campaign, "exclusive")]], "step 1 unlocked, then step 2 under the exclusive lock"
+
+
+DOCUMENT_NARROWINGS = [
+    "archive",
+    "archive_step_one_alone",
+    "archive_step_two_alone",
+    "delete",
+    "delete_step_one_alone",
+    "delete_step_two_alone",
+]
+
+
+def _document_lifecycle_stores(s: Served) -> document_lifecycle_api.LifecycleStores:
+    """The stores `1kg.5.2`'s routes compose: in PostgreSQL the production
+    dependency itself, fill and all; in the twin the served world's, whose
+    session store has the same fill."""
+    w = s.w
+    if w.kind == "postgres":
+        return document_lifecycle_api.get_lifecycle_stores()
+    return document_lifecycle_api.LifecycleStores(w.campaigns, w.documents, w.sessions, s.audit)
+
+
+@pytest.mark.parametrize("narrowing", DOCUMENT_NARROWINGS)
+def test_a_document_archive_or_delete_clears_that_documents_copies_at_the_requests_clock(
+    served: Served, narrowing: str
+) -> None:
+    """T-B11 for `1kg.5.2`'s narrowings (RQ-7; the brief's ID-5 and T-B12, and
+    its critic 8 for a bead that lands first). Archiving or deleting a document
+    clears every copy of that document, as `document_archived` or
+    `document_deleted`, stamped with the one clock the request read, and leaves
+    every other display up: step 1 takes no campaign lock and step 2 the
+    exclusive one, each advancing the epoch once, and no reveal audit row is
+    written. A delete narrows **before** it deletes, so a document still shown
+    (archived under its display by the store's primitive, as nothing else can
+    leave one) is deleted rather than refused by the slot -> disclosure key,
+    and in PostgreSQL its ended disclosure then goes with it by the cascade.
+    Each step clears on its own: step 1 before step 2 has run, and step 2 for
+    the session a start between the steps leaves showing."""
+    s, w = served, served.w
+    stores = _document_lifecycle_stores(s)
+    campaign = _campaign(w)
+    a, b = (_seat(w, campaign, "open", w.players[n]) for n in range(2))
+    session = _session(w, campaign)
+    x, y = _document(w, campaign), _document(w, campaign)
+    cx, cy = _command(), _command()
+    _write(w, campaign, session.id, x, _parts(a, b), command=cx)
+    _write(w, campaign, session.id, y, TableTarget(), command=cy)
+    deleting = narrowing.startswith("delete")
+    if deleting:
+        with w.db.transaction() as unit:
+            assert w.documents.set_archived(unit, campaign, x, archived=True, now=_now())
+    epoch, marks = _epoch(w, session.id), len(s.db.units)
+    #: A moment no reading of the clock during the test can be.
+    now = _now() + timedelta(minutes=5)
+
+    if narrowing == "archive":
+        document_lifecycle_api.archive_document(
+            s.db, stores, campaign_id=campaign, document_id=x, owner_id=w.owner, now=now
+        )
+    elif narrowing == "archive_step_one_alone":
+        document_lifecycle_api.archive_step_one(
+            s.db, stores, campaign_id=campaign, document_id=x, owner_id=w.owner, now=now
+        )
+    elif narrowing == "archive_step_two_alone":
+        document_lifecycle_api.archive_step_two(
+            s.db, stores, campaign_id=campaign, document_id=x, owner_id=w.owner, now=now
+        )
+    elif narrowing == "delete":
+        document_lifecycle_api.delete_document(
+            s.db, stores, campaign_id=campaign, document_id=x, owner_id=w.owner, now=now
+        )
+    elif narrowing == "delete_step_one_alone":
+        document_lifecycle_api.delete_step_one(
+            s.db, stores, campaign_id=campaign, document_id=x, owner_id=w.owner, now=now
+        )
+    else:
+        document_lifecycle_api.delete_step_two(
+            s.db, stores, campaign_id=campaign, document_id=x, owner_id=w.owner, now=now
+        )
+
+    table = _by_command(w, session.id, cy)
+    assert _shown(w, session.id) == {None: table.id, a: None, b: None}, "that document's copies, and only them"
+    assert _seqs(w, session.id) == {None: 1, a: 2, b: 2}
+    assert {p: _slots(w, session.id)[p].updated_at for p in (a, b)} == {a: now, b: now}, "cleared at the one clock"
+    assert [d.id for d in _live(w, session.id)] == [table.id], "another document's display stays up"
+    gone = narrowing in ("delete", "delete_step_two_alone")
+    with w.db.transaction() as unit:
+        ended = w.reveals.by_command(unit, session.id, cx)
+        kept = w.documents.get(unit, campaign, x)
+    assert (kept is None) == gone, "a delete deletes; nothing else does"
+    if gone and w.kind == "postgres":
+        assert ended is None, "the ended disclosure went with the document, by the cascade"
+    else:
+        reason = EndReason.DOCUMENT_DELETED if deleting else EndReason.DOCUMENT_ARCHIVED
+        assert ended is not None and (ended.ended_reason, ended.ended_at) == (reason, now), "the request's clock"
+    assert _reveal_rows(s, campaign) == [], "a narrowing writes its own row, never a reveal row"
+    locks = [unit.campaign_locks for unit in s.db.units[marks:]]
+    if narrowing.endswith("step_one_alone"):
+        assert (_epoch(w, session.id), locks) == (epoch + 1, [[]]), "step 1 never asks for the campaign lock"
+    elif narrowing.endswith("step_two_alone"):
         assert (_epoch(w, session.id), locks) == (epoch + 1, [[(campaign, "exclusive")]])
     else:
         assert _epoch(w, session.id) == epoch + 2, "step 1 and step 2 each advance it once"
