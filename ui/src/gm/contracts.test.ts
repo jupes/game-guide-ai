@@ -77,7 +77,6 @@ import {
   ToolInvocationRequestSchema,
   codePointLength,
   isKnownErrorCode,
-  isRefusedInATitle,
   isWellFormedText,
   parseConversation,
   parseConversationPage,
@@ -1731,12 +1730,69 @@ describe('the conversation family (1kg.2.4)', () => {
     for (const junk of [null, undefined, 42, 'x', []]) expect(parseConversationPage(junk).kind).toBe('unknown')
   })
 
-  it('refuses in a title exactly the code points the server refuses (ruling A2-9)', () => {
-    const spelled = new Set<number>()
-    for (const [low, high] of [[0x00, 0x1f], [0x7f, 0x9f], [0x202a, 0x202e], [0x2066, 0x2069]]) {
-      for (let code = low; code <= high; code += 1) spelled.add(code)
+  // agent-forge-harness-644: a title used to refuse its own hand-picked
+  // isRefusedInATitle set — narrower than the lead ruling of 2026-09-21's
+  // REFUSED_TEXT_CODE_POINTS, which every other piece of stored text refuses
+  // by. There must not be three opinions (service/workbench_contracts.py's
+  // Python twin retires REFUSED_IN_A_TITLE the same way): a title now refuses
+  // exactly that shared set, plus its own, already-shared one-line rule for
+  // the two code points REFUSED_TEXT_CODE_POINTS deliberately leaves to it.
+  it('titles refuse exactly the shared REFUSED_TEXT_CODE_POINTS set', () => {
+    const create = (mid: string) =>
+      ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title: `Harbour${mid}job` })
+    for (const code of REFUSED_TEXT_CODE_POINTS) {
+      const refused = create(String.fromCharCode(code))
+      expect(refused.success).toBe(false)
+      if (!refused.success) expect(refused.error.issues[0]?.path).toEqual(['title'])
     }
-    for (let code = 0; code <= 0x3000; code += 1) expect(isRefusedInATitle(code)).toBe(spelled.has(code))
+  })
+
+  it("titles stay one line — not REFUSED_TEXT_CODE_POINTS' job, so a title keeps its own rule for it", () => {
+    const create = (mid: string) =>
+      ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title: `Harbour${mid}job` })
+    for (const code of [0x0a, 0x0d, 0x2028, 0x2029]) expect(create(String.fromCharCode(code)).success).toBe(false)
+  })
+
+  it('keeps tab and the code points either side of each retired range — the retired isRefusedInATitle blanket-refused them', () => {
+    const create = (mid: string) =>
+      ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title: `Harbour${mid}job` })
+    for (const code of [0x09, 0x20, 0x7e, 0xa0, 0x202f, 0x2065, 0x206a, 0x200c, 0x200d, 0xfe0f]) {
+      expect(create(String.fromCharCode(code)).success).toBe(true)
+    }
+  })
+
+  // agent-forge-harness-644 review M1: pinning only that the shared set IS
+  // refused lets a title-only refusal grow back unseen -- the second opinion
+  // 644 retired. Both directions, over every code point to U+3000, each refused
+  // code point and its neighbours (U+FEFF sits above U+3000), and astral
+  // samples. Lone surrogates are left out: well-formedness is its own rule.
+  // test_conversation_contract.py sweeps the same set on the server.
+  it('a title refuses a code point if and only if the shared rule or the one-line rule does', () => {
+    const lineBreaks = new Set([0x0a, 0x0d, 0x2028, 0x2029])
+    const sweep = new Set<number>()
+    for (let code = 0; code <= 0x3000; code += 1) sweep.add(code)
+    for (const code of REFUSED_TEXT_CODE_POINTS) for (const step of [-1, 0, 1]) if (code + step >= 0) sweep.add(code + step)
+    for (const code of [0x1f3b2, 0xe0001, 0xe007f, 0xf0000, 0x10fffd, 0x10ffff]) sweep.add(code)
+    const wrong: string[] = []
+    for (const code of sweep) {
+      if (code >= 0xd800 && code <= 0xdfff) continue
+      const expected = REFUSED_TEXT_CODE_POINTS.has(code) || lineBreaks.has(code)
+      const refused = !ConversationCreateRequestSchema.safeParse({
+        schema_version: 1, started_mode: 'sage', title: `Harbour${String.fromCodePoint(code)}job`,
+      }).success
+      if (refused !== expected) wrong.push(`U+${code.toString(16).toUpperCase().padStart(4, '0')} ${refused ? 'refused' : 'kept'}`)
+    }
+    expect(wrong).toEqual([])
+  })
+
+  it("trims a title's edges before checking them, as the server does (review N1)", () => {
+    const create = (title: string) =>
+      ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title }).success
+    const bom = String.fromCharCode(0xfeff)
+    const lrm = String.fromCharCode(0x200e)
+    expect(create(`${bom}Harbour${bom}`)).toBe(true)
+    expect(create(`${lrm}Harbour`)).toBe(false)
+    expect(create(`Harbour${lrm}`)).toBe(false)
   })
 
   it('bounds a title after trimming, as the server stores it', () => {

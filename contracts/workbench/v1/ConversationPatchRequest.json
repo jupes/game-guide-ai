@@ -46,6 +46,14 @@
         "archived": false,
         "started_mode": "gm"
       }
+    },
+    {
+      "name": "a tab inside a title",
+      "why": "lead ruling of 2026-09-21 (agent-forge-harness-644): a title's refused set is now exactly check_plain_text/REFUSED_TEXT_CODE_POINTS, the one rule every other piece of stored text uses — not ruling A2-9's own, narrower REFUSED_IN_A_TITLE. That shared rule allows tab everywhere; only a title's line-break rule (still its own, alongside it) refuses U+000A/U+000D.",
+      "value": {
+        "schema_version": 1,
+        "title": "Harbour\tjob"
+      }
     }
   ],
   "invalid": [
@@ -94,14 +102,6 @@
       "value": {
         "schema_version": 1,
         "title": "   "
-      }
-    },
-    {
-      "name": "a tab inside a title",
-      "why": "ruling A2-9: U+0000 to U+001F are refused inside a title; only its edges are trimmed",
-      "value": {
-        "schema_version": 1,
-        "title": "Harbour\tjob"
       }
     },
     {

@@ -13,6 +13,12 @@ export interface Conversation {
    * a change after that starts a new conversation instead (D6, plan's
    * "Conversation affinity"), enforced by the UI, not this store. */
   modelPreference: string
+  /** The preference its FIRST prompt was sent with — what the server bound the
+   * conversation to (D6) — recorded by `recordFirstPrompt` and never changed
+   * after. Null before the first prompt, and for a row that sent its first
+   * prompt before agent-forge-harness-bta, when the pane always posted 'auto'
+   * (so the server bound 'auto', whatever `modelPreference` says). */
+  boundPreference: string | null
 }
 
 const NEW_CONVERSATION_TITLE = 'New conversation'
@@ -54,6 +60,10 @@ function normalizeConversation(value: unknown): Conversation | null {
   // default the backend uses for an omitted model_preference.
   const modelPreference =
     typeof row.modelPreference === 'string' && row.modelPreference ? row.modelPreference : 'auto'
+  const boundPreference =
+    hasFirstPrompt && typeof row.boundPreference === 'string' && row.boundPreference
+      ? row.boundPreference
+      : null
 
   return {
     id: row.id,
@@ -64,6 +74,7 @@ function normalizeConversation(value: unknown): Conversation | null {
     hasFirstPrompt,
     createdAt: row.createdAt,
     modelPreference,
+    boundPreference,
   }
 }
 
@@ -80,6 +91,9 @@ function createConversation(
     hasFirstPrompt: Boolean(firstPrompt?.trim()),
     createdAt: new Date().toISOString(),
     modelPreference,
+    // A row created already holding a first prompt was not sent through
+    // `recordFirstPrompt`, so what bound it is not known here.
+    boundPreference: null,
   }
 }
 
@@ -114,6 +128,7 @@ function recordFirstPrompt(
   rows: Conversation[],
   id: string,
   prompt: string,
+  sentPreference: string | undefined,
 ): Conversation[] | null {
   if (!prompt.trim()) return null
   return updateConversation(rows, id, (conversation) => {
@@ -124,6 +139,7 @@ function recordFirstPrompt(
       title: conversation.customTitle ?? derivedTitle,
       derivedTitle,
       hasFirstPrompt: true,
+      boundPreference: sentPreference ?? null,
     }
   })
 }
@@ -145,7 +161,7 @@ export interface ConversationStore {
   list(mode: ChatMode): Conversation[]
   get(id: string): Conversation | undefined
   create(mode: ChatMode, firstPrompt?: string, modelPreference?: string): Conversation
-  recordFirstPrompt(id: string, prompt: string): void
+  recordFirstPrompt(id: string, prompt: string, sentPreference?: string): void
   rename(id: string, title: string): void
   setModelPreference(id: string, modelPreference: string): void
   remove(id: string): void
@@ -192,8 +208,8 @@ export class MemoryConversationStore
     return this.convs.find((c) => c.id === id)
   }
 
-  recordFirstPrompt(id: string, prompt: string): void {
-    const next = recordFirstPrompt(this.convs, id, prompt)
+  recordFirstPrompt(id: string, prompt: string, sentPreference?: string): void {
+    const next = recordFirstPrompt(this.convs, id, prompt, sentPreference)
     if (next === null) return
     this.convs = next
     this.notifyChanged()
@@ -321,8 +337,8 @@ export class LocalStorageConversationStore
     return conversation
   }
 
-  recordFirstPrompt(id: string, prompt: string): void {
-    const next = recordFirstPrompt(this.load(), id, prompt)
+  recordFirstPrompt(id: string, prompt: string, sentPreference?: string): void {
+    const next = recordFirstPrompt(this.load(), id, prompt, sentPreference)
     if (next !== null && this.save(next)) this.notifyChanged()
   }
 
