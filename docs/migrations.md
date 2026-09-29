@@ -233,6 +233,18 @@ caller's work. Many concurrent share holders make a multixact, and in principle
 could keep a claim off that one row for as long as absorbers keep arriving; each
 holds it only until its own short transaction commits.
 
+**Enqueuing several keys in one transaction needs a fixed order.** Because an
+enqueue can wait on another open transaction's uncommitted enqueue of the same
+key, two transactions that each enqueue keys `K1` and `K2` — one in that order,
+the other reversed — can each end up waiting on the other's insert.
+PostgreSQL's own deadlock detector finds the cycle and aborts one of them with
+`40P01`; that is not a bug in the outbox, and no queue bound covers it, since
+nothing bounds an enqueue's wait (above). A deadlock victim here is retried
+exactly as a lock-timeout victim is (RQ-3). A caller that enqueues more than
+one dedupe key in a transaction must therefore pick one fixed order for its
+keys and use it every time, the way RQ-3 orders every row lock — never an
+order that depends on the request.
+
 #### Who runs jobs (1kg.2.7)
 
 Nothing runs by itself: Cloud Run allocates CPU only during a request. The three
