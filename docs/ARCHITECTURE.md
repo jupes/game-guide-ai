@@ -442,8 +442,11 @@ off the very bound it exists to raise.
 ### Documents and their versions
 
 `0008_document_schema.sql` adds two tables and `service/document_store.py` the
-store over them (`1kg.5.1`). **No routes read either yet** — those are
-`1kg.5.2`'s.
+store over them (`1kg.5.1`). Eight Workbench routes in `service/documents_api.py`
+(`1kg.5.2`) serve them — the library, create, read, field patch, history, a
+version's content, restore and seal — under `/campaigns/{campaign_id}`, each
+reading ownership first in its transaction and none taking the campaign lock;
+the pure rules between the store and the wire are `service/document_wire.py`.
 
 `campaign.documents` holds one document's **live** content as flat JSON, one
 value per field key its type declares, plus the two counters. `campaign.document_versions`
