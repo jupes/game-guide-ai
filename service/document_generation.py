@@ -300,6 +300,7 @@ def _walk(value: object) -> Iterator[tuple[object, int]]:
 
 
 def _checked_fields(doc_type: DocumentTypeId, data: dict[str, Any]) -> dict[str, Any] | None:
+    # justification: document data is stored JSON, which check_fields validates.
     """``check_fields(whole=True)`` or None, so the refusal is raised outside
     the ``except`` and carries no chained context."""
     try:
@@ -311,6 +312,7 @@ def _checked_fields(doc_type: DocumentTypeId, data: dict[str, Any]) -> dict[str,
 def validate_generated_fields(
     doc_type: DocumentTypeId, raw: object, *, server_owned: frozenset[str], preset: Mapping[str, Any]
 ) -> tuple[dict[str, Any], int]:
+    # justification: the preset and the returned data are stored JSON of each field's kind.
     """§6.5 steps 6–10 and 12, for any type: the stored-JSON data and how many
     server-owned keys the output tried to set. Raises only :class:`InvalidGeneration`."""
     kind_of_type = DocumentTypeId(doc_type)
@@ -433,6 +435,7 @@ def _context_is_bounded(request: GenerationRequest) -> bool:
 
 
 def _preset_is_valid(spec: GenerationSpec, preset: Mapping[str, Any]) -> bool:
+    # justification: the preset is bare JSON of each field's kind, checked here.
     declared = _declared(spec.doc_type)
     if any(key not in declared or declared[key] is FieldKind.ASSET or key == "tags" for key in preset):
         return False
@@ -654,6 +657,7 @@ def _strict_json(body: str) -> tuple[bool, Any]:
 
 
 def _envelope(parsed: object) -> tuple[dict[str, Any], list[int]] | None:
+    # justification: the fields are bare JSON until validate_generated_fields checks them.
     if not isinstance(parsed, dict) or set(parsed) != {"fields", "cited"}:
         return None
     fields, cited = parsed["fields"], parsed["cited"]

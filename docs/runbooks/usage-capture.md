@@ -114,7 +114,7 @@ turn**, classifying what happened to it.
 | `parse_failure` | The provider responded, but the reply was not valid JSON or not the right shape (a `ValueError`, including pydantic's `ValidationError`, which is a `ValueError` subclass). Ours, not the provider's — and it was still billed. |
 | `skipped_by_gate` | The cost heuristic (`_looks_like_statblock`) ruled the turn out before any call was made. `suggestions` and `spell_structuring` have no gate and never produce this outcome. |
 
-`document_generation` (bead `1kg.5.4`) records exactly one outcome per generation that reached a provider: `produced`, `parse_failure` (the output failed a check, with its closed code kept server-side), or `none` (the provider call failed, or a cancellation stopped a retry). A request refused before any call records nothing, and it never produces `skipped_by_gate`.
+`document_generation` (bead `1kg.5.4`) records exactly one outcome per generation that reached a provider: `produced`, `parse_failure` (the output failed a check; the record carries no reason, and the closed code exists only on the `InvalidGeneration` raised to the caller), or `none` (the provider call failed, or a cancellation stopped a retry). A request refused before any call records nothing, and it never produces `skipped_by_gate`.
 
 It shares `operation_id` with that turn's `provider_attempt` records (both
 come from the same `Operation`) — join on it to see "one call, no record" for
