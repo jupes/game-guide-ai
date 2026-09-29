@@ -584,20 +584,28 @@ def _fmt(v: Any, pct: bool = False) -> str:
 
 
 def summary_table(reports: Sequence[Mapping[str, Any]]) -> str:
-    """Markdown summary: one row per arm."""
+    """Markdown summary: one row per arm. The template-grouped adversarial column reads
+    ``adversarial_template_grouped`` (only the embedding arm carries it, and only when that
+    pass came back ``"ok"``, see ``run_embedding``/``evaluate``) and prints n/a for every arm
+    without one -- README Limitations says Pilot 1 test 3 must read this score, not the
+    per-instance ``Adversarial held @0.99`` column beside it (``agent-forge-harness-fzx``)."""
     head = ("| Arm | Status | Macro-F1 | ECE | Coverage / precision @0.99 | None-veto precision / coverage @0.99 "
-            "| Adversarial held @0.99 | p50 / p95 ms | $ per 1,000 | Wasted calls / missed cards per 1,000 |")
-    rows = [head, "|" + "---|" * 10]
+            "| Adversarial held @0.99 | Adversarial held @0.99 (template-grouped) | p50 / p95 ms | $ per 1,000 "
+            "| Wasted calls / missed cards per 1,000 |")
+    rows = [head, "|" + "---|" * 11]
     for r in reports:
         if r["status"] != "ok":
-            rows.append(f"| {r['arm']} | {r['status']}: {r['reason']} |" + " n/a |" * 8)
+            rows.append(f"| {r['arm']} | {r['status']}: {r['reason']} |" + " n/a |" * 9)
             continue
         cov, veto, ds = r["coverage"]["0.99"], r["none_veto_on_heuristic_positives"]["0.99"], r["downstream_per_1000"]
+        template_adv = r.get("adversarial_template_grouped")
+        template_held = template_adv["held_to_none_at_0.99"] if template_adv else None
         rows.append(
             f"| {r['arm']} | ok (n={r['n']}) | {_fmt(r['macro_f1'])} | {_fmt(r['ece_10_bins'])} "
             f"| {_fmt(cov['coverage'], True)} / {_fmt(cov['precision'], True)} "
             f"| {_fmt(veto['precision'], True)} / {_fmt(veto['coverage'], True)} "
             f"| {_fmt(r['adversarial']['held_to_none_at_0.99'], True)} "
+            f"| {_fmt(template_held, True)} "
             f"| {_fmt(r['latency_ms']['p50'])} / {_fmt(r['latency_ms']['p95'])} "
             f"| {r['cost_per_1000_usd']:.4f} | {ds['wasted_calls']:.0f} / {ds['missed_cards']:.0f} |"
         )

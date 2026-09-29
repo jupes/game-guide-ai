@@ -566,6 +566,44 @@ def test_evaluate_passes_a_skipped_arm_through_without_scores():
     assert report == {"arm": "llm", "status": "skipped", "reason": "no recording"}
 
 
+def _bare_ok_report(arm: str, adversarial_template_grouped: dict | None = None) -> dict:
+    report = {
+        "arm": arm, "status": "ok", "reason": "", "n": 10, "macro_f1": 0.9, "ece_10_bins": 0.05,
+        "coverage": {"0.99": {"coverage": 0.8, "precision": 0.95}},
+        "none_veto_on_heuristic_positives": {"0.99": {"precision": 0.97, "coverage": 0.6}},
+        "adversarial": {"n": 2, "held_to_none_at_0.99": 0.7},
+        "latency_ms": {"p50": 12.0, "p95": 30.0},
+        "cost_per_1000_usd": 0.021,
+        "downstream_per_1000": {"wasted_calls": 3.0, "missed_cards": 1.0},
+    }
+    if adversarial_template_grouped is not None:
+        report["adversarial_template_grouped"] = adversarial_template_grouped
+    return report
+
+
+def test_summary_table_pins_the_template_grouped_adversarial_column():
+    """agent-forge-harness-fzx: README Limitations says Pilot 1 test 3 must read the embedding
+    arm's adversarial_template_grouped score, but until now that score only ever reached the
+    JSON report -- summary_table() (what main() prints) showed only the per-instance
+    'Adversarial held @0.99'. Pins the new column beside it, and n/a for an arm (llm here) whose
+    report carries no template-grouped section at all."""
+    embedding = _bare_ok_report("embedding", {"n": 2, "held_to_none_at_0.99": 0.55})
+    llm = _bare_ok_report("llm")  # no template-grouped pass for this arm
+    table = db.summary_table([embedding, llm])
+    assert "Adversarial held @0.99 (template-grouped)" in table
+    rows = {line.split("|")[1].strip(): [c.strip() for c in line.split("|")]
+            for line in table.splitlines() if line.startswith("| ")}
+    assert rows["embedding"][7] == "70.0%"  # the pre-existing per-instance column is untouched
+    assert rows["embedding"][8] == "55.0%"  # the new template-grouped column
+    assert rows["llm"][8] == "n/a"  # llm never runs a template-grouped pass
+
+
+def test_summary_table_fills_every_new_column_with_na_for_a_non_ok_arm():
+    table = db.summary_table([db.evaluate([], db.ArmResult("jev", "refused", "no key"), {})])
+    line = next(line for line in table.splitlines() if line.startswith("| jev"))
+    assert [c.strip() for c in line.split("|")] == ["", "jev", "refused: no key"] + ["n/a"] * 9 + [""]
+
+
 def test_cli_runs_offline_on_the_committed_set_and_never_prints_a_key(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("OPENAI_API_KEY", FAKE_OPENAI_KEY)  # present, but --offline must win
     out = tmp_path / "report.json"
