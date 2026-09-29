@@ -3357,13 +3357,14 @@ def test_the_invitee_page_is_newest_first_and_walks_once(world: World) -> None:
     with world.db.transaction() as unit:
         found = offers.find_for_invitee(unit, made[0], key, world.players[0], now=T0)
     assert found is not None and (found.campaign_name, found.alias) == ("C0", "Rook")
-    # Structural check, not a substring-of-repr check: `repr(found)` also holds
-    # SeatOffer's random ids (secrets.token_urlsafe), so asserting a short name
-    # like "C0" is absent from that soup is flaky — it can appear there by
-    # chance. Assert instead, on the dataclass's own field metadata, that
-    # `campaign_name` and `alias` are exactly the fields hidden from repr.
-    hidden_fields = {f.name for f in fields(found) if not f.repr}
-    assert hidden_fields == {"campaign_name", "alias"}
+    # `repr(found)` also holds SeatOffer's random ids (secrets.token_urlsafe), so
+    # a short name like "C0" can appear there by chance. Check two things that
+    # do not depend on those ids: the dataclass marks both fields hidden, and
+    # what `repr(found)` prints outside the nested offer names neither of them
+    # (a hand-written `__repr__` would pass the first check but not this one).
+    assert {f.name for f in fields(found) if not f.repr} >= {"campaign_name", "alias"}
+    rendered = repr(found).replace(repr(found.offer), "")
+    assert "C0" not in rendered and "Rook" not in rendered
 
 
 def test_decline_block_and_the_repeat_readers(world: World) -> None:
