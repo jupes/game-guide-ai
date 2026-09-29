@@ -12,9 +12,9 @@
  * to `onStartRefused` (`ecr`). End is offered whenever a live session is known,
  * whatever is pending, for any tier (X-3, T4-3), and delivered by an
  * `EndCourier` that outlives the scope and this provider. One status re-read
- * when `ends_at` passes, never a poll, and no `liveSession` past it whatever
- * that re-read says (SEC-42, T4-7). No Rotate, no screen UI,
- * no timeline re-read, no web storage.
+ * when the `ends_at` timer fires, never a poll, and from then on no
+ * `liveSession` for that `ends_at`, whatever the re-read says (SEC-42, T4-7).
+ * No Rotate, no screen UI, no timeline re-read, no web storage.
  */
 
 import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
@@ -47,8 +47,9 @@ export interface TableSessionView {
   readonly endedAt: string | null
 }
 
-/** For `1ir` and `1kg.7`: non-null only while the session is live and its
- * `ends_at` has not yet passed on this clock (SEC-42, T4-7). */
+/** For `1ir` and `1kg.7`: non-null while the session is live, until its
+ * `ends_at` timer fires on this clock (SEC-42, T4-7). A late timer (a suspended
+ * tab) withdraws it late; the server checks `ends_at` on every frame. */
 export interface LiveSession {
   readonly sessionId: string
   readonly campaignId: string

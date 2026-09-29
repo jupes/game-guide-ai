@@ -168,6 +168,7 @@ describe('TableSessionProvider', () => {
   it('T4-4: live_elsewhere is shown and never answered with an End', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(ENDED))
+    expect(t.now()).toMatchObject({ state: 'ended', liveSession: null })
     void t.now().start()
     await flush()
     await t.answer(409, refusal('live_elsewhere'))
@@ -239,7 +240,7 @@ describe('TableSessionProvider', () => {
     expect(t.posts().map((call) => call.url)).toEqual(Array<string>(8).fill(TABLE_A))
     expect(new Set(bodies.map((body) => body?.command_id)).size).toBe(1)
     expect(bodies.every((body) => body?.action === 'end' && body.session_id === 'tss_1')).toBe(true)
-    expect(t.now()).toMatchObject({ state: 'ended', pending: null, endRetrying: false })
+    expect(t.now()).toMatchObject({ state: 'ended', pending: null, endRetrying: false, liveSession: null })
   })
 
   it('End honours a longer retry_after_s, is sent at once on a second press, and stops on a 404', async () => {
@@ -390,6 +391,23 @@ describe('TableSessionProvider', () => {
     void t.now().end()
     await flush()
     expect(t.posts()).toMatchObject([{ url: TABLE_A, body: { action: 'end', session_id: 'tss_1' } }])
+  })
+
+  it('T4-7: after an expiry, a later ends_at is live again (one more re-read), and so is the next session', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    await advance(HOUR)
+    expect(t.now().liveSession).toBeNull()
+    await t.answer(200, envelope(stored({ ends_at: '2026-09-29T23:00:00Z' })))
+    expect(t.now().liveSession).toMatchObject({ sessionId: 'tss_1', campaignId: 'cmp_A' })
+    await advance(2 * HOUR)
+    expect(t.gets()).toHaveLength(3)
+    await t.answer(200, envelope(stored({ state: 'ended', ends_at: '2026-09-29T23:00:00Z', ended_at: '2026-09-29T23:00:00Z' })))
+    expect(t.now()).toMatchObject({ state: 'ended', liveSession: null })
+    void t.now().start()
+    await flush()
+    await t.answer(200, envelope(stored({ session_id: 'tss_2', started_at: '2026-09-29T23:00:00Z', ends_at: '2026-09-30T01:00:00Z' })))
+    expect(t.now()).toMatchObject({ state: 'live', liveSession: { sessionId: 'tss_2', campaignId: 'cmp_A' } })
   })
 
   it('is inert outside a provider', async () => {
