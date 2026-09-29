@@ -18,6 +18,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable, Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import httpcore
@@ -219,8 +220,39 @@ def test_a_trickling_provider_ends_at_the_attempt_deadline(stalled: Callable[...
     elapsed = time.monotonic() - began
     assert isinstance(raised, openai.APITimeoutError)
     # The drip beat every read bound; the deadline, connect + request, ended it, and only once.
-    assert DEADLINE_S - CLOCK_SLACK_S <= elapsed < 2 * DEADLINE_S
+    # agent-forge-harness-g44q M-1: [0.94x, 2x) let a mutant that stamps 1.8x the configured
+    # deadline through (117 s per attempt in production, 352.5 s for three attempts, over Cloud
+    # Run's 300 s). The budget tolerates at most one extra read timeout past the deadline.
+    assert DEADLINE_S - CLOCK_SLACK_S <= elapsed < DEADLINE_S + TIMEOUT_S
     assert provider.hung_up_on(1)
+
+
+def test_the_attempt_deadline_is_stamped_exactly_now_plus_the_configured_seconds(
+    monkeypatch: pytest.MonkeyPatch, stalled: Callable[..., StalledProvider],
+) -> None:
+    """agent-forge-harness-g44q M-1: pins the enforced stamp itself, reading only
+    `_deadline_s`, not merely how long an attempt runs — the elapsed-time bracket above is
+    loose enough that a mutant stamping e.g. 1.8x the configured deadline could still land
+    inside it on a slow box. Freezing `provider_deadline`'s own view of `time.monotonic` (a
+    name replaced only in that module, not the real clock everything else still reads) lets
+    the stamp be checked for exact equality instead of a window."""
+    provider = stalled(_ANSWERED)
+    fixed_now = 1_000_000.0
+    monkeypatch.setattr(provider_deadline, "time", SimpleNamespace(monotonic=lambda: fixed_now))
+    captured: list[float | None] = []
+    original_capped = provider_deadline._capped
+
+    def spying_capped(timeout: float | None, expired: type[httpcore.TimeoutException]) -> float | None:
+        if not captured:  # only the first call: connect_tcp, right after the stamp is set
+            captured.append(provider_deadline._attempt_deadline.get())
+        return original_capped(timeout, expired)
+
+    monkeypatch.setattr(provider_deadline, "_capped", spying_capped)
+    transport = provider_deadline.AttemptDeadlineTransport(DEADLINE_S)
+    with httpx.Client(transport=transport, timeout=None) as client:
+        response = client.post(provider.url)
+    assert response.status_code == 200
+    assert captured == [fixed_now + DEADLINE_S]
 
 
 def test_each_attempt_gets_a_deadline_of_its_own(stalled: Callable[..., StalledProvider]) -> None:
@@ -262,7 +294,12 @@ def test_an_attempt_on_another_thread_neither_extends_nor_ends_this_ones_deadlin
     answers: list[bytes] = []
 
     def answer_meanwhile() -> None:
+        # `sent_to(1)` only proves the preamble went out, before any drip; sleeping a couple
+        # of drips further makes this genuinely partway through the trickle (agent-forge-
+        # harness-g44q M-2), so a shared holder extended by this attempt's own deadline would
+        # push the first one's well past the tight bound below, not by a start-time sliver.
         if trickling.sent_to(1):
+            time.sleep(2 * DRIP_S)
             answers.append(client.post(answering.url).content)
 
     meanwhile = threading.Thread(target=answer_meanwhile, daemon=True)
@@ -274,7 +311,11 @@ def test_an_attempt_on_another_thread_neither_extends_nor_ends_this_ones_deadlin
     client.close()
     assert answers == [_ANSWER]
     assert isinstance(raised, httpx.ReadTimeout)
-    assert elapsed >= DEADLINE_S - CLOCK_SLACK_S
+    # agent-forge-harness-g44q M-2: the lower bound alone proves "not earlier"; it does not
+    # prove "not extended" — a process-shared or ref-counted deadline holder that lets the
+    # second thread's attempt push this one's deadline out would still pass it. The upper
+    # bound proves the overlapping attempt on the other thread left this deadline alone.
+    assert DEADLINE_S - CLOCK_SLACK_S <= elapsed < DEADLINE_S + CLOCK_SLACK_S
 
 
 def test_an_attempt_is_one_request_and_follows_no_redirect(stalled: Callable[..., StalledProvider]) -> None:
