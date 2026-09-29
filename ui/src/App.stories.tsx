@@ -189,3 +189,29 @@ export const SessionCheckUnavailablePhone320: Story = {
     await expectTouchTarget(canvas, 'Try again')
   },
 }
+
+/**
+ * agent-forge-harness-0rn: the phone sign-in path, composed. App imports every
+ * shell stylesheet, so this is the one local story where all of the shell's
+ * CSS runs together: Landing, then the workspace, then the drawer, with no
+ * page-level overflow at any step. (The e2e spec `phone.spec.ts` runs the
+ * same path against the real stack in CI.)
+ */
+export const SignedInPhone390: Story = {
+  ...atViewport('phone390'),
+  decorators: [withShell({ authStatus: 'authenticated', screen: 'landing' })],
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone390')
+    const canvas = within(canvasElement)
+    await expectNoPageOverflow()
+    await userEvent.click(canvas.getByRole('button', { name: /enter the tavern/i }))
+    const menu = await canvas.findByRole('button', { name: 'Open navigation' })
+    await expectNoPageOverflow()
+    await userEvent.click(menu)
+    const drawer = canvas.getByRole('dialog', { name: 'Navigation' })
+    await expectNoPageOverflow()
+    await userEvent.click(within(drawer).getByRole('button', { name: 'New conversation' }))
+    await expect(canvas.queryByRole('dialog', { name: 'Navigation' })).toBeNull()
+    await expectNoPageOverflow()
+  },
+}

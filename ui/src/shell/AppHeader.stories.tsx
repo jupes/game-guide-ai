@@ -12,6 +12,8 @@ import { expect, userEvent, within } from 'storybook/test'
 
 import { tabTo } from '../../.storybook/keyboard'
 import { json, stubFetch, withShell } from '../../.storybook/shellHarness'
+import { expectTouchTargets } from '../../.storybook/touchTarget'
+import { atViewport, expectNoPageOverflow, expectViewport } from '../../.storybook/viewports'
 import { AppHeader } from './AppHeader'
 
 const CATALOG = {
@@ -135,4 +137,21 @@ export const Dark: Story = {
 export const DarkGmChannel: Story = {
   globals: { theme: 'dark' },
   decorators: [withShell({ mode: 'gm', conversations: [{ mode: 'gm' }], selected: 0 })],
+}
+
+/**
+ * agent-forge-harness-0rn: the narrow layout's header — channels only (the
+ * model picker and theme control are in the drawer). At 320px the four DM
+ * channels are wider than the band, so the band scrolls; the page must not.
+ */
+export const Phone320WithoutSettings: Story = {
+  ...atViewport('phone320'),
+  args: { showSettings: false },
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone320')
+    const canvas = within(canvasElement)
+    await expectNoPageOverflow()
+    await expect(canvas.queryByRole('combobox', { name: 'Model' })).toBeNull()
+    await expectTouchTargets(canvas, ['Sage', 'Spell', 'Rules', 'GM'])
+  },
 }

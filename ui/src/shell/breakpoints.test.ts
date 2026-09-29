@@ -9,11 +9,13 @@
  * went back to `100vh` (LAYOUT-8), and that zoom stays enabled.
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { act, renderHook } from '@testing-library/react'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { NARROW_MEDIA, PHONE_MEDIA } from './breakpoints'
+import { NARROW_MEDIA, PHONE_MEDIA, useShellLayout } from './breakpoints'
+import { installMatchMedia, type MatchMediaStub } from '../testing/matchMediaStub'
 
 const SHELL_DIR = dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = dirname(SHELL_DIR)
@@ -119,5 +121,45 @@ describe('zoom is never disabled (T-BP-5, WCAG 1.4.4)', () => {
     expect(meta?.[1]).toBe('width=device-width, initial-scale=1.0')
     expect(html).not.toMatch(/maximum-scale/)
     expect(html).not.toMatch(/user-scalable/)
+  })
+})
+
+describe('useShellLayout (T-HK-1..3)', () => {
+  let stub: MatchMediaStub | null = null
+  afterEach(() => {
+    stub?.restore()
+    stub = null
+  })
+
+  it('is wide where the platform has no matchMedia, so jsdom tests keep today’s layout', () => {
+    expect(typeof window.matchMedia).toBe('undefined')
+    const { result } = renderHook(() => useShellLayout())
+    expect(result.current).toBe('wide')
+  })
+
+  it('asks NARROW_MEDIA, is narrow when it matches, and follows a change', () => {
+    stub = installMatchMedia(true)
+    const { result } = renderHook(() => useShellLayout())
+    expect(result.current).toBe('narrow')
+    expect(stub.queries).toContain(NARROW_MEDIA)
+    expect(new Set(stub.queries)).toEqual(new Set([NARROW_MEDIA]))
+    act(() => stub?.set(false))
+    expect(result.current).toBe('wide')
+    act(() => stub?.set(true))
+    expect(result.current).toBe('narrow')
+  })
+
+  it('removes its listener on unmount', () => {
+    stub = installMatchMedia(false)
+    const { unmount } = renderHook(() => useShellLayout())
+    expect(stub.listenerCount()).toBeGreaterThan(0)
+    unmount()
+    expect(stub.listenerCount()).toBe(0)
+  })
+
+  it('restores the platform it found', () => {
+    const own = installMatchMedia(false)
+    own.restore()
+    expect(typeof window.matchMedia).toBe('undefined')
   })
 })

@@ -1,5 +1,9 @@
 /* ── WorkspaceShell ──────────────────────────────────────────────────────────
-   Two-column workspace layout: TopBar over LeftNav + main chat area.
+   Wide (>= 768px): TopBar over LeftNav + main chat area, two columns.
+   Narrow (< 768px, LAYOUT-3, agent-forge-harness-0rn): one column; LeftNav is
+   an off-canvas modal drawer. The structural switch keys on `data-layout`,
+   which WorkspaceShell sets from useShellLayout (NARROW_MEDIA), so the
+   presentation and the dialog semantics come from the same query.
    ─────────────────────────────────────────────────────────────────────────── */
 
 .workspace-shell {
@@ -10,10 +14,21 @@
   background: var(--md-sys-color-surface);
 }
 
+/* TopBar and AppHeader: one wrapper so the drawer can make them inert. */
+.workspace-shell__chrome {
+  flex-shrink: 0;
+}
+
 .workspace-shell__body {
   display: flex;
   flex: 1;
   overflow: hidden;
+}
+
+/* The drawer host. At wide it takes no box of its own, so LeftNav sits in
+   the body row exactly as before. */
+.workspace-shell__nav {
+  display: contents;
 }
 
 .workspace-shell__main {
@@ -22,6 +37,93 @@
   flex-direction: column;
   overflow: hidden;
   padding: 24px;
+}
+
+/* A programmatic focus target (LAYOUT-6's fallback), not a control. */
+.workspace-shell__main:focus {
+  outline: none;
+}
+
+/* ── Narrow: the drawer ───────────────────────────────────────────────────────
+   Closed, the host is not rendered at all (display: none), so nothing in it
+   is in the tab order or the accessibility tree. Open, it is a fixed panel
+   over a scrim, and it scrolls as a whole, so a short screen (a phone in
+   landscape, or a laptop at 200% zoom) still reaches the account footer. */
+.workspace-shell[data-layout="narrow"] .workspace-shell__nav {
+  display: none;
+}
+
+.workspace-shell[data-layout="narrow"] .workspace-shell__nav[data-open] {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 268px;
+  max-width: calc(100% - 48px); /* at least 48px of scrim stays tappable */
+  z-index: var(--aether-z-drawer);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--md-sys-color-surface-container);
+  box-shadow: var(--md-sys-elevation-level3);
+}
+
+.workspace-shell[data-layout="narrow"] .workspace-shell__nav[data-open]:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: -3px;
+}
+
+/* LeftNav fills the drawer and never shrinks below its content: `height:
+   auto` overrides LeftNav's own `height: 100%`, which would otherwise become
+   the flex basis and squeeze the conversation list to nothing. */
+.workspace-shell[data-layout="narrow"] .left-nav {
+  width: 100%;
+  height: auto;
+  flex: 1 0 auto;
+  border-right: none;
+}
+
+.workspace-shell__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--aether-z-drawer) - 1);
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 55%, transparent);
+}
+
+.workspace-shell__drawer-head {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  padding: 8px 8px 0;
+}
+
+.workspace-shell__drawer-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--aether-touch-min);
+  min-height: var(--aether-touch-min);
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  cursor: pointer;
+}
+
+.workspace-shell__drawer-close .material-symbols-rounded {
+  font-size: 24px;
+}
+
+@media (hover: hover) {
+  .workspace-shell__drawer-close:hover {
+    background: var(--md-sys-color-surface-container-high);
+  }
+}
+
+.workspace-shell__drawer-close:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
 }
 
 /* ── Phone (agent-forge-harness-0rn) ─────────────────────────────────────────
