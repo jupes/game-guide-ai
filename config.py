@@ -114,6 +114,19 @@ IPL_FALLBACK_DISTANCE: float = _float("RAG_FALLBACK_DISTANCE", 0.42)
 # out-of-corpus questions. (Name kept stable for existing importers.)
 KOZ_ANSWERABLE_DISTANCE: float = _float("RAG_ANSWERABLE_DISTANCE", 0.50)
 
+# Per-attempt timeout on the service's query-embeddings client
+# (agent-forge-harness-xiu.2.3): how long one read, write or pool wait may block
+# before the embed fails as a timeout. It used to be the SDK's 600 s with two
+# SDK retries, so a silent provider held a /chat worker for about 30 minutes.
+# One short query embeds in well under a second; 10 s leaves headroom for a slow
+# provider, and ingestion/retrieval.py's two attempts end within
+# 2 x (5 + 10) + 0.5 s of backoff = 30.5 s against a silent provider. The bound
+# is per wait, not wall-clock: a provider that trickles bytes can outlast it.
+# Read when the client is built, so a test can monkeypatch it.
+EMBED_REQUEST_TIMEOUT_S: float = _seconds("RAG_EMBED_REQUEST_TIMEOUT_S", 10.0)
+# Connect bound for the same client; 5 s is the OpenAI SDK's own default.
+EMBED_CONNECT_TIMEOUT_S: float = _seconds("RAG_EMBED_CONNECT_TIMEOUT_S", 5.0)
+
 
 # --- Generation / answer assembly (service) --------------------------------
 
@@ -141,6 +154,10 @@ TEMPERATURE: float = _float("RAG_TEMPERATURE", 0.2)
 # finish, and service/generate.py's three attempts still end within
 # 3 x (5 + 60) + 1.5 s of backoff = 196.5 s, under Cloud Run's 300 s request
 # timeout (scripts/deploy.sh; pinned in service/tests/test_providers.py).
+# Those bounds are per wait, so a provider that trickles a byte at a time would
+# outlast them; the two added together are also each attempt's wall-clock
+# deadline (agent-forge-harness-2bb, service/provider_deadline.py), which keeps
+# that sum true whatever the provider sends.
 LLM_REQUEST_TIMEOUT_S: float = _seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0)
 # Connect bound for the same clients; 5 s is the OpenAI SDK's own default.
 LLM_CONNECT_TIMEOUT_S: float = _seconds("RAG_LLM_CONNECT_TIMEOUT_S", 5.0)

@@ -120,7 +120,7 @@ export const KNOWN_ERROR_CODES = [
   'cap_reached', 'throttled_user', 'throttled_daily', 'provider_failed', 'provider_timeout',
   'attempt_expired', 'backend_unavailable', 'already_linked', 'alias_taken', 'seat_not_open',
   'seat_not_accepted', 'seat_cap_reached', 'campaign_archived', 'reauth_failed', 'document_unsupported',
-  'inactive', 'cross_site', 'screen_limit', 'live_elsewhere',
+  'inactive', 'cross_site', 'screen_limit', 'live_elsewhere', 'group_name_taken', 'group_cap_reached',
 ] as const
 export type KnownErrorCode = (typeof KNOWN_ERROR_CODES)[number]
 
@@ -2609,6 +2609,65 @@ export const PlayerSeatPageSchema = z.object({
 })
 export type PlayerSeatPage = z.infer<typeof PlayerSeatPageSchema>
 
+// ── Named groups (btb) ───────────────────────────────────────────────────────
+// A GM's named groups of seats (owner decision O-3; shared eligibility ADR ED-4,
+// ED-12, ED-13, ED-15), under `/campaigns/{id}/groups`. A group's name and its
+// members are GM-only: no table-side shape carries either, and the audience a
+// table sees never names a group (ED-15, REVEAL-24). A group is a label, not an
+// audience: whatever delivers to its members applies SEC-50(5) seat by seat.
+
+/** 0019's CHECK on a group's name, and the server's `check_group_name` bound. */
+export const GROUP_NAME_MAX_CHARS = 40
+/** The server's `GROUPS_PER_CAMPAIGN_MAX`: one page holds every live group. */
+export const GROUP_PAGE_MAX_ITEMS = 50
+
+const GroupNameRequestSchema = storedRequestText(1, GROUP_NAME_MAX_CHARS, 'a group name')
+
+/** A GM's named group of seats. `member_ids` are the seats in it that are not
+ * removed, distinct, ascending by code point — including seats not yet
+ * confirmed, so they are **not recipients** (SEC-50(5), A-27). No campaign id
+ * and no removed state: a removed group is never listed, and never restored. */
+export const GroupSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  group_id: OpaqueIdSchema,
+  // A response is read as stored: bounded, with no trim rule.
+  name: text(1, GROUP_NAME_MAX_CHARS),
+  member_ids: z
+    .array(OpaqueIdSchema)
+    .max(CAMPAIGN_SEATS_MAX)
+    .refine((ids) => new Set(ids).size === ids.length, { message: 'a group names each seat once' }),
+  created_at: TimestampSchema,
+  updated_at: TimestampSchema,
+})
+export type Group = z.infer<typeof GroupSchema>
+
+/** The campaign's live groups, by the name's fold, then id. One page:
+ * `next_cursor` is always `null` today, and stays a key so paging needs no bump. */
+export const GroupPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(GroupSchema).max(GROUP_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type GroupPage = z.infer<typeof GroupPageSchema>
+
+/** `POST /campaigns/{id}/groups`: an empty group. Keyed, because live names are
+ * unique: a repeat of the key answers the group it made, whatever name it sends. */
+export const GroupCreateRequestSchema = refusingProtoKeys(
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    command_id: CommandIdSchema,
+    name: GroupNameRequestSchema,
+  }),
+)
+export type GroupCreateRequest = z.infer<typeof GroupCreateRequestSchema>
+
+/** `PATCH /campaigns/{id}/groups/{group_id}`: a rename, and only that. Removal is
+ * its own route and cannot be undone, so there is no archive. */
+export const GroupPatchRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), name: GroupNameRequestSchema }),
+)
+export type GroupPatchRequest = z.infer<typeof GroupPatchRequestSchema>
+
 /** Name → schema, in the order `contracts/workbench/v1/schemas.json` lists them. */
 export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   Timestamp: TimestampSchema,
@@ -2678,6 +2737,10 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   SeatDeclineRequest: SeatDeclineRequestSchema,
   PlayerSeat: PlayerSeatSchema,
   PlayerSeatPage: PlayerSeatPageSchema,
+  Group: GroupSchema,
+  GroupPage: GroupPageSchema,
+  GroupCreateRequest: GroupCreateRequestSchema,
+  GroupPatchRequest: GroupPatchRequestSchema,
 }
 
 // ── Forward-version behaviour ────────────────────────────────────────────────

@@ -151,6 +151,8 @@ a generic failure.
 | `cross_site` | 403 | no | a table route's Fetch Metadata refusal (`1kg.2.3`, SEC-45): `Sec-Fetch-Site` present and not `same-origin`, or `Sec-Fetch-Mode: navigate`. It depends on nothing but those headers and runs before any cookie is read |
 | `screen_limit` | 409 | no | a screen minted for a session that already has as many live screens as SEC-48 allows (`1kg.2.3`). The owner revokes one; the account stays signed in |
 | `live_elsewhere` | 409 | no | a Start while the GM's table is live in another campaign (`1kg.2.3`, REVEAL-2). The client sends End for that session, then Start: Start never ends a table on its own |
+| `group_name_taken` | 409 | no | a group name another live group of the campaign already has, up to case (`btb`). The name is never echoed |
+| `group_cap_reached` | 409 | no | the 51st live group of a campaign (`btb`, SEC-35) |
 
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
@@ -194,6 +196,8 @@ names it starts fresh rather than reading another caller's status or result
 | Offer a seat | none needed | an offer of an address this campaign already has a live offer for, or an accepted seat of, is a repeat: it changes nothing and answers the same `204` |
 | Confirm a seat, Remove a seat | none needed | confirming a confirmed seat and removing a removed one answer as the first did and change nothing (no second audit row, no second job) |
 | Accept, decline an offer | none needed | a repeat accept by the account that accepted answers the same seat; a repeat decline answers `204` and applies a block it now asks for |
+| Create a group | `command_id`, minted by the client, scoped to the campaign (`btb`) | answers `201` with the group that key made, whatever name the repeat sends, rather than `409 group_name_taken` for its own group. A key whose group was since removed is the one `404` |
+| Rename a group, remove a group, add or remove a member | none needed | the same name changes nothing and answers `200`; removing a removed group, adding a member, and removing a seat that is not a member answer `204` and change nothing — no audit row and no revision advance |
 
 ### Pagination
 
@@ -264,6 +268,7 @@ on both sides.
 | Tool and document-type registry | `1kg.3.1` | extends `registry.json` |
 | Conversations | **done** | `Conversation`, `ConversationPage`, `ConversationCreateRequest`, `ConversationPatchRequest`, and `already_linked` on the error envelope. See *The conversation family* below |
 | Campaigns and seats | **done** | `Campaign`, `CampaignPage`, `CampaignCreateRequest`, `CampaignPatchRequest`, `Seat`, `SeatPage`, `SeatCreateRequest`, `SeatOfferRequest`, `SeatRemoveRequest`, `SeatOffer`, `SeatOfferPage`, `SeatDeclineRequest`, `PlayerSeat`, `PlayerSeatPage`, and six codes on the error envelope. See *The campaigns and seats family* below |
+| Groups | **done** | `Group`, `GroupPage`, `GroupCreateRequest`, `GroupPatchRequest`, and `group_name_taken` and `group_cap_reached` on the error envelope (`btb`). See *The groups family* below |
 
 ## The tool-invocation family
 
@@ -994,6 +999,55 @@ same one `404` for a campaign that is not the caller's. Each change writes an
 audit row (`campaign.concluded`, `campaign.reopened`); a repeat writes none.
 Not yet recorded, so not on the wire: the card's "last beat" line and an avatar
 the GM chose.
+
+## The groups family
+
+A GM's named groups of seats (`btb`; owner decision O-3; shared eligibility ADR
+ED-4, ED-12, ED-13, ED-15). A group is a label the GM keeps for choosing an
+audience. **A group's name and its members are GM-only. No table-side shape
+carries either, and the audience a table sees never names a group (ED-15,
+REVEAL-24).** The routes are on the `dm`-gated Workbench router: the origin
+check, the one `401`, the role `403`, and the one `404` for anything that is
+not the caller's (SEC-2, SEC-3, SEC-7).
+
+| Route | Answers |
+| --- | --- |
+| `GET /campaigns/{campaign_id}/groups` | `GroupPage`: every live group, by the name's fold, then id |
+| `POST /campaigns/{campaign_id}/groups` | `201` and the new, empty `Group`; a repeat of the key answers `201` too. The body is a `GroupCreateRequest` |
+| `PATCH /campaigns/{campaign_id}/groups/{group_id}` | `200` and the renamed `Group`; the same name again changes nothing. The body is a `GroupPatchRequest` |
+| `POST …/groups/{group_id}/remove` | `204`, a repeat included. No body |
+| `POST …/groups/{group_id}/members/{participant_id}` | `204`, a repeat included. No body. A seat that is missing, removed or another campaign's is the one `404` |
+| `POST …/groups/{group_id}/members/{participant_id}/remove` | `204`, a seat that is not a member included. No body |
+
+A group that is missing, removed or another campaign's is the one `404` on
+every group-scoped route except remove, where a removed group answers `204`.
+
+**One page.** A campaign holds at most 50 live groups, so `GroupPage` holds them
+all: there is no `limit` or `cursor` parameter and `next_cursor` is always
+`null`. The key stays, so paging can arrive without a version bump.
+
+**`member_ids` is not an audience.** It lists the seats in the group that are
+not removed — open, offered, and accepted but not yet confirmed as well as
+confirmed — distinct and ascending by code point. Whatever delivers to a group's
+members applies SEC-50(5) and A-27 seat by seat: a group never widens delivery
+to a seat the GM has not confirmed.
+
+**Removal is permanent.** A removed group is kept for disclosure memory and is
+never restored, so the wire says *remove*, never *archive*, and a patch cannot
+carry one. A removed group frees its name. A name is unique among a campaign's
+live groups up to case (`Scouts` and `scouts` collide), and is checked by the
+alias rules on the server, which are stricter than the shape and answer the
+same `422`.
+
+**Eligibility.** Adding a member, removing one and removing a group each
+advance the campaign's authorisation revision under the campaign lock; creating
+and renaming a group change no one's eligibility and advance nothing
+(`docs/ARCHITECTURE.md`, the authorisation revision). Adding a member displays
+nothing (ED-13). Removing a member or a group is a narrowing (ED-12, RQ-5): it
+narrows the live session first, in a step that never waits for the lock, and
+then changes the fact under the lock; if the lock cannot be had in time the
+answer is `503 backend_unavailable`, retryable, and the change is *not applied
+yet*. No password is asked for: a narrowing never waits on one (X-3).
 
 ## The timeline family
 

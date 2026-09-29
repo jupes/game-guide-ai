@@ -68,6 +68,10 @@
     "SeatDeclineRequest",
     "PlayerSeat",
     "PlayerSeatPage",
+    "Group",
+    "GroupPage",
+    "GroupCreateRequest",
+    "GroupPatchRequest",
     "LegacyChatResponse",
     "LegacyMessagesResponse"
   ]
