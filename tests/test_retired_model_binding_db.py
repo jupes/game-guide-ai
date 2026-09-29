@@ -23,6 +23,10 @@ from service import migrations as mig
 from service.history import PostgresMessageStore
 
 CONV = "44444444-4444-4444-4444-444444444444"
+# A second conversation, owned and bound, that no rebind of CONV may touch
+# (pr156 H-3): with only one row seeded, a WHERE clause widened to every
+# conversation would still pass every assertion here.
+BYSTANDER = "55555555-5555-5555-5555-555555555555"
 
 
 @pytest.fixture
@@ -32,16 +36,28 @@ def dsn() -> Iterator[str]:
         yield target
 
 
-def _an_owner(dsn: str) -> int:
+def _an_owner(dsn: str, email: str = "gm@example.com") -> int:
     """`chat.conversations.user_id` has a real FK into `auth.users` — a row
     there is a precondition, not something under test here."""
     with connect(dsn) as conn:
         return int(
             conn.execute(
-                "INSERT INTO auth.users (email, password_hash) VALUES ('gm@example.com', 'x') "
-                "RETURNING id"
+                "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id",
+                (email,),
             ).fetchone()[0]
         )
+
+
+def _a_bystander(dsn: str, store: PostgresMessageStore) -> tuple[str, str | None, str | None]:
+    """BYSTANDER, owned by someone else and bound manually under the same
+    revision — the row a too-wide UPDATE would overwrite first."""
+    store.claim_conversation(BYSTANDER, _an_owner(dsn, "other-gm@example.com"))
+    store.claim_conversation_strategy(
+        BYSTANDER, strategy="manual", manual_alias="gpt-4o-mini", catalog_revision="v2",
+    )
+    binding = store.conversation_binding(BYSTANDER)
+    assert binding == ("manual", "gpt-4o-mini", "v2")
+    return binding
 
 
 @needs_db
@@ -52,11 +68,13 @@ def test_rebind_overwrites_an_existing_binding_in_real_postgres(dsn: str) -> Non
         CONV, strategy="manual", manual_alias="kimi-k3", catalog_revision="v2",
     )
     assert store.conversation_binding(CONV) == ("manual", "kimi-k3", "v2")
+    bystander = _a_bystander(dsn, store)
 
     store.rebind_conversation_strategy(
         CONV, strategy="manual", manual_alias="deepseek-v4-flash", catalog_revision="v2",
     )
     assert store.conversation_binding(CONV) == ("manual", "deepseek-v4-flash", "v2")
+    assert store.conversation_binding(BYSTANDER) == bystander
 
 
 @needs_db
@@ -66,11 +84,13 @@ def test_rebind_to_auto_clears_the_manual_alias_in_real_postgres(dsn: str) -> No
     store.claim_conversation_strategy(
         CONV, strategy="manual", manual_alias="kimi-k3", catalog_revision="v2",
     )
+    bystander = _a_bystander(dsn, store)
 
     store.rebind_conversation_strategy(
         CONV, strategy="auto", manual_alias=None, catalog_revision="v2",
     )
     assert store.conversation_binding(CONV) == ("auto", None, "v2")
+    assert store.conversation_binding(BYSTANDER) == bystander
 
 
 @needs_db
@@ -82,7 +102,9 @@ def test_rebind_without_an_existing_ownership_row_is_a_silent_no_op(dsn: str) ->
     intentionally does not re-guard: proven here as "affects nothing", not as
     a state a real caller can reach."""
     store = PostgresMessageStore(dsn)
+    bystander = _a_bystander(dsn, store)
     store.rebind_conversation_strategy(
         CONV, strategy="manual", manual_alias="kimi-k3", catalog_revision="v2",
     )
     assert store.conversation_binding(CONV) is None
+    assert store.conversation_binding(BYSTANDER) == bystander

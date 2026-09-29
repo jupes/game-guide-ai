@@ -135,6 +135,33 @@ describe('useChat', () => {
     await waitFor(() => expect(result.current.exchanges[0].status).toBe('done'))
   })
 
+  // pr156 H-1: the real shape of a heal to 'auto', which is every heal while
+  // no catalog entry names a successor. `requested` ('auto') is the binding;
+  // `effective` ('traveller') is only the model that answered, and a client
+  // that adopted it would get a binding-mismatch 409 on every later turn.
+  it('reports the binding (routing.requested), not the model that answered, on a heal to auto', async () => {
+    const rebound: Array<[string, string]> = []
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: {
+        ...(GROUNDED.kind === 'ok' ? GROUNDED.response : {}),
+        conversation_id: 'conv-heal',
+        routing: {
+          requested: 'auto', effective: 'traveller', strategy: 'auto', fallback_from: 'unassigned-3',
+        },
+      },
+    }) as ChatResult
+    const { result } = renderHook(() =>
+      useChat({
+        post, mode: 'sage', conversationId: 'conv-heal', modelPreference: 'unassigned-3',
+        onPreferenceRebound: (id, preference) => rebound.push([id, preference]),
+      }),
+    )
+
+    act(() => { result.current.send('again') })
+    await waitFor(() => expect(rebound).toEqual([['conv-heal', 'auto']]))
+  })
+
   // ── Per-conversation model preference (b8o.2) ─────────────────────────────
 
   it('passes the modelPreference option through to post', async () => {

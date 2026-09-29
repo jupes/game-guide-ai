@@ -86,9 +86,9 @@ class MessageStore(Protocol):
 
         Unlike `claim_conversation_strategy` this is NOT first-writer-wins — it
         always writes. Used only by the server's own healing of a manual pick
-        the catalog has retired (agent-forge-harness-j9w): the caller already
-        holds the authority to move the conversation off it, never a client
-        request's own (strategy, manual_alias)."""
+        the catalog has retired (agent-forge-harness-j9w), once the client
+        names the successor the server chose: the (strategy, manual_alias)
+        written is always the server's, never one a client request picked."""
         ...  # pragma: no cover - structural type
 
     def has_content(self, conversation_id: str) -> bool:

@@ -111,10 +111,13 @@ export interface RoutingInfo {
   effective: string
   strategy: 'auto' | 'manual'
   /** Set only when this turn's conversation was bound to a manual pick the
-   * catalog has since retired, and the server rebound it to `effective`
-   * (agent-forge-harness-j9w) — the retired pick's own public id, so a
-   * client can tell a heal just happened and stop sending it. Absent/null
-   * on every ordinary turn. */
+   * catalog has since retired and the server healed it
+   * (agent-forge-harness-j9w) — the retired pick's public id (or, for one
+   * the catalog dropped entirely, the preference this turn sent), so a
+   * client can tell a heal just happened. The client then sends `requested`
+   * from its next turn on — never `effective`, which after a heal to 'auto'
+   * is the model that answered, not the binding. Absent/null on every
+   * ordinary turn. */
   fallback_from?: string | null
 }
 
