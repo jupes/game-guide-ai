@@ -112,6 +112,24 @@ def _root_at_warning() -> Callable[[], None]:
     return lambda: root.setLevel(level)
 
 
+def _httpx_at_its_default() -> Callable[[], None]:
+    """Importing langfuse sets the ``httpx`` logger to WARNING and gives it a console handler of its
+    own, for the rest of the process. The harness honours a level set on a logger (as production
+    does), so this case restores httpx's defaults for its duration: what it proves is that a
+    third-party logger reaches the capture, whichever test imported langfuse first."""
+    logger = logging.getLogger("httpx")
+    level, handlers = logger.level, list(logger.handlers)
+    logger.setLevel(logging.NOTSET)
+    for handler in handlers:
+        logger.removeHandler(handler)
+
+    def undo() -> None:
+        logger.setLevel(level)
+        for handler in handlers:
+            logger.addHandler(handler)
+    return undo
+
+
 def _chained(c: dict[str, Canary]) -> None:
     try:
         try:
@@ -137,7 +155,8 @@ def _cleared_list(c: dict[str, Canary]) -> None:
 
 
 _LOG_CASES: dict[str, _LogCase] = {
-    "httpx": _LogCase(("x",), "record", lambda c: logging.getLogger("httpx").info("HTTP Request: %s", c["x"].value)),
+    "httpx": _LogCase(("x",), "record", lambda c: logging.getLogger("httpx").info("HTTP Request: %s", c["x"].value),
+                      before=_httpx_at_its_default),
     "openai": _LogCase(("x",), "record", lambda c: logging.getLogger("openai._base_client").debug(
         "Request options: %s", {"json": c["x"].value})),
     "no-propagate": _LogCase(("x",), "record", lambda c: logging.getLogger("canary_sinks.no_propagate").info(

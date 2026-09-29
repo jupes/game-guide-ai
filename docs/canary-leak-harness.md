@@ -165,9 +165,12 @@ job (`1ir.11.5`).
   `sys.stdout` between test phases. So it cannot be combined with `capsys` or `capfd` (pytest refuses),
   or with a test's own `capteesys.readouterr()` (which would consume the output first). A
   conftest-level fixture that needs stdio uses `leak_capture`, not a bare `LogCapture`.
-- Loggers created after the capture starts with `propagate=False` are not captured. A level product
-  code sets on its own logger is honoured, as in production (`psycopg.pool` at ERROR). Probe records
-  appear in `caplog.records` inside a `leak_capture` test.
+- Loggers created after the capture starts with `propagate=False` are not captured. A level set on a
+  logger is honoured, as in production (`psycopg.pool` at ERROR). Importing `langfuse` sets the
+  `httpx` and `langfuse` loggers to WARNING, and gives `httpx` a console handler, for the rest of the
+  process; after that, `httpx`'s INFO request lines are not emitted at all. A suite-wide sweep that
+  needs them resets that logger first. Probe records appear in `caplog.records` inside a
+  `leak_capture` test.
 - Inside a capture every warning is recorded, so a test relying on `-W error` loses it there.
 - Captures in concurrent threads of one process are unsupported; nested captures exit in LIFO order.
 - `tracing()` models only SEC-24's *absent* option: it sees everything a Langfuse handler would be
