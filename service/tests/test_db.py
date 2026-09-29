@@ -1030,6 +1030,13 @@ def test_a_second_reader_sees_neither_revision_nor_queue_item_before_commit():
         assert writer.projected_items(campaign)[0].authz_revision == 5
         assert _state(db, campaign) == (4, 4, [])
     assert _state(db, campaign) == (5, 4, [(_DOC, "portrait", 5)])
+    moving = _at(db, 2, 2)
+    with db.transaction() as writer:
+        writer.lock_campaign(moving, shared=False)
+        writer.advance_authz_revision(moving)
+        assert writer.projection_revision(moving) == 3
+        assert _state(db, moving) == (2, 2, [])
+    assert _state(db, moving) == (3, 3, [])
 
 
 class _NotAnItem:
@@ -1137,6 +1144,11 @@ def test_a_nested_writer_that_would_queue_is_refused_and_leaves_nothing_behind()
             nested.lock_campaign(second, shared=False)
             with pytest.raises(TwinWouldBlock):
                 nested.advance_authz_revision(second, project=[_ITEM])
+            # Each staging path claims on its own, not only through the first.
+            with pytest.raises(TwinWouldBlock):
+                nested._stage_projection(second, 1)
+            with pytest.raises(TwinWouldBlock):
+                nested._stage_queued(second, (_ITEM,), 1)
             assert nested.projected_items(second) == []
             assert nested.projection_revision(second) == 1
     assert _state(db, second) == (1, 1, [])

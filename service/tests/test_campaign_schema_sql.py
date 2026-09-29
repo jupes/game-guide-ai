@@ -28,6 +28,8 @@ from service import (
     audit_log,
     campaign_store,
     campaigns_api,
+    db,
+    eligibility_store,
     participant_store,
     reconciliation,
     seat_offer_store,
@@ -78,6 +80,7 @@ STORE_MODULES = (
     audit_log,
     seat_offer_store,
     reconciliation,
+    eligibility_store,
 )
 
 
@@ -722,3 +725,64 @@ def test_the_media_migration_says_why_in_its_own_words():
     ):
         assert reason in prose, reason
     assert "PostgreSQL REFUSES to delete a campaign that still has any asset row" in prose
+
+
+# ── Field eligibility and groups (bead 1ir.2.1) ──────────────────────────────
+
+#: Found by name, never by number (R-7).
+[ELIGIBILITY_SQL_PATH] = sorted(MIGRATIONS.glob("*_field_eligibility_and_groups.sql"))
+ELIGIBILITY_SQL = ELIGIBILITY_SQL_PATH.read_text(encoding="utf-8")
+FIELD_KEY_PATTERN = get_args(workbench_contracts.FieldKey)[1].pattern
+
+
+def test_the_eligibility_migration_spells_the_field_key_rule_as_the_wire_does():
+    """T-B1: the key CHECK on both tables is `FieldKey`'s pattern and refuses
+    every reserved word; db.py's spelling is the wire's; the command-id CHECK
+    is `CommandId`'s. Kills drift in any one spelling (M-B1)."""
+    reserved = " AND ".join(f"field_key <> '{word}'" for word in sorted(workbench_contracts.RESERVED_MASK_KEYS))
+    rule = f"CHECK (field_key ~ '{FIELD_KEY_PATTERN}' AND {reserved})"
+    assert _statements(ELIGIBILITY_SQL).count(rule) == 2
+    assert db.FIELD_KEY_PATTERN == FIELD_KEY_PATTERN
+    assert db.RESERVED_FIELD_KEYS == workbench_contracts.RESERVED_MASK_KEYS
+    assert f"created_command_id ~ '{COMMAND_ID_PATTERN}'" in ELIGIBILITY_SQL
+
+
+def test_the_principal_patterns_are_the_registrys():
+    """T-B2 (M-B2): each list class is checked against its prefix's regex."""
+    found = re.findall(r"WHEN '(\w+)'\s+THEN campaign\.principal_ids_ok\(principal_ids, '([^']+)'\)", ELIGIBILITY_SQL)
+    assert dict(found) == {
+        field_class.value: ident.id_check_regex(prefix) for field_class, prefix in eligibility_store.LIST_PREFIX.items()
+    }
+    assert f"CHECK (id ~ '{ident.id_check_regex(ident.GROUP)}')" in ELIGIBILITY_SQL
+
+
+def test_the_bounds_the_eligibility_migration_checks_are_the_modules():
+    """T-B3 (M-B3): 100 ids, a 40-character name and a 200-character key, and
+    64 projection items per advance, each the number its module holds."""
+    assert eligibility_store.PRINCIPAL_IDS_MAX == workbench_contracts.PRESENCE_MAX_PARTICIPANTS
+    assert f"cardinality(ids) BETWEEN 1 AND {eligibility_store.PRINCIPAL_IDS_MAX}" in ELIGIBILITY_SQL
+    assert f"length(name) BETWEEN 1 AND {participant_store.ALIAS_MAX_CHARS}" in ELIGIBILITY_SQL
+    assert f"length(name_key) BETWEEN 1 AND {participant_store.ALIAS_KEY_MAX}" in ELIGIBILITY_SQL
+    assert db.PROJECTION_ITEMS_MAX == workbench_contracts.MAX_CHANGED_FIELDS
+
+
+def test_the_eligibility_migration_states_why_each_check_on_an_existing_table_is_safe():
+    """T-B4, the 0009 precedent (M-B4): the two changes to existing tables
+    each say why they are safe, there is no backfill, and no transaction
+    control; `unclassified` and `suggested` are never storable."""
+    prose = " ".join(line.lstrip("- ").strip() for line in ELIGIBILITY_SQL.splitlines() if line.startswith("--"))
+    for reason in (
+        "THE CHECK IS SAFE ON AN EXISTING TABLE",
+        "THE KEY IS SAFE ON AN EXISTING TABLE",
+        "NO BACKFILL",
+        "ACCESS EXCLUSIVE",
+        "not built CONCURRENTLY",
+        "Rollback is sending traffic back to the previous image",
+    ):
+        assert reason in prose, reason
+    body = _statements(ELIGIBILITY_SQL)
+    assert not re.search(r"\b(BEGIN|COMMIT|END|ROLLBACK)\s*;", body)
+    assert "UPDATE " not in body.upper(), "no existing row is rewritten"
+    assert set(re.findall(r"ALTER TABLE ([\w.]+)", body)) == {"campaign.authz_state", "campaign.documents"}
+    assert "'unclassified'" not in body and "'suggested'" not in body
+    assert "CREATE TABLE campaign.characters" not in body, "a character is a character-sheet document (R-6)"
