@@ -190,6 +190,16 @@
       }
     },
     {
+      "name": "a stored document this build cannot read or write over (1kg.5.2): fail closed, not retryable",
+      "value": {
+        "detail": {
+          "code": "document_unsupported",
+          "message": "This document can't be used by this version of Aetheril.",
+          "retryable": false
+        }
+      }
+    },
+    {
       "name": "the per-owner offer throttle (1kg.2.2, SEC-50(3)) with its wait",
       "value": {
         "detail": {

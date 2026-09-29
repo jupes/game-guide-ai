@@ -146,6 +146,7 @@ a generic failure.
 | `seat_cap_reached` | 409 | no | the 41st live seat of a campaign (`1kg.2.2`, SEC-50(3)) |
 | `campaign_archived` | 409 | no | a seat added to, or an offer made in, an archived campaign (`1kg.2.2`) |
 | `reauth_failed` | 403 | no | a Remove whose password did not check out (`1kg.2.2`, SEC-40). A 403, never a 401, because the client signs out on any 401; it names no resource |
+| `document_unsupported` | 409 | no | a stored document this build cannot read, or cannot write over: an unknown stored type, a stored type version this build does not write, stored data that is not an object or fails the tolerant read, or — for a patch or a restore — a stored key or sub-key this build does not declare (`1kg.5.2`). Fail closed; only the document's owner can reach it |
 
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
@@ -170,10 +171,11 @@ names it starts fresh rather than reading another caller's status or result
 | --- | --- | --- |
 | Tool invocation, AI edit | `invocation_id`, minted by the client | while working, reports status and starts nothing; once done, replays the stored result free of charge; after a retryable failure, starts a new attempt that passes the cost guards again (RAIL-18) |
 | Reveal and audio commands | `command_id` | is recognised and is not a second command (AUDIO-24) |
-| Field patch | the document's base **write revision** | conflicts only if a field it touches changed since (CANVAS-19, CANVAS-34). A repeat of a patch that already landed finds the fields equal to what it sends and is a no-op, not a conflict |
+| Field patch | the document's base **write revision** | conflicts only if a field it touches changed since (CANVAS-19, CANVAS-34). Under the row lock the server compares each touched field's stored value with the one sent, canonically: a patch whose every field already holds what it sends answers `200` with the document and writes nothing — no revision, no version, no `updated_at` — so a repeat of a patch that already landed is a no-op, not a conflict. A patch that lands partly equal writes, and judges staleness on, only the fields that differ |
 | AI edit after a conflict | the same `invocation_id`, a fresh `base_write_revision` | starts a new attempt on the new base; the body of a replay is otherwise ignored |
-| Create a document | `command_id`, minted by the client | opens the document already made instead of making a second *Untitled NPC* |
-| Restore, archive, unarchive | none needed | restoring what the document already equals changes nothing and creates no version; the others set a state |
+| Create a document | `command_id`, minted by the client, scoped to the campaign | answers `201` with the document that key already made, as it is now, whatever the repeat's body says, instead of making a second *Untitled NPC*. The same key in another campaign is another key; a key whose document was deleted makes a new one |
+| Restore, archive, unarchive | none needed | restoring what the document already equals changes nothing and creates no version, and a restore that changes content always appends one sealed version; the others set a state |
+| Seal a document's open version | none needed | a document with no open version is answered as it is: nothing is sealed and nothing advances |
 | Create an asset, create a cue | `command_id`, minted by the client | opens the asset or cue already made; a retried upload sends its bytes to the same asset |
 | Play a cue | `command_id`, and the audio epoch it was issued under (AUDIO-28) | replays the first outcome; a stale epoch is `409 conflict` and is never retried automatically |
 | Stop a cue, Stop all | `command_id`, no epoch (X-3) | is idempotent by nature: a slot the cue no longer holds is left alone (AUDIO-9) |
@@ -673,6 +675,73 @@ never let a save response overwrite newer local text (CANVAS-10).
 a write does — `whole=True` and nothing else — it enforces the type's required
 fields; `read_stored_fields` and the two response models opt out of that one rule
 and of nothing else.
+
+### Routes
+
+`1kg.5.2` serves the documents family under the campaign it belongs to. Every
+route is on the Workbench GM router: the origin check (`POST` and `PATCH`), the
+one 401, the `dm` gate and the one 404.
+
+| Method and path | Body | Answers |
+| --- | --- | --- |
+| `POST /campaigns/{campaign_id}/library` | `LibraryQuery` | `200 LibraryPage` |
+| `POST /campaigns/{campaign_id}/documents` | `DocumentCreateRequest` | `201 Document`, a replay too |
+| `GET /campaigns/{campaign_id}/documents/{document_id}` | — | `200 Document` |
+| `PATCH /campaigns/{campaign_id}/documents/{document_id}` | `FieldPatchRequest` | `200 Document`, a no-op too |
+| `GET …/documents/{document_id}/versions?limit=&cursor=` | — | `200 DocumentHistoryPage` |
+| `GET …/documents/{document_id}/versions/{number}` | — | `200 DocumentVersionSnapshot` |
+| `POST …/documents/{document_id}/restore` | `RestoreRequest` | `200 Document` |
+| `POST …/documents/{document_id}/seal` | none; one sent is not read | `200 Document` |
+
+There is no list route beside the library and no `DELETE` method. Archive,
+unarchive and delete arrive with the rest of `1kg.5.2`.
+
+**The order of checks.** Origin (403), authentication (401), role (403); then
+the body and the query, each validated on nothing but itself (422); the
+database (503); the path ids' shapes — a `campaign_id`, `document_id` or
+version `number` outside its shape is the one 404, before any query; a body
+`campaign_id` that is not the path's (422, `field: "campaign_id"`); a cursor's
+own shape (422, `field: "cursor"`); then, in one transaction, ownership (the one
+404) and the document (the one 404). Only after both come the refusals that
+depend on the document, so none of them is reachable for a campaign the caller
+does not own: a patch whose `type` is not the stored one (422, `field: "type"`),
+a `base_write_revision` ahead of the document (422, `field:
+"base_write_revision"`, checked before the no-op, because it is always a client
+defect), `document_unsupported` (409), a touched field that moved after the base
+(409 `conflict`, naming the fields and the current write revision and never
+their text), a merged document that fails validation (422, no `field`), and a
+restore of a version the document does not have (422, `field:
+"version_number"`). A document of the GM's other campaign under this campaign's
+path, a deleted one and someone else's are the same 404.
+
+**Concurrency.** `base_write_revision` in the body is the only concurrency
+token; there is no `ETag`. A patch, a restore and a seal hold the document's row
+for their transaction, so two autosaves of one document are serialised and the
+second reads what the first committed. None of them takes the campaign lock or
+advances the campaign's authorisation revision: a content write changes no fact
+a display's preconditions read. **No document route consults the campaign's
+archived state**: reads, create, patch, restore, seal and the library all work in
+an archived campaign and on an archived document. That differs, deliberately,
+from `campaign_archived` on seats and from conversation create's 404: refusing
+would strand an open canvas's autosave when another tab archives.
+
+**Paging.** History is newest first, `?limit=` 1 to 50 (default 20), digits only
+— `1.0`, `+5` and `05` are refused, never clamped. Its cursor names a version of
+that document and no other, and `next_cursor` is `null` once a page reaches
+version 1, so the walk never ends on an empty page. The library's `limit` is 1 to
+50 (default 25). Its `next_cursor` is present whenever the server read a full
+page, so a page may be short, or empty, while it is non-null: a row this build
+cannot list is skipped (and counted in the service's log), never allowed to end
+the walk. A library cursor whose anchor document has since been deleted — the
+last row of an Archived page, deleted, then *Load more* — or that came from
+another campaign is `422` with `field: "cursor"`; the client answers it by
+reloading the list from the first page. Neither cursor ever holds text.
+
+**Body caps.** A create and a field patch may carry up to 6 MiB, because the
+largest valid document (a stat block at every bound, in four-byte code points)
+is about 5.2 MB of UTF-8; nginx's `/campaigns` location lets that through. Every
+other body on these routes stays at 8 KiB. A larger body is `422` with no
+`field`, refused as soon as it is known to be too long.
 
 ### AI edits
 

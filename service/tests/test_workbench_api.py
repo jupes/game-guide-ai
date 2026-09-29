@@ -970,6 +970,13 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/remove"),
     ("GET", "/seats"), ("GET", "/seats/offers"),
     ("POST", "/seats/offers/{offer_id}/accept"), ("POST", "/seats/offers/{offer_id}/decline"),
+    ("POST", "/campaigns/{campaign_id}/library"), ("POST", "/campaigns/{campaign_id}/documents"),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}"),
+    ("PATCH", "/campaigns/{campaign_id}/documents/{document_id}"),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}/versions"),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}/versions/{number}"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/restore"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/seal"),
 }
 
 
@@ -1270,6 +1277,7 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "timeline_api.py").resolve(),
         (REPO_ROOT / "service" / "campaigns_api.py").resolve(),
         (REPO_ROOT / "service" / "seats_api.py").resolve(),
+        (REPO_ROOT / "service" / "documents_api.py").resolve(),
     }
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []
 
