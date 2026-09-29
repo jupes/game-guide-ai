@@ -29,10 +29,18 @@ import { expect, within } from 'storybook/test'
 
 type Canvas = ReturnType<typeof within>
 
-/** Assert one rendered control, found by its accessible name, clears the
- * 44x44 touch-target floor. */
-export async function expectTouchTarget(canvas: Canvas, name: string | RegExp): Promise<void> {
-  const box = canvas.getByRole('button', { name }).getBoundingClientRect()
+/** The roles a touch target is looked up by. A switch and a select are
+ * controls too, and 0rn's drawer holds one of each (agent-forge-harness-0rn). */
+export type TouchTargetRole = 'button' | 'switch' | 'combobox'
+
+/** Assert one rendered control, found by its role and accessible name, clears
+ * the 44x44 touch-target floor. The role defaults to `button`. */
+export async function expectTouchTarget(
+  canvas: Canvas,
+  name: string | RegExp,
+  role: TouchTargetRole = 'button',
+): Promise<void> {
+  const box = canvas.getByRole(role, { name }).getBoundingClientRect()
   await expect(box.width).toBeGreaterThanOrEqual(44)
   await expect(box.height).toBeGreaterThanOrEqual(44)
 }
@@ -41,8 +49,9 @@ export async function expectTouchTarget(canvas: Canvas, name: string | RegExp): 
 export async function expectTouchTargets(
   canvas: Canvas,
   names: ReadonlyArray<string | RegExp>,
+  role: TouchTargetRole = 'button',
 ): Promise<void> {
   for (const name of names) {
-    await expectTouchTarget(canvas, name)
+    await expectTouchTarget(canvas, name, role)
   }
 }
