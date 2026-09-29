@@ -1182,6 +1182,27 @@ def test_a_lost_fence_deletes_nothing(world: World) -> None:
     assert jobs.objects.deleted() == [] and record.object_key in jobs.keys()
 
 
+def test_a_fresh_entry_into_the_same_state_between_read_and_fence_wins(world: World) -> None:
+    """The fence names the moment the sweep read, not only the state: a row that
+    went back to `uploading` and on to `processing` again after the sweep read
+    it is in the same state, but not the entry this sweep was due for."""
+    campaign = _campaign(world)
+    record = _in_state(world, campaign, "processing")
+    again = T0 + timedelta(minutes=11)
+
+    def reentered_meanwhile() -> None:
+        _act(world, campaign, record.id, "return_to_uploading", now=again)
+        _act(world, campaign, record.id, "start_processing", now=again)
+
+    jobs = _jobs(world, between_read_and_fence=reentered_meanwhile)
+    jobs.put(record.tmp_key, b"upload")
+    jobs.run(T0 + timedelta(minutes=11))
+    row = world.rows()[record.id]
+    assert (row.state, row.failure, row.state_changed_at) == ("processing", None, again)
+    assert world.usage(campaign) == (1000, 1), "the reservation survives with its row"
+    assert jobs.objects.deleted() == [] and record.tmp_key in jobs.keys()
+
+
 def test_a_row_that_failed_quota_on_its_way_to_ready_loses_its_processed_object_to_its_sweep(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
