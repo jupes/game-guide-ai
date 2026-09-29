@@ -255,6 +255,19 @@ CHAT_RATE_LIMIT_PER_USER: int = _int("CHAT_RATE_LIMIT_PER_USER", 20)
 # survives the scale-to-zero that would reset an in-process daily count
 # exactly when testers come back after a break. Resets at UTC midnight.
 CHAT_DAILY_CAP: int = _int("CHAT_DAILY_CAP", 500)
+
+# --- GM tools (agent-forge-harness-1kg.4.1) -----------------------------------
+
+# The GM tools this deployment runs, as comma-separated registry ids ("npc,loot").
+# Empty, the default, runs none: every tool answers 409 tool_disabled. Setting it
+# in production needs E-8's owner-chosen limits, the tool's 1kg.4.6 threshold
+# and the SEC-39 terms record first. An id the registry does not know fails
+# startup (service/tool_invocations.py parses both variables).
+WORKBENCH_ENABLED_TOOLS: str = _str("WORKBENCH_ENABLED_TOOLS", "")
+# The registry capabilities switched on ("image_generation"). Empty by default;
+# portrait and map are paid under D-3, so image_generation stays unset in
+# production until yje.4.1's entitlement gate covers them.
+WORKBENCH_CAPABILITIES: str = _str("WORKBENCH_CAPABILITIES", "")
 # How many X-Forwarded-For entries our OWN infrastructure appends. X-Forwarded-For
 # is caller-writable — Google preserves what the client sent and appends to it —
 # so the source key is taken from the right-hand (trusted) end of the chain, this
