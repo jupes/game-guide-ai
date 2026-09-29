@@ -257,6 +257,14 @@ class TableSessionStore(Protocol):
         """Every credential ever made for that session, oldest first."""
         ...  # pragma: no cover - structural type
 
+    def live_session_for_campaign(self, unit: UnitOfWork, campaign_id: str) -> TableSession | None:
+        """That campaign's session whose state is `live`, **whether or not it has
+        passed `expires_at`**, or None — read without a lock (bead 1kg.2.2, L-12).
+        A narrowing (archive, Remove) finds what to narrow with it; narrowing an
+        expired row is harmless and never wrong (SEC-42 makes every reader
+        compare `expires_at` with the clock anyway)."""
+        ...  # pragma: no cover - structural type
+
 
 _S_COLUMNS = (
     "id, campaign_id, gm_user_id, state, started_at, expires_at, link_generation, "
@@ -526,6 +534,16 @@ class PostgresTableSessionStore:
         ).fetchall()
         return [_credential(row) for row in rows]
 
+    def live_session_for_campaign(self, unit: UnitOfWork, campaign_id: str) -> TableSession | None:
+        # A GM has at most one live session (REVEAL-2's partial unique index), so
+        # a campaign has at most one; LIMIT 1 says so rather than trusting it.
+        row = pg(unit).conn.execute(
+            f"SELECT {_S_COLUMNS} FROM campaign.table_sessions "
+            f"WHERE campaign_id = %s AND state = 'live' LIMIT 1",
+            (campaign_id,),
+        ).fetchone()
+        return None if row is None else _session(row)
+
 
 class InMemoryTableSessionStore:
     """The twin. It refuses a second live session for the same GM itself rather
@@ -734,3 +752,9 @@ class InMemoryTableSessionStore:
             c for c in self._credentials.visible(fake(unit)).values() if c.session_id == session_id
         ]
         return sorted(mine, key=lambda c: (c.created_at, c.id))
+
+    def live_session_for_campaign(self, unit: UnitOfWork, campaign_id: str) -> TableSession | None:
+        live = [
+            s for s in self._sessions.visible(fake(unit)).values() if s.campaign_id == campaign_id and s.is_live
+        ]
+        return live[0] if live else None

@@ -1,0 +1,176 @@
+{
+  "schema": "Seat",
+  "direction": "response",
+  "note": "A seat as its GM sees it. address is the latest offer's address as the GM typed it, null for a seat never offered. There is no account id (SEC-50(1)).",
+  "valid": [
+    {
+      "name": "an open seat",
+      "value": {
+        "schema_version": 1,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+        "alias": "Rook",
+        "status": "open",
+        "address": null,
+        "created_at": "2026-09-16T19:20:11Z",
+        "offered_at": null,
+        "offer_expires_at": null,
+        "accepted_at": null,
+        "confirmed_at": null,
+        "removed_at": null
+      }
+    },
+    {
+      "name": "a seat offered to an address",
+      "value": {
+        "schema_version": 1,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+        "alias": "Rook",
+        "status": "offered",
+        "address": "wren@example.com",
+        "created_at": "2026-09-16T19:20:11Z",
+        "offered_at": "2026-09-16T19:31:24Z",
+        "offer_expires_at": "2026-09-30T19:31:24Z",
+        "accepted_at": null,
+        "confirmed_at": null,
+        "removed_at": null
+      }
+    },
+    {
+      "name": "an offer that was not accepted",
+      "value": {
+        "schema_version": 1,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+        "alias": "Rook",
+        "status": "not_accepted",
+        "address": "wren@example.com",
+        "created_at": "2026-09-16T19:20:11Z",
+        "offered_at": "2026-09-16T19:20:11Z",
+        "offer_expires_at": "2026-09-30T19:31:24Z",
+        "accepted_at": null,
+        "confirmed_at": null,
+        "removed_at": null
+      }
+    },
+    {
+      "name": "accepted, awaiting the GM's confirmation",
+      "value": {
+        "schema_version": 1,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+        "alias": "Rook",
+        "status": "awaiting_confirmation",
+        "address": "Wren@Example.com",
+        "created_at": "2026-09-16T19:20:11Z",
+        "offered_at": "2026-09-16T19:20:11Z",
+        "offer_expires_at": "2026-09-30T19:31:24Z",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed_at": null,
+        "removed_at": null
+      }
+    },
+    {
+      "name": "confirmed",
+      "value": {
+        "schema_version": 1,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+        "alias": "Rook",
+        "status": "confirmed",
+        "address": "Wren@Example.com",
+        "created_at": "2026-09-16T19:20:11Z",
+        "offered_at": "2026-09-16T19:20:11Z",
+        "offer_expires_at": "2026-09-30T19:31:24Z",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed_at": "2026-09-16T19:31:24Z",
+        "removed_at": null
+      }
+    },
+    {
+      "name": "removed",
+      "value": {
+        "schema_version": 1,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+        "alias": "Rook",
+        "status": "removed",
+        "address": "Wren@Example.com",
+        "created_at": "2026-09-16T19:20:11Z",
+        "offered_at": "2026-09-16T19:20:11Z",
+        "offer_expires_at": "2026-09-30T19:31:24Z",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed_at": null,
+        "removed_at": "2026-09-16T19:31:24Z"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an account id",
+      "why": "SEC-50(1): no numeric account id reaches a GM; a client strips what a newer server adds",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+        "alias": "Rook",
+        "status": "open",
+        "address": null,
+        "created_at": "2026-09-16T19:20:11Z",
+        "offered_at": null,
+        "offer_expires_at": null,
+        "accepted_at": null,
+        "confirmed_at": null,
+        "removed_at": null,
+        "user_id": 7
+      }
+    },
+    {
+      "name": "a status the GM cannot be shown",
+      "why": "the six statuses are closed",
+      "value": {
+        "schema_version": 1,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+        "alias": "Rook",
+        "status": "pending",
+        "address": null,
+        "created_at": "2026-09-16T19:20:11Z",
+        "offered_at": null,
+        "offer_expires_at": null,
+        "accepted_at": null,
+        "confirmed_at": null,
+        "removed_at": null
+      }
+    },
+    {
+      "name": "a missing address key",
+      "why": "every key is present; null when there is no offer",
+      "value": {
+        "schema_version": 1,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+        "alias": "Rook",
+        "status": "open",
+        "created_at": "2026-09-16T19:20:11Z",
+        "offered_at": null,
+        "offer_expires_at": null,
+        "accepted_at": null,
+        "confirmed_at": null,
+        "removed_at": null
+      }
+    },
+    {
+      "name": "an alias past 40",
+      "why": "0004's CHECK",
+      "value": {
+        "schema_version": 1,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+        "alias": "@repeat:a:41",
+        "status": "open",
+        "address": null,
+        "created_at": "2026-09-16T19:20:11Z",
+        "offered_at": null,
+        "offer_expires_at": null,
+        "accepted_at": null,
+        "confirmed_at": null,
+        "removed_at": null
+      }
+    }
+  ]
+}

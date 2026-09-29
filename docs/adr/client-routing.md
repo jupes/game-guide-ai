@@ -63,10 +63,10 @@ add a workspace key to the reserved list.
 `ui/vite.config.ts` proxy by STRING prefix, not path segment, so
 `/chat-history` would be silently proxied to the service the day it existed):
 the live API prefixes (`/chat`, `/healthz`, `/models`, `/metrics`,
-`/conversations`, `/auth`), the built bundle's own path (`/assets`, MS-7),
-the table client's separate entry point (`/table`, `/table-sessions`,
-`/t/`, SEC-18), and the "Proposed route families" not yet built
-(`/campaigns`, `/documents`, `/tool-invocations`, `/cues` --
+`/conversations`, `/auth`, and since `1kg.2.2` `/campaigns` and `/seats`), the
+built bundle's own path (`/assets`, MS-7), the table client's separate entry
+point (`/table`, `/table-sessions`, `/t/`, SEC-18), and the "Proposed route
+families" not yet built (`/documents`, `/tool-invocations`, `/cues` --
 `docs/forge/plans/aetheril-gm-workbench-expansion.md:258-271`).
 `tests/test_spa_routes_parity.py` checks this against the LIVE route table
 plus this named list, not a hard-coded copy, so it keeps working after a
