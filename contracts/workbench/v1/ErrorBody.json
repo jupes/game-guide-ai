@@ -209,6 +209,66 @@
           "retry_after_s": 3600
         }
       }
+    },
+    {
+      "name": "SEC-46's one table answer (1kg.2.3): every signed-in caller not entitled, whatever the reason",
+      "value": {
+        "detail": {
+          "code": "inactive",
+          "message": "There's no live table here.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "SEC-45's Fetch Metadata refusal on a table route (1kg.2.3): it names nothing",
+      "value": {
+        "detail": {
+          "code": "cross_site",
+          "message": "That request didn't come from this application.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "SEC-48's per-session bound on screens (1kg.2.3)",
+      "value": {
+        "detail": {
+          "code": "screen_limit",
+          "message": "This table already has as many screens as it can.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "a Start while the GM's table is live in another campaign (1kg.2.3): End that one first",
+      "value": {
+        "detail": {
+          "code": "live_elsewhere",
+          "message": "Your table is live in another campaign. End it first.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "a group name another live group of the campaign has, up to case (btb): the name is never echoed",
+      "value": {
+        "detail": {
+          "code": "group_name_taken",
+          "message": "Another group already has that name.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "the campaign's 51st live group (btb, SEC-35)",
+      "value": {
+        "detail": {
+          "code": "group_cap_reached",
+          "message": "A campaign holds at most 50 groups.",
+          "retryable": false
+        }
+      }
     }
   ],
   "invalid": [

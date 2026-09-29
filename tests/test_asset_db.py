@@ -862,6 +862,79 @@ def test_every_method_that_locks_bounds_its_transaction_first(world: World) -> N
                 unit.lock_campaign(campaign, shared=True)
 
 
+def test_the_four_transitions_pass_their_caller_bound_to_the_hold(world: World) -> None:
+    """M3 from the review of PR #154 (1kg.8.1.1 slice a, review pr154-h): L-5's
+    "a method that locks takes transaction_timeout_s" held for create, hold,
+    delete and delete_campaign_assets, but start_processing,
+    return_to_uploading, mark_ready and mark_failed took no
+    transaction_timeout_s of their own and always used the configured
+    default. Each now accepts it and passes it to `_held`, so — since the
+    FIRST bound a transaction asks for is the one in force
+    (`Database.transaction_bound`'s docstring) — it shows up as
+    `unit.transaction_bounds[0]` when the transition is the first thing an
+    otherwise-fresh unit does. Mutant: drop the pass-through in any of the
+    four (call `_held` with no bound, or ignore the parameter), and this goes
+    red — the recorded bound would be the configured default's, not the
+    caller's."""
+    campaign = _campaign(world)
+    uploading = _create(world, campaign)
+    for_return = _act(world, campaign, _create(world, campaign).id, "start_processing")
+    for_ready = _act(world, campaign, _create(world, campaign).id, "start_processing")
+    for_failed = _create(world, campaign)
+
+    calls: list[tuple[str, float, Callable[[UnitOfWork], object]]] = [
+        ("start_processing", 11.0, lambda u: world.assets.start_processing(
+            u, campaign, uploading.id, owner_id=world.owner, now=T0, transaction_timeout_s=11.0)),
+        ("return_to_uploading", 12.0, lambda u: world.assets.return_to_uploading(
+            u, campaign, for_return.id, owner_id=world.owner, now=T0, transaction_timeout_s=12.0)),
+        ("mark_ready", 13.0, lambda u: world.assets.mark_ready(
+            u, campaign, for_ready.id, owner_id=world.owner, measured=_measured(AssetKind.IMAGE),
+            now=T0, transaction_timeout_s=13.0)),
+        ("mark_failed", 14.0, lambda u: world.assets.mark_failed(
+            u, campaign, for_failed.id, owner_id=world.owner, failure=AssetFailure.UNREADABLE,
+            now=T0, transaction_timeout_s=14.0)),
+    ]
+    for name, timeout_s, call in calls:
+        with world.db.transaction() as unit:
+            call(unit)
+            assert unit.transaction_bounds[:1] == [f"{timeout_s}s"], (
+                f"{name}'s caller bound was not the transaction's first: {unit.transaction_bounds}"
+            )
+
+
+@needs_db
+def test_the_four_transitions_caller_bound_is_what_postgresql_enforces(dsn: str) -> None:
+    """The other half of M3 (PR #154, pr154-h): `unit.transaction_bounds`
+    proves what the store ASKED PostgreSQL for; this reads back
+    `SHOW transaction_timeout` on the same session right after each call, to
+    prove the value PostgreSQL actually holds is the caller's, not the
+    configured default (5s here, via `QUICK`)."""
+    world = _pg_world(dsn)
+    campaign = _campaign(world)
+    uploading = _create(world, campaign)
+    for_return = _act(world, campaign, _create(world, campaign).id, "start_processing")
+    for_ready = _act(world, campaign, _create(world, campaign).id, "start_processing")
+    for_failed = _create(world, campaign)
+
+    calls: list[tuple[str, int, Callable[[UnitOfWork], object]]] = [
+        ("start_processing", 21, lambda u: world.assets.start_processing(
+            u, campaign, uploading.id, owner_id=world.owner, now=T0, transaction_timeout_s=21.0)),
+        ("return_to_uploading", 22, lambda u: world.assets.return_to_uploading(
+            u, campaign, for_return.id, owner_id=world.owner, now=T0, transaction_timeout_s=22.0)),
+        ("mark_ready", 23, lambda u: world.assets.mark_ready(
+            u, campaign, for_ready.id, owner_id=world.owner, measured=_measured(AssetKind.IMAGE),
+            now=T0, transaction_timeout_s=23.0)),
+        ("mark_failed", 24, lambda u: world.assets.mark_failed(
+            u, campaign, for_failed.id, owner_id=world.owner, failure=AssetFailure.UNREADABLE,
+            now=T0, transaction_timeout_s=24.0)),
+    ]
+    for name, timeout_s, call in calls:
+        with world.db.transaction() as unit:
+            call(unit)
+            (shown,) = unit.conn.execute("SHOW transaction_timeout").fetchone()
+            assert shown == f"{timeout_s}s", f"{name}: PostgreSQL holds {shown!r}, not the caller's {timeout_s}s"
+
+
 class _Recording:
     """A connection that keeps the text of every statement sent through it, in
     order, and passes everything else (the savepoint too) to the real one."""

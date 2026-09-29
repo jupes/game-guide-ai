@@ -136,17 +136,23 @@ a generic failure.
 | `cap_reached` | 409 | yes | X-5: two tool invocations or AI edits are already in flight |
 | `throttled_user` | 429 | yes | the per-user window; carries `retry_after_s` |
 | `throttled_daily` | 429 | no | the pilot's daily cap |
-| `provider_failed`, `provider_timeout` | 502, 504 | yes | the model provider |
-| `attempt_expired` | — | yes | the server expired a stuck attempt (RAIL-27); seen on an invocation, never as a response status |
+| `provider_failed`, `provider_timeout` | 502, 504 | per case | the model provider. On the tool-invocation routes both are carried on the invocation, answered 200 (`1kg.4.1`). `provider_timeout` is retryable; `provider_failed` is final only when the request itself cannot succeed — `/chat`'s 422 categories, a content refusal or an invalid request — and retryable otherwise |
+| `attempt_expired` | — | yes (no on the 100th attempt) | the server expired a stuck attempt (RAIL-27); seen on an invocation, never as a response status |
 | `backend_unavailable` | 503 | yes | the service fails closed |
 | `already_linked` | 409 | no | a link to a campaign for a conversation that is already in one (`1kg.2.4`). A new code rather than `conflict` with a wider meaning |
 | `alias_taken` | 409 | no | a seat whose alias another live seat of the campaign already answers to (`1kg.2.2`) |
 | `seat_not_open` | 409 | no | an offer of a seat that is accepted or holds a live offer for another address (`1kg.2.2`) |
 | `seat_not_accepted` | 409 | no | a confirmation of a seat nobody has accepted (`1kg.2.2`) |
 | `seat_cap_reached` | 409 | no | the 41st live seat of a campaign (`1kg.2.2`, SEC-50(3)) |
-| `campaign_archived` | 409 | no | a seat added to, or an offer made in, an archived campaign (`1kg.2.2`) |
+| `campaign_archived` | 409 | no | a seat added to, or an offer made in, an archived campaign (`1kg.2.2`), or a tool invocation started in one (`1kg.4.1`) |
 | `reauth_failed` | 403 | no | a Remove whose password did not check out (`1kg.2.2`, SEC-40). A 403, never a 401, because the client signs out on any 401; it names no resource |
 | `document_unsupported` | 409 | no | a stored document this build cannot read, or cannot write over: an unknown stored type, a stored type version this build does not write, stored data that is not an object or fails the tolerant read, or — for a patch or a restore — a stored key or sub-key this build does not declare (`1kg.5.2`). Fail closed; only the document's owner can reach it |
+| `inactive` | 404 | no | a table route's one answer for every signed-in caller who is not entitled, whatever the reason (`1kg.2.3`, SEC-46, TABLE-9): not the owner, no live session, a session that ended under the request, a screen asking to mint. Identical in status, body and headers |
+| `cross_site` | 403 | no | a table route's Fetch Metadata refusal (`1kg.2.3`, SEC-45): `Sec-Fetch-Site` present and not `same-origin`, or `Sec-Fetch-Mode: navigate`. It depends on nothing but those headers and runs before any cookie is read |
+| `screen_limit` | 409 | no | a screen minted for a session that already has as many live screens as SEC-48 allows (`1kg.2.3`). The owner revokes one; the account stays signed in |
+| `live_elsewhere` | 409 | no | a Start while the GM's table is live in another campaign (`1kg.2.3`, REVEAL-2). The client sends End for that session, then Start: Start never ends a table on its own |
+| `group_name_taken` | 409 | no | a group name another live group of the campaign already has, up to case (`btb`). The name is never echoed |
+| `group_cap_reached` | 409 | no | the 51st live group of a campaign (`btb`, SEC-35) |
 
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
@@ -190,6 +196,8 @@ names it starts fresh rather than reading another caller's status or result
 | Offer a seat | none needed | an offer of an address this campaign already has a live offer for, or an accepted seat of, is a repeat: it changes nothing and answers the same `204` |
 | Confirm a seat, Remove a seat | none needed | confirming a confirmed seat and removing a removed one answer as the first did and change nothing (no second audit row, no second job) |
 | Accept, decline an offer | none needed | a repeat accept by the account that accepted answers the same seat; a repeat decline answers `204` and applies a block it now asks for |
+| Create a group | `command_id`, minted by the client, scoped to the campaign (`btb`) | answers `201` with the group that key made, whatever name the repeat sends, rather than `409 group_name_taken` for its own group. A key whose group was since removed is the one `404` |
+| Rename a group, remove a group, add or remove a member | none needed | the same name changes nothing and answers `200`; removing a removed group, adding a member, and removing a seat that is not a member answer `204` and change nothing — no audit row and no revision advance |
 
 ### Pagination
 
@@ -214,6 +222,12 @@ entry. It is `1` throughout this contract version.
 Version 1 is still being assembled by `1kg.1.2`, family by family, and nothing
 consumes it yet. The rules below start to bind when that bead closes; until then
 a new family may add a member to a union without a bump.
+
+A family whose *Schema families* status is **open** is not bound by the table
+below until it is marked done again. The table-session family is one: threat
+model §15.11 reopened it, and no build, deployed or not, has ever served or
+parsed one of its shapes, so there is no producer and consumer that have met for
+a bump to protect (`1kg.2.3`, DV-3).
 
 | Change | Version |
 | --- | --- |
@@ -249,11 +263,12 @@ on both sides.
 | Per-type document fields | **done** | All eight types declare their fields, rules, reveal groups and default reveals (`1kg.5.3`). A key a type does not name fails closed — the same posture as card kinds |
 | Reveal | **done** | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealLive`, `RevealState`, `TableProjection`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
-| Table sessions | **done** | `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest`, `EnrolResponse`, `TableSession`, `TableSessionRequest`, `TableSessionAnswer` |
+| Table sessions | **open** — reopened by threat model §15.11; not bound by the bump table until marked done again (see *Versioning and forward compatibility*) | `TableSession`, `TableSessionRequest`, `TableSessionAnswer`, `ScreenMintRequest`, `ScreenMintAnswer`, `TableLeaveRequest`, and `inactive`, `cross_site`, `screen_limit` and `live_elsewhere` on the error envelope. `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest` and `EnrolResponse` are retired (`1kg.2.3`). See *The table-session family* below |
 | Realtime events | **done** | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect`), `TableEvent` (`session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect`), and the two snapshot resources `GmSnapshot` and `TableSnapshot`. `slot` and `snapshot` are the reveal family's; the transport is the media ADR's |
 | Tool and document-type registry | `1kg.3.1` | extends `registry.json` |
 | Conversations | **done** | `Conversation`, `ConversationPage`, `ConversationCreateRequest`, `ConversationPatchRequest`, and `already_linked` on the error envelope. See *The conversation family* below |
 | Campaigns and seats | **done** | `Campaign`, `CampaignPage`, `CampaignCreateRequest`, `CampaignPatchRequest`, `Seat`, `SeatPage`, `SeatCreateRequest`, `SeatOfferRequest`, `SeatRemoveRequest`, `SeatOffer`, `SeatOfferPage`, `SeatDeclineRequest`, `PlayerSeat`, `PlayerSeatPage`, and six codes on the error envelope. See *The campaigns and seats family* below |
+| Groups | **done** | `Group`, `GroupPage`, `GroupCreateRequest`, `GroupPatchRequest`, and `group_name_taken` and `group_cap_reached` on the error envelope (`btb`). See *The groups family* below |
 
 ## The tool-invocation family
 
@@ -308,6 +323,28 @@ the composer and never runs (RAIL-8).
 
 The handoff's `tool_label` is not on the wire: a label is a registry fact, and
 sending it would give the two a chance to disagree.
+
+### Routes (`1kg.4.1`)
+
+| Route | Answers |
+| --- | --- |
+| `POST /campaigns/{campaign_id}/tool-invocations` | `200 ToolInvocation`: new, replayed or retried |
+| `GET /campaigns/{campaign_id}/tool-invocations/{invocation_id}` | `200 ToolInvocation` |
+| `POST /campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel` | `200 ToolInvocation`; no body |
+
+The body's `campaign_id` must equal the path's (`422`, `field: "campaign_id"`),
+and a body is read up to 32 KiB. A repeat of an `invocation_id` is answered by
+the stored invocation's state, never by comparing bodies: `working`, `done`,
+a final `failure` and `cancelled` are answered as stored and start nothing; a
+retryable failure starts the next attempt of the stored request, through every
+guard again. Cancel is a flag, never refused for state.
+
+On these routes a provider failure or an expiry is carried on the invocation,
+answered 200; 502, 504 and `attempt_expired` never appear as response statuses.
+An HTTP error is a refusal before any attempt starts — `422`, the one `404`,
+`409` (`campaign_archived`, `tool_disabled`, `nothing_to_recap`, `cap_reached`),
+`429` (`throttled_daily`; `throttled_user` with `retry_after_s` and a matching
+`Retry-After` header) — which creates nothing, or a `503`.
 
 ## The documents family
 
@@ -963,6 +1000,55 @@ audit row (`campaign.concluded`, `campaign.reopened`); a repeat writes none.
 Not yet recorded, so not on the wire: the card's "last beat" line and an avatar
 the GM chose.
 
+## The groups family
+
+A GM's named groups of seats (`btb`; owner decision O-3; shared eligibility ADR
+ED-4, ED-12, ED-13, ED-15). A group is a label the GM keeps for choosing an
+audience. **A group's name and its members are GM-only. No table-side shape
+carries either, and the audience a table sees never names a group (ED-15,
+REVEAL-24).** The routes are on the `dm`-gated Workbench router: the origin
+check, the one `401`, the role `403`, and the one `404` for anything that is
+not the caller's (SEC-2, SEC-3, SEC-7).
+
+| Route | Answers |
+| --- | --- |
+| `GET /campaigns/{campaign_id}/groups` | `GroupPage`: every live group, by the name's fold, then id |
+| `POST /campaigns/{campaign_id}/groups` | `201` and the new, empty `Group`; a repeat of the key answers `201` too. The body is a `GroupCreateRequest` |
+| `PATCH /campaigns/{campaign_id}/groups/{group_id}` | `200` and the renamed `Group`; the same name again changes nothing. The body is a `GroupPatchRequest` |
+| `POST …/groups/{group_id}/remove` | `204`, a repeat included. No body |
+| `POST …/groups/{group_id}/members/{participant_id}` | `204`, a repeat included. No body. A seat that is missing, removed or another campaign's is the one `404` |
+| `POST …/groups/{group_id}/members/{participant_id}/remove` | `204`, a seat that is not a member included. No body |
+
+A group that is missing, removed or another campaign's is the one `404` on
+every group-scoped route except remove, where a removed group answers `204`.
+
+**One page.** A campaign holds at most 50 live groups, so `GroupPage` holds them
+all: there is no `limit` or `cursor` parameter and `next_cursor` is always
+`null`. The key stays, so paging can arrive without a version bump.
+
+**`member_ids` is not an audience.** It lists the seats in the group that are
+not removed — open, offered, and accepted but not yet confirmed as well as
+confirmed — distinct and ascending by code point. Whatever delivers to a group's
+members applies SEC-50(5) and A-27 seat by seat: a group never widens delivery
+to a seat the GM has not confirmed.
+
+**Removal is permanent.** A removed group is kept for disclosure memory and is
+never restored, so the wire says *remove*, never *archive*, and a patch cannot
+carry one. A removed group frees its name. A name is unique among a campaign's
+live groups up to case (`Scouts` and `scouts` collide), and is checked by the
+alias rules on the server, which are stricter than the shape and answer the
+same `422`.
+
+**Eligibility.** Adding a member, removing one and removing a group each
+advance the campaign's authorisation revision under the campaign lock; creating
+and renaming a group change no one's eligibility and advance nothing
+(`docs/ARCHITECTURE.md`, the authorisation revision). Adding a member displays
+nothing (ED-13). Removing a member or a group is a narrowing (ED-12, RQ-5): it
+narrows the live session first, in a step that never waits for the lock, and
+then changes the fact under the lock; if the lock cannot be had in time the
+answer is `503 backend_unavailable`, retryable, and the change is *not applied
+yet*. No password is asked for: a narrowing never waits on one (X-3).
+
 ## The timeline family
 
 A conversation is read as a list of entries, one per **exchange**: a turn
@@ -1083,21 +1169,30 @@ Stop all (AUDIO-9), and carries no epoch, because a Stop is never stale (X-3).
 
 ## The table-session family
 
-Four bearer secrets exist (threat model §6.2); two of them are on the wire, each
-exactly once, in a POST body: the **table token** a table link carries and the
-**enrolment code** a personal link carries. Both are 32 CSPRNG bytes as
-`secrets.token_urlsafe` spells them — 43 base64url characters — and the contract
-pins that length. Neither ever appears in a URL the server sees (REVEAL-19).
+There is **no table link, no join and no enrolment** (threat model §15, owner
+decisions D-1 and D-13): a player is an account, seated by the GM (SEC-41), and
+no bearer secret is on the wire for any account (SEC-43). The one bearer secret
+left is the **screen grant** (SEC-48): 32 CSPRNG bytes the owner mints on the
+browser they are signed in on. It leaves the server once, in the `Set-Cookie`
+of the answer that mints it, and is in no body, no URL and no list.
 
-| Request | Answer |
-| --- | --- |
-| `TableJoinRequest` — the token | `TableJoinResponse`: `joined` with the device's role (`participant`, or `guest` with TABLE-13's line), `full` (SEC-10), or `inactive` — the one answer for a wrong, ended, expired or rotated token (TABLE-9). No reason, ever |
-| `EnrolRequest` — the code | `EnrolResponse`: `enrolled` or `inactive` (TABLE-16). No reason, ever |
-| `TableSessionRequest` — `start`, `end` or `rotate`, idempotent by `command_id`; only `rotate` may also reset personal links (REVEAL-17) | `TableSessionAnswer`: the `TableSession` and, for a start or a rotation, the new token — the one time a token is in a body. An end carries `null` |
+| Route | Request | Answer |
+| --- | --- | --- |
+| `GET /campaigns/{campaign_id}/table-session` | — | `TableSessionAnswer`: the campaign's live session, else the one most recently started, else `session: null`. A session still `live` past `ends_at` reads `ended`, with `ended_at` its `ends_at`. Writes nothing |
+| `POST /campaigns/{campaign_id}/table-session` | `TableSessionRequest` — `start`, `end` or `rotate`, idempotent by `command_id`; End and Rotate name their `session_id`, Start names none | `TableSessionAnswer`: the session as it stands after the command. `409 live_elsewhere` for a Start while the GM is live in another campaign; `429 throttled_user` with `retry_after_s` for a Start or a Rotate past SEC-35's per-campaign bound (End is never refused); `503 backend_unavailable`, retryable |
+| `DELETE /campaigns/{campaign_id}/table-session/screens/{screen_id}` | — | `204`, a repeat too. Another GM's screen, or none, is the one `404` |
+| `POST /table/screen` | `ScreenMintRequest` — the campaign | `ScreenMintAnswer`: when the grant ends. The same answer sets the grant's cookie, deletes the account's session cookie and sends `Clear-Site-Data: "cache", "storage"` (D-13). `inactive` for anyone but the owner of a campaign with a live session, and for a screen; `409 screen_limit` at SEC-48's bound, with the account kept signed in |
+| `POST /table/leave` | `TableLeaveRequest` — nothing | `204`, always: a live grant is revoked and its cookie deleted, a dead one's cookie is deleted, and no account is ever signed out (SEC-49) |
 
-`TableSession` is the GM's view: state, link generation, when it started and
-ends, whether table audio is on, and how many devices hold a credential. It never
-carries the token: a token is not re-readable.
+`TableSession` is the GM's view: state, **admission generation** (`gen`, which
+§15.11 keeps), when it started and ends, whether table audio is on, and
+`screens` — the live grants of a live session, each as `{screen_id, created_at,
+last_seen_at}`, never the grant or its digest; an ended session lists none. The
+list carries up to 16, above SEC-48's per-session bound of four (*suggested*), so
+tuning the bound is not a contract change. The GM routes are Workbench GM routes
+(the `dm` gate, SEC-2, SEC-3); the two `/table/` routes are the table router's
+(SEC-44 to SEC-46): Fetch Metadata first, then SEC-7, then one principal — a
+live screen grant alone, else the account session.
 
 ## The realtime family
 
@@ -1339,10 +1434,9 @@ reveal happened, and a frame that arrives whenever something invisible changes
 is exactly the inference channel WT-7 and T-8 rule out.
 
 A table client is never told a participant id. Every table-side shape in this
-contract is already id-free — `TableRole` is an enum, `TableJoinResponse` answers
-with a role and no id, `EnrolResponse` with a status alone — and which
-participant `mine` is, the server resolves from the credential pair, *never from
-request fields*. A slot a device is not entitled to is **absent**, never marked:
+contract is already id-free — `TableRole` is an enum, `ScreenMintAnswer` carries
+a time alone — and which participant `mine` is, the server resolves from the
+table principal, *never from request fields*. A slot a device is not entitled to is **absent**, never marked:
 a marker would confirm both that the slot exists and that a private reveal is
 happening (WT-7, T-8, threat model §8.2).
 

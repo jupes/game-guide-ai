@@ -3556,21 +3556,32 @@ def test_the_invitee_page_is_newest_first_and_walks_once(world: World) -> None:
     made = []
     for n in range(3):
         campaign = _a_campaign(world, name=f"C{n}")
-        made.append(_held_offer(world, campaign, "Rook", key, now=T0 + timedelta(hours=n))[1])
+        made.append(_held_offer(world, campaign, f"Rook{n}", key, now=T0 + timedelta(hours=n))[1])
     offers = _offer_store(world)
     seen: list[str] = []
+    seen_names: list[str] = []
+    seen_aliases: list[str] = []
     cursor: str | None = None
     for _ in range(5):
         with world.db.transaction() as unit:
             page = offers.invitee_page(unit, key, world.players[0], now=T0 + timedelta(days=1), cursor=cursor, limit=2)
         seen += [found.offer.id for found in page.items]
+        seen_names += [found.campaign_name for found in page.items]
+        seen_aliases += [found.alias for found in page.items]
         cursor = page.next_cursor
         if cursor is None:
             break
     assert seen == list(reversed(made))
+    # C1, C2: each item's campaign name and seat alias travel with ITS row, not
+    # the page's last row (mutant M10: pg's invitee_page giving every item
+    # rows[-1]'s campaign name) or a shared alias (a wrong-seat-alias mutant:
+    # swapping in another item's alias would pass if every seat answered to
+    # the same name).
+    assert seen_names == ["C2", "C1", "C0"]
+    assert seen_aliases == ["Rook2", "Rook1", "Rook0"]
     with world.db.transaction() as unit:
         found = offers.find_for_invitee(unit, made[0], key, world.players[0], now=T0)
-    assert found is not None and (found.campaign_name, found.alias) == ("C0", "Rook")
+    assert found is not None and (found.campaign_name, found.alias) == ("C0", "Rook0")
     # `repr(found)` also holds SeatOffer's random ids (secrets.token_urlsafe), so
     # a short name like "C0" can appear there by chance. Check two things that
     # do not depend on those ids: the dataclass marks both fields hidden, and

@@ -77,6 +77,9 @@ import {
   TOOL_RESULT_KIND,
   TableEventSchema,
   TableProjectionSchema,
+  GROUP_NAME_MAX_CHARS,
+  GroupCreateRequestSchema,
+  GroupPatchRequestSchema,
   SEAT_ALIAS_MAX_CHARS,
   SEAT_STATUSES,
   SeatCreateRequestSchema,
@@ -1888,5 +1891,36 @@ describe('campaigns and seats (1kg.2.2)', () => {
 
   it('knows the unsupported-document code of the document family (1kg.5.2)', () => {
     expect(isKnownErrorCode('document_unsupported')).toBe(true)
+  })
+})
+
+describe('the groups family (btb)', () => {
+  it('knows both group codes, and still reads an unknown code as generic', () => {
+    for (const code of ['group_name_taken', 'group_cap_reached']) {
+      expect(isKnownErrorCode(code)).toBe(true)
+      expect(readErrorBody({ detail: { code, message: 'Fixed.', retryable: false } })).toEqual({
+        kind: 'workbench',
+        info: { code, message: 'Fixed.', retryable: false },
+      })
+    }
+    expect(isKnownErrorCode('group_taken')).toBe(false)
+  })
+
+  it('takes a key minted by crypto.randomUUID, and refuses a create without one', () => {
+    const create = (command_id?: string) =>
+      GroupCreateRequestSchema.safeParse({ schema_version: 1, ...(command_id ? { command_id } : {}), name: 'Scouts' })
+    for (let minted = 0; minted < 20; minted += 1) expect(create(crypto.randomUUID()).success).toBe(true)
+    expect(create().success).toBe(false)
+  })
+
+  it('bounds a name in code points after trimming, on a create and a rename alike', () => {
+    const dice = String.fromCodePoint(0x1f3b2)
+    for (const request of [
+      (name: string) => GroupCreateRequestSchema.safeParse({ schema_version: 1, command_id: 'cmd_4f1c9a2e7b3d6e8f', name }),
+      (name: string) => GroupPatchRequestSchema.safeParse({ schema_version: 1, name }),
+    ]) {
+      expect(request(` ${dice.repeat(GROUP_NAME_MAX_CHARS)} `).success).toBe(true)
+      expect(request(dice.repeat(GROUP_NAME_MAX_CHARS + 1)).success).toBe(false)
+    }
   })
 })
