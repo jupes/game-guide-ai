@@ -811,7 +811,9 @@ would otherwise answer a player's `GET /campaigns/offers` with the role refusal.
 | `GET /campaigns?limit&cursor&include_archived` | `CampaignPage`: the caller's campaigns, newest first (`created_at DESC, id DESC`, the id by code point) |
 | `POST /campaigns` | `201` and the new `Campaign`; the caller is its GM (D-5). The body is a `CampaignCreateRequest` |
 | `GET /campaigns/{campaign_id}` | the `Campaign`, archived or not |
-| `PATCH /campaigns/{campaign_id}` | the `Campaign` after a rename, archive or restore. The body is a `CampaignPatchRequest` |
+| `PATCH /campaigns/{campaign_id}` | the `Campaign` after a rename, archive, restore or tone-line change. The body is a `CampaignPatchRequest` |
+| `POST /campaigns/{campaign_id}/conclude` | the `Campaign`, marked concluded (bead `cfx`). No body; a repeat changes nothing |
+| `POST /campaigns/{campaign_id}/reopen` | the `Campaign`, no longer concluded. No body; a repeat changes nothing |
 | `GET /campaigns/{campaign_id}/participants?limit&cursor&include_removed` | `SeatPage`, oldest first |
 | `POST /campaigns/{campaign_id}/participants` | `201` and the new, open `Seat`. The body is a `SeatCreateRequest` |
 | `POST …/participants/{participant_id}/offer` | **`204` with no body, whatever the address holds**. The body is a `SeatOfferRequest` |
@@ -857,6 +859,40 @@ reads are the design lane's. Withdrawing an offer is the GM's Remove.
 campaign lock, and then changes the fact under the lock; if the lock cannot be
 had in time the answer is `503 backend_unavailable`, retryable, and the change
 is *not applied yet*. Archive ends no session.
+
+### The tavern card (bead `cfx`)
+
+Every answer that carries a `Campaign` carries its card's facts, and every
+`PlayerSeat` carries the seated card's. Three are the GM's to state — stored by
+migration 0013 — and the rest are derived by the server at read time, never
+stored (`service/campaign_summary_store.py`). The rules the server applies are
+interactions ADR §19 A-30, which the owner may override.
+
+| Key | `Campaign` | `PlayerSeat` | Meaning |
+| --- | --- | --- | --- |
+| `tone` | yes | yes | the card's tone line, or `null`. Optional at create (only a name is required); `PATCH` sets it, `tone: null` clears it. 1 to 80 characters, trimmed as a name is |
+| `game_system` | yes | yes | `dnd5e`, the one system the service answers from |
+| `avatar_icon`, `avatar_tone` | yes | yes | a Material Symbols name and `ember` or `gold`: stable per campaign, the same for the owner and every seated player, until a GM can choose one |
+| `concluded_at` / `concluded` | timestamp or `null` | boolean | the GM's Mark concluded. **Not archive**: a concluded campaign keeps its seats, documents and table, stays in the list, and narrows or widens nothing |
+| `last_played_at` | yes | yes | when the table last met — an ended session's end, an expired one's expiry, a live one's start — or `null` |
+| `live` | as `badge` | yes | a table session is running now |
+| `badge` | `live`, `ready` or `null` | — | LIVE wins; READY is prepared material waiting (an unarchived document edited after the table last met, or any, for a campaign that has never met); `null` means idle |
+| `seat_count` | 0 to 40 | — | seats not removed, open, offered and accepted alike |
+| `last_activity_at` | yes | — | the latest of a session played, a document edited and a GM turn in a conversation linked to the campaign, never before `created_at` |
+| `dormant` | yes | — | no activity for more than 30 days, and neither live, concluded nor archived |
+
+**A seated card is the table's and nothing more** (SEC-43): no participant id,
+no seat count, nothing about another player, and no signal of the GM's private
+prep — no READY and no last-edit time. `GET /campaigns` stays newest first by
+creation: the tavern orders by `last_activity_at` itself, because the
+"Concluded (N)" disclosure needs every page anyway.
+
+Conclude and Reopen are a rename's kind of write: one statement with the owner
+in it, no campaign lock and no `authz_revision` advance, answered through the
+same one `404` for a campaign that is not the caller's. Each change writes an
+audit row (`campaign.concluded`, `campaign.reopened`); a repeat writes none.
+Not yet recorded, so not on the wire: the card's "last beat" line and an avatar
+the GM chose.
 
 ## The timeline family
 
