@@ -284,7 +284,8 @@ def account_router(
     )
 
 
-
+# justification: `Coroutine`'s send and yield types; FastAPI awaits the dependency and
+# uses only its `bytes` result.
 def body_reader(max_bytes: int) -> Callable[[Request], Coroutine[Any, Any, bytes]]:
     """A dependency that reads a route's raw body, at most `max_bytes` (1kg.4.1,
     I-23). A longer one is refused as soon as it is known to be longer — by its
@@ -315,6 +316,7 @@ def body_reader(max_bytes: int) -> Callable[[Request], Coroutine[Any, Any, bytes
 def _too_long() -> RequestValidationError:
     """A body past its bound: `validation_failed`, no field, nothing echoed."""
     return RequestValidationError([{"type": "value_error", "loc": (), "msg": "the body is too long"}])
+
 
 def api_routes(app: FastAPI) -> list[tuple[str, APIRoute]]:
     """Effective path (prefix-joined) and route object for every API route.

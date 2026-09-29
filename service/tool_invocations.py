@@ -216,6 +216,7 @@ class Replay:
 
 type Clock = Callable[[], datetime]
 #: What a produced result may be: the contract's own model, or its JSON shape.
+#: justification: that shape is bare JSON, validated by `judge_result`.
 type Produced = CardResult | DocumentResult | MediaResult | Mapping[str, Any]
 
 
@@ -288,6 +289,7 @@ class ExecutionContext:
             raise ProviderNotAllowed()
         return _BoundedClient(self._factory.client_for(self.model_alias), self.remaining_s)
 
+    # justification: LangChain's `RunnableConfig` is a JSON-shaped dict of mixed values.
     def run_config(self) -> dict[str, Any]:
         """The ledger's operation, and nothing else: no tracing callback and no
         trace metadata ever rides on a Workbench model call (SEC-24)."""
@@ -430,6 +432,7 @@ def to_wire(row: InvocationRow) -> ToolInvocation:
     raise Unreadable()
 
 
+# justification: the entry is the JSON the timeline stores; `to_wire` typed it first.
 def tool_entry(row: InvocationRow) -> dict[str, Any]:
     """The timeline entry that carries `row`, around `to_wire(row)`."""
     return {
@@ -439,6 +442,7 @@ def tool_entry(row: InvocationRow) -> dict[str, Any]:
     }
 
 
+# justification: the error as the JSON column stores it; `ErrorInfo` typed it first.
 def _stored(info: ErrorInfo) -> dict[str, Any]:
     return info.model_dump(mode="json", exclude_none=True)
 
@@ -550,6 +554,7 @@ def _rewrite_entry(unit: UnitOfWork, stores: InvocationStores, row: InvocationRo
     )
 
 
+# justification: `result` and `error` are JSON column values, typed before they get here.
 def _settle(
     unit: UnitOfWork, stores: InvocationStores, row: InvocationRow, *, status: str, outcome: str,
     result: Mapping[str, Any] | None = None, error: Mapping[str, Any] | None = None, now: datetime,
