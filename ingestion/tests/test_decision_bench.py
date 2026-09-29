@@ -234,6 +234,78 @@ def test_run_embedding_grouped_by_category_never_splits_a_group_that_spans_two_c
         assert test_fold_of_category[f"cat{g}-0"] == test_fold_of_category[f"cat{g}-1"], g
 
 
+def test_category_pass_never_fits_or_tunes_on_a_group_that_spans_two_categories(monkeypatch):
+    """agent-forge-harness-uhc, for the INNER (temperature) split as well as the outer one.
+    Every committed `group` here spans two categories, as the 8 `rules:*` groups span
+    `rules_prose` and `prompt_injection`, so its connected component is the whole group. An
+    inner split on raw `category` would tune the temperature on one twin of an answer whose
+    other twin the centroids were just fitted on. test_embedding_arm_never_fits_or_tunes_on_a_
+    group_it_scores[category] cannot see that: there every item has its own group, so the
+    components are exactly the categories. This checks what each classifier was given."""
+    items, emb = [], {}
+    axes = {"stat_block": [1.0, 0.0, 0.0], "spell_card": [0.0, 1.0, 0.0], "none": [0.0, 0.0, 1.0]}
+    for g in range(15):
+        label = db.LABELS[g % 3]
+        for j in range(2):
+            it = _item(g * 2 + j, label, group=f"grp{g}", category=f"cat{g}-{j}")
+            items.append(it)
+            # A fourth coordinate unique to each item, so that a vector identifies its item.
+            vec = [*(x + 0.01 * ((g + j) % 5) for x in axes[label]), 0.001 * (g * 2 + j + 1)]
+            emb[it.id] = db.Embedding(vec, tokens=100, latency_ms=200.0 + g)
+    group_of_vector = {tuple(emb[it.id].vector): it.group for it in items}
+    log: dict[db.NearestCentroid, list[tuple[str, set[str]]]] = {}
+    tuning = [False]
+    real_fit = db.NearestCentroid.fit
+    real_tune = db.NearestCentroid.fit_temperature
+    real_predict = db.NearestCentroid.predict_proba
+
+    def fit(self, vectors, labels):
+        log.setdefault(self, []).append(("fit", {group_of_vector[tuple(v)] for v in vectors}))
+        return real_fit(self, vectors, labels)
+
+    def fit_temperature(self, vectors, labels):
+        log.setdefault(self, []).append(("tune", {group_of_vector[tuple(v)] for v in vectors}))
+        tuning[0] = True  # the grid search calls predict_proba; that is tuning, not scoring
+        try:
+            return real_tune(self, vectors, labels)
+        finally:
+            tuning[0] = False
+
+    def predict_proba(self, vector):
+        if not tuning[0]:
+            log.setdefault(self, []).append(("score", {group_of_vector[tuple(vector)]}))
+        return real_predict(self, vector)
+
+    monkeypatch.setattr(db.NearestCentroid, "fit", fit)
+    monkeypatch.setattr(db.NearestCentroid, "fit_temperature", fit_temperature)
+    monkeypatch.setattr(db.NearestCentroid, "predict_proba", predict_proba)
+
+    seeds = range(6)
+    for seed in seeds:
+        assert db.run_embedding(items, emb, k=5, seed=seed, group_field="category").status == "ok", seed
+
+    scored: list[str] = []
+    tuned = 0
+    for events in log.values():
+        seen: set[str] = set()  # every group this classifier's centroids or temperature used
+        last_fit: set[str] = set()
+        for kind, gs in events:
+            if kind == "score":
+                assert not gs & seen, f"scored {gs} with a classifier fitted or tuned on it"
+                scored += gs
+            elif kind == "tune":
+                assert not gs & last_fit, f"temperature tuned on {sorted(gs & last_fit)}, which the centroids had seen"
+                tuned += 1
+                seen |= gs
+            else:
+                last_fit = gs
+                seen |= gs
+    # Both twins of every group scored exactly once per seed, and T tuned in every fold of
+    # every seed, so the two checks above really ran.
+    assert sorted(scored) == sorted(it.group for it in items for _ in seeds)
+    assert tuned == 5 * len(seeds)
+
+
 def test_run_embedding_grouped_by_category_keeps_a_template_family_in_one_fold():
     """Every item here has its OWN `group` (so grouping by `group` would happily split a
     template family across folds), but items share a `category` in pairs. Asking for
