@@ -392,7 +392,9 @@ def _scheduler_call(driver: JobDriver | None) -> Any:
     return TestClient(_scheduler_app(lambda: driver)).post(SCHEDULER_PATH, headers={SCHEDULER_SECRET_HEADER: SECRET})
 
 
-def _answer(client: TestClient, method: str, path: str, headers: dict[str, str]) -> tuple[int, dict[str, str], bytes]:
+def _answer(
+    client: TestClient, method: str, path: str, headers: dict[str, str] | list[tuple[str, str]],
+) -> tuple[int, dict[str, str], bytes]:
     r = client.request(method, path, headers=headers, follow_redirects=False)
     return r.status_code, {k: v for k, v in r.headers.items() if k.lower() != "date"}, r.content
 
@@ -424,6 +426,32 @@ def test_without_the_credential_the_route_is_exactly_a_path_that_does_not_exist(
         route = _answer(client, method, f"/internal/jobs{suffix}", headers)
         assert route == _answer(client, method, f"/internal/nope{suffix}", headers)
         assert route == _answer(client, method, f"/nope{suffix}", headers)
+    assert queue.claims == 0
+
+
+#: pr158-i L1 / mutant U2: the header presented twice, either copy correct.
+#: Both must still leave the route unmatched — `_credentialed` requires
+#: exactly one presented value, so a second value is never authoritative,
+#: whether it repeats the secret or gets it wrong (never a bypass either way).
+_DUPLICATED_SECRET = {
+    "both copies correct": [(SCHEDULER_SECRET_HEADER, SECRET), (SCHEDULER_SECRET_HEADER, SECRET)],
+    "second copy wrong": [(SCHEDULER_SECRET_HEADER, SECRET), (SCHEDULER_SECRET_HEADER, "x" * len(SECRET))],
+}
+
+
+@pytest.mark.parametrize("topology", ["no static mount", "root static mount"])
+@pytest.mark.parametrize("pair", sorted(_DUPLICATED_SECRET))
+def test_a_duplicated_secret_header_is_refused_even_when_both_copies_match(monkeypatch, dist, topology, pair):
+    monkeypatch.setenv(SCHEDULER_SECRET_ENV, SECRET)
+    queue = _CountingQueue()
+    _enqueue(queue)
+    client = TestClient(_scheduler_app(lambda: _driver(queue), dist if topology == "root static mount" else None))
+    headers = _DUPLICATED_SECRET[pair]
+
+    for suffix in ("", "/"):
+        route = _answer(client, "POST", f"/internal/jobs{suffix}", headers)
+        assert route == _answer(client, "POST", f"/internal/nope{suffix}", headers)
+        assert route == _answer(client, "POST", f"/nope{suffix}", headers)
     assert queue.claims == 0
 
 
