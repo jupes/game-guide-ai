@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import logging
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -559,6 +561,8 @@ _MISUSE: dict[str, tuple[Callable[[_Env], object], str]] = {
     "tracing-after-exit": (_after_exit(lambda cap: cap.tracing()), "after the capture exited"),
     "tracing-twice": (_tracing_twice, "once per capture"),
     "seed-reused": (lambda env: CanaryWorld(env.request.node.nodeid), "already exists in this process"),
+    "stt-glossary-as-string": (lambda env: env.capture.stt("s", audience=Audience.GM).transcribe(
+        b"\x00", glossary="Strahd von Zarovich"), "glossary is a sequence of terms, not one string"),
 }
 
 
@@ -644,10 +648,35 @@ def _raised_then_nothing(world: CanaryWorld, capture: LeakCapture) -> None:
         capture.assert_clean()
 
 
+def _late_stdout(world: CanaryWorld, capture: LeakCapture) -> None:
+    """An early token, reported by assert_clean and still inside the late scan's overlap, then a late one:
+    only the late one is reported at exit (the watermark's ``min_end``)."""
+    sys.stdout.write(f"{world.mint('early-stdout').token}\n")
+    with pytest.raises(CanaryLeak):
+        capture.assert_clean()
+    sys.stdout.write(f"late: {world.mint('late-stdout').token}\n")
+
+
+def _late_stdout_straddling(world: CanaryWorld, capture: LeakCapture) -> None:
+    """A token half-written when assert_clean reads stdout (its probe went elsewhere), finished after."""
+    token = world.mint("straddling").token
+    sys.stdout.write(f"partial {token[:9]}")
+    saved, sys.stdout = sys.stdout, io.StringIO()
+    try:
+        with pytest.raises(CanaryLeak) as raised:
+            capture.assert_clean()
+    finally:
+        sys.stdout = saved
+    assert [(f.category, f.facet) for f in raised.value.findings] == [(FindingCategory.PROBE_LOST, "stdout")]
+    sys.stdout.write(f"{token[9:]} rest\n")
+
+
 @pytest.mark.parametrize(
     ("scenario", "late_leak"),
-    [(_late_log, "late-log"), (_late_player, "hidden"), (_nothing_late, None), (_raised_then_nothing, None)],
-    ids=["telemetry-after", "player-after", "nothing-after", "raised-then-nothing"],
+    [(_late_log, "late-log"), (_late_player, "hidden"), (_nothing_late, None), (_raised_then_nothing, None),
+     (_late_stdout, "late-stdout"), (_late_stdout_straddling, "straddling")],
+    ids=["telemetry-after", "player-after", "nothing-after", "raised-then-nothing", "stdout-after",
+         "stdout-straddling-the-mark"],
 )
 def test_captures_after_the_last_assert_are_still_checked(
     canary_world: CanaryWorld, scenario: Callable[[CanaryWorld, LeakCapture], None], late_leak: str | None,
@@ -663,6 +692,37 @@ def test_captures_after_the_last_assert_are_still_checked(
     assert "after the last assert_clean" in str(raised.value)
     assert [(f.category, f.canary.label if f.canary else None) for f in raised.value.findings] == [
         (FindingCategory.LEAK, late_leak)
+    ]
+
+
+def test_stdio_after_the_last_assert_is_checked_through_capteesys(
+    canary_world: CanaryWorld, monkeypatch: pytest.MonkeyPatch, capteesys: pytest.CaptureFixture[str],
+) -> None:
+    """H-U3 (C-7) with stdio read from ``capteesys``, wired as the ``leak_capture`` fixture wires it."""
+
+    def read_stdio() -> tuple[str, str]:
+        captured = capteesys.readouterr()
+        return captured.out, captured.err
+
+    capture = LeakCapture(canary_world, monkeypatch=monkeypatch, stdio_source=read_stdio).__enter__()
+    try:
+        sys.stdout.write(f"{canary_world.mint('early-stdout').token}\n")
+        with pytest.raises(CanaryLeak) as early:
+            capture.assert_clean()
+        sys.stdout.write(f"late: {canary_world.mint('late-stdout').token}\n")
+        sys.stderr.write(f"late: {canary_world.mint('late-stderr').token}\n")
+    except BaseException:
+        capture._exit(call_failed=True)
+        raise
+    with pytest.raises(CanaryLeak) as late:
+        capture._exit(call_failed=False)
+    assert [(f.sink, f.facet, f.canary.label if f.canary else None) for f in early.value.findings] == [
+        ("stdio", "stdout", "early-stdout")
+    ]
+    assert "after the last assert_clean" in str(late.value)
+    assert [(f.category, f.sink, f.facet, f.canary.label if f.canary else None) for f in late.value.findings] == [
+        (FindingCategory.LEAK, "stdio", "stdout", "late-stdout"),
+        (FindingCategory.LEAK, "stdio", "stderr", "late-stderr"),
     ]
 
 

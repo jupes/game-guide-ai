@@ -96,8 +96,8 @@ Every sink declares an audience. The policy is a pure function of the captures a
 
 | Factory | Records | Wire it through |
 | --- | --- | --- |
-| `llm(label, audience=...)` | `messages` (every message, as JSON), `config` (every key; key-like), `kwargs` | `RagService(llm_client=...)` or `ProviderClientFactory(client_builders={alias: llm})`; `invoke` and `ainvoke` |
-| `embeddings(label, audience=...)` | every `input` string, `model` | `embed_query(text, client=...)` |
+| `llm(label, audience=...)` | `messages` (every message as JSON: role, content, and every other field of its `model_dump()`, such as tool calls and tool call ids), `config` (every key; key-like), `kwargs` | `RagService(llm_client=...)` or `ProviderClientFactory(client_builders={alias: llm})`; `invoke` and `ainvoke` |
+| `embeddings(label, audience=...)` | every `input` string, `model`, any other `kwargs` | `embed_query(text, client=...)` |
 | `stt(label, audience=...)` | `audio` bytes, `glossary`, `options` | provisional; see section 12 |
 | `cache(label, audience=...)` | every `key` (key-like), every stored `value` | provisional |
 | `channel(label, audience=...)` | each `frame` as the bytes sent, `topic`, `recipient` (key-like) | provisional; one sink per recipient |
@@ -169,7 +169,8 @@ job (`1ir.11.5`).
   logger is honoured, as in production (`psycopg.pool` at ERROR). Importing `langfuse` sets the
   `httpx` and `langfuse` loggers to WARNING, and gives `httpx` a console handler, for the rest of the
   process; after that, `httpx`'s INFO request lines are not emitted at all. A suite-wide sweep that
-  needs them resets that logger first. Probe records appear in `caplog.records` inside a
+  needs them resets that logger first. The log probe proves only the root path: a logger with its own
+  level above DEBUG, or with `disabled=True`, drops records without a `PROBE_LOST`. Probe records appear in `caplog.records` inside a
   `leak_capture` test.
 - Inside a capture every warning is recorded, so a test relying on `-W error` loses it there.
 - Captures in concurrent threads of one process are unsupported; nested captures exit in LIFO order.
@@ -215,7 +216,9 @@ test modules, which emit canaries on purpose: `test_canary_harness.py`, `test_ca
 ## 12. Who owns the provisional fakes
 
 The product interfaces for these do not exist yet. Each fake records every argument; the bead that
-builds the real interface adapts its fake and keeps these recording semantics.
+builds the real interface adapts its fake and keeps these recording semantics. `RecordingSTT`'s
+`glossary` is a sequence of terms: one string (which type-checks as `Sequence[str]`) raises
+`HarnessMisuse` rather than being recorded as its characters, until `1ir.4.3` settles the real type.
 
 | Fake | Owner of the real interface |
 | --- | --- |

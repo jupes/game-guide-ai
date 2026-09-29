@@ -425,15 +425,19 @@ def _as_messages(value: object) -> list[BaseMessage] | None:
 
 
 def _message_record(message: BaseMessage) -> dict[str, object]:
+    """Role and content, then every other non-empty field of the message's ``model_dump()`` (a
+    superset: ``tool_calls``, ``invalid_tool_calls``, ``tool_call_id``, ``name``, ``additional_kwargs``
+    and whatever a later message class adds, all of which a provider adapter may send)."""
     content = message.content
     record: dict[str, object] = {
         "role": message.type,
         "content": content if isinstance(content, str) else _dump(content),
     }
-    for extra in ("name", "additional_kwargs", "tool_calls"):
-        value = getattr(message, extra, None)
-        if value:
-            record[extra] = value
+    try:
+        fields: Mapping[str, object] = message.model_dump()
+    except Exception as exc:  # a message the harness cannot dump is still recorded, loudly
+        fields = {"model_dump_failed": _safe_repr(exc), "repr": _safe_repr(message)}
+    record.update({key: value for key, value in fields.items() if key not in ("type", "content") and value})
     return record
 
 
@@ -507,7 +511,8 @@ class RecordingLLM:
 class RecordingEmbeddings:
     """The OpenAI client shape ``embed_query`` uses: ``.embeddings.create(*, model, input)``.
 
-    Records every input string under ``input`` and the model under ``model``; each call takes the next
+    Records every input string under ``input``, the model under ``model`` and any other keyword under
+    ``kwargs``; each call takes the next
     item of ``errors`` (an exception is raised after recording, ``None`` succeeds)."""
 
     def __init__(self, writer: _SinkWriter, *, dimensions: int, errors: Sequence[BaseException | None]) -> None:
@@ -551,6 +556,10 @@ class RecordingSTT:
         self.calls = 0
 
     def transcribe(self, audio: bytes, *, glossary: Sequence[str] = (), **options: object) -> str:
+        """``glossary`` is a sequence of terms; one string type-checks as ``Sequence[str]`` but would be
+        recorded as its characters, so it is refused (a vendor prompt string is ``1ir.4.3``'s to model)."""
+        if isinstance(glossary, str | bytes):
+            raise HarnessMisuse("glossary is a sequence of terms, not one string")
         self._writer.record("audio", bytes(audio))
         self._writer.record("glossary", _dump(list(glossary)))
         self._writer.record("options", _safe_repr(options))

@@ -27,7 +27,7 @@ import httpx
 import openai
 import pytest
 from fastapi import FastAPI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from starlette.requests import Request
@@ -55,6 +55,7 @@ from service.tests.canary import (
     FindingCategory,
     LeakCapture,
     RecordingLangfuseClient,
+    RecordingLLM,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -407,6 +408,36 @@ def test_tracing_also_captures_the_langfuse_client(leak_capture: LeakCapture, ca
     assert {facet for _, facet, _ in _leaks(raised)} == {"start_observation", "create_score"}
 
 
+def test_tracing_records_the_config_metadata_handed_to_callbacks(leak_capture: LeakCapture,
+                                                                 canary_world: CanaryWorld) -> None:
+    """H-T1: a canary only in the trace metadata (here ``service_version``) still reaches the recorder."""
+    canary = canary_world.mint("version", max_chars=20)
+    leak_capture.tracing()
+    config = tracing.build_trace_config(model="m", mode="gm", version=canary.token)
+    graph = StateGraph(_State)
+    graph.add_node("only", lambda state: {"note": state["note"] + " seen"})
+    graph.add_edge(START, "only")
+    graph.add_edge("only", END)
+    graph.compile().invoke({"note": "plain"}, config=cast("RunnableConfig", config))
+    with pytest.raises(CanaryLeak) as raised:
+        leak_capture.assert_clean()
+    facets = {facet for sink, facet, label in _leaks(raised) if sink == "trace" and label == "version"}
+    assert "on_chain_start" in facets
+
+
+def test_tracing_records_every_call_on_a_langfuse_observation(leak_capture: LeakCapture,
+                                                              canary_world: CanaryWorld) -> None:
+    """H-T2: a method the harness does not name (``update``) is recorded under its own facet."""
+    import langfuse
+
+    canary = canary_world.mint("output")
+    leak_capture.tracing()
+    langfuse.get_client().start_observation(name="span").update(output=canary.value)
+    with pytest.raises(CanaryLeak) as raised:
+        leak_capture.assert_clean()
+    assert _leaks(raised) == [("trace", "observation.update", "output")]
+
+
 # ── The LLM and embeddings ───────────────────────────────────────────────────
 
 
@@ -425,6 +456,44 @@ def test_the_llm_records_every_message_and_its_config(leak_capture: LeakCapture,
         ("player-llm", "config", "metadata"),
         ("player-llm", "messages", "system"),
     ]
+
+
+def _tool_turn(args: dict[str, str]) -> list[BaseMessage]:
+    return [HumanMessage(content="look it up"),
+            AIMessage(content="", tool_calls=[{"name": "lookup", "args": args, "id": "call-1"}])]
+
+
+def _invalid_tool_turn(args: str) -> list[BaseMessage]:
+    return [HumanMessage(content="look it up"), AIMessage(
+        content="", invalid_tool_calls=[{"name": "lookup", "args": args, "id": "call-1", "error": "bad json"}])]
+
+
+#: Each case puts the canary in exactly one place a provider adapter would send it (H-LLM1).
+_LLM_FACETS: dict[str, tuple[str, Callable[[RecordingLLM, Canary], object]]] = {
+    "list-content": ("messages", lambda llm, c: llm.invoke(
+        [HumanMessage(content=[{"type": "text", "text": c.value}])])),
+    "tool-call-args": ("messages", lambda llm, c: llm.invoke(_tool_turn({"q": c.value}))),
+    "invalid-tool-call-args": ("messages", lambda llm, c: llm.invoke(_invalid_tool_turn(f'{{"q": "{c.token}"'))),
+    "tool-call-id": ("messages", lambda llm, c: llm.invoke(
+        [*_tool_turn({"q": "plain"}), ToolMessage(content="found", tool_call_id=c.token)])),
+    "dict-input": ("messages", lambda llm, c: llm.invoke({"question": c.value})),
+    "stop-kwarg": ("kwargs", lambda llm, c: llm.invoke("hello", stop=[c.value])),
+    "ainvoke-kwarg": ("kwargs", lambda llm, c: asyncio.run(llm.ainvoke("hello", stop=[c.value]))),
+}
+
+
+@pytest.mark.parametrize("case", list(_LLM_FACETS), ids=list(_LLM_FACETS))
+def test_the_llm_records_every_part_of_its_input(
+    leak_capture: LeakCapture, canary_world: CanaryWorld, case: str,
+) -> None:
+    """H-LLM1: list content, tool calls (valid or not), tool call ids, a dict input and call kwargs."""
+    canary = canary_world.mint("payload")
+    facet, act = _LLM_FACETS[case]
+    llm = leak_capture.llm("player-llm", audience=Audience.PLAYER)
+    act(llm, canary)
+    with pytest.raises(CanaryLeak) as raised:
+        leak_capture.assert_clean()
+    assert _leaks(raised) == [("player-llm", facet, "payload")]
 
 
 def _rate_limited() -> openai.RateLimitError:
@@ -491,6 +560,10 @@ _SINK_CASES: dict[str, tuple[str, bool, Callable[[LeakCapture, Canary], object]]
         b"\x00\x01", glossary=["Strahd", c.value])),
     "stt-audio": ("audio", False, lambda cap, c: cap.stt("sink", audience=Audience.PLAYER).transcribe(
         b"RIFF\x00" + c.value.encode())),
+    "stt-options": ("options", False, lambda cap, c: cap.stt("sink", audience=Audience.PLAYER).transcribe(
+        b"\x00\x01", prompt=c.value)),
+    "embeddings-kwargs": ("kwargs", False, lambda cap, c: cap.embeddings("sink", audience=Audience.PLAYER).create(
+        model="m", input="plain", user=c.value)),
     "cache-key": ("key", True, lambda cap, c: cap.cache("sink", audience=Audience.PLAYER).get(f"card:{c.token}")),
     "cache-value": ("value", False, lambda cap, c: cap.cache("sink", audience=Audience.PLAYER).set(
         "card:1", {"body": c.value})),
@@ -498,6 +571,8 @@ _SINK_CASES: dict[str, tuple[str, bool, Callable[[LeakCapture, Canary], object]]
         c.value.encode(), topic="slot-table")),
     "channel-topic": ("topic", True, lambda cap, c: cap.channel("sink", audience=Audience.PLAYER).publish(
         b"{}", topic=f"slot-{c.token}")),
+    "channel-recipient": ("recipient", True, lambda cap, c: cap.channel("sink", audience=Audience.PLAYER).publish(
+        b"{}", topic="slot-table", recipient=f"player-{c.token}")),
     "http-body": ("body", False, lambda cap, c: _http(cap, content=c.value.encode())),
     "http-content-disposition": ("header:content-disposition", False, lambda cap, c: _http(
         cap, headers=[("Content-Disposition", f'attachment; filename="{c.token}.pdf"')])),
