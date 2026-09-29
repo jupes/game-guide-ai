@@ -199,7 +199,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
     monkeypatch.setattr(usage_capture, "_ledger_provider", lambda: made.sink)
     yield made
     for dependency in (*overrides, require_session, get_service, get_auth_store):
-        app.dependency_overrides.pop(dependency, None)
+        app.dependency_overrides.pop(cast(Any, dependency), None)
 
 
 @pytest.fixture
@@ -934,7 +934,8 @@ def test_e4_a_late_completion_of_a_superseded_attempt_is_fenced_out(world: World
     assert executor.finishes == 0 and world.rows() == rows
     done = tool_invocations.complete(world.db, world.stores, executor, second, _result("Mira"),
                                      _ctx(world, second), now=world.clock())
-    assert (done.status.value, done.attempt, done.result.document.title) == ("done", 2, "Mira")
+    assert (done.status.value, done.attempt) == ("done", 2)
+    assert done.model_dump(mode="json")["result"]["document"]["title"] == "Mira"
     assert executor.finishes == 1
     assert status_of(client, table).json() == done.model_dump(mode="json")
 
@@ -1160,7 +1161,11 @@ def test_g3_no_trace_callback_or_metadata_rides_on_a_tool_call(world: World, cli
                                                                monkeypatch: pytest.MonkeyPatch) -> None:
     """M-G4, C-10(c)."""
     built: list[Any] = []
-    monkeypatch.setattr(tracing, "build_trace_config", lambda *a, **k: built.append(1) or {"callbacks": ["spy"]})
+    def spy(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        built.append(1)
+        return {"callbacks": ["spy"]}
+
+    monkeypatch.setattr(tracing, "build_trace_config", spy)
     monkeypatch.setenv("RAG_TRACING", "1")
     world.executors[ToolId.NPC].behaviour = _one_provider_call
     assert post(client, world.table()).json()["status"] == "done"
@@ -1211,12 +1216,14 @@ def test_h3_a_row_this_build_cannot_read_is_a_503_and_is_never_overwritten(world
     table = world.table()
     world.executors[ToolId.NPC].behaviour = _raise(_timeout())
     post(client, table)
-    rows = shared_rows(world.db, "tool_invocations")
+    rows: Any = shared_rows(world.db, "tool_invocations")
     with world.db.transaction() as unit:
         [(key, stored)] = rows.visible(unit).items()
         rows.replace(unit, key, replace(stored, row=replace(stored.row, schema_version=2)))
     before = world.rows()
-    response = {"status": status_of, "cancel": cancel_of, "repeat": post}[route](client, table)
+    routes: dict[str, Callable[[TestClient, Table], Response]] = {
+        "status": status_of, "cancel": cancel_of, "repeat": post}
+    response = routes[route](client, table)
     assert response.status_code == 503
     assert world.rows() == before
 

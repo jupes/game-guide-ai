@@ -81,9 +81,9 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from types import MappingProxyType
-from typing import NoReturn
+from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, params
@@ -285,7 +285,7 @@ def account_router(
 
 
 
-def body_reader(max_bytes: int) -> Callable[[Request], Awaitable[bytes]]:
+def body_reader(max_bytes: int) -> Callable[[Request], Coroutine[Any, Any, bytes]]:
     """A dependency that reads a route's raw body, at most `max_bytes` (1kg.4.1,
     I-23). A longer one is refused as soon as it is known to be longer — by its
     declared length, or by the first chunk that crosses the line — and the rest

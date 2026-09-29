@@ -38,7 +38,7 @@ import pytest
 from _pg import connect, needs_db, throwaway_database
 
 from service import migrations as mig
-from service import tool_invocation_store
+from service import tool_invocation_store, tool_invocations
 from service.campaign_store import InMemoryCampaignStore, PostgresCampaignStore, shared_rows
 from service.conversation_store import InMemoryConversationStore, PostgresConversationStore
 from service.db import (
@@ -61,7 +61,6 @@ from service.tool_invocation_store import (
     InvocationRow,
     PostgresToolInvocationStore,
 )
-from service import tool_invocations
 from service.tool_invocations import InvocationStores, ToolSettings
 from service.workbench_contracts import CONTRACT_VERSION, ToolId, ToolInvocationRequest
 

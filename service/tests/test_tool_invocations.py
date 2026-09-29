@@ -104,7 +104,7 @@ class _Executor:
 
 
 def test_a_tool_runs_only_when_named_switched_on_and_registered() -> None:
-    every = {tool: _Executor(tool) for tool in ToolId}
+    every: dict[ToolId, Any] = {tool: _Executor(tool) for tool in ToolId}
     named = ToolSettings(frozenset(ToolId))
     assert tool_availability(ToolId.NPC, named, every) is None
     assert tool_availability(ToolId.NPC, ToolSettings(), every) == "That tool isn't available yet."
@@ -145,6 +145,7 @@ def test_anything_unexpected_is_a_retryable_backend_outage(error: BaseException)
 
 def test_a_database_or_embedding_outage_is_a_retryable_backend_outage() -> None:
     import psycopg
+
     from ingestion.retrieval import EmbeddingUnavailableError
 
     for error in (psycopg.OperationalError("x"), EmbeddingUnavailableError("x")):
