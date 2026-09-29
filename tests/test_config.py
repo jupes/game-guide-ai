@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import importlib
 
+import pytest
+
 import config
 
 # Every env var config reads, with its (var, attr, default) contract.
@@ -23,6 +25,8 @@ KNOBS = (
     ("RAG_SNIPPET_MAX", "SNIPPET_MAX", 240),
     ("RAG_FALLBACK_DISTANCE", "IPL_FALLBACK_DISTANCE", 0.42),
     ("RAG_ANSWERABLE_DISTANCE", "KOZ_ANSWERABLE_DISTANCE", 0.50),
+    ("RAG_EMBED_REQUEST_TIMEOUT_S", "EMBED_REQUEST_TIMEOUT_S", 10.0),
+    ("RAG_EMBED_CONNECT_TIMEOUT_S", "EMBED_CONNECT_TIMEOUT_S", 5.0),
     ("RAG_DEFAULT_MODEL", "DEFAULT_MODEL", "gpt-4o-mini"),
     ("RAG_TEMPERATURE", "TEMPERATURE", 0.2),
     ("RAG_RERANK", "RAG_RERANK", False),
@@ -37,6 +41,8 @@ OVERRIDES = {
     "RAG_SNIPPET_MAX": ("120", "SNIPPET_MAX", 120),
     "RAG_FALLBACK_DISTANCE": ("0.30", "IPL_FALLBACK_DISTANCE", 0.30),
     "RAG_ANSWERABLE_DISTANCE": ("0.66", "KOZ_ANSWERABLE_DISTANCE", 0.66),
+    "RAG_EMBED_REQUEST_TIMEOUT_S": ("12.5", "EMBED_REQUEST_TIMEOUT_S", 12.5),
+    "RAG_EMBED_CONNECT_TIMEOUT_S": ("2.5", "EMBED_CONNECT_TIMEOUT_S", 2.5),
     "RAG_DEFAULT_MODEL": ("gpt-4o", "DEFAULT_MODEL", "gpt-4o"),
     "RAG_TEMPERATURE": ("0.9", "TEMPERATURE", 0.9),
     "RAG_RERANK": ("1", "RAG_RERANK", True),
@@ -74,6 +80,21 @@ def test_bool_knob_truthy_set(monkeypatch):
         monkeypatch.setenv("RAG_RERANK", raw)
         cfg = importlib.reload(config)
         assert cfg.RAG_RERANK is expected, f"RAG_RERANK={raw!r}"
+
+
+@pytest.mark.parametrize("raw", ["inf", "nan", "0", "-1"])
+@pytest.mark.parametrize("var", ["RAG_EMBED_REQUEST_TIMEOUT_S", "RAG_EMBED_CONNECT_TIMEOUT_S"])
+def test_embed_timeout_knobs(monkeypatch, var, raw):
+    """The embed stage's bounds (xiu.2.3) are read with `_seconds`: a value that
+    would remove the bound (inf, nan) or break every embed (0, -1) refuses the
+    import, naming the variable."""
+    monkeypatch.setenv(var, raw)
+    try:
+        with pytest.raises(ValueError, match=var):
+            importlib.reload(config)
+    finally:
+        monkeypatch.delenv(var)
+        importlib.reload(config)
 
 
 def teardown_module(_module):

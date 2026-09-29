@@ -30,8 +30,10 @@ THREE CLASSES OF PIN.
   a visible, reviewed decision rather than a silent one.
 
 READING THE COUNTS. An embed count is a call to `embeddings.create` on the fake.
-The SDK's own retries (pinned by the client-configuration test) are invisible to
-it, so one real embedding 429 is up to three provider requests today. Where a
+The service's embeddings client makes no SDK retries (pinned by the
+client-configuration test; agent-forge-harness-xiu.2.3), so every embed request
+is a visible call: at most `retrieval.EMBED_MAX_ATTEMPTS`, the service-owned
+retry of a transient fault, and exactly one for any other. Where a
 turn fails inside the handler's `try:`, "no message rows" means exactly that:
 the ownership claim and the strategy binding were committed before the `try:`
 and stay. When both branches of the GM fan-out fail, which error wins is
@@ -96,8 +98,6 @@ SLATED: dict[str, str] = {
         "agent-forge-harness-xiu.2.3: embedding API errors become typed embed faults, not provider 429/502/422",
     "test_embedding_and_generation_failures_are_indistinguishable":
         "agent-forge-harness-xiu.2.3: an embed failure becomes distinguishable from a generation failure",
-    "test_embedding_client_keeps_sdk_default_retries_and_timeout":
-        "agent-forge-harness-xiu.2.3: the embed stage gets its own deadline and retry budget",
     "test_retrieval_database_errors_are_a_503":
         "agent-forge-harness-xiu.2.3: vector-search and fetch faults degrade to generation instead of a 503",
     "test_gm_secondary_failure_fails_the_turn":
@@ -462,6 +462,7 @@ def _hermetic(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9")
     monkeypatch.setattr(generate_module, "_RETRY_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(retrieval, "_EMBED_RETRY_BACKOFF_S", 0)
     # Process-wide: never write through a ledger or job driver another test leaked.
     assert "ledger" not in service_app._state
     assert "jobs" not in service_app._state
@@ -843,7 +844,9 @@ def test_embedding_api_errors_surface_through_the_generation_error_branch(
     assert (run.response.status_code, run.response.json()) == (status, {"detail": detail})
     assert run.response.headers.get("retry-after") == ("7" if category == "rate_limit" else None)
     assert "x-chat-throttled" not in run.response.headers
-    assert (run.emb.calls, run.searches, run.llm.calls, run.rows()) == (1, 0, 0, [])
+    # The service-owned embed retry (xiu.2.3) tries a transient fault twice, anything else once.
+    embed_calls = retrieval.EMBED_MAX_ATTEMPTS if category in ("rate_limit", "timeout", "upstream_unavailable") else 1
+    assert (run.emb.calls, run.searches, run.llm.calls, run.rows()) == (embed_calls, 0, 0, [])
     assert_failure_metrics(run, metric)
     assert_content_free(run, fault=True)
     if category == "authentication":
@@ -852,16 +855,16 @@ def test_embedding_api_errors_surface_through_the_generation_error_branch(
         assert run.store.conversation_strategy(CONV) == ("auto", None)
 
 
-@pytest.mark.parametrize(("make_exc", "llm_calls"), [
-    pytest.param(lambda: _status_error(openai.AuthenticationError, 401), 1, id="authentication"),
-    pytest.param(_rate_limit, generate_module._MAX_ATTEMPTS, id="rate_limit"),
+@pytest.mark.parametrize(("make_exc", "embed_calls", "llm_calls"), [
+    pytest.param(lambda: _status_error(openai.AuthenticationError, 401), 1, 1, id="authentication"),
+    pytest.param(_rate_limit, retrieval.EMBED_MAX_ATTEMPTS, generate_module._MAX_ATTEMPTS, id="rate_limit"),
 ])
 def test_embedding_and_generation_failures_are_indistinguishable(
-    post_chat: Callable[..., ChatRun], make_exc: Callable[[], BaseException], llm_calls: int,
+    post_chat: Callable[..., ChatRun], make_exc: Callable[[], BaseException], embed_calls: int, llm_calls: int,
 ) -> None:
     at_embed = post_chat(FAILING_PROMPT, rows=HIT, emb_exc=make_exc())
     at_generation = post_chat(FAILING_PROMPT, rows=HIT, llm_exc=make_exc())
-    assert (at_embed.emb.calls, at_embed.llm.calls) == (1, 0)
+    assert (at_embed.emb.calls, at_embed.llm.calls) == (embed_calls, 0)
     assert (at_generation.emb.calls, at_generation.llm.calls) == (1, llm_calls)
     seen = [(r.response.status_code, r.response.json(), r.response.headers.get("retry-after"))
             for r in (at_embed, at_generation)]
@@ -871,12 +874,15 @@ def test_embedding_and_generation_failures_are_indistinguishable(
         assert_content_free(run, fault=True)
 
 
-def test_embedding_client_keeps_sdk_default_retries_and_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_service_embedding_client_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Flipped by xiu.2.3 from the SDK defaults (2 retries, 600 s waits): no SDK
+    # retries, since RagRetriever.embed owns the attempts, and every wait bounded.
     monkeypatch.setenv("OPENAI_API_KEY", "characterization-dummy-key")
     client = retrieval._openai_client()
     assert isinstance(client, openai.OpenAI)
-    assert client.max_retries == openai.DEFAULT_MAX_RETRIES
-    assert client.timeout == openai.DEFAULT_TIMEOUT
+    assert client.max_retries == 0
+    assert client.timeout == httpx.Timeout(config.EMBED_REQUEST_TIMEOUT_S, connect=config.EMBED_CONNECT_TIMEOUT_S)
+    assert client.timeout != openai.DEFAULT_TIMEOUT
 
 
 # ── PostgreSQL retrieval failures ─────────────────────────────────────────────
@@ -1088,6 +1094,7 @@ def test_characterization_registries_name_real_tests() -> None:
         assert SLATED[slated_half].startswith("agent-forge-harness-xiu.2.3: ")
     for invariant in ("test_history_write_failure_is_not_reported_as_a_retrieval_failure",
                       "test_strategy_claim_failure_spends_nothing",
-                      "test_pre_retrieval_gates_fail_closed_without_spending_retrieval"):
+                      "test_pre_retrieval_gates_fail_closed_without_spending_retrieval",
+                      "test_the_service_embedding_client_is_bounded"):
         assert invariant in defined
         assert invariant not in registered
