@@ -40,6 +40,7 @@ from . import (
     conversations_api,
     documents_api,
     gcp_logging,
+    groups_api,
     job_driver,
     media_objects,
     reconciliation,
@@ -1698,6 +1699,28 @@ def reauthenticate(request: Request, store: AuthStore, password: str) -> None:
         reauth_failed()
 
 
+def get_group_stores() -> groups_api.GroupStores:
+    """The group routes' stores (agent-forge-harness-btb). The campaigns, the
+    sessions and the ledger are `campaigns_api.get_campaign_stores()`'s own, so
+    whatever slot clear that module gives its sessions reaches the group routes
+    too; only this module may build a concrete eligibility store (T-G2). The
+    table-namespace narrowing is passed by name until `1ir.2.3` builds that
+    namespace. Tests override this dependency."""
+    from .document_store import PostgresDocumentStore
+    from .eligibility import no_table_namespace
+    from .eligibility_store import PostgresEligibilityStore
+
+    shared = campaigns_api.get_campaign_stores()
+    return groups_api.GroupStores(
+        campaigns=shared.campaigns,
+        eligibility=PostgresEligibilityStore(),
+        documents=PostgresDocumentStore(),
+        sessions=shared.sessions,
+        audit=shared.audit,
+        table_namespace=no_table_namespace,
+    )
+
+
 #: The GM gate every Workbench router is built with (agent-forge-harness-oe6).
 WORKBENCH_GM = gm_session(require_session)
 app.include_router(conversations_api.build_router(WORKBENCH_GM, get_timeline_database))
@@ -1711,6 +1734,7 @@ app.include_router(assets_api.build_router(WORKBENCH_GM, get_timeline_database, 
 app.include_router(table_session_api.build_router(WORKBENCH_GM, get_table_sessions, _job_driver, start_gate))
 app.include_router(table_api.build_router(require_session, get_auth_store, _clear_session_cookie, get_table_sessions))
 app.include_router(tool_invocations_api.build_router(WORKBENCH_GM, get_timeline_database, get_message_store))
+app.include_router(groups_api.build_router(WORKBENCH_GM, get_timeline_database, get_group_stores))
 
 
 app.include_router(job_driver.build_router(_job_driver))
