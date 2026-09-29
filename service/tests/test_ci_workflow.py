@@ -1,5 +1,6 @@
 """Repository-level contract for PR E2E gating and deploy safety."""
 
+import ast
 import re
 import tomllib
 from pathlib import Path
@@ -69,27 +70,52 @@ def _integration_step_run() -> str:
     return run.group(1)
 
 
+def _imports_pg_module(text: str) -> bool:
+    """True if `text` imports `_pg` or `tests._pg`, in any form Python accepts.
+
+    Minting `DSN`, `needs_db`, `throwaway_database` or `corpus_database` from
+    `_pg`/`tests._pg` is the gate a module takes on a real database, so the
+    import line alone is enough -- without guessing at which of those names it
+    uses (a bare `DSN` would also match an unrelated same-named local, e.g.
+    `tests/test_bootstrap_db.py`'s fake one).
+
+    AST-based, not a column-0-anchored regex: `^from\\s+(?:tests\\.)?_pg\\s+
+    import\\b` missed `import tests._pg as pg`, `from tests import _pg`, and
+    an import indented inside a `try:`/`if:` block, all of which are legal
+    Python imports that `ast.walk` finds regardless of indentation or import
+    style (agent-forge-harness-opn / #137 M-1).
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name in ("_pg", "tests._pg") for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module in ("_pg", "tests._pg"):
+                return True
+            if node.module == "tests" and any(alias.name == "_pg" for alias in node.names):
+                return True
+    return False
+
+
 def _database_backed_test_files() -> list[str]:
     """Every test module under pytest's testpaths that gates on a real database.
 
     A module is database-backed when it uses the `needs_db` marker, reads
-    DATABASE_URL itself, or imports from `_pg`/`tests._pg` at all -- that
-    module mints its own `DSN`, `needs_db`, `throwaway_database` or
-    `corpus_database` from there, so the import line alone is the gate,
-    without guessing at which of those names it uses (a bare `DSN` would also
-    match an unrelated same-named local, e.g. `tests/test_bootstrap_db.py`'s
-    fake one). Discovered, not listed, so the next one cannot be added without
-    CI running it: the seven tests from #53 skipped on every run because
-    nobody added them to a list (agent-forge-harness-5fo), and a module using
-    `tests._pg`'s own gate rather than `needs_db`/DATABASE_URL directly in its
-    own text was the same gap again (#124 M-2).
+    DATABASE_URL itself, or imports from `_pg`/`tests._pg` at all (see
+    `_imports_pg_module`). Discovered, not listed, so the next one cannot be
+    added without CI running it: the seven tests from #53 skipped on every run
+    because nobody added them to a list (agent-forge-harness-5fo), and a
+    module using `tests._pg`'s own gate rather than `needs_db`/DATABASE_URL
+    directly in its own text was the same gap again (#124 M-2).
     """
     config = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     testpaths = config["tool"]["pytest"]["ini_options"]["testpaths"]
     reads_dsn = re.compile(
-        r"""(?:environ\.get|getenv)\(\s*["']DATABASE_URL["']|environ\[\s*["']DATABASE_URL["']\s*\]"""
-        r"""|^from\s+(?:tests\.)?_pg\s+import\b""",
-        re.M,
+        r"""(?:environ\.get|getenv)\(\s*["']DATABASE_URL["']|environ\[\s*["']DATABASE_URL["']\s*\]""",
     )
     this_file = Path(__file__).resolve()
     found: list[str] = []
@@ -98,7 +124,7 @@ def _database_backed_test_files() -> list[str]:
             if path.resolve() == this_file:
                 continue
             text = path.read_text(encoding="utf-8")
-            if re.search(r"\bneeds_db\b", text) or reads_dsn.search(text):
+            if re.search(r"\bneeds_db\b", text) or reads_dsn.search(text) or _imports_pg_module(text):
                 found.append(path.as_posix())
     return found
 
@@ -226,6 +252,32 @@ def test_every_database_backed_test_file_runs_in_the_integration_step():
     )
     unlisted = [path for path in discovered if path not in DB_BACKED_TESTS]
     assert not unlisted, f"add {unlisted} to DB_BACKED_TESTS"
+
+
+def test_pg_import_detection_matches_every_legal_import_form():
+    """The old column-0 regex only caught `from _pg import ...` / `from
+    tests._pg import ...`. These forms are equally real Python and equally
+    mint a database gate from the same module -- an AST scan must catch them
+    all (agent-forge-harness-opn / #137 M-1)."""
+    matches = [
+        "from _pg import connect, needs_db\n",
+        "from tests._pg import corpus_database, needs_db\n",
+        "import tests._pg as pg\n",
+        "import _pg\n",
+        "from tests import _pg\n",
+        "try:\n    from tests._pg import needs_db\nexcept ImportError:\n    pass\n",
+        "if True:\n    from _pg import needs_db\n",
+    ]
+    for text in matches:
+        assert _imports_pg_module(text), f"missed a real _pg import: {text!r}"
+
+    non_matches = [
+        "from typing import Any\n",
+        "import pg8000\n",  # a same-prefix, unrelated package must not match
+        "# from tests._pg import needs_db -- just a comment\n",
+    ]
+    for text in non_matches:
+        assert not _imports_pg_module(text), f"matched something that is not a _pg import: {text!r}"
 
 
 def test_the_dsn_is_scoped_to_the_integration_step_not_the_whole_job():

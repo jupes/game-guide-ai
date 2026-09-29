@@ -19,6 +19,19 @@
  * cannot put Chromium back beside jsdom or quietly empty the jsdom run. It
  * follows the convention in `service/tests/test_ci_workflow.py`, ported to
  * TS because the fix lives in `package.json`, not `ci.yml`.
+ *
+ * The storybook half now runs through `scripts/runStorybookTests.ts` (the
+ * guard in `scripts/hangGuard.ts`), not a bare `vitest run
+ * --project=storybook` (agent-forge-harness-w1e): CI run 36377294380 went
+ * silent after 44 of 45 story files for 23 minutes with no per-test timeout
+ * firing. The working hypothesis, not reproduced, is that the tab running
+ * the story wedged, and with it the in-tab timer that enforces `testTimeout`.
+ * The guard is an external, Node-side watchdog that kills the process tree
+ * on its own deadline and names the story files that started and never
+ * finished. Because this pin now only reaches the wrapper, the exact
+ * storybook command and arguments are pinned in `scripts/hangGuard.test.ts`
+ * ("the storybook invocation"), and the guard fails a zero exit unless every
+ * story file under `src/` started and finished.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -37,15 +50,16 @@ function readTestScript(): string {
   return script as string
 }
 
-describe('package.json scripts.test (agent-forge-harness-b4v)', () => {
+describe('package.json scripts.test (agent-forge-harness-b4v, agent-forge-harness-w1e)', () => {
   it('is not the bare "vitest run" that shares one process across projects', () => {
     expect(readTestScript()).not.toBe('vitest run')
   })
 
-  it('runs only jsdom, then only storybook in a second process, joined by &&', () => {
+  it('runs jsdom directly, then the storybook project through the hang guard, joined by &&', () => {
     expect(
       readTestScript(),
-      'each project needs its own vitest run: jsdom alone first (fails fast), then storybook alone',
-    ).toBe('vitest run --project=jsdom && vitest run --project=storybook')
+      'jsdom needs its own vitest run (fails fast, and stays off the Chromium CPU); the storybook run goes ' +
+        'through scripts/runStorybookTests.ts so a hung story fails the step instead of the 25-minute job timeout',
+    ).toBe('vitest run --project=jsdom && bun run scripts/runStorybookTests.ts')
   })
 })

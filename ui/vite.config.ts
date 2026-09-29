@@ -57,7 +57,10 @@ export default defineConfig({
         name: 'jsdom',
         environment: 'jsdom',
         globals: true,
-        include: ['src/**/*.{test,spec}.{ts,tsx}'],
+        // `scripts/**` covers hangGuard.test.ts (agent-forge-harness-w1e): a
+        // plain Node module, not app source, but it still wants jsdom's
+        // environment/globals and no real browser.
+        include: ['src/**/*.{test,spec}.{ts,tsx}', 'scripts/**/*.{test,spec}.ts'],
         setupFiles: './src/test-setup.ts'
       }
     }, {
