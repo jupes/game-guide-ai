@@ -128,6 +128,77 @@
           "field": "campaign_id"
         }
       }
+    },
+    {
+      "name": "an alias another seat of the campaign answers to (1kg.2.2)",
+      "value": {
+        "detail": {
+          "code": "alias_taken",
+          "message": "Someone at this table already has that name.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "an offer of a seat that is accepted or holds a live offer (1kg.2.2)",
+      "value": {
+        "detail": {
+          "code": "seat_not_open",
+          "message": "That seat isn't open.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "a confirmation of a seat nobody accepted (1kg.2.2)",
+      "value": {
+        "detail": {
+          "code": "seat_not_accepted",
+          "message": "Nobody has accepted that seat yet.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "the 41st live seat (1kg.2.2, SEC-50(3))",
+      "value": {
+        "detail": {
+          "code": "seat_cap_reached",
+          "message": "A table seats at most 40.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "a seat added to or offered in an archived campaign (1kg.2.2)",
+      "value": {
+        "detail": {
+          "code": "campaign_archived",
+          "message": "That campaign is archived.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "a Remove whose password did not check out (1kg.2.2, SEC-40): a 403, never a 401",
+      "value": {
+        "detail": {
+          "code": "reauth_failed",
+          "message": "That password isn't right.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "the per-owner offer throttle (1kg.2.2, SEC-50(3)) with its wait",
+      "value": {
+        "detail": {
+          "code": "throttled_user",
+          "message": "You've made a lot of offers today. Try again later.",
+          "retryable": true,
+          "retry_after_s": 3600
+        }
+      }
     }
   ],
   "invalid": [

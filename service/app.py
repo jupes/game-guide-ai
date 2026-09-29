@@ -33,7 +33,16 @@ from fastapi.exceptions import RequestValidationError
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from . import conversations_api, gcp_logging, job_driver, timeline_api, usage_capture
+from . import (
+    campaigns_api,
+    conversations_api,
+    gcp_logging,
+    job_driver,
+    reconciliation,
+    seats_api,
+    timeline_api,
+    usage_capture,
+)
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .db import Database, PoolSettings
@@ -101,8 +110,8 @@ from .security_headers import (
 from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
-from .workbench_api import gm_session, install_workbench
-from .workbench_contracts import CHAT_TEXT_MAX_CHARS, CONTRACT_VERSION, check_plain_text
+from .workbench_api import gm_session, install_workbench, reauth_failed
+from .workbench_contracts import CHAT_TEXT_MAX_CHARS, CONTRACT_VERSION, ErrorCode, check_plain_text
 
 log = logging.getLogger(__name__)
 
@@ -288,9 +297,15 @@ def _build_stores(db: Database) -> None:
     from .usage_ledger import LedgerWriter, PostgresUsageLedgerStore
 
     _state["ledger"] = LedgerWriter(PostgresUsageLedgerStore(), db)
-    # The job outbox's drivers (1kg.2.7). No kind is registered yet, so the hook
-    # stays off; a bead that adds one calls `runner.register(kind, handler)` here.
-    runner = JobRunner(PostgresJobQueue(db), single_flight=job_driver.JOB_LOCK)
+    # The job outbox's drivers (1kg.2.7), and its one registered kind:
+    # `campaign.reconcile`, which every revocation leaves behind (1kg.2.2, RQ-5)
+    # and which the runner retries until it succeeds. Registering it turns the
+    # request hook on for every signed-in request. The slot step is
+    # `reconcile_slots`, passed by name: empty until 1kg.7.1 gives it a body.
+    queue = PostgresJobQueue(db)
+    runner = JobRunner(queue, single_flight=job_driver.JOB_LOCK)
+    runner.register(reconciliation.RECONCILE_KIND, reconciliation.handler(db, slots=reconciliation.reconcile_slots))
+    _state["job_queue"] = queue
     _state["jobs"] = job_driver.JobDriver(runner, healthy=_schema_understood)
 
 
@@ -1441,18 +1456,97 @@ def me(
     return AuthUser(email=user.email, role=user.role)
 
 
-#: The GM gate every Workbench router is built with (agent-forge-harness-oe6).
-WORKBENCH_GM = gm_session(require_session)
-app.include_router(conversations_api.build_router(WORKBENCH_GM, get_timeline_database))
-app.include_router(timeline_api.build_router(WORKBENCH_GM, get_timeline_store, get_timeline_database))
-
-
 def _job_driver() -> job_driver.JobDriver | None:
     # A scheduler call may be the only traffic a degraded instance gets, so it
     # looks for the database like the other getters (it runs in the thread pool).
     if "jobs" not in _state:
         recover_database()
     return _state.get("jobs")
+
+
+def _job_queue() -> PostgresJobQueue | None:
+    """The outbox a revocation enqueues its reconciliation in (1kg.2.2)."""
+    if "job_queue" not in _state:
+        recover_database()
+    return _state.get("job_queue")
+
+
+#: The Workbench envelope of the auth throttle's 429 and of a hashing outage,
+#: for the one Workbench route that checks a password (Remove, SEC-40).
+REAUTH_THROTTLED_MESSAGE = "Too many attempts. Wait, then try again."
+REAUTH_BUSY_MESSAGE = "That can't be checked right now. Try again."
+
+
+def reauthenticator(request: Request, store: AuthStore = Depends(get_auth_store)) -> Callable[[str], None]:
+    """Remove's re-authentication (SEC-40), as a dependency: it hands the route
+    a `check(password)` bound to this request's account and auth store. The
+    store is the one `require_session` already resolved for this request, so
+    declaring it here adds no lookup and no outage path of its own."""
+
+    def check(password: str) -> None:
+        reauthenticate(request, store, password)
+
+    return check
+
+
+def reauthenticate(request: Request, store: AuthStore, password: str) -> None:
+    """SEC-40: the password of the account this request signed in as, checked
+    again before a Remove — BEFORE any transaction opens, because argon2 never
+    runs while a lock is held (bead 1kg.2.2, L-12).
+
+    In order: the auth attempt budget (`_throttle_auth`), whose legacy 429 is
+    answered in the Workbench envelope with both of its headers; the
+    credentials, whose outage is a 503; exactly one argon2 verification, against
+    `DUMMY_PASSWORD_HASH` when there are no credentials, as login does, whose
+    capacity refusal is a 503; and a wrong password is `reauth_failed()` — a
+    403 that names nothing, never the 401 the client would sign out on. The
+    password is never logged, echoed or chained into an exception."""
+    user = getattr(request.state, "auth_user", None)
+    if not isinstance(user, User):
+        reauth_failed()
+    throttled: HTTPException | None = None
+    try:
+        _throttle_auth(request, user.email)
+    except HTTPException as exc:
+        throttled = exc
+    if throttled is not None:
+        headers = dict(throttled.headers or {})
+        wait = headers.get("Retry-After", "")
+        raise campaigns_api.refusal(
+            429,
+            ErrorCode.THROTTLED_USER,
+            REAUTH_THROTTLED_MESSAGE,
+            retryable=True,
+            retry_after_s=int(wait) if wait.isdigit() else None,
+            headers=headers,
+        )
+    outage = False
+    try:
+        creds = _auth_lookup("credentials lookup", lambda: store.get_credentials(user.email))
+    except HTTPException:
+        outage, creds = True, None
+    if outage:
+        raise campaigns_api.unavailable(REAUTH_BUSY_MESSAGE)
+    stored_hash = creds[1] if creds is not None else None
+    busy = False
+    try:
+        matches = verify_password(stored_hash or DUMMY_PASSWORD_HASH, password)
+    except HashingCapacityError:
+        busy, matches = True, False
+    if busy:
+        raise campaigns_api.unavailable(REAUTH_BUSY_MESSAGE)
+    if creds is None or not matches or creds[0].id != user.id:
+        reauth_failed()
+
+
+#: The GM gate every Workbench router is built with (agent-forge-harness-oe6).
+WORKBENCH_GM = gm_session(require_session)
+app.include_router(conversations_api.build_router(WORKBENCH_GM, get_timeline_database))
+app.include_router(timeline_api.build_router(WORKBENCH_GM, get_timeline_store, get_timeline_database))
+app.include_router(
+    campaigns_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator, _job_queue, _job_driver)
+)
+app.include_router(seats_api.build_router(require_session, get_timeline_database))
 
 
 app.include_router(job_driver.build_router(_job_driver))

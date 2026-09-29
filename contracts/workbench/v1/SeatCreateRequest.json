@@ -1,0 +1,55 @@
+{
+  "schema": "SeatCreateRequest",
+  "direction": "request",
+  "note": "POST /campaigns/{id}/participants: an open seat. A retried add of the same alias is 409 alias_taken, its defined behaviour; the client re-reads the list.",
+  "valid": [
+    {
+      "name": "an alias",
+      "value": {
+        "schema_version": 1,
+        "alias": "Rook"
+      }
+    },
+    {
+      "name": "an alias trimmed as the client trims",
+      "value": {
+        "schema_version": 1,
+        "alias": " Rook "
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no alias",
+      "why": "a seat has an alias",
+      "value": {
+        "schema_version": 1
+      }
+    },
+    {
+      "name": "an alias past 40",
+      "why": "0004's CHECK",
+      "value": {
+        "schema_version": 1,
+        "alias": "@repeat:a:41"
+      }
+    },
+    {
+      "name": "a blank alias",
+      "why": "1 to 40 characters after trimming",
+      "value": {
+        "schema_version": 1,
+        "alias": "  "
+      }
+    },
+    {
+      "name": "an account in the request",
+      "why": "SEC-50(1): a seat is offered to an address, never an account",
+      "value": {
+        "schema_version": 1,
+        "alias": "Rook",
+        "user_id": 7
+      }
+    }
+  ]
+}

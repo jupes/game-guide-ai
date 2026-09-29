@@ -45,6 +45,27 @@ class User:
     created_at: datetime
 
 
+def verified_address(user: User) -> str | None:
+    """The address this account has PROVED it holds, or None — and on this build
+    it is None for every account (bead 1kg.2.2, L-8; owner question OQ-1).
+
+    An offer of a seat is shown to, and may be accepted by, only a Verified
+    account whose verified address is the one the offer names (SEC-50(4), the
+    identity ADR's IDA-2). Nothing can be Verified yet: `auth.users` has no
+    `email_verified_at`, and IDT-15 enters every existing account as Unverified.
+    `User.email` is only the login id — signup checks its shape, never that the
+    account can read mail sent to it — so answering with it would let whoever
+    registered someone else's address read and accept that person's offers.
+
+    So this fails closed, in one place. `agent-forge-harness-yje.2.1` adds the
+    column and makes this return the address exactly when the account is
+    Verified. There is no flag, setting or environment variable that turns it
+    on; tests override the dependency that reads it, and production has none.
+    """
+    del user
+    return None
+
+
 def _now(now: datetime | None) -> datetime:
     return now if now is not None else datetime.now(UTC)
 

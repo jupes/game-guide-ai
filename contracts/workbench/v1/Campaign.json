@@ -1,0 +1,93 @@
+{
+  "schema": "Campaign",
+  "direction": "response",
+  "note": "One of the GM's campaigns (1kg.2.2). Every key is present; archived_at is null for a campaign in use. The owner is the session and is never on the wire.",
+  "valid": [
+    {
+      "name": "a campaign in use",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    },
+    {
+      "name": "an archived campaign",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "a name is read as stored, untrimmed",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": " Nocturne ",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "the owner on the wire",
+      "why": "SEC-50(1): no account id anywhere in this family; a client strips what a newer server adds",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null,
+        "owner_id": 7
+      }
+    },
+    {
+      "name": "a missing archived_at",
+      "why": "every key is present; the end of an archive is null, never absent",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "The Nocturne Heist",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "an empty name",
+      "why": "0004's CHECK: 1 to 120 characters",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    },
+    {
+      "name": "a name past 120",
+      "why": "0004's CHECK",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "name": "@repeat:n:121",
+        "created_at": "2026-09-16T19:20:11Z",
+        "updated_at": "2026-09-16T19:31:24Z",
+        "archived_at": null
+      }
+    }
+  ]
+}

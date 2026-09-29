@@ -1,11 +1,15 @@
 """
-The posture every Workbench GM route inherits (agent-forge-harness-oe6).
+The posture every Workbench route inherits (agent-forge-harness-oe6): GM routes,
+and account routes that act for the signed-in account on its own offers and
+seats (agent-forge-harness-1kg.2.2).
 
 One 401 body (SEC-2), one non-enumerating 404 from one code path (SEC-3), the
 origin check (SEC-7) and one application-wide validation handler (SEC-23),
 built once so that no route bead has to build its own. The routes on it are the
 four conversation routes (`service/conversations_api.py`) and the conversation
-timeline (`service/timeline_api.py`, moved here by `agent-forge-harness-oqx`).
+timeline (`service/timeline_api.py`, moved here by `agent-forge-harness-oqx`),
+the GM's campaigns and seats (`service/campaigns_api.py`) and an account's own
+offers and seats (`service/seats_api.py`, on `account_router`).
 
 What makes a route a Workbench route
 ------------------------------------
@@ -19,9 +23,12 @@ the prefix an `include_router(..., prefix=...)` added. The two handlers
 implemented). Every other route — every legacy route, an unknown path, a 405
 — is answered by FastAPI's own default handler, byte for byte.
 
-GM routes only. `workbench_router` applies the `dm` gate through `gm_session`,
-so it is for GM routes and nothing else. Table routes wait on `hgm` (TA-2) and
-must reuse `origin_check` in their own factory.
+Two factories. `workbench_router` applies the `dm` gate through `gm_session`,
+so it is for GM routes and nothing else. `account_router` is the same posture
+without the role: a route that acts for the signed-in account on its own
+offers and seats, which a player must reach and so must a GM seated at another
+GM's table. Table routes get their own factory (`1kg.2.3`), reusing
+`origin_check`.
 
 The order of checks, as a client observes it
 --------------------------------------------
@@ -114,16 +121,27 @@ NOT_FOUND_DETAIL = _refusal(ErrorCode.NOT_FOUND, "That isn't available.")
 FORBIDDEN_ROLE_DETAIL = _refusal(ErrorCode.FORBIDDEN, "This is a Game Master feature.")
 #: SEC-7. The same code as a role refusal; the message tells an operator apart.
 FORBIDDEN_ORIGIN_DETAIL = _refusal(ErrorCode.FORBIDDEN, "That request didn't come from this application.")
+#: SEC-40: a Remove whose password did not check out. It depends on nothing but
+#: the password and names no resource, and it is a 403, never a 401 — the
+#: client signs out on any 401 (bead 1kg.2.2, L-12).
+REAUTH_FAILED_DETAIL = _refusal(ErrorCode.REAUTH_FAILED, "That password isn't right.")
 
 
 class WorkbenchRoute(APIRoute):
     """The membership marker: a route is a Workbench route iff its route
-    object is one of these. Only `workbench_router` should create them."""
+    object is one of these. Only `workbench_router` and `account_router`
+    should create them."""
 
 
 def not_found() -> NoReturn:
     """The ONE way a Workbench route answers 404 (SEC-3)."""
     raise HTTPException(status_code=404, detail=dict(NOT_FOUND_DETAIL))
+
+
+def reauth_failed() -> NoReturn:
+    """The ONE way a Workbench route refuses a password it asked for again
+    (SEC-40): `403 reauth_failed`, not retryable, naming no resource."""
+    raise HTTPException(status_code=403, detail=dict(REAUTH_FAILED_DETAIL))
 
 
 def gm_session(session: SessionDependency) -> SessionDependency:
@@ -240,6 +258,28 @@ def workbench_router(
         prefix=prefix,
         route_class=WorkbenchRoute,
         dependencies=[*dependencies, Depends(origin_check(content_types)), Depends(gm)],
+    )
+
+
+def account_router(
+    session: SessionDependency,
+    *,
+    prefix: str = "",
+    content_types: Sequence[str] = ("application/json",),
+) -> APIRouter:
+    """The router a route that acts for the signed-in account is declared on
+    (bead 1kg.2.2, L-3): `workbench_router` without the `dm` gate.
+
+    The same route class, so the one 401 body and the Workbench validation
+    handler apply, and the same order: the origin check, then `session`. There
+    is no role check — a player must reach these routes, and so must a GM who
+    holds a seat at another GM's table. Everything a route here reads is the
+    caller's own, found by the account in the statement.
+    """
+    return APIRouter(
+        prefix=prefix,
+        route_class=WorkbenchRoute,
+        dependencies=[Depends(origin_check(content_types)), Depends(session)],
     )
 
 
