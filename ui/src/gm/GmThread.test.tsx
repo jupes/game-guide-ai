@@ -7,14 +7,20 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import type { MockInstance } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { GmThread } from './GmThread'
-import { turnsFromTimeline } from './gmTimeline'
+import { DIVIDER_COPY, collapseSessionSpans, formatDividerTime, turnsFromTimeline } from './gmTimeline'
 import type { GmTurn } from './gmTimeline'
 import { LANE_COPY } from './laneState'
 import { toolById } from './registry'
 import {
+  DIVIDER_ENTRY,
   EDIT_ENTRY,
+  END_DIVIDER_ENTRY,
   OPAQUE_ENTRY,
+  QUIET_SESSION,
   SOURCED_ANSWER,
   chatEntry,
   toolEntry,
@@ -402,5 +408,172 @@ describe('GmThread — Load earlier hands keyboard focus on (1kg.3.7)', () => {
       expect(document.activeElement).toBe(first)
       expect(lastFocusOptions(first)?.preventScroll ?? false).toBe(false)
     })
+  })
+})
+
+// ── Session dividers (1kg.3.5) ───────────────────────────────────────────────
+
+/** A fixed zone and locale, so a divider's time reads the same on every machine. */
+const UTC_TIME = new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' })
+const formatUtc = (iso: string): string => UTC_TIME.format(new Date(iso))
+
+function dividers(container: HTMLElement): HTMLElement[] {
+  return [...container.querySelectorAll<HTMLElement>('.gm-thread__divider')]
+}
+
+/** What a screen reader reads: the text, without anything `aria-hidden`. */
+function readAloud(el: HTMLElement): string {
+  const copy = el.cloneNode(true) as HTMLElement
+  copy.querySelectorAll('[aria-hidden="true"]').forEach((node) => node.remove())
+  return (copy.textContent ?? '').replace(/\s+/g, ' ').trim()
+}
+
+describe('GmThread — session dividers (1kg.3.5)', () => {
+  // A played session (start, a turn, end), then a quiet one collapsed to a span.
+  const turns = collapseSessionSpans(turnsFromTimeline([DIVIDER_ENTRY, chatEntry(), END_DIVIDER_ENTRY, ...QUIET_SESSION]))
+
+  it('labels each divider with its time', () => {
+    const { container } = render(<GmThread turns={turns} formatTime={formatUtc} />)
+    const [start, end, span] = dividers(container)
+    const datetimes = (el: HTMLElement) => [...el.querySelectorAll('time')].map((time) => time.getAttribute('datetime'))
+
+    expect(start).toHaveAttribute('data-boundary', 'start')
+    expect(readAloud(start)).toBe(`Session started ${formatUtc('2026-09-16T19:00:00Z')}`)
+    expect(datetimes(start)).toEqual(['2026-09-16T19:00:00Z'])
+
+    expect(end).toHaveAttribute('data-boundary', 'end')
+    expect(readAloud(end)).toBe(`Session ended ${formatUtc('2026-09-16T23:00:00Z')}`)
+    expect(datetimes(end)).toEqual(['2026-09-16T23:00:00Z'])
+
+    // A quiet session reads "… to …"; the dash is drawn, never spoken.
+    expect(span).toHaveAttribute('data-boundary', 'span')
+    expect(readAloud(span)).toBe(
+      `Session played ${formatUtc('2026-09-23T19:00:00Z')} to ${formatUtc('2026-09-23T22:30:00Z')}`,
+    )
+    expect(datetimes(span)).toEqual(['2026-09-23T19:00:00Z', '2026-09-23T22:30:00Z'])
+    expect(within(span).getByText('–')).toHaveAttribute('aria-hidden', 'true')
+    expect(within(span).getByText('to')).toHaveClass('gm-thread__sr-only')
+  })
+
+  it('writes a time in the reader’s own locale by default, and one it cannot read as it came', () => {
+    const iso = '2026-09-16T19:00:00Z'
+    const local = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso))
+    expect(formatDividerTime(iso)).toBe(local)
+    expect(formatDividerTime('not-a-date')).toBe('not-a-date')
+    const { container } = render(<GmThread turns={turnsFromTimeline([DIVIDER_ENTRY])} />)
+    expect(container.querySelector('.gm-thread__divider time')).toHaveTextContent(local)
+  })
+
+  it('a divider is text, not a control or a live region', () => {
+    const { container } = render(<GmThread turns={turns} formatTime={formatUtc} />)
+    const all = dividers(container)
+    expect(all).toHaveLength(3)
+    for (const divider of all) {
+      // Reachable by Load earlier's hand-off alone, never by Tab.
+      expect(divider.tabIndex).toBe(-1)
+      expect(divider.querySelector('a, button, input, [tabindex]')).toBeNull()
+      // Not an exchange, and never inside one.
+      expect(divider.closest('.gm-thread__exchange')).toBeNull()
+      // No role at all: role="separator" would make the label presentational.
+      expect(divider.hasAttribute('role')).toBe(false)
+      expect(divider.querySelector('[role]')).toBeNull()
+      // No live region: the pane has one announcer (A-29).
+      expect(divider.hasAttribute('aria-live')).toBe(false)
+      expect(divider.querySelector('[aria-live]')).toBeNull()
+      // The rules are decoration.
+      const rules = [...divider.querySelectorAll('.gm-thread__divider-rule')]
+      expect(rules).toHaveLength(2)
+      for (const rule of rules) expect(rule).toHaveAttribute('aria-hidden', 'true')
+    }
+    expect(screen.queryByRole('separator')).toBeNull()
+    expect(screen.queryByRole('status')).toBeNull()
+    // Found as the text it is.
+    expect(screen.getByText(DIVIDER_COPY.start, { exact: false }).tagName).toBe('P')
+    expect(screen.getByText(DIVIDER_COPY.end, { exact: false }).tagName).toBe('P')
+    expect(screen.getByText(DIVIDER_COPY.span, { exact: false }).tagName).toBe('P')
+  })
+
+  it('draws each divider in its place between the exchanges, in reading order', () => {
+    const { container } = render(<GmThread turns={turns} formatTime={formatUtc} />)
+    const [start, end, span] = dividers(container)
+    const [exchange] = exchanges(container)
+    expect(precedes(start, exchange)).toBe(true)
+    expect(precedes(exchange, end)).toBe(true)
+    expect(precedes(end, span)).toBe(true)
+  })
+
+  it('Load earlier hands keyboard focus to a divider that arrives first', async () => {
+    const newer = turnsFromTimeline([chatEntry({ entry_id: 'ent_new', prompt: 'A newer question' })])
+    const older = turnsFromTimeline([DIVIDER_ENTRY, chatEntry({ entry_id: 'ent_old', prompt: 'An older question' })])
+    const onLoadEarlier = vi.fn()
+    const view = render(<GmThread turns={newer} hasEarlier onLoadEarlier={onLoadEarlier} formatTime={formatUtc} />)
+    screen.getByRole('button', { name: 'Load earlier' }).focus()
+    await userEvent.keyboard('{Enter}')
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+    view.rerender(<GmThread turns={newer} hasEarlier loadingEarlier onLoadEarlier={onLoadEarlier} formatTime={formatUtc} />)
+    view.rerender(<GmThread turns={[...older, ...newer]} hasEarlier={false} onLoadEarlier={onLoadEarlier} formatTime={formatUtc} />)
+    const [first] = dividers(view.container)
+    expect(first).toHaveAttribute('data-boundary', 'start')
+    expect(document.activeElement).toBe(first)
+  })
+})
+
+describe('GmThread — the divider’s styles (1kg.3.5)', () => {
+  const HERE = dirname(fileURLToPath(import.meta.url))
+  // Comments hold prose, not rules.
+  const THREAD_CSS = readFileSync(join(HERE, 'GmThread.css'), 'utf-8').replace(/\/\*[\s\S]*?\*\//g, ' ')
+
+  /** Every block whose selector names `name`, with its body. */
+  function rulesNaming(name: string): { selector: string; body: string }[] {
+    return [...THREAD_CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .map((match) => ({ selector: match[1].replace(/\s+/g, ' ').trim(), body: match[2] }))
+      .filter((rule) => rule.selector.includes(name))
+  }
+
+  function body(selector: string): string {
+    const found = rulesNaming(selector).filter((rule) => rule.selector === selector)
+    expect(found).toHaveLength(1)
+    return found[0].body
+  }
+
+  it('never move: no animation and no transition on any divider rule', () => {
+    const rules = [...rulesNaming('.gm-thread__divider'), ...rulesNaming('.gm-thread__sr-only')]
+    expect(rules.map((rule) => rule.selector)).toEqual([
+      '.gm-thread__divider',
+      '.gm-thread__divider:focus-visible',
+      '.gm-thread__divider-rule',
+      '.gm-thread__divider-label',
+      '.gm-thread__sr-only',
+    ])
+    for (const { selector, body: declarations } of rules) {
+      expect({ selector, moves: /(^|[;\s])(animation|transition)[a-z-]*\s*:/.test(declarations) }).toEqual({
+        selector,
+        moves: false,
+      })
+    }
+  })
+
+  it('wrap on a phone rather than scroll: the row wraps and the label may break anywhere', () => {
+    expect(body('.gm-thread__divider')).toMatch(/(^|;)\s*flex-wrap:\s*wrap\s*;/)
+    const label = body('.gm-thread__divider-label')
+    expect(label).toMatch(/(^|;)\s*min-width:\s*0\s*;/)
+    expect(label).toMatch(/(^|;)\s*overflow-wrap:\s*anywhere\s*;/)
+    expect(label).not.toMatch(/white-space\s*:\s*nowrap/)
+    expect(label).not.toMatch(/(^|;)\s*width\s*:/)
+  })
+
+  it('read at AA contrast in both themes: the one text colour is the token ds/contrast.test.ts proves on the surface', () => {
+    // Axe cannot decide contrast over the parchment ground in the stories, so
+    // the colour is pinned here to `on-surface-variant`, whose 4.5:1 on
+    // `surface` is asserted per theme by src/ds/contrast.test.ts.
+    expect(body('.gm-thread__divider')).toMatch(/(^|;)\s*color:\s*var\(--md-sys-color-on-surface-variant\)\s*;/)
+    for (const selector of ['.gm-thread__divider-label', '.gm-thread__divider-rule', '.gm-thread__sr-only']) {
+      expect({ selector, paints: /(^|[;\s])(color|opacity)\s*:/.test(body(selector)) }).toEqual({ selector, paints: false })
+    }
+  })
+
+  it('show where Load earlier’s hand-off landed, and draw the rules as borders', () => {
+    expect(body('.gm-thread__divider:focus-visible')).toMatch(/outline:\s*3px solid var\(--md-sys-color-secondary\)/)
+    expect(body('.gm-thread__divider-rule')).toMatch(/border-top:\s*1px solid var\(--md-sys-color-outline-variant\)/)
   })
 })

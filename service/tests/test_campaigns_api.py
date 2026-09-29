@@ -713,9 +713,10 @@ def test_a_driver_error_is_a_503_that_logs_its_type_only(
 def test_the_openapi_models_of_this_family_expose_no_secret(client: TestClient) -> None:
     document = app.openapi()
     family = {path: spec for path, spec in document["paths"].items() if path.startswith(("/campaigns", "/seats"))}
-    # 1kg.2.2's ten, bead cfx's conclude and reopen, and 1kg.5.2's ten
-    # document paths nested under a campaign.
-    assert len(family) == 22
+    # 1kg.2.2's ten, bead cfx's conclude and reopen, 1kg.5.2's ten
+    # document paths nested under a campaign, and 1kg.2.3's two table-session
+    # paths (agent-forge-harness-1kg.2.10), whose answers carry no secret either.
+    assert len(family) == 24
     schemas = document["components"]["schemas"]
     answered = {"Campaign", "CampaignPage", "Seat", "SeatPage", "SeatOffer", "SeatOfferPage", "PlayerSeat",
                 "PlayerSeatPage"}
@@ -732,6 +733,9 @@ def test_the_openapi_models_of_this_family_expose_no_secret(client: TestClient) 
     assert not fields["PlayerSeat"] & private
     remove = SeatRemoveRequest.model_json_schema()["properties"]["password"]
     assert remove.get("writeOnly") is True
+    table = {name: set(schemas[name].get("properties", {})) for name in ("TableSessionAnswer", "TableSession",
+                                                                        "TableScreen")}
+    assert not set().union(*table.values()) & {"token", "grant", "secret", "credential_digest", "devices"}
 
 
 # ── Private text never escapes (AC10) ────────────────────────────────────────

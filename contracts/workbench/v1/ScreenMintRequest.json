@@ -1,0 +1,49 @@
+{
+  "schema": "ScreenMintRequest",
+  "direction": "request",
+  "channel": "table",
+  "note": "POST /table/screen: the owner makes the browser they are signed in on a table screen for the campaign's live session (SEC-48, D-13). The same answer signs the account out of this browser.",
+  "valid": [
+    {
+      "name": "the campaign",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no campaign",
+      "why": "a screen shows one campaign's session",
+      "value": {
+        "schema_version": 1
+      }
+    },
+    {
+      "name": "a session id as well",
+      "why": "the owner names the campaign; which session is live is the server's",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7a",
+        "session_id": "ses_0c1d2e3f"
+      }
+    },
+    {
+      "name": "a campaign id that is not an id",
+      "why": "OpaqueId is 1 to 64 URL-safe characters",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp 4b1d9e7a"
+      }
+    },
+    {
+      "name": "a version this server does not speak",
+      "why": "schema_version is 1 throughout this contract",
+      "value": {
+        "schema_version": 2,
+        "campaign_id": "cmp_4b1d9e7a"
+      }
+    }
+  ]
+}

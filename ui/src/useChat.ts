@@ -166,6 +166,13 @@ export function useChat({
     lastSettle: null,
   })
   const pendingRef = useRef(false)
+  /** 1kg.3.5 (I-14): whether THIS hook has a request in flight, in any
+   * conversation. `pending` below is the visible conversation's alone, so
+   * after a switch it is false while `send` would still refuse (`pendingRef`);
+   * this is what a composer asks before offering Send. State-backed, so a
+   * consumer re-renders when it flips: true from an accepted `send` until that
+   * send's settle, whatever its outcome and whether or not it is shown. */
+  const [inFlight, setInFlight] = useState(false)
   const nextId = useRef(1)
   /** The settle `onTurnSettled` last reported — each is reported exactly once. */
   const reportedSettle = useRef<SettleRecord | null>(null)
@@ -231,6 +238,7 @@ export function useChat({
       const trimmed = prompt.trim()
       if (!trimmed || pendingRef.current) return
       pendingRef.current = true
+      setInFlight(true)
       const startedAt = now()
 
       const id = nextId.current++
@@ -259,6 +267,7 @@ export function useChat({
         adoptedId: string | null = null,
       ) => {
         pendingRef.current = false
+        setInFlight(false)
         const labels = runtimeMetricLabels(mode)
         recordMetric({
           name: 'ui.interaction.chat_round_trip_ms',
@@ -371,5 +380,5 @@ export function useChat({
     onTurnSettled?.(s.outcome, s.sentFor, shown)
   }, [lastSettle, scoped, scopeExchanges, conversationId, onTurnSettled])
 
-  return { exchanges, send, pending, historyError, loadingHistory }
+  return { exchanges, send, pending, inFlight, historyError, loadingHistory }
 }

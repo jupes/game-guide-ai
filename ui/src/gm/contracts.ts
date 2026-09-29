@@ -120,7 +120,7 @@ export const KNOWN_ERROR_CODES = [
   'cap_reached', 'throttled_user', 'throttled_daily', 'provider_failed', 'provider_timeout',
   'attempt_expired', 'backend_unavailable', 'already_linked', 'alias_taken', 'seat_not_open',
   'seat_not_accepted', 'seat_cap_reached', 'campaign_archived', 'reauth_failed', 'document_unsupported',
-  'document_not_archived',
+  'document_not_archived', 'inactive', 'cross_site', 'screen_limit', 'live_elsewhere',
 ] as const
 export type KnownErrorCode = (typeof KNOWN_ERROR_CODES)[number]
 
@@ -1248,8 +1248,9 @@ export const ALT_MAX_CHARS = 300
 export const CUE_TITLE_MAX_CHARS = 200
 export const CUE_PAGE_MAX_ITEMS = 50
 export const PRESENCE_MAX_PARTICIPANTS = 100
-/** `secrets.token_urlsafe(32)`: 32 CSPRNG bytes are 43 base64url characters (SEC-5). */
-export const TABLE_SECRET_CHARS = 43
+/** The most screens a `TableSession` lists: above SEC-48's per-session bound (four,
+ * suggested), so that tuning the bound is not a contract change. */
+export const TABLE_SCREENS_MAX = 16
 
 export const ASSET_KINDS = ['image', 'audio'] as const
 export type AssetKind = (typeof ASSET_KINDS)[number]
@@ -1271,8 +1272,6 @@ export type CueKind = (typeof CUE_KINDS)[number]
 export const AUDIO_SLOTS = ['ambience', 'one_shot'] as const
 const CUE_MAX_MS: Record<CueKind, number> = { ambience: AMBIENCE_MAX_MS, one_shot: ONE_SHOT_MAX_MS }
 export const TABLE_ROLES = ['participant', 'guest'] as const
-export const JOIN_STATUSES = ['joined', 'full', 'inactive'] as const
-export const ENROL_STATUSES = ['enrolled', 'inactive'] as const
 export const SESSION_STATES = ['live', 'ended'] as const
 export const SESSION_ACTIONS = ['start', 'end', 'rotate'] as const
 /** AUDIO-21, AUDIO-22: listening means playing and unmuted. */
@@ -1482,40 +1481,20 @@ export const CueStopRequestSchema = refusingProtoKeys(
 export type CueStopRequest = z.infer<typeof CueStopRequestSchema>
 
 // ── Table sessions ───────────────────────────────────────────────────────────
+// Reopened by threat model section 15.11 and rebuilt by 1kg.2.3 (L-14): no table
+// link, no join, no enrolment, so no token is on the wire for any account. The
+// one bearer secret left, the screen grant (SEC-48, D-13), leaves the server in
+// a `Set-Cookie` header and is in no body.
 
-/** A table token or an enrolment code as it travels — once, in a POST body (SEC-8, SEC-11). */
-const TableSecretSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
-
-export const TableJoinRequestSchema = refusingProtoKeys(
-  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), token: TableSecretSchema }),
-)
-export type TableJoinRequest = z.infer<typeof TableJoinRequestSchema>
-
-/** One shape for every outcome (SEC-8); the role comes only with a join. */
-export const TableJoinResponseSchema = z
-  .object({
-    schema_version: z.literal(CONTRACT_VERSION),
-    status: z.enum(JOIN_STATUSES),
-    role: z.enum(TABLE_ROLES).nullable(),
-  })
-  .refine((answer) => (answer.role !== null) === (answer.status === 'joined'), {
-    path: ['role'],
-    message: 'a role comes with a join, and only with a join',
-  })
-export type TableJoinResponse = z.infer<typeof TableJoinResponseSchema>
-
-export const EnrolRequestSchema = refusingProtoKeys(
-  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), code: TableSecretSchema }),
-)
-export type EnrolRequest = z.infer<typeof EnrolRequestSchema>
-
-export const EnrolResponseSchema = z.object({
-  schema_version: z.literal(CONTRACT_VERSION),
-  status: z.enum(ENROL_STATUSES),
+/** One live screen of a live session, as its GM sees it: never the grant (SEC-5, SEC-48). */
+const TableScreenSchema = z.object({
+  screen_id: OpaqueIdSchema,
+  created_at: TimestampSchema,
+  last_seen_at: TimestampSchema.nullable(),
 })
-export type EnrolResponse = z.infer<typeof EnrolResponseSchema>
+export type TableScreen = z.infer<typeof TableScreenSchema>
 
-/** The GM's view of a session (REVEAL-2, REVEAL-17). The token is not here: it travels once. */
+/** The GM's view of a session (REVEAL-2, REVEAL-17): its admission generation and its live screens. No secret. */
 export const TableSessionSchema = z
   .object({
     schema_version: z.literal(CONTRACT_VERSION),
@@ -1536,7 +1515,8 @@ export const TableSessionSchema = z
     ends_at: TimestampSchema,
     ended_at: TimestampSchema.nullable(),
     audio: z.boolean(),
-    devices: z.number().int().min(0).max(1000),
+    /** The live grants of a live session, oldest first; none once it has ended. */
+    screens: z.array(TableScreenSchema).max(TABLE_SCREENS_MAX),
   })
   .refine((session) => (session.ended_at !== null) === (session.state === 'ended'), {
     path: ['ended_at'],
@@ -1546,37 +1526,54 @@ export const TableSessionSchema = z
     path: ['ends_at'],
     message: 'a session ends after it starts',
   })
+  .refine((session) => session.screens.length === 0 || session.state === 'live', {
+    path: ['screens'],
+    message: 'an ended session has no live screen',
+  })
 export type TableSession = z.infer<typeof TableSessionSchema>
 
-/** Start, End and Rotate (REVEAL-17), idempotent by command id; only Rotate may reset personal links. */
+/** Start, End and Rotate (REVEAL-17), idempotent by command id. The path names the
+ * campaign; End and Rotate name their session, and Start names none. */
 export const TableSessionRequestSchema = refusingProtoKeys(
   z
     .strictObject({
       schema_version: z.literal(CONTRACT_VERSION),
       command_id: CommandIdSchema,
-      campaign_id: OpaqueIdSchema,
       action: z.enum(SESSION_ACTIONS),
-      reset_personal_links: z.boolean().optional(),
+      session_id: OpaqueIdSchema.optional(),
     })
-    .refine((request) => !request.reset_personal_links || request.action === 'rotate', {
-      path: ['reset_personal_links'],
-      message: 'personal links are reset with a rotation',
+    .refine((request) => (request.session_id !== undefined) === (request.action !== 'start'), {
+      path: ['session_id'],
+      message: 'End and Rotate name their session, and Start names none',
     }),
 )
 export type TableSessionRequest = z.infer<typeof TableSessionRequestSchema>
 
-/** A start or a rotation carries the new token, the one time it is in a body (SEC-8); an end carries none. */
-export const TableSessionAnswerSchema = z
-  .object({
-    schema_version: z.literal(CONTRACT_VERSION),
-    session: TableSessionSchema,
-    token: TableSecretSchema.nullable(),
-  })
-  .refine((answer) => (answer.token !== null) === (answer.session.state === 'live'), {
-    path: ['token'],
-    message: 'a live session answers with its token, and an ended one with none',
-  })
+/** The answer to a session request and to the status read; `null` for a campaign that never started one. No token. */
+export const TableSessionAnswerSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  session: TableSessionSchema.nullable(),
+})
 export type TableSessionAnswer = z.infer<typeof TableSessionAnswerSchema>
+
+/** POST /table/screen: the owner makes this browser a table screen (SEC-48, D-13). */
+export const ScreenMintRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), campaign_id: OpaqueIdSchema }),
+)
+export type ScreenMintRequest = z.infer<typeof ScreenMintRequestSchema>
+
+/** When the new screen's grant ends. No id, no generation (SEC-15); the grant is in the `Set-Cookie` alone. */
+export const ScreenMintAnswerSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  ends_at: TimestampSchema,
+})
+export type ScreenMintAnswer = z.infer<typeof ScreenMintAnswerSchema>
+
+/** POST /table/leave (SEC-49): names nothing; the grant it ends is the request's cookie. */
+export const TableLeaveRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION) }),
+)
+export type TableLeaveRequest = z.infer<typeof TableLeaveRequestSchema>
 
 /** What the deployment has switched on (RAIL-10, AE-58): the answer to the lookup
  * a GM client makes once per load. A newer server may add a switch; it is
@@ -2172,9 +2169,9 @@ const TableAudioEventSchema = z
   .refine((frame) => playingFitsSlot(frame.slot, frame.playing), SLOT_ISSUE)
 /** How a **table** client is told which region a projection belongs in.
  * Deliberately *not* a RevealAudience: an audience carries a participant id, and
- * every table-side shape here is id-free (TableRole, TableJoinResponse,
- * EnrolResponse). Which participant `mine` is, the server resolves from the
- * credential pair, never from a field (eligibility ADR section 4, SEC-15). */
+ * every table-side shape here is id-free (TableRole, ScreenMintAnswer). Which
+ * participant `mine` is, the server resolves from the table principal, never
+ * from a field (eligibility ADR section 4, SEC-15). */
 export const TABLE_SLOT_NAMES = ['table', 'mine'] as const
 export type TableSlotName = (typeof TABLE_SLOT_NAMES)[number]
 
@@ -2655,13 +2652,12 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   CuePage: CuePageSchema,
   CuePlayRequest: CuePlayRequestSchema,
   CueStopRequest: CueStopRequestSchema,
-  TableJoinRequest: TableJoinRequestSchema,
-  TableJoinResponse: TableJoinResponseSchema,
-  EnrolRequest: EnrolRequestSchema,
-  EnrolResponse: EnrolResponseSchema,
   TableSession: TableSessionSchema,
   TableSessionRequest: TableSessionRequestSchema,
   TableSessionAnswer: TableSessionAnswerSchema,
+  ScreenMintRequest: ScreenMintRequestSchema,
+  ScreenMintAnswer: ScreenMintAnswerSchema,
+  TableLeaveRequest: TableLeaveRequestSchema,
   Capabilities: CapabilitiesSchema,
   RevealAudience: RevealAudienceSchema,
   RevealSlotRef: RevealSlotRefSchema,

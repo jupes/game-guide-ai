@@ -113,6 +113,33 @@ export const DIVIDER_ENTRY: TimelineItem = entry({
   boundary: 'start',
 })
 
+/**
+ * A session boundary as the divider job stores it (1kg.3.5): two ids and the
+ * boundary's own time, nothing else. Defaults to the END of DIVIDER_ENTRY's
+ * session, four hours after its start.
+ */
+export function dividerEntry(overrides: Record<string, unknown> = {}): TimelineItem {
+  return entry({
+    schema_version: 1,
+    entry_kind: 'session_divider',
+    entry_id: 'ent_5e55a002',
+    created_at: '2026-09-16T23:00:00Z',
+    session_id: 'ses_2c7d91aa',
+    boundary: 'end',
+    ...overrides,
+  })
+}
+
+/** The end of DIVIDER_ENTRY's session. */
+export const END_DIVIDER_ENTRY: TimelineItem = dividerEntry()
+
+/** A second session, a week later, that left nothing in this thread: its
+ * start, then its own end, with nothing between them (I-10's quiet session). */
+export const QUIET_SESSION: readonly TimelineItem[] = [
+  dividerEntry({ entry_id: 'ent_5e55b001', session_id: 'ses_7f3e0b12', boundary: 'start', created_at: '2026-09-23T19:00:00Z' }),
+  dividerEntry({ entry_id: 'ent_5e55b002', session_id: 'ses_7f3e0b12', boundary: 'end', created_at: '2026-09-23T22:30:00Z' }),
+]
+
 export const OPAQUE_ENTRY: TimelineItem = entry({
   schema_version: 1,
   entry_kind: 'opaque',

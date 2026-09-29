@@ -21,7 +21,13 @@ import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { toSpellCardProps, toStatBlockCardProps } from '../gm/adapters'
 import { GmThread } from '../gm/GmThread'
-import { exchangesForExport, turnFromExchange, turnsFromTimeline, useGmTimeline } from '../gm/gmTimeline'
+import {
+  collapseSessionSpans,
+  exchangesForExport,
+  turnFromExchange,
+  turnsFromTimeline,
+  useGmTimeline,
+} from '../gm/gmTimeline'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { useAppNav } from './AppNav'
 import { useConversationStore } from './ConversationStoreContext'
@@ -212,7 +218,7 @@ function ChatPaneBody({
     },
     [],
   )
-  const { exchanges, send, pending, historyError, loadingHistory } = useChat({
+  const { exchanges, send, pending, inFlight, historyError, loadingHistory } = useChat({
     post,
     loadHistory: gm ? SKIP_RECALL : loadHistory,
     mode,
@@ -237,9 +243,12 @@ function ChatPaneBody({
   // 1kg.3.4: in the GM channel a stored entry and a live turn become the same
   // GmTurn, so a reload draws an answer exactly as it arrived. The thread's
   // empty, loading and error states are §12.2's, which are today's.
+  // 1kg.3.5 (I-10): a quiet session's start and end collapse over the WHOLE
+  // drawn list, so the pair still collapses once Load earlier prepends one
+  // half above the other.
   const timeline = useGmTimeline(conversationId, gm, loadTimeline)
   const gmTurns = React.useMemo(
-    () => (gm ? [...turnsFromTimeline(timeline.items), ...exchanges.map(turnFromExchange)] : []),
+    () => (gm ? collapseSessionSpans([...turnsFromTimeline(timeline.items), ...exchanges.map(turnFromExchange)]) : []),
     [gm, timeline.items, exchanges],
   )
   const threadError = gm ? timeline.error : historyError
@@ -255,15 +264,28 @@ function ChatPaneBody({
   const draftLength = codePointLength(draft)
   const overLength = draftLength > CHAT_TEXT_MAX_CHARS
   const counterId = React.useId()
+  // 1kg.3.5 (RAIL-16, I-14 as the critic amended it): in the GM channel — the
+  // pane on the GM side AND the mode `gm`, so neither held state of a turn
+  // crossing the boundary counts — the field is never disabled: the GM can
+  // keep typing while a turn is in flight. Send (and Enter) wait while this
+  // pane has a plain turn in flight in ANY conversation (`inFlight`), not only
+  // the visible one: `useChat` allows one request per mounted hook, and a Send
+  // it silently refuses would clear the GM's text. `|| pending` keeps it never
+  // looser than today. Sage, Spell and Rules keep today's lock (X-9).
+  const gmLive = gm && mode === 'gm'
+  const sendBlocked = gmLive ? inFlight || pending : pending
   // agent-forge-harness-8tt: announce the crossing itself — once when the
   // draft first goes over CHAT_TEXT_MAX_CHARS and once when it comes back
   // under — through the SAME `.chat-pane__arrival` node, never a second live
   // region. Keyed on the overLength→!overLength (and back) TRANSITION via
-  // this ref, not on overLength's value directly: the field is disabled
-  // while `pending` (so it cannot change mid-turn, never racing
-  // PENDING_ANNOUNCEMENT or a settle), and further edits that leave the
-  // draft over the bound — a paste growing an already-over-length draft, or
-  // one more keystroke — must NOT re-announce (the visible counter already
+  // this ref, not on overLength's value directly. Outside the GM channel the
+  // field is disabled while `pending`, so there it cannot change mid-turn. In
+  // the GM channel it stays live (1kg.3.5): a crossing made mid-turn replaces
+  // the pending phrase on this same node, and the turn's settle then
+  // announces its outcome as usual (a suppressed settle clears only the
+  // pending phrase, pr129 M-2, so it leaves this one alone). Further edits
+  // that leave the draft over the bound — a paste growing an already-over-
+  // length draft, or one more keystroke — must NOT re-announce (the visible counter already
   // updates every keystroke; the live region does not need to). No effect on
   // conversation switches or a `side` remount: `draft` resets to '' there, so
   // overLength starts false and matches this ref's own initial value.
@@ -380,7 +402,9 @@ function ChatPaneBody({
 
   const handleSend = React.useCallback(() => {
     const trimmed = draft.trim()
-    if (!trimmed || pending || overLength) return
+    // The same gate as Send's `disabled`, so Enter never clears a draft that
+    // `send` would refuse (1kg.3.5, I-14).
+    if (!trimmed || sendBlocked || overLength) return
     if (conversationId !== null) {
       // bta: record what this first turn binds the conversation to — the same
       // value `send` posts below, both read from this render.
@@ -394,7 +418,7 @@ function ChatPaneBody({
     setArrival(PENDING_ANNOUNCEMENT)
     send(trimmed)
     setDraft('')
-  }, [conversationId, conversationStore, draft, modelPreference, overLength, pending, send])
+  }, [conversationId, conversationStore, draft, modelPreference, overLength, sendBlocked, send])
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -746,7 +770,7 @@ function ChatPaneBody({
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Ask…"
-          disabled={pending}
+          disabled={pending && !gmLive}
           aria-invalid={overLength || undefined}
           aria-describedby={overLength ? counterId : undefined}
           fullWidth
@@ -755,7 +779,7 @@ function ChatPaneBody({
           icon="send"
           ariaLabel="Send message"
           onClick={handleSend}
-          disabled={pending || draft.trim() === '' || overLength}
+          disabled={sendBlocked || draft.trim() === '' || overLength}
         />
       </div>
     </div>
