@@ -68,7 +68,7 @@ from .eligibility_store import (
     classifiable_keys,
     is_field_key,
 )
-from .table_session_store import TableSessionStore
+from .table_session_store import TableSessionStore, check_command_id
 
 log = logging.getLogger(__name__)
 
@@ -418,8 +418,11 @@ class EligibilityMutations:
         self, campaign_id: str, *, name: str, command_id: str | None = None, now: datetime | None = None
     ) -> Group:
         """A new group, or the one this `command_id` already made. Advances
-        nothing: an empty group widens nothing."""
+        nothing: an empty group widens nothing. A malformed `command_id` is
+        refused before any statement (critic item 16)."""
         check_types(campaign_id=campaign_id, name=name, command_id=command_id)
+        if command_id is not None:
+            check_command_id(command_id)
         return self._attempt(
             "create_group",
             lambda unit: _create_group_locked(unit, self._stores, campaign_id, name, command_id, now),

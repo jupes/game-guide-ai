@@ -178,10 +178,14 @@ PUBLIC = Eligibility(FieldClass.PUBLIC, (), GM)
 
 
 def test_a_deadlock_victim_is_retried_and_the_result_returned():
-    service, flaky, ids = _service([DEADLOCK] * (DEADLOCK_ATTEMPTS - 1))
+    """Two lost deadlocks, then the third attempt's result (I-21: the number
+    is `table_sessions`' three, written out so the test cannot follow a change
+    to the constant). Kills no retry (M-F12)."""
+    assert DEADLOCK_ATTEMPTS == 3
+    service, flaky, ids = _service([DEADLOCK, DEADLOCK])
     change = service.classify(ids["campaign"], ids["sheet"], "hp", expected=UNCLASSIFIED, new=PUBLIC)
     assert change == Change(True, 1)
-    assert flaky.opened == DEADLOCK_ATTEMPTS
+    assert flaky.opened == 3
 
 
 def test_a_deadlock_lost_every_time_is_backend_unavailable_and_bounded(caplog):
@@ -238,6 +242,8 @@ def test_a_malformed_key_is_refused_before_any_transaction():
         service.classify(ids["campaign"], ids["sheet"], "hp", expected="unclassified", new=PUBLIC)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="group name"):
         service.rename_group(ids["campaign"], "grp_" + "g" * 22, name="")
+    with pytest.raises(ValueError, match="command id"):
+        service.create_group(ids["campaign"], name="Scouts", command_id="short")
     assert flaky.opened == 0
 
 
