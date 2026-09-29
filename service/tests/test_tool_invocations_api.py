@@ -45,7 +45,7 @@ from service.participant_store import InMemoryParticipantStore
 from service.providers import ProviderClientFactory
 from service.session import SessionData
 from service.timeline_store import InMemoryTimelineStore
-from service.tool_invocation_store import InMemoryToolInvocationStore
+from service.tool_invocation_store import InMemoryToolInvocationStore, InvocationNotStored
 from service.tool_invocations import (
     ATTEMPT_TTL_S,
     ExecutionContext,
@@ -663,6 +663,30 @@ def test_c3_a_retry_runs_the_stored_brief_not_the_repeats(world: World, client: 
     world.executors[ToolId.NPC].behaviour = lambda ctx: npc_result()
     assert post(client, table, brief="A different brief").json()["status"] == "done"
     assert [ctx.target.brief for ctx in world.executors[ToolId.NPC].runs] == ["A dwarf smith", "A dwarf smith"]
+
+
+@pytest.mark.parametrize("race", ["archived", "gone"])
+def test_c4_a_create_the_statement_refuses_rolls_its_entry_back(world: World, client: TestClient,
+                                                                race: str) -> None:
+    """C-4: the zero-row path. The campaign is archived between the guard's
+    read and the creating statement (in the same unit here), or the statement
+    refuses for a reason the re-read cannot name: 409 or the one 404, and the
+    entry appended first is gone with the rest."""
+    table = world.table()
+    real = world.stores.invocations.create
+
+    def racing(unit: Any, **kwargs: Any) -> Any:
+        if race == "gone":
+            raise InvocationNotStored()
+        assert world.stores.campaigns.set_archived(unit, table.campaign, owner_id=table.owner, archived=True)
+        return real(unit, **kwargs)
+
+    world.stores.invocations.create = racing  # type: ignore[method-assign]
+    response = post(client, table)
+    expected = (409, "campaign_archived") if race == "archived" else (404, "not_found")
+    assert (response.status_code, _error(response)["code"]) == expected
+    _nothing_created(world)
+    assert world.executors[ToolId.NPC].runs == []
 
 
 def test_c4_one_id_from_two_gms_is_two_invocations(world: World, client: TestClient) -> None:

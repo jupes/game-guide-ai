@@ -1253,3 +1253,37 @@ def test_a_completion_whose_conversation_was_deleted_is_the_one_404(dsn: str) ->
         tool_invocations.complete(world.db, stores, executors[ToolId.NPC], admitted,
                                   tool_invocations.Outcome(cancelled=True), ctx, now=T0)
     assert executors[ToolId.NPC].finishes == 0
+
+
+def test_a_create_the_statement_refuses_leaves_no_entry_invocation_or_attempt(world: World) -> None:
+    """C-4 through the service: the campaign is archived inside T1, after the
+    guard read it, so the creating statement writes nothing — the answer is the
+    409 and the entry T1 appended first rolls back with it."""
+    table = a_table(world)
+    stores, executors, settings = _service(world)
+    real = world.store.create
+
+    def archived_first(unit: Any, **kwargs: Any) -> Any:
+        assert world.campaigns.set_archived(unit, table.campaign, owner_id=table.owner, archived=True)
+        return real(unit, **kwargs)
+
+    racing = InvocationStores(_Racing(world.store, archived_first), world.campaigns, world.conversations,
+                              world.timeline)
+    with pytest.raises(tool_invocations.Refused) as refused:
+        _attempt_with(world, table, T0, racing, executors, settings)
+    assert refused.value.info.code.value == "campaign_archived"
+    assert _entry_ids(world, table.conversation) == []
+    assert held(world, table) is None and attempts(world, table) == []
+    with world.db.transaction() as unit:
+        assert world.campaigns.get(unit, table.campaign, owner_id=table.owner).archived_at is None
+
+
+class _Racing:
+    """The store, with its `create` replaced."""
+
+    def __init__(self, inner: Any, create: Callable[..., Any]) -> None:
+        self._inner = inner
+        self.create = create
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
