@@ -882,7 +882,7 @@ def test_the_four_transitions_pass_their_caller_bound_to_the_hold(world: World) 
     for_ready = _act(world, campaign, _create(world, campaign).id, "start_processing")
     for_failed = _create(world, campaign)
 
-    calls: list[tuple[str, float, Callable[[Any], object]]] = [
+    calls: list[tuple[str, float, Callable[[UnitOfWork], object]]] = [
         ("start_processing", 11.0, lambda u: world.assets.start_processing(
             u, campaign, uploading.id, owner_id=world.owner, now=T0, transaction_timeout_s=11.0)),
         ("return_to_uploading", 12.0, lambda u: world.assets.return_to_uploading(
@@ -916,7 +916,7 @@ def test_the_four_transitions_caller_bound_is_what_postgresql_enforces(dsn: str)
     for_ready = _act(world, campaign, _create(world, campaign).id, "start_processing")
     for_failed = _create(world, campaign)
 
-    calls: list[tuple[str, int, Callable[[Any], object]]] = [
+    calls: list[tuple[str, int, Callable[[UnitOfWork], object]]] = [
         ("start_processing", 21, lambda u: world.assets.start_processing(
             u, campaign, uploading.id, owner_id=world.owner, now=T0, transaction_timeout_s=21.0)),
         ("return_to_uploading", 22, lambda u: world.assets.return_to_uploading(
