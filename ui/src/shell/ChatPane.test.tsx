@@ -354,12 +354,86 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
     )
     // 4oz: not by a second live region beside the announcer — counted in every
     // live-region shape (explicit role, aria-live, OR an implicit role such
-    // as <output>'s implicit role="status" — see queryAllLiveRegions above),
-    // and not by the announcer, whose text changes only when a turn is sent
-    // or settles.
+    // as <output>'s implicit role="status" — see queryAllLiveRegions above).
     const live = queryAllLiveRegions(container)
     expect(live).toEqual([announcer])
-    expect(announcer.textContent).toBe('')
+    // agent-forge-harness-8tt: crossing the bound now IS said, but on this
+    // SAME node — never a second one (ADR gm-workbench-interactions A-30).
+    // (Superseded pre-8tt behavior: the announcer stayed empty here.)
+    expect(announcer.textContent).toBe('Message is over the character limit.')
+  })
+
+  // agent-forge-harness-8tt: the owner's decision (ADR gm-workbench-interactions
+  // A-30) — crossing CHAT_TEXT_MAX_CHARS is announced, once each way, through
+  // the SAME single live region as every other event this pane announces.
+  // Never a second live region, and the counter above stays the textarea's
+  // accessible description, not itself announced.
+  describe('ChatPane — over-limit crossing is announced (agent-forge-harness-8tt)', () => {
+    it('announces once when the draft first crosses over the limit, through the SAME node the pane already uses', () => {
+      const { container } = render(<Wrapper />)
+      const [announcer] = screen.getAllByRole('status')
+      expect(announcer.textContent).toBe('')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+      // Still exactly one live region in the pane — no second one was added.
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+    })
+
+    it('announces once when the draft drops back under the limit, and does not just clear silently', () => {
+      const { container } = render(<Wrapper />)
+      const [announcer] = screen.getAllByRole('status')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS) } })
+
+      expect(announcer.textContent).toBe('Message is back under the character limit.')
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+    })
+
+    it('does not re-announce while the draft stays over the limit — only the visible counter keeps changing', () => {
+      const { container } = render(<Wrapper />)
+      const [announcer] = screen.getAllByRole('status')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+
+      // Grows well past the bound — still over, so the live region must not
+      // change again (a real screen reader would otherwise re-announce it on
+      // every keystroke of a long paste or continued typing).
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 50) } })
+
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+      // The visible counter DID keep up (it is not gated on the crossing).
+      expect(
+        screen.getByText(`${CHAT_TEXT_MAX_CHARS + 50} of ${CHAT_TEXT_MAX_CHARS} characters`, { exact: false }),
+      ).toBeInTheDocument()
+    })
+
+    it('crossing over and back under does not disturb the pending/settled announcement contract', async () => {
+      const post: PostFn = async () => GROUNDED
+      const { container } = render(<Wrapper post={post} />)
+      const [announcer] = screen.getAllByRole('status')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+      fireEvent.change(ta, { target: { value: 'a question' } })
+      expect(announcer.textContent).toBe('Message is back under the character limit.')
+
+      await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
+      await waitFor(() => expect(announcer.textContent).not.toBe('Message is back under the character limit.'))
+      await waitFor(() =>
+        expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+      )
+      expect(announcer.textContent).toBe('Answer received')
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+    })
   })
 })
 
@@ -546,6 +620,16 @@ describe('ChatPane — typing indicator (pp6q.1.5)', () => {
     await waitFor(() => expect(resolvers).toHaveLength(2))
     act(() => resolvers[1]({ kind: 'error', message: 'The GM service is busy.' }))
     await screen.findByText('The GM service is busy.')
+    expect(liveRegions(container)).toHaveLength(1)
+  })
+
+  // agent-forge-harness-8tt: crossing CHAT_TEXT_MAX_CHARS joins the states this
+  // census samples — it is announced (see the composer describe block below),
+  // so it is exactly the kind of state where a second live region could hide.
+  it('agent-forge-harness-8tt: exactly one live region while the composer is over the character limit', () => {
+    const { container } = render(<Wrapper />)
+    const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
     expect(liveRegions(container)).toHaveLength(1)
   })
 

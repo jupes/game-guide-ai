@@ -11,7 +11,12 @@ Four arms decide {stat_block, spell_card, none} for every item of the block-choi
    mode, question and answer, with a softmax temperature fitted on held-out training groups.
    Every prediction is out-of-fold: grouped K-fold keeps all items of a group (one creature,
    one spell, one rules topic) on the same side, so no item is scored by a model that saw it
-   or its near-duplicates.
+   or its near-duplicates. It runs twice: once grouped by the committed, per-instance ``group``
+   (the report's ``adversarial``/``hard_positive`` sections), and once more grouped by
+   ``category`` — the template family — so no fold trains on a template sibling of what it
+   scores (the report's ``*_template_grouped`` sections; ``eval_data/block_choice/README.md``
+   Limitations, ``agent-forge-harness-69h``; a committed group spanning two categories can
+   still be split there, ``agent-forge-harness-uhc``).
 3. ``llm`` — ``gpt-4o-mini`` answering one token (A/B/C) with ``logprobs``; the probabilities
    are the renormalised top-logprob mass of the three letters.
 4. ``jev`` — a stub. It refuses to run without ``TYPESAFE_API_KEY``, and even with one it has
@@ -312,8 +317,19 @@ def get_embeddings(items: Sequence[Item], cache_path: Path, client: Any | None,
 
 
 def run_embedding(items: Sequence[Item], embeddings: Mapping[str, Embedding], k: int = 5,
-                  seed: int = 7) -> ArmResult:
-    folds = grouped_folds([it.group for it in items], [it.label for it in items], k, seed)
+                  seed: int = 7, group_field: str = "group") -> ArmResult:
+    """``group_field`` picks which ``Item`` attribute a grouped fold may never split:
+    ``"group"`` (default) is the committed per-instance grouping (one creature, one spell, one
+    rules topic). ``"category"`` is the template family: every item of one adversarial or
+    hard-positive template (for example all 12 ``prose_ac_hp`` items) then lands in the same
+    fold, so no fold trains on a template sibling of what it scores (README Limitations,
+    ``agent-forge-harness-69h``). Grouping by ``category`` can still split a committed group
+    that spans two categories (8 ``rules:*`` topics sit in both ``rules_prose`` and
+    ``prompt_injection``), depending on k and seed: ``agent-forge-harness-uhc``."""
+    if group_field not in ("group", "category"):
+        raise ValueError(f"group_field must be 'group' or 'category', got {group_field!r}")
+    groups = [getattr(it, group_field) for it in items]
+    folds = grouped_folds(groups, [it.label for it in items], k, seed)
     decisions: dict[str, Decision] = {}
     fold_log = []
     for f in range(k):
@@ -322,8 +338,10 @@ def run_embedding(items: Sequence[Item], embeddings: Mapping[str, Embedding], k:
         if not test:
             continue
         # Temperature: fit centroids on an inner grouped split of the training fold, tune T on
-        # its held-out part, then refit the centroids on the whole training fold.
-        inner = grouped_folds([it.group for it in train], [it.label for it in train], 5, seed + f + 1)
+        # its held-out part, then refit the centroids on the whole training fold. The inner
+        # split is grouped the same way, so tuning never sees a group's own fold-mates either.
+        inner = grouped_folds([getattr(it, group_field) for it in train], [it.label for it in train], 5,
+                              seed + f + 1)
         fit_part = [it for it, fo in zip(train, inner, strict=True) if fo != 0]
         tune_part = [it for it, fo in zip(train, inner, strict=True) if fo == 0]
         clf = NearestCentroid()
@@ -338,10 +356,11 @@ def run_embedding(items: Sequence[Item], embeddings: Mapping[str, Embedding], k:
             classify_ms = (time.perf_counter() - t0) * 1000
             label = max(LABELS, key=lambda lab: probs[lab])
             decisions[it.id] = Decision(it.id, label, probs, emb.latency_ms + classify_ms, emb.tokens, 0)
-        fold_log.append({"fold": f, "train_groups": sorted({it.group for it in train}),
-                         "test_groups": sorted({it.group for it in test}), "temperature": clf.temperature})
+        fold_log.append({"fold": f, "train_groups": sorted({getattr(it, group_field) for it in train}),
+                         "test_groups": sorted({getattr(it, group_field) for it in test}),
+                         "temperature": clf.temperature})
     return ArmResult("embedding", "ok", decisions=[decisions[it.id] for it in items],
-                     extra={"folds": k, "fold_log": fold_log,
+                     extra={"folds": k, "group_field": group_field, "fold_log": fold_log,
                             "note": "latency = the recorded embedding call + the classifier"})
 
 
@@ -442,7 +461,11 @@ def run_jev(items: Sequence[Item], env: Mapping[str, str] | None = None,
 
 def evaluate(items: Sequence[Item], result: ArmResult, baseline: Mapping[str, str | None],
              thresholds: Iterable[float] = dm.THRESHOLDS, call_usd: Mapping[str, float] = CALL_USD,
-             price: tuple[float, float] = (0.0, 0.0)) -> dict[str, Any]:
+             price: tuple[float, float] = (0.0, 0.0), template: ArmResult | None = None) -> dict[str, Any]:
+    """``template``, when given an ``"ok"`` embedding-arm result scored with a different
+    ``group_field`` (see ``run_embedding``), adds the ``adversarial_template_grouped`` and
+    ``hard_positive_template_grouped`` sections beside the per-instance ``adversarial`` and
+    ``hard_positive`` ones (README Limitations, ``agent-forge-harness-69h``)."""
     report: dict[str, Any] = {"arm": result.arm, "status": result.status, "reason": result.reason, **result.extra}
     if result.status != "ok":
         return report
@@ -453,6 +476,7 @@ def evaluate(items: Sequence[Item], result: ArmResult, baseline: Mapping[str, st
     correct = [g == p for g, p in zip(gold, pred, strict=True)]
     base = [baseline[it.id] for it in items]
     adv = [i for i, it in enumerate(items) if it.subset == "adversarial"]
+    hp = [i for i, it in enumerate(items) if it.subset == "hard_positive"]
     latencies = [d.latency_ms for d in result.decisions]
     thresholds = list(thresholds)
     by_mode: dict[str, list[int]] = {}
@@ -471,6 +495,7 @@ def evaluate(items: Sequence[Item], result: ArmResult, baseline: Mapping[str, st
         "adversarial": {"n": len(adv), **{
             f"held_to_none_at_{t:.2f}": dm.held_to_none([pred[i] for i in adv], [conf[i] for i in adv], t)
             for t in thresholds}},
+        "hard_positive": {"n": len(hp), "accuracy": dm.accuracy([gold[i] for i in hp], [pred[i] for i in hp])},
         "latency_ms": {"p50": dm.percentile(latencies, 0.5), "p95": dm.percentile(latencies, 0.95)},
         "cost_per_1000_usd": dm.cost_per_1000([d.input_tokens for d in result.decisions],
                                               [d.output_tokens for d in result.decisions], *price),
@@ -478,6 +503,22 @@ def evaluate(items: Sequence[Item], result: ArmResult, baseline: Mapping[str, st
         "macro_f1_by_mode": {mode: dm.macro_f1([gold[i] for i in idx], [pred[i] for i in idx], LABELS)
                              for mode, idx in sorted(by_mode.items())},
     })
+    if template is not None and template.status == "ok":
+        # The template run's OWN decisions, never the committed run's: falling back to `by_id`
+        # here would silently reproduce the per-instance score (agent-forge-harness-69h).
+        t_by_id = {d.item_id: d for d in template.decisions}
+        t_pred = [t_by_id[it.id].label for it in items]
+        t_conf = [t_by_id[it.id].confidence for it in items]
+        group_field = template.extra.get("group_field")
+        report["adversarial_template_grouped"] = {
+            "n": len(adv), "group_field": group_field,
+            **{f"held_to_none_at_{t:.2f}": dm.held_to_none([t_pred[i] for i in adv], [t_conf[i] for i in adv], t)
+               for t in thresholds},
+        }
+        report["hard_positive_template_grouped"] = {
+            "n": len(hp), "group_field": group_field,
+            "accuracy": dm.accuracy([gold[i] for i in hp], [t_pred[i] for i in hp]),
+        }
     return report
 
 
@@ -516,13 +557,18 @@ def run(arms: Sequence[str], items: Sequence[Item], recordings: Path, *, offline
     heuristic = run_heuristic(items)
     baseline = {d.item_id: d.label for d in heuristic.decisions}
     results: list[ArmResult] = []
+    templates: dict[str, ArmResult] = {}
     for arm in arms:
         if arm == "heuristic":
             results.append(heuristic)
         elif arm == "embedding":
             try:
                 emb = get_embeddings(items, recordings / f"{EMBED_MODEL}.jsonl", client_factory(offline))
-                results.append(run_embedding(items, emb, k=folds, seed=seed))
+                results.append(run_embedding(items, emb, k=folds, seed=seed, group_field="group"))
+                # Second, leave-one-template-family-out pass: same embeddings, grouped by
+                # `category` instead of the committed per-instance `group` (agent-forge-
+                # harness-69h). evaluate() reports it beside the per-instance score.
+                templates["embedding"] = run_embedding(items, emb, k=folds, seed=seed, group_field="category")
             except MissingRecording as exc:
                 results.append(ArmResult("embedding", "skipped", str(exc)))
         elif arm == "llm":
@@ -535,7 +581,7 @@ def run(arms: Sequence[str], items: Sequence[Item], recordings: Path, *, offline
             results.append(run_jev(items, env, prices["jev"]))
         else:
             raise ValueError(f"unknown arm {arm!r}; choose from {ARMS}")
-    return [evaluate(items, r, baseline, price=prices[r.arm]) for r in results]
+    return [evaluate(items, r, baseline, price=prices[r.arm], template=templates.get(r.arm)) for r in results]
 
 
 def parse_prices(overrides: Sequence[str]) -> dict[str, tuple[float, float]]:
