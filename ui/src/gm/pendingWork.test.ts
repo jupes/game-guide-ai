@@ -542,6 +542,10 @@ describe('pendingWork — the thread it draws', () => {
     expect(lane(run(start(A)))).toMatchObject({ state: 'working', status: 'Writing the dossier…' })
   })
 
+  it('draws a run whose submit time is not a date rather than throwing', () => {
+    expect(liveTurn(run(start(A, {}, Number.NaN))).invocation.created_at).toBe('1970-01-01T00:00:00.000Z')
+  })
+
   it('never stores the view it draws for a run with no answer', () => {
     const state = run(start(A), { type: 'cancel-requested', invocationId: A })
     liveTurn(state)
