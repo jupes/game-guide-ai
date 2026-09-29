@@ -122,7 +122,7 @@ def test_the_action_set_is_closed_and_a_caller_cannot_invent_one():
             assert value not in str(refused.value), "a refusal never repeats what it refused"
 
 
-def test_the_twenty_six_actions_that_ship_are_sec38s_the_tavern_s_two_the_media_delete_and_reveals_three():
+def test_the_thirty_one_actions_that_ship_include_reveals_three_a_documents_three_and_the_group_routes_five():
     """The export actions are not here: ED-18(a) makes the table shared, and they
     belong to the bead that will write them (1kg.5.2), which adds its own members
     without a migration. `1kg.7.1` adds reveal's three — displayed, updated and
@@ -144,7 +144,10 @@ def test_the_twenty_six_actions_that_ship_are_sec38s_the_tavern_s_two_the_media_
     `1kg.8.1.1` adds `asset.deleted`: deletion is the irreversible act, and
     uploads are not audited (ruling 8.1#4).
 
-    `1kg.5.2` adds a document's three: archived, unarchived and deleted."""
+    `1kg.5.2` adds a document's three: archived, unarchived and deleted.
+
+    `btb` adds the group routes' five: created, renamed, removed, and a member
+    added or removed."""
     assert {a.value for a in AuditAction} == {
         "session.started", "session.ended", "session.expired", "session.rotated",
         "participant.added", "participant.removed", "participant.linked",
@@ -155,6 +158,7 @@ def test_the_twenty_six_actions_that_ship_are_sec38s_the_tavern_s_two_the_media_
         "screen.minted", "screen.revoked", "asset.deleted",
         "reveal.displayed", "reveal.updated", "reveal.stopped",
         "document.archived", "document.unarchived", "document.deleted",
+        "group.created", "group.renamed", "group.removed", "group.member_added", "group.member_removed",
     }
     assert "join.burst_refused" not in {a.value for a in AuditAction}, "retired with the join"
     assert not [a for a in AuditAction if a.value.startswith("export.")]
@@ -179,7 +183,7 @@ def test_a_seat_row_carries_the_seat_and_nothing_else():
 
 _WORDS = {
     3: "three", 4: "four", 5: "five", 6: "six", 14: "fourteen", 16: "sixteen", 18: "eighteen", 19: "nineteen",
-    20: "twenty", 23: "twenty-three", 26: "twenty-six",
+    7: "seven", 20: "twenty", 23: "twenty-three", 26: "twenty-six", 28: "twenty-eight", 31: "thirty-one",
 }
 
 
@@ -451,10 +455,11 @@ def test_every_kind_the_ledger_knows_is_a_thing_the_schema_mints_an_id_for():
         audit_log.ObjectKind.TABLE_SCREEN: ident.TABLE_CREDENTIAL,
         audit_log.ObjectKind.ASSET: ident.ASSET,
         audit_log.ObjectKind.DOCUMENT: ident.DOCUMENT,
+        audit_log.ObjectKind.GROUP: ident.GROUP,
     }
     assert set(minted_as) == set(ObjectKind)
     assert {kind.value for kind in ObjectKind} == {
-        "campaign", "participant", "table_session", "table_screen", "asset", "document"
+        "campaign", "participant", "table_session", "table_screen", "asset", "document", "group"
     }
     assert all(prefix in ident.PREFIXES for prefix in minted_as.values())
 

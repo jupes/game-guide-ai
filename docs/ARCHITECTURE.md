@@ -452,9 +452,9 @@ refused unless the transaction holds the lock exclusively
 | Screen mint, revoke, Leave | `1kg.2.3` | entitlement, not eligibility | as `1kg.2.3` ships them | **no** | — |
 | Document archive / delete | `1kg.5.2` | fact-changing narrowing | step 1 never; step 2 exclusive | step 2 | rule 3 |
 | Classification | `1ir.2.1` (`EligibilityMutations.classify`) | widening or narrowing | exclusive | same transaction | enqueue if the new class admits anyone, else rule 3 |
-| Group create / rename | `1ir.2.1` | none | exclusive / none | **no** | — |
-| Group member add | `1ir.2.1` | locked widening | exclusive | same transaction | rule 3 |
-| Group member remove; group remove | `1ir.2.1` | fact-changing narrowing | step 1 never; step 2 exclusive | step 2 | rule 3 |
+| Group create / rename | `1ir.2.1` (service), `btb` (routes, audit) | none | exclusive / none | **no** | — |
+| Group member add | `1ir.2.1` (service), `btb` (routes, audit) | locked widening | exclusive | same transaction | rule 3 |
+| Group member remove; group remove | `1ir.2.1` (service), `btb` (routes, audit) | fact-changing narrowing | step 1 never; step 2 exclusive | step 2 | rule 3 |
 | The projector | `1ir.2.3` | none: it rebuilds rows | exclusive, in slices | **never** | sets `projection_revision := authz_revision` only in the slice that finds the queue empty |
 | Approved version (future) | `1ir.2.3` or its successor | widening | exclusive | same transaction | enqueue |
 | Enforcement on / off (future) | `1ir.11.1` | narrowing / locked widening | per M-3 / M-8 | same transaction (step 2) | rule 3 |
@@ -498,7 +498,9 @@ Nothing in `1ir.2.1` is reachable from HTTP, displayed, audited or enqueued:
 `service/eligibility.py` takes an already-authorised `campaign_id`, and its two
 required extension points — `TableNamespaceNarrowing` (empty until `1ir.2.3`)
 and `ChangeRecorder` (the route bead's audit row, written in the mutating
-transaction) — are passed by name, never defaulted.
+transaction) — are passed by name, never defaulted. `btb`'s routes
+(`service/groups_api.py`) reach the group mutations; its `audit_recorder` is
+the `ChangeRecorder`.
 
 ### One setting interaction to know about
 
