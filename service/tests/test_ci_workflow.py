@@ -280,6 +280,35 @@ def test_pg_import_detection_matches_every_legal_import_form():
         assert not _imports_pg_module(text), f"matched something that is not a _pg import: {text!r}"
 
 
+def test_the_ast_import_scan_actually_changes_discovery(tmp_path, monkeypatch):
+    """`_database_backed_test_files()` ORs three signals together: `needs_db`,
+    a `DATABASE_URL` read, or `_imports_pg_module`. Every file already in
+    `DB_BACKED_TESTS` also matches one of the first two, so dropping the
+    `_imports_pg_module` clause changes nothing there -- a mutant that deletes
+    it still passes the whole suite. This proves the clause is load-bearing,
+    against a fixture module that matches ONLY through the AST scan: no
+    `needs_db` marker, no DATABASE_URL read, just `import tests._pg as pg` --
+    one of the forms `test_pg_import_detection_matches_every_legal_import_form`
+    proves `_imports_pg_module` recognises but the older column-0 regex missed
+    (agent-forge-harness-8ug / #147 M-1)."""
+    testdir = tmp_path / "tests"
+    testdir.mkdir()
+    (testdir / "test_ast_only.py").write_text("import tests._pg as pg\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    discovered = _database_backed_test_files()
+
+    assert "tests/test_ast_only.py" in discovered, (
+        "a module that imports tests._pg only in a form the needs_db/DATABASE_URL "
+        "regexes miss must still be discovered through the AST scan -- dropping "
+        "the `_imports_pg_module` clause from `_database_backed_test_files` would "
+        "silently stop this and no other test would notice"
+    )
+
+
 def test_the_dsn_is_scoped_to_the_integration_step_not_the_whole_job():
     """A job-wide DATABASE_URL would change the app's startup path in every
     unrelated test (the lifespan builds a real auth store when it can connect),

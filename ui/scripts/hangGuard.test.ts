@@ -20,15 +20,16 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { spawnSync, type SpawnOptions } from 'node:child_process'
-import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { spawn, spawnSync, type SpawnOptions } from 'node:child_process'
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { platform, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   HANG_GUARD_EVENTS_ENV,
   STORYBOOK_COMMAND,
   findStoryFiles,
+  killProcessTree,
   main,
   runWithHangGuard,
   storybookVitestArgs,
@@ -438,3 +439,129 @@ describe('findStoryFiles', () => {
     }
   })
 })
+
+describe('killProcessTree (the real OS-level kill; every runWithHangGuard test above injects a fake killFn, so ' +
+  'this function itself -- including its own catch/fallback branches -- was never once invoked; agent-forge-harness-8ug)', () => {
+  it('actually terminates a real, running process', async () => {
+    // Not detached, so on POSIX this child is in the test's own process
+    // group: `process.kill(-pid, ...)` finds no group of that id, and only
+    // the single-pid fallback beneath it can kill the child.
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'])
+    const pid = child.pid
+    if (pid === undefined) throw new Error('failed to spawn a test child process')
+    const exited = new Promise<void>((resolve) => child.on('exit', () => resolve()))
+
+    killProcessTree(pid)
+
+    await exited // hangs out to the test's own timeout if the kill did nothing
+  }, 10_000)
+
+  it('kills the whole tree, not just the immediate child: a grandchild the child started dies too (#148 review M-2)', async () => {
+    // The child is spawned the way runWithHangGuard spawns the real run
+    // (detached into its own process group on POSIX), and it starts a
+    // long-lived grandchild, which stands in for the esbuild and Chromium
+    // processes that vitest leaves behind. On POSIX the grandchild stays in
+    // the child's group, which is what `process.kill(-pid, ...)` targets. On
+    // win32 it is detached only so that libuv does not put it in the child's
+    // kill-on-close job object: otherwise killing the child alone would take
+    // the grandchild with it, and the test could not tell whether
+    // `taskkill /T` walked the tree.
+    const grandchildOptions = `{ stdio: 'ignore', detached: process.platform === 'win32' }`
+    const childScript =
+      "const { spawn } = require('node:child_process');" +
+      `const g = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], ${grandchildOptions});` +
+      "process.stdout.write(String(g.pid) + '\\n');" +
+      'setInterval(() => {}, 1000);'
+    const child = spawn(process.execPath, ['-e', childScript], {
+      detached: platform() !== 'win32',
+      stdio: ['ignore', 'pipe', 'inherit'],
+    })
+    const pid = child.pid
+    if (pid === undefined) throw new Error('failed to spawn a test child process')
+    let childGone = false
+    const childExited = new Promise<void>((resolve) =>
+      child.on('exit', () => {
+        childGone = true
+        resolve()
+      }),
+    )
+    const grandchildPid = await new Promise<number>((resolve, reject) => {
+      let out = ''
+      child.stdout?.on('data', (chunk: Buffer) => {
+        out += chunk.toString('utf8')
+        const newline = out.indexOf('\n')
+        if (newline >= 0) resolve(Number(out.slice(0, newline)))
+      })
+      child.on('exit', () => reject(new Error('the child exited before it reported its grandchild pid')))
+    })
+
+    try {
+      expect(Number.isInteger(grandchildPid) && grandchildPid > 0).toBe(true)
+      expect(isAlive(grandchildPid), 'the grandchild must be running before the kill').toBe(true)
+
+      killProcessTree(pid)
+
+      // Bounded here rather than by the test's own timeout, so the cleanup
+      // below still runs when the kill does nothing.
+      await Promise.race([childExited, new Promise((resolve) => setTimeout(resolve, 5_000))])
+      expect(childGone, 'the child outlived killProcessTree').toBe(true)
+      expect(await waitUntilGone(grandchildPid, 5_000), 'the grandchild outlived killProcessTree').toBe(true)
+    } finally {
+      // Never leak a process when an assertion (or a mutant) fails. Only
+      // targets that are still running are signalled, so a pid that has
+      // already been freed, and perhaps reused, is left alone.
+      if (!childGone) child.kill('SIGKILL')
+      if (isAlive(grandchildPid)) {
+        try {
+          process.kill(grandchildPid, 'SIGKILL')
+        } catch {
+          // It exited between the check and the kill.
+        }
+      }
+    }
+  }, 15_000)
+
+  it('does not throw when no such process exists, e.g. it already exited (the best-effort fallback swallows the error)', () => {
+    // A pid far above anything either OS allocates (Linux caps pid_max at
+    // 2^22, and Windows hands out pids from a handle table that stays far
+    // below 2^31). A real pid that has just exited could be reused by an
+    // unrelated process, and `taskkill /T /F` would then kill that process
+    // tree (#148 review N-1).
+    const neverAPid = 2_147_483_647
+    // On win32 this exercises the catch around `taskkill` failing to find the
+    // pid. On POSIX it exercises both `process.kill(-pid, ...)` and the
+    // `process.kill(pid, ...)` fallback beneath it, since a pid that does
+    // not exist satisfies neither.
+    expect(() => killProcessTree(neverAPid)).not.toThrow()
+  }, 10_000)
+})
+
+/** Whether `pid` is a live process. Signal 0 checks for existence without
+ * sending anything. On Linux a killed process that its new parent has not
+ * reaped yet still answers signal 0 as a zombie, so a `Z` state in
+ * /proc/<pid>/stat counts as gone. */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+  if (platform() !== 'linux') return true
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    const state = stat.slice(stat.lastIndexOf(')') + 2).charAt(0)
+    return state !== 'Z'
+  } catch {
+    return false
+  }
+}
+
+/** Polls until `pid` is gone or `timeoutMs` passes; true if it is gone. */
+async function waitUntilGone(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) return true
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return !isAlive(pid)
+}
