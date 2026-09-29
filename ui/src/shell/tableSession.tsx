@@ -12,7 +12,8 @@
  * to `onStartRefused` (`ecr`). End is offered whenever a live session is known,
  * whatever is pending, for any tier (X-3, T4-3), and delivered by an
  * `EndCourier` that outlives the scope and this provider. One status re-read
- * when `ends_at` passes, never a poll (SEC-42, T4-7). No Rotate, no screen UI,
+ * when `ends_at` passes, never a poll, and no `liveSession` past it whatever
+ * that re-read says (SEC-42, T4-7). No Rotate, no screen UI,
  * no timeline re-read, no web storage.
  */
 
@@ -46,7 +47,8 @@ export interface TableSessionView {
   readonly endedAt: string | null
 }
 
-/** For `1ir` and `1kg.7`: non-null only while the session is live. */
+/** For `1ir` and `1kg.7`: non-null only while the session is live and its
+ * `ends_at` has not yet passed on this clock (SEC-42, T4-7). */
 export interface LiveSession {
   readonly sessionId: string
   readonly campaignId: string
@@ -83,6 +85,9 @@ interface Snap {
   readonly expiryReadFor: string | null
 }
 
+/** A live session is past its `ends_at` once the timer for this mark has fired. */
+const expiryMark = (session: TableSession): string => `${session.session_id}@${session.ends_at}`
+
 const EMPTY: Snap = { token: null, read: 'loading', session: null, starting: false, startCommand: null, problem: null, expiryReadFor: null }
 
 class SessionStore extends Emitter {
@@ -114,7 +119,7 @@ class SessionStore extends Emitter {
 
   expire(token: string, fetchImpl: typeof fetch): void {
     const { session } = this.snap
-    const mark = session === null ? null : `${session.session_id}@${session.ends_at}`
+    const mark = session === null ? null : expiryMark(session)
     if (this.snap.token !== token || session?.state !== 'live' || this.snap.expiryReadFor === mark) return
     this.patch(token, { expiryReadFor: mark, read: 'loading' })
     void this.read(token, session.campaign_id, fetchImpl)
@@ -234,7 +239,7 @@ export function TableSessionProvider({
     if (token === null || campaignId === null) return INERT
     const shown = current ?? { ...EMPTY, token }
     const state = shown.read === 'failed' ? 'failed' : (known?.state ?? (shown.read === 'loading' ? 'loading' : 'none'))
-    const live = state === 'live' && known !== null
+    const live = state === 'live' && known !== null && shown.expiryReadFor !== expiryMark(known)
     return {
       state,
       session: known && {

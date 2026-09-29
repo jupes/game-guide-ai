@@ -28,6 +28,8 @@ const refusal = (code: string, extra: object = {}) => ({ detail: { code, message
 const A1: CampaignScope = { campaignId: 'cmp_A', key: 'scope-1' }
 const B2: CampaignScope = { campaignId: 'cmp_B', key: 'scope-2' }
 const A3: CampaignScope = { campaignId: 'cmp_A', key: 'scope-3' }
+/** The one address an End for campaign A's session may go to (SEC-43). */
+const TABLE_A = '/campaigns/cmp_A/table-session'
 
 async function flush(): Promise<void> {
   for (let round = 0; round < 4; round += 1) {
@@ -205,6 +207,17 @@ describe('TableSessionProvider', () => {
     expect(t.posts()[1].body?.command_id).toBe(t.posts()[0].body?.command_id)
   })
 
+  it.each([404, 403])('a %s status read is the one unavailable state, with no Retry (positive control: a 503 is re-read above)', async (status) => {
+    const t = mount({ scope: A1 })
+    await t.answer(status, refusal(status === 404 ? 'not_found' : 'forbidden'))
+    expect(t.now()).toMatchObject({ state: 'failed', problem: { kind: 'unavailable' } })
+    await act(async () => {
+      await expect(t.now().retry()).resolves.toBe('skipped')
+    })
+    await flush()
+    expect(t.gets()).toHaveLength(1)
+  })
+
   it('T4-2: End is retried on the backoff with one session and command id until a 2xx', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(LIVE))
@@ -223,6 +236,7 @@ describe('TableSessionProvider', () => {
     await t.answer(200, envelope(ENDED))
     const bodies = t.posts().map((call) => call.body)
     expect(bodies).toHaveLength(8)
+    expect(t.posts().map((call) => call.url)).toEqual(Array<string>(8).fill(TABLE_A))
     expect(new Set(bodies.map((body) => body?.command_id)).size).toBe(1)
     expect(bodies.every((body) => body?.action === 'end' && body.session_id === 'tss_1')).toBe(true)
     expect(t.now()).toMatchObject({ state: 'ended', pending: null, endRetrying: false })
@@ -246,6 +260,18 @@ describe('TableSessionProvider', () => {
     await advance(HOUR)
     expect(t.posts()).toHaveLength(3)
     expect(t.now()).toMatchObject({ state: 'none', pending: null })
+  })
+
+  it('Critic 23a: End stops on a 401 and resolves signed_out', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    const ended = t.now().end()
+    await flush()
+    await t.answer(401, { detail: 'not signed in' })
+    await advance(HOUR)
+    expect(t.posts()).toHaveLength(1)
+    await expect(ended).resolves.toBe('signed_out')
+    expect(t.now()).toMatchObject({ pending: null, endRetrying: false })
   })
 
   it('T4-3: End goes out while a status read is still pending', async () => {
@@ -283,6 +309,23 @@ describe('TableSessionProvider', () => {
     expect(t.seen.some((value) => value.session !== null)).toBe(false)
   })
 
+  it("T4-6: A's End answer, arriving after a switch to B, never lands on B's live session", async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    const ended = t.now().end()
+    await flush()
+    await t.answer(503)
+    t.rerender(B2)
+    await flush()
+    await t.answer(200, envelope(stored({ campaign_id: 'cmp_B', session_id: 'tss_B' })))
+    expect(t.now().liveSession).toMatchObject({ sessionId: 'tss_B', campaignId: 'cmp_B' })
+    await advance(SECOND)
+    expect(t.posts().map((call) => call.url)).toEqual([TABLE_A, TABLE_A])
+    await t.answer(200, envelope(ENDED))
+    await expect(ended).resolves.toBe('ended')
+    expect(t.now()).toMatchObject({ state: 'live', session: { sessionId: 'tss_B' }, liveSession: { sessionId: 'tss_B', campaignId: 'cmp_B' } })
+  })
+
   it('T4-6: an identity change clears what the last account saw', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(LIVE))
@@ -306,6 +349,7 @@ describe('TableSessionProvider', () => {
     t.unmount()
     await advance(SECOND)
     expect(t.posts()).toHaveLength(2)
+    expect(t.posts().map((call) => call.url)).toEqual([TABLE_A, TABLE_A])
     await t.answer(200, envelope(ENDED))
     await expect(ended).resolves.toBe('ended')
   })
@@ -330,6 +374,22 @@ describe('TableSessionProvider', () => {
     await t.answer(200, envelope(LIVE))
     await advance(24 * HOUR)
     expect(t.calls).toHaveLength(2)
+  })
+
+  it('SEC-42: past ends_at on this clock there is no live session, even if the re-read still says live; End stays offered', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    await advance(HOUR - 1)
+    expect(t.now().liveSession).toMatchObject({ sessionId: 'tss_1' })
+    await advance(1)
+    expect(t.now()).toMatchObject({ state: 'live', liveSession: null })
+    await t.answer(200, envelope(LIVE))
+    await advance(24 * HOUR)
+    expect(t.calls).toHaveLength(2)
+    expect(t.now()).toMatchObject({ state: 'live', session: { sessionId: 'tss_1' }, liveSession: null })
+    void t.now().end()
+    await flush()
+    expect(t.posts()).toMatchObject([{ url: TABLE_A, body: { action: 'end', session_id: 'tss_1' } }])
   })
 
   it('is inert outside a provider', async () => {
