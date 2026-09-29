@@ -597,7 +597,7 @@ class PostgresParticipantStore:
                 row = conn.execute(
                     f"UPDATE campaign.participants p SET user_id = %s, confirmed_at = NULL "
                     f"WHERE p.id = %s AND p.campaign_id = %s "
-                    f"AND p.user_id IS NULL "
+                    f"AND p.removed_at IS NULL AND p.user_id IS NULL "
                     f"AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = %s) "
                     f"AND NOT EXISTS (SELECT 1 FROM campaign.campaigns c "
                     f"WHERE c.id = p.campaign_id AND c.owner_id = %s) "
@@ -625,13 +625,13 @@ class PostgresParticipantStore:
     ) -> bool:
         check_argument_types(campaign_id=campaign_id, participant_id=participant_id, user_id=user_id)
         seat = self.hold(unit, participant_id, campaign_id=campaign_id)
-        if seat is None or seat.user_id != user_id:
+        if seat is None or not seat.is_active or seat.user_id != user_id:
             raise SeatUnavailable()
         if seat.accepted_at is not None:
             return False
         changed = pg(unit).conn.execute(
             "UPDATE campaign.participants SET accepted_at = %s "
-            "WHERE id = %s AND campaign_id = %s "
+            "WHERE id = %s AND campaign_id = %s AND removed_at IS NULL "
             "AND user_id = %s AND accepted_at IS NULL RETURNING id",
             (now_or(now), participant_id, campaign_id, user_id),
         ).fetchone()
@@ -669,10 +669,10 @@ class PostgresParticipantStore:
         if seat.confirmed_at is not None:
             return False
         changed = pg(unit).conn.execute(
-            "UPDATE campaign.participants SET confirmed_at = NULL "
+            "UPDATE campaign.participants SET confirmed_at = %s "
             "WHERE id = %s AND campaign_id = %s AND removed_at IS NULL "
-            "AND accepted_at IS NOT NULL AND confirmed_at IS NULL AND %s IS NOT NULL RETURNING id",
-            (participant_id, campaign_id, now_or(now)),
+            "AND accepted_at IS NOT NULL AND confirmed_at IS NULL RETURNING id",
+            (now_or(now), participant_id, campaign_id),
         ).fetchone()
         return changed is not None
 
