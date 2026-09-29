@@ -39,7 +39,13 @@ from service import documents_api
 from service.app import app, get_timeline_database, require_session
 from service.campaign_store import InMemoryCampaignStore, MissingParent, shared_rows
 from service.db import InMemoryDatabase, InMemoryTransaction
-from service.document_store import SEAL_IDLE_S, DocumentRecord, InMemoryDocumentStore
+from service.document_store import (
+    SEAL_IDLE_S,
+    DocumentRecord,
+    InMemoryDocumentStore,
+    StaleTypeVersion,
+    UnknownWriteRevision,
+)
 from service.document_wire import encode_history_cursor, encode_library_cursor
 from service.session import SessionData
 from service.workbench_api import FORBIDDEN_ORIGIN_DETAIL, FORBIDDEN_ROLE_DETAIL, NOT_FOUND_DETAIL
@@ -912,3 +918,40 @@ def test_a_document_deleted_between_two_reads_is_the_one_404(client: TestClient,
     world.spy(documents={"get": gone})
     for path in (_doc(campaign, document), _doc(campaign, document, "/versions")):
         assert _shape(client.get(path)) == reference, path
+
+
+def test_a_library_query_for_another_campaign_than_its_path_is_refused_before_any_query(
+    client: TestClient, world: _World
+) -> None:
+    campaign, other = world.campaign(), world.campaign(name="Second")
+    opened = len(world.db.units)
+    refused = client.post(f"/campaigns/{campaign}/library", json={
+        "schema_version": 1, "campaign_id": other, "category": "npcs", "search": "", "sort": "recent",
+        "archived": False})
+    assert (refused.status_code, refused.json()["detail"]["field"]) == (422, "campaign_id")
+    assert len(world.db.units) == opened
+
+
+@pytest.mark.parametrize(
+    ("refusal", "status", "code", "field"),
+    [
+        (StaleTypeVersion("npc", 2, 1), 409, "document_unsupported", None),
+        (UnknownWriteRevision(9, 1), 422, "validation_failed", "base_write_revision"),
+    ],
+)
+def test_the_stores_named_refusals_are_answered_and_roll_back(
+    client: TestClient, world: _World, refusal: Exception, status: int, code: str, field: str | None
+) -> None:
+    """The route checks both first, so the store's own refusal is a backstop:
+    answered as the route would answer it, never a 500."""
+    campaign = world.campaign()
+    made = _create(client, campaign).json()
+
+    def refuse(real: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        raise refusal
+
+    world.spy(documents={"write_fields": refuse})
+    answer = _patch(client, campaign, made["document_id"], made["write_revision"], {"voice": "low"})
+    assert (answer.status_code, answer.json()["detail"]["code"], answer.json()["detail"].get("field")) == (
+        status, code, field)
+    assert world.record(campaign, made["document_id"]).write_revision == made["write_revision"]
