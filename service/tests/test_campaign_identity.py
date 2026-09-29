@@ -21,6 +21,7 @@ from service.campaign_identity import (
     ID_BODY_MIN,
     PARTICIPANT,
     PREFIXES,
+    SEAT_OFFER,
     SECRET_CHARS,
     TABLE_CREDENTIAL,
     TABLE_SESSION,
@@ -74,6 +75,7 @@ def test_every_prefix_is_distinct_and_the_registry_is_the_whole_set():
         TABLE_SESSION,
         TABLE_CREDENTIAL,
         DOCUMENT,
+        SEAT_OFFER,
         ASSET,
     }
 

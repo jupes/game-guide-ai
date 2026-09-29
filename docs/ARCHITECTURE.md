@@ -201,19 +201,35 @@ Storage for the Workbench, added by `1kg.2.1`. Migrations `0004`–`0006`, with
 `0009` making a participant **an account's seat at a campaign** (bead `fma`, the
 owner's decisions D-1 and D-4: every player holds an account and there are no
 guests); stores in `service/campaign_store.py`, `service/participant_store.py`,
-`service/table_session_store.py` and `service/audit_log.py`. **No routes read any
-of it yet** — those are `1kg.2.2`'s and `1kg.2.3`'s.
+`service/table_session_store.py` and `service/audit_log.py`. `1kg.2.2` added
+`0012` (the GM's confirmation, offers by address and blocks), the
+`service/seat_offer_store.py` store and two routers: `service/campaigns_api.py`,
+the GM's campaigns and seats on the `dm`-gated Workbench router, and
+`service/seats_api.py`, an account's own offers and seats on `account_router`
+(`/seats`, which a player reaches). Table routes are `1kg.2.3`'s.
 
 A seat is **open** (an alias the GM seated while preparing, no account),
-**offered** (to one account), **accepted** (by that account) or **removed**
-(marked, never deleted). Only an offer followed by that same account's
-acceptance moves a seat forward: there is no claiming an open seat by
+**accepted** (by an account), **confirmed** (the GM confirmed who accepted,
+`confirmed_at`, D-12 and SEC-50(5)) or **removed** (marked, never deleted).
+**The GM offers a seat to an address, never to an account** (D-12): the offer
+is a `seat_offers` row, making it reads no account row and no block, and it
+**binds to an account only at acceptance**, when the accept route composes the
+participant store's `offer` and `accept` in one transaction — so the store's
+"offered" row state is transient and never committed. Only a Verified account
+whose verified address is the offer's may see or accept it, which on this build
+is nobody until `yje.2.1` (`auth_store.verified_address` fails closed). Until
+the GM confirms, a seat gets the table slot only (SEC-41's `own_slot` reads
+`confirmed_at`). Only an offer followed by that same account's acceptance moves
+a seat forward: there is no claiming an open seat by
 possession of a link or a code, because that would be the retired enrolment
 code under a new name, and a GM is never offered a seat in their own campaign.
 Every refusal is one `SeatUnavailable` with a fixed message that names nothing.
 The store takes no campaign lock and advances no `authz_revision`; the route
-that composes an offer or an acceptance (`1kg.2.2`) does both, as for `add`
-(RQ-4, RQ-10). The single-use enrolment code and the device credential are
+that composes an acceptance (`1kg.2.2`) does both, as for `add` and confirm
+(RQ-4, RQ-10). Archive narrows a live session first without the lock and then
+changes the fact under it (RQ-5); Remove is a revocation that never takes the
+lock, asks for the password (SEC-40) and leaves one `campaign.reconcile` job
+(`service/reconciliation.py`) that advances the revision. The single-use enrolment code and the device credential are
 retired, and `0009` drops their tables.
 
 ### The tables
@@ -497,7 +513,7 @@ routes that call them, `1kg.5.2` for documents and `1kg.2.2` for participants.
 ## Media assets (GM Workbench)
 
 Storage for a GM's images and audio, added by `1kg.8.1.1` (slice a of `1kg.8.1`):
-migration `0012_media_assets.sql`, the asset store in `service/asset_store.py`
+the media migration (`*_media_assets.sql`), the asset store in `service/asset_store.py`
 and the object store in `service/media_objects.py`. **It ships dark.** No route
 exists, nothing in `service/app.py` builds a store or registers a job kind, and
 nothing in the running service reads the media settings: slice b (`1kg.8.1.2`)

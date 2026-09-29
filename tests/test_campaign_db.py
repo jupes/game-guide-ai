@@ -28,6 +28,8 @@ Without it they skip, and a skip is reported as a skip. From the repo root:
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import threading
 import time
@@ -43,6 +45,7 @@ from typing import Any
 import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
+from fastapi import HTTPException
 
 from service import migrations as mig
 from service.audit_log import (
@@ -56,13 +59,17 @@ from service.campaign_store import (
     AliasTaken,
     Campaign,
     InMemoryCampaignStore,
+    InvalidCursor,
     LiveSessionExists,
     MissingParent,
     NotLive,
     PostgresCampaignStore,
+    SeatNotAccepted,
     SeatUnavailable,
     check_name,
+    encode_cursor,
 )
+from service.campaigns_api import CampaignStores, archive, archive_step_one, archive_step_two, restore
 from service.db import (
     CampaignAuthzMissing,
     CampaignLockOrder,
@@ -73,12 +80,36 @@ from service.db import (
     PoolSettings,
     TwinWouldBlock,
 )
+from service.jobs import InMemoryJobQueue, Job, JobContext, PostgresJobQueue
 from service.participant_store import (
     InMemoryParticipantStore,
     Participant,
     PostgresParticipantStore,
     alias_key,
     check_alias,
+)
+from service.reconciliation import (
+    RECONCILE_KIND,
+    enqueue_reconciliation,
+    handler,
+    reconcile,
+    reconcile_slots,
+)
+from service.seat_offer_store import (
+    ACCEPTED,
+    DECLINED,
+    EXPIRED,
+    OFFER_LIFETIME,
+    THROTTLE_WINDOW,
+    WITHDRAWN,
+    InMemorySeatOfferStore,
+    PostgresSeatOfferStore,
+    SeatOffer,
+    ThrottleCount,
+    address_key,
+    check_address,
+    seat_status,
+    throttle_wait_s,
 )
 from service.table_session_store import (
     InMemoryTableSessionStore,
@@ -87,7 +118,7 @@ from service.table_session_store import (
     TableSession,
     no_slots,
 )
-from service.workbench_contracts import REFUSED_TEXT_CODE_POINTS
+from service.workbench_contracts import REFUSED_TEXT_CODE_POINTS, SeatStatus
 
 CAMPAIGN = "cmp_" + "a" * 22
 OTHER_CAMPAIGN = "cmp_" + "b" * 22
@@ -1292,12 +1323,13 @@ def test_no_seat_refusal_names_the_alias_the_account_or_the_seat(
         assert value not in text, f"a {kind} reached a message"
 
 
-#: The three methods that change a participant's own row, each called the way a
+#: The four methods that change a participant's own row, each called the way a
 #: caller who has composed nothing else would call it. Every one of them takes
 #: the seat's row lock itself (G-6), naming the campaign there, so the
 #: participant-first order RQ-3 asks for is a property of the store and not of
-#: every caller. `accept` needs a seat offered to `player` first; the tests that
-#: use this dict arrange that before they call it.
+#: every caller. `accept` needs a seat offered to `player` first, and `confirm`
+#: one offered to `player` and accepted; the tests that use this dict arrange
+#: that before they call it.
 PARTICIPANT_MUTATORS: dict[str, Callable[[Any, Any, str, str, int], object]] = {
     "remove": lambda store, unit, campaign, seat, player: store.remove(unit, campaign, seat),
     "offer": lambda store, unit, campaign, seat, player: store.offer(
@@ -1306,6 +1338,7 @@ PARTICIPANT_MUTATORS: dict[str, Callable[[Any, Any, str, str, int], object]] = {
     "accept": lambda store, unit, campaign, seat, player: store.accept(
         unit, campaign, seat, user_id=player
     ),
+    "confirm": lambda store, unit, campaign, seat, player: store.confirm(unit, campaign, seat),
 }
 
 
@@ -1334,8 +1367,8 @@ def test_every_participant_mutator_takes_the_seats_row_and_bounds_its_transactio
 
     **The seat-state axis (thl AC2).** On a seat that is removed, or that
     belongs to another GM's campaign and is named with this campaign's id,
-    every mutator refuses — `remove` answers False, `offer` and `accept` raise
-    `SeatUnavailable` — so nothing after the refusal can have bounded the
+    every mutator refuses — `remove` answers False, `offer`, `accept` and
+    `confirm` raise `SeatUnavailable` — so nothing after the refusal can have bounded the
     transaction or declared a row lock: only the mutator's own leading `hold`
     can. A mutator that answers from an unlocked read before it holds (mutant
     M-R) leaves `transaction_bounds` empty on those cells and goes red here,
@@ -1353,8 +1386,11 @@ def test_every_participant_mutator_takes_the_seats_row_and_bounds_its_transactio
     home = _a_campaign(world, owner=world.other_owner, name="Theirs") if state == "foreign" else campaign
     seat = _a_participant(world, home, "Rook")
     player = world.players[0]
-    if mutator == "accept":
+    if mutator in ("accept", "confirm"):
         _offer(world, home, seat, player)
+    if mutator == "confirm":
+        with world.db.transaction() as unit:
+            assert world.participants.accept(unit, home, seat, user_id=player) is True
     if state == "removed":
         with world.db.transaction() as unit:
             assert world.participants.remove(unit, home, seat) is True
@@ -1458,6 +1494,13 @@ WRONG_TYPES: list[tuple[str, str, object]] = [
     ("seat_for", "user_id", "987654321"),
     ("seats_for_user", "user_id", "987654321"),
     ("seats_for_user", "user_id", True),
+    ("confirm", "campaign_id", 987654321),
+    ("confirm", "participant_id", 987654321),
+    ("confirm", "participant_id", None),
+    ("count_live", "campaign_id", 987654321),
+    ("page_for_campaign", "campaign_id", 987654321),
+    ("seat_page_for_user", "user_id", "987654321"),
+    ("seat_page_for_user", "user_id", True),
 ]
 
 _STORE_CALLS: dict[str, Callable[[Any, Any, dict[str, Any]], object]] = {
@@ -1474,6 +1517,10 @@ _STORE_CALLS: dict[str, Callable[[Any, Any, dict[str, Any]], object]] = {
     ),
     "seat_for": lambda store, unit, a: store.seat_for(unit, a["campaign_id"], a["user_id"]),
     "seats_for_user": lambda store, unit, a: store.seats_for_user(unit, a["user_id"]),
+    "confirm": lambda store, unit, a: store.confirm(unit, a["campaign_id"], a["participant_id"]),
+    "count_live": lambda store, unit, a: store.count_live(unit, a["campaign_id"]),
+    "page_for_campaign": lambda store, unit, a: store.page_for_campaign(unit, a["campaign_id"]),
+    "seat_page_for_user": lambda store, unit, a: store.seat_page_for_user(unit, a["user_id"]),
 }
 
 
@@ -2468,12 +2515,19 @@ def _accounts(dsn: str, count: int = 2) -> list[int]:
 
 
 def _a_seat(
-    db: Database, participants: PostgresParticipantStore, *, offered_to: int | None = None
+    db: Database,
+    participants: PostgresParticipantStore,
+    *,
+    offered_to: int | None = None,
+    accepted_by: int | None = None,
 ) -> str:
     with db.transaction() as unit:
         seat = participants.add(unit, CAMPAIGN, alias="Rook")
         if offered_to is not None:
             participants.offer(unit, CAMPAIGN, seat.id, user_id=offered_to)
+        if accepted_by is not None:
+            participants.offer(unit, CAMPAIGN, seat.id, user_id=accepted_by)
+            participants.accept(unit, CAMPAIGN, seat.id, user_id=accepted_by)
     return seat.id
 
 
@@ -2565,7 +2619,12 @@ def test_a_bare_participant_mutator_waits_for_the_seat_another_transaction_holds
     timing."""
     db, participants = _database(dsn, PATIENT), PostgresParticipantStore()
     (player,) = _accounts(dsn, 1)
-    seat = _a_seat(db, participants, offered_to=player if mutator == "accept" else None)
+    seat = _a_seat(
+        db,
+        participants,
+        offered_to=player if mutator == "accept" else None,
+        accepted_by=player if mutator == "confirm" else None,
+    )
 
     def nothing_else(unit: Any) -> None:
         """The harness's own `hold` is the whole of the holder's work."""
@@ -2846,3 +2905,643 @@ def test_the_slot_clearing_extension_point_is_empty_in_this_bead() -> None:
     says so in one place rather than by omission."""
     with InMemoryDatabase().transaction() as unit:
         assert no_slots(unit, "ses_x") is None
+
+
+# ══ 1kg.2.2: campaigns, seats, offers and the GM's confirmation ═════════════
+#
+# The shared suite for bead 1kg.2.2, in both worlds. The races — two
+# connections, explicit interleaving, `pg_stat_activity` — are
+# `tests/test_seats_db.py`'s.
+
+T0 = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+
+
+def _offer_store(world: World) -> Any:
+    return InMemorySeatOfferStore(world.db) if world.kind == "fake" else PostgresSeatOfferStore()
+
+
+def _job_queue(world: World) -> Any:
+    return InMemoryJobQueue(world.db) if world.kind == "fake" else PostgresJobQueue(world.db)
+
+
+def _stores(world: World) -> CampaignStores:
+    return CampaignStores(world.campaigns, world.participants, world.sessions, _offer_store(world), world.audit)
+
+
+class _Recording:
+    """The world's database, recording every unit of work it opens, so a test
+    can read what each one locked — in either world."""
+
+    def __init__(self, db: Any) -> None:
+        self.db = db
+        self.units: list[Any] = []
+
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        with self.db.transaction() as unit:
+            self.units.append(unit)
+            yield unit
+
+
+def _revision(world: World, campaign_id: str) -> int | None:
+    with world.db.transaction() as unit:
+        return world.campaigns.authz_revision(unit, campaign_id)
+
+
+def _ledger(world: World, campaign_id: str) -> list[str]:
+    with world.db.transaction() as unit:
+        return [event.action for event in world.audit.for_campaign(unit, campaign_id)]
+
+
+def _jobs_enqueued(world: World, queue: Any) -> list[tuple[str, dict[str, Any], str | None]]:
+    """(kind, payload, dedupe_key) of every committed job, oldest first."""
+    if world.kind == "fake":
+        return [
+            (row.job.kind, dict(row.job.payload), row.dedupe_key)
+            for row in sorted(queue._rows.values(), key=lambda row: row.job.id)
+        ]
+    with world.db.transaction() as unit:
+        rows = unit.conn.execute("SELECT kind, payload, dedupe_key FROM app.jobs ORDER BY id").fetchall()
+    return [(kind, dict(payload), key) for kind, payload, key in rows]
+
+
+def _held_offer(world: World, campaign_id: str, alias: str, address: str, *, now: datetime = T0) -> tuple[str, str]:
+    """An open seat and an offer of it to `address`, made by the owner."""
+    seat = _a_participant(world, campaign_id, alias)
+    offers = _offer_store(world)
+    with world.db.transaction() as unit:
+        made = offers.create(unit, campaign_id, seat, offered_by=world.owner, address=address, now=now)
+    return seat, made.id
+
+
+# ── Campaigns: rename, the page, the name rule ──────────────────────────────
+
+
+def test_a_rename_changes_the_name_and_a_rename_to_the_same_name_changes_nothing(world: World) -> None:
+    campaign = _a_campaign(world, name="Nocturne")
+    later = datetime.now(UTC) + timedelta(minutes=5)
+    with world.db.transaction() as unit:
+        renamed = world.campaigns.rename(unit, campaign, owner_id=world.owner, name="Aubade", now=later)
+    assert renamed is not None and renamed.name == "Aubade" and renamed.updated_at == later
+    with world.db.transaction() as unit:
+        again = world.campaigns.rename(
+            unit, campaign, owner_id=world.owner, name="Aubade", now=later + timedelta(hours=1)
+        )
+    assert again is not None and again.updated_at == later, "a rename to the same name changes nothing"
+    with world.db.transaction() as unit:
+        assert world.campaigns.rename(unit, campaign, owner_id=world.other_owner, name="Mine") is None
+        stored = world.campaigns.get(unit, campaign, owner_id=world.owner)
+    assert stored is not None and stored.name == "Aubade"
+
+
+def test_a_campaign_name_with_a_control_character_is_refused_before_the_statement(world: World) -> None:
+    campaign = _a_campaign(world)
+    for code in (0x00, 0x1B, 0x202E, 0xFEFF):
+        with world.db.transaction() as unit:
+            with pytest.raises(ValueError, match="no control or formatting") as refused:
+                world.campaigns.rename(unit, campaign, owner_id=world.owner, name=f"Noc{chr(code)}turne")
+            assert "Noc" not in str(refused.value)
+            with pytest.raises(ValueError, match="no control or formatting"):
+                world.campaigns.create(unit, owner_id=world.owner, name=f"Noc{chr(code)}turne")
+    with pytest.raises(ValueError, match="no control or formatting"):
+        check_name("Noc" + chr(0xD800))
+
+
+def _made_at(world: World, name: str, moment: datetime, *, owner: int | None = None) -> str:
+    with world.db.transaction() as unit:
+        return world.campaigns.create(
+            unit, owner_id=world.owner if owner is None else owner, name=name, now=moment
+        ).id
+
+
+def _walk_campaigns(world: World, *, limit: int, include_archived: bool = False) -> list[list[str]]:
+    pages: list[list[str]] = []
+    cursor: str | None = None
+    for _ in range(20):
+        with world.db.transaction() as unit:
+            page = world.campaigns.page_for_owner(
+                unit, world.owner, include_archived=include_archived, cursor=cursor, limit=limit
+            )
+        pages.append([c.id for c in page.items])
+        cursor = page.next_cursor
+        if cursor is None:
+            return pages
+    raise AssertionError("the walk did not end")
+
+
+def test_the_campaign_page_is_newest_first_ties_by_id_and_walks_every_row_once(world: World) -> None:
+    oldest = _made_at(world, "One", T0)
+    tied = sorted([_made_at(world, "Two", T0 + timedelta(hours=1)), _made_at(world, "Three", T0 + timedelta(hours=1))])
+    newest = _made_at(world, "Four", T0 + timedelta(hours=2))
+    _made_at(world, "Theirs", T0 + timedelta(hours=3), owner=world.other_owner)
+    expected = [newest, tied[1], tied[0], oldest]
+    assert sum(_walk_campaigns(world, limit=50), []) == expected
+    pages = _walk_campaigns(world, limit=3)
+    assert pages == [expected[:3], expected[3:]], "a full page carries a cursor; the last does not"
+    assert sum(_walk_campaigns(world, limit=1), []) == expected
+    assert _walk_campaigns(world, limit=4) == [expected], "exactly a page is the last page"
+
+
+def test_the_campaign_page_leaves_archived_ones_out_unless_asked(world: World) -> None:
+    kept = _made_at(world, "Kept", T0)
+    shelved = _made_at(world, "Shelved", T0 + timedelta(hours=1))
+    with world.db.transaction() as unit:
+        assert world.campaigns.set_archived(unit, shelved, owner_id=world.owner, archived=True)
+    assert _walk_campaigns(world, limit=50) == [[kept]]
+    assert _walk_campaigns(world, limit=50, include_archived=True) == [[shelved, kept]]
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        "not-base64-json",
+        encode_cursor(T0, "prt_" + "a" * 22),
+        encode_cursor(T0, "cmp_" + "a" * 21 + chr(0x07)),
+        encode_cursor(T0.replace(tzinfo=None), "cmp_" + "a" * 22),
+    ],
+    ids=["garbage", "another-kinds-id", "a-control-character", "a-naive-moment"],
+)
+def test_a_cursor_this_server_did_not_make_is_the_one_refusal(world: World, cursor: str) -> None:
+    """L-19 and `kky`: an id outside its prefix's shape — a control character
+    in it included — is `InvalidCursor` before any statement, never a 500."""
+    with world.db.transaction() as unit:
+        with pytest.raises(InvalidCursor) as refused:
+            world.campaigns.page_for_owner(unit, world.owner, cursor=cursor)
+        assert refused.value.__context__ is None and refused.value.__cause__ is None
+        assert str(refused.value) == InvalidCursor.MESSAGE
+
+
+# ── Archive: RQ-5's two steps; restore: a locked widening ───────────────────
+
+
+def test_archive_step_one_narrows_a_live_session_without_the_campaign_lock(world: World) -> None:
+    campaign = _a_campaign(world)
+    session, _ = _a_session(world, campaign)
+    recording = _Recording(world.db)
+    archive_step_one(recording, _stores(world), campaign_id=campaign, owner_id=world.owner)
+    assert [unit.campaign_locks for unit in recording.units] == [[]], "step 1 never asks for the lock"
+    with world.db.transaction() as unit:
+        narrowed = world.sessions.get(unit, session.id)
+        still = world.campaigns.get(unit, campaign, owner_id=world.owner)
+    assert narrowed is not None and narrowed.reveal_epoch == session.reveal_epoch + 1
+    assert still is not None and not still.is_archived, "step 1 changes no fact"
+    assert _revision(world, campaign) == 0 and _ledger(world, campaign) == []
+
+
+def test_archive_step_two_narrows_a_session_step_one_did_not_see_then_archives_once(world: World) -> None:
+    campaign = _a_campaign(world)
+    stores = _stores(world)
+    archive_step_one(world.db, stores, campaign_id=campaign, owner_id=world.owner)
+    session, _ = _a_session(world, campaign)  # started between the steps
+    recording = _Recording(world.db)
+    archived = archive_step_two(recording, stores, campaign_id=campaign, owner_id=world.owner, now=T0)
+    assert recording.units[0].campaign_locks == [(campaign, "exclusive")]
+    assert archived.is_archived and archived.archived_at == T0
+    with world.db.transaction() as unit:
+        narrowed = world.sessions.get(unit, session.id)
+    assert narrowed is not None and narrowed.reveal_epoch == session.reveal_epoch + 1
+    assert narrowed.is_live, "archive narrows; ending the session is 1kg.2.6's"
+    assert _revision(world, campaign) == 1
+    assert _ledger(world, campaign) == ["campaign.archived"]
+
+
+def test_archiving_an_archived_campaign_and_restoring_a_live_one_change_nothing(world: World) -> None:
+    campaign = _a_campaign(world)
+    stores = _stores(world)
+    archive(world.db, stores, campaign_id=campaign, owner_id=world.owner, now=T0)
+    session, _ = _a_session(world, _a_campaign(world, name="Other"))  # a live session elsewhere
+    archive(world.db, stores, campaign_id=campaign, owner_id=world.owner, now=T0 + timedelta(hours=1))
+    assert _revision(world, campaign) == 1 and _ledger(world, campaign) == ["campaign.archived"]
+    recording = _Recording(world.db)
+    restored = restore(recording, stores, campaign_id=campaign, owner_id=world.owner, now=T0)
+    assert not restored.is_archived and _revision(world, campaign) == 2
+    recording = _Recording(world.db)
+    again = restore(recording, stores, campaign_id=campaign, owner_id=world.owner, now=T0)
+    assert not again.is_archived
+    assert [unit.campaign_locks for unit in recording.units] == [[]], "restoring a live campaign takes no lock"
+    assert _ledger(world, campaign) == ["campaign.archived", "campaign.restored"]
+    with world.db.transaction() as unit:
+        untouched = world.sessions.get(unit, session.id)
+    assert untouched is not None and untouched.reveal_epoch == session.reveal_epoch
+
+
+def test_another_gms_campaign_is_not_found_by_archive_or_restore(world: World) -> None:
+    theirs = _a_campaign(world, owner=world.other_owner, name="Theirs")
+    stores = _stores(world)
+    for call in (
+        lambda: archive(world.db, stores, campaign_id=theirs, owner_id=world.owner, now=T0),
+        lambda: restore(world.db, stores, campaign_id=theirs, owner_id=world.owner, now=T0),
+    ):
+        with pytest.raises(HTTPException) as refused:
+            call()
+        assert refused.value.status_code == 404
+    assert _revision(world, theirs) == 0 and _ledger(world, theirs) == []
+
+
+# ── The GM's confirmation ────────────────────────────────────────────────────
+
+
+def test_confirm_is_true_once_then_false_and_sets_confirmed_at(world: World) -> None:
+    campaign = _a_campaign(world)
+    seat = _seat(world, campaign, "Rook", world.players[0])
+    with world.db.transaction() as unit:
+        assert world.participants.confirm(unit, campaign, seat, now=T0) is True
+    for _ in range(2):
+        with world.db.transaction() as unit:
+            assert world.participants.confirm(unit, campaign, seat, now=T0 + timedelta(days=1)) is False
+    with world.db.transaction() as unit:
+        held = world.participants.get(unit, seat)
+        assert world.participants.seat_for(unit, campaign, world.players[0]) is not None
+    assert held is not None and held.confirmed_at == T0 and held.is_confirmed
+
+
+def test_confirm_refuses_every_seat_it_cannot_confirm_identically_in_both_worlds(world: World) -> None:
+    campaign = _a_campaign(world)
+    theirs = _a_campaign(world, owner=world.other_owner, name="Theirs")
+    foreign = _seat(world, theirs, "Rook", world.players[0])
+    removed = _seat(world, campaign, "Wren", world.players[1])
+    with world.db.transaction() as unit:
+        assert world.participants.remove(unit, campaign, removed)
+    open_seat = _a_participant(world, campaign, "Kestrel")
+    offered = _a_participant(world, campaign, "Finch")
+    unavailable = [("prt_" + "z" * 22, campaign), (foreign, campaign), (removed, campaign)]
+    for seat, where in unavailable:
+        with world.db.transaction() as unit:
+            with pytest.raises(SeatUnavailable) as refused:
+                world.participants.confirm(unit, where, seat)
+            assert str(refused.value) == SeatUnavailable.MESSAGE
+    with world.db.transaction() as unit:
+        with pytest.raises(SeatNotAccepted) as refused:
+            world.participants.confirm(unit, campaign, open_seat)
+        assert str(refused.value) == SeatNotAccepted.MESSAGE
+    with world.db.transaction() as unit:
+        world.participants.offer(unit, campaign, offered, user_id=world.players[2])
+        with pytest.raises(SeatNotAccepted):
+            world.participants.confirm(unit, campaign, offered)
+
+
+def test_a_seat_confirmed_before_it_was_accepted_cannot_exist_in_the_twin() -> None:
+    with pytest.raises(ValueError, match="confirmed after it is accepted"):
+        Participant("prt_x", "cmp_x", "Rook", T0, user_id=3, confirmed_at=T0)
+
+
+def test_a_removed_confirmed_seat_is_no_longer_confirmed(world: World) -> None:
+    campaign = _a_campaign(world)
+    seat = _seat(world, campaign, "Rook", world.players[0])
+    with world.db.transaction() as unit:
+        world.participants.confirm(unit, campaign, seat)
+        world.participants.remove(unit, campaign, seat)
+        held = world.participants.get(unit, seat)
+    assert held is not None and held.confirmed_at is not None and not held.is_confirmed
+
+
+# ── Offers ──────────────────────────────────────────────────────────────────
+
+
+def test_an_offer_is_created_open_for_fourteen_days_and_names_no_account(world: World) -> None:
+    campaign = _a_campaign(world)
+    seat, offer_id = _held_offer(world, campaign, "Rook", "Wren@Example.com")
+    with world.db.transaction() as unit:
+        made = _offer_store(world).get(unit, offer_id)
+    assert made is not None
+    assert (made.campaign_id, made.participant_id, made.offered_by) == (campaign, seat, world.owner)
+    assert (made.address, made.address_key) == ("Wren@Example.com", "wren@example.com")
+    assert made.expires_at - made.created_at == OFFER_LIFETIME and made.outcome is None
+    assert "Wren" not in repr(made) and "example" not in repr(made)
+
+
+def test_a_seat_holds_one_open_offer_and_the_refusal_names_nothing(world: World) -> None:
+    campaign = _a_campaign(world)
+    seat, _ = _held_offer(world, campaign, "Rook", "wren@example.com")
+    with world.db.transaction() as unit:
+        with pytest.raises(SeatUnavailable) as refused:
+            _offer_store(world).create(unit, campaign, seat, offered_by=world.owner, address="finch@example.com")
+        assert refused.value.__context__ is None and "finch" not in str(refused.value)
+
+
+def test_an_offer_names_a_seat_of_its_own_campaign_made_by_its_owner(world: World) -> None:
+    campaign = _a_campaign(world)
+    theirs = _a_campaign(world, owner=world.other_owner, name="Theirs")
+    their_seat = _a_participant(world, theirs, "Rook")
+    mine = _a_participant(world, campaign, "Wren")
+    offers = _offer_store(world)
+    for where, seat, by in ((campaign, their_seat, world.owner), (campaign, mine, world.other_owner)):
+        with world.db.transaction() as unit:
+            with pytest.raises(SeatUnavailable):
+                offers.create(unit, where, seat, offered_by=by, address="finch@example.com")
+
+
+def test_a_stale_offer_is_marked_expired_lazily_under_its_own_seat(world: World) -> None:
+    campaign = _a_campaign(world)
+    seat, offer_id = _held_offer(world, campaign, "Rook", "wren@example.com")
+    other, other_id = _held_offer(world, campaign, "Finch", "finch@example.com")
+    offers = _offer_store(world)
+    later = T0 + OFFER_LIFETIME + timedelta(seconds=1)
+    with world.db.transaction() as unit:
+        assert offers.expire_stale(unit, campaign, seat, now=T0 + timedelta(days=1)) is False
+        assert offers.expire_stale(unit, campaign, seat, now=later) is True
+        assert offers.expire_stale(unit, campaign, seat, now=later) is False
+        marked, untouched = offers.get(unit, offer_id), offers.get(unit, other_id)
+    assert marked is not None and (marked.outcome, marked.answered_at) == (EXPIRED, marked.expires_at)
+    assert untouched is not None and untouched.outcome is None, "only this seat's offer is marked"
+    with world.db.transaction() as unit:
+        offers.create(unit, campaign, seat, offered_by=world.owner, address="wren@example.com", now=later)
+    del other
+
+
+def test_a_repeat_is_a_live_offer_on_any_seat_or_an_accepted_seat_of_that_key(world: World) -> None:
+    campaign = _a_campaign(world)
+    offers = _offer_store(world)
+    _held_offer(world, campaign, "Rook", "Wren@Example.com")
+    with world.db.transaction() as unit:
+        assert offers.is_repeat(unit, campaign, "wren@example.com", now=T0)
+        assert offers.is_repeat(unit, campaign, address_key("WREN@EXAMPLE.COM"), now=T0), "ASCII case folds"
+        assert not offers.is_repeat(unit, campaign, "finch@example.com", now=T0)
+        assert not offers.is_repeat(unit, campaign, "wren@example.com", now=T0 + OFFER_LIFETIME), "expired"
+    other = _a_campaign(world, name="Other")
+    with world.db.transaction() as unit:
+        assert not offers.is_repeat(unit, other, "wren@example.com", now=T0), "per campaign"
+    seat, offer_id = _held_offer(world, campaign, "Finch", "finch@example.com")
+    with world.db.transaction() as unit:
+        world.participants.offer(unit, campaign, seat, user_id=world.players[0])
+        world.participants.accept(unit, campaign, seat, user_id=world.players[0])
+        offers.close(unit, offer_id, outcome=ACCEPTED, now=T0)
+    with world.db.transaction() as unit:
+        assert offers.is_repeat(unit, campaign, "finch@example.com", now=T0 + OFFER_LIFETIME * 2)
+        world.participants.remove(unit, campaign, seat)
+    with world.db.transaction() as unit:
+        assert not offers.is_repeat(unit, campaign, "finch@example.com", now=T0), "a removed seat repeats nothing"
+
+
+def test_the_throttle_counts_every_offer_in_the_window_whatever_became_of_it(world: World) -> None:
+    campaign = _a_campaign(world)
+    offers = _offer_store(world)
+    _, first = _held_offer(world, campaign, "Rook", "one@example.com", now=T0)
+    _, _second = _held_offer(world, campaign, "Wren", "two@example.com", now=T0 + timedelta(hours=1))
+    with world.db.transaction() as unit:
+        offers.close(unit, first, outcome=DECLINED, now=T0 + timedelta(minutes=5))
+    with world.db.transaction() as unit:
+        counted = offers.count_recent(unit, world.owner, now=T0 + timedelta(hours=2))
+        assert (counted.count, counted.oldest) == (2, T0)
+        assert offers.count_recent(unit, world.owner, now=T0 + THROTTLE_WINDOW + timedelta(minutes=1)).count == 1
+        assert offers.count_recent(unit, world.other_owner, now=T0).count == 0
+    left = THROTTLE_WINDOW - timedelta(hours=2)
+    assert throttle_wait_s(counted, T0 + timedelta(hours=2)) == int(left.total_seconds())
+    assert throttle_wait_s(ThrottleCount(30, T0), T0 + THROTTLE_WINDOW - timedelta(milliseconds=1)) == 1
+
+
+def _invitee(world: World, key: str, user: int, *, now: datetime = T0) -> list[str]:
+    with world.db.transaction() as unit:
+        page = _offer_store(world).invitee_page(unit, key, user, now=now)
+    return [found.offer.id for found in page.items]
+
+
+def test_the_invitee_sees_an_offer_only_through_all_seven_predicates(world: World) -> None:
+    """L-9, each predicate shown excluding a row it alone excludes."""
+    player = world.players[0]
+    key = "wren@example.com"
+    offers = _offer_store(world)
+    campaign = _a_campaign(world)
+    _, shown = _held_offer(world, campaign, "Rook", "Wren@Example.com")
+    assert _invitee(world, key, player) == [shown]
+    assert _invitee(world, "finch@example.com", player) == [], "1. another key"
+    assert _invitee(world, key, player, now=T0 + OFFER_LIFETIME) == [], "2. expired"
+    removed_campaign = _a_campaign(world, name="Removed")
+    removed_seat, _ = _held_offer(world, removed_campaign, "Rook", key)
+    with world.db.transaction() as unit:
+        world.participants.remove(unit, removed_campaign, removed_seat)
+    archived = _a_campaign(world, name="Archived")
+    _held_offer(world, archived, "Rook", key)
+    with world.db.transaction() as unit:
+        world.campaigns.set_archived(unit, archived, owner_id=world.owner, archived=True)
+    assert _invitee(world, key, player) == [shown], "3. a removed seat; 4. an archived campaign"
+    assert _invitee(world, key, world.owner) == [], "5. the caller's own campaign"
+    with world.db.transaction() as unit:
+        offers.block(unit, blocker_user_id=world.players[1], blocked_owner_id=world.owner)
+    assert _invitee(world, key, world.players[1]) == [], "6. an owner the caller blocked"
+    seated = _seat(world, campaign, "Finch", player)
+    assert _invitee(world, key, player) == [], "7. a campaign where the caller already has a seat"
+    del seated
+    with world.db.transaction() as unit:
+        assert offers.close(unit, shown, outcome=DECLINED, now=T0)
+    assert _invitee(world, key, world.players[2]) == [], "an answered offer is not open"
+
+
+def test_the_invitee_page_is_newest_first_and_walks_once(world: World) -> None:
+    key = "wren@example.com"
+    made = []
+    for n in range(3):
+        campaign = _a_campaign(world, name=f"C{n}")
+        made.append(_held_offer(world, campaign, "Rook", key, now=T0 + timedelta(hours=n))[1])
+    offers = _offer_store(world)
+    seen: list[str] = []
+    cursor: str | None = None
+    for _ in range(5):
+        with world.db.transaction() as unit:
+            page = offers.invitee_page(unit, key, world.players[0], now=T0 + timedelta(days=1), cursor=cursor, limit=2)
+        seen += [found.offer.id for found in page.items]
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    assert seen == list(reversed(made))
+    with world.db.transaction() as unit:
+        found = offers.find_for_invitee(unit, made[0], key, world.players[0], now=T0)
+    assert found is not None and (found.campaign_name, found.alias) == ("C0", "Rook")
+    assert "C0" not in repr(found) and "Rook" not in repr(found)
+
+
+def test_decline_block_and_the_repeat_readers(world: World) -> None:
+    campaign = _a_campaign(world)
+    offers = _offer_store(world)
+    seat, offer_id = _held_offer(world, campaign, "Rook", "wren@example.com")
+    with world.db.transaction() as unit:
+        assert offers.close(unit, offer_id, outcome=DECLINED, now=T0) is True
+        assert offers.close(unit, offer_id, outcome=DECLINED, now=T0) is False
+        assert offers.block(unit, blocker_user_id=world.players[0], blocked_owner_id=world.owner) is True
+        assert offers.block(unit, blocker_user_id=world.players[0], blocked_owner_id=world.owner) is False
+        assert offers.is_blocked(unit, world.players[0], world.owner)
+        assert not offers.is_blocked(unit, world.owner, world.players[0])
+        assert offers.repeat_decline(unit, offer_id, "wren@example.com") is not None
+        assert offers.repeat_decline(unit, offer_id, "finch@example.com") is None
+        assert offers.repeat_accept(unit, offer_id, "wren@example.com", world.players[0]) is None
+    del seat
+
+
+def test_remove_withdraws_the_open_offer_and_an_expired_one_reads_expired(world: World) -> None:
+    campaign = _a_campaign(world)
+    offers = _offer_store(world)
+    seat, live = _held_offer(world, campaign, "Rook", "wren@example.com")
+    stale_seat, stale = _held_offer(world, campaign, "Finch", "finch@example.com")
+    moment = T0 + timedelta(days=1)
+    with world.db.transaction() as unit:
+        assert offers.withdraw_open(unit, campaign, seat, now=moment) is True
+        assert offers.withdraw_open(unit, campaign, seat, now=moment) is False
+        assert offers.withdraw_open(unit, campaign, stale_seat, now=T0 + OFFER_LIFETIME * 2) is True
+        withdrawn, expired = offers.get(unit, live), offers.get(unit, stale)
+    assert withdrawn is not None and (withdrawn.outcome, withdrawn.answered_at) == (WITHDRAWN, moment)
+    assert expired is not None and (expired.outcome, expired.answered_at) == (EXPIRED, expired.expires_at)
+
+
+# ── The status function ──────────────────────────────────────────────────────
+
+
+def _an_offer(outcome: str | None = None, *, at: datetime = T0) -> SeatOffer:
+    return SeatOffer(
+        "sof_x", "cmp_x", "prt_x", 1, "a@b.c", "a@b.c", at, at + OFFER_LIFETIME,
+        outcome, None if outcome is None else at,
+    )
+
+
+@pytest.mark.parametrize(
+    ("seat", "latest", "status"),
+    [
+        (Participant("prt_x", "cmp_x", "Rook", T0), None, SeatStatus.OPEN),
+        (Participant("prt_x", "cmp_x", "Rook", T0), _an_offer(), SeatStatus.OFFERED),
+        (Participant("prt_x", "cmp_x", "Rook", T0), _an_offer(DECLINED), SeatStatus.NOT_ACCEPTED),
+        (Participant("prt_x", "cmp_x", "Rook", T0), _an_offer(EXPIRED), SeatStatus.NOT_ACCEPTED),
+        (Participant("prt_x", "cmp_x", "Rook", T0), _an_offer(at=T0 - OFFER_LIFETIME * 2), SeatStatus.NOT_ACCEPTED),
+        (Participant("prt_x", "cmp_x", "Rook", T0, user_id=3, accepted_at=T0), _an_offer(ACCEPTED),
+         SeatStatus.AWAITING_CONFIRMATION),
+        (Participant("prt_x", "cmp_x", "Rook", T0, user_id=3, accepted_at=T0, confirmed_at=T0), _an_offer(ACCEPTED),
+         SeatStatus.CONFIRMED),
+        (Participant("prt_x", "cmp_x", "Rook", T0, removed_at=T0), _an_offer(WITHDRAWN), SeatStatus.REMOVED),
+    ],
+    ids=["open", "offered", "declined", "expired-marked", "expired-unmarked", "awaiting", "confirmed", "removed"],
+)
+def test_the_status_function_derives_each_of_the_six_statuses(
+    seat: Participant, latest: SeatOffer | None, status: SeatStatus
+) -> None:
+    assert seat_status(seat, latest, T0 + timedelta(minutes=1)) is status
+
+
+# ── The player's seats ───────────────────────────────────────────────────────
+
+
+def test_the_players_seat_page_is_newest_acceptance_first_and_leaves_archived_out(world: World) -> None:
+    player = world.players[0]
+    campaigns = [_a_campaign(world, name=f"C{n}") for n in range(3)]
+    seats = [_seat(world, c, "Rook", player, now=T0 + timedelta(hours=n)) for n, c in enumerate(campaigns)]
+    with world.db.transaction() as unit:
+        world.campaigns.set_archived(unit, campaigns[1], owner_id=world.owner, archived=True)
+        world.participants.confirm(unit, campaigns[0], seats[0])
+    walked: list[tuple[str, str, bool]] = []
+    cursor: str | None = None
+    for _ in range(5):
+        with world.db.transaction() as unit:
+            page = world.participants.seat_page_for_user(unit, player, cursor=cursor, limit=1)
+        walked += [(h.seat.campaign_id, h.campaign_name, h.seat.is_confirmed) for h in page.items]
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    assert walked == [(campaigns[2], "C2", False), (campaigns[0], "C0", True)]
+    with world.db.transaction() as unit:
+        assert world.participants.seat_page_for_user(unit, world.players[1]).items == []
+
+
+def _cursor_payload(cursor: str) -> list[Any]:
+    """What a page cursor carries, decoded here by hand rather than by the
+    store's own reader, which would accept only what it expects."""
+    return list(json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))))
+
+
+def test_the_players_seat_cursor_is_the_acceptance_and_the_campaign_never_a_seat_id(world: World) -> None:
+    """L-9 and SEC-43 (R145-M2): no participant id, ever, not even the caller's
+    own. The cursor is keyed on the acceptance time and the campaign id, which
+    the page already shows; a live seat is unique per account and campaign, so
+    the pair orders the list totally. Four acceptances at one instant are
+    walked one row at a time: ties by campaign id compared by code point, none
+    skipped and none repeated."""
+    player = world.players[0]
+    campaigns = [_a_campaign(world, name=f"Tie{n}") for n in range(4)]
+    seats = [_seat(world, c, "Rook", player, now=T0) for c in campaigns]
+    walked: list[str] = []
+    cursors: list[str] = []
+    cursor: str | None = None
+    for _ in range(6):
+        with world.db.transaction() as unit:
+            page = world.participants.seat_page_for_user(unit, player, cursor=cursor, limit=1)
+        walked += [h.seat.campaign_id for h in page.items]
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+        cursors.append(cursor)
+    payloads = [_cursor_payload(c) for c in cursors]
+    assert [v for p in payloads for v in p if str(v).startswith("prt_")] == [], "a cursor decodes to a participant id"
+    assert [s for s in seats for p in payloads if s in json.dumps(p)] == []
+    assert [(datetime.fromisoformat(at), campaign) for at, campaign in payloads] == [(T0, c) for c in walked[:3]]
+    assert walked == sorted(campaigns), "ties by campaign id, by code point, each exactly once"
+
+
+def test_the_seat_page_is_oldest_first_and_counts_the_live_seats(world: World) -> None:
+    campaign = _a_campaign(world)
+    with world.db.transaction() as unit:
+        made = [
+            world.participants.add(unit, campaign, alias=f"Seat{n}", now=T0 + timedelta(seconds=n)).id
+            for n in range(3)
+        ]
+    with world.db.transaction() as unit:
+        world.participants.remove(unit, campaign, made[1])
+    with world.db.transaction() as unit:
+        assert world.participants.count_live(unit, campaign) == 2
+        first = world.participants.page_for_campaign(unit, campaign, limit=1)
+        second = world.participants.page_for_campaign(unit, campaign, cursor=first.next_cursor, limit=1)
+        everyone = world.participants.page_for_campaign(unit, campaign, include_removed=True)
+    assert [p.id for p in first.items + second.items] == [made[0], made[2]] and second.next_cursor is None
+    assert [p.id for p in everyone.items] == made
+
+
+# ── campaign.reconcile ───────────────────────────────────────────────────────
+
+
+def test_reconcile_advances_the_revision_under_the_exclusive_lock_and_calls_the_slot_step(world: World) -> None:
+    campaign = _a_campaign(world)
+    seen: list[tuple[list[tuple[str, str]], str]] = []
+
+    def slots(unit: Any, campaign_id: str) -> None:
+        seen.append((list(unit.campaign_locks), campaign_id))
+
+    assert reconcile(world.db, campaign, slots=slots) is True
+    assert seen == [([(campaign, "exclusive")], campaign)]
+    assert _revision(world, campaign) == 1
+    assert reconcile_slots(None, campaign) is None  # type: ignore[arg-type]
+
+
+def test_reconcile_completes_as_a_no_op_on_a_campaign_that_is_gone(world: World) -> None:
+    calls: list[str] = []
+    gone = "cmp_" + "g" * 22
+    assert reconcile(world.db, gone, slots=lambda unit, cid: calls.append(cid)) is False
+    assert calls == []
+    job = Job(1, RECONCILE_KIND, {"campaign_id": gone}, 1, T0)
+    handler(world.db, slots=lambda unit, cid: calls.append(cid)).run(job, JobContext())
+    handler(world.db, slots=lambda unit, cid: calls.append(cid)).run(
+        Job(2, RECONCILE_KIND, {"campaign_id": "not an id"}, 1, T0), JobContext()
+    )
+    assert calls == []
+    assert handler(world.db, slots=reconcile_slots).max_attempts is None
+
+
+def test_every_enqueue_of_a_reconciliation_is_its_own_job_with_no_dedupe_key(world: World) -> None:
+    campaign = _a_campaign(world)
+    queue = _job_queue(world)
+    with world.db.transaction() as unit:
+        first = enqueue_reconciliation(unit, queue, campaign)
+        second = enqueue_reconciliation(unit, queue, campaign)
+    assert first != second
+    assert _jobs_enqueued(world, queue) == [
+        (RECONCILE_KIND, {"campaign_id": campaign}, None),
+        (RECONCILE_KIND, {"campaign_id": campaign}, None),
+    ]
+
+
+# ── Every refusal is fixed and names nothing ─────────────────────────────────
+
+
+def test_every_new_refusal_message_is_fixed_and_carries_no_identifier() -> None:
+    for refusal in (SeatNotAccepted(), InvalidCursor(), SeatUnavailable()):
+        assert str(refusal) == type(refusal).MESSAGE
+        assert not any(prefix in str(refusal) for prefix in ("cmp_", "prt_", "sof_", "@"))
+    with pytest.raises(TypeError):
+        SeatNotAccepted("prt_leak")  # type: ignore[call-arg]
+    with pytest.raises(ValueError) as refused:
+        check_address("Wren Hidden@example.com")
+    assert "Wren" not in str(refused.value)
