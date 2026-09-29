@@ -37,7 +37,7 @@ import traceback
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -3357,7 +3357,14 @@ def test_the_invitee_page_is_newest_first_and_walks_once(world: World) -> None:
     with world.db.transaction() as unit:
         found = offers.find_for_invitee(unit, made[0], key, world.players[0], now=T0)
     assert found is not None and (found.campaign_name, found.alias) == ("C0", "Rook")
-    assert "C0" not in repr(found) and "Rook" not in repr(found)
+    # `repr(found)` also holds SeatOffer's random ids (secrets.token_urlsafe), so
+    # a short name like "C0" can appear there by chance. Check two things that
+    # do not depend on those ids: the dataclass marks both fields hidden, and
+    # what `repr(found)` prints outside the nested offer names neither of them
+    # (a hand-written `__repr__` would pass the first check but not this one).
+    assert {f.name for f in fields(found) if not f.repr} >= {"campaign_name", "alias"}
+    rendered = repr(found).replace(repr(found.offer), "")
+    assert "C0" not in rendered and "Rook" not in rendered
 
 
 def test_decline_block_and_the_repeat_readers(world: World) -> None:
