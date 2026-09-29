@@ -354,7 +354,11 @@ def run_embedding(items: Sequence[Item], embeddings: Mapping[str, Embedding], k:
     ``agent-forge-harness-69h``). That pass folds on ``connected_groups(items)`` -- connected
     components of (``group`` OR ``category``) -- instead of ``category`` alone, so a committed
     group that spans two categories (8 ``rules:*`` topics sit in both ``rules_prose`` and
-    ``prompt_injection``) is never split between train and test: ``agent-forge-harness-uhc``."""
+    ``prompt_injection``) is never split between train and test: ``agent-forge-harness-uhc``.
+    When a fold has test items but no training items -- every item landed in one group or
+    category, most often on the ``"category"`` pass -- ``NearestCentroid``/``_softmax`` would
+    raise on an empty fit; this returns a ``"skipped"`` result with a reason instead, without
+    touching the other ``group_field``'s pass over the same items: ``agent-forge-harness-xrx``."""
     if group_field not in ("group", "category"):
         raise ValueError(f"group_field must be 'group' or 'category', got {group_field!r}")
     group_of = connected_groups(items) if group_field == "category" else {it.id: it.group for it in items}
@@ -367,6 +371,18 @@ def run_embedding(items: Sequence[Item], embeddings: Mapping[str, Embedding], k:
         test = [it for it, fo in zip(items, folds, strict=True) if fo == f]
         if not test:
             continue
+        if not train:
+            # Every item shares one group/category, so this fold's whole training set is the
+            # test set itself: nothing is left to fit a classifier on. Report the pass skipped
+            # rather than let NearestCentroid.fit([], []) leave predict_proba's max() to raise
+            # on an empty iterable (agent-forge-harness-xrx).
+            return ArmResult(
+                "embedding", "skipped",
+                f"fold {f} of {k} (group_field={group_field!r}) has {len(test)} test item(s) and no "
+                "training items: every item landed in one group/category, so this pass cannot hold "
+                "anything out",
+                extra={"group_field": group_field},
+            )
         # Temperature: fit centroids on an inner grouped split of the training fold, tune T on
         # its held-out part, then refit the centroids on the whole training fold. The inner
         # split is grouped the same way, so tuning never sees a group's own fold-mates either.
@@ -495,7 +511,11 @@ def evaluate(items: Sequence[Item], result: ArmResult, baseline: Mapping[str, st
     """``template``, when given an ``"ok"`` embedding-arm result scored with a different
     ``group_field`` (see ``run_embedding``), adds the ``adversarial_template_grouped`` and
     ``hard_positive_template_grouped`` sections beside the per-instance ``adversarial`` and
-    ``hard_positive`` ones (README Limitations, ``agent-forge-harness-69h``)."""
+    ``hard_positive`` ones (README Limitations, ``agent-forge-harness-69h``). When ``template``
+    is given but is not ``"ok"`` (for example ``"skipped"`` -- every item shared one group or
+    category, ``agent-forge-harness-xrx``), those two sections are left out and the report
+    instead carries ``template_grouped_status``/``template_grouped_reason``, so a consumer can
+    tell "no template-grouped pass ran" apart from "the arm itself never ran"."""
     report: dict[str, Any] = {"arm": result.arm, "status": result.status, "reason": result.reason, **result.extra}
     if result.status != "ok":
         return report
@@ -549,6 +569,9 @@ def evaluate(items: Sequence[Item], result: ArmResult, baseline: Mapping[str, st
             "n": len(hp), "group_field": group_field,
             "accuracy": dm.accuracy([gold[i] for i in hp], [t_pred[i] for i in hp]),
         }
+    elif template is not None:
+        report["template_grouped_status"] = template.status
+        report["template_grouped_reason"] = template.reason
     return report
 
 

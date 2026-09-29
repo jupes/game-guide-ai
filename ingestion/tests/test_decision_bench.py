@@ -294,6 +294,22 @@ def test_category_folds_on_connected_components_split_no_group_and_no_category_o
             assert all(len(fs) == 1 for fs in fold_of_category.values()), (k, seed)
 
 
+def test_run_embedding_marks_the_category_pass_skipped_when_no_fold_can_train():
+    """agent-forge-harness-xrx: every item here shares one category (the `_item`/`_clustered_
+    items` default), so category grouping puts them all in one group, and the one fold with
+    test items has no training items left. Must report itself skipped with a reason instead of
+    letting NearestCentroid.fit([], []) leave _softmax's max() to raise on an empty iterable.
+    The committed, per-instance pass over the SAME items is unaffected."""
+    items, emb = _clustered_items()
+    committed = db.run_embedding(items, emb, k=5, seed=3, group_field="group")
+    assert committed.status == "ok" and len(committed.decisions) == len(items)
+    template = db.run_embedding(items, emb, k=5, seed=3, group_field="category")
+    assert template.status == "skipped"
+    assert template.decisions == []
+    assert "no training items" in template.reason
+    assert template.extra["group_field"] == "category"
+
+
 def _fake_openai_embeddings(dim: int = 4):
     calls: list[list[str]] = []
 
@@ -480,6 +496,22 @@ def test_evaluate_omits_template_grouped_sections_without_a_template_run():
     result = db.ArmResult("embedding", "ok", decisions=[db.Decision("t-0", "none", {"none": 1.0}, 1.0)])
     report = db.evaluate(items, result, {"t-0": "none"})
     assert "adversarial_template_grouped" not in report and "hard_positive_template_grouped" not in report
+    assert "template_grouped_status" not in report  # no template pass was even attempted
+
+
+def test_evaluate_reports_a_skipped_template_pass_instead_of_omitting_it_silently():
+    """agent-forge-harness-xrx: a `template` ArmResult that is not "ok" (skipped -- an empty
+    training fold) must surface as template_grouped_status/reason, not look identical to "no
+    template pass was attempted" (test_evaluate_omits_template_grouped_sections_without_a_
+    template_run, where `template` is None)."""
+    items = [_item(0, "none", subset="adversarial")]
+    committed = db.ArmResult("embedding", "ok", decisions=[db.Decision("t-0", "none", {"none": 1.0}, 1.0)])
+    template = db.ArmResult("embedding", "skipped", "fold 0 of 3 has 1 test item(s) and no training items",
+                            extra={"group_field": "category"})
+    report = db.evaluate(items, committed, {"t-0": "none"}, template=template)
+    assert "adversarial_template_grouped" not in report and "hard_positive_template_grouped" not in report
+    assert report["template_grouped_status"] == "skipped"
+    assert report["template_grouped_reason"] == template.reason
 
 
 def test_run_wires_a_category_grouped_pass_for_the_embedding_arm(tmp_path):
@@ -503,10 +535,10 @@ def test_run_wires_a_category_grouped_pass_for_the_embedding_arm(tmp_path):
 
 
 def test_run_prices_each_arm_by_its_own_tokens(tmp_path):
-    # Distinct categories: db.run() now also groups the embedding arm by category (agent-forge-
-    # harness-69h), and every item sharing one category (the `_item` default) would collapse
-    # every fold's training set for that pass — unrelated to what this test prices.
-    items = [_item(i, db.LABELS[i % 3], category=f"c{i}") for i in range(6)]
+    # All six items share one category (the `_item` default): the category-grouped pass then
+    # has nowhere to hold anything out and reports itself skipped instead of raising
+    # (agent-forge-harness-xrx). Unrelated to what this test prices, which is the committed pass.
+    items = [_item(i, db.LABELS[i % 3]) for i in range(6)]
     chat, _ = _fake_openai_chat({"B": math.log(0.9), "C": math.log(0.1)})
     embed, _ = _fake_openai_embeddings()
     client = SimpleNamespace(chat=chat.chat, embeddings=embed.embeddings)
@@ -517,10 +549,16 @@ def test_run_prices_each_arm_by_its_own_tokens(tmp_path):
     # embedding: 42 input tokens × 0.5 per 1M = 0.000021 a decision → 0.021 per 1,000.
     # llm: 310 × 2.0 + 1 × 8.0 = 628 per 1M = 0.000628 a decision → 0.628 per 1,000.
     assert cost == pytest.approx({"embedding": 0.021, "llm": 0.628})
-    # Only the embedding arm trains, so only its report carries the category-grouped pass; the
-    # llm report must not borrow the embedding arm's template-grouped numbers.
+    # The committed (per-instance) pass still runs and prices normally; the category-grouped
+    # pass over the same one-category items is skipped, not silently empty, and the llm report
+    # (which never had a template pass) must not carry the embedding arm's skip either.
+    embedding_report = next(r for r in reports if r["arm"] == "embedding")
+    assert embedding_report["status"] == "ok"
+    assert embedding_report["template_grouped_status"] == "skipped"
+    assert "no training items" in embedding_report["template_grouped_reason"]
     grouped = {r["arm"]: sorted(key for key in r if key.endswith("_template_grouped")) for r in reports}
-    assert grouped == {"embedding": ["adversarial_template_grouped", "hard_positive_template_grouped"], "llm": []}
+    assert grouped == {"embedding": [], "llm": []}
+    assert "template_grouped_status" not in next(r for r in reports if r["arm"] == "llm")
 
 
 def test_evaluate_passes_a_skipped_arm_through_without_scores():
