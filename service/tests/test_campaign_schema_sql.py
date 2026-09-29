@@ -36,6 +36,18 @@ from service import (
     workbench_contracts,
 )
 from service import campaign_identity as ident
+from service.workbench_contracts import (
+    ALT_MAX_CHARS,
+    AMBIENCE_MAX_MS,
+    ASSET_MAX_BYTES,
+    IMAGE_MAX_PIXELS,
+    IMAGE_MAX_SIDE,
+    MEDIA_TYPES,
+    AssetFailure,
+    AssetKind,
+    AssetState,
+    CommandId,
+)
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "sql" / "migrations"
 CAMPAIGN_SQL = (MIGRATIONS / "0004_campaign_schema.sql").read_text(encoding="utf-8")
@@ -43,7 +55,11 @@ AUDIT_SQL = (MIGRATIONS / "0005_audit_events.sql").read_text(encoding="utf-8")
 CONVERSATION_SQL = (MIGRATIONS / "0006_conversation_metadata.sql").read_text(encoding="utf-8")
 DOCUMENT_SQL = (MIGRATIONS / "0008_document_schema.sql").read_text(encoding="utf-8")
 SEAT_SQL = (MIGRATIONS / "0009_participant_accounts.sql").read_text(encoding="utf-8")
-SESSION_ACCESS_SQL = (MIGRATIONS / "0015_table_session_access.sql").read_text(encoding="utf-8")
+SESSION_ACCESS_SQL = (MIGRATIONS / "0016_table_session_access.sql").read_text(encoding="utf-8")
+#: Found by its name, never by its number: the lead renumbers a migration at
+#: merge when a parallel bead takes the number first (R-7).
+[MEDIA_SQL_PATH] = sorted(MIGRATIONS.glob("*_media_assets.sql"))
+MEDIA_SQL = MEDIA_SQL_PATH.read_text(encoding="utf-8")
 
 #: Every migration, sorted and concatenated. The two identifier tests below read
 #: THIS rather than one file: the prefix registry is service-wide, so a prefix
@@ -137,6 +153,7 @@ MIGRATION_FILES = [
     pytest.param("0004", CAMPAIGN_SQL, id="0004"),
     pytest.param("0005", AUDIT_SQL, id="0005"),
     pytest.param("0007", DOCUMENT_SQL, id="0007"),
+    pytest.param("media_assets", MEDIA_SQL, id="media_assets"),
 ]
 
 #: Files that deliberately store no digest at all, each for its own reason, and
@@ -146,6 +163,7 @@ MIGRATION_FILES = [
 NO_DIGEST_FILES = {
     "0005": "the audit ledger stores no digest of anything (ED-26)",
     "0007": "a document holds field content, never a secret (SEC-20)",
+    "media_assets": "an asset row holds object keys, never a secret",
 }
 
 
@@ -352,7 +370,7 @@ def test_the_seat_migration_states_why_its_check_and_its_drops_are_safe():
 
 
 
-# ── 0015: the table session without a link or a join (1kg.2.3) ──────────────
+# ── 0016: the table session without a link or a join (1kg.2.3) ──────────────
 
 #: The wire contract's `CommandId` pattern, read off the contract itself.
 COMMAND_ID_PATTERN = get_args(workbench_contracts.CommandId)[1].pattern
@@ -546,3 +564,161 @@ def test_the_offer_path_names_no_account_and_no_block(step):
     source = inspect.getsource(step)
     for table in ("auth.users", "seat_blocks", "is_blocked", "get_credentials", "get_user"):
         assert table not in source, f"{step.__qualname__} reads {table}"
+
+
+# ── Media assets (agent-forge-harness-1kg.8.1.1, L-2 to L-4) ─────────────────
+#
+# One rule spelled twice drifts, so every set and every bound the migration
+# writes out is held here to the wire contract's constant it mirrors.
+
+
+def _table(sql: str, name: str) -> str:
+    """The body of `CREATE TABLE name (...)`, comments dropped."""
+    body = _statements(sql)
+    found = re.search(rf"CREATE TABLE {re.escape(name)} \((.*?)\n\);", body, re.S)
+    assert found is not None, f"no CREATE TABLE {name}"
+    return found.group(1)
+
+
+def _quoted(listing: str) -> set[str]:
+    return set(re.findall(r"'([^']*)'", listing))
+
+
+ASSETS_SQL = _table(MEDIA_SQL, "campaign.assets")
+USAGE_SQL = _table(MEDIA_SQL, "campaign.media_usage")
+
+
+def test_the_media_tables_are_found_by_the_column_parser():
+    """The raw-secret test above reads columns one per line; a layout it cannot
+    parse would make it check nothing at all."""
+    columns = {(table, line.split()[0]) for table, line in _columns(MEDIA_SQL)}
+    assert columns, "no column was found, so the raw-secret test checked nothing"
+    assert {column for table, column in columns if table == "campaign.assets"} == {
+        "id", "campaign_id", "kind", "state", "failure", "declared_media_type", "declared_size_bytes",
+        "media_type", "size_bytes", "width", "height", "duration_ms", "alt", "object_key", "tmp_key",
+        "created_command_id", "created_at", "updated_at", "state_changed_at",
+    }
+    assert {column for table, column in columns if table == "campaign.media_usage"} == {
+        "campaign_id", "bytes_reserved", "asset_count",
+    }
+
+
+def test_the_asset_id_is_checked_by_the_registrys_own_regex():
+    assert f"CHECK (id ~ '{ident.id_check_regex(ident.ASSET)}')" in ASSETS_SQL
+
+
+def test_an_asset_names_its_campaign_with_no_delete_action_and_nothing_cascades_to_it():
+    """L-3(b): NO ACTION, written out. A cascade would remove the rows and leave
+    their bytes in the bucket with nothing naming them (SEC-29, SEC-36)."""
+    assert re.search(
+        r"^\s*campaign_id\s+TEXT NOT NULL REFERENCES campaign\.campaigns \(id\) ON DELETE NO ACTION,$",
+        ASSETS_SQL,
+        re.M,
+    )
+    assert "CASCADE" not in ASSETS_SQL and "SET NULL" not in ASSETS_SQL
+    assert re.search(
+        r"^\s*campaign_id\s+TEXT PRIMARY KEY REFERENCES campaign\.campaigns \(id\) ON DELETE CASCADE,$",
+        USAGE_SQL,
+        re.M,
+    ), "the usage row holds counts, never content, and goes with its campaign"
+
+
+def test_the_closed_sets_are_the_enums_they_mirror():
+    kinds = re.search(r"kind\s+TEXT NOT NULL CHECK \(kind IN \(([^)]*)\)\)", ASSETS_SQL)
+    states = re.search(r"state\s+TEXT NOT NULL CHECK \(state IN \(([^)]*)\)\)", ASSETS_SQL)
+    failures = re.search(r"failure\s+TEXT CHECK \(failure IN \(([^)]*)\)\)", ASSETS_SQL)
+    assert kinds and states and failures
+    assert _quoted(kinds.group(1)) == {kind.value for kind in AssetKind}
+    assert _quoted(states.group(1)) == {state.value for state in AssetState} | {"deleted"}, (
+        "deleted is a storage-only tombstone and never joins the contract"
+    )
+    assert "deleted" not in {state.value for state in AssetState}
+    assert _quoted(failures.group(1)) == {failure.value for failure in AssetFailure}
+    declared = dict(re.findall(r"kind = '(\w+)' AND declared_media_type IN \(([^)]*)\)", ASSETS_SQL))
+    assert {AssetKind(kind): _quoted(types) for kind, types in declared.items()} == {
+        kind: set(types) for kind, types in MEDIA_TYPES.items()
+    }
+
+
+def test_every_bound_is_the_wire_contracts_number():
+    caps = re.findall(r"CASE kind WHEN 'image' THEN (\d+) WHEN 'audio' THEN (\d+) END", ASSETS_SQL)
+    assert caps == [(str(ASSET_MAX_BYTES[AssetKind.IMAGE]), str(ASSET_MAX_BYTES[AssetKind.AUDIO]))] * 2, (
+        "the declared size and the ready size, each under its kind's cap"
+    )
+    for side in ("width", "height"):
+        assert f"CHECK ({side} BETWEEN 1 AND {IMAGE_MAX_SIDE})" in ASSETS_SQL
+    assert f"CHECK (width::bigint * height <= {IMAGE_MAX_PIXELS})" in ASSETS_SQL
+    assert f"CHECK (duration_ms BETWEEN 1 AND {AMBIENCE_MAX_MS})" in ASSETS_SQL
+    assert f"CHECK (length(alt) BETWEEN 1 AND {ALT_MAX_CHARS})" in ASSETS_SQL
+    command = next(m.pattern for m in CommandId.__metadata__ if getattr(m, "pattern", None))
+    assert f"CHECK (created_command_id ~ '{command}')" in ASSETS_SQL
+
+
+def test_what_was_measured_exists_exactly_on_a_ready_row():
+    """L-3(e), which is the wire `Asset` validator's own rule."""
+    measured = re.search(r"CONSTRAINT assets_measured_chk CHECK \((.*?)\),\n", ASSETS_SQL, re.S)
+    assert measured is not None
+    clauses = {" ".join(clause.split()) for clause in re.split(r"\s+AND (?=\()", measured.group(1))}
+    assert clauses == {
+        "(media_type IS NOT NULL) = (state = 'ready')",
+        "(size_bytes IS NOT NULL) = (state = 'ready')",
+        "(width IS NOT NULL) = (kind = 'image' AND state = 'ready')",
+        "(height IS NOT NULL) = (kind = 'image' AND state = 'ready')",
+        "(duration_ms IS NOT NULL) = (kind = 'audio' AND state = 'ready')",
+    }
+    assert "CHECK ((failure IS NOT NULL) = (state = 'failed'))" in ASSETS_SQL
+    assert "CASE WHEN state = 'deleted' THEN alt IS NULL ELSE (alt IS NOT NULL) = (kind = 'image') END" in ASSETS_SQL
+    assert "(kind = 'image' AND media_type = declared_media_type)" in ASSETS_SQL
+    assert "(kind = 'audio' AND media_type = 'audio/mpeg')" in ASSETS_SQL
+
+
+def test_both_keys_are_checked_and_unique():
+    assert "object_key          TEXT NOT NULL UNIQUE CHECK (object_key ~ '^assets/[0-9a-f]{32}$')," in ASSETS_SQL
+    assert "tmp_key             TEXT NOT NULL UNIQUE CHECK (tmp_key ~ '^tmp/[0-9a-f]{32}$')," in ASSETS_SQL
+
+
+def test_the_command_index_is_partial_and_the_one_other_index_is_campaign_and_state():
+    body = _statements(MEDIA_SQL)
+    assert re.search(
+        r"CREATE UNIQUE INDEX \w+\s+ON campaign\.assets \(campaign_id, created_command_id\) "
+        r"WHERE created_command_id IS NOT NULL;",
+        body,
+    )
+    indexes = re.findall(r"CREATE (?:UNIQUE )?INDEX (\w+)\s+ON campaign\.assets \(([^)]*)\)", body)
+    assert sorted(columns for _, columns in indexes) == ["campaign_id, created_command_id", "campaign_id, state"]
+
+
+def test_the_usage_row_is_made_by_a_trigger_and_backfilled():
+    body = _statements(MEDIA_SQL)
+    assert "bytes_reserved BIGINT NOT NULL DEFAULT 0 CHECK (bytes_reserved >= 0)" in USAGE_SQL
+    assert "asset_count    INTEGER NOT NULL DEFAULT 0 CHECK (asset_count >= 0)" in USAGE_SQL
+    assert "INSERT INTO campaign.media_usage (campaign_id) VALUES (NEW.id);" in body
+    assert re.search(
+        r"CREATE TRIGGER \w+ AFTER INSERT ON campaign\.campaigns\s+FOR EACH ROW EXECUTE FUNCTION "
+        r"campaign\.create_media_usage\(\);",
+        body,
+    )
+    assert "INSERT INTO campaign.media_usage (campaign_id) SELECT id FROM campaign.campaigns;" in body
+
+
+def test_the_media_migration_holds_no_bytes_touches_no_existing_table_and_no_transaction():
+    body = _statements(MEDIA_SQL)
+    assert "BYTEA" not in body.upper(), "a row holds keys, never bytes"
+    assert "ALTER TABLE" not in body.upper(), "no CHECK is added to an existing table"
+    assert set(re.findall(r"CREATE TABLE ([\w.]+)", body)) == {"campaign.assets", "campaign.media_usage"}
+    assert not re.search(r"\b(BEGIN|COMMIT|END|ROLLBACK)\s*;", body)
+    assert "CONCURRENTLY" not in body
+
+
+def test_the_media_migration_says_why_in_its_own_words():
+    """AC-1's five reasons, read where the schema is."""
+    prose = " ".join(line.lstrip("- ").strip() for line in MEDIA_SQL.splitlines() if line.startswith("--"))
+    for reason in (
+        "WHY `campaign_id` IS ON DELETE NO ACTION, WRITTEN OUT.",
+        "WHY `media_usage` IS A TABLE OF ITS OWN, NOT COLUMNS ON `campaigns`.",
+        "WHY A TRIGGER AND A BACKFILL.",
+        "WHY THE KEYS ARE IMMUTABLE.",
+        "NO CHECK IS ADDED TO AN EXISTING TABLE",
+    ):
+        assert reason in prose, reason
+    assert "PostgreSQL REFUSES to delete a campaign that still has any asset row" in prose

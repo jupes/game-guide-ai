@@ -12,10 +12,11 @@ reviewer sees, not a string a caller invents, so the ledger cannot quietly grow
 a vocabulary nobody agreed to. Reveal's three actions and the export ones are
 not here: ED-18(a) makes the table shared, and those belong to `1kg.7.1` and
 `1kg.5.2`, which add their own members without a migration. Nor is there one
-writer for the nineteen that are here: the session and screen rows are
+writer for the twenty that are here: the session and screen rows are
 written by `service/table_sessions.py` (`1kg.2.3`), the campaign's Conclude and
-Reopen by the tavern's route (bead cfx), the rest by `1kg.2.2`'s campaign and
-seat routes. The reason is ownership, not use.
+Reopen by the tavern's route (bead cfx), `asset.deleted` by the media bead's
+delete route (`1kg.8.1.3`), the rest by `1kg.2.2`'s campaign and seat routes.
+The reason is ownership, not use.
 
 **A row carries identifiers, never content** (SEC-20, ED-26) — and no hash of
 any content either: ED-26 is explicit that no value derived from field text may
@@ -146,10 +147,16 @@ class AuditAction(str, Enum):
     #: `gm`) or by the screen's own Leave (`left`, actor `screen`). An End or a
     #: Rotate revokes every grant of the session and records it on its own row.
     SCREEN_REVOKED = "screen.revoked"
+    #: The GM deleted an asset (actor `gm`; `1kg.8.1.1`). The row names the asset
+    #: and nothing else: its `campaign_id_tombstone` names the campaign, as the
+    #: seat rows do, and alt text is private. Uploads are not audited (ruling
+    #: 8.1#4): deletion is the irreversible act. A campaign's deletion records
+    #: one `campaign.deleted` row, not one row per asset.
+    ASSET_DELETED = "asset.deleted"
 
 
 class ActorKind(str, Enum):
-    """Who acted, as `0015_table_session_access.sql`'s CHECK has it. There are
+    """Who acted, as `0016_table_session_access.sql`'s CHECK has it. There are
     no guests (D-1); a table screen acts only to leave, and its `actor_ref` is
     its own grant's id (SEC-38)."""
 
@@ -160,7 +167,7 @@ class ActorKind(str, Enum):
 
 
 class ObjectKind(str, Enum):
-    """What the decision was **about** — one of the four things the nineteen
+    """What the decision was **about** — one of the five things the twenty
     actions act on, and nothing else. A table screen's `object_ref` is its
     grant's `tcr_` id.
 
@@ -175,6 +182,7 @@ class ObjectKind(str, Enum):
     TABLE_SESSION = "table_session"
     PARTICIPANT = "participant"
     TABLE_SCREEN = "table_screen"
+    ASSET = "asset"
 
 
 class Decision(str, Enum):
@@ -272,6 +280,8 @@ _SESSION = MintedId(ident.TABLE_SESSION)
 #: title: a document's name is field text, and nothing derived from field text
 #: may outlive it in a ledger that survives the campaign (ED-26).
 _DOCUMENT = MintedId(ident.DOCUMENT)
+#: A deleted asset, by its id alone: never its alt text, a key or a filename.
+_ASSET = MintedId(ident.ASSET)
 
 #: What an End, an expiry and a Rotate record: the session, the admission
 #: generation it closed, and how many screen grants that revoked.
@@ -310,6 +320,7 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     },
     AuditAction.SCREEN_MINTED: {"session_id": _SESSION, "generation": Shape.WHOLE_NUMBER},
     AuditAction.SCREEN_REVOKED: {"session_id": _SESSION},
+    AuditAction.ASSET_DELETED: {"asset_id": _ASSET},
 }
 
 #: The closed set of reason codes **per action**, beside `ACTION_DETAIL` and
@@ -342,6 +353,7 @@ ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
     AuditAction.CAMPAIGN_DELETED: frozenset(),
     AuditAction.SCREEN_MINTED: frozenset(),
     AuditAction.SCREEN_REVOKED: frozenset({"gm_revoked", "left"}),
+    AuditAction.ASSET_DELETED: frozenset(),
 }
 
 

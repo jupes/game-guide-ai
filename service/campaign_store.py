@@ -68,7 +68,7 @@ class LiveSessionExists(CampaignStoreError):
 
 class StartReplayed(CampaignStoreError):
     """That campaign already has a session started by this command id
-    (`table_sessions_start_command_uidx`, migration 0015). A caller that holds
+    (`table_sessions_start_command_uidx`, migration 0016). A caller that holds
     the campaign lock reads the replay first and answers the session it finds
     (`service/table_sessions.py`), so this is what a caller that skipped that
     read gets instead of a unique violation. The message names no id."""

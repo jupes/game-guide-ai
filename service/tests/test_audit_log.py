@@ -57,9 +57,9 @@ PARTICIPANT = "prt_" + "a" * 22
 AUDIT_SQL = (
     Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0005_audit_events.sql"
 ).read_text(encoding="utf-8")
-#: 0015 replaced 0005's actor-kind CHECK (`1kg.2.3`): `guest` went, `screen` came.
+#: 0016 replaced 0005's actor-kind CHECK (`1kg.2.3`): `guest` went, `screen` came.
 SESSION_ACCESS_SQL = (
-    Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0015_table_session_access.sql"
+    Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0016_table_session_access.sql"
 ).read_text(encoding="utf-8")
 
 
@@ -121,7 +121,7 @@ def test_the_action_set_is_closed_and_a_caller_cannot_invent_one():
             assert value not in str(refused.value), "a refusal never repeats what it refused"
 
 
-def test_the_nineteen_actions_that_ship_are_sec38s_and_the_tavern_s_two():
+def test_the_twenty_actions_that_ship_are_sec38s_the_tavern_s_two_and_the_media_delete():
     """Reveal's three and the export ones are not here: ED-18(a) makes the table
     shared, and they belong to the beads that will write them (1kg.7.1, 1kg.5.2),
     which add their own members without a migration.
@@ -136,7 +136,10 @@ def test_the_nineteen_actions_that_ship_are_sec38s_and_the_tavern_s_two():
     concluded and its reversal, which are not archive and restore.
 
     `1kg.2.3` retired the join (threat model section 15), and its refused-burst
-    row with it; the screen grant brought two: minted and revoked (SEC-48)."""
+    row with it; the screen grant brought two: minted and revoked (SEC-48).
+
+    `1kg.8.1.1` adds `asset.deleted`: deletion is the irreversible act, and
+    uploads are not audited (ruling 8.1#4)."""
     assert {a.value for a in AuditAction} == {
         "session.started", "session.ended", "session.expired", "session.rotated",
         "participant.added", "participant.removed", "participant.linked",
@@ -144,7 +147,7 @@ def test_the_nineteen_actions_that_ship_are_sec38s_and_the_tavern_s_two():
         "seat.declined", "seat.confirmed",
         "campaign.archived", "campaign.restored", "campaign.deleted",
         "campaign.concluded", "campaign.reopened",
-        "screen.minted", "screen.revoked",
+        "screen.minted", "screen.revoked", "asset.deleted",
     }
     assert "join.burst_refused" not in {a.value for a in AuditAction}, "retired with the join"
     assert not [a for a in AuditAction if a.value.startswith(("reveal.", "export."))]
@@ -164,7 +167,9 @@ def test_a_seat_row_carries_the_seat_and_nothing_else():
             check_detail(action, {"user_id": 7})
 
 
-_WORDS = {4: "four", 19: "nineteen"}
+_WORDS = {
+    3: "three", 4: "four", 5: "five", 14: "fourteen", 16: "sixteen", 18: "eighteen", 19: "nineteen", 20: "twenty",
+}
 
 
 def test_the_module_docstrings_count_what_the_enums_hold():
@@ -426,16 +431,18 @@ def test_every_kind_the_ledger_knows_is_a_thing_the_schema_mints_an_id_for():
     """The other direction, so the enum cannot quietly become somewhere to put a
     word: every member names one of the things `campaign_identity` mints an
     identifier for — a table screen is a row of `table_credentials`, so its
-    `object_ref` is a `tcr_` id (`1kg.2.3`)."""
+    `object_ref` is a `tcr_` id (`1kg.2.3`), and an asset's is its `ast_` id
+    (`1kg.8.1.1`)."""
     minted_as = {
         audit_log.ObjectKind.CAMPAIGN: ident.CAMPAIGN,
         audit_log.ObjectKind.PARTICIPANT: ident.PARTICIPANT,
         audit_log.ObjectKind.TABLE_SESSION: ident.TABLE_SESSION,
         audit_log.ObjectKind.TABLE_SCREEN: ident.TABLE_CREDENTIAL,
+        audit_log.ObjectKind.ASSET: ident.ASSET,
     }
     assert set(minted_as) == set(ObjectKind)
     assert {kind.value for kind in ObjectKind} == {
-        "campaign", "participant", "table_session", "table_screen"
+        "campaign", "participant", "table_session", "table_screen", "asset"
     }
     assert all(prefix in ident.PREFIXES for prefix in minted_as.values())
 
@@ -491,12 +498,12 @@ def test_the_python_vocabularies_are_the_ones_the_migration_checks():
     assert decision is not None, "0005 no longer constrains decision with an IN list"
     in_sql = {value.strip().strip("'") for value in decision.group(1).split(",")}
     assert in_sql == {member.value for member in Decision}
-    # 0015 replaced 0005's actor-kind CHECK, so the one in force is 0015's.
+    # 0016 replaced 0005's actor-kind CHECK, so the one in force is 0016's.
     actor = re.search(
         r"ADD CONSTRAINT events_actor_kind_check\s+CHECK \(actor_kind IN \(([^)]*)\)\)",
         SESSION_ACCESS_SQL,
     )
-    assert actor is not None, "0015 no longer constrains actor_kind with an IN list"
+    assert actor is not None, "0016 no longer constrains actor_kind with an IN list"
     in_sql = {value.strip().strip("'") for value in actor.group(1).split(",")}
     assert in_sql == {member.value for member in ActorKind}
 
@@ -604,3 +611,45 @@ def test_a_decline_and_a_confirmation_carry_the_seat_and_nothing_else():
             check_detail(action, {"address": "wren@example.com"})
     check_detail(AuditAction.SEAT_DECLINED, {"participant_id": "prt_" + "a" * 22, "blocked": True})
     assert "seat.withdrawn" not in {a.value for a in AuditAction}, "participant.removed is the withdrawal record"
+
+
+# ── asset.deleted (agent-forge-harness-1kg.8.1.1, L-14) ──────────────────────
+
+
+def test_an_asset_deletion_row_carries_the_asset_and_nothing_else():
+    """The asset by its minted id: never its alt text (private), never a key
+    (a map to the bytes) and never the campaign, which the row's own
+    `campaign_id_tombstone` already names."""
+    assert AuditAction.ASSET_DELETED.value == "asset.deleted"
+    assert ObjectKind.ASSET.value == "asset"
+    assert ACTION_DETAIL[AuditAction.ASSET_DELETED] == {"asset_id": MintedId(ident.ASSET)}
+    assert ACTION_REASONS[AuditAction.ASSET_DELETED] == frozenset()
+    asset_id = "ast_" + "a" * 22
+    assert check_detail(AuditAction.ASSET_DELETED, {"asset_id": asset_id}) == {"asset_id": asset_id}
+    for refused in (
+        {"alt": "The villain's portrait"},
+        {"campaign_id": "cmp_" + "a" * 22},
+        {"object_key": "assets/" + "0" * 32},
+        {"asset_id": "doc_" + "a" * 22},
+        {"asset_id": "The villain's portrait"},
+    ):
+        with pytest.raises(ValueError) as caught:
+            check_detail(AuditAction.ASSET_DELETED, refused)
+        for value in refused.values():
+            assert value not in str(caught.value), "a refusal never repeats what it refused"
+
+
+def test_an_asset_deletion_is_recorded_about_an_asset():
+    log, db = InMemoryAuditLog(), InMemoryDatabase()
+    with db.transaction() as unit:
+        event = log.append(
+            unit,
+            campaign_id=CAMPAIGN,
+            actor_kind=ActorKind.GM,
+            action=AuditAction.ASSET_DELETED,
+            object_kind=ObjectKind.ASSET,
+            decision=Decision.ALLOWED,
+            object_ref="ast_" + "b" * 22,
+            detail={"asset_id": "ast_" + "b" * 22},
+        )
+    assert (event.action, event.object_kind) == ("asset.deleted", "asset")

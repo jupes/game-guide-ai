@@ -269,7 +269,7 @@ def test_the_database_refuses_a_campaign_row_the_application_would_never_mint(ds
             )
 
 
-#: Every table 0004 hangs off a campaign that 0009 and 0015 kept, with the column that
+#: Every table 0004 hangs off a campaign that 0009 and 0016 kept, with the column that
 #: reaches a user, and 0008's two document tables (1kg.5.1): a document hangs
 #: off its campaign and a version off its document, both ON DELETE CASCADE.
 CAMPAIGN_TABLES = (
@@ -950,7 +950,204 @@ def test_a_seat_holds_one_open_offer_by_the_partial_unique_index(dsn):
             )
 
 
-# ── 0015: the table session without a link or a join (1kg.2.3) ──────────────
+# ── Media assets and their quota (agent-forge-harness-1kg.8.1.1, AC-3) ──────
+#
+# Found by name, never by number: the lead renumbers at merge (R-7).
+[MEDIA_MIGRATION] = [m for m in PACKAGED if m.filename.endswith("_media_assets.sql")]
+BEFORE_MEDIA = [m for m in PACKAGED if m.version < MEDIA_MIGRATION.version]
+
+
+def _usage(conn, campaign_id: str = CAMPAIGN_ID) -> tuple | None:
+    return conn.execute(
+        "SELECT bytes_reserved, asset_count FROM campaign.media_usage WHERE campaign_id = %s", (campaign_id,)
+    ).fetchone()
+
+
+def test_a_campaign_that_existed_before_the_media_migration_gets_a_usage_row_at_zero(dsn):
+    """The backfill: the quota's conditional UPDATE assumes the row exists."""
+    assert BEFORE_MEDIA and BEFORE_MEDIA[-1].version == MEDIA_MIGRATION.version - 1
+    mig.migrate(dsn, packaged=BEFORE_MEDIA)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')", (CAMPAIGN_ID, owner)
+        )
+        assert not _exists(dsn, "campaign.media_usage")
+    assert mig.migrate(dsn).applied[0] == MEDIA_MIGRATION.filename
+    with connect(dsn) as conn:
+        assert _usage(conn) == (0, 0)
+
+
+def test_a_campaign_inserted_by_raw_sql_gets_its_usage_row_from_the_trigger(dsn):
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')", (CAMPAIGN_ID, owner)
+        )
+        assert _usage(conn) == (0, 0)
+
+
+def _asset_row(kind: str = "image", state: str = "uploading", n: int = 1, **overrides) -> dict:
+    """One row of `campaign.assets` that every CHECK accepts, for `kind` in `state`."""
+    image, ready = kind == "image", state == "ready"
+    return {
+        "id": "ast_" + f"{n:022d}",
+        "campaign_id": CAMPAIGN_ID,
+        "kind": kind,
+        "state": state,
+        "failure": "too_large" if state == "failed" else None,
+        "declared_media_type": "image/png" if image else "audio/ogg",
+        "declared_size_bytes": 1000,
+        "media_type": ("image/png" if image else "audio/mpeg") if ready else None,
+        "size_bytes": 900 if ready else None,
+        "width": 40 if image and ready else None,
+        "height": 30 if image and ready else None,
+        "duration_ms": 12000 if not image and ready else None,
+        "alt": "A red door" if image and state != "deleted" else None,
+        "object_key": f"assets/{n:032x}",
+        "tmp_key": f"tmp/{n:032x}",
+    } | overrides
+
+
+def _insert_asset(conn, row: dict) -> None:
+    columns = ", ".join(row)
+    conn.execute(
+        f"INSERT INTO campaign.assets ({columns}) VALUES ({', '.join(f'%({c})s' for c in row)})", row
+    )
+
+
+def _a_campaign_with_its_owner(conn) -> int:
+    owner = _one_user(conn)
+    conn.execute(
+        "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')", (CAMPAIGN_ID, owner)
+    )
+    return owner
+
+
+FORBIDDEN_ASSETS = [
+    ("a tombstone that carries alt", "image", "deleted", {"alt": "A red door"}),
+    ("a tombstone that carries a measured value", "image", "deleted", {"size_bytes": 10}),
+    ("a failed row with no failure", "image", "failed", {"failure": None}),
+    ("a failed row that carries a measured value", "image", "failed", {"media_type": "image/png"}),
+    ("a ready image with no dimensions", "image", "ready", {"width": None, "height": None}),
+    ("a ready image with only one dimension", "image", "ready", {"height": None}),
+    ("a ready image that carries a duration", "image", "ready", {"duration_ms": 1000}),
+    ("a ready audio row that carries a width", "audio", "ready", {"width": 10}),
+    ("a ready audio row that carries a height", "audio", "ready", {"height": 10}),
+    ("a ready audio row that is not mp3", "audio", "ready", {"media_type": "audio/ogg"}),
+    ("a ready image whose type is not its declared one", "image", "ready", {"media_type": "image/jpeg"}),
+    ("an uploading row that carries a size", "image", "uploading", {"size_bytes": 10}),
+    ("a malformed object key", "image", "uploading", {"object_key": "assets/" + "A" * 32}),
+    ("a malformed tmp key", "image", "uploading", {"tmp_key": "tmp/../" + "0" * 29}),
+    ("a failure on a row that is not failed", "image", "uploading", {"failure": "timed_out"}),
+    ("an audio row with alt text", "audio", "uploading", {"alt": "A red door"}),
+    ("an image with no alt text", "image", "processing", {"alt": None}),
+    ("a declared type its kind refuses", "image", "uploading", {"declared_media_type": "image/gif"}),
+    ("a declared size over the cap", "audio", "uploading", {"declared_size_bytes": 20000001}),
+    ("an image over the pixel cap", "image", "ready", {"width": 8192, "height": 8192}),
+    ("a state the schema does not know", "image", "uploading", {"state": "archived"}),
+    ("an id of another kind", "image", "uploading", {"id": "doc_" + "a" * 22}),
+    ("a command id that is not one", "image", "uploading", {"created_command_id": "short"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "kind", "state", "overrides"), FORBIDDEN_ASSETS, ids=[f[0] for f in FORBIDDEN_ASSETS]
+)
+def test_the_database_refuses_each_asset_row_the_schema_forbids(dsn, label, kind, state, overrides):
+    import psycopg
+
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        _a_campaign_with_its_owner(conn)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert_asset(conn, _asset_row(kind, state) | overrides)
+
+
+def test_the_database_accepts_one_valid_asset_row_of_each_kind_in_each_state(dsn):
+    """So the CHECKs are shown to refuse only what L-3 forbids."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        _a_campaign_with_its_owner(conn)
+        n = 0
+        for kind in ("image", "audio"):
+            for state in ("uploading", "processing", "ready", "failed", "deleted"):
+                n += 1
+                _insert_asset(conn, _asset_row(kind, state, n))
+        assert conn.execute("SELECT count(*) FROM campaign.assets").fetchone()[0] == 10
+
+
+def test_the_database_refuses_a_duplicate_key(dsn):
+    import psycopg
+
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        _a_campaign_with_its_owner(conn)
+        _insert_asset(conn, _asset_row(n=1))
+        for clash in ({"object_key": f"assets/{1:032x}"}, {"tmp_key": f"tmp/{1:032x}"}):
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                _insert_asset(conn, _asset_row(n=2, **clash))
+        _insert_asset(conn, _asset_row(n=3, created_command_id="c" * 16))
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            _insert_asset(conn, _asset_row(n=4, created_command_id="c" * 16))
+
+
+@pytest.mark.parametrize("through", ["campaign", "owner"])
+def test_a_campaign_that_holds_an_asset_row_cannot_be_deleted(dsn, through):
+    """L-3(b): NO ACTION. Neither a direct DELETE nor the account's cascade may
+    remove the rows and leave their bytes with nothing naming them."""
+    import psycopg
+
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _a_campaign_with_its_owner(conn)
+        _insert_asset(conn, _asset_row(state="deleted"))
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            if through == "campaign":
+                conn.execute("DELETE FROM campaign.campaigns WHERE id = %s", (CAMPAIGN_ID,))
+            else:
+                conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+        assert conn.execute("SELECT count(*) FROM campaign.assets").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("through", ["campaign", "owner"])
+def test_the_deletion_succeeds_after_the_primitive_in_the_same_transaction(dsn, through):
+    from service.asset_store import PostgresAssetStore
+    from service.db import CampaignLockSettings, Database, PoolSettings
+    from service.jobs import PostgresJobQueue
+
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _a_campaign_with_its_owner(conn)
+        _insert_asset(conn, _asset_row(state="ready", n=1))
+        _insert_asset(conn, _asset_row(state="deleted", n=2))
+        conn.execute("UPDATE campaign.media_usage SET bytes_reserved = 900, asset_count = 1")
+    db = Database(dsn, PoolSettings(sync_max=2, async_max=0), CampaignLockSettings(lock_timeout_s=1))
+    store = PostgresAssetStore(PostgresJobQueue(db))
+    with db.transaction() as unit:
+        jobs = store.delete_campaign_assets(unit, CAMPAIGN_ID, owner_id=owner)
+        if through == "campaign":
+            unit.conn.execute("DELETE FROM campaign.campaigns WHERE id = %s", (CAMPAIGN_ID,))
+        else:
+            unit.conn.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+    assert len(jobs) == 1, "one job for the live row; the tombstone already had its own"
+    with connect(dsn) as conn:
+        assert conn.execute("SELECT count(*) FROM campaign.campaigns").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM campaign.assets").fetchone()[0] == 0
+        assert conn.execute("SELECT kind FROM app.jobs").fetchall() == [("asset.delete",)]
+
+
+def test_media_usage_cascades_with_its_campaign(dsn):
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        _a_campaign_with_its_owner(conn)
+        assert _usage(conn) == (0, 0)
+        conn.execute("DELETE FROM campaign.campaigns WHERE id = %s", (CAMPAIGN_ID,))
+        assert _usage(conn) is None
+
+
+# ── 0016: the table session without a link or a join (1kg.2.3) ──────────────
 
 #: Found by name, like 1kg.2.2's `SEAT_OFFERS`: every migration before it.
 SESSION_ACCESS = next(m for m in PACKAGED if m.name == "table_session_access")
@@ -969,9 +1166,9 @@ def _actor_kind_check(dsn: str) -> list[tuple[str, str]]:
 
 
 @needs_db
-def test_the_actor_kind_check_0015_replaces_is_the_one_0005_created(dsn):
-    """0015 drops a constraint by name, so the name is read off a database
-    migrated to 0014 rather than assumed — and after 0015 there is still exactly
+def test_the_actor_kind_check_0016_replaces_is_the_one_0005_created(dsn):
+    """0016 drops a constraint by name, so the name is read off a database
+    migrated to 0015 rather than assumed — and after 0016 there is still exactly
     one such CHECK, under the same name, with `screen` where `guest` was."""
     mig.migrate(dsn, packaged=_BEFORE_SESSION_ACCESS)
     [(name, definition)] = _actor_kind_check(dsn)
@@ -1034,7 +1231,7 @@ def test_the_ledger_refuses_a_guest_and_accepts_a_screen(dsn):
 
 @needs_db
 def test_a_command_id_column_holds_the_contracts_shape_or_nothing(dsn):
-    """0015's two CHECKs, and the start index: one session per command per
+    """0016's two CHECKs, and the start index: one session per command per
     campaign, while any number of sessions have none."""
     import psycopg
 
