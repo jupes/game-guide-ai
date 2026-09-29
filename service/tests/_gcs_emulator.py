@@ -16,7 +16,11 @@ JSON API the store uses, the way Cloud Storage answers it:
 * the resumable upload: an initiating `POST` that answers a session URL, then
   `PUT`s with `Content-Range: bytes a-b/*` (308 and the persisted `Range`) and a
   final `bytes a-b/N` or `bytes */N` that creates the object (200 and its
-  metadata, with its `crc32c`). An upload never finalized creates nothing.
+  metadata, with its `crc32c`). An upload never finalized creates nothing;
+* uniform bucket-level access, as the bucket is created (`docs/deploy-gcp.md`
+  section 13): a request carrying `predefinedAcl` or
+  `predefinedDefaultObjectAcl`, or an upload whose metadata carries `acl`, is
+  refused 400, so an upload that tried to make its object public fails.
 
 Every request is recorded, and `fail` makes the next matching requests answer
 an error whose message names the bucket and the object, as Cloud Storage's do,
@@ -163,6 +167,9 @@ _DOWNLOAD = re.compile(r"^/download/storage/v1/b/([^/]+)/o/(.+)$")
 _UPLOAD = re.compile(r"^/upload/storage/v1/b/([^/]+)/o$")
 _RANGE = re.compile(r"^bytes=(\d+)-(\d+)$")
 _CONTENT_RANGE = re.compile(r"^bytes (?:(\d+)-(\d+)|\*)/(\d+|\*)$")
+#: The query parameters that set a legacy ACL. A bucket with uniform
+#: bucket-level access refuses each with 400, whatever the request.
+_LEGACY_ACL_PARAMETERS = frozenset({"predefinedAcl", "predefinedDefaultObjectAcl"})
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -204,7 +211,9 @@ class _Handler(BaseHTTPRequestHandler):
         if failed is not None:
             self._error(failed, unquote(path))
             return
-        if method == "PUT" and "upload_id" in query:
+        if _LEGACY_ACL_PARAMETERS.intersection(query):
+            self._error(400, unquote(path))
+        elif method == "PUT" and "upload_id" in query:
             self._upload_put(query["upload_id"][0], body)
         elif method == "POST" and _UPLOAD.match(path):
             self._upload_start(json.loads(body or b"{}"))
@@ -286,6 +295,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _upload_start(self, metadata: dict[str, object]) -> None:
         name = str(metadata.get("name"))
+        if "acl" in metadata:
+            self._error(400, name)
+            return
         session_id = secrets.token_hex(8)
         self.owner.sessions[session_id] = UploadSession(
             name, self.headers.get("x-upload-content-type"), metadata=dict(metadata)

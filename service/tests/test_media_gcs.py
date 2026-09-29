@@ -6,27 +6,34 @@ right, through the real `google-cloud-storage` client against the in-process
 emulator of `service/tests/_gcs_emulator.py` (no bucket, no credentials):
 
 * **An upload over its ceiling is never finalized**, so nothing appears at the
-  key, and an upload travels in bounded chunks carrying nothing but its bytes.
+  key, and an upload travels in bounded chunks carrying nothing but its bytes:
+  no ACL, which the uniform-access bucket (and the emulator) would refuse.
 * **A read asks for bounded ranges pinned to one generation**, so a stream
   never mixes two versions of a key.
 * **A failure is the named error with no driver text**: Cloud Storage's own
   messages name the bucket and the object.
 * **Keys are checked before any request**, and a listing never examines a name
   outside the key grammar.
-* **The production builder** uses the runtime's credentials and bounded calls.
+* **Every request is bounded** by the store's timeout and retry, and the
+  production builder gives it the runtime's credentials and those bounds.
 
     uv run --frozen --no-sync python -m pytest service/tests/test_media_gcs.py -q
 """
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import time
-from collections.abc import Callable, Iterator
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from google.api_core.exceptions import BadRequest
 from google.auth.credentials import AnonymousCredentials
 from google.cloud import storage
 
@@ -98,8 +105,39 @@ def test_an_upload_travels_in_bounded_chunks_and_carries_nothing_but_its_bytes(g
     assert session.puts[:-1] == [media_gcs.UPLOAD_CHUNK_BYTES] * (len(session.puts) - 1)
     assert 0 < session.puts[-1] <= media_gcs.UPLOAD_CHUNK_BYTES and sum(session.puts) == len(body)
     assert session.metadata == {"name": "assets/" + HEX}, "no filename, no custom metadata, nothing but the key"
+    [started] = [r for r in gcs.emulator.requests if r.method == "POST" and r.path.startswith("/upload/")]
+    assert started.query == {"uploadType": ["resumable"]}, "no predefined ACL, nothing but a resumable upload"
     assert session.content_type == media_gcs.OBJECT_CONTENT_TYPE
     assert gcs.emulator.objects["assets/" + HEX].data == body
+
+
+@pytest.mark.parametrize("query", ["&predefinedAcl=publicRead", "&predefinedDefaultObjectAcl=publicRead", ""])
+def test_the_emulator_refuses_a_legacy_acl_as_a_uniform_access_bucket_does(gcs: Bucket, query: str) -> None:
+    """The bucket has uniform bucket-level access, so Cloud Storage refuses any
+    ACL an upload asks for; the emulator does too, so a store that asked for one
+    would fail every upload of the shared suite. The third case carries the ACL
+    in the object's metadata instead of the query."""
+    metadata: dict[str, object] = {"name": "tmp/" + HEX}
+    if not query:
+        metadata["acl"] = [{"entity": "allUsers", "role": "READER"}]
+    request = urllib.request.Request(
+        f"{gcs.emulator.endpoint}/upload/storage/v1/b/{BUCKET}/o?uploadType=resumable{query}",
+        data=json.dumps(metadata).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        urllib.request.urlopen(request, timeout=10)
+    assert refused.value.code == 400
+    assert gcs.emulator.sessions == {}
+    client = storage.Client(
+        project="media-test", credentials=AnonymousCredentials(), client_options={"api_endpoint": gcs.emulator.endpoint}
+    )
+    with pytest.raises(BadRequest):
+        client.bucket(BUCKET).blob("tmp/" + HEX).upload_from_file(
+            io.BytesIO(b"x"), predefined_acl="publicRead", retry=None
+        )
+    assert gcs.emulator.objects == {}
 
 
 @pytest.mark.parametrize("size", [0, media_gcs.UPLOAD_CHUNK_BYTES, 2 * media_gcs.UPLOAD_CHUNK_BYTES - 1])
@@ -286,19 +324,45 @@ class _Blob:
     updated: datetime | None = None
     served: bytes = b""
 
-    def download_as_bytes(self, **_: object) -> bytes:
-        return self.served
-
 
 class _StubBucket:
-    def __init__(self, found: _Blob) -> None:
+    """A bucket in memory that records the keyword arguments of every call
+    that would send a request."""
+
+    def __init__(self, found: _Blob, *, listed: Sequence[_Blob] = ()) -> None:
         self.found = found
+        self.listed = listed
+        self.calls: list[tuple[str, dict[str, object]]] = []
 
-    def get_blob(self, blob_name: str, **_: object) -> _Blob:
+    def get_blob(self, blob_name: str, **kwargs: object) -> _Blob:
+        self.calls.append(("get_blob", kwargs))
         return self.found
 
-    def blob(self, blob_name: str, **_: object) -> _Blob:
-        return self.found
+    def delete_blob(self, blob_name: str, **kwargs: object) -> None:
+        self.calls.append(("delete_blob", kwargs))
+
+    def list_blobs(self, **kwargs: object) -> Iterator[_Blob]:
+        self.calls.append(("list_blobs", kwargs))
+        return iter(self.listed)
+
+    def blob(self, blob_name: str, **_: object) -> _StubHandle:
+        return _StubHandle(self)
+
+
+@dataclass
+class _StubHandle:
+    """What `bucket.blob(key)` answers: a handle, which sends nothing until a
+    call on it does."""
+
+    bucket: _StubBucket
+
+    def upload_from_file(self, file_obj: io.RawIOBase, **kwargs: object) -> None:
+        self.bucket.calls.append(("upload_from_file", kwargs))
+        file_obj.read()
+
+    def download_as_bytes(self, **kwargs: object) -> bytes:
+        self.bucket.calls.append(("download_as_bytes", kwargs))
+        return self.bucket.found.served
 
 
 @pytest.mark.parametrize("missing", ["size", "generation", "updated"])
@@ -316,6 +380,49 @@ def test_a_range_that_comes_back_short_is_unavailable() -> None:
     )
     with pytest.raises(mo.ObjectStoreUnavailable):
         b"".join(store.get_stream("tmp/" + HEX))
+
+
+def test_a_listed_object_with_no_time_is_examined_but_never_old() -> None:
+    """The reconcile deletes what a listing calls old, so an object whose time
+    did not come back is young: the safe side."""
+    bucket = _StubBucket(_Blob(), listed=[_Blob(name="tmp/" + HEX, updated=None)])
+    store = media_gcs.CloudStorageObjectStore(bucket)  # type: ignore[arg-type]
+    page = store.list_objects("tmp/", older_than=FAR_FUTURE, limit=3)
+    assert page.keys == () and page.examined == 1
+
+
+# ── Every request is bounded ─────────────────────────────────────────────────
+
+
+def test_every_request_the_store_sends_carries_its_timeout_and_its_retry() -> None:
+    """D-2's bound is in the arguments: a call without them gets the client's
+    own defaults, 60 s a request and 120 s of retrying. `reachable()` is a probe
+    and does not retry at all."""
+    retry = object()
+    bucket = _StubBucket(
+        _Blob(size=3, generation=7, updated=T0, served=b"abc"), listed=[_Blob(name="tmp/" + HEX, updated=T0)]
+    )
+    store = media_gcs.CloudStorageObjectStore(bucket, retry=retry)  # type: ignore[arg-type]
+    assert store.put_stream("tmp/" + HEX, iter([b"abc"]), max_bytes=10) == 3
+    assert b"".join(store.get_stream("tmp/" + HEX)) == b"abc"
+    assert store.stat_object("tmp/" + HEX) is not None
+    store.delete_object("tmp/" + HEX)
+    assert store.list_objects("tmp/", older_than=FAR_FUTURE, limit=3).keys == ("tmp/" + HEX,)
+    assert store.reachable() is True
+    *calls, (probe, probed) = bucket.calls
+    assert [name for name, _ in calls] == [
+        "upload_from_file",
+        "get_blob",
+        "download_as_bytes",
+        "get_blob",
+        "delete_blob",
+        "list_blobs",
+    ]
+    for name, sent in [*calls, (probe, probed)]:
+        assert sent.get("timeout") == media_gcs.REQUEST_TIMEOUT, f"{name} ran on the client's default timeout"
+    for name, sent in calls:
+        assert sent.get("retry") is retry, f"{name} ran on the client's default retry"
+    assert probe == "list_blobs" and "retry" in probed and probed["retry"] is None
 
 
 # ── The production builder ───────────────────────────────────────────────────
