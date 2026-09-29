@@ -406,7 +406,8 @@ def test_the_real_app_starts_dark_and_no_catch_all_exists(monkeypatch: pytest.Mo
     monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     assert appmod._media_enabled() is True
     media = [route for path, route in api_routes(app) if "/assets" in path]
-    assert len(media) == 2 and all(isinstance(route, assets_api.WorkbenchRoute) for route in media)
+    # Two upload routes, and 1kg.8.1.3's read and delete (`asset_serving_api`).
+    assert len(media) == 4 and all(isinstance(route, assets_api.WorkbenchRoute) for route in media)
     assert not [path for path, _ in api_routes(app) if ":path}" in path]
     app.openapi_schema = None
     assert not [path for path in app.openapi()["paths"] if "/assets" in path], "no announcement either"
