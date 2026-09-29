@@ -7,6 +7,8 @@ account, no key, no network beyond the loopback. It serves the slice of the
 JSON API the store uses, the way Cloud Storage answers it:
 
 * object metadata `GET` and `DELETE` (404 when absent);
+* the bucket's own metadata `GET`, refused 403, as it is for the runtime
+  account, which holds object administration and nothing more;
 * media download with a `Range`, `ifGenerationMatch` (412 on a mismatch) and
   the whole object's `x-goog-hash`;
 * the listing: `prefix`, an inclusive `startOffset`, `maxResults` per page, and
@@ -210,6 +212,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._download(unquote(found.group(2)), query)
         elif method == "GET" and _LIST.match(path):
             self._list(query)
+        elif method == "GET" and path == f"/storage/v1/b/{BUCKET}":
+            self._error(403, BUCKET)
         elif method in ("GET", "DELETE") and (found := _OBJECT.match(path)):
             name = unquote(found.group(2))
             stored = owner.objects.get(name)
