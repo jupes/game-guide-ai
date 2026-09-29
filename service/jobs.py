@@ -20,17 +20,36 @@ be idempotent**. `attempts` doubles as the fencing token: only the latest
 claimer may reschedule a job.
 
 **Nothing here runs by itself.** Cloud Run allocates CPU only while a request is
-in flight, so there is no worker thread. `JobRunner.run_due()` is called from
-the three places RT-15 names — after the commit that created the job
-(`run_after_commit`), from a hook on ordinary requests, and from an
-authenticated `/internal/jobs` that Cloud Scheduler calls. The last two are
-wired by the beads that introduce the first job kinds (`1kg.8.1`, `1kg.9.5`).
+in flight, so there is no worker thread. The runner is driven from the three
+places RT-15 names, all wired in `service/job_driver.py` (1kg.2.7): after the
+commit that created the job (`run_after_commit`, inside that request) or after
+its response (`job_driver.run_after_response`); from a hook on signed-in
+requests, one due job at most every few seconds; and from an authenticated
+`POST /internal/jobs` that Cloud Scheduler calls. Every driver takes the
+instance's one job lock without waiting, so job work holds at most one of the
+gate's connections, and runs in the thread pool, never on the event loop.
+
+A handler is registered by kind (`JobRunner.register`) where the application
+builds its stores. `max_attempts=None` retries for ever with capped backoff; a
+kind with no handler at dispatch fails content-free and is retried. A handler
+is given a `JobContext` deadline that is **advisory** — nothing interrupts it,
+so it must bound its own I/O — and every transaction the queue opens carries
+server-side `lock_timeout`, `statement_timeout` and `transaction_timeout`,
+which bound the database's side and not a client's wall clock (`1kg.2.8`).
 
 **Dedupe absorbs only into a job nobody has started.** Once a job has been
 claimed, its handler may already have read the state it acts on, so a new
 request for the same work gets a row of its own and runs afterwards. Two jobs
 for one key are harmless — handlers are idempotent; a request swallowed by a
 job that then finishes without it is not.
+
+The `attempts = 0` guard alone did not achieve that. It is read at the moment of
+the absorb and locked nothing, so between the absorb and the enqueuer's commit
+another instance could claim that job, run it and delete it — and the change the
+enqueuer made in the same transaction was then never processed by anything
+(W-1). An absorbing enqueue therefore holds the row it absorbed into
+`FOR SHARE`, and `claim`'s `FOR UPDATE SKIP LOCKED` skips it until every
+absorber has committed. `InMemoryJobQueue` holds the same rule directly.
 
 **Rows are content-free** (SEC-20): a payload is a flat object of identifiers,
 which `check_payload` enforces by shape, and a failure records the exception's
@@ -41,6 +60,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -61,6 +82,14 @@ PAYLOAD_VALUE_MAX_CHARS = 200
 #: No longer than the platform lets a request live (Cloud Run: 300 s), since a
 #: handler always runs inside one.
 LEASE_SECONDS = 300
+
+#: Server-side bounds on the transactions this queue opens. Defence in depth for
+#: the database — **not** a client wall clock: they do not cover COMMIT, and they
+#: do nothing about a black-holed network. A hard client-side deadline is
+#: `1kg.2.8`'s question. `docs/migrations.md` section 4 says so in full.
+LOCK_TIMEOUT = "2s"
+STATEMENT_TIMEOUT = "2s"
+TRANSACTION_TIMEOUT = "5s"
 RETRY_BASE_SECONDS = 5
 RETRY_CAP_SECONDS = 3600
 
@@ -152,6 +181,23 @@ class JobQueue(Protocol):
 
 # ── Postgres ─────────────────────────────────────────────────────────────────
 
+def _bound(conn: object) -> None:
+    """The first statement of every transaction this queue opens.
+
+    `set_config(..., true)` is transaction-scoped, which holds only because
+    `Database.connection()` hands out a connection that is *not* in autocommit
+    and commits when its block exits. `enqueue()` is deliberately not bounded
+    this way: it runs inside the caller's transaction, and re-timing the rest of
+    the caller's work is not this module's business.
+    """
+    conn.execute(  # type: ignore[attr-defined]  # justification: the psycopg connection Database yields is untyped
+        "SELECT set_config('lock_timeout', %s, true), "
+        "set_config('statement_timeout', %s, true), "
+        "set_config('transaction_timeout', %s, true)",
+        (LOCK_TIMEOUT, STATEMENT_TIMEOUT, TRANSACTION_TIMEOUT),
+    )
+
+
 #: MATERIALIZED, not `WHERE id IN (SELECT ... LIMIT n FOR UPDATE SKIP LOCKED)`: the
 #: planner may run that subquery once per outer row, and each rerun skips the rows
 #: this statement has already locked, so the LIMIT window slides and one claim
@@ -203,6 +249,15 @@ class PostgresJobQueue:
         )
         # Twice at most: the job that absorbed the insert can be claimed (and so
         # leave the index) before the SELECT sees it, in which case the insert wins.
+        #
+        # The SELECT holds what it finds FOR SHARE until this transaction commits,
+        # which is what stops a concurrent claim from running and deleting the
+        # absorbing job — and this transaction's work with it — before the work is
+        # visible (W-1). `claim`'s FOR UPDATE SKIP LOCKED skips a share-locked row;
+        # share mode lets concurrent absorbers through without waiting for each
+        # other. The one thing this statement can wait for is a claim's own short
+        # transaction, and if that claim wins the row, `attempts = 0` no longer
+        # matches, so the next turn of this loop inserts a row of its own.
         for _ in range(3):
             row = unit.conn.execute(
                 "INSERT INTO app.jobs (kind, payload, dedupe_key, run_after, created_at) "
@@ -215,7 +270,8 @@ class PostgresJobQueue:
             if row is None:
                 row = unit.conn.execute(
                     "SELECT id FROM app.jobs "
-                    "WHERE kind = %s AND dedupe_key = %s AND dead_at IS NULL AND attempts = 0",
+                    "WHERE kind = %s AND dedupe_key = %s AND dead_at IS NULL AND attempts = 0 "
+                    "FOR SHARE",
                     (kind, dedupe_key),
                 ).fetchone()
             if row is not None:
@@ -235,6 +291,7 @@ class PostgresJobQueue:
             return []
         moment = _now(now)
         with self._db.connection() as conn:
+            _bound(conn)
             rows = conn.execute(
                 _CLAIM,
                 {
@@ -250,10 +307,12 @@ class PostgresJobQueue:
 
     def complete(self, job: Job) -> None:
         with self._db.connection() as conn:
+            _bound(conn)
             conn.execute("DELETE FROM app.jobs WHERE id = %s", (job.id,))
 
     def fail(self, job: Job, *, error: str, retry_at: datetime | None, now: datetime | None = None) -> None:
         with self._db.connection() as conn:
+            _bound(conn)
             conn.execute(
                 "UPDATE app.jobs SET locked_until = NULL, last_error = %s, "
                 "run_after = COALESCE(%s, run_after), "
@@ -285,6 +344,10 @@ class InMemoryJobQueue:
     _rows: dict[int, _Row] = field(default_factory=dict)
     #: Enqueued but not committed, per open unit of work.
     _staged: dict[int, dict[int, _Row]] = field(default_factory=dict)
+    #: Committed rows an open unit absorbed into, and so holds until it commits.
+    #: The twin of `SELECT ... FOR SHARE`: `claim` skips these, as its
+    #: `FOR UPDATE SKIP LOCKED` skips a share-locked row.
+    _held: dict[int, set[int]] = field(default_factory=dict)
     _next_id: int = 1
 
     def enqueue(
@@ -307,6 +370,11 @@ class InMemoryJobQueue:
             for row in (*self._rows.values(), *mine.values()):
                 unstarted = row.dead_at is None and row.job.attempts == 0
                 if row.job.kind == kind and row.dedupe_key == dedupe_key and unstarted:
+                    if row.job.id in self._rows:
+                        # A committed row: hold it, so no claim can take the job —
+                        # and delete this transaction's work with it — before we
+                        # commit. Our own staged rows are invisible anyway.
+                        self._held.setdefault(id(unit), set()).add(row.job.id)
                     return row.job.id
         moment = _now(now)
         job_id = self._next_id
@@ -323,9 +391,11 @@ class InMemoryJobQueue:
 
             def publish() -> None:
                 self._rows.update(self._staged.pop(key, {}))
+                self._held.pop(key, None)
 
             def discard() -> None:
                 self._staged.pop(key, None)
+                self._held.pop(key, None)
 
             unit.on_publish(publish)
             unit.on_rollback(discard)
@@ -350,6 +420,7 @@ class InMemoryJobQueue:
                 and (row.locked_until is None or row.locked_until < moment)
                 and row.job.kind in kinds
                 and (job_id is None or row.job.id == job_id)
+                and not self._is_held(row.job.id)
             ),
             key=lambda row: (row.run_after, row.job.id),
         )[: max(0, limit)]
@@ -357,6 +428,10 @@ class InMemoryJobQueue:
             row.locked_until = moment + timedelta(seconds=lease_seconds)
             row.job = replace(row.job, attempts=row.job.attempts + 1)
         return [row.job for row in due]
+
+    def _is_held(self, job_id: int) -> bool:
+        """True while some open transaction has absorbed into this row."""
+        return any(job_id in held for held in self._held.values())
 
     def complete(self, job: Job) -> None:
         self._rows.pop(job.id, None)
@@ -384,8 +459,58 @@ class InMemoryJobQueue:
 
 
 @dataclass(frozen=True)
+class JobContext:
+    """What a handler is told about its time.
+
+    **Advisory.** Nothing interrupts a handler: the runner stops *starting*
+    work when the budget is spent and lets what is running finish. A handler
+    that blocks past its deadline breaks this contract, and the only bound left
+    is the platform's — Cloud Run's request timeout, Cloud Scheduler's attempt
+    deadline. So a handler must cap its own I/O by `remaining_seconds()`.
+    """
+
+    #: None: no budget — run to completion.
+    deadline_monotonic: float | None = None
+    monotonic: Callable[[], float] = time.monotonic
+
+    def remaining_seconds(self) -> float | None:
+        if self.deadline_monotonic is None:
+            return None
+        return self.deadline_monotonic - self.monotonic()
+
+    def expired(self) -> bool:
+        remaining = self.remaining_seconds()
+        return remaining is not None and remaining <= 0
+
+
+@dataclass(frozen=True)
+class JobRunResult:
+    """What an attempt says about itself — counts only, never content (SEC-20).
+
+    `ran` counts jobs attempted, whatever the outcome; `failed` counts how many
+    of those raised. `remaining` is conservative: it is True whenever the runner
+    stopped before the queue was empty, and only False when a claim came back
+    empty and so proved there was nothing due.
+    """
+
+    ran: int = 0
+    failed: int = 0
+    remaining: bool = False
+
+
+class UnknownJobKind(Exception):
+    """A claimed job whose kind has no handler at dispatch.
+
+    `claim` filters by the registry, so this is the narrow window in which the
+    registry changed in between. The job is failed content-free and retried —
+    never dead-lettered, because the instance that does have the handler should
+    still get it.
+    """
+
+
+@dataclass(frozen=True)
 class JobHandler:
-    run: Callable[[Job], None]
+    run: Callable[[Job, JobContext], None]
     #: None: retried until it succeeds, with capped backoff — a deletion is
     #: never abandoned. A number: marked dead after that many attempts.
     max_attempts: int | None = None
@@ -399,48 +524,111 @@ class JobRunner:
     def __init__(
         self,
         queue: JobQueue,
-        handlers: Mapping[str, JobHandler],
+        handlers: Mapping[str, JobHandler] | None = None,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        monotonic: Callable[[], float] = time.monotonic,
+        single_flight: threading.Lock | None = None,
     ) -> None:
         self._queue = queue
-        self._handlers = dict(handlers)
+        self._handlers = dict(handlers or {})
         self._clock = clock
+        self._monotonic = monotonic
+        #: The instance's one job lock (`service/job_driver.JOB_LOCK`), injected
+        #: rather than imported: the driver imports this module, not the reverse.
+        self._single_flight = single_flight
 
-    def run_due(self, limit: int = 1) -> int:
-        """Run up to `limit` due jobs; returns how many ran, whatever their outcome.
+    def has_handlers(self) -> bool:
+        """Whether this build runs any kind at all — without one, a driver has
+        nothing to claim and does not ask the database."""
+        return bool(self._handlers)
 
-        One claim per job: a lease starts when its handler does, not while the
-        jobs ahead of it in a batch are still running."""
-        ran = 0
-        while ran < limit and self._run(self._queue.claim(self._handlers.keys(), now=self._clock())):
-            ran += 1
-        return ran
+    def register(self, kind: str, handler: JobHandler) -> None:
+        """Wire a kind at startup. Claims take a snapshot of what is registered,
+        so an older build never claims a newer build's kinds."""
+        self._handlers[check_kind(kind)] = handler
+
+    def run_due(self, limit: int = 1, deadline_monotonic: float | None = None) -> JobRunResult:
+        """Run up to `limit` due jobs within a **cooperative** budget.
+
+        The budget stops the runner *starting* another job; it never interrupts
+        one that is running. One claim per job, so a lease starts when its
+        handler does, not while the jobs ahead of it are still running."""
+        context = JobContext(deadline_monotonic, self._monotonic)
+        ran = failed = 0
+        while ran < max(0, limit):
+            if context.expired():
+                return JobRunResult(ran, failed, remaining=True)
+            claimed = self._queue.claim(self._handlers.keys(), now=self._clock())
+            if not claimed:
+                # The only probe there is: nothing was due.
+                return JobRunResult(ran, failed, remaining=False)
+            attempted, lost = self._run(claimed, context)
+            ran += attempted
+            failed += lost
+        # Stopped on the count, so there may well be more.
+        return JobRunResult(ran, failed, remaining=ran > 0)
+
+    def run_job(self, job_id: int, deadline_monotonic: float | None = None) -> JobRunResult:
+        """One named job, now — what both post-response drivers call. Its row
+        stays the retry record, so nothing is lost if this attempt does not run."""
+        context = JobContext(deadline_monotonic, self._monotonic)
+        if context.expired():
+            return JobRunResult(remaining=True)
+        claimed = self._queue.claim(self._handlers.keys(), job_id=job_id, now=self._clock())
+        ran, failed = self._run(claimed, context)
+        return JobRunResult(ran, failed, remaining=False)
 
     def run_after_commit(self, unit: UnitOfWork, job_id: int) -> None:
-        """Try the job as soon as `unit` commits; its row stays as the retry record."""
+        """Try the job as soon as `unit` commits; its row stays as the retry record.
+
+        This runs inside the request that committed, before its response. Where
+        the answer must not wait for the job — a revocation's acknowledgement
+        never waits on its reconciliation (RQ-5) — use
+        `service.job_driver.run_after_response` instead.
+
+        It takes the single-flight lock without waiting. If other job work holds
+        it, nothing is claimed: the row waits for the request hook or
+        `/internal/jobs`, and job work on the instance still holds at most one
+        of the gate's connections."""
 
         def run() -> None:
-            self._run(self._queue.claim(self._handlers.keys(), job_id=job_id, now=self._clock()))
+            lock = self._single_flight
+            if lock is not None and not lock.acquire(blocking=False):
+                return
+            try:
+                self.run_job(job_id)
+            finally:
+                if lock is not None:
+                    lock.release()
 
         unit.on_commit(run)
 
-    def _run(self, jobs: list[Job]) -> int:
+    def _run(self, jobs: list[Job], context: JobContext) -> tuple[int, int]:
+        """Returns (attempted, failed). Never raises: a job's failure is the
+        job's, and a driver must be able to swallow it whole."""
+        failed = 0
         for job in jobs:
-            handler = self._handlers[job.kind]
+            handler = self._handlers.get(job.kind)
             error: str | None = None
-            try:
-                handler.run(job)
-            except Exception as exc:
-                error = type(exc).__name__
+            if handler is None:
+                error = UnknownJobKind.__name__
+            else:
+                try:
+                    handler.run(job, context)
+                except Exception as exc:
+                    error = type(exc).__name__
             if error is None:
                 self._queue.complete(job)
                 continue
+            failed += 1
             now = self._clock()
-            exhausted = handler.max_attempts is not None and job.attempts >= handler.max_attempts
+            exhausted = (
+                handler is not None and handler.max_attempts is not None and job.attempts >= handler.max_attempts
+            )
             self._queue.fail(job, error=error, retry_at=None if exhausted else now + retry_delay(job.attempts), now=now)
             log.warning(
                 "jobs: %s #%d failed on attempt %d (%s)%s",
                 job.kind, job.id, job.attempts, error, "; giving up" if exhausted else "",
             )
-        return len(jobs)
+        return len(jobs), failed

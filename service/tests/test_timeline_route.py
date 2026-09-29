@@ -41,9 +41,9 @@ from service.history import InMemoryMessageStore
 from service.models import ChatMode, ChatResponse, Source
 from service.session import SessionData
 from service.tests.test_workbench_api import _answer, _json_headers
-from service.timeline_store import InMemoryTimelineStore
+from service.timeline_store import InMemoryTimelineStore, new_entry_id
 from service.workbench_api import NOT_FOUND_DETAIL, WorkbenchRoute, api_route_dependants
-from service.workbench_contracts import TimelinePage
+from service.workbench_contracts import CONTRACT_VERSION, TimelinePage
 
 OWNER = 1
 STRANGER = 2
@@ -923,3 +923,67 @@ def test_the_route_is_a_workbench_route_behind_the_apps_gm_gate() -> None:
 def test_the_route_module_imports_nothing_from_the_app() -> None:
     text = (Path(__file__).resolve().parents[1] / "timeline_api.py").read_text(encoding="utf-8")
     assert "from .app" not in text and "service.app" not in text
+
+
+# ── Rework 2: carry items from the oqx review (agent-forge-harness-4ff) ──────
+
+
+def test_without_a_store_a_malformed_id_and_a_missing_one_answer_identically(
+    world: _World, client
+) -> None:
+    """M-1. `timeline_api.py`'s own comment claims malformed and missing 'never
+    diverge... both 503 without a store (SEC-3)': the id's shape is checked
+    only after the no-store gate. Nothing pinned that ordering — a guard that
+    moved the shape check ahead of the 503 gate would give a malformed id 404
+    and a merely-missing one 503, quietly reopening SEC-3's oracle for exactly
+    the ids H-1 protects."""
+    app.dependency_overrides[get_timeline_store] = lambda: None
+    try:
+        malformed = _timeline_encoded(client, MALFORMED_IDS[0])
+        missing = _timeline(client, "no-such")
+    finally:
+        app.dependency_overrides[get_timeline_store] = lambda: world.timeline
+    assert malformed.status_code == missing.status_code == 503
+    assert malformed.text == missing.text
+    varying = {"date", "content-length", "server"}
+    shapes = {
+        tuple(sorted((k.lower(), v) for k, v in r.headers.items() if k.lower() not in varying))
+        for r in (malformed, missing)
+    }
+    assert len(shapes) == 1, f"the responses differ outside the body: {shapes}"
+
+
+def test_a_fully_covered_window_is_an_empty_page_with_a_live_cursor(world: _World, client) -> None:
+    """M-2. A full legacy window whose every row is already covered by a typed
+    entry can show nothing this page -- covering entries older than the
+    window's oldest row sit below the merge's floor, so they are not taken
+    either -- yet the page must still carry a cursor. A route that nulled
+    `next_cursor` whenever `items == []` would tell a poller the conversation
+    is caught up while three typed entries are still waiting to surface once
+    the legacy position clears this window; the walk below would also stop one
+    page early and silently drop them."""
+    world.own()
+    row_ids = [
+        world.messages.append(CONVERSATION, "sage", "user" if i % 2 == 0 else "assistant", f"row{i}")
+        for i in range(6)
+    ]
+    old = datetime(2000, 1, 1, tzinfo=UTC)
+    with world.db.transaction() as unit:
+        for n in range(3):
+            entry = {
+                "schema_version": CONTRACT_VERSION, "entry_kind": "chat", "entry_id": new_entry_id(),
+                "created_at": old, "mode": "sage", "prompt": f"old q{n}",
+                "answer": {"text": f"old a{n}", "answerable": True, "sources": [], "created_at": old},
+            }
+            world.timeline.append(
+                unit, CONVERSATION, entry, old, owner_id=OWNER,
+                user_message_id=row_ids[2 * n], assistant_message_id=row_ids[2 * n + 1],
+            )
+
+    first = _timeline(client, limit="1").json()
+    assert first["items"] == [], "every row of a full window that is covered shows nothing"
+    assert first["next_cursor"] is not None, "but the three entries below the floor are still unread"
+
+    # And the walk still ends, having shown exactly the three covered-window
+    # entries the first page could not surface yet.
+    assert len(_walk(client, 1)) == 3

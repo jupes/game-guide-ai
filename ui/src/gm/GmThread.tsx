@@ -25,6 +25,10 @@
  * a button at the top of the thread, present only while `hasEarlier` is true.
  * It fetches nothing itself — `ChatPane` owns `useGmTimeline` and wires its
  * `loadEarlier`/`loadingEarlier`/`earlierError` straight through as props.
+ * When the last page lands and the control goes, keyboard focus moves to the
+ * first exchange that arrived (tabIndex -1), as VersionList's Load more does
+ * (1kg.3.7). Only a keyboard press scrolls to it; otherwise the reader's place,
+ * which ChatPane holds still as the older turns arrive, stays where it is.
  */
 
 import * as React from 'react'
@@ -37,6 +41,7 @@ import { parseDiceNotation } from '../shell/diceNotation'
 import { AssistantLane } from './AssistantLane'
 import { AssistantText } from './AssistantText'
 import { toSpellCardProps, toStatBlockCardProps } from './adapters'
+import type { ChatMode } from '../api'
 import type { DocumentLink } from './contracts'
 import type { AnswerState, GmTurn, LaneAnswer } from './gmTimeline'
 import { LANE_COPY } from './laneState'
@@ -78,13 +83,58 @@ export function GmThread({
   earlierError = null,
   onLoadEarlier,
 }: GmThreadProps): React.JSX.Element {
+  const buttonRef = React.useRef<HTMLButtonElement>(null)
+  const firstExchangeRef = React.useRef<HTMLDivElement>(null)
+  // 1kg.3.7, VersionList's hand-off: a press made here, whether its walk has
+  // been seen in flight (so focus moves only once that walk settles), and
+  // whether the keyboard made it.
+  const press = React.useRef<{ stage: 'pressed' | 'loading'; byKeyboard: boolean } | null>(null)
+
+  React.useEffect(() => {
+    const pressed = press.current
+    if (pressed === null) return
+    if (loadingEarlier) {
+      press.current = { ...pressed, stage: 'loading' }
+      return
+    }
+    if (pressed.stage !== 'loading') return
+    press.current = null
+    // Only focus the walk left nowhere — the control unmounted with the last
+    // page, or a browser dropped it off the disabled button — never focus the
+    // reader has since put somewhere else.
+    const active = document.activeElement
+    if (active !== null && active !== document.body) return
+    // focus() scrolls its target into view, and ChatPane has just held still
+    // the content the reader was looking at (1kg.3.6), so the hand-off must
+    // not scroll it away (PR #136 review H1). Back on the control, focus only
+    // repairs a browser dropping it off the disabled button: it never scrolls.
+    // On the first turn that arrived, it scrolls there for a keyboard press,
+    // whose reader follows the focus ring, and not for a pointer press.
+    if (hasEarlier) buttonRef.current?.focus({ preventScroll: true })
+    else firstExchangeRef.current?.focus({ preventScroll: !pressed.byKeyboard })
+  }, [loadingEarlier, hasEarlier, turns])
+
+  const handleLoadEarlier = React.useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      // A click made by Enter or Space counts no pointer clicks: detail is 0.
+      press.current = { stage: 'pressed', byKeyboard: event.detail === 0 }
+      onLoadEarlier?.()
+    },
+    [onLoadEarlier],
+  )
+
   return (
     <>
       {hasEarlier && onLoadEarlier && (
-        <LoadEarlier loading={loadingEarlier} error={earlierError} onLoadEarlier={onLoadEarlier} />
+        <LoadEarlier loading={loadingEarlier} error={earlierError} onLoadEarlier={handleLoadEarlier} buttonRef={buttonRef} />
       )}
-      {turns.map((turn) => (
-        <div key={turn.key} className="gm-thread__exchange">
+      {turns.map((turn, index) => (
+        <div
+          key={turn.key}
+          className="gm-thread__exchange"
+          tabIndex={-1}
+          ref={index === 0 ? firstExchangeRef : undefined}
+        >
           <Narration turn={turn} />
           <Outcome turn={turn} onOpenDocument={onOpenDocument} />
         </div>
@@ -106,16 +156,19 @@ function LoadEarlier({
   loading,
   error,
   onLoadEarlier,
+  buttonRef,
 }: {
   loading: boolean
   error: string | null
-  onLoadEarlier: () => void
+  onLoadEarlier: (event: React.MouseEvent<HTMLButtonElement>) => void
+  buttonRef: React.Ref<HTMLButtonElement>
 }): React.JSX.Element {
   return (
     <div className="gm-thread__load-earlier">
       {error !== null && <p className="gm-thread__load-earlier-error">{error}</p>}
       <button
         type="button"
+        ref={buttonRef}
         className="gm-thread__load-earlier-button"
         onClick={onLoadEarlier}
         disabled={loading}
@@ -153,7 +206,7 @@ function Outcome({
 }): React.JSX.Element | null {
   switch (turn.kind) {
     case 'chat':
-      return <AnswerLane answer={turn.answer} />
+      return <AnswerLane answer={turn.answer} mode={turn.mode} />
     case 'tool':
       return (
         <AssistantLane
@@ -190,7 +243,7 @@ function LaneFrame({ state, children }: { state: string; children: React.ReactNo
 }
 
 /** RAIL-14: a plain GM turn is answered, and the answer sits in the lane. */
-function AnswerLane({ answer }: { answer: AnswerState }): React.JSX.Element | null {
+function AnswerLane({ answer, mode }: { answer: AnswerState; mode: ChatMode }): React.JSX.Element | null {
   switch (answer.state) {
     case 'none':
       return null
@@ -221,7 +274,7 @@ function AnswerLane({ answer }: { answer: AnswerState }): React.JSX.Element | nu
     case 'answered':
       return (
         <LaneFrame state="done">
-          <AnswerBody answer={answer.answer} />
+          <AnswerBody answer={answer.answer} mode={mode} />
         </LaneFrame>
       )
   }
@@ -231,8 +284,16 @@ function AnswerLane({ answer }: { answer: AnswerState }): React.JSX.Element | nu
  * Prose, then what was lifted out of it, then the notice, then the evidence —
  * the order a GM reads, and the order it is announced. `answerable` of `null`
  * (not recorded) earns neither the creative notice nor citations.
+ *
+ * agent-forge-harness-ffz (pr120 review L-3): the creative notice is the GM
+ * channel's own wording for the GM's own improvisation — it does not fit a
+ * Sage or Rules entry hydrated into this thread (a mode chip keeps the same
+ * conversation, so those entries can land here too). Neither Sage nor Rules
+ * shows any such notice for an unanswerable reply (ChatPane.tsx), so a
+ * non-`gm` entry gets the same silent treatment here, matching `answerable
+ * === null`'s "no claim either way" rather than mislabeling it as invented.
  */
-function AnswerBody({ answer }: { answer: LaneAnswer }): React.JSX.Element {
+function AnswerBody({ answer, mode }: { answer: LaneAnswer; mode: ChatMode }): React.JSX.Element {
   const grounded = answer.answerable === true
   const dice = grounded ? parseDiceNotation(answer.text) : null
   return (
@@ -240,7 +301,7 @@ function AnswerBody({ answer }: { answer: LaneAnswer }): React.JSX.Element {
       {answer.text.trim() !== '' && <AssistantText source={answer.text} />}
       {answer.spell_content && <SpellCard {...toSpellCardProps(answer.spell_content)} density="compact" />}
       {answer.stat_block && <StatBlockCard {...toStatBlockCardProps(answer.stat_block)} density="compact" />}
-      {answer.answerable === false && <p className="gm-thread__creative">{CREATIVE_NOTICE}</p>}
+      {mode === 'gm' && answer.answerable === false && <p className="gm-thread__creative">{CREATIVE_NOTICE}</p>}
       {dice && (
         <div className="gm-thread__dice">
           <DiceRoll die={dice.die} value={dice.value} modifier={dice.modifier} />

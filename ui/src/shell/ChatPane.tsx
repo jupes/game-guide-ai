@@ -225,6 +225,10 @@ function ChatPaneBody({
   const threadError = gm ? timeline.error : historyError
   const threadLoading = gm ? timeline.loading : loadingHistory
   const threadLength = gm ? gmTurns.length : exchanges.length
+  // 1kg.3.8 L3: a first window of nothing but empty pages can still leave a
+  // cursor behind it, and the thread (with its Load earlier control) is then
+  // what to draw, not the empty label.
+  const threadEmpty = threadLength === 0 && !(gm && timeline.hasEarlier)
   const [draft, setDraft] = React.useState('')
   // agent-forge-harness-764: block a submit before it ever reaches the wire,
   // mirroring the server-side gate in service/app.py::chat().
@@ -251,17 +255,22 @@ function ChatPaneBody({
   // either the loading state or the prepended turns. The layout effect below
   // turns that into a scrollTop adjustment once the older turns land, so the
   // content the reader was looking at holds still while the thread above it
-  // grows. `null` once consumed, and reset on a conversation switch so a
-  // press that never resolved before the switch cannot misapply itself to a
-  // different conversation's geometry.
-  const earlierScrollAdjustRef = React.useRef<number | null>(null)
+  // grows. `null` once consumed. It is kept with the conversation it was
+  // measured in, and the layout effect consumes it on a switch too, so a
+  // press that was still pending, or had failed, can never move a different
+  // conversation's feed (1kg.3.8 L2: a reset in a passive effect ran after the
+  // switch commit's layout effect had already applied it).
+  const earlierScrollAdjustRef = React.useRef<{ conversationId: string | null; height: number } | null>(null)
+  // How many stored entries were drawn when Load earlier was pressed, so the
+  // settle announcement can tell a walk that found turns from one that found
+  // none (1kg.3.8 L4).
+  const itemsAtPressRef = React.useRef(0)
   // The other half of STATE-7's pair (below): whether the settle-announcement
   // effect just saw a walk that was THIS conversation's, so switching away
   // mid-walk cannot fire a stale "loaded"/"failed" phrase once the NEW
   // conversation's own (unrelated) loadingEarlier happens to read false.
   const wasLoadingEarlierRef = React.useRef(false)
   React.useEffect(() => {
-    earlierScrollAdjustRef.current = null
     wasLoadingEarlierRef.current = false
   }, [conversationId])
 
@@ -269,29 +278,39 @@ function ChatPaneBody({
     const feed = feedRef.current
     const before = earlierScrollAdjustRef.current
     earlierScrollAdjustRef.current = null
-    if (feed && before !== null) feed.scrollTop += feed.scrollHeight - before
-  }, [timeline.items])
+    if (feed && before !== null && before.conversationId === conversationId) {
+      feed.scrollTop += feed.scrollHeight - before.height
+    }
+  }, [timeline.items, conversationId])
 
   const { loadEarlier } = timeline
+  const itemCount = timeline.items.length
   const handleLoadEarlier = React.useCallback(() => {
     const feed = feedRef.current
-    if (feed) earlierScrollAdjustRef.current = feed.scrollHeight
+    if (feed) earlierScrollAdjustRef.current = { conversationId, height: feed.scrollHeight }
+    itemsAtPressRef.current = itemCount
     // agent-forge-harness-ekf / agent-forge-harness-4oz: the same single
     // announcer, not a live region of GmThread's own (STATE-7 rations this
     // to one announcement now and one when the walk settles, below).
     setArrival('Loading earlier turns…')
     loadEarlier()
-  }, [loadEarlier])
+  }, [loadEarlier, conversationId, itemCount])
 
   // The other half of STATE-7's pair: once a Load earlier walk settles,
   // announce how it went. Keyed on the loadingEarlier→settled transition so
   // this never fires on mount or from an unrelated rerender.
   React.useEffect(() => {
     if (wasLoadingEarlierRef.current && !timeline.loadingEarlier) {
-      setArrival(timeline.earlierError !== null ? 'Couldn’t load earlier turns' : 'Earlier turns loaded')
+      setArrival(
+        timeline.earlierError !== null
+          ? 'Couldn’t load earlier turns'
+          : itemCount > itemsAtPressRef.current
+            ? 'Earlier turns loaded'
+            : 'No earlier turns found',
+      )
     }
     wasLoadingEarlierRef.current = timeline.loadingEarlier
-  }, [timeline.loadingEarlier, timeline.earlierError])
+  }, [timeline.loadingEarlier, timeline.earlierError, itemCount])
 
   const scrollToLatest = React.useCallback(() => {
     const feed = feedRef.current
@@ -444,7 +463,7 @@ function ChatPaneBody({
         {/* History recall failed — recoverable: the thread starts empty. */}
         {threadError && <ChatMessage role="system">{threadError}</ChatMessage>}
 
-        {threadLength === 0 && threadLoading ? (
+        {threadEmpty && threadLoading ? (
           // agent-forge-harness-swg (pr116 M-1): NOT a live region. This node
           // used to carry `role="status"` mounted together with its own
           // text — a SECOND live region alongside `.chat-pane__arrival`
@@ -458,7 +477,7 @@ function ChatPaneBody({
           <p className="chat-pane__empty">
             Recalling the conversation…
           </p>
-        ) : threadLength === 0 ? (
+        ) : threadEmpty ? (
           !threadError && <p className="chat-pane__empty">{EMPTY_LABELS[mode]}</p>
         ) : gm ? (
           <GmThread

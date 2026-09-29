@@ -3,7 +3,8 @@
  * lane beneath it, and a reading order that is the visual order.
  */
 
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
+import type { MockInstance } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { GmThread } from './GmThread'
@@ -79,11 +80,71 @@ describe('GmThread — three lanes', () => {
     expect(screen.getByText(/Creative — may include invented content/)).toBeVisible()
   })
 
+  // agent-forge-harness-ffz (pr120 review L-3): a mode chip keeps the same
+  // conversation, so a Sage or Rules entry can land in the GM thread too. The
+  // creative notice is the GM's own wording for the GM's own improvisation —
+  // Sage and Rules show no such notice for an unanswerable reply anywhere
+  // else in the app (ChatPane.tsx) — so it must not be pinned on their entries.
+  it('does not label a Sage entry\'s unanswerable reply as "Creative", unlike a GM one (review L-3)', () => {
+    renderThread(
+      turnsFromTimeline([
+        chatEntry({
+          mode: 'sage',
+          prompt: 'What is the range of fireball?',
+          answer: { text: 'The sources do not cover that.', answerable: false, sources: [] },
+        }),
+      ]),
+    )
+    expect(screen.getByText('The sources do not cover that.')).toBeInTheDocument()
+    expect(screen.queryByText(/Creative —/)).toBeNull()
+  })
+
+  it('does not label a Rules entry\'s unanswerable reply as "Creative" either (review L-3)', () => {
+    renderThread(
+      turnsFromTimeline([
+        chatEntry({
+          mode: 'rules',
+          prompt: 'Can a rogue sneak attack twice in one turn?',
+          answer: { text: 'The sources do not cover that.', answerable: false, sources: [] },
+        }),
+      ]),
+    )
+    expect(screen.queryByText(/Creative —/)).toBeNull()
+  })
+
   it('makes no claim either way when groundedness was never recorded', () => {
     renderThread(turnsFromTimeline([chatEntry({ answer: { text: 'An old answer.', answerable: null, sources: null } })]))
     expect(screen.getByText('An old answer.')).toBeInTheDocument()
     expect(screen.queryByText(/Creative —/)).toBeNull()
     expect(screen.queryByText(/source/)).toBeNull()
+  })
+
+  // agent-forge-harness-ffz (pr120 review L-4, surviving mutant M13): dice is
+  // parsed out of the answer text only when the answer is grounded
+  // (`answerable === true`) — an invented (creative) answer that happens to
+  // contain dice-shaped text must not get a dice chip, because nothing
+  // vouches for that number the way a real roll would be.
+  it('never shows a dice roll under a creative (non-grounded) answer, even when its text carries dice notation (review L-4)', () => {
+    const { container } = renderThread(
+      turnsFromTimeline([
+        chatEntry({
+          answer: { text: 'You roll 1d20+5=18 to swim through the current.', answerable: false, sources: [] },
+        }),
+      ]),
+    )
+    expect(screen.getByText(/You roll/)).toBeInTheDocument()
+    expect(container.querySelector('.gm-thread__dice')).toBeNull()
+  })
+
+  it('shows a dice roll under a grounded answer whose text carries dice notation (review L-4, positive case)', () => {
+    const { container } = renderThread(
+      turnsFromTimeline([
+        chatEntry({
+          answer: { text: 'The trap deals 1d20+5=18 damage.', answerable: true, sources: [] },
+        }),
+      ]),
+    )
+    expect(container.querySelector('.gm-thread__dice')).not.toBeNull()
   })
 
   it('renders citations compactly inside the lane, after the prose', () => {
@@ -152,7 +213,7 @@ describe('GmThread — entries it cannot draw here', () => {
 describe('GmThread — a turn in flight', () => {
   it('shows the lane working, with decorative dots and no live region of its own', () => {
     const { container } = renderThread([
-      { kind: 'chat', key: 'live:1', prompt: 'Who runs the inn?', answer: { state: 'pending' } },
+      { kind: 'chat', key: 'live:1', prompt: 'Who runs the inn?', answer: { state: 'pending' }, mode: 'gm' },
     ])
     const lane = container.querySelector('.assistant-lane') as HTMLElement
     expect(within(lane).getByText('Consulting the tomes…')).toBeInTheDocument()
@@ -164,7 +225,7 @@ describe('GmThread — a turn in flight', () => {
 
   it('shows a failed turn’s message in the lane', () => {
     const { container } = renderThread([
-      { kind: 'chat', key: 'live:1', prompt: 'Who runs the inn?', answer: { state: 'failed', message: 'The service is busy.' } },
+      { kind: 'chat', key: 'live:1', prompt: 'Who runs the inn?', answer: { state: 'failed', message: 'The service is busy.' }, mode: 'gm' },
     ])
     const lane = container.querySelector('.assistant-lane') as HTMLElement
     expect(lane).toHaveAttribute('data-state', 'error')
@@ -233,5 +294,113 @@ describe('GmThread — Load earlier (1kg.3.6)', () => {
   it('draws nothing when hasEarlier is true but no handler is wired (defensive)', () => {
     render(<GmThread turns={turns} hasEarlier />)
     expect(screen.queryByRole('button', { name: /Load earlier|Loading/ })).toBeNull()
+  })
+})
+
+describe('GmThread — Load earlier hands keyboard focus on (1kg.3.7)', () => {
+  const newer = turnsFromTimeline([chatEntry({ entry_id: 'ent_new', prompt: 'A newer question' })])
+  const older = turnsFromTimeline([chatEntry({ entry_id: 'ent_old', prompt: 'An older question' })])
+
+  /** Presses the control (from the keyboard unless told otherwise), then plays the walk's renders as ChatPane would. */
+  async function pressAndSettle(
+    hasEarlier: boolean,
+    whileLoading: () => void = () => {},
+    via: 'keyboard' | 'mouse' = 'keyboard',
+  ) {
+    const onLoadEarlier = vi.fn()
+    const view = render(<GmThread turns={newer} hasEarlier onLoadEarlier={onLoadEarlier} />)
+    const button = screen.getByRole('button', { name: 'Load earlier' })
+    if (via === 'mouse') {
+      await userEvent.click(button)
+    } else {
+      button.focus()
+      await userEvent.keyboard('{Enter}')
+    }
+    expect(onLoadEarlier).toHaveBeenCalledTimes(1)
+    view.rerender(<GmThread turns={newer} hasEarlier loadingEarlier onLoadEarlier={onLoadEarlier} />)
+    whileLoading()
+    view.rerender(<GmThread turns={[...older, ...newer]} hasEarlier={hasEarlier} onLoadEarlier={onLoadEarlier} />)
+    return view
+  }
+
+  it('moves focus to the first older turn once the last page lands and the control goes, like VersionList', async () => {
+    const { container } = await pressAndSettle(false)
+    expect(screen.queryByRole('button', { name: 'Load earlier' })).toBeNull()
+    const [first] = exchanges(container)
+    expect(first).toHaveTextContent('An older question')
+    expect(first).toHaveAttribute('tabindex', '-1')
+    expect(document.activeElement).toBe(first)
+  })
+
+  it('puts focus back on the control when the browser dropped it while the control was disabled', async () => {
+    // A browser may drop focus to <body> once the button is disabled. jsdom
+    // never does (and ignores blur() on a disabled button), so the test drops
+    // it there itself: focus a stand-in, then remove it.
+    await pressAndSettle(true, () => {
+      const standIn = document.createElement('input')
+      document.body.append(standIn)
+      standIn.focus()
+      standIn.remove()
+      expect(document.activeElement).toBe(document.body)
+    })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Load earlier' }))
+  })
+
+  it('never takes focus from wherever the reader moved it while the walk ran', async () => {
+    const elsewhere = document.createElement('input')
+    document.body.append(elsewhere)
+    await pressAndSettle(false, () => elsewhere.focus())
+    expect(document.activeElement).toBe(elsewhere)
+    elsewhere.remove()
+  })
+
+  describe('without moving the view the reader holds (PR #136 review H1)', () => {
+    // In a real browser focus() scrolls its target into view, which would undo
+    // ChatPane's scroll hold (1kg.3.6). jsdom never scrolls, so these read the
+    // options each focus() call was made with; the real-Chromium half is the
+    // ChatPane story LoadEarlierByMouseHoldsTheReadersPlace.
+    let focusSpy: MockInstance<HTMLElement['focus']>
+    beforeEach(() => {
+      focusSpy = vi.spyOn(HTMLElement.prototype, 'focus')
+    })
+    afterEach(() => focusSpy.mockRestore())
+
+    /** The options of the last focus() call made on `el`. */
+    function lastFocusOptions(el: Element): FocusOptions | undefined {
+      const index = focusSpy.mock.contexts.lastIndexOf(el)
+      expect(index).toBeGreaterThanOrEqual(0)
+      return focusSpy.mock.calls[index][0]
+    }
+
+    /** What Chromium does to a focused button once it is disabled (jsdom never does). */
+    function dropFocusToBody() {
+      const standIn = document.createElement('input')
+      document.body.append(standIn)
+      standIn.focus()
+      standIn.remove()
+      expect(document.activeElement).toBe(document.body)
+    }
+
+    it.each(['keyboard', 'mouse'] as const)('puts focus back on the control without scrolling to it (%s press)', async (via) => {
+      await pressAndSettle(true, dropFocusToBody, via)
+      const button = screen.getByRole('button', { name: 'Load earlier' })
+      expect(document.activeElement).toBe(button)
+      expect(lastFocusOptions(button)).toEqual({ preventScroll: true })
+    })
+
+    it('hands focus to the first older turn without scrolling to it after a mouse press', async () => {
+      const { container } = await pressAndSettle(false, undefined, 'mouse')
+      const [first] = exchanges(container)
+      expect(first).toHaveTextContent('An older question')
+      expect(document.activeElement).toBe(first)
+      expect(lastFocusOptions(first)).toEqual({ preventScroll: true })
+    })
+
+    it('scrolls to the first older turn after a keyboard press, so its focus ring is on screen', async () => {
+      const { container } = await pressAndSettle(false)
+      const [first] = exchanges(container)
+      expect(document.activeElement).toBe(first)
+      expect(lastFocusOptions(first)?.preventScroll ?? false).toBe(false)
+    })
   })
 })
