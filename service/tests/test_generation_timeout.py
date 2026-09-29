@@ -8,6 +8,10 @@ hand it back within BOUND_S; before the fix it waited forever.
 A provider that trickles instead, one byte every DRIP_S = T/2, restarts every
 read bound; only the attempt's wall-clock deadline (connect + request timeout,
 agent-forge-harness-2bb) ends it. Before that fix it held the thread forever.
+
+A /chat turn's calls together end at the turn's budget (agent-forge-harness-0u02),
+which cuts an attempt short and refuses a call or a retry it cannot afford.
+Before that fix a trickling provider held a spell turn for four whole attempts.
 """
 
 from __future__ import annotations
@@ -27,14 +31,16 @@ import openai
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 import config
 import service.generate as generate_module
 from ingestion.retrieval import RetrievedChunk
 from service import provider_deadline
 from service.app import _ERROR_DETAIL, app, get_service
+from service.generate import LLMClient
 from service.model_catalog import DEFAULT_ALIAS
+from service.models import ChatResponse
 from service.providers import ProviderClientFactory
 from service.rag import RagService
 
@@ -418,3 +424,193 @@ def test_chat_answers_the_existing_timeout_502_when_the_provider_stalls(
     assert (response.status_code, response.json()) == (502, {"detail": detail})
     assert provider.hung_up_on(ATTEMPTS)
     assert provider.accepted == ATTEMPTS
+
+
+# ── The turn's budget (agent-forge-harness-0u02) ──────────────────────────────
+
+TURN_S = DEADLINE_S + 0.3  # one whole attempt, then 0.3 s of a second one
+TURN_CALL_MIN_S = 0.05
+# The deadline plus a scheduler's wake-up; without the budget, a turn ran at
+# least DEADLINE_S - 0.3 = 0.5 s past it.
+TURN_SLACK_S = 0.25
+
+
+@pytest.fixture
+def turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(provider_deadline, "TURN_BUDGET_S", TURN_S)
+    monkeypatch.setattr(provider_deadline, "TURN_CALL_MIN_S", TURN_CALL_MIN_S)
+
+
+class _AnswersFirst:
+    """Answers a turn's first call itself, and hands every later one to `client`."""
+
+    def __init__(self, client: LLMClient) -> None:
+        self.client, self.calls = client, 0
+
+    # justification: LLMClient.invoke's own signature, forwarded unchanged.
+    def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        self.calls += 1
+        if self.calls == 1:
+            return AIMessage(content="Fire Bolt hurls a mote of fire.")
+        return self.client.invoke(input, config=config, **kwargs)
+
+
+class _TimedService(RagService):
+    """Times the graph, which makes every provider call of the turn."""
+
+    elapsed = float("inf")
+
+    # justification: RagService.answer's own arguments, forwarded unchanged.
+    def answer(self, *args: Any, **kwargs: Any) -> ChatResponse:
+        began = time.monotonic()
+        try:
+            return super().answer(*args, **kwargs)
+        finally:
+            self.elapsed = time.monotonic() - began
+
+
+class _TimesOut:
+    """A client whose every call times out, counted."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    # justification: LLMClient.invoke's own signature.
+    def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        self.calls += 1
+        raise openai.APITimeoutError(request=httpx.Request("POST", "https://provider.invalid"))
+
+
+def _chat(svc: RagService, mode: str) -> httpx.Response:
+    app.dependency_overrides[get_service] = lambda: svc
+    try:
+        response = on_own_thread(lambda: TestClient(app, raise_server_exceptions=False).post(
+            "/chat", json={"prompt": "What does Fire Bolt do?", "mode": mode},
+        ))
+    finally:
+        app.dependency_overrides.pop(get_service, None)
+    assert isinstance(response, httpx.Response)
+    return response
+
+
+def test_a_spell_turn_answers_within_its_budget_while_its_structuring_calls_trickle(
+    stalled: Callable[..., StalledProvider], turn: None,
+) -> None:
+    provider = stalled(_JSON_HEADERS, drip_s=DRIP_S)
+    first = _AnswersFirst(ProviderClientFactory().client_for(DEFAULT_ALIAS))
+    factory = ProviderClientFactory(client_builders={DEFAULT_ALIAS: first})
+    svc = _TimedService(retriever=_HitRetriever(), factory=factory)
+    response = _chat(svc, "spell")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "Fire Bolt hurls a mote of fire."
+    assert (body["suggestions"], body["spell_content"]) == (None, None)
+    # The suggestions got one whole attempt and one the turn's deadline cut
+    # short; the third and the spell card never started. Unbudgeted: 3 + 1 whole.
+    assert provider.hung_up_on(2)
+    assert provider.accepted == 2
+    assert svc.elapsed < TURN_S + TURN_SLACK_S
+
+
+def test_a_turn_whose_answer_trickles_ends_at_its_budget_with_the_existing_timeout_502(
+    stalled: Callable[..., StalledProvider], turn: None,
+) -> None:
+    provider = stalled(_JSON_HEADERS, drip_s=DRIP_S)
+    svc = _TimedService(retriever=_HitRetriever())
+    response = _chat(svc, "spell")
+    detail = {"category": "timeout", "retryable": True, "message": _ERROR_DETAIL["timeout"]}
+    assert (response.status_code, response.json()) == (502, {"detail": detail})
+    # One whole attempt, then one cut short at the turn's deadline, not three whole ones.
+    assert provider.hung_up_on(2)
+    assert provider.accepted == 2
+    assert svc.elapsed < TURN_S + TURN_SLACK_S
+
+
+SHORT_TURN_S = DEADLINE_S / 4  # a turn that ends well before an attempt's own deadline
+
+
+def _in_a_turn(call: Callable[[], object]) -> Callable[[], object]:
+    def within() -> object:
+        token = provider_deadline.begin_turn()
+        try:
+            return call()
+        finally:
+            provider_deadline.end_turn(token)
+
+    return within
+
+
+def test_an_attempt_ends_at_the_turn_deadline_when_that_comes_before_its_own(
+    stalled: Callable[..., StalledProvider], turn: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(provider_deadline, "TURN_BUDGET_S", SHORT_TURN_S)
+    provider = stalled(_JSON_HEADERS, drip_s=DRIP_S)
+    client = ProviderClientFactory().client_for(DEFAULT_ALIAS)
+    began = time.monotonic()
+    raised = on_own_thread(_in_a_turn(lambda: generate_module.generate_result(
+        [HumanMessage(content="hi")], alias=DEFAULT_ALIAS, client=client, max_attempts=1,
+    )))
+    elapsed = time.monotonic() - began
+    # Made and cut short, not refused; nearer the turn's deadline than its own.
+    assert isinstance(raised, openai.APITimeoutError)
+    assert not isinstance(raised, generate_module.TurnBudgetExhausted)
+    assert SHORT_TURN_S - CLOCK_SLACK_S <= elapsed < (SHORT_TURN_S + DEADLINE_S) / 2
+    assert provider.hung_up_on(1)
+
+
+def test_a_request_queued_in_a_turn_ends_at_the_turn_deadline(
+    stalled: Callable[..., StalledProvider], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(provider_deadline, "TURN_BUDGET_S", SHORT_TURN_S)
+    provider = stalled(_JSON_HEADERS, drip_s=DRIP_S)
+    transport = provider_deadline.AttemptDeadlineTransport(DEADLINE_S, limits=httpx.Limits(max_connections=1))
+    waited: list[float] = []
+
+    def queue_behind_the_only_connection() -> object:
+        with httpx.Client(transport=transport, timeout=None) as client, client.stream("POST", provider.url):
+            began = time.monotonic()
+            try:
+                return _in_a_turn(lambda: client.post(provider.url))()
+            finally:
+                waited.append(time.monotonic() - began)
+
+    assert isinstance(on_own_thread(queue_behind_the_only_connection), httpx.PoolTimeout)
+    assert waited[0] < (SHORT_TURN_S + DEADLINE_S) / 2
+
+
+def test_a_call_the_turn_cannot_afford_is_refused_before_it_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(provider_deadline, "TURN_BUDGET_S", provider_deadline.TURN_CALL_MIN_S - 1)
+    client, seen = _TimesOut(), _Recorded()
+    token = provider_deadline.begin_turn()
+    try:
+        with pytest.raises(generate_module.TurnBudgetExhausted) as refused:
+            generate_module.generate_result(
+                [HumanMessage(content="hi")], alias=DEFAULT_ALIAS, client=client, observer=seen,
+            )
+    finally:
+        provider_deadline.end_turn(token)
+    # A timeout: /chat's existing 502 for an answer, a structuring call's None.
+    assert isinstance(refused.value, openai.APITimeoutError)
+    assert (client.calls, seen.errors) == (0, [])
+    assert provider_deadline._turn_deadline.get() is None
+
+
+@pytest.mark.parametrize(("budget_s", "calls"), [
+    (provider_deadline.TURN_CALL_MIN_S + generate_module._RETRY_BACKOFF_SECONDS / 2, 1),
+    (60.0, ATTEMPTS),
+], ids=["unaffordable", "affordable"])
+def test_a_retry_is_made_only_while_the_turn_affords_it(
+    monkeypatch: pytest.MonkeyPatch, budget_s: float, calls: int,
+) -> None:
+    monkeypatch.setattr(provider_deadline, "TURN_BUDGET_S", budget_s)
+    client, slept = _TimesOut(), list[float]()
+    token = provider_deadline.begin_turn()
+    try:
+        with pytest.raises(openai.APITimeoutError) as raised:
+            generate_module.generate_result(
+                [HumanMessage(content="hi")], alias=DEFAULT_ALIAS, client=client, sleep=slept.append,
+            )
+    finally:
+        provider_deadline.end_turn(token)
+    assert not isinstance(raised.value, generate_module.TurnBudgetExhausted)  # the last attempt's own
+    assert (client.calls, len(slept)) == (calls, calls - 1)

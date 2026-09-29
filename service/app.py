@@ -105,6 +105,7 @@ from .models import (
     SignupRequest,
     SuggestionsRoutingInfo,
 )
+from .provider_deadline import begin_turn, end_turn
 from .rag import RagService
 from .ratelimit import (
     RateLimited,
@@ -1322,6 +1323,10 @@ def chat(
         mode=req.mode.value, billed_account_id=session.user_id,
         actor_kind=usage_capture.ACTOR_ACCOUNT, campaign_id=None, request=request,
     )
+    # 0u02: the turn's one provider budget, which every call below draws down,
+    # so the turn answers before Cloud Run's request timeout cuts it off.
+    # Beside the operation for the same reasons, and ended in the same finally.
+    turn_token = begin_turn()
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, conversation_id,
@@ -1417,6 +1422,7 @@ def chat(
         log.exception("internal error on /chat (mode=%s)", req.mode.value)
         raise HTTPException(status_code=500, detail="internal error") from None
     finally:
+        end_turn(turn_token)
         usage_capture.end_operation(op_token)
 
 
