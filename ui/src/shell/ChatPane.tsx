@@ -219,6 +219,15 @@ function ChatPaneBody({
     conversationId,
     modelPreference,
     onConversationAdopted: setConversationId,
+    // j9w: the server healed this conversation off a retired manual pick —
+    // move the store onto the healed preference so the NEXT turn stops
+    // sending the retired id and ModelPicker shows it. Wrapped (not passed
+    // bare) so `rebindPreference` keeps its `this` — it is an ordinary
+    // method, not a bound field like the store's own getSnapshot/subscribe.
+    onPreferenceRebound: React.useCallback(
+      (id: string, preference: string) => conversationStore.rebindPreference(id, preference),
+      [conversationStore],
+    ),
     onTurnSettled: handleTurnSettled,
   })
   // Keeps ChatPane on this side of the GM boundary while a turn is in flight.

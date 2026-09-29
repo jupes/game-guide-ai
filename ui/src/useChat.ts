@@ -50,6 +50,16 @@ export interface UseChatOptions {
    * the user could never return to. Adopting it is what makes the id the server
    * chose the one the next turn continues. */
   onConversationAdopted?: (conversationId: string) => void
+  /** Called when a turn's response says the SERVER healed this conversation
+   * off a manual pick it has since retired (agent-forge-harness-j9w) —
+   * `routing.fallback_from` set, `preference` is `routing.requested`: the
+   * binding the server moves the conversation to, which the next turn must
+   * send. Never `routing.effective`: on a heal to 'auto' that is the model
+   * that answered, and sending it is a binding mismatch (pr156 H-1). The one
+   * legitimate way `boundPreference` changes after the first prompt; wire it
+   * to `ConversationStore.rebindPreference` so the next turn stops sending
+   * the retired id and ModelPicker shows the healed preference. */
+  onPreferenceRebound?: (conversationId: string, preference: string) => void
   /** Called exactly once per turn THIS hook sent, right after the commit in
    * which it settles (agent-forge-harness-ekf) — 'done' for an answer, 'error'
    * for a failed result or a rejection. Additive and optional: every existing
@@ -142,6 +152,7 @@ export function useChat({
   conversationId,
   modelPreference = 'auto',
   onConversationAdopted,
+  onPreferenceRebound,
   onTurnSettled,
   now = monotonicNow,
   recordMetric = recordBrowserMetric,
@@ -306,6 +317,11 @@ export function useChat({
             if (adopted !== null) {
               onConversationAdopted?.(adopted)
             }
+            const routing = result.response.routing
+            const scopeId = conversationId ?? adopted
+            if (scopeId !== null && typeof routing?.fallback_from === 'string' && routing.fallback_from) {
+              onPreferenceRebound?.(scopeId, routing.requested)
+            }
             settle({ status: 'done', response: result.response }, 'success', adopted)
           } else {
             settle(
@@ -331,7 +347,10 @@ export function useChat({
         },
       )
     },
-    [post, mode, conversationId, modelPreference, now, recordMetric, onConversationAdopted],
+    [
+      post, mode, conversationId, modelPreference, now, recordMetric,
+      onConversationAdopted, onPreferenceRebound,
+    ],
   )
 
   // agent-forge-harness-ekf / agent-forge-harness-swg (pr129 M-1): report each
