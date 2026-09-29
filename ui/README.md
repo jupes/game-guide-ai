@@ -43,9 +43,11 @@ Landing ── "Enter the Tavern" ─▶ Workspace                    Profile (s
     Dark phone stories add `expectTheme('dark')`. The document's `scrollWidth` cannot see
     inside a box that clips (the ds Card, the transcript, the workspace's boxes, the open
     drawer), so `expectNoPageOverflow` also runs `expectNothingClipped` over the page:
-    every element and line of text lies inside its nearest clipping box, on both sides.
-    The channel strip, code blocks, tables, ellipsised titles and visually hidden labels
-    are the only exemptions. Workspace stories also call `expectWorkspaceFits` (the
+    every element and line of text lies inside its nearest clipping box, on both sides —
+    including an ellipsised title's or a scroller's own box, not just what is inside it.
+    The channel strip, code blocks, tables and visually hidden labels exempt their
+    contents; an ellipsised title exempts its own text but is itself still checked.
+    Workspace stories also call `expectWorkspaceFits` (the
     composer and Send on screen, then the same walk), and the open drawer's `scrollWidth`
     equals its `clientWidth`.
 - **Profile page** (swe1.7): editable display name + avatar tone, persisted to

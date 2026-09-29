@@ -716,6 +716,27 @@ def test_two_absorbing_enqueuers_never_wait_for_each_other() -> None:
     assert [job.id for job in queue.claim(["upload.sweep"], now=T0)] == [first], "claimable once both committed"
 
 
+def test_an_absorber_that_rolls_back_releases_its_hold() -> None:
+    """M-1 from the review of PR #141: only the commit half of J-3's release was
+    tested (`test_an_absorbed_enqueue_is_not_claimable_until_the_absorber_commits`
+    above). An absorber that rolls back must release its hold too — `_staged_by`
+    registers `discard` on `on_rollback`, and `discard` pops `_held` exactly as
+    `publish` does — so the job the absorber never wrote to stays claimable
+    rather than stuck forever. Mutant R-discard-hold: drop the
+    `self._held.pop(unit, None)` line from `discard`, and this goes red."""
+    queue = _queue()
+    first = _enqueue(queue, kind="upload.sweep", dedupe_key="session:S")
+
+    with pytest.raises(RuntimeError):
+        with queue.db.transaction() as absorber:
+            assert queue.enqueue(absorber, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0) == first
+            assert queue.claim(["upload.sweep"], now=T0) == [], "held while the absorber is open"
+            raise RuntimeError("the absorber's own work failed")
+
+    (claimed,) = queue.claim(["upload.sweep"], now=T0)
+    assert claimed.id == first, "released once the absorber rolled back, not stuck forever"
+
+
 def test_an_absorb_is_not_a_write() -> None:
     """A unit that has only absorbed is not the writer, so a unit opened inside
     it may stage a job of its own; and a writer does not stop a nested unit
