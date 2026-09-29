@@ -52,6 +52,8 @@ from service.campaigns_api import (
 )
 from service.db import CampaignLockOrder, CampaignLockSettings, Database, InMemoryDatabase, PoolSettings
 from service.document_store import InMemoryDocumentStore, PostgresDocumentStore
+from service.eligibility import EligibilityMutations, EligibilityStores, narrow_step_one, remove_member_step_two
+from service.eligibility_store import InMemoryEligibilityStore, PostgresEligibilityStore
 from service.history import InMemoryMessageStore
 from service.jobs import InMemoryJobQueue, PostgresJobQueue
 from service.participant_store import InMemoryParticipantStore, PostgresParticipantStore
@@ -2036,6 +2038,83 @@ def test_every_shipped_narrowing_clears_exactly_what_it_invalidates(served: Serv
         assert s.db.units[marks].campaign_locks == [], "Start's finalising transaction takes no campaign lock"
     elif narrowing != "archive_step_two":
         assert s.db.locks(marks) == [], "a revocation never asks for the campaign lock"
+
+
+def _group_narrowings(s: Served) -> tuple[EligibilityMutations, EligibilityStores]:
+    """`1ir.2.1`'s mutations over the served world's filled session store. The
+    change recorder and the table namespace do nothing here: the subject is
+    the reveal slots."""
+    w = s.w
+    eligibility: Any = (
+        InMemoryEligibilityStore(w.db, documents=w.documents) if w.kind == "fake" else PostgresEligibilityStore()
+    )
+
+    def nothing(*_: Any) -> None:
+        return None
+
+    mutations = EligibilityMutations(
+        s.db,
+        eligibility=eligibility,
+        documents=w.documents,
+        sessions=w.sessions,
+        table_namespace=nothing,
+        record=nothing,
+    )
+    return mutations, EligibilityStores(eligibility, w.documents, w.sessions, nothing, nothing)
+
+
+@pytest.mark.parametrize("narrowing", ["remove_member", "remove_group", "step_one_alone", "step_two_alone"])
+def test_a_group_narrowing_clears_every_slot_in_each_step_at_the_requests_clock(
+    served: Served, narrowing: str
+) -> None:
+    """T-B11 for `1ir.2.1`'s narrowings (RQ-7, RQ-5; the lead ruling on
+    `1kg.7.1`). A disclosure does not record the group it went to yet, so
+    removing a member or a whole group clears every slot, as `narrowed`,
+    stamped with the one clock the request read: step 1 takes no campaign lock
+    and step 2 the exclusive one, each advancing the epoch once, and no reveal
+    audit row is written. Each step clears on its own: step 1 before step 2
+    has run, and step 2 for the session a start between the steps leaves
+    showing."""
+    s, w = served, served.w
+    mutations, stores = _group_narrowings(s)
+    campaign = _campaign(w)
+    a, b = (_seat(w, campaign, "open", w.players[n]) for n in range(2))
+    group = mutations.create_group(campaign, name="Scouts")
+    assert all(mutations.add_member(campaign, group.id, seat).changed for seat in (a, b))
+    session = _session(w, campaign)
+    x, y = _document(w, campaign), _document(w, campaign)
+    cx, cy = _command(), _command()
+    _write(w, campaign, session.id, x, TableTarget(), command=cx)
+    _write(w, campaign, session.id, y, _parts(a, b), command=cy)
+    epoch, marks = _epoch(w, session.id), len(s.db.units)
+    #: A moment no reading of the clock during the test can be.
+    now = _now() + timedelta(minutes=5)
+
+    if narrowing == "remove_member":
+        assert mutations.remove_member(campaign, group.id, a, now=now).changed
+    elif narrowing == "remove_group":
+        assert mutations.remove_group(campaign, group.id, now=now).changed
+    elif narrowing == "step_one_alone":
+        with s.db.transaction() as unit:
+            narrow_step_one(unit, stores, campaign, now=now)
+    else:
+        with s.db.transaction() as unit:
+            assert remove_member_step_two(unit, stores, campaign, group.id, a, now=now).changed
+
+    table, copies = _by_command(w, session.id, cx), _by_command(w, session.id, cy)
+    assert _shown(w, session.id) == {None: None, a: None, b: None}, "every slot: no display outlives the change"
+    assert _seqs(w, session.id) == {None: 2, a: 2, b: 2}
+    assert (table.ended_reason, copies.ended_reason) == (EndReason.NARROWED, EndReason.NARROWED)
+    assert table.ended_at == copies.ended_at == now, "the request's clock, not a second reading"
+    assert _reveal_rows(s, campaign) == [], "a narrowing writes its own row, never a reveal row"
+    locks = [unit.campaign_locks for unit in s.db.units[marks:]]
+    if narrowing == "step_one_alone":
+        assert (_epoch(w, session.id), locks) == (epoch + 1, [[]]), "step 1 never asks for the campaign lock"
+    elif narrowing == "step_two_alone":
+        assert (_epoch(w, session.id), locks) == (epoch + 1, [[(campaign, "exclusive")]])
+    else:
+        assert _epoch(w, session.id) == epoch + 2, "step 1 and step 2 each advance it once"
+        assert locks == [[], [(campaign, "exclusive")]], "step 1 unlocked, then step 2 under the exclusive lock"
 
 
 def test_the_scopes_later_beads_will_use(served: Served) -> None:

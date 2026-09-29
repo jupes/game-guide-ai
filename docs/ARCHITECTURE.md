@@ -646,6 +646,7 @@ Every production `narrow(` names `clears=` and `now=`, and
 | Rotate | every slot | `link_rotated` | never |
 | Remove (`remove_seat`) | that member's slots (A-20) | `participant_removed` | never |
 | Campaign archive, step 1 and step 2 | every slot | `campaign_archived` | step 2 only, exclusive |
+| Group member remove, group remove (`1ir.2.1`), step 1 and step 2 | every slot (`NARROWED`, fail closed: a disclosure does not record its group until `1ir.2.x`) | `narrowed` | step 2 only, exclusive |
 | A Stop of one document | that document's copies | `gm_stop` | never |
 | Stop-all | every slot | `stop_all` | never |
 | The reconciliation | a dead session's every slot; a live session's removed seats | `reconciled` | exclusive |

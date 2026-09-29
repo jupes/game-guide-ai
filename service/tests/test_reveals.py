@@ -302,10 +302,11 @@ def test_every_production_narrow_names_its_scope_and_every_store_gets_the_fill()
     registers the reconciliation fill and never the empty `reconcile_slots`.
 
     Positive controls: the scan must find the named sites it exists for —
-    `remove_seat`, both archive steps and the reconciliation fill, and
-    `narrow`, `_close` and `rotate` in each world — so an empty or mis-rooted
-    scan fails. A bead that adds a narrowing (`1kg.5.2`'s document archive and
-    delete, `1ir.2.1`'s group removal) must choose its scope here too."""
+    `remove_seat`, both archive steps, the reconciliation fill and both steps
+    of `1ir.2.1`'s group narrowings, and `narrow`, `_close` and `rotate` in
+    each world — so an empty or mis-rooted scan fails. A bead that adds a
+    narrowing (`1kg.5.2`'s document archive and delete) must choose its scope
+    here too."""
     modules = sorted(p.name for p in SERVICE.glob("*.py"))
     assert "campaigns_api.py" in modules and "reveals.py" in modules, "the scan is rooted at service/"
     narrows: list[tuple[str, str, set[str]]] = []
@@ -319,6 +320,8 @@ def test_every_production_narrow_names_its_scope_and_every_store_gets_the_fill()
         ("campaigns_api.py", "archive_step_one"),
         ("campaigns_api.py", "archive_step_two"),
         ("reveals.py", "reconcile_slots"),
+        ("eligibility.py", "narrow_step_one"),
+        ("eligibility.py", "_narrow_again_and_advance"),
     } <= sites
     missing = [(name, owner) for name, owner, keywords in narrows if not {"clears", "now"} <= keywords]
     assert missing == [], "every production narrow passes clears= and now="
