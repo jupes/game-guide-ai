@@ -461,6 +461,12 @@ class ErrorCode(str, Enum):
     CROSS_SITE = "cross_site"
     SCREEN_LIMIT = "screen_limit"
     LIVE_ELSEWHERE = "live_elsewhere"
+    #: Named groups (btb). Each 409 is reachable only by the campaign's owner,
+    #: after ownership was shown (SEC-3); neither names a value (SEC-20).
+    #: ``group_name_taken``: another live group of the campaign has that name,
+    #: up to case. ``group_cap_reached``: the campaign's 51st live group.
+    GROUP_NAME_TAKEN = "group_name_taken"
+    GROUP_CAP_REACHED = "group_cap_reached"
 
 
 # ── Registry facts the validators need (pinned by registry.json) ─────────────
@@ -1072,6 +1078,15 @@ def _is_empty(kind: FieldKind, value: Any) -> bool:
         return not value
     # ``asset``, ``integer`` and ``abilities`` all clear to ``null``.
     return value is None
+
+
+def is_empty_value(kind: FieldKind, value: Any) -> bool:
+    # justification: the same bare JSON value :func:`_is_empty` takes.
+    """The contract's one definition of *empty*, for a caller outside this
+    module (``1kg.5.4``'s generated fields strip an empty optional value rather
+    than store it). It delegates, so there is never a second definition. The
+    caller hands it a value of the kind's own JSON type."""
+    return _is_empty(kind, value)
 
 
 def check_fields(
@@ -3669,6 +3684,89 @@ class PlayerSeatPage(_Contract):
     next_cursor: Cursor | None
 
 
+# ── Named groups (btb) ───────────────────────────────────────────────────────
+#
+# A GM's named groups of seats (owner decision O-3; shared eligibility ADR ED-4,
+# ED-12, ED-13, ED-15), served by `btb`'s GM routes under
+# `/campaigns/{id}/groups`. A group's name and its members are GM-only: no
+# table-side shape carries either, and the audience a table sees never names a
+# group (ED-15, REVEAL-24). A group is a label, **not an audience**: its members
+# include seats the GM has not confirmed, so whatever delivers to a group's
+# members applies SEC-50(5) seat by seat.
+
+#: 0019's CHECK on `groups.name`, and ``eligibility_store.check_group_name``'s bound.
+GROUP_NAME_MAX_CHARS = 40
+#: ``eligibility_store.GROUPS_PER_CAMPAIGN_MAX``: one page holds every live group.
+GROUP_PAGE_MAX_ITEMS = 50
+
+
+def _a_group_name(value: str) -> str:
+    """The contract's half of a group name. The server's ``check_group_name``
+    (the alias rules) is stricter still and refuses the rest with the same 422
+    before any statement."""
+    return _stored_request_text(value, low=1, high=GROUP_NAME_MAX_CHARS, what="a group name")
+
+
+def _distinct_members(ids: list[str]) -> list[str]:
+    """A group holds a seat once. Not ``_distinct_ids``: that one words a
+    recipient list, and a group's members are not recipients."""
+    if len(set(ids)) != len(ids):
+        raise ValueError("a group names each seat once")
+    return ids
+
+
+#: What a client may send as a group's name; what the server answers with is
+#: read as stored — bounded, with no trim rule.
+GroupNameRequest = Annotated[WireText, AfterValidator(_a_group_name)]
+GroupName = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=GROUP_NAME_MAX_CHARS)]
+
+
+class Group(_Contract):
+    """A GM's named group of seats. GM-only: never on a table channel (SEC-44).
+
+    ``member_ids`` are the seats in it that are not removed, distinct, ascending
+    by code point. They include seats that are open, offered, or accepted and
+    not yet confirmed, so they are **not recipients**: a consumer that delivers
+    to them applies SEC-50(5) and A-27 per seat. No campaign id and no removed
+    state: a removed group is never listed, and is never restored."""
+
+    schema_version: SchemaVersion
+    group_id: OpaqueId
+    name: GroupName
+    member_ids: Annotated[list[OpaqueId], Field(max_length=CAMPAIGN_SEATS_MAX), AfterValidator(_distinct_members)]
+    created_at: Timestamp
+    updated_at: Timestamp
+
+
+class GroupPage(_Contract):
+    """The campaign's live groups, by the name's fold, then id. One page:
+    ``next_cursor`` is always ``null`` today, and the key stays so that paging
+    can arrive without a version bump."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[Group], Field(max_length=GROUP_PAGE_MAX_ITEMS)]
+    next_cursor: Cursor | None
+
+
+class GroupCreateRequest(_Contract):
+    """``POST /campaigns/{id}/groups``: an empty group. Keyed: live names are
+    unique, so an unkeyed retry of a create that landed would be ``409
+    group_name_taken``. A repeat of the key answers the group it made, whatever
+    name the repeat sends. Members are added one by one, each its own change."""
+
+    schema_version: SchemaVersion
+    command_id: CommandId
+    name: GroupNameRequest
+
+
+class GroupPatchRequest(_Contract):
+    """``PATCH /campaigns/{id}/groups/{group_id}``: a rename, and only that.
+    Removal is its own route and cannot be undone, so there is no archive."""
+
+    schema_version: SchemaVersion
+    name: GroupNameRequest
+
+
 #: Name → validator, in the order ``contracts/workbench/v1/schemas.json`` lists them.
 CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "Timestamp": TypeAdapter(Timestamp, config=_HIDE_INPUT),
@@ -3739,4 +3837,8 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "SeatDeclineRequest": TypeAdapter(SeatDeclineRequest),
     "PlayerSeat": TypeAdapter(PlayerSeat),
     "PlayerSeatPage": TypeAdapter(PlayerSeatPage),
+    "Group": TypeAdapter(Group),
+    "GroupPage": TypeAdapter(GroupPage),
+    "GroupCreateRequest": TypeAdapter(GroupCreateRequest),
+    "GroupPatchRequest": TypeAdapter(GroupPatchRequest),
 }

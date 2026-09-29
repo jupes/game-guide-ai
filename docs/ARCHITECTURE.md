@@ -667,10 +667,11 @@ projection from them with its one builder.
 
 Storage for a GM's images and audio, added by `1kg.8.1.1` (slice a of `1kg.8.1`):
 the media migration (`*_media_assets.sql`), the asset store in `service/asset_store.py`
-and the object store in `service/media_objects.py`. **It ships dark.** No route
-exists, nothing in `service/app.py` builds a store or registers a job kind, and
-nothing in the running service reads the media settings: slice b (`1kg.8.1.2`)
-wires them. Switching the capability on is the owner's decision (Q-5).
+and the object store in `service/media_objects.py`; then the upload routes of
+`1kg.8.1.2` (slice b, below). **It ships dark.** The routes match nothing while
+`WORKBENCH_MEDIA_ENABLED` is off (the default), and no store is built or job
+kind registered unless `WORKBENCH_MEDIA_STORE` names one. Switching the
+capability on is the owner's decision (Q-5), and the $10 cap must rise first.
 
 ### The tables
 
@@ -747,9 +748,10 @@ asset row remains.
 
 ### The three jobs (`service/asset_jobs.py`)
 
-`register_jobs(runner, ...)` registers all three kinds, and nothing calls it in
-the running service until slice b wires it into `_build_stores` when a store is
-configured; with no store configured nothing is registered. Every handler
+`register_jobs(runner, ...)` registers all three kinds; `_build_stores` calls it
+when a store is configured, whatever the capability switch says (a deployment
+switched off still owes its deletions), and with no store configured nothing is
+registered. Every handler
 re-reads current state and uses nothing from its payload beyond the ids and keys
 it names. **No handler holds a database connection while it calls the object
 store**, and every call goes through `via_store`. A handler whose advisory
@@ -786,13 +788,53 @@ by default, meaning no store is built; `filesystem` with an absolute
 in code only). "Off" means no route, no store, no bucket and no cost; the store
 setting is separate from `enabled` because a deployment switched off must still
 finish the deletions it owes. Every refusal names the variable, never its value.
-Every object-store call outside `service/media_objects.py` goes through
+The running service reads them once, at startup, through `startup_settings`,
+which adds one rule: the capability cannot be on with no store (refused by
+name, so startup fails loudly). Every object-store call outside `service/media_objects.py` goes through
 `via_store`, where slice c puts the thread limiter. The store's health signal
 for `1kg.9.2` is the read-only `reachable()`.
 
 **Table reads never use this store** (SEC-44(2)). A table's slot resolver finds
 its asset in its own `table_principal` query (SEC-16, SEC-41, `1kg.7.x`); the
 asset store is GM-side and system-side only.
+
+### Uploading (`service/assets_api.py`, `service/media_processing.py`)
+
+Two Workbench routes on `workbench_router`, each a `MediaRoute` whose `matches`
+answers `Match.NONE` while the capability is off, so the router goes on exactly
+as for a path that does not exist, in every topology (`SchedulerRoute`'s
+precedent; no catch-all). Serving the bytes and deleting an asset are slice c's.
+
+| Route | Answers |
+|---|---|
+| `POST /campaigns/{campaign_id}/assets` | `201`, the `Asset`, `uploading`: the contract's caps checked and the declared size reserved against the quota before a byte is accepted; `409 cap_reached` when it does not fit; a replayed `command_id` answers the asset it made |
+| `PUT /campaigns/{campaign_id}/assets/{asset_id}/bytes` | one raw body, `Content-Type` the declared type, `Content-Length` required (`411`). The answer is the `Asset` once processing has ended: `200` `ready`, or `failed` with its reason — `415` `unsupported_type`, `413` `too_large`, `422` any other |
+
+**The bytes request, in order.** Ownership in the statement (the one 404), the
+state (`409` unless `uploading`), the `Content-Type` against the declared type
+(`415`). Then, with **no connection held**, the body streams to the asset's
+`tmp/` key, counted: the first byte past `ASSET_MAX_BYTES[kind]` ends it
+(`too_large`), a body longer or shorter than its `Content-Length` is
+`unreadable`, and the first 16 bytes are judged by magic number before anything
+is written (`unsupported_type`; SVG and GIF are refused). Then `processing`,
+committed; a wait of at most 60 s for the one processing slot per instance, and
+past it `503` with `Retry-After` while the asset returns to `uploading`; then the
+processing itself in a subprocess (60 s wall clock, `RLIMIT_AS` 512 MB on POSIX,
+an environment of `PATH` alone): images header-first against the pixel and side
+caps and re-encoded within their family from the pixels alone, audio probed
+(one audio stream; cover art dropped, other video refused; at most
+`AMBIENCE_MAX_MS` — a one-shot's 30 s is the cue route's) and transcoded to MP3
+with every tag, chapter and picture dropped. The processed object is written to
+`assets/<hex>`, then `ready` or `failed` committed, then the `tmp/` object
+deleted. When the final transition loses (the sweep or a tombstone won), the
+object it wrote is deleted too.
+
+**The proxies.** `ui/nginx.conf` gives the bytes path alone a regex location
+with `client_max_body_size 20m`, `proxy_request_buffering off` and
+`proxy_read_timeout 180s` (RT-10), and no `add_header`; every other
+`/campaigns` request keeps the prefix location's settings. Production has no
+nginx; Cloud Run's settings, ffmpeg and Pillow in both images, and the bucket are
+`1kg.9.5`'s. CI installs ffmpeg for the tests (`.github/workflows/ci.yml`).
 
 ## Running it
 
@@ -957,6 +999,49 @@ is no backfill. And a thread created or linked mid-session gets the `end`
 without the `start`, so its recap reads from its beginning, which is not all
 play when the thread was created before the Start and linked after it.
 
+## Document generation (1kg.5.4)
+
+`service/document_generation.py` turns a GM tool's request into a validated first
+document. It is a **library with no route and no executor**: its one production caller
+is `1kg.4.4`'s executor under `1kg.4.1`'s invocation API, which owns admission, the cost
+guards, fencing and the `401`/`404`. It ships dark: nothing calls it until a tool is enabled.
+
+- **Two halves.** `generate_document(request, client=, alias=, config=, max_attempts=,
+  between_attempts=)` opens no unit of work. `persist_generated(unit, store, campaign_id,
+  generated, now=)` runs inside the caller's unit — the one that settles the invocation —
+  and makes no network call. No connection is held across a provider call (RQ-8), and a
+  failed settle rolls the document back: there are no partial documents (X-6).
+- **Generatable types** are the registry's tool targets: `npc`, `encounter` and
+  `session-notes` (`GENERATION_SPECS`). Each spec names its tool, its basis (creative or
+  summary), the keys it must fill, and the keys only the server sets (`session`, `date`,
+  `present` for notes; `tags` and every asset key always). `field_catalog` and
+  `validate_generated_fields` work for all eight types.
+- **The data block.** Every untrusted text travels in one JSON payload between
+  `<data id="NONCE">` tags, with a per-call nonce redrawn if the payload contains it.
+  Controls and bidirectional overrides in context are replaced with U+FFFD. The payload is
+  bounded at 24,000 code points and refused, never truncated, above it (`context_size`
+  lets the caller fit first). Preset values never enter the prompt.
+- **The envelope.** The model returns exactly `{"fields": {...}, "cited": [...]}`. The
+  parser refuses duplicate keys, `NaN`, depth past six, undeclared keys, asset keys and any
+  remote reference (`://`, `![`, `](`, `<img`, …); drops server-owned keys; trims and
+  strips empty optional values; then runs the contract's own `check_fields(whole=True)`
+  and stores `stored_json` of the result. Every failure is a closed `InvalidOutput` code.
+- **Provenance** is computed by the server: a creative document is `invented` or `mixed`
+  (it cited supplied passages), never "from the books"; a summary is `thread`. The lane
+  prose (`disclosure_prose`) and version 1's summary (`version_summary`) are composed from
+  closed sentences and escaped corpus labels, never from model text.
+- **Observation.** Every attempt is a `provider_attempt` record and ledger row with purpose
+  `document_generation`, and each generation that reached a provider gets one
+  `structuring_outcome`. The config handed to the client is the usage operation plus an
+  explicitly empty callback list, so an enclosing traced run cannot record the prompt
+  (SEC-24). The output bound (`max_tokens`, 3,000) rides on every call; on a reasoning model
+  it counts reasoning tokens too, so the constant is provisional.
+- **The caller's obligations.** Authorize the campaign and its owner first; pass the
+  allowlisted client and its alias (this module never builds a client, resolves a model or
+  reads a tier: D-8, D-9); pass `between_attempts=ctx.check_cancelled`; take
+  `campaign_id` from the fenced admission. Synthetic eval cases live in
+  `ingestion/eval_data/document_generation/`; the runner is `1kg.4.6`'s.
+
 ## Workbench routes: the posture every new route inherits
 
 `service/workbench_api.py` (agent-forge-harness-oe6) is the seam every Workbench
@@ -1111,3 +1196,65 @@ none today, and the test asserts that count.
 **Contract parity gates deploy.** The timeline route serves the Workbench
 contract, so `contract-parity` is now one of `deploy`'s `needs` and a
 top-level clause of its `if:` (see `docs/ci.md`).
+
+## GM tool invocations (GM Workbench)
+
+Bead `1kg.4.1`. A GM asks for a tool with a brief; the answer is a
+`ToolInvocation` (`docs/workbench-wire-contract.md`, *The tool-invocation
+family*). The rows are `service/tool_invocation_store.py`'s
+(`campaign.tool_invocations`, and `campaign.tool_attempts`, **the admission
+record**: one row per attempt, written before any provider work, holding no
+token, price, alias or provider). The rules are `service/tool_invocations.py`'s;
+the three routes are `service/tool_invocations_api.py`'s, on the Workbench
+scaffolding.
+
+**Off by default.** A tool runs only when `WORKBENCH_ENABLED_TOOLS` names it,
+its registry capability is in `WORKBENCH_CAPABILITIES`, and an executor is
+registered for it — and none is registered yet (`1kg.4.3`, `1kg.4.4` and
+`1kg.8.3` add theirs). Availability is decided in one function,
+`tool_availability`, which `1kg.9.6` replaces. Setting `WORKBENCH_ENABLED_TOOLS`
+in production needs E-8's owner-chosen limits, the tool's `1kg.4.6` threshold
+and the SEC-39 terms record; `portrait` and `map` are paid under D-3, so
+`WORKBENCH_CAPABILITIES=image_generation` stays unset in production until
+`yje.4.1`'s entitlement gate covers them. An unknown id in either variable
+fails startup.
+
+**Lifecycle.** A POST runs three steps. **T1** takes the GM's
+`WORKBENCH_IN_FLIGHT` advisory lock first, decides ownership once (campaign,
+conversation-in-campaign, source entry: any miss is the one 404), answers an
+existing `invocation_id` by its stored state, then runs the guards — archived,
+enabled, the model allowlist, the executor's precheck, the X-5 cap, the pilot
+day, the per-user window, in that order, so no refused request spends a token
+— and writes the timeline entry, the invocation and its attempt row. The
+executor then runs with no connection held. **T2** takes the fence (still
+`working`, still this attempt, before its deadline) and only through it stores
+the outcome and runs the executor's `finish`, rewriting the entry in the same
+transaction. A row past its deadline is settled by whichever path meets it
+next (lazy expiry; there is no sweeper): `cancelled` if a cancel was asked for,
+else `failed attempt_expired`. An attempt's deadline is 150 s from its start,
+and every provider call an executor makes is bounded by what is left of it.
+
+**One clock.** Every time the service writes or compares is the route's clock,
+passed into SQL; no statement calls `now()`. The pilot day's chat half is
+`calls_today()`'s own database day, so the two agree except within seconds of
+UTC midnight.
+
+**Cost guards.** The X-5 cap is two in-flight tool invocations per GM across
+every campaign and instance, counted in PostgreSQL under the advisory lock;
+`/chat` turns are not counted. The hourly window is `/chat`'s own per-user
+window, so a GM who spends it on tools is throttled on `/chat` too. The pilot
+day counts today's chat turns plus every GM's tool attempts against
+`CHAT_DAILY_CAP`, while `/chat`'s own daily check is unchanged and does not
+count tools. Two residuals follow, acceptable only because E-8 forbids enabling
+any tool before the owner chooses the limits: once a tool is enabled, the
+pilot's daily total can reach twice `CHAT_DAILY_CAP`; and admissions from
+different GMs at the edge can overshoot, because the day check is serialised
+per GM only. Each provider attempt is recorded in the cost ledger under the
+operation `tool_invocation`, with the attempt row's `operation_id`.
+
+**The model.** `resolve_tool_model` is the one place the server chooses the
+model (D-8; bead `iov` gives it the tier mapping), and the client can send none.
+`model_catalog.WORKBENCH_PROVIDERS` is the provider allowlist (SEC-39, S-5:
+OpenAI only), enforced at admission and on the one client an executor can ask
+for. No answer, entry or log line of these routes names a model or a provider
+(D-9), and no tracing callback rides on a tool call (SEC-24).

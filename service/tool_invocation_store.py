@@ -1,6 +1,6 @@
 """The GM tool invocation aggregate's storage seam (1kg.4.1, slice A).
 
-Two tables (`0014_tool_invocations.sql`): `campaign.tool_invocations`, one row
+Two tables (the tool invocations migration): `campaign.tool_invocations`, one row
 per invocation keyed by `(owner, campaign, invocation_id)` — the client's own
 idempotency key, scoped to the GM and the campaign — and
 `campaign.tool_attempts`, **the admission record**: one row per attempt,
@@ -324,10 +324,13 @@ _ATTEMPT_COLUMNS = (
 #: that name no owner.
 _BOUND = "SELECT set_config('lock_timeout', %s, true), set_config('transaction_timeout', %s, true)"
 
+#: Oldest first. The tie-break compares ids byte by byte (`COLLATE "C"`), as the
+#: twin's Python sort does, so both worlds list two rows of one instant alike
+#: whatever the database's default collation is.
 _IN_FLIGHT = (
     "SELECT invocation_id FROM campaign.tool_invocations "
     "WHERE owner_id = %s AND status = 'working' AND attempt_deadline > %s "
-    "ORDER BY created_at, invocation_id"
+    'ORDER BY created_at, invocation_id COLLATE "C"'
 )
 _HOLD = (
     f"SELECT {_COLUMNS} FROM campaign.tool_invocations "

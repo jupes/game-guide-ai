@@ -259,6 +259,26 @@
           "retryable": false
         }
       }
+    },
+    {
+      "name": "a group name another live group of the campaign has, up to case (btb): the name is never echoed",
+      "value": {
+        "detail": {
+          "code": "group_name_taken",
+          "message": "Another group already has that name.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "the campaign's 51st live group (btb, SEC-35)",
+      "value": {
+        "detail": {
+          "code": "group_cap_reached",
+          "message": "A campaign holds at most 50 groups.",
+          "retryable": false
+        }
+      }
     }
   ],
   "invalid": [

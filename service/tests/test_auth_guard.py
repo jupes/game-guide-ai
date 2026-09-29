@@ -16,8 +16,10 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import config
+from service import app as appmod
 from service.app import app, get_auth_store, get_service, require_session
 from service.auth_store import InMemoryAuthStore
+from service.media_objects import MediaSettings
 from service.models import ChatMode, ChatResponse
 from service.workbench_api import api_route_dependants
 
@@ -33,6 +35,9 @@ class _FakeService:
 
 @pytest.fixture
 def store(monkeypatch):
+    # 1kg.8.1.2's media routes match nothing while the capability is off, which
+    # it is by default; the matrix must see them live to test their guard.
+    monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate-at-least-32-chars")
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", False)
     s = InMemoryAuthStore()
@@ -126,6 +131,12 @@ PROTECTED_ROUTES: list[Route] = [
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/delete",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/delete",
      {"schema_version": 1, "password": "password123"}),
+    # 1kg.8.1.2, live for this module only (the `store` fixture switches media on).
+    ("POST", "/campaigns/{campaign_id}/assets", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets",
+     {"schema_version": 1, "command_id": "cmd-guard-000000001", "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "audio", "media_type": "audio/mpeg", "size_bytes": 10}),
+    ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa/bytes", None),
     # 1kg.2.3 PR-B (agent-forge-harness-1kg.2.10): the GM's table session.
     ("GET", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session", None),
     ("POST", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session",
@@ -136,6 +147,14 @@ PROTECTED_ROUTES: list[Route] = [
     # (a live screen grant decides without it, SEC-44), so the dependency walk
     # below cannot see it as guarded; it is listed so both halves run on it.
     ("POST", "/table/screen", "/table/screen", {"schema_version": 1, "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa"}),
+    # 1kg.4.1 slice B: the GM's tool invocations.
+    ("POST", "/campaigns/{campaign_id}/tool-invocations", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations",
+     {"schema_version": 1, "invocation_id": "inv_guard_0000000001", "tool_id": "npc", "brief": "a smith",
+      "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa", "conversation_id": "cnv_aaaaaaaaaaaaaaaaaaaaaa"}),
+    ("GET", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations/inv_guard_0000000001", None),
+    ("POST", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations/inv_guard_0000000001/cancel", None),
 ]
 
 #: Deliberately unguarded, and asserted so that a blanket "guard everything"

@@ -703,10 +703,17 @@ class DocumentStore(Protocol):
         data: dict[str, Any],
         author: Author,
         command_id: str | None = None,
+        summary: str = "",
         now: datetime | None = None,
     ) -> DocumentRecord:
         """Mint a document and its version 1 — open when `author` is `gm`,
         sealed when `assistant`.
+
+        `summary` is version 1's one-line summary (`1kg.5.4`, I-17): a document
+        the assistant generated carries its closed disclosure line there, so
+        the version history says what made it. It is bounded by `check_summary`
+        in `_minted`, before either world runs a statement. The documents route
+        passes none, and version 1 keeps `''`.
 
         **`command_id` is optional here although the wire's is required, and
         that asymmetry is deliberate.** `DocumentCreateRequest.command_id` is
@@ -1244,9 +1251,10 @@ class PostgresDocumentStore:
         data: dict[str, Any],
         author: Author,
         command_id: str | None = None,
+        summary: str = "",
         now: datetime | None = None,
     ) -> DocumentRecord:
-        kind, writer, content, moment = _minted(doc_type, type_version, data, author, now)
+        kind, writer, content, moment = _minted(doc_type, type_version, data, author, now, summary)
         # INSERT ... SELECT ... WHERE EXISTS rather than letting the foreign key
         # raise: a ForeignKeyViolation aborts the whole transaction and arrives
         # carrying the driver's text, so an ordinary wrong id would cost the
@@ -1278,10 +1286,11 @@ class PostgresDocumentStore:
             "INSERT INTO campaign.document_versions "
             "(document_id, number, author, summary, changed_fields, restored_from, data, "
             "created_at, updated_at, sealed_at) "
-            "SELECT d.id, 1, %s, '', %s::jsonb, NULL, %s::jsonb, %s, %s, %s "
+            "SELECT d.id, 1, %s, %s, %s::jsonb, NULL, %s::jsonb, %s, %s, %s "
             "FROM campaign.documents d WHERE d.id = %s AND d.campaign_id = %s",
             (
                 writer.value,
+                summary,
                 json.dumps(list(_changed({}, content))),
                 json.dumps(content),
                 moment,
@@ -1584,13 +1593,16 @@ def _minted(
     data: dict[str, Any],
     author: Author | str,
     now: datetime | None,
+    summary: str = "",
 ) -> tuple[DocumentTypeId, Author, dict[str, Any], datetime]:
     """Everything `create` checks before either world writes a row, so the twin
-    and PostgreSQL cannot disagree about which creates are refused."""
+    and PostgreSQL cannot disagree about which creates are refused — version
+    1's `summary` included (`1kg.5.4`)."""
     kind = check_type(doc_type)
     writer = check_author(author)
     _require_current_type_version(kind, type_version)
     _validated(kind, type_version, data)
+    check_summary(summary)
     content = dict(data)
     # Bounded here, before the statement: a CHECK the application did not
     # enforce first comes back as a driver error whose DETAIL quotes the row.
@@ -1954,10 +1966,11 @@ class InMemoryDocumentStore:
         data: dict[str, Any],
         author: Author,
         command_id: str | None = None,
+        summary: str = "",
         now: datetime | None = None,
     ) -> DocumentRecord:
         twin = fake(unit)
-        kind, writer, content, moment = _minted(doc_type, type_version, data, author, now)
+        kind, writer, content, moment = _minted(doc_type, type_version, data, author, now, summary)
         if campaign_id not in self._campaigns.visible(twin):
             raise MissingParent("no such campaign")
         if command_id is not None:
@@ -1986,7 +1999,7 @@ class InMemoryDocumentStore:
             row.id,
             number=1,
             writer=writer,
-            summary="",
+            summary=summary,
             changed=_changed({}, content),
             data=content,
             moment=moment,
