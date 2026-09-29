@@ -16,7 +16,18 @@ import { modesForRole, accentClass } from './modes'
 import './LeftNav.css'
 import './modeAccents.css'
 
-export function LeftNav(): React.JSX.Element {
+export interface LeftNavProps {
+  /** Called AFTER a navigation action: a mode chip, a conversation button,
+   * New conversation. Never for the rename button, the rename input, or
+   * anything in `settings` or the footer (agent-forge-harness-0rn: the
+   * narrow drawer closes on navigation only, INF-8). */
+  onNavigate?: () => void
+  /** Rendered between the conversation list and the footer (the narrow
+   * layout's NavSettings). */
+  settings?: React.ReactNode
+}
+
+export function LeftNav({ onNavigate, settings }: LeftNavProps): React.JSX.Element {
   const { mode, setMode, conversationId, setConversationId } = useAppNav()
   const { user } = useCurrentUser()
   const store = useConversationStore()
@@ -29,7 +40,8 @@ export function LeftNav(): React.JSX.Element {
   const handleNew = React.useCallback(() => {
     const conv = store.create(mode)
     setConversationId(conv.id)
-  }, [mode, store, setConversationId])
+    onNavigate?.()
+  }, [mode, store, setConversationId, onNavigate])
 
   const saveRename = React.useCallback((id: string) => {
     if (renameState?.id !== id) return
@@ -51,7 +63,10 @@ export function LeftNav(): React.JSX.Element {
             icon={icon}
             label={label}
             selected={mode === m}
-            onClick={() => setMode(m)}
+            onClick={() => {
+              setMode(m)
+              onNavigate?.()
+            }}
             className={`left-nav__mode-chip ${accentClass(m)}`}
           />
         ))}
@@ -96,7 +111,10 @@ export function LeftNav(): React.JSX.Element {
               ) : (
                 <button
                   type="button"
-                  onClick={() => setConversationId(conv.id)}
+                  onClick={() => {
+                    setConversationId(conv.id)
+                    onNavigate?.()
+                  }}
                   aria-pressed={conversationId === conv.id}
                   className={
                     conversationId === conv.id
@@ -120,6 +138,8 @@ export function LeftNav(): React.JSX.Element {
           )
         })}
       </div>
+
+      {settings}
 
       {/* Bottom row: UserMenu */}
       <div className="left-nav__footer">

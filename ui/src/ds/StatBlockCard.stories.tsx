@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect } from 'storybook/test'
 
 import { StatBlockCard } from './StatBlockCard'
 
@@ -72,3 +73,35 @@ export const MinimalCoreOnly: Story = {
 // colour is a DIFFERENT value per theme, so a light-only story is half a test.
 
 export const Dark: Story = { ...GoblinScout, globals: { theme: 'dark' } }
+
+/**
+ * agent-forge-harness-0rn (INF-15): the width ChatPane gives a card at a 320px
+ * viewport. The details grid's 250px track minimum used to overflow the
+ * details grid's content box, so every detail row ran 24px into the padding
+ * (and under the card's edge at 320px), with no page-level overflow to show it.
+ */
+export const NarrowColumn: Story = {
+  args: GoblinScout.args,
+  decorators: [
+    (Story) => (
+      <div style={{ width: 276 }}>
+        <Story />
+      </div>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const details = canvasElement.querySelector('.stat-block-card__details')
+    if (!(details instanceof HTMLElement)) throw new Error('no details grid')
+    // Each detail row ends inside the grid's content box. `scrollWidth` alone
+    // cannot see this: a row that runs 24px into the end padding stays inside
+    // the element's own box.
+    const style = getComputedStyle(details)
+    const contentRight =
+      details.getBoundingClientRect().right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth)
+    const rows = Array.from(details.children)
+    await expect(rows.length).toBeGreaterThan(0)
+    for (const row of rows) {
+      await expect(row.getBoundingClientRect().right).toBeLessThanOrEqual(contentRight + 1)
+    }
+  },
+}

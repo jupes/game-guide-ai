@@ -4,6 +4,11 @@
  * Sits under the TopBar so switching channels no longer depends on the LeftNav.
  * Renders the role-gated channels as accented filter chips wired to setMode,
  * with the shared theme control anchored at the right edge.
+ *
+ * On the narrow layout (agent-forge-harness-0rn) WorkspaceShell passes
+ * `showSettings={false}`: ModelPicker and the theme control move into the
+ * LeftNav drawer, and the band keeps only the channels, so a phone's header
+ * is one row.
  */
 
 import * as React from 'react'
@@ -17,7 +22,13 @@ import { modesForRole, accentClass } from './modes'
 import './AppHeader.css'
 import './modeAccents.css'
 
-export function AppHeader(): React.JSX.Element {
+export interface AppHeaderProps {
+  /** false on the narrow layout: ModelPicker and the theme control move to
+   * the drawer. @default true */
+  showSettings?: boolean
+}
+
+export function AppHeader({ showSettings = true }: AppHeaderProps): React.JSX.Element {
   const { mode, setMode } = useAppNav()
   const { user } = useCurrentUser()
   const { theme, toggleTheme } = useTheme()
@@ -38,16 +49,20 @@ export function AppHeader(): React.JSX.Element {
         ))}
       </div>
 
-      <ModelPicker />
+      {showSettings && (
+        <>
+          <ModelPicker />
 
-      <div className="app-header__theme">
-        <span className="app-header__theme-label">Dark theme</span>
-        <Switch
-          checked={theme === 'dark'}
-          onChange={toggleTheme}
-          ariaLabel="Dark theme"
-        />
-      </div>
+          <div className="app-header__theme">
+            <span className="app-header__theme-label">Dark theme</span>
+            <Switch
+              checked={theme === 'dark'}
+              onChange={toggleTheme}
+              ariaLabel="Dark theme"
+            />
+          </div>
+        </>
+      )}
     </nav>
   )
 }
