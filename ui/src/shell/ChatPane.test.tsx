@@ -23,8 +23,32 @@ import type {
 import type { LoadHistoryFn, PostFn } from '../useChat'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import type { GetAttachmentsFn, UploadAttachmentFn } from './ChatPane'
+import { ModelPicker, type GetModelsFn } from './ModelPicker'
+import { ModelCatalogProvider } from './ModelCatalogContext'
 
 // ── CP-F5.3 — ChatPane behaviors (#21) ────────────────────────────────────────
+
+// agent-forge-harness-frc (pr126 M1): explicit ARIA roles that mark a node as
+// a live region. A plain `[role="status"]`-style selector only catches a
+// role written on the element — it misses a role an element carries
+// IMPLICITLY, such as <output> (implicit role="status"). screen.queryAllByRole
+// resolves implicit roles the same way Testing Library's underlying
+// accessibility-tree computation (and real assistive tech) does, so pairing
+// it with the explicit `[aria-live]` selector below counts every shape.
+const LIVE_REGION_ROLES = ['status', 'alert', 'log', 'marquee', 'timer'] as const
+
+// Census of every live region in `container`, regardless of whether the role
+// is written explicitly (`role="…"`) or carried implicitly by the element
+// (e.g. <output>), and regardless of whether it announces via a role or via a
+// bare `aria-live` attribute. Deduped, because an element can match both a
+// role query and the aria-live selector (e.g. role="status" aria-live="polite").
+function queryAllLiveRegions(container: HTMLElement): Element[] {
+  const byRole = LIVE_REGION_ROLES.flatMap((role) => screen.queryAllByRole(role))
+  const byAriaLive = Array.from(
+    container.querySelectorAll('[aria-live]:not([aria-live="off"])'),
+  )
+  return Array.from(new Set<Element>([...byRole, ...byAriaLive]))
+}
 
 function makeNavState(overrides: Partial<AppNavState> = {}): AppNavState {
   return {
@@ -317,7 +341,7 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
     expect(ta.value.length).toBe(CHAT_TEXT_MAX_CHARS + 1)
   })
 
-  it('agent-forge-harness-764 × 4oz: the over-length counter describes the field and adds no second live region', () => {
+  it('agent-forge-harness-764 × 4oz × agent-forge-harness-frc: the over-length counter describes the field and adds no second live region, counted by every live-region shape including implicit roles', () => {
     const { container } = render(<Wrapper />)
     // The pane's one announcer, captured at rest (the 4oz tests' own shape).
     const [announcer] = screen.getAllByRole('status')
@@ -329,12 +353,12 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
       `${CHAT_TEXT_MAX_CHARS + 1} of ${CHAT_TEXT_MAX_CHARS} characters — shorten your message to send it.`,
     )
     // 4oz: not by a second live region beside the announcer — counted in every
-    // live-region shape, not role="status" alone — and not by the announcer,
-    // whose text changes only when a turn is sent or settles.
-    const live = container.querySelectorAll(
-      '[role="status"], [role="alert"], [role="log"], [aria-live]:not([aria-live="off"])',
-    )
-    expect(Array.from(live)).toEqual([announcer])
+    // live-region shape (explicit role, aria-live, OR an implicit role such
+    // as <output>'s implicit role="status" — see queryAllLiveRegions above),
+    // and not by the announcer, whose text changes only when a turn is sent
+    // or settles.
+    const live = queryAllLiveRegions(container)
+    expect(live).toEqual([announcer])
     expect(announcer.textContent).toBe('')
   })
 })
@@ -1347,5 +1371,156 @@ describe('ChatPane (#21)', () => {
 
     await waitFor(() => expect(screen.getByText('Fireball')).toBeInTheDocument())
     expect(screen.getByText('Practical')).toBeInTheDocument()
+  })
+})
+
+describe('ChatPane — model preference wiring (agent-forge-harness-bta)', () => {
+  // b8o.2's AC ("ChatRequest sends an allowlisted model_preference") is unmet
+  // in the shipped UI unless the preference the picker shows actually reaches
+  // `post`. Before bta, ChatPane called useChat with no `modelPreference` at
+  // all, so useChat's own default ('auto') went out on every turn — which is
+  // also why every UI conversation first sent before bta is bound 'auto'
+  // server-side, whatever it stored. These tests mount the REAL picker and
+  // pane on one store, the way WorkspaceShell does, so "what the picker
+  // shows is what the pane sends" is proven about the two together.
+  const emptyHistory: LoadHistoryFn = async () => ({ kind: 'ok', messages: [] })
+  const noAttachments: GetAttachmentsFn = async () => ({ kind: 'ok', attachments: [] })
+  const CATALOG_AFTER_D9 = {
+    default: 'auto',
+    models: [
+      { id: 'auto', display_name: 'Automatic' },
+      { id: 'traveller', display_name: 'Traveller', tier: 'traveller', supports_attachments: true },
+    ],
+  }
+  const catalogDown: GetModelsFn = async () => { throw new Error('network error') }
+
+  function Workspace({ store, conversationId, post, getModels }: {
+    store: MemoryConversationStore
+    conversationId: string
+    post: PostFn
+    getModels: GetModelsFn
+  }): React.JSX.Element {
+    return (
+      <ThemeProvider>
+        <AppNavContext.Provider value={makeNavState({ conversationId })}>
+          <CurrentUserContext.Provider value={makeUserState()}>
+            <ConversationStoreProvider store={store}>
+              <ModelCatalogProvider>
+                <ModelPicker getModels={getModels} confirmChange={() => true} />
+                <ChatPane post={post} loadHistory={emptyHistory} getAttachments={noAttachments} />
+              </ModelCatalogProvider>
+            </ConversationStoreProvider>
+          </CurrentUserContext.Provider>
+        </AppNavContext.Provider>
+      </ThemeProvider>
+    )
+  }
+
+  const picker = () => screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement
+  const catalogServed = () => waitFor(() => expect(screen.getByRole('option', { name: 'Traveller' })).toBeInTheDocument())
+  async function ask(prompt: string): Promise<void> {
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), prompt)
+    await userEvent.keyboard('{Enter}')
+  }
+  const sent = (post: ReturnType<typeof vi.fn<PostFn>>) => post.mock.calls.map((call) => call[3])
+
+  it("sends the active conversation's stored modelPreference, not useChat's default", async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => CATALOG_AFTER_D9} />)
+    await catalogServed()
+
+    await ask('What is a basilisk?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post).toHaveBeenCalledWith('What is a basilisk?', 'sage', conv.id, 'traveller')
+  })
+
+  it('sends a model picked through the picker AFTER mount, then keeps sending it once bound', async () => {
+    // M2 of the review: seeding the store before mount cannot tell a live read
+    // of the store from a stale one; a pick made after mount can.
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => CATALOG_AFTER_D9} />)
+    await catalogServed()
+
+    await userEvent.selectOptions(picker(), 'traveller')
+    await ask('What is a basilisk?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    await ask('And a cockatrice?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+
+    expect(sent(post)).toEqual(['traveller', 'traveller'])
+    expect(store.get(conv.id)?.boundPreference).toBe('traveller')
+    expect(picker().value).toBe('traveller')
+  })
+
+  it("falls back to 'auto' for a conversation with no stored preference", async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => CATALOG_AFTER_D9} />)
+    await catalogServed()
+
+    await ask('What is a basilisk?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post).toHaveBeenCalledWith('What is a basilisk?', 'sage', conv.id, 'auto')
+  })
+
+  it.each([
+    ['served', true],
+    ['down (so the a6o reset never runs)', false],
+  ])("posts 'auto' for a conversation first sent before bta, whatever alias it stored, catalog %s (B1)", async (_catalog, up) => {
+    // Master's picker stored the model ALIAS and master's pane posted nothing,
+    // so the server bound this conversation ('auto', None). /chat refuses the
+    // alias on such a binding with a 422 — on every turn.
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', 'How does grappling work?', 'gpt-4o-mini')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    const getModels = vi.fn<GetModelsFn>(up ? async () => CATALOG_AFTER_D9 : catalogDown)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={getModels} />)
+    if (up) await catalogServed()
+    else await waitFor(() => expect(getModels).toHaveBeenCalled())
+    await act(async () => {})
+
+    await ask('And a shove?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect({ posted: sent(post), shown: picker().value }).toEqual({ posted: ['auto'], shown: 'auto' })
+  })
+
+  it.each(['gpt-4o-mini', 'traveller'])(
+    'with only the offline fallback catalog, posts what the picker shows — never the stored %s (B1)',
+    async (stored) => {
+      const store = new MemoryConversationStore()
+      const conv = store.create('sage', undefined, stored)
+      const post = vi.fn<PostFn>(async () => GROUNDED)
+      const getModels = vi.fn(catalogDown)
+      render(<Workspace store={store} conversationId={conv.id} post={post} getModels={getModels} />)
+      await waitFor(() => expect(getModels).toHaveBeenCalled())
+      await act(async () => {})
+
+      await ask('What is a basilisk?')
+
+      await waitFor(() => expect(post).toHaveBeenCalled())
+      expect({ posted: sent(post), shown: picker().value }).toEqual({ posted: ['auto'], shown: 'auto' })
+      expect(store.get(conv.id)?.boundPreference).toBe('auto')
+    },
+  )
+
+  it('keeps posting the preference a conversation was bound with, even when the catalog is down', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={catalogDown} />)
+
+    await ask('And a cockatrice?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(sent(post)).toEqual(['traveller'])
   })
 })

@@ -118,7 +118,8 @@ export const KNOWN_ERROR_CODES = [
   'validation_failed', 'unsupported_schema_version', 'brief_required', 'brief_too_long', 'unknown_tool',
   'tool_disabled', 'campaign_required', 'nothing_to_recap', 'not_found', 'forbidden', 'conflict',
   'cap_reached', 'throttled_user', 'throttled_daily', 'provider_failed', 'provider_timeout',
-  'attempt_expired', 'backend_unavailable', 'already_linked',
+  'attempt_expired', 'backend_unavailable', 'already_linked', 'alias_taken', 'seat_not_open',
+  'seat_not_accepted', 'seat_cap_reached', 'campaign_archived', 'reauth_failed',
 ] as const
 export type KnownErrorCode = (typeof KNOWN_ERROR_CODES)[number]
 
@@ -2320,20 +2321,14 @@ export type TableSnapshot = z.infer<typeof TableSnapshotSchema>
 export const CONVERSATION_PAGE_MAX_ITEMS = 100
 export const CONVERSATION_TITLE_MAX_CHARS = 200
 
-/** The code points a title may not hold, by code point so that none sits in this
- * file (ruling A2-9): the C0 and C1 controls, and the bidirectional embeddings,
- * overrides and isolates. The server refuses exactly this set. */
-export function isRefusedInATitle(code: number): boolean {
-  return (
-    code <= 0x1f ||
-    (code >= 0x7f && code <= 0x9f) ||
-    (code >= 0x202a && code <= 0x202e) ||
-    (code >= 0x2066 && code <= 0x2069)
-  )
-}
-
 /** A title as a request sends it: 1 to 200 characters once trimmed as the server
- * trims, with no refused code point left inside. The server stores it trimmed. */
+ * trims, held to one line, with no code point in `REFUSED_TEXT_CODE_POINTS` left
+ * inside either — the one shared stored-text rule (lead ruling of 2026-09-21),
+ * not a title-only list. Ruling A2-9 originally gave titles their own, narrower
+ * `isRefusedInATitle`; agent-forge-harness-644 retired it, since a conversation
+ * title is stored text like any other `isPlainText` refuses, and a second
+ * opinion here could only drift from the first. The composition mirrors
+ * `plainOneLine` (a cue's title and the like). The server stores it trimmed. */
 const ConversationTitleRequestSchema = z
   .string()
   .refine(isWellFormedText, WELL_FORMED)
@@ -2344,9 +2339,10 @@ const ConversationTitleRequestSchema = z
     },
     { message: `a title is 1 to ${CONVERSATION_TITLE_MAX_CHARS} characters after trimming` },
   )
-  .refine((value) => ![...trimWire(value)].some((character) => isRefusedInATitle(character.codePointAt(0) ?? 0)), {
-    message: 'a title holds no control or bidirectional-formatting characters',
+  .refine((value) => !LINE_BREAKS.some((mark) => trimWire(value).includes(mark)), {
+    message: 'must be a single line',
   })
+  .superRefine(refuseTrimmedPlainText)
 
 /** One conversation's metadata. Every key is present; what a row never recorded
  * is `null`. Read it through `parseConversation`. */
@@ -2410,6 +2406,171 @@ export const ConversationPatchRequestSchema = refusingProtoKeys(
 )
 export type ConversationPatchRequest = z.infer<typeof ConversationPatchRequestSchema>
 
+// ── Campaigns and seats (1kg.2.2) ────────────────────────────────────────────
+// A GM's campaigns and the seats at their table (`/campaigns`), and an account's
+// own side of it (`/seats`). No numeric account id is on the wire anywhere in
+// this family (SEC-50(1)), and nothing on the account side carries an address, a
+// campaign owner or a participant id (SEC-43, SEC-50(4)).
+
+export const CAMPAIGN_PAGE_MAX_ITEMS = 50
+export const CAMPAIGN_NAME_MAX_CHARS = 120
+export const SEAT_ALIAS_MAX_CHARS = 40
+export const EMAIL_MIN_CHARS = 3
+export const EMAIL_MAX_CHARS = 254
+export const PASSWORD_MAX_CHARS = 1024
+export const SEAT_STATUSES = [
+  'open', 'offered', 'not_accepted', 'awaiting_confirmation', 'confirmed', 'removed',
+] as const
+export type SeatStatus = (typeof SEAT_STATUSES)[number]
+
+/** `service/models.py`'s `_validate_email` rule, restated as the server restates
+ * it (`is_email_shaped`): an `@` that is neither first nor last, and no U+0020. */
+export function isEmailShaped(value: string): boolean {
+  return value.includes('@') && !value.startsWith('@') && !value.endsWith('@') && !value.includes(' ')
+}
+
+/** Trimmed as the server trims, bounded in code points, and plain text: what is
+ * stored is the trimmed value, so the rule reads that. */
+function storedRequestText(min: number, max: number, what: string) {
+  return z
+    .string()
+    .refine(isWellFormedText, WELL_FORMED)
+    .refine(
+      (value) => {
+        const length = codePointLength(trimWire(value))
+        return length >= min && length <= max
+      },
+      { message: `${what} is ${min} to ${max} characters after trimming` },
+    )
+    .superRefine(refuseTrimmedPlainText)
+}
+
+const CampaignNameRequestSchema = storedRequestText(1, CAMPAIGN_NAME_MAX_CHARS, 'a campaign name')
+const SeatAliasRequestSchema = storedRequestText(1, SEAT_ALIAS_MAX_CHARS, 'an alias')
+const EmailAddressSchema = storedRequestText(EMAIL_MIN_CHARS, EMAIL_MAX_CHARS, 'an address').refine(
+  (value) => isEmailShaped(trimWire(value)),
+  { message: 'an address has an @ that is neither first nor last, and no space' },
+)
+
+/** One of the GM's campaigns. The owner is the session and never on the wire. */
+export const CampaignSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  campaign_id: OpaqueIdSchema,
+  name: text(1, CAMPAIGN_NAME_MAX_CHARS),
+  created_at: TimestampSchema,
+  updated_at: TimestampSchema,
+  archived_at: TimestampSchema.nullable(),
+})
+export type Campaign = z.infer<typeof CampaignSchema>
+
+export const CampaignPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(CampaignSchema).max(CAMPAIGN_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type CampaignPage = z.infer<typeof CampaignPageSchema>
+
+/** `POST /campaigns`. No `command_id`: a retried create makes a second campaign. */
+export const CampaignCreateRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), name: CampaignNameRequestSchema }),
+)
+export type CampaignCreateRequest = z.infer<typeof CampaignCreateRequestSchema>
+
+/** `PATCH /campaigns/{id}`: rename, archive, restore. At least one key; none is nullable. */
+export const CampaignPatchRequestSchema = refusingProtoKeys(
+  z
+    .strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      name: CampaignNameRequestSchema.optional(),
+      archived: z.boolean().optional(),
+    })
+    .refine((patch) => patch.name !== undefined || patch.archived !== undefined, {
+      message: 'a patch names at least one of name and archived',
+    }),
+)
+export type CampaignPatchRequest = z.infer<typeof CampaignPatchRequestSchema>
+
+/** A seat as its GM sees it: no account id (SEC-50(1)). */
+export const SeatSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  participant_id: OpaqueIdSchema,
+  alias: text(1, SEAT_ALIAS_MAX_CHARS),
+  status: z.enum(SEAT_STATUSES),
+  address: text(EMAIL_MIN_CHARS, EMAIL_MAX_CHARS).nullable(),
+  created_at: TimestampSchema,
+  offered_at: TimestampSchema.nullable(),
+  offer_expires_at: TimestampSchema.nullable(),
+  accepted_at: TimestampSchema.nullable(),
+  confirmed_at: TimestampSchema.nullable(),
+  removed_at: TimestampSchema.nullable(),
+})
+export type Seat = z.infer<typeof SeatSchema>
+
+export const SeatPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(SeatSchema).max(CAMPAIGN_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type SeatPage = z.infer<typeof SeatPageSchema>
+
+export const SeatCreateRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), alias: SeatAliasRequestSchema }),
+)
+export type SeatCreateRequest = z.infer<typeof SeatCreateRequestSchema>
+
+/** An ADDRESS, never an account (SEC-50(1)); the answer is `204` whatever it holds. */
+export const SeatOfferRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), email: EmailAddressSchema }),
+)
+export type SeatOfferRequest = z.infer<typeof SeatOfferRequestSchema>
+
+/** SEC-40: removing a seat asks for the password again. Never logged or echoed. */
+export const SeatRemoveRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), password: text(1, PASSWORD_MAX_CHARS) }),
+)
+export type SeatRemoveRequest = z.infer<typeof SeatRemoveRequestSchema>
+
+/** An offer as its invitee sees it: the GM's own words and the dates (SEC-50(4)). */
+export const SeatOfferSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  offer_id: OpaqueIdSchema,
+  campaign_name: text(1, CAMPAIGN_NAME_MAX_CHARS),
+  alias: text(1, SEAT_ALIAS_MAX_CHARS),
+  offered_at: TimestampSchema,
+  expires_at: TimestampSchema,
+})
+export type SeatOffer = z.infer<typeof SeatOfferSchema>
+
+export const SeatOfferPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(SeatOfferSchema).max(CAMPAIGN_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type SeatOfferPage = z.infer<typeof SeatOfferPageSchema>
+
+export const SeatDeclineRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), block: z.boolean() }),
+)
+export type SeatDeclineRequest = z.infer<typeof SeatDeclineRequestSchema>
+
+/** One of the caller's own seats: the campaign's id, never the participant's (SEC-43). */
+export const PlayerSeatSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  campaign_id: OpaqueIdSchema,
+  campaign_name: text(1, CAMPAIGN_NAME_MAX_CHARS),
+  alias: text(1, SEAT_ALIAS_MAX_CHARS),
+  accepted_at: TimestampSchema,
+  confirmed: z.boolean(),
+})
+export type PlayerSeat = z.infer<typeof PlayerSeatSchema>
+
+export const PlayerSeatPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(PlayerSeatSchema).max(CAMPAIGN_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type PlayerSeatPage = z.infer<typeof PlayerSeatPageSchema>
+
 /** Name → schema, in the order `contracts/workbench/v1/schemas.json` lists them. */
 export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   Timestamp: TimestampSchema,
@@ -2466,6 +2627,20 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   ConversationPage: ConversationPageSchema,
   ConversationCreateRequest: ConversationCreateRequestSchema,
   ConversationPatchRequest: ConversationPatchRequestSchema,
+  Campaign: CampaignSchema,
+  CampaignPage: CampaignPageSchema,
+  CampaignCreateRequest: CampaignCreateRequestSchema,
+  CampaignPatchRequest: CampaignPatchRequestSchema,
+  Seat: SeatSchema,
+  SeatPage: SeatPageSchema,
+  SeatCreateRequest: SeatCreateRequestSchema,
+  SeatOfferRequest: SeatOfferRequestSchema,
+  SeatRemoveRequest: SeatRemoveRequestSchema,
+  SeatOffer: SeatOfferSchema,
+  SeatOfferPage: SeatOfferPageSchema,
+  SeatDeclineRequest: SeatDeclineRequestSchema,
+  PlayerSeat: PlayerSeatSchema,
+  PlayerSeatPage: PlayerSeatPageSchema,
 }
 
 // ── Forward-version behaviour ────────────────────────────────────────────────

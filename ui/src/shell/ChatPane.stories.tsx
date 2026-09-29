@@ -14,8 +14,10 @@ import { ChatPane } from './ChatPane'
 import type { GetAttachmentsFn } from './ChatPane'
 import type { Attachment, ChatResponse, ChatResult, MessagesResult, Source, StoredMessage } from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
+import type { TimelineItem } from '../gm/contracts'
+import { HYDRATE_TARGET } from '../gm/gmTimeline'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
-import { chatEntry, pagedTimeline, toolEntry } from '../gm/threadFixtures'
+import { chatEntry, manyChatEntries, pagedTimeline, toolEntry } from '../gm/threadFixtures'
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -500,6 +502,112 @@ export const GmThreadHydrated: Story = {
     await expect(canvas.getByText(/Creative — may include invented content/)).toBeVisible()
     await expect(canvas.getByText('AC 16')).toBeVisible()
     await expect(canvas.getByText('Checking on Monster…')).toBeVisible()
+  },
+}
+
+/**
+ * A GM thread with older pages behind its first, each taking a moment to
+ * arrive as it would over the network. The wait matters: Chromium drops focus
+ * off a button the walk has disabled only once a frame has run, so a loader
+ * that answered on the next microtask would hide the focus restore's scroll.
+ */
+function slowPagedTimeline(pages: readonly (readonly TimelineItem[])[]): LoadTimelinePageFn {
+  const load = pagedTimeline(pages)
+  return async (conversationId, cursor) => {
+    if (cursor !== null) await new Promise((resolve) => setTimeout(resolve, 200))
+    return load(conversationId, cursor)
+  }
+}
+
+/** A full window of turns sharing one prompt, numbered from `offset`. */
+function gmPage(offset: number, prompt: string): TimelineItem[] {
+  return manyChatEntries(HYDRATE_TARGET, offset, { prompt })
+}
+
+function gmFeed(canvasElement: HTMLElement): { feed: HTMLElement; exchanges: () => HTMLElement[] } {
+  const feed = canvasElement.querySelector('.chat-pane__exchanges')
+  if (!(feed instanceof HTMLElement)) throw new Error('no chat feed')
+  return { feed, exchanges: () => Array.from(feed.querySelectorAll<HTMLElement>('.gm-thread__exchange')) }
+}
+
+/** Where `row` sits in the feed's viewport, in whole pixels. */
+function offsetIn(feed: HTMLElement, row: Element): number {
+  return Math.round(row.getBoundingClientRect().top - feed.getBoundingClientRect().top)
+}
+
+/** The reader scrolls up to the top of the thread, where Load earlier is. */
+async function scrollToTop(canvasElement: HTMLElement, feed: HTMLElement): Promise<void> {
+  feed.scrollTop = 0
+  feed.dispatchEvent(new Event('scroll'))
+  // The pane has seen the reader leave the bottom, so it will not follow the
+  // walk's new content down there.
+  await within(canvasElement).findByRole('button', { name: /jump to latest/i })
+}
+
+/**
+ * Load earlier by mouse (1kg.3.6, PR #136 review H1). The older turns arrive
+ * above what the reader was looking at, and that content holds still — both
+ * while pages remain (focus goes back to the control a browser dropped it
+ * from, without scrolling there) and on the last page (focus goes to the
+ * first turn that arrived, without scrolling there). Runs in real Chromium,
+ * where focus() scrolls its target into view; jsdom never scrolls.
+ */
+export const LoadEarlierByMouseHoldsTheReadersPlace: Story = {
+  decorators: [withShell({ mode: 'gm', conversations: [{ mode: 'gm' }], selected: 0 })],
+  args: {
+    loadTimeline: slowPagedTimeline([
+      gmPage(200, 'A newer question'),
+      gmPage(100, 'An older question'),
+      gmPage(0, 'The oldest question'),
+    ]),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const { feed, exchanges } = gmFeed(canvasElement)
+    await waitFor(() => expect(exchanges()).toHaveLength(HYDRATE_TARGET))
+
+    for (const last of [false, true]) {
+      await scrollToTop(canvasElement, feed)
+      const anchor = exchanges()[0]
+      const before = offsetIn(feed, anchor)
+      await userEvent.click(canvas.getByRole('button', { name: 'Load earlier' }))
+      await waitFor(() => expect(exchanges()).toHaveLength((last ? 3 : 2) * HYDRATE_TARGET))
+      if (last) {
+        await waitFor(() => expect(exchanges()[0]).toHaveFocus())
+        await expect(canvas.queryByRole('button', { name: 'Load earlier' })).not.toBeInTheDocument()
+      } else {
+        await waitFor(() => expect(canvas.getByRole('button', { name: 'Load earlier' })).toHaveFocus())
+      }
+      await expect(Math.abs(offsetIn(feed, anchor) - before)).toBeLessThanOrEqual(1)
+    }
+  },
+}
+
+/**
+ * Load earlier by keyboard on the last page (1kg.3.7): focus goes to the
+ * first turn that arrived, and that turn is scrolled into view, so the focus
+ * ring the keyboard reader follows is on screen rather than far above it.
+ */
+export const LoadEarlierByKeyboardHandsFocusToTheOldestTurn: Story = {
+  decorators: [withShell({ mode: 'gm', conversations: [{ mode: 'gm' }], selected: 0 })],
+  args: {
+    loadTimeline: slowPagedTimeline([gmPage(100, 'A newer question'), gmPage(0, 'The oldest question')]),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const { feed, exchanges } = gmFeed(canvasElement)
+    await waitFor(() => expect(exchanges()).toHaveLength(HYDRATE_TARGET))
+    await scrollToTop(canvasElement, feed)
+    const button = canvas.getByRole('button', { name: 'Load earlier' })
+    await tabTo(button, 60)
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(exchanges()).toHaveLength(2 * HYDRATE_TARGET))
+    const oldest = exchanges()[0]
+    await expect(oldest).toHaveTextContent('The oldest question')
+    await waitFor(() => expect(oldest).toHaveFocus())
+    const top = offsetIn(feed, oldest)
+    await expect(top).toBeGreaterThanOrEqual(-1)
+    await expect(top).toBeLessThan(feed.clientHeight)
   },
 }
 

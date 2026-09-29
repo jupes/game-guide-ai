@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -455,7 +456,9 @@ def test_a_malformed_body_is_the_same_422_for_an_owned_and_a_foreign_conversatio
     """Body validation depends on nothing but the body, so it may run first —
     and a 422 is therefore never evidence that a conversation exists."""
     mine, theirs = world.conversation(OWNER).id, world.conversation(STRANGER).id
-    for body in ({}, {"title": None}, {"archived": "yes"}, {"title": "a\tb"}):
+    # "a\nb": still refused post-644 (a title stays one line); a tab no longer
+    # is (the shared check_plain_text/REFUSED_TEXT_CODE_POINTS rule allows it).
+    for body in ({}, {"title": None}, {"archived": "yes"}, {"title": "a\nb"}):
         answers = [_patch(client, target, **body) for target in (mine, theirs, "cnv_" + "q" * 22)]
         assert {a.status_code for a in answers} == {422}
         assert len({_shape(a) for a in answers}) == 1
@@ -586,6 +589,43 @@ def test_a_cursor_of_the_right_shape_that_this_server_did_not_mint_is_a_422(clie
     answer = client.get("/conversations", params={"cursor": forged})
     assert (answer.status_code, answer.json()["detail"]["field"]) == (422, "cursor")
     assert CANARY not in answer.text
+
+
+@pytest.mark.parametrize("character", ["\x00", "\x1f", "\x85", "\ud800"], ids=["nul", "c0", "c1", "lone-surrogate"])
+def test_a_cursor_whose_id_carries_a_control_character_is_a_422_that_is_not_retryable(
+    client: TestClient, world: _World, caplog: pytest.LogCaptureFixture, character: str
+) -> None:
+    """agent-forge-harness-kky (PR #127's review, N-1). On PostgreSQL a NUL in a
+    cursor's id reached the statement and came back as psycopg's `DataError`,
+    which this route answers as `backend_unavailable`, retryable: a client would
+    retry forever on a value it sent. No id the index lists carries a control
+    character, so the cursor is refused as the store's `InvalidCursor`: 422
+    naming the field, and the one log line the refusal writes carries no value."""
+    world.conversation()
+    payload = json.dumps([T0.isoformat(), f"cnv_{CANARY}{character}"])
+    forged = base64.urlsafe_b64encode(payload.encode("ascii")).decode("ascii").rstrip("=")
+    with caplog.at_level(logging.DEBUG, logger="service"):
+        answer = client.get("/conversations", params={"cursor": forged})
+        ours = [r for r in caplog.records if r.name.startswith("service")]
+    assert (answer.status_code, answer.json()) == (
+        422,
+        {
+            "detail": {
+                "code": "validation_failed",
+                "message": "That request isn't valid.",
+                "retryable": False,
+                "field": "cursor",
+            }
+        },
+    )
+    assert [(r.name, r.getMessage()) for r in ours] == [
+        (
+            "service.workbench_api",
+            "workbench request refused by validation: GET /conversations "
+            "[{'type': 'value_error', 'loc': ['query', 'cursor'], 'msg': 'invalid'}]",
+        )
+    ]
+    assert all(r.exc_info is None for r in ours)
 
 
 def test_a_cursor_the_store_would_read_is_still_refused_past_the_contracts_bound(
@@ -1180,7 +1220,7 @@ def test_no_title_campaign_id_or_conversation_id_reaches_a_log_line(
     refused = "workbench request refused by validation: "
     assert [(r.name, r.getMessage()) for r in ours] == [
         ("service.workbench_api", refused + "POST /conversations [{'type': 'value_error', 'loc': ['body', 'title'], "
-         "'msg': 'Value error, a title holds no control or bidirectional-formatting characters'}]"),
+         "'msg': 'Value error, must be a single line'}]"),
         ("service.workbench_api", refused + "POST /conversations [{'type': 'enum', 'loc': ['body', 'started_mode'], "
          "'msg': \"Input should be 'sage', 'spell', 'rules' or 'gm'\"}]"),
         ("service.workbench_api", refused + "GET /conversations [{'type': 'value_error', "

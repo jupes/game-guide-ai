@@ -1,0 +1,59 @@
+{
+  "schema": "PlayerSeat",
+  "direction": "response",
+  "note": "One of the caller's own seats. campaign_id is what the table address will name (SEC-43); a participant id never reaches a table client. confirmed is false until the GM confirms who accepted (D-12).",
+  "valid": [
+    {
+      "name": "a seat awaiting the GM's confirmation",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": false
+      }
+    },
+    {
+      "name": "a confirmed seat",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a participant id",
+      "why": "SEC-43: a table client is never told a participant id; a client strips what a newer server adds",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": false,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+      }
+    },
+    {
+      "name": "confirmed as text",
+      "why": "no coercion",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": "false"
+      }
+    }
+  ]
+}

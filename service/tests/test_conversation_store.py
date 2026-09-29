@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import base64
 import inspect
+import json
 import re
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -107,10 +109,10 @@ def test_the_conversation_prefix_never_joins_the_constrained_registry() -> None:
     adding `cnv_` there turns three tests red and the only fix is an edit to a
     released migration."""
     assert store.CONVERSATION_PREFIX not in ident.PREFIXES
-    # Seven since `1kg.5.1` added `doc_`. The number is a tripwire on the
+    # Eight since `1kg.2.2` added `sof_`. The number is a tripwire on the
     # registry growing by accident, so it is meant to be edited deliberately by
     # whichever bead adds a prefix — and never by this one.
-    assert len(ident.PREFIXES) == 7
+    assert len(ident.PREFIXES) == 8
 
 
 def test_a_client_minted_uuid_is_still_a_shaped_conversation_id() -> None:
@@ -197,6 +199,62 @@ def test_a_refused_cursor_chains_nothing_the_caller_sent(payload: bytes) -> None
     assert refused.value.__cause__ is None
     assert refused.value.__context__ is None
     assert "Zx9CanaryQ7" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "conversation_id",
+    [
+        "Zx9CanaryQ7\x00",
+        "Zx9CanaryQ7\n",
+        "Zx9CanaryQ7\x1f",
+        "Zx9CanaryQ7\x7f",
+        "Zx9CanaryQ7\x85",
+        "Zx9CanaryQ7\ud800",
+        "Zx9CanaryQ7é",
+        "",
+        7,
+        None,
+        ["Zx9CanaryQ7"],
+    ],
+    ids=["nul", "newline", "c0", "del", "c1", "lone-surrogate", "non-ascii", "empty", "number", "null", "list"],
+)
+def test_a_cursor_on_an_id_the_index_could_never_list_is_refused_by_the_decoder(
+    conversation_id: object,
+) -> None:
+    """agent-forge-harness-kky (PR #127's review, N-1). The index lists only an
+    id of printable ASCII, so a cursor anchored on any other id did not come
+    from this server. The decoder used to hand such an id to the statement: on
+    PostgreSQL a NUL came back from psycopg as `DataError`, which the route
+    answers as a retryable 503 — a client would retry forever on a value it
+    sent — and a lone surrogate as `UnicodeEncodeError`, a 500. Now it is the
+    one refusal, and like every other it chains and names nothing."""
+    payload = json.dumps([datetime(2026, 3, 1, 12, tzinfo=UTC).isoformat(), conversation_id])
+    forged = base64.urlsafe_b64encode(payload.encode("ascii")).decode("ascii").rstrip("=")
+    with pytest.raises(store.InvalidCursor) as refused:
+        store._decode_cursor(forged)
+    assert refused.value.__cause__ is None
+    assert refused.value.__context__ is None
+    assert "Zx9CanaryQ7" not in str(refused.value)
+
+
+def test_a_cursor_on_any_id_of_printable_ascii_still_decodes_to_that_id() -> None:
+    """The refusal above is no tighter than the index: every printable ASCII
+    character, the ones JSON escapes, a space, and an id longer than any the
+    index lists (the route, not the decoder, owns the wire's 512-character
+    bound) all come back exactly as they were encoded."""
+    moment = datetime(2026, 3, 1, 12, 0, 0, 123_456, tzinfo=UTC)
+    for conversation_id in ("".join(map(chr, range(0x20, 0x7F))), '"\\' * 32, " ", "c" * 600):
+        anchor = store.Conversation(
+            id=conversation_id,
+            owner_id=1,
+            campaign_id=None,
+            title=None,
+            started_mode=None,
+            created_at=moment,
+            updated_at=None,
+            archived_at=None,
+        )
+        assert store._decode_cursor(store._encode_cursor(anchor)) == (moment, conversation_id)
 
 
 def test_both_stores_declare_the_protocol_so_mypy_checks_them_against_it() -> None:

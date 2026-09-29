@@ -113,6 +113,18 @@ def test_the_alias_is_refused_on_any_other_pre_d9_binding(store, bound):
     _refused_like_any_unknown_string(_turn(preference), preference)
 
 
+@pytest.mark.parametrize("preference", [
+    "not-a-real-model",  # unknown to the catalog entirely
+    "unassigned-1",  # a real public id, but that profile is disabled
+    "GPT-4o-mini",  # a case variant of the alias this conversation was bound by
+])
+def test_a_pre_d9_binding_refuses_anything_but_the_exact_alias_it_was_bound_by(store, preference):
+    _bound(store, "manual", DEFAULT_ALIAS, PRE_D9)
+    before = store.conversation_binding(CONV)
+    _refused_like_any_unknown_string(_turn(preference), preference)
+    assert store.conversation_binding(CONV) == before, "a refused turn must not rebind"
+
+
 def test_an_unbound_conversation_still_refuses_the_alias(store):
     store.claim_conversation(CONV, USER_ID)
     _refused_like_any_unknown_string(_turn(DEFAULT_ALIAS), DEFAULT_ALIAS)

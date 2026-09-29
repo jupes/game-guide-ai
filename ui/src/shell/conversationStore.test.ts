@@ -324,6 +324,29 @@ describe('LocalStorageConversationStore', () => {
     expect(b.get(conv.id)?.modelPreference).toBe('gpt-4o-mini')
   })
 
+  it('records the preference a first prompt was sent with, once, and persists it (agent-forge-harness-bta)', () => {
+    const userId = 'alice@example.com'
+    const a = new LocalStorageConversationStore(userId)
+    const conv = a.create('sage', undefined, 'traveller')
+    expect(a.get(conv.id)?.boundPreference).toBeNull()
+
+    a.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    a.recordFirstPrompt(conv.id, 'And a cockatrice?', 'auto')
+
+    const b = new LocalStorageConversationStore(userId)
+    expect(b.get(conv.id)?.boundPreference).toBe('traveller')
+  })
+
+  it('reads a started row stored before bta as bound to nothing recorded (agent-forge-harness-bta)', () => {
+    const rows = [
+      { id: 'pre-bta', mode: 'sage', title: 'How does grappling work?', createdAt: '2026-01-01T00:00:00.000Z',
+        derivedTitle: 'How does grappling work?', customTitle: null, hasFirstPrompt: true, modelPreference: 'gpt-4o-mini' },
+    ]
+    lsMock.setItem('game-guide-ai:conversations:alice@example.com', JSON.stringify(rows))
+    const store = new LocalStorageConversationStore('alice@example.com')
+    expect(store.get('pre-bta')).toMatchObject({ modelPreference: 'gpt-4o-mini', boundPreference: null })
+  })
+
   it('create() does not throw when the write fails (quota exceeded) and warns instead', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     lsMock.setItem = () => {

@@ -1,8 +1,10 @@
+import * as React from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, fn, userEvent, within } from 'storybook/test'
+import { expect, fn, userEvent, waitFor, within } from 'storybook/test'
 
 import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { VersionList } from './VersionList'
+import type { VersionListProps } from './VersionList'
 import { HISTORY_PAGE_SIZE } from './canvasStatus'
 import type { DocumentVersion } from './contracts'
 
@@ -154,6 +156,71 @@ export const PagingInFlight: Story = {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('button', { name: 'Loading…' })).toBeDisabled()
     await expect(canvas.getByRole('status')).toHaveTextContent('Loading older versions…')
+  },
+}
+
+/**
+ * A real browser drops focus off a disabled button once it has been disabled
+ * across a frame boundary (agent-forge-harness-alf, same class of bug as
+ * GmThread's Load earlier — 1kg.3.7, PR #136): Chromium sets
+ * `document.activeElement` to `<body>`; jsdom never does. Only a real-Chromium
+ * story can prove Load more gets focus back rather than losing it to `<body>`
+ * for the rest of the page. `VersionList` fetches nothing itself, so this
+ * wrapper stands in for the caller that owns paging, with a delay long enough
+ * for a frame to run before the page arrives.
+ */
+type PagedLiveProps = Omit<VersionListProps, 'versions' | 'hasMore' | 'loadingMore' | 'onLoadMore'> & {
+  pages: readonly DocumentVersion[][]
+}
+
+function PagedLive({ pages, ...rest }: PagedLiveProps): React.JSX.Element {
+  const [loaded, setLoaded] = React.useState<readonly DocumentVersion[]>(pages[0])
+  const [nextPage, setNextPage] = React.useState(1)
+  const [loadingMore, setLoadingMore] = React.useState(false)
+  return (
+    <VersionList
+      {...rest}
+      versions={loaded}
+      hasMore={nextPage < pages.length}
+      loadingMore={loadingMore}
+      onLoadMore={() => {
+        setLoadingMore(true)
+        setTimeout(() => {
+          setLoaded((was) => [...was, ...pages[nextPage]])
+          setNextPage((was) => was + 1)
+          setLoadingMore(false)
+        }, 200)
+      }}
+    />
+  )
+}
+
+export const RestoresFocusAfterARealBrowserDropsIt: Story = {
+  render: (args) => (
+    <PagedLive
+      {...args}
+      pages={[
+        Array.from({ length: HISTORY_PAGE_SIZE }, (_, at) => version({ number: 100 - at })),
+        Array.from({ length: 5 }, (_, at) => version({ number: 80 - at })),
+        Array.from({ length: 5 }, (_, at) => version({ number: 70 - at })),
+      ]}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const scroller = canvasElement.ownerDocument.scrollingElement
+    await expect(scroller).not.toBeNull()
+    await userEvent.click(canvas.getByRole('button', { name: 'Load more' }))
+    // Where the click left the page. The second page pushes Load more below
+    // the fold, and a bare focus() would scroll it back into view, jumping
+    // the list the reader holds (PR #142 review H1) — jsdom never scrolls, so
+    // only this story can see that.
+    const heldAt = scroller?.scrollTop
+    // The click disables the button; a real frame runs while the page is in
+    // flight, and Chromium drops focus to <body>. Once it settles, focus must
+    // be back on Load more — the second page still leaves one more behind it.
+    await waitFor(() => expect(canvas.getByRole('button', { name: 'Load more' })).toHaveFocus())
+    await expect(scroller?.scrollTop).toBe(heldAt)
   },
 }
 

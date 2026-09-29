@@ -931,7 +931,8 @@ def test_the_spa_parity_walk_still_reserves_every_prefix_it_reserved_before() ->
     """Moving the walk onto `api_routes()` dropped nothing: FastAPI's own
     documentation routes stay reserved though they are not API routes."""
     assert _live_api_prefixes() == {"/openapi.json", "/docs", "/redoc", "/healthz", "/models", "/chat",
-                                    "/metrics", "/conversations", "/auth", "/internal"}
+                                    "/metrics", "/conversations", "/auth", "/internal",
+                                    "/campaigns", "/seats"}
 
 
 # ── A10: the route census ────────────────────────────────────────────────────
@@ -952,12 +953,21 @@ EXPECTED_LEGACY_ROUTES = {
     ("POST", "/internal/jobs"),
 }
 #: 1kg.2.4 A2's routes, moved onto `workbench_router` by oe6 (lead ruling on
-#: PR #98), and 1kg.4.2 B's timeline route, moved from the set above by oqx.
-#: No exemption list and nothing pending.
+#: PR #98), 1kg.4.2 B's timeline route, moved from the set above by oqx, and
+#: 1kg.2.2's campaign and seat routes: nine on `workbench_router`, four on
+#: `account_router`. No exemption list and nothing pending.
 EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/conversations"), ("POST", "/conversations"),
     ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
     ("GET", "/conversations/{conversation_id}/timeline"),
+    ("GET", "/campaigns"), ("POST", "/campaigns"),
+    ("GET", "/campaigns/{campaign_id}"), ("PATCH", "/campaigns/{campaign_id}"),
+    ("GET", "/campaigns/{campaign_id}/participants"), ("POST", "/campaigns/{campaign_id}/participants"),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/offer"),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/confirm"),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/remove"),
+    ("GET", "/seats"), ("GET", "/seats/offers"),
+    ("POST", "/seats/offers/{offer_id}/accept"), ("POST", "/seats/offers/{offer_id}/decline"),
 }
 
 
@@ -1256,5 +1266,54 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
     assert modules == {  # a route bead adds its module
         (REPO_ROOT / "service" / "conversations_api.py").resolve(),
         (REPO_ROOT / "service" / "timeline_api.py").resolve(),
+        (REPO_ROOT / "service" / "campaigns_api.py").resolve(),
+        (REPO_ROOT / "service" / "seats_api.py").resolve(),
     }
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []
+
+
+# ── account_router and reauth_failed (bead 1kg.2.2, L-3) ─────────────────────
+
+
+def test_the_reauth_refusal_is_read_only_and_a_workbench_error_body() -> None:
+    from service.workbench_api import REAUTH_FAILED_DETAIL, reauth_failed
+    from service.workbench_contracts import ErrorBody
+
+    body = ErrorBody.model_validate({"detail": dict(REAUTH_FAILED_DETAIL)})
+    assert (body.detail.code.value, body.detail.retryable) == ("reauth_failed", False)
+    with pytest.raises(TypeError):
+        REAUTH_FAILED_DETAIL["code"] = "not_found"  # type: ignore[index]
+    with pytest.raises(HTTPException) as refused:
+        reauth_failed()
+    assert refused.value.status_code == 403 and refused.value.detail == dict(REAUTH_FAILED_DETAIL)
+
+
+def test_an_account_router_has_no_role_gate_and_keeps_the_workbench_posture() -> None:
+    """A player reaches a route on `account_router`; every authentication
+    failure there is the one 401 body; the origin check still runs first."""
+    from service.session import SessionData
+    from service.workbench_api import account_router
+
+    caller: list[SessionData | None] = [SessionData(user_id=5, role="player")]
+
+    def session() -> SessionData:
+        current = caller[0]
+        if current is None:
+            raise HTTPException(status_code=401, detail="invalid or expired session")
+        return current
+
+    target = FastAPI()
+    install_workbench(target)
+    router = account_router(session)
+
+    @router.post("/mine")
+    def mine(who: SessionData = Depends(session)) -> dict[str, int]:
+        return {"user_id": who.user_id}
+
+    target.include_router(router)
+    client = TestClient(target)
+    assert client.post("/mine").json() == {"user_id": 5}
+    assert isinstance(next(r for p, r in api_routes(target) if p == "/mine"), WorkbenchRoute)
+    assert client.post("/mine", headers={"origin": "https://evil.example"}).status_code == 403
+    caller[0] = None
+    assert client.post("/mine").json() == {"detail": "not signed in"}
