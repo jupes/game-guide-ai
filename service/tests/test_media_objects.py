@@ -1,9 +1,13 @@
-"""The object store, its keys and its settings (agent-forge-harness-1kg.8.1.1).
+"""The object store, its keys and its settings (agent-forge-harness-1kg.8.1.1,
+and 1kg.8.1.4 for Cloud Storage).
 
-Slice a of the media bead: no route, no database. What is asserted here:
+Slices a and d of the media bead: no route, no database. What is asserted here:
 
 * **The contract** every object store keeps (L-11(a), AC-4), run over the
-  in-memory store and the filesystem store alike: a round trip, reads by offset
+  in-memory store, the filesystem store and the Cloud Storage store alike (the
+  last through the real client against the in-process emulator of
+  `service/tests/_gcs_emulator.py`, with no bucket and no credentials): a round
+  trip, reads by offset
   and length, the ceiling that ends a stream the moment it is passed and leaves
   nothing behind, bounded chunks, an idempotent delete, and the ordered, paged
   listing whose cursor always moves on.
@@ -13,7 +17,8 @@ Slice a of the media bead: no route, no database. What is asserted here:
   an original and its derivatives coexist, a symlink cannot lead out of the
   root, and an operating-system error is the named store-unavailable error.
 * **The settings and the factory** (L-12, AC-6): off by default, `memory` never
-  selectable from the environment, `gcs` refused until slice d.
+  selectable from the environment, `gcs` only with a bucket, refused by name on
+  a build without its client, and never imported unless it is chosen.
 * **The chokepoint** (L-11(d), AC-13): every object-store call outside the
   object-store module goes through `via_store`.
 
@@ -26,6 +31,7 @@ import ast
 import builtins
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -71,8 +77,10 @@ class _Clock:
         return self.now
 
 
-@pytest.fixture(params=["memory", "filesystem"])
+@pytest.fixture(params=["memory", "filesystem", "gcs"])
 def store(request: pytest.FixtureRequest, tmp_path: Path) -> Store:
+    if request.param == "gcs":
+        return _cloud_storage(request)
     if request.param == "memory":
         clock = _Clock()
         memory = mo.InMemoryObjectStore(clock=clock)
@@ -91,6 +99,24 @@ def store(request: pytest.FixtureRequest, tmp_path: Path) -> Store:
         os.utime(disk._path(key), (stamp, stamp))
 
     return Store("filesystem", disk, age_disk, root)
+
+
+def _cloud_storage(request: pytest.FixtureRequest) -> Store:
+    """The Cloud Storage store, through the real client, on the in-process
+    emulator: no bucket, no account, no credentials, nothing off the loopback."""
+    from google.auth.credentials import AnonymousCredentials
+    from google.cloud import storage
+
+    from service.media_gcs import NO_BUCKET_METADATA_READ, CloudStorageObjectStore
+    from service.tests._gcs_emulator import BUCKET, Emulator
+
+    request.getfixturevalue("monkeypatch").setenv(NO_BUCKET_METADATA_READ, "true")
+    emulator = Emulator(_Clock())
+    request.addfinalizer(emulator.close)
+    client = storage.Client(
+        project="media-test", credentials=AnonymousCredentials(), client_options={"api_endpoint": emulator.endpoint}
+    )
+    return Store("gcs", CloudStorageObjectStore(client.bucket(BUCKET), retry=None), emulator.age, None)
 
 
 def _put(store: mo.ObjectStore, key: str, data: bytes, *, max_bytes: int = 10_000_000) -> int:
@@ -635,18 +661,88 @@ def test_the_filesystem_store_is_built_from_an_absolute_directory(tmp_path: Path
     assert isinstance(built, mo.FilesystemObjectStore) and built.reachable()
 
 
-def test_gcs_is_refused_by_a_named_error_and_imports_no_client() -> None:
-    """Vacuous until slice d: `google-cloud-storage` is not installed, so the
-    `sys.modules` half proves nothing today. It is kept as the regression
-    guard for the day slice d adds the library — that day it is the proof that
-    choosing no store, or `filesystem`, never imports the client (AC 11(iii))."""
+def test_gcs_is_chosen_with_the_bucket_its_variable_names() -> None:
+    env = {"WORKBENCH_MEDIA_STORE": "gcs", "WORKBENCH_MEDIA_BUCKET": "my-project-workbench-media"}
+    assert mo.MediaSettings.from_env(env) == mo.MediaSettings(
+        enabled=False, store="gcs", media_dir=None, bucket="my-project-workbench-media"
+    )
+    assert mo.MediaSettings.from_env({**env, "WORKBENCH_MEDIA_DIR": "relative/is/ignored"}).media_dir is None
+
+
+@pytest.mark.parametrize(
+    "bucket",
+    [None, "", "ab", "Media-Bucket", "media.bucket.example", "media/bucket", "-media", "media-", "m" * 64, " media"],
+)
+def test_gcs_needs_a_bucket_and_the_refusal_names_the_variable_not_the_value(bucket: str | None) -> None:
+    env = {"WORKBENCH_MEDIA_STORE": "gcs"}
+    if bucket is not None:
+        env["WORKBENCH_MEDIA_BUCKET"] = bucket
+    with pytest.raises(mo.MediaSettingsError, match="WORKBENCH_MEDIA_BUCKET") as caught:
+        mo.MediaSettings.from_env(env)
+    assert str(caught.value) == "WORKBENCH_MEDIA_BUCKET must name a Cloud Storage bucket for this store"
+    assert not isinstance(caught.value, mo.MediaStoreNotBuilt), "a bad bucket is a setting, not a missing build"
+    with pytest.raises(mo.MediaSettingsError, match="WORKBENCH_MEDIA_BUCKET"):
+        mo.build_object_store(mo.MediaSettings(store="gcs", bucket=bucket))
+
+
+def test_gcs_on_a_build_without_the_client_is_refused_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AC 11(ii): the image carries no client unless it was built with the
+    `gcs` extra, and the factory then refuses by name (on the error's type, not
+    its message) rather than falling back to anything."""
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
     with pytest.raises(mo.MediaStoreNotBuilt) as caught:
-        mo.MediaSettings.from_env({"WORKBENCH_MEDIA_STORE": "gcs"})
-    assert "gcs" not in str(caught.value)
-    with pytest.raises(mo.MediaStoreNotBuilt):
-        mo.build_object_store(mo.MediaSettings(store="gcs"))
-    mo.build_object_store(mo.MediaSettings.from_env({}))
-    assert "google.cloud.storage" not in sys.modules
+        mo.build_object_store(mo.MediaSettings(store="gcs", bucket="my-project-workbench-media"))
+    assert "my-project-workbench-media" not in str(caught.value)
+
+
+def test_gcs_builds_through_its_own_module_and_only_there(monkeypatch: pytest.MonkeyPatch) -> None:
+    from service import media_gcs
+
+    built: list[str] = []
+    sentinel = mo.InMemoryObjectStore()
+
+    def build(bucket: str) -> mo.ObjectStore:
+        built.append(bucket)
+        return sentinel
+
+    monkeypatch.setattr(media_gcs, "build_gcs_store", build)
+    settings = mo.MediaSettings.from_env({"WORKBENCH_MEDIA_STORE": "gcs", "WORKBENCH_MEDIA_BUCKET": "media-a"})
+    assert mo.build_object_store(settings) is sentinel
+    assert built == ["media-a"]
+
+
+_IMPORT_PROBE = """
+import sys, tempfile
+from service import media_objects as mo
+assert mo.build_object_store(mo.MediaSettings.from_env({})) is None
+with tempfile.TemporaryDirectory() as root:
+    env = {"WORKBENCH_MEDIA_STORE": "filesystem", "WORKBENCH_MEDIA_DIR": root}
+    assert isinstance(mo.build_object_store(mo.MediaSettings.from_env(env)), mo.FilesystemObjectStore)
+    import service.asset_jobs, service.asset_store
+untouched = [m for m in ("google.cloud.storage", "service.media_gcs") if m in sys.modules]
+import service.media_gcs
+by_the_module = "google.cloud.storage" in sys.modules
+import importlib
+importlib.import_module("google.cloud.storage")
+print(repr(untouched), by_the_module, "google.cloud.storage" in sys.modules)
+"""
+
+
+def test_no_store_and_the_filesystem_store_never_import_the_client() -> None:
+    """AC 11(iii), no longer vacuous: the library is installed wherever these
+    tests run (the `test` and `dev` extras pull it in), and the probe's last
+    step imports it on purpose, so a probe that could not see an import would
+    say so. Importing the adapter's own module imports no client either: only
+    its builder does. A fresh interpreter, because this process has long since
+    imported the client for the contract suite."""
+    probe = subprocess.run(
+        [sys.executable, "-c", _IMPORT_PROBE],
+        capture_output=True, text=True, timeout=120, cwd=SERVICE.parent, check=False,
+    )
+    assert probe.returncode == 0, probe.stderr[-2000:]
+    assert probe.stdout.split() == ["[]", "False", "True"], (
+        "choosing no store or the filesystem, or importing the adapter's module, imported the client"
+    )
 
 
 @pytest.mark.parametrize("raw", ["s3", "Filesystem", "disk", "gcs "])
@@ -654,7 +750,7 @@ def test_an_unknown_store_is_refused_by_name_without_its_value(raw: str) -> None
     with pytest.raises(mo.MediaSettingsError, match="WORKBENCH_MEDIA_STORE") as caught:
         mo.MediaSettings.from_env({"WORKBENCH_MEDIA_STORE": raw})
     assert str(caught.value) == "WORKBENCH_MEDIA_STORE must be unset or name a store this build provides"
-    assert not isinstance(caught.value, mo.MediaStoreNotBuilt), "only `gcs` itself is slice d's"
+    assert not isinstance(caught.value, mo.MediaStoreNotBuilt), "only a build without the client is that"
 
 
 def test_the_settings_are_read_from_the_process_environment_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
