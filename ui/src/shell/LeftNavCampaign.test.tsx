@@ -11,9 +11,10 @@
 
 import * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as api from '../api'
+import { CampaignSchema } from '../gm/contracts'
 import { AppNavProvider, useAppNav, type AppNavState } from './AppNav'
 import { CurrentUserProvider } from './currentUser'
 import { ConversationStoreProvider } from './ConversationStoreContext'
@@ -141,5 +142,188 @@ describe('legacy markup (T2-6)', () => {
     await act(async () => { await live.c.clearCampaign() })
     await userEvent.click(screen.getByRole('button', { name: 'GM' }))
     expect(roleTree()).toMatchSnapshot('GM after a clear')
+  })
+})
+
+// ── The campaign branch ───────────────────────────────────────────────────────
+
+const threadBody = (id: string, over: Record<string, unknown> = {}) => ({
+  schema_version: 1, conversation_id: id, campaign_id: 'cmp_A', title: `Thread ${id}`, started_mode: 'gm',
+  created_at: '2026-09-16T19:20:11Z', updated_at: null, archived_at: null, ...over,
+})
+const threadPage = (items: unknown[], next: string | null = null) => ({ schema_version: 1, items, next_cursor: next })
+
+/** Campaigns by id; each campaign's list holds `<id>-1` and `<id>-2`; `overrides` answers first. */
+function serve(overrides: (call: Call) => Reply | 'defer' | undefined = () => undefined): Route {
+  return (call) => {
+    const override = overrides(call)
+    if (override !== undefined) return override
+    const list = /^\/conversations\?campaign_id=(cmp_\w+)$/.exec(call.url)
+    if (list !== null) {
+      return { status: 200, body: threadPage([1, 2].map((n) => threadBody(`${list[1]}-${n}`, { campaign_id: list[1] }))) }
+    }
+    return defaultRoute(call)
+  }
+}
+
+/** Every web-storage key and value, scanned for `text`. */
+function expectNotStored(text: string): void {
+  for (const area of [localStorage, sessionStorage]) {
+    for (let i = 0; i < area.length; i += 1) {
+      const key = area.key(i) ?? ''
+      expect(`${key}=${area.getItem(key) ?? ''}`).not.toContain(text)
+    }
+  }
+}
+
+describe('the campaign line (section 7.7, critic 5)', () => {
+  it('404, 403 and an archived campaign read alike: one generic line, no thread list (T1-6, M1-6)', async () => {
+    const trees: string[] = []
+    const answers: Reply[] = [{ status: 404 }, { status: 403 }, { status: 200, body: campaignBody('cmp_A', { archived_at: '2026-09-17T00:00:00Z' }) }]
+    for (const answer of answers) {
+      const { server } = await mount({ route: serve(({ url }) => (url === '/campaigns/cmp_A' ? answer : undefined)) })
+      expect(await screen.findByText("That campaign isn't available.")).toBeInTheDocument()
+      expect(server.lines().filter((l) => l.includes('/conversations'))).toEqual([])
+      trees.push(roleTree())
+      cleanup()
+    }
+    expect(new Set(trees).size).toBe(1)
+    expect(trees[0]).toContain('button "Continue without a campaign"')
+    expect(trees[0]).not.toMatch(/archiv|Conversations|legacy/i)
+  })
+
+  it('reads Loading campaign…, then the failure with a Retry that stays mounted and keeps focus through its request (§11)', async () => {
+    const { server } = await mount({ route: serve(({ url }) => (url === '/campaigns/cmp_A' ? 'defer' : undefined)) })
+    expect(screen.getByText('Loading campaign…')).toBeInTheDocument()
+    act(() => server.calls[0].reply({ status: 503 }))
+    const retry = await screen.findByRole('button', { name: 'Retry' })
+    expect(screen.getByText("Couldn't load campaigns")).toBeInTheDocument()
+    await userEvent.click(retry)
+    expect(server.lines().filter((l) => l === 'GET /campaigns/cmp_A')).toHaveLength(2)
+    expect(retry).toHaveAttribute('aria-disabled', 'true')
+    expect(retry).toHaveFocus()
+    await userEvent.click(retry)
+    expect(server.lines().filter((l) => l === 'GET /campaigns/cmp_A')).toHaveLength(2)
+    act(() => server.calls[1].reply({ status: 200, body: campaignBody('cmp_A') }))
+    expect(await screen.findByText('Campaign: Name of cmp_A')).toHaveFocus()
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+  })
+
+  it.each([['failed', { status: 503 }], ['unavailable', { status: 404 }]] as const)(
+    'when %s, Continue without a campaign clears it: the legacy GM list is back and focus is on the GM chip (T2-13)',
+    async (_state, answer) => {
+      const onNavigate = vi.fn()
+      await mount({ onNavigate, route: serve(({ url }) => (url === '/campaigns/cmp_A' ? answer : undefined)) })
+      await userEvent.click(await screen.findByRole('button', { name: 'Continue without a campaign' }))
+      expect(await screen.findByRole('button', { name: 'A legacy GM question about the heist' })).toBeInTheDocument()
+      expect(live.c.selection.kind).toBe('none')
+      expect(screen.getByRole('button', { name: /GM$/ })).toHaveFocus()
+      expect(onNavigate).not.toHaveBeenCalled()
+    },
+  )
+})
+
+describe('the campaign thread list', () => {
+  it('shows the campaign and only its threads; New conversation opens none and makes no local row (M2-1b)', async () => {
+    const onNavigate = vi.fn()
+    const { server, store } = await mount({ onNavigate, route: serve() })
+    expect(await screen.findByText('Campaign: Name of cmp_A')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Thread cmp_A-1' })).toBeInTheDocument()
+    expect(server.lines()).toContain('GET /conversations?campaign_id=cmp_A')
+    expect(screen.queryByRole('button', { name: 'A legacy GM question about the heist' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Thread cmp_A-2' }))
+    expect(live.nav.conversationId).toBe('cmp_A-2')
+    expect(screen.getByRole('button', { name: 'Thread cmp_A-2' })).toHaveAttribute('aria-pressed', 'true')
+    const before = store.list('gm').length
+    await userEvent.click(screen.getByRole('button', { name: 'New conversation' }))
+    expect(live.nav.conversationId).toBeNull()
+    expect(store.list('gm')).toHaveLength(before)
+    expect(onNavigate).toHaveBeenCalledTimes(2)
+  })
+
+  it('never draws a row of the previous campaign, on any render (T2-4, LIB-25), with its positive control', async () => {
+    const heldA = serve(({ url }) => (url === '/conversations?campaign_id=cmp_A' ? 'defer' : undefined))
+    const replyA = (calls: Call[]) => act(() => calls.find((c) => c.url.includes('campaign_id=cmp_A'))
+      ?.reply({ status: 200, body: threadPage([threadBody('cmp_A-1')]) }))
+    const control = await mount({ route: heldA })
+    await waitFor(() => expect(control.server.lines()).toContain('GET /conversations?campaign_id=cmp_A'))
+    replyA(control.server.calls)
+    expect(await screen.findByRole('button', { name: 'Thread cmp_A-1' })).toBeInTheDocument()
+    cleanup()
+
+    const { server } = await mount({ route: heldA })
+    await waitFor(() => expect(server.lines()).toContain('GET /conversations?campaign_id=cmp_A'))
+    const seen: string[] = []
+    const observer = new MutationObserver(() => {
+      if (document.body.textContent?.includes('Thread cmp_A-') === true) seen.push('an A row was drawn')
+    })
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true })
+    await act(async () => { await live.c.selectCampaign(CampaignSchema.parse(campaignBody('cmp_B'))) })
+    expect(await screen.findByRole('button', { name: 'Thread cmp_B-1' })).toBeInTheDocument()
+    replyA(server.calls)
+    await act(async () => {})
+    observer.disconnect()
+    expect(seen).toEqual([])
+    expect(screen.getByRole('button', { name: 'Thread cmp_B-2' })).toBeInTheDocument()
+  })
+
+  it('loading, failure, Retry and Load more: visible text, focus kept, and none of them navigates (T2-11)', async () => {
+    const onNavigate = vi.fn()
+    let lists = 0
+    const { server } = await mount({
+      onNavigate,
+      route: serve(({ url }) => {
+        if (!url.startsWith('/conversations?campaign_id=cmp_A')) return undefined
+        lists += 1
+        if (lists === 1) return { status: 503 }
+        if (lists === 2) return 'defer'
+        return { status: 200, body: threadPage([threadBody('cmp_A-3')]) }
+      }),
+    })
+    const retry = await screen.findByRole('button', { name: 'Retry' })
+    expect(screen.getByText("Couldn't load conversations")).toBeInTheDocument()
+    await userEvent.click(retry)
+    expect(screen.getByText('Loading conversations…')).toBeInTheDocument()
+    expect(retry).toHaveAttribute('aria-disabled', 'true')
+    expect(retry).toHaveFocus()
+    act(() => server.calls[server.calls.length - 1].reply({ status: 200, body: threadPage([threadBody('cmp_A-1')], 'more_1') }))
+    expect(await screen.findByRole('button', { name: 'Thread cmp_A-1' })).toBeInTheDocument()
+    expect(screen.getByText('Conversations')).toHaveFocus()
+    await userEvent.click(screen.getByRole('button', { name: 'Load more' }))
+    expect(await screen.findByRole('button', { name: 'Thread cmp_A-3' })).toBeInTheDocument()
+    expect(server.lines().at(-1)).toBe('GET /conversations?campaign_id=cmp_A&cursor=more_1')
+    expect(screen.getAllByRole('button', { name: /^Thread / }).map((b) => b.textContent)).toEqual(['Thread cmp_A-1', 'Thread cmp_A-3'])
+    expect(onNavigate).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Thread cmp_A-1' }))
+    expect(onNavigate).toHaveBeenCalledTimes(1)
+  })
+
+  it('renames through the server: its title, an inline 422, a 503 that keeps the text with Retry, a 404 that removes the row (T2-7)', async () => {
+    const onNavigate = vi.fn()
+    const answers: Reply[] = [{ status: 422 }, { status: 503 }, { status: 200, body: threadBody('cmp_A-1', { title: 'Server title' }) }, { status: 404 }]
+    const { server } = await mount({ onNavigate, route: serve(({ method }) => (method === 'PATCH' ? answers.shift() : undefined)) })
+    await userEvent.click(await screen.findByRole('button', { name: 'Rename Thread cmp_A-1' }))
+    const input = screen.getByRole('textbox', { name: 'Conversation title for Thread cmp_A-1' })
+    await userEvent.clear(input)
+    await userEvent.type(input, 'The Smuggler Queen{Enter}')
+    await waitFor(() => expect(input).toHaveAttribute('aria-invalid', 'true'))
+    expect(input).toHaveAccessibleDescription('A title is 1 to 200 characters on one line.')
+    await userEvent.type(input, 's{Enter}')
+    expect(await screen.findByText("Couldn't rename the conversation.")).toBeInTheDocument()
+    expect(input).toHaveValue('The Smuggler Queens')
+    expect(input).not.toHaveAttribute('aria-invalid')
+    expectNotStored('Smuggler Queen')
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('button', { name: 'Server title' })).toBeInTheDocument()
+    expect(server.calls.filter((c) => c.method === 'PATCH').map((c) => JSON.parse(c.body ?? '{}'))).toEqual([
+      { schema_version: 1, title: 'The Smuggler Queen' },
+      { schema_version: 1, title: 'The Smuggler Queens' },
+      { schema_version: 1, title: 'The Smuggler Queens' },
+    ])
+    await userEvent.click(screen.getByRole('button', { name: 'Rename Thread cmp_A-2' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'Conversation title for Thread cmp_A-2' }), '!{Enter}')
+    await waitFor(() => expect(screen.queryByRole('button', { name: /cmp_A-2/ })).toBeNull())
+    expectNotStored('Smuggler Queen')
+    expect(onNavigate).not.toHaveBeenCalled()
   })
 })
