@@ -69,6 +69,10 @@ DISCLOSURE: Final = "dsc_"
 #: One audience slot of one table session (1kg.7.1): the table slot or one
 #: participant's. GM-side only, like the disclosure it points at.
 REVEAL_SLOT: Final = "rsl_"
+#: A GM's named group of seats (1ir.2.1, owner decision O-3). A disclosure will
+#: remember the group it came from, so a group is marked removed and never
+#: deleted, and its id is never reused.
+GROUP: Final = "grp_"
 
 PREFIXES: Final[tuple[str, ...]] = (
     CAMPAIGN,
@@ -82,6 +86,7 @@ PREFIXES: Final[tuple[str, ...]] = (
     ASSET,
     DISCLOSURE,
     REVEAL_SLOT,
+    GROUP,
 )
 
 #: What each prefix is called in a refusal. Never the value, only the kind (SEC-20).
@@ -97,6 +102,7 @@ _KINDS: Final[dict[str, str]] = {
     ASSET: "asset identifier",
     DISCLOSURE: "disclosure identifier",
     REVEAL_SLOT: "reveal-slot identifier",
+    GROUP: "group identifier",
 }
 
 #: 16 bytes = 128 bits, SEC-4's floor, which `token_urlsafe` renders as 22 characters.
