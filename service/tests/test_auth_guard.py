@@ -16,8 +16,10 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import config
+from service import app as appmod
 from service.app import app, get_auth_store, get_service, require_session
 from service.auth_store import InMemoryAuthStore
+from service.media_objects import MediaSettings
 from service.models import ChatMode, ChatResponse
 from service.workbench_api import api_route_dependants
 
@@ -33,6 +35,9 @@ class _FakeService:
 
 @pytest.fixture
 def store(monkeypatch):
+    # 1kg.8.1.2's media routes match nothing while the capability is off, which
+    # it is by default; the matrix must see them live to test their guard.
+    monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate-at-least-32-chars")
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", False)
     s = InMemoryAuthStore()
@@ -119,6 +124,22 @@ PROTECTED_ROUTES: list[Route] = [
      {"schema_version": 1, "version_number": 1}),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/seal",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/seal", None),
+    # 1kg.8.1.2, live for this module only (the `store` fixture switches media on).
+    ("POST", "/campaigns/{campaign_id}/assets", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets",
+     {"schema_version": 1, "command_id": "cmd-guard-000000001", "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "audio", "media_type": "audio/mpeg", "size_bytes": 10}),
+    ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa/bytes", None),
+    # 1kg.2.3 PR-B (agent-forge-harness-1kg.2.10): the GM's table session.
+    ("GET", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session", None),
+    ("POST", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session",
+     {"schema_version": 1, "command_id": "cmd_aaaaaaaaaaaaaaaa", "action": "start"}),
+    ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session/screens/tcr_aaaaaaaaaaaaaaaaaaaaaa", None),
+    # The screen mint calls `require_session` directly from its table principal
+    # (a live screen grant decides without it, SEC-44), so the dependency walk
+    # below cannot see it as guarded; it is listed so both halves run on it.
+    ("POST", "/table/screen", "/table/screen", {"schema_version": 1, "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa"}),
 ]
 
 #: Deliberately unguarded, and asserted so that a blanket "guard everything"
@@ -127,6 +148,10 @@ PROTECTED_ROUTES: list[Route] = [
 OPEN_ROUTES: list[tuple[str, str, dict[str, object] | None]] = [
     ("GET", "/healthz", None),
     ("POST", "/metrics/ui", {"points": []}),
+    # Leave (SEC-49): a browser stops being a table screen. It never reads the
+    # account session and never signs an account out, so it is never a 401 —
+    # with no cookie at all it is a 204 that changes nothing.
+    ("POST", "/table/leave", {"schema_version": 1}),
 ]
 
 

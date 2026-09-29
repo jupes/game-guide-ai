@@ -32,10 +32,11 @@ limiter; `service/tests/test_media_objects.py` checks every module by `ast`.
 The asset store imports nothing from here at all, so no transaction there can
 hold a connection while bytes move (requirement 3.8).
 
-**Off by default** (Q-5, L-12). `MediaSettings.from_env` reads two switches and
-nothing in the running service reads them yet: slice b wires them into startup.
-`memory` is never selectable from the environment — a deployment on it would
-lose bytes between instances — and is built in code only.
+**Off by default** (Q-5, L-12). `MediaSettings.from_env` reads two switches;
+the running service reads them once, at startup, through `startup_settings`
+(slice b, `service/app.py`). `memory` is never selectable from the environment
+— a deployment on it would lose bytes between instances — and is built in code
+only.
 """
 
 from __future__ import annotations
@@ -581,6 +582,17 @@ class MediaSettings:
         if not directory or not Path(directory).is_absolute():
             raise MediaSettingsError("WORKBENCH_MEDIA_DIR must name an absolute directory for this store")
         return cls(enabled=enabled, store=_FILESYSTEM, media_dir=Path(directory))
+
+
+def startup_settings(env: Mapping[str, str] | None = None) -> MediaSettings:
+    """What the running service reads at startup (slice b, `1kg.8.1.2`):
+    `MediaSettings.from_env`, plus the one rule only a running service needs —
+    the routes cannot be switched on with no store to put bytes in. Refused by
+    name at startup, so a misconfigured deployment fails loudly (AC 11)."""
+    settings = MediaSettings.from_env(env)
+    if settings.enabled and settings.store is None:
+        raise MediaSettingsError("WORKBENCH_MEDIA_ENABLED needs WORKBENCH_MEDIA_STORE to name a store")
+    return settings
 
 
 def build_object_store(

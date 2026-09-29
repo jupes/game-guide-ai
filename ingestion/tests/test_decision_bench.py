@@ -209,6 +209,103 @@ def test_run_embedding_rejects_an_unknown_group_field():
         db.run_embedding([], {}, group_field="template")
 
 
+def test_run_embedding_grouped_by_category_never_splits_a_group_that_spans_two_categories():
+    """agent-forge-harness-uhc: run_embedding(group_field="category") must wire
+    connected_groups(items) into its own fold split, not just leave it an unused helper. Each
+    pair below shares one committed `group` but sits in two different `category` values;
+    folding on `category` alone (ignoring the shared group) would very likely put one twin's
+    category in one fold's test set and the other's in a different fold."""
+    items, emb = [], {}
+    axes = {"stat_block": [1.0, 0.0, 0.0], "spell_card": [0.0, 1.0, 0.0], "none": [0.0, 0.0, 1.0]}
+    for g in range(15):
+        label = db.LABELS[g % 3]
+        for j in range(2):
+            it = _item(g * 2 + j, label, group=f"grp{g}", category=f"cat{g}-{j}")
+            items.append(it)
+            vec = [x + 0.01 * ((g + j) % 5) for x in axes[label]]
+            emb[it.id] = db.Embedding(vec, tokens=100, latency_ms=200.0 + g)
+    result = db.run_embedding(items, emb, k=5, seed=3, group_field="category")
+    assert result.status == "ok"
+    test_fold_of_category: dict[str, int] = {}
+    for fold in result.extra["fold_log"]:
+        for cat in fold["test_groups"]:
+            test_fold_of_category[cat] = fold["fold"]
+    for g in range(15):
+        assert test_fold_of_category[f"cat{g}-0"] == test_fold_of_category[f"cat{g}-1"], g
+
+
+def test_category_pass_never_fits_or_tunes_on_a_group_that_spans_two_categories(monkeypatch):
+    """agent-forge-harness-uhc, for the INNER (temperature) split as well as the outer one.
+    Every committed `group` here spans two categories, as the 8 `rules:*` groups span
+    `rules_prose` and `prompt_injection`, so its connected component is the whole group. An
+    inner split on raw `category` would tune the temperature on one twin of an answer whose
+    other twin the centroids were just fitted on. test_embedding_arm_never_fits_or_tunes_on_a_
+    group_it_scores[category] cannot see that: there every item has its own group, so the
+    components are exactly the categories. This checks what each classifier was given."""
+    items, emb = [], {}
+    axes = {"stat_block": [1.0, 0.0, 0.0], "spell_card": [0.0, 1.0, 0.0], "none": [0.0, 0.0, 1.0]}
+    for g in range(15):
+        label = db.LABELS[g % 3]
+        for j in range(2):
+            it = _item(g * 2 + j, label, group=f"grp{g}", category=f"cat{g}-{j}")
+            items.append(it)
+            # A fourth coordinate unique to each item, so that a vector identifies its item.
+            vec = [*(x + 0.01 * ((g + j) % 5) for x in axes[label]), 0.001 * (g * 2 + j + 1)]
+            emb[it.id] = db.Embedding(vec, tokens=100, latency_ms=200.0 + g)
+    group_of_vector = {tuple(emb[it.id].vector): it.group for it in items}
+    log: dict[db.NearestCentroid, list[tuple[str, set[str]]]] = {}
+    tuning = [False]
+    real_fit = db.NearestCentroid.fit
+    real_tune = db.NearestCentroid.fit_temperature
+    real_predict = db.NearestCentroid.predict_proba
+
+    def fit(self, vectors, labels):
+        log.setdefault(self, []).append(("fit", {group_of_vector[tuple(v)] for v in vectors}))
+        return real_fit(self, vectors, labels)
+
+    def fit_temperature(self, vectors, labels):
+        log.setdefault(self, []).append(("tune", {group_of_vector[tuple(v)] for v in vectors}))
+        tuning[0] = True  # the grid search calls predict_proba; that is tuning, not scoring
+        try:
+            return real_tune(self, vectors, labels)
+        finally:
+            tuning[0] = False
+
+    def predict_proba(self, vector):
+        if not tuning[0]:
+            log.setdefault(self, []).append(("score", {group_of_vector[tuple(vector)]}))
+        return real_predict(self, vector)
+
+    monkeypatch.setattr(db.NearestCentroid, "fit", fit)
+    monkeypatch.setattr(db.NearestCentroid, "fit_temperature", fit_temperature)
+    monkeypatch.setattr(db.NearestCentroid, "predict_proba", predict_proba)
+
+    seeds = range(6)
+    for seed in seeds:
+        assert db.run_embedding(items, emb, k=5, seed=seed, group_field="category").status == "ok", seed
+
+    scored: list[str] = []
+    tuned = 0
+    for events in log.values():
+        seen: set[str] = set()  # every group this classifier's centroids or temperature used
+        last_fit: set[str] = set()
+        for kind, gs in events:
+            if kind == "score":
+                assert not gs & seen, f"scored {gs} with a classifier fitted or tuned on it"
+                scored += gs
+            elif kind == "tune":
+                assert not gs & last_fit, f"temperature tuned on {sorted(gs & last_fit)}, which the centroids had seen"
+                tuned += 1
+                seen |= gs
+            else:
+                last_fit = gs
+                seen |= gs
+    # Both twins of every group scored exactly once per seed, and T tuned in every fold of
+    # every seed, so the two checks above really ran.
+    assert sorted(scored) == sorted(it.group for it in items for _ in seeds)
+    assert tuned == 5 * len(seeds)
+
+
 def test_run_embedding_grouped_by_category_keeps_a_template_family_in_one_fold():
     """Every item here has its OWN `group` (so grouping by `group` would happily split a
     template family across folds), but items share a `category` in pairs. Asking for
@@ -233,20 +330,56 @@ def test_run_embedding_grouped_by_category_keeps_a_template_family_in_one_fold()
     assert sorted(tested) == sorted({it.category for it in items})
 
 
-def test_category_folds_at_the_cli_defaults_split_no_committed_group_of_the_committed_set():
-    """README Limitations: 8 committed `rules:*` groups span two categories, so grouping by
-    category can split one across folds; at the CLI defaults (--folds 5, --seed 7) it splits
-    none on the committed set. A dataset edit that breaks this fails here, before a Pilot 1 run
-    reads a leaked score. Folding on groups and categories together (agent-forge-harness-uhc)
-    retires this pin."""
+def test_connected_groups_merges_categories_linked_by_a_shared_group():
+    # t-0/t-1 share a group but sit in different categories; t-2 shares t-1's category only.
+    items = [
+        _item(0, "none", group="shared", category="cat_x"),
+        _item(1, "none", group="shared", category="cat_y"),
+        _item(2, "none", group="solo", category="cat_y"),
+        _item(3, "none", group="other", category="cat_z"),
+    ]
+    keys = db.connected_groups(items)
+    assert keys["t-0"] == keys["t-1"] == keys["t-2"]  # cat_x and cat_y merged via the shared group
+    assert keys["t-3"] != keys["t-0"]  # cat_z is untouched, sharing neither group nor category
+
+
+def test_category_folds_on_connected_components_split_no_group_and_no_category_of_the_real_set():
+    """README Limitations: 8 committed `rules:*` groups span two categories (`rules_prose` and
+    `prompt_injection`), so folding on `category` alone can split one of them across folds --
+    and did, in 173 of 200 (k, seed) combinations the reviewer tried, with the CLI defaults
+    (--folds 5, --seed 7) avoiding it only by chance. Folding on connected_groups(items) instead
+    (agent-forge-harness-uhc) must never split a committed group, or a category, at ANY of
+    several (k, seed) combinations -- not just the one the CLI happens to default to."""
     items = db.load_items()
-    folds = db.grouped_folds([it.category for it in items], [it.label for it in items], 5, 7)
-    folds_of: dict[str, set[int]] = {}
-    for it, fold in zip(items, folds, strict=True):
-        folds_of.setdefault(it.group, set()).add(fold)
     assert len({it.group for it in items if it.category == "prompt_injection"} & {
         it.group for it in items if it.category == "rules_prose"}) == 8
-    assert {g: fs for g, fs in folds_of.items() if len(fs) > 1} == {}
+    keys = db.connected_groups(items)
+    for k in (3, 5, 7, 11):
+        for seed in (0, 1, 2, 7, 42):
+            folds = db.grouped_folds([keys[it.id] for it in items], [it.label for it in items], k, seed)
+            fold_of_group: dict[str, set[int]] = {}
+            fold_of_category: dict[str, set[int]] = {}
+            for it, fold in zip(items, folds, strict=True):
+                fold_of_group.setdefault(it.group, set()).add(fold)
+                fold_of_category.setdefault(it.category, set()).add(fold)
+            assert all(len(fs) == 1 for fs in fold_of_group.values()), (k, seed)
+            assert all(len(fs) == 1 for fs in fold_of_category.values()), (k, seed)
+
+
+def test_run_embedding_marks_the_category_pass_skipped_when_no_fold_can_train():
+    """agent-forge-harness-xrx: every item here shares one category (the `_item`/`_clustered_
+    items` default), so category grouping puts them all in one group, and the one fold with
+    test items has no training items left. Must report itself skipped with a reason instead of
+    letting NearestCentroid.fit([], []) leave _softmax's max() to raise on an empty iterable.
+    The committed, per-instance pass over the SAME items is unaffected."""
+    items, emb = _clustered_items()
+    committed = db.run_embedding(items, emb, k=5, seed=3, group_field="group")
+    assert committed.status == "ok" and len(committed.decisions) == len(items)
+    template = db.run_embedding(items, emb, k=5, seed=3, group_field="category")
+    assert template.status == "skipped"
+    assert template.decisions == []
+    assert "no training items" in template.reason
+    assert template.extra["group_field"] == "category"
 
 
 def _fake_openai_embeddings(dim: int = 4):
@@ -435,6 +568,22 @@ def test_evaluate_omits_template_grouped_sections_without_a_template_run():
     result = db.ArmResult("embedding", "ok", decisions=[db.Decision("t-0", "none", {"none": 1.0}, 1.0)])
     report = db.evaluate(items, result, {"t-0": "none"})
     assert "adversarial_template_grouped" not in report and "hard_positive_template_grouped" not in report
+    assert "template_grouped_status" not in report  # no template pass was even attempted
+
+
+def test_evaluate_reports_a_skipped_template_pass_instead_of_omitting_it_silently():
+    """agent-forge-harness-xrx: a `template` ArmResult that is not "ok" (skipped -- an empty
+    training fold) must surface as template_grouped_status/reason, not look identical to "no
+    template pass was attempted" (test_evaluate_omits_template_grouped_sections_without_a_
+    template_run, where `template` is None)."""
+    items = [_item(0, "none", subset="adversarial")]
+    committed = db.ArmResult("embedding", "ok", decisions=[db.Decision("t-0", "none", {"none": 1.0}, 1.0)])
+    template = db.ArmResult("embedding", "skipped", "fold 0 of 3 has 1 test item(s) and no training items",
+                            extra={"group_field": "category"})
+    report = db.evaluate(items, committed, {"t-0": "none"}, template=template)
+    assert "adversarial_template_grouped" not in report and "hard_positive_template_grouped" not in report
+    assert report["template_grouped_status"] == "skipped"
+    assert report["template_grouped_reason"] == template.reason
 
 
 def test_run_wires_a_category_grouped_pass_for_the_embedding_arm(tmp_path):
@@ -458,10 +607,10 @@ def test_run_wires_a_category_grouped_pass_for_the_embedding_arm(tmp_path):
 
 
 def test_run_prices_each_arm_by_its_own_tokens(tmp_path):
-    # Distinct categories: db.run() now also groups the embedding arm by category (agent-forge-
-    # harness-69h), and every item sharing one category (the `_item` default) would collapse
-    # every fold's training set for that pass — unrelated to what this test prices.
-    items = [_item(i, db.LABELS[i % 3], category=f"c{i}") for i in range(6)]
+    # All six items share one category (the `_item` default): the category-grouped pass then
+    # has nowhere to hold anything out and reports itself skipped instead of raising
+    # (agent-forge-harness-xrx). Unrelated to what this test prices, which is the committed pass.
+    items = [_item(i, db.LABELS[i % 3]) for i in range(6)]
     chat, _ = _fake_openai_chat({"B": math.log(0.9), "C": math.log(0.1)})
     embed, _ = _fake_openai_embeddings()
     client = SimpleNamespace(chat=chat.chat, embeddings=embed.embeddings)
@@ -472,15 +621,59 @@ def test_run_prices_each_arm_by_its_own_tokens(tmp_path):
     # embedding: 42 input tokens × 0.5 per 1M = 0.000021 a decision → 0.021 per 1,000.
     # llm: 310 × 2.0 + 1 × 8.0 = 628 per 1M = 0.000628 a decision → 0.628 per 1,000.
     assert cost == pytest.approx({"embedding": 0.021, "llm": 0.628})
-    # Only the embedding arm trains, so only its report carries the category-grouped pass; the
-    # llm report must not borrow the embedding arm's template-grouped numbers.
+    # The committed (per-instance) pass still runs and prices normally; the category-grouped
+    # pass over the same one-category items is skipped, not silently empty, and the llm report
+    # (which never had a template pass) must not carry the embedding arm's skip either.
+    embedding_report = next(r for r in reports if r["arm"] == "embedding")
+    assert embedding_report["status"] == "ok"
+    assert embedding_report["template_grouped_status"] == "skipped"
+    assert "no training items" in embedding_report["template_grouped_reason"]
     grouped = {r["arm"]: sorted(key for key in r if key.endswith("_template_grouped")) for r in reports}
-    assert grouped == {"embedding": ["adversarial_template_grouped", "hard_positive_template_grouped"], "llm": []}
+    assert grouped == {"embedding": [], "llm": []}
+    assert "template_grouped_status" not in next(r for r in reports if r["arm"] == "llm")
 
 
 def test_evaluate_passes_a_skipped_arm_through_without_scores():
     report = db.evaluate([], db.ArmResult("llm", "skipped", "no recording"), {})
     assert report == {"arm": "llm", "status": "skipped", "reason": "no recording"}
+
+
+def _bare_ok_report(arm: str, adversarial_template_grouped: dict | None = None) -> dict:
+    report = {
+        "arm": arm, "status": "ok", "reason": "", "n": 10, "macro_f1": 0.9, "ece_10_bins": 0.05,
+        "coverage": {"0.99": {"coverage": 0.8, "precision": 0.95}},
+        "none_veto_on_heuristic_positives": {"0.99": {"precision": 0.97, "coverage": 0.6}},
+        "adversarial": {"n": 2, "held_to_none_at_0.99": 0.7},
+        "latency_ms": {"p50": 12.0, "p95": 30.0},
+        "cost_per_1000_usd": 0.021,
+        "downstream_per_1000": {"wasted_calls": 3.0, "missed_cards": 1.0},
+    }
+    if adversarial_template_grouped is not None:
+        report["adversarial_template_grouped"] = adversarial_template_grouped
+    return report
+
+
+def test_summary_table_pins_the_template_grouped_adversarial_column():
+    """agent-forge-harness-fzx: README Limitations says Pilot 1 test 3 must read the embedding
+    arm's adversarial_template_grouped score, but until now that score only ever reached the
+    JSON report -- summary_table() (what main() prints) showed only the per-instance
+    'Adversarial held @0.99'. Pins the new column beside it, and n/a for an arm (llm here) whose
+    report carries no template-grouped section at all."""
+    embedding = _bare_ok_report("embedding", {"n": 2, "held_to_none_at_0.99": 0.55})
+    llm = _bare_ok_report("llm")  # no template-grouped pass for this arm
+    table = db.summary_table([embedding, llm])
+    assert "Adversarial held @0.99 (template-grouped)" in table
+    rows = {line.split("|")[1].strip(): [c.strip() for c in line.split("|")]
+            for line in table.splitlines() if line.startswith("| ")}
+    assert rows["embedding"][7] == "70.0%"  # the pre-existing per-instance column is untouched
+    assert rows["embedding"][8] == "55.0%"  # the new template-grouped column
+    assert rows["llm"][8] == "n/a"  # llm never runs a template-grouped pass
+
+
+def test_summary_table_fills_every_new_column_with_na_for_a_non_ok_arm():
+    table = db.summary_table([db.evaluate([], db.ArmResult("jev", "refused", "no key"), {})])
+    line = next(line for line in table.splitlines() if line.startswith("| jev"))
+    assert [c.strip() for c in line.split("|")] == ["", "jev", "refused: no key"] + ["n/a"] * 9 + [""]
 
 
 def test_cli_runs_offline_on_the_committed_set_and_never_prints_a_key(tmp_path, monkeypatch, capsys):
