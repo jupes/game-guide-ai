@@ -355,6 +355,31 @@ def test_anything_not_ready_and_anything_not_yours_is_the_one_identical_404(clie
     assert [kind for kind, _ in world.objects.threads].count("get_stream") == 1, "no 404 ever reached the store"
 
 
+class Counting:
+    """The database, counting the transactions a request opens."""
+
+    def __init__(self, inner: InMemoryDatabase) -> None:
+        self.inner = inner
+        self.opened = 0
+
+    def transaction(self, *args: Any, **kwargs: Any) -> Any:
+        self.opened += 1
+        return self.inner.transaction(*args, **kwargs)
+
+
+def test_a_malformed_id_is_the_one_404_before_any_query(client: TestClient, world: World) -> None:
+    campaign = world.campaign()
+    asset = world.asset(campaign)
+    counting = Counting(world.db)
+    world.database = cast(Any, counting)
+    for path in (_path(campaign, "not-an-id"), _path("cmp_nope", asset), _path(campaign, "cmp_" + "a" * 22)):
+        for method in ("GET", "DELETE"):
+            assert client.request(method, path).json() == NOT_FOUND, (path, method)
+    assert counting.opened == 0, "the shape is judged before any query"
+    assert client.get(_path(campaign, asset)).status_code == 200
+    assert counting.opened == 1, "and a well-formed one is resolved in one transaction"
+
+
 def test_the_route_rules_hold(client: TestClient, world: World) -> None:
     campaign = world.campaign()
     asset = world.asset(campaign)
