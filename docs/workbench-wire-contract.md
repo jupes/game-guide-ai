@@ -817,7 +817,7 @@ would otherwise answer a player's `GET /campaigns/offers` with the role refusal.
 | `POST …/participants/{participant_id}/offer` | **`204` with no body, whatever the address holds**. The body is a `SeatOfferRequest` |
 | `POST …/participants/{participant_id}/confirm` | the confirmed `Seat` (D-12, SEC-50(5)) |
 | `POST …/participants/{participant_id}/remove` | `204`. The body is a `SeatRemoveRequest`: every Remove asks for the password (SEC-40) |
-| `GET /seats?limit&cursor` | `PlayerSeatPage`: the caller's accepted, live seats, newest acceptance first |
+| `GET /seats?limit&cursor` | `PlayerSeatPage`: the caller's accepted, live seats, newest acceptance first (`accepted_at DESC, campaign_id`, the id by code point); the cursor encodes those two, never a participant id (SEC-43) |
 | `GET /seats/offers?limit&cursor` | `SeatOfferPage`: the offers made to the caller's **verified** address, newest first |
 | `POST /seats/offers/{offer_id}/accept` | the `PlayerSeat`, `confirmed: false` until the GM confirms |
 | `POST /seats/offers/{offer_id}/decline` | `204`. The body is a `SeatDeclineRequest`; `block` refuses that GM's later offers, silently |

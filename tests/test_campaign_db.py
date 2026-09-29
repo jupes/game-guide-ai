@@ -28,6 +28,8 @@ Without it they skip, and a skip is reported as a skip. From the repo root:
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import threading
 import time
@@ -3434,6 +3436,40 @@ def test_the_players_seat_page_is_newest_acceptance_first_and_leaves_archived_ou
     assert walked == [(campaigns[2], "C2", False), (campaigns[0], "C0", True)]
     with world.db.transaction() as unit:
         assert world.participants.seat_page_for_user(unit, world.players[1]).items == []
+
+
+def _cursor_payload(cursor: str) -> list[Any]:
+    """What a page cursor carries, decoded here by hand rather than by the
+    store's own reader, which would accept only what it expects."""
+    return list(json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))))
+
+
+def test_the_players_seat_cursor_is_the_acceptance_and_the_campaign_never_a_seat_id(world: World) -> None:
+    """L-9 and SEC-43 (R145-M2): no participant id, ever, not even the caller's
+    own. The cursor is keyed on the acceptance time and the campaign id, which
+    the page already shows; a live seat is unique per account and campaign, so
+    the pair orders the list totally. Four acceptances at one instant are
+    walked one row at a time: ties by campaign id compared by code point, none
+    skipped and none repeated."""
+    player = world.players[0]
+    campaigns = [_a_campaign(world, name=f"Tie{n}") for n in range(4)]
+    seats = [_seat(world, c, "Rook", player, now=T0) for c in campaigns]
+    walked: list[str] = []
+    cursors: list[str] = []
+    cursor: str | None = None
+    for _ in range(6):
+        with world.db.transaction() as unit:
+            page = world.participants.seat_page_for_user(unit, player, cursor=cursor, limit=1)
+        walked += [h.seat.campaign_id for h in page.items]
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+        cursors.append(cursor)
+    payloads = [_cursor_payload(c) for c in cursors]
+    assert [v for p in payloads for v in p if str(v).startswith("prt_")] == [], "a cursor decodes to a participant id"
+    assert [s for s in seats for p in payloads if s in json.dumps(p)] == []
+    assert [(datetime.fromisoformat(at), campaign) for at, campaign in payloads] == [(T0, c) for c in walked[:3]]
+    assert walked == sorted(campaigns), "ties by campaign id, by code point, each exactly once"
 
 
 def test_the_seat_page_is_oldest_first_and_counts_the_live_seats(world: World) -> None:

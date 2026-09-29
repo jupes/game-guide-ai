@@ -13,6 +13,8 @@ Run from the repo root:
 
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import Iterator
 from datetime import timedelta
 from typing import Any
@@ -247,6 +249,31 @@ def test_every_account_refusal_is_one_identical_404(client: TestClient, world: _
     _verified(WREN)
     assert [o["offer_id"] for o in _offers(client)] == [_offer_id(world, fresh)]
     del own_campaign
+
+
+# ── The player's seat list ───────────────────────────────────────────────────
+
+
+def test_the_seat_list_cursor_decodes_to_no_participant_id(client: TestClient, world: _World) -> None:
+    """L-9 and SEC-43 (R145-M2): `next_cursor` on `GET /seats` names no
+    participant, not even the caller's own. It carries the acceptance time and
+    the campaign id, which the page already shows, and it walks on."""
+    first, second = world.campaign(name="First"), world.campaign(name="Second")
+    seats = [world.accepted(first, "Rook", PLAYER, WREN)]
+    world.now[0] = T0 + timedelta(minutes=1)
+    seats.append(world.accepted(second, "Wren", PLAYER, WREN))
+    _as(PLAYER, "player")
+    page = client.get("/seats", params={"limit": "1"})
+    assert page.status_code == 200, page.text
+    assert [s["campaign_id"] for s in page.json()["items"]] == [second]
+    cursor = page.json()["next_cursor"]
+    assert isinstance(cursor, str)
+    decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+    assert [v for v in decoded if str(v).startswith("prt_")] == [], "the cursor decodes to a participant id"
+    assert [s for s in seats if s in json.dumps(decoded)] == []
+    assert decoded == [(T0 + timedelta(minutes=1)).isoformat(), second]
+    rest = client.get("/seats", params={"limit": "1", "cursor": cursor}).json()
+    assert ([s["campaign_id"] for s in rest["items"]], rest["next_cursor"]) == ([first], None)
 
 
 # ── The account router's posture ─────────────────────────────────────────────

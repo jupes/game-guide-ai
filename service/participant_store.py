@@ -304,9 +304,14 @@ def _created_key(seat: Participant) -> tuple[datetime, str]:
 
 
 def _accepted_key(held: HeldSeat) -> tuple[datetime, str]:
+    """The player's list is keyed on the acceptance and the campaign, never the
+    seat: its cursor must not decode to a participant id (L-9, SEC-43). A live
+    seat is unique per account and campaign (0009's
+    `participants_one_live_seat_per_account_uidx`), so the pair is a total
+    order over one account's list, and the campaign id is on the page anyway."""
     accepted = held.seat.accepted_at
     assert accepted is not None, "a held seat is an accepted one"
-    return accepted, held.seat.id
+    return accepted, held.seat.campaign_id
 
 
 class ParticipantStore(Protocol):
@@ -457,9 +462,10 @@ class ParticipantStore(Protocol):
         self, unit: UnitOfWork, user_id: int, *, cursor: str | None = None, limit: int = PAGE_MAX
     ) -> Page[HeldSeat]:
         """The account's accepted, live seats in campaigns that are not
-        archived, newest acceptance first (`accepted_at DESC, id`), one page at
-        a time — the player's own list (L-9). Beside `seats_for_user`, which
-        stays as it is."""
+        archived, newest acceptance first (`accepted_at DESC, campaign_id`),
+        one page at a time — the player's own list (L-9). The cursor carries
+        the acceptance time and the campaign id, never a participant id
+        (SEC-43). Beside `seats_for_user`, which stays as it is."""
         ...  # pragma: no cover - structural type
 
 
@@ -717,7 +723,7 @@ class PostgresParticipantStore:
     ) -> Page[HeldSeat]:
         check_argument_types(user_id=user_id)
         size = check_limit(limit)
-        after = None if cursor is None else decode_cursor(cursor, ident.PARTICIPANT)
+        after = None if cursor is None else decode_cursor(cursor, ident.CAMPAIGN)
         columns = ", ".join(f"p.{column.strip()}" for column in _P_COLUMNS.split(","))
         rows = pg(unit).conn.execute(
             f"SELECT {columns}, c.name FROM campaign.participants p "
@@ -725,12 +731,12 @@ class PostgresParticipantStore:
             f"WHERE p.user_id = %(user)s AND p.removed_at IS NULL AND p.accepted_at IS NOT NULL "
             f"AND c.archived_at IS NULL "
             f"AND (%(at)s::timestamptz IS NULL OR p.accepted_at < %(at)s::timestamptz "
-            f'OR (p.accepted_at = %(at)s::timestamptz AND p.id COLLATE "C" > %(id)s)) '
-            f'ORDER BY p.accepted_at DESC, p.id COLLATE "C" LIMIT %(limit)s',
+            f'OR (p.accepted_at = %(at)s::timestamptz AND p.campaign_id COLLATE "C" > %(campaign)s)) '
+            f'ORDER BY p.accepted_at DESC, p.campaign_id COLLATE "C" LIMIT %(limit)s',
             {
                 "user": user_id,
                 "at": None if after is None else after[0],
-                "id": None if after is None else after[1],
+                "campaign": None if after is None else after[1],
                 "limit": size + 1,
             },
         ).fetchall()
@@ -936,7 +942,7 @@ class InMemoryParticipantStore:
     ) -> Page[HeldSeat]:
         check_argument_types(user_id=user_id)
         size = check_limit(limit)
-        after = None if cursor is None else decode_cursor(cursor, ident.PARTICIPANT)
+        after = None if cursor is None else decode_cursor(cursor, ident.CAMPAIGN)
         twin = fake(unit)
         campaigns = self._campaigns.visible(twin)
         held: list[HeldSeat] = []
@@ -946,12 +952,16 @@ class InMemoryParticipantStore:
                 continue
             accepted = p.accepted_at
             assert accepted is not None
-            # Newest acceptance first, ties by id ascending: strictly after the
-            # cursor's row in that order.
-            if after is not None and not (accepted < after[0] or (accepted == after[0] and p.id > after[1])):
+            # Newest acceptance first, ties by campaign id ascending: strictly
+            # after the cursor's row in that order.
+            if after is not None and not (
+                accepted < after[0] or (accepted == after[0] and p.campaign_id > after[1])
+            ):
                 continue
             held.append(HeldSeat(p, campaign.name))
-        # The id sort first, then a stable sort on the time, reversed — as
-        # `seats_for_user` orders them.
-        ordered = sorted(sorted(held, key=lambda h: h.seat.id), key=lambda h: _accepted_key(h)[0], reverse=True)
+        # The campaign id sort first, then a stable sort on the time, reversed:
+        # `accepted_at DESC, campaign_id COLLATE "C"`.
+        ordered = sorted(
+            sorted(held, key=lambda h: h.seat.campaign_id), key=lambda h: _accepted_key(h)[0], reverse=True
+        )
         return page_of(ordered[: size + 1], size, _accepted_key)
