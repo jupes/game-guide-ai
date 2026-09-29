@@ -74,11 +74,3 @@ ALTER TABLE audit.events DROP CONSTRAINT events_actor_kind_check;
 
 ALTER TABLE audit.events ADD CONSTRAINT events_actor_kind_check
   CHECK (actor_kind IN ('gm','participant','screen','system'));
-
-ALTER TABLE campaign.table_sessions ADD CONSTRAINT broken_rotate_key UNIQUE (rotate_command_id);
-
-DROP INDEX campaign.table_sessions_start_command_uidx;
-
-ALTER TABLE campaign.table_sessions ADD COLUMN broken_digest TEXT;
-
-ALTER TABLE audit.events DROP CONSTRAINT events_actor_kind_check;

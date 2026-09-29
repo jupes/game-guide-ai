@@ -571,7 +571,7 @@ class PostgresTableSessionStore:
         else:
             row = transaction.conn.execute(
                 f"SELECT {_S_COLUMNS} FROM campaign.table_sessions "
-                f"WHERE id = %s AND campaign_id = %s AND %s > 0 FOR UPDATE",
+                f"WHERE id = %s AND campaign_id = %s AND gm_user_id = %s FOR NO KEY UPDATE",
                 (session_id, campaign_id, owner_id),
             ).fetchone()
         return None if row is None else _session(row)
