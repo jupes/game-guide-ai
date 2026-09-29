@@ -7,6 +7,7 @@ import { expect, userEvent, within } from 'storybook/test'
 
 import { tabTo } from '../../.storybook/keyboard'
 import { withShell } from '../../.storybook/shellHarness'
+import { atViewport, expectLeftEdge, expectNoPageOverflow, expectSpans, expectViewport } from '../../.storybook/viewports'
 import { ProfilePage } from './ProfilePage'
 
 const meta = {
@@ -113,4 +114,29 @@ export const Dark: Story = {
 export const DarkVerdigris: Story = {
   globals: { theme: 'dark' },
   decorators: [withShell({ screen: 'profile', avatarTone: 'verdigris' })],
+}
+
+/**
+ * agent-forge-harness-0rn: Profile on a phone. The page's side padding drops
+ * to the gutter, "Back to chat" spans the card, and each avatar-tone
+ * swatch keeps its 44px target.
+ */
+export const Phone390: Story = {
+  ...atViewport('phone390'),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone390')
+    const canvas = within(canvasElement)
+    await expectNoPageOverflow()
+    const card = canvasElement.querySelector('.profile-page__card')
+    if (!(card instanceof HTMLElement)) throw new Error('no profile card')
+    await expectLeftEdge(card, 16)
+    await expectSpans(canvas.getByRole('button', { name: 'Back to chat' }), card)
+    const swatches = Array.from(canvasElement.querySelectorAll('.profile-page__tone'))
+    await expect(swatches.length).toBeGreaterThan(0)
+    for (const swatch of swatches) {
+      const box = swatch.getBoundingClientRect()
+      await expect(box.width).toBeGreaterThanOrEqual(44)
+      await expect(box.height).toBeGreaterThanOrEqual(44)
+    }
+  },
 }

@@ -10,6 +10,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
 import { json, stubFetch, withShell } from '../.storybook/shellHarness'
+import { expectTouchTarget } from '../.storybook/touchTarget'
+import { atViewport, expectNoPageOverflow, expectStacked, expectViewport } from '../.storybook/viewports'
 import App from './App'
 
 const CATALOG = { default: 'auto', models: [{ id: 'auto', display_name: 'Automatic' }] }
@@ -165,4 +167,25 @@ export const DarkSignedOut: Story = {
 export const DarkSessionCheckUnavailable: Story = {
   globals: { theme: 'dark' },
   decorators: [withShell({ authStatus: 'unavailable' })],
+}
+
+/**
+ * agent-forge-harness-0rn: the session-unavailable screen on a 320px phone.
+ * `.auth-screen` is a row flexbox, so its heading, paragraph and button sat
+ * side by side; under 600px they stack. "Try again" was an unstyled button
+ * below the 44px floor at every width.
+ */
+export const SessionCheckUnavailablePhone320: Story = {
+  ...atViewport('phone320'),
+  decorators: [withShell({ authStatus: 'unavailable', retryAuthCheck: fn() })],
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone320')
+    const canvas = within(canvasElement)
+    await expectNoPageOverflow()
+    const heading = canvas.getByRole('heading', { name: 'Can’t reach the service' })
+    const paragraph = canvas.getByText(/We couldn’t check your session/)
+    const retry = canvas.getByRole('button', { name: 'Try again' })
+    await expectStacked([heading, paragraph, retry])
+    await expectTouchTarget(canvas, 'Try again')
+  },
 }

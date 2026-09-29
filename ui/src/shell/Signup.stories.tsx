@@ -10,6 +10,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
 import { json, pending, stubFetch, withShell } from '../../.storybook/shellHarness'
+import { expectTouchTarget } from '../../.storybook/touchTarget'
+import { atViewport, expectNoPageOverflow, expectSpans, expectViewport } from '../../.storybook/viewports'
 import { Signup } from './Signup'
 
 const meta = {
@@ -161,5 +163,23 @@ export const DarkWithError: Story = {
     canvas.getByRole('button', { name: 'Create account' }).focus()
     await userEvent.keyboard('{Enter}')
     await expect(await canvas.findByRole('alert')).toBeVisible()
+  },
+}
+
+/**
+ * agent-forge-harness-0rn: on a phone, "Already have an account? Sign in" is a
+ * card action, so it spans the card instead of sitting as a centred link.
+ */
+export const Phone390: Story = {
+  ...atViewport('phone390'),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone390')
+    const canvas = within(canvasElement)
+    await expectNoPageOverflow()
+    const card = canvasElement.querySelector('.auth-screen__card')
+    if (!(card instanceof HTMLElement)) throw new Error('no signup card')
+    const toSignIn = canvas.getByRole('button', { name: 'Already have an account? Sign in' })
+    await expectSpans(toSignIn, card)
+    await expectTouchTarget(canvas, 'Already have an account? Sign in')
   },
 }

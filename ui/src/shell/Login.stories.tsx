@@ -9,6 +9,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, within } from 'storybook/test'
 
 import { json, pending, stubFetch, withShell } from '../../.storybook/shellHarness'
+import { expectTouchTarget } from '../../.storybook/touchTarget'
+import { atViewport, expectLeftEdge, expectNoPageOverflow, expectSpans, expectViewport, type ViewportName } from '../../.storybook/viewports'
 import { Login } from './Login'
 
 const meta = {
@@ -144,5 +146,56 @@ export const DarkWithError: Story = {
     canvas.getByRole('button', { name: 'Sign in' }).focus()
     await userEvent.keyboard('{Enter}')
     await expect(await canvas.findByRole('alert')).toBeVisible()
+  },
+}
+
+// ── Phone (agent-forge-harness-0rn) ──────────────────────────────────────────
+// A regression pin for the sign-in card on a phone. Login was already one
+// column (a row flexbox with one centred child lays out as one), so nothing
+// here is the phone block's mutation killer; Signup and the session-check
+// screen are. What this pins is the reflow and the 44px floors at the widths
+// every player signs in at (owner decision D-1).
+
+async function expectPhoneSignIn(canvasElement: HTMLElement, viewport: ViewportName): Promise<void> {
+  await expectViewport(viewport)
+  const canvas = within(canvasElement)
+  await expectNoPageOverflow()
+  const card = canvasElement.querySelector('.auth-screen__card')
+  if (!(card instanceof HTMLElement)) throw new Error('no sign-in card')
+  await expectLeftEdge(card, 16)
+  await expectTouchTarget(canvas, 'Sign in')
+  await expectSpans(canvas.getByRole('button', { name: 'Sign in' }), card)
+  const rows = Array.from(canvasElement.querySelectorAll('.aether-field__row'))
+  await expect(rows).toHaveLength(2)
+  for (const row of rows) {
+    await expect(row.getBoundingClientRect().height).toBeGreaterThanOrEqual(44)
+  }
+}
+
+export const Phone390: Story = {
+  ...atViewport('phone390'),
+  play: async ({ canvasElement }) => expectPhoneSignIn(canvasElement, 'phone390'),
+}
+
+export const Phone320: Story = {
+  ...atViewport('phone320'),
+  play: async ({ canvasElement }) => expectPhoneSignIn(canvasElement, 'phone320'),
+}
+
+/** The error message is the longest line on the card; it wraps, not scrolls. */
+export const DarkPhone320WithError: Story = {
+  ...atViewport('phone320', 'dark'),
+  beforeEach: stubFetch(() => json({ detail: 'Email or password is incorrect.' }, 401)),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone320')
+    const canvas = within(canvasElement)
+    canvas.getByRole('textbox', { name: 'Email' }).focus()
+    await userEvent.keyboard('alanna@aetheril.test')
+    canvas.getByLabelText('Password').focus()
+    await userEvent.keyboard('wrong-password')
+    canvas.getByRole('button', { name: 'Sign in' }).focus()
+    await userEvent.keyboard('{Enter}')
+    await expect(await canvas.findByRole('alert')).toBeVisible()
+    await expectPhoneSignIn(canvasElement, 'phone320')
   },
 }

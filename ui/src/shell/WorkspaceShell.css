@@ -5,7 +5,7 @@
 .workspace-shell {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100dvh; /* LAYOUT-8: a phone's collapsing toolbar overflows 100vh */
   overflow: hidden;
   background: var(--md-sys-color-surface);
 }
@@ -22,4 +22,13 @@
   flex-direction: column;
   overflow: hidden;
   padding: 24px;
+}
+
+/* ── Phone (agent-forge-harness-0rn) ─────────────────────────────────────────
+   Under 600px the chat's 24px padding costs a 320px screen 15% of its width;
+   the gutter is the design system's phone margin. */
+@media (width < 600px) {
+  .workspace-shell__main {
+    padding: var(--aether-gutter);
+  }
 }
