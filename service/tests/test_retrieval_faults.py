@@ -14,10 +14,12 @@ content-free check instead of importing the characterization harness.
 
 from __future__ import annotations
 
+import ast
 import logging
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -415,6 +417,18 @@ def test_each_retried_embed_attempt_is_its_own_ledger_record(monkeypatch: pytest
     assert (outcome.response.answer, outcome.attempts, client.calls) == (ANSWER, (), 2)
     embeddings = [(r["retry_index"], r["error_class"]) for r in records if r["purpose"] == "embedding"]
     assert embeddings == [(0, "APIConnectionError"), (1, None)]
+
+
+def test_the_retrieval_module_imports_no_undeclared_http_client() -> None:
+    # agent-forge-harness-0oh: httpx is not a declared core dependency; the SDK re-exports its Timeout.
+    tree = ast.parse(Path(retrieval.__file__).read_text(encoding="utf-8"))
+    roots = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import)
+             for alias in node.names}
+    roots |= {node.module.split(".")[0] for node in ast.walk(tree)
+              if isinstance(node, ast.ImportFrom) and node.module and node.level == 0}
+    assert {"openai", "psycopg"} <= roots
+    assert "httpx" not in roots
+    assert openai.Timeout is httpx.Timeout
 
 
 # ── The /chat branches a stub service still reaches ───────────────────────────
