@@ -244,10 +244,11 @@ class PostgresJobQueue:
         if not isinstance(unit, PgTransaction):
             raise TypeError("a Postgres job is enqueued inside a Postgres transaction")
         moment = _now(now)
+        check_dedupe_key(dedupe_key)
         params = (
             check_kind(kind),
             json.dumps(check_payload(payload)),
-            check_dedupe_key(dedupe_key),
+            None,  # DELIBERATELY BROKEN (ixa.2 M-P1): the INSERT carries no dedupe key, so nothing conflicts
             run_after or moment,
             moment,
         )
