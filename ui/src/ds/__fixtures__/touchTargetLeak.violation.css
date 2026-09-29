@@ -1,15 +1,16 @@
 /**
  * Fixture for touchTargetLeak.test.ts's positive-control test
- * (agent-forge-harness-8ug / #147 M-2). This directory (__fixtures__) is
- * excluded from the guard's production sweep, so nothing here ever shrinks a
- * real button or fails the real-file guard test — it exists only to prove
- * the guard's detection logic (isGuardedSelector + SIZE_PROPERTIES + the
- * blocks() parser) can find a violation when one is actually there.
+ * (agent-forge-harness-8ug / #147 M-2). The guard's production sweep skips
+ * this one file by its exact path, so nothing here ever shrinks a real
+ * button or fails the real-file guard test. It exists only to prove that the
+ * guard's detection, its violations() function, can find a violation when
+ * one is actually there.
  *
  * Each rule below is isolated to exactly one guarded-selector kind and one
  * size property, cycling through all three selector matchers
  * (.aether-btn/.aether-icon-btn, a bare `button` element, and `[data-size`)
- * and all eight properties the guard watches.
+ * and all eight properties the guard watches. The positive-control test
+ * pins the exact list of violations, in this order, so keep the two in step.
  */
 
 .aether-btn {

@@ -38,10 +38,11 @@
  * detection itself -- `isGuardedSelector` always `false`, `SIZE_PROPERTIES`
  * emptied, the `blocks()` regex broken -- passes exactly as green as the
  * unmutated code; there was no committed fixture with a real violation to
- * prove the scan can ever find one. `__fixtures__/` below is excluded from
- * the production sweep (like the two floor owners) and holds one, so the
- * positive-control test at the bottom exercises every guarded-selector kind
- * and every size property against real detection logic, not mocks.
+ * prove the scan can ever find one. `__fixtures__/touchTargetLeak.violation.css`
+ * is that fixture. Only that one file is left out of the production sweep
+ * (like the two floor owners), and the positive-control test at the bottom
+ * runs every guarded-selector kind and every size property in it through
+ * the same `violations()` function the guard uses, not a copy of it.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -54,22 +55,23 @@ const SRC_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
 /** The only two files the 44px floor is allowed to live in. */
 const FLOOR_OWNERS = [join(SRC_DIR, 'ds', 'Button.css'), join(SRC_DIR, 'ds', 'IconButton.css')]
 
-/** Directory name for committed violation fixtures (see the bottom of this
- * file) — deliberately outside the production sweep, the same way the two
+/** A committed fixture with one deliberate violation per guarded-selector
+ * kind and per size property (see the positive-control test below). It is
+ * left out of the production sweep by its exact path, the same way the two
  * floor owners are, so a fixture proving the scan CAN fire never trips the
- * scan it exists to prove. */
-const FIXTURE_DIR_NAME = '__fixtures__'
+ * scan it exists to prove. No other file, and no other `__fixtures__`
+ * directory, is exempt. */
+const VIOLATION_FIXTURE = join(SRC_DIR, 'ds', '__fixtures__', 'touchTargetLeak.violation.css')
 
 /** Every *.css file under src/, outside the floor's two legitimate owners and
- * the fixtures directory. */
+ * the one violation fixture. */
 function cssFilesOutsideFloorOwners(dir: string): string[] {
   const found: string[] = []
   for (const name of readdirSync(dir)) {
-    if (name === FIXTURE_DIR_NAME) continue
     const full = join(dir, name)
     if (statSync(full).isDirectory()) {
       found.push(...cssFilesOutsideFloorOwners(full))
-    } else if (name.endsWith('.css') && !FLOOR_OWNERS.includes(full)) {
+    } else if (name.endsWith('.css') && !FLOOR_OWNERS.includes(full) && full !== VIOLATION_FIXTURE) {
       found.push(full)
     }
   }
@@ -77,10 +79,6 @@ function cssFilesOutsideFloorOwners(dir: string): string[] {
 }
 
 const GUARDED_FILES = cssFilesOutsideFloorOwners(SRC_DIR)
-
-/** A committed fixture with one deliberate violation per guarded-selector
- * kind and per size property -- see the positive-control test below. */
-const VIOLATION_FIXTURE = join(SRC_DIR, 'ds', FIXTURE_DIR_NAME, 'touchTargetLeak.violation.css')
 
 /** CSS comments hold prose, not declarations. */
 const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, ' ')
@@ -133,6 +131,23 @@ function blocks(css: string): Block[] {
   return found
 }
 
+/** Every size declaration on a guarded selector in one stylesheet, as
+ * `selector { property }` labels in source order. This is the whole
+ * detection: the comment strip, blocks(), isGuardedSelector,
+ * SIZE_PROPERTIES and the per-property match. The production guard and the
+ * positive control both call it, so the fixture exercises the code the guard
+ * actually runs, not a copy of it (#148 review M-1). */
+function violations(css: string): string[] {
+  const found: string[] = []
+  for (const { selector, body } of blocks(stripComments(css))) {
+    if (!isGuardedSelector(selector)) continue
+    for (const property of SIZE_PROPERTIES) {
+      if (new RegExp(`(^|;)\\s*${property}\\s*:`).test(body)) found.push(`${selector.trim()} { ${property} }`)
+    }
+  }
+  return found
+}
+
 it('found the files it is meant to guard', () => {
   expect(GUARDED_FILES.length).toBeGreaterThanOrEqual(30)
   expect(GUARDED_FILES.some((f) => f.endsWith('ChatPane.css'))).toBe(true)
@@ -151,57 +166,36 @@ it('found the files it is meant to guard', () => {
 describe('touch-target floor cannot be beaten outside ds/Button.css or ds/IconButton.css (agent-forge-harness-hxq / pr128 F1, broadened by agent-forge-harness-opn / #138 M-1)', () => {
   it('sets no size property on .aether-btn/.aether-icon-btn, a bare button selector, or [data-size from any other stylesheet', () => {
     for (const file of GUARDED_FILES) {
-      const css = stripComments(readFileSync(file, 'utf8'))
-      for (const { selector, body } of blocks(css)) {
-        if (!isGuardedSelector(selector)) continue
-        for (const property of SIZE_PROPERTIES) {
-          expect(
-            new RegExp(`(^|;)\\s*${property}\\s*:`).test(body),
-            `${relative(SRC_DIR, file)}: selector "${selector.trim()}" sets ${property} on a button ` +
-              'element/class/attribute the ds/ 44px touch floor already governs — this can shrink the ' +
-              'rendered target below 44px in the real app even though no single storybook story sees it.',
-          ).toBe(false)
-        }
-      }
+      expect(
+        violations(readFileSync(file, 'utf8')),
+        `${relative(SRC_DIR, file)} sets a size property on a button element/class/attribute the ds/ 44px ` +
+          'touch floor already governs — this can shrink the rendered target below 44px in the real app even ' +
+          'though no single storybook story sees it.',
+      ).toEqual([])
     }
   })
 })
 
 describe('positive control: the detection logic can actually find a violation (agent-forge-harness-8ug / #147 M-2)', () => {
   it('flags every guarded-selector kind and every size property on the committed fixture', () => {
-    const css = stripComments(readFileSync(VIOLATION_FIXTURE, 'utf8'))
-    const fixtureBlocks = blocks(css)
-    expect(fixtureBlocks.length).toBeGreaterThan(0)
-
-    const flaggedProperties = new Set<string>()
-    for (const { selector, body } of fixtureBlocks) {
-      expect(isGuardedSelector(selector), `fixture selector "${selector.trim()}" must be one this guard watches`).toBe(
-        true,
-      )
-      for (const property of SIZE_PROPERTIES) {
-        if (new RegExp(`(^|;)\\s*${property}\\s*:`).test(body)) flaggedProperties.add(property)
-      }
-    }
-    // Hard-coded, not derived from SIZE_PROPERTIES: comparing against the
-    // production list itself would go blind exactly when that list is the
-    // thing mutated (dropping an entry from SIZE_PROPERTIES would drop it
-    // from both sides of the comparison and never fail). Every property
-    // below has its own isolated rule in the fixture, so a mutant that
-    // empties, shrinks, or otherwise breaks the list -- or the per-property
-    // regex built from it -- leaves at least one entry unflagged here, even
-    // though it would never fail the real-file guard above (nothing to flag
-    // either way).
-    expect([...flaggedProperties].sort()).toEqual(
-      [
-        'min-height',
-        'min-width',
-        'height',
-        'width',
-        'min-block-size',
-        'min-inline-size',
-        'block-size',
-        'inline-size',
-      ].sort(),
-    )
+    // Hard-coded, not derived from SIZE_PROPERTIES or the selector matchers:
+    // comparing against the production lists would go blind exactly when
+    // they are the thing mutated. Each fixture rule pairs one guarded-selector
+    // kind with one size property, so a mutant that breaks any part of
+    // violations() -- a selector matcher, a dropped property, the
+    // per-property regex, the loop over blocks, blocks() itself, or the
+    // comment strip (the fixture's header comment would join the first
+    // selector) -- changes this exact list, even though the real-file guard
+    // above would stay green (nothing to flag either way).
+    expect(violations(readFileSync(VIOLATION_FIXTURE, 'utf8'))).toEqual([
+      '.aether-btn { min-height }',
+      '.icon-only-toggle button { min-width }',
+      '.chat-pane [data-size="compact"] { height }',
+      '.aether-icon-btn { width }',
+      '.left-nav button { min-block-size }',
+      '[data-size="small"] { min-inline-size }',
+      '.aether-btn { block-size }',
+      'button { inline-size }',
+    ])
   })
 })
