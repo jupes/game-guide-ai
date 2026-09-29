@@ -211,15 +211,19 @@ describe('the campaign list (critic 14e)', () => {
     })
     await waitFor(() => expect(live.c.list).toMatchObject({ kind: 'ready', nextCursor: 'c2' }))
     expect(server.lines()).toEqual(['GET /campaigns'])
+    status = 503
+    act(() => live.c.loadMoreCampaigns())
+    await waitFor(() => expect(live.c.list).toMatchObject({ items: [A], loadingMore: false, moreFailed: true }))
+    status = 200
     act(() => {
       live.c.loadMoreCampaigns()
       live.c.loadMoreCampaigns()
     })
     await waitFor(() => expect(live.c.list).toMatchObject({ nextCursor: null, loadingMore: false }))
-    expect(server.lines()).toEqual(['GET /campaigns', 'GET /campaigns?cursor=c2'])
+    expect(server.lines()).toEqual(['GET /campaigns', 'GET /campaigns?cursor=c2', 'GET /campaigns?cursor=c2'])
     expect(screen.getByTestId('probe')).toHaveTextContent('Name of cmp_A,Name of cmp_B')
     act(() => live.c.loadMoreCampaigns())
-    expect(server.calls).toHaveLength(2)
+    expect(server.calls).toHaveLength(3)
     status = 503
     act(() => live.c.loadCampaigns())
     expect(live.c.list).toEqual({ kind: 'loading', items: [A, B] })
@@ -253,7 +257,8 @@ describe('switching and the guard (LIB-25, critic 14)', () => {
     await run(() => live.c.selectCampaign(A))
     const before = { selection: live.c.selection, key: live.c.scope?.key, hash: window.location.hash, id: live.nav.conversationId }
     const spy = vi.fn(guard)
-    act(() => { live.c.registerSwitchGuard(spy) })
+    let unregister = () => {}
+    act(() => { unregister = live.c.registerSwitchGuard(spy) })
     expect(await run(() => live.c.selectCampaign(A))).toBe('unchanged')
     expect(spy).not.toHaveBeenCalled()
     expect(await run(() => live.c.selectCampaign(B))).toBe('vetoed')
@@ -261,6 +266,9 @@ describe('switching and the guard (LIB-25, critic 14)', () => {
     expect(spy.mock.calls).toEqual([[{ campaignId: 'cmp_B' }], [{ campaignId: null }]])
     expect({ selection: live.c.selection, key: live.c.scope?.key, hash: window.location.hash, id: live.nav.conversationId })
       .toEqual(before)
+    unregister()
+    expect(await run(() => live.c.selectCampaign(B))).toBe('switched')
+    expect(spy).toHaveBeenCalledTimes(2)
   })
 
   it('while one switch awaits its guards every other switch is vetoed; a late guard after sign-out applies nothing', async () => {
