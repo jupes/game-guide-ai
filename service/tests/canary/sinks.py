@@ -270,7 +270,7 @@ class LogCapture:
         if self._state != "active":
             raise HarnessMisuse("a LogCapture exits once, after it was entered")
         if not self._is_innermost():
-            raise HarnessMisuse("captures exit in LIFO order")
+            raise HarnessMisuse("LogCaptures exit in LIFO order")
         self._pull()
         _LOG_STACK.pop()
         self._state = "closed"
@@ -827,7 +827,7 @@ class LeakCapture:
         if self._state == "closed":
             raise HarnessMisuse("a LeakCapture exits once")
         if not _LEAK_STACK or _LEAK_STACK[-1] is not self or not self._logs._is_innermost():
-            raise HarnessMisuse("captures exit in LIFO order")
+            raise HarnessMisuse("LeakCaptures exit in LIFO order")
         late: list[Finding] = []
         try:
             if not call_failed:

@@ -530,28 +530,35 @@ def _visible_on_gm(env: _Env) -> None:
     env.capture.assert_clean(visible={"g": CanarySet()})
 
 
-_MISUSE: dict[str, Callable[[_Env], object]] = {
-    "unknown-visible": lambda env: env.capture.assert_clean(visible={"nope": CanarySet()}),
-    "unknown-must-see": lambda env: env.capture.assert_clean(must_see={"nope": CanarySet()}),
-    "unknown-expect-empty": lambda env: env.capture.assert_clean(expect_empty=["nope"]),
-    "expect-empty-as-string": lambda env: env.capture.assert_clean(expect_empty="logs"),
-    "visible-on-gm": _visible_on_gm,
-    "visible-on-telemetry": lambda env: env.capture.assert_clean(visible={"logs": CanarySet()}),
-    "must-see-on-telemetry": lambda env: env.capture.assert_clean(must_see={"logs": CanarySet()}),
-    "duplicate-label": lambda env: (env.capture.llm("x", audience=Audience.GM),
-                                    env.capture.cache("x", audience=Audience.GM)),
-    "reserved-label": lambda env: env.capture.channel("logs", audience=Audience.PLAYER),
-    "canary-not-in-world": _foreign_canary,
-    "enter-twice": _enter_twice,
-    "double-exit": _double_exit,
-    "exit-out-of-lifo-order": _exit_out_of_order,
-    "install-metrics-twice": _metrics_twice,
-    "factory-after-exit": _after_exit(lambda cap: cap.llm("late", audience=Audience.GM)),
-    "assert-after-exit": _after_exit(lambda cap: cap.assert_clean()),
-    "install-metrics-after-exit": _after_exit(lambda cap: cap.install_metrics(FastAPI())),
-    "tracing-after-exit": _after_exit(lambda cap: cap.tracing()),
-    "tracing-twice": _tracing_twice,
-    "seed-reused": lambda env: CanaryWorld(env.request.node.nodeid),
+#: Each case, and the words its refusal must carry: a mutant that removes one guard and lets a
+#: later guard refuse instead is still caught, because the message is the other guard's.
+_MISUSE: dict[str, tuple[Callable[[_Env], object], str]] = {
+    "unknown-visible": (lambda env: env.capture.assert_clean(visible={"nope": CanarySet()}), "visible names 'nope'"),
+    "unknown-must-see": (lambda env: env.capture.assert_clean(must_see={"nope": CanarySet()}),
+                         "must_see names 'nope'"),
+    "unknown-expect-empty": (lambda env: env.capture.assert_clean(expect_empty=["nope"]),
+                             "expect_empty names 'nope'"),
+    "expect-empty-as-string": (lambda env: env.capture.assert_clean(expect_empty="logs"), "not one string"),
+    "visible-on-gm": (_visible_on_gm, "visible is for PLAYER sinks"),
+    "visible-on-telemetry": (lambda env: env.capture.assert_clean(visible={"logs": CanarySet()}),
+                             "visible is for PLAYER sinks"),
+    "must-see-on-telemetry": (lambda env: env.capture.assert_clean(must_see={"logs": CanarySet()}),
+                              "cannot name the TELEMETRY sink"),
+    "duplicate-label": (lambda env: (env.capture.llm("x", audience=Audience.GM),
+                                     env.capture.cache("x", audience=Audience.GM)), "already declared"),
+    "reserved-label": (lambda env: env.capture.channel("logs", audience=Audience.PLAYER), "reserved"),
+    "canary-not-in-world": (_foreign_canary, "did not mint"),
+    "enter-twice": (_enter_twice, "LeakCapture is entered once"),
+    "double-exit": (_double_exit, "exits once"),
+    "exit-out-of-lifo-order": (_exit_out_of_order, "LeakCaptures exit in LIFO order"),
+    "install-metrics-twice": (_metrics_twice, "already called for this app"),
+    "factory-after-exit": (_after_exit(lambda cap: cap.llm("late", audience=Audience.GM)), "after the capture exited"),
+    "assert-after-exit": (_after_exit(lambda cap: cap.assert_clean()), "after the capture exited"),
+    "install-metrics-after-exit": (_after_exit(lambda cap: cap.install_metrics(FastAPI())),
+                                   "after the capture exited"),
+    "tracing-after-exit": (_after_exit(lambda cap: cap.tracing()), "after the capture exited"),
+    "tracing-twice": (_tracing_twice, "once per capture"),
+    "seed-reused": (lambda env: CanaryWorld(env.request.node.nodeid), "already exists in this process"),
 }
 
 
@@ -570,8 +577,9 @@ def test_misuse_is_loud(
     monkeypatch.setattr(canary_core, "scan", counting_scan)
     capture = LeakCapture(canary_world, monkeypatch=monkeypatch).__enter__()
     try:
-        with pytest.raises(HarnessMisuse):
-            _MISUSE[case](_Env(canary_world, capture, monkeypatch, request))
+        action, words = _MISUSE[case]
+        with pytest.raises(HarnessMisuse, match=re.escape(words)):
+            action(_Env(canary_world, capture, monkeypatch, request))
         assert scanned == []
     finally:
         capture._exit(call_failed=True)
