@@ -924,7 +924,7 @@ lives (RV-1).
 
 | Route | Answers |
 |---|---|
-| `GET /campaigns/{campaign_id}/assets/{asset_id}` | a `ready` asset's bytes: `200`, `206` for one byte range, `416` with `Content-Range: bytes */<size>` for a range past the end. Another unit, a syntax error, several ranges and any `If-Range` are ignored and the whole object answered (RFC 9110 section 14; no validator is ever issued, so no `If-Range` can match). `503` with `Retry-After` when the instance's store tokens are all taken |
+| `GET /campaigns/{campaign_id}/assets/{asset_id}` | a `ready` asset's bytes: `200`, `206` for one byte range, `416` with `Content-Range: bytes */<size>` for a range past the end. A position of any length means its value (one longer than the size in digits is compared, never converted), so no numeral makes a `500`. Another unit, a syntax error, several ranges and any `If-Range` are ignored and the whole object answered (RFC 9110 section 14; no validator is ever issued, so no `If-Range` can match). `503` with `Retry-After` when the instance's store tokens are all taken |
 | `DELETE /campaigns/{campaign_id}/assets/{asset_id}` | `204`. One transaction writes the tombstone, releases the reservation, enqueues `asset.delete` last and records `asset.deleted` (detail: the asset id); the job is tried after the response. A deleted asset is missing, so a second delete is the `404` |
 
 **A read, in order.** Ownership and `ready` in one statement (`resolve_ready`;

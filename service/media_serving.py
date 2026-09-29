@@ -103,18 +103,37 @@ def byte_window(range_header: str | None, if_range: str | None, size: int) -> By
     if not dash or not all(_POSITION.fullmatch(part) for part in (first, last) if part) or not (first or last):
         return whole
     if not first:
-        suffix = int(last)
+        suffix = _at_most(last, size)
         if suffix == 0:
             raise RangeNotSatisfiable()
-        start = max(size - suffix, 0)
+        start = size - suffix
         return ByteWindow(start, size - start, partial=True)
-    start = int(first)
-    if last and int(last) < start:
+    if last and _order(last) < _order(first):
         return whole
+    start = _at_most(first, size)
     if start >= size:
         raise RangeNotSatisfiable()
-    end = size - 1 if not last else min(int(last), size - 1)
+    end = size - 1 if not last else min(_at_most(last, size), size - 1)
     return ByteWindow(start, end - start + 1, partial=True)
+
+
+def _order(digits: str) -> tuple[int, str]:
+    """A position's place among positions, found without converting it: with
+    its leading zeros gone, more digits is larger, and equal lengths compare
+    as text."""
+    significant = digits.lstrip("0") or "0"
+    return len(significant), significant
+
+
+def _at_most(digits: str, size: int) -> int:
+    """A position's value, or `size` for any larger one: every position at or
+    past the end means the same. One with more significant digits than `size`
+    is never converted, because `int()` refuses a string of over 4,300 digits,
+    and that `ValueError` was an unhandled `500` (review M-1)."""
+    length, significant = _order(digits)
+    if length > len(str(size)):
+        return size
+    return min(int(significant), size)
 
 
 def _policy() -> dict[str, str]:

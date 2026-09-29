@@ -329,6 +329,27 @@ def test_a_range_is_206_and_a_range_past_the_end_is_416(client: TestClient, worl
     assert (malformed.status_code, malformed.content) == (200, IMAGE), "an invalid range is ignored"
 
 
+def test_a_position_too_long_for_int_is_answered_as_its_value_never_500(client: TestClient, world: World) -> None:
+    """Review M-1: a position of more than 4,300 digits once raised `ValueError`
+    out of the route (Python's `int()` limit), a bare `500` with none of
+    SEC-19's headers. Each is now the answer its value earns."""
+    campaign = world.campaign()
+    asset = world.asset(campaign)
+    size = len(IMAGE)
+    huge = "9" * 5000
+    past = client.get(_path(campaign, asset), headers={"range": f"bytes={huge}-"})
+    assert (past.status_code, past.content, past.headers["content-range"]) == (416, b"", f"bytes */{size}")
+    clipped = client.get(_path(campaign, asset), headers={"range": f"bytes=0-{huge}"})
+    suffix = client.get(_path(campaign, asset), headers={"range": f"bytes=-{huge}"})
+    for answer in (clipped, suffix):
+        assert (answer.status_code, answer.content) == (206, IMAGE)
+        assert answer.headers["content-range"] == f"bytes 0-{size - 1}/{size}"
+    for answer in (past, clipped, suffix):
+        assert answer.headers.get_list("content-security-policy") == [POLICY]
+        assert (answer.headers["cache-control"], answer.headers["x-content-type-options"]) == ("no-store", "nosniff")
+    assert mo.STORE_LIMITER.borrowed == 0, "no answer keeps a store token"
+
+
 # ── AC 23: nothing resolves unless the asset is ready ───────────────────────
 
 

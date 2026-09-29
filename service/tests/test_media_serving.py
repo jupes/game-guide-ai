@@ -56,12 +56,19 @@ SIZE = 1000
         ("bytes=-10", ByteWindow(990, 10, partial=True)),
         ("bytes=-5000", ByteWindow(0, SIZE, partial=True)),  # a suffix longer than the object is all of it
         ("BYTES=10-19", ByteWindow(10, 10, partial=True)),  # the unit is case-insensitive
+        # A numeral longer than Python's 4,300-digit `int()` limit (review M-1)
+        # still means what its value means: a last position past the end is
+        # clipped, and a suffix longer than the object is all of it.
+        ("bytes=0-" + "9" * 5000, ByteWindow(0, SIZE, partial=True)),
+        ("bytes=-" + "9" * 5000, ByteWindow(0, SIZE, partial=True)),
+        ("bytes=" + "0" * 5000 + "10-" + "0" * 5000 + "19", ByteWindow(10, 10, partial=True)),  # zeros add nothing
         # Ignored, so the whole object is answered 200 (section 14.2).
         ("items=0-9", ByteWindow(0, SIZE, partial=False)),
         ("bytes 0-9", ByteWindow(0, SIZE, partial=False)),
         ("bytes=", ByteWindow(0, SIZE, partial=False)),
         ("bytes=-", ByteWindow(0, SIZE, partial=False)),
         ("bytes=9-0", ByteWindow(0, SIZE, partial=False)),
+        ("bytes=" + "9" * 5000 + "-" + "9" * 4999, ByteWindow(0, SIZE, partial=False)),  # last < first, both huge
         ("bytes=a-9", ByteWindow(0, SIZE, partial=False)),
         ("bytes=+1-9", ByteWindow(0, SIZE, partial=False)),
         ("bytes=0-1,5-6", ByteWindow(0, SIZE, partial=False)),
@@ -72,7 +79,15 @@ def test_a_range_is_read_as_rfc_9110_reads_it(header: str | None, window: ByteWi
     assert byte_window(header, None, SIZE) == window
 
 
-@pytest.mark.parametrize("header", ["bytes=1000-", "bytes=1000-1000", "bytes=5000-6000", "bytes=-0"])
+@pytest.mark.parametrize(
+    "header",
+    [
+        "bytes=1000-", "bytes=1000-1000", "bytes=5000-6000", "bytes=-0",
+        "bytes=" + "1" * 5000 + "-",  # a first position of 5,000 digits (review M-1)
+        "bytes=" + "1" * 5000 + "-" + "1" * 5001,
+        "bytes=-" + "0" * 5000,
+    ],
+)
 def test_a_range_that_starts_past_the_end_or_asks_for_no_suffix_is_unsatisfiable(header: str) -> None:
     with pytest.raises(RangeNotSatisfiable):
         byte_window(header, None, SIZE)
