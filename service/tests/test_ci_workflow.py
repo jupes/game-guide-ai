@@ -48,6 +48,7 @@ DB_BACKED_TESTS = [
     "tests/test_corpus_schema.py",
     "ingestion/tests/test_scrape_wikidot.py",
     "tests/test_asset_db.py",
+    "tests/test_eligibility_db.py",
 ]
 
 

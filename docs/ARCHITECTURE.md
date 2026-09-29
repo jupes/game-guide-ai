@@ -242,6 +242,10 @@ retired, and `0009` drops their tables.
 | `campaign.table_sessions` | a GM running a table now | at most one `live` session **per GM across campaigns** (a partial unique index), both epochs, and `link_generation`, which **is the admission generation** (SEC-42; renamed in prose only); `start_command_id` (one session per start command per campaign, a partial unique index, so a retried Start answers its session) and `rotate_command_id` (no index: it is read from the row its Rotate already holds, and an index would make Rotate block every screen-grant insert, RQ-3), both from `0016`; `(campaign_id, gm_user_id)` references `campaigns (id, owner_id)`, so the GM **is** the owner (AUD-1); `state` and `ended_at` are kept in step by a CHECK, and a row still `live` past `expires_at` is dead to every reader |
 | `campaign.table_credentials` | a **screen grant**: a browser the owner made a table screen (SEC-48, D-13) | bound to the admission generation it was minted in; live only while unrevoked, its session live and unexpired, and its generation the session's current one — the reader's test, never `revoked_at` alone (`1kg.2.3`). The table link and the join are gone (threat model section 15), and `0012` dropped the join counter |
 | `audit.events` | one recorded decision | append-only; `campaign_id_tombstone` has **no** foreign key, so rows outlive their campaign |
+| `campaign.field_eligibility` | one classified field of a document (`0017`, `1ir.2.1`): the flat field key, its class, a principal list for `participants` / `characters` / `groups`, and who set it (`gm` or `default`) | a revealable field with **no row is unclassified**, and a reset deletes the row; a key off the type's allowlist has no row and is `gm_only` by construction, and an orphan row is ignored (ED-5, ED-24); the key is never `all` (ED-8); only a `gm` row is wider than `gm_only` (ED-7); the list is 1 to 100 ids, strictly ascending, each checked live in this campaign when written; `(document_id, campaign_id)` → `documents`, cascading |
+| `campaign.groups` | a GM's named group of seats (`0017`, O-3) | the name is private GM text under the alias rules, unique among live groups by `name_key` (a partial index); marked removed, never deleted, because a disclosure will remember its group; at most 50 live per campaign |
+| `campaign.group_members` | a seat in a group (`0017`) | removal is a DELETE; `(group_id, campaign_id)` and `(participant_id, campaign_id)` are composite foreign keys; a removed seat's row stays and is never read for it |
+| `campaign.projection_queue` | a field whose table-namespace rows the projector must rebuild, stamped with the `authz_revision` that queued it (`0017`) | written only by `advance_authz_revision(project=...)`; ids and a key, never a class, a list or text; drained by the projector (`1ir.2.3`) |
 
 ### The uncampaigned state
 
@@ -409,6 +413,85 @@ locks, and a shared holder never upgrades to exclusive in place. Who *blocks*
 whom is the database's, and is tested there (`tests/test_campaign_db.py`).
 `Database.transaction()` opens every transaction **explicitly READ COMMITTED**, so
 no server, database or role default can change what the lock is reasoning about.
+
+### The authorisation revision and the projection revision
+
+Added by `1ir.2.1` (migration `0017`, the shared eligibility ADR's RQ-1 to
+RQ-12, the live-session plan's section 4.3). This is the helper contract every
+mutation that changes who may be shown something adopts.
+
+**1. The pair is the whole helper.** `lock_campaign(campaign_id, shared=...)`
+and `advance_authz_revision(campaign_id, *, project=())`. No other code writes
+`authz_revision`. Outside the projector (`1ir.2.3`), no other code writes
+`projection_revision` (`service/tests/test_eligibility.py` scans `service/`
+for it). Rule 3 and the queue live inside `advance_authz_revision`, which is
+refused unless the transaction holds the lock exclusively
+(`require_exclusive_campaign_lock` is the same guard, for store writes).
+
+**2. Who calls what.** Every future mutation adds a row.
+
+| Mutation | Owner | Kind (ADR section 4) | Lock | Revision | Projection |
+|---|---|---|---|---|---|
+| Seat add; seat accept; seat confirm | `1kg.2.2` | locked widening | exclusive | same transaction | rule 3 |
+| Seat offer; decline; block | `1kg.2.2` | none (widens nothing) | exclusive | **no** | — |
+| Seat remove | `1kg.2.2` | revocation | **never** (step 1) | `campaign.reconcile` job | rule 3, in the job |
+| Participant rename | — | none | no | **no** (RQ-10) | — |
+| Character link (towards a seat) | the calling route (`1kg.2.2` Participants panel, `1kg.5.2` document side) | locked widening | exclusive | same transaction | rule 3 |
+| Character unlink / relink | the calling route | fact-changing narrowing | step 1 never; step 2 exclusive | step 2, same transaction | rule 3 |
+| Campaign archive / restore | `1kg.2.2` | narrowing (two steps) / widening | step 2 / exclusive | same transaction | rule 3 |
+| Campaign deletion | `1kg.2.6` | fact-changing narrowing | step 1 never; step 2 exclusive | step 2 | rule 3 |
+| Session start | `1kg.2.3` | locked widening | exclusive | same transaction | rule 3 |
+| End, expiry, Rotate | `1kg.2.3` | revocation | **never** | `campaign.reconcile` job | rule 3, in the job |
+| Screen mint, revoke, Leave | `1kg.2.3` | entitlement, not eligibility | as `1kg.2.3` ships them | **no** | — |
+| Document archive / delete | `1kg.5.2` | fact-changing narrowing | step 1 never; step 2 exclusive | step 2 | rule 3 |
+| Classification | `1ir.2.1` (`EligibilityMutations.classify`) | widening or narrowing | exclusive | same transaction | enqueue if the new class admits anyone, else rule 3 |
+| Group create / rename | `1ir.2.1` | none | exclusive / none | **no** | — |
+| Group member add | `1ir.2.1` | locked widening | exclusive | same transaction | rule 3 |
+| Group member remove; group remove | `1ir.2.1` | fact-changing narrowing | step 1 never; step 2 exclusive | step 2 | rule 3 |
+| The projector | `1ir.2.3` | none: it rebuilds rows | exclusive, in slices | **never** | sets `projection_revision := authz_revision` only in the slice that finds the queue empty |
+| Approved version (future) | `1ir.2.3` or its successor | widening | exclusive | same transaction | enqueue |
+| Enforcement on / off (future) | `1ir.11.1` | narrowing / locked widening | per M-3 / M-8 | same transaction (step 2) | rule 3 |
+| ED-24 type migration (future) | the bead that first moves `DOC_TYPE_VERSION` | narrowing | step 1 never; step 2 exclusive | step 2 | rule 3 |
+| Roles | — | **none exist** (D-5: ownership is the role; `owner_id` is never updated) | — | — | — |
+| Device credentials | — | **retired** (D-4; `0009`) | — | — | — |
+| Consent, attestation, announcement, pause writes (`1ir.3.x`, future) | — | they gate capture, not visibility (plan rule 1) | **never exclusively** | **never** | — |
+
+A removed group is never restored; a restore would be a locked widening.
+
+**3. RQ-5's departure, stated plainly.** A revocation (Remove, End, expiry,
+Rotate) is effective first, without the lock. Its revision advances in the
+`campaign.reconcile` job, not in the revocation's own transaction. Every reader
+re-checks seat, session and grant directly (RQ-11), so the interval opens
+nothing.
+
+**4. Rule 3.** With no `project` items, `projection_revision` advances with
+`authz_revision` **only when it equalled the old `authz_revision`**; with
+items, it stays where it is and each item is queued in the same call, stamped
+with the new revision. It never catches up: from `(authz 7, projection 7)`, a
+widening with items gives `(8, 7)` and a queued item, and a following
+narrowing with no items gives `(9, 7)`. Only the projector sets
+`projection_revision := authz_revision`, and only in the slice that finds the
+queue empty (RQ-8). The previous release's helper leaves `(8, 7)` with an empty
+queue — work to do, not a failure. A campaign that existed before `0017` reads
+`(n, 0)` for the same reason: there is no backfill.
+
+**5. Lock order for these tables**, added to RQ-3's: `authz_state` → group row
+/ eligibility row / membership row (and unlocked reads of documents and seats)
+→ the advance, whose queue insert takes `FOR KEY SHARE` on the document → the
+session row (`narrow`) → the outbox. A caller that passes `project=` advances
+**before** it takes any session or slot row lock. `hold_group` is
+`FOR NO KEY UPDATE`, so a rename in flight never blocks a member insert's
+`FOR KEY SHARE`.
+
+**6. The ED-24 hand-off.** A future type-migration step deletes orphan rows and
+resets moved keys under the narrowing protocol. Until then evaluation ignores
+orphans: the allowlist is checked before any row is read.
+
+Nothing in `1ir.2.1` is reachable from HTTP, displayed, audited or enqueued:
+`service/eligibility.py` takes an already-authorised `campaign_id`, and its two
+required extension points — `TableNamespaceNarrowing` (empty until `1ir.2.3`)
+and `ChangeRecorder` (the route bead's audit row, written in the mutating
+transaction) — are passed by name, never defaulted.
 
 ### One setting interaction to know about
 
