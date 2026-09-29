@@ -77,7 +77,7 @@
 .left-nav__conversation-input {
   flex: 1;
   min-width: 0;
-  height: 40px;
+  height: var(--aether-touch-min); /* was 40px: text entry meets the 44px floor (0rn) */
   padding: 8px 10px;
   border: 1px solid var(--md-sys-color-primary);
   border-radius: 8px;
