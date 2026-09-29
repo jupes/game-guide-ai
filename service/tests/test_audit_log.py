@@ -117,7 +117,7 @@ def test_the_action_set_is_closed_and_a_caller_cannot_invent_one():
             assert value not in str(refused.value), "a refusal never repeats what it refused"
 
 
-def test_the_fourteen_actions_sec38_names_are_the_ones_that_ship():
+def test_the_sixteen_actions_sec38_names_are_the_ones_that_ship():
     """Reveal's three and the export ones are not here: ED-18(a) makes the table
     shared, and they belong to the beads that will write them (1kg.7.1, 1kg.5.2),
     which add their own members without a migration.
@@ -131,6 +131,7 @@ def test_the_fourteen_actions_sec38_names_are_the_ones_that_ship():
         "session.started", "session.ended", "session.expired", "session.rotated",
         "participant.added", "participant.removed", "participant.linked",
         "participant.unlinked", "seat.offered", "seat.accepted",
+        "seat.declined", "seat.confirmed",
         "campaign.archived", "campaign.restored", "campaign.deleted",
         "join.burst_refused",
     }
@@ -151,7 +152,7 @@ def test_a_seat_row_carries_the_seat_and_nothing_else():
             check_detail(action, {"user_id": 7})
 
 
-_WORDS = {3: "three", 14: "fourteen"}
+_WORDS = {3: "three", 14: "fourteen", 16: "sixteen"}
 
 
 def test_the_module_docstrings_count_what_the_enums_hold():
