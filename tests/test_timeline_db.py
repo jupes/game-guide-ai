@@ -629,12 +629,15 @@ def test_every_statement_the_timeline_store_issues_names_the_conversation() -> N
 
 
 def test_the_store_writes_its_own_table_and_only_reads_everyone_elses() -> None:
-    """The boundary with `1kg.2.4`, as a property of the statements. The one
-    write is an `INSERT` into `chat.timeline_entries`; `chat.conversations` and
+    """The boundary with `1kg.2.4`, as a property of the statements. The two
+    writes are an `INSERT` into `chat.timeline_entries` and the one `UPDATE` of
+    a tool entry's payload (`1kg.4.1`, C-19); `chat.conversations` and
     `chat.messages` are only ever read, and `1kg.2.4`'s columns are never named."""
     statements = _statements(timeline_store)
     writes = [s for s in statements if re.search(r"\b(INSERT|UPDATE|DELETE|ALTER|TRUNCATE)\b", s, re.I)]
-    assert [" ".join(s.split()[:3]) for s in writes] == ["INSERT INTO chat.timeline_entries"]
+    assert [" ".join(s.split()[:3]) for s in writes] == [
+        "INSERT INTO chat.timeline_entries", "UPDATE chat.timeline_entries SET",
+    ]
     for statement in statements:
         for column in ("campaign_id", "title", "updated_at", "archived_at", "started_mode"):
             assert not re.search(rf"\b{column}\b", statement), f"names 1kg.2.4's {column}: {statement!r}"
@@ -1383,4 +1386,141 @@ def test_a_payload_written_past_append_is_served_by_the_rule_and_never_touched(d
         ("chat", None), ("chat", None), ("opaque", OpaqueReason.UNREADABLE),
         ("opaque", OpaqueReason.UNREADABLE), ("opaque", OpaqueReason.NEWER_VERSION), ("chat", None),
     ]
+    assert _every_entry_row(dsn) == before
+
+
+# ── 1kg.4.1: the tool turn's two methods, in both worlds ─────────────────────
+
+INVOCATION = "inv_timeline_suite_0001"
+
+
+def _tool_entry(
+    *, moment: datetime | None = None, entry_id: str | None = None, invocation_id: str = INVOCATION,
+    tool_id: str = "npc", status: str = "working", updated: datetime | None = None,
+) -> tuple[dict[str, Any], datetime]:
+    """A `tool` entry carrying its invocation, as `1kg.4.1` writes one."""
+    at = moment or datetime.now(UTC)
+    error = (
+        {"code": "provider_timeout", "message": "The model took too long to answer.", "retryable": True}
+        if status == "failed" else None
+    )
+    return {
+        "schema_version": CONTRACT_VERSION, "entry_kind": "tool",
+        "entry_id": entry_id or timeline_store.new_entry_id(), "created_at": at,
+        "brief": "a brief the GM wrote", "source_entry_id": None,
+        "invocation": {
+            "schema_version": CONTRACT_VERSION, "invocation_id": invocation_id, "tool_id": tool_id,
+            "status": status, "attempt": 1, "cancel_requested": False, "created_at": at,
+            "updated_at": updated or at, "result": None, "error": error,
+        },
+    }, at
+
+
+def _replace(world: World, entry: Any, moment: datetime, *, conversation_id: str = CONVERSATION,
+             owner: int | None = None) -> str:
+    with world.db.transaction() as unit:
+        replaced: str = world.timeline.replace_tool_invocation(
+            unit, conversation_id, entry, moment, owner_id=world.owner if owner is None else owner,
+        )
+    return replaced
+
+
+def test_has_entry_answers_only_for_a_stored_entry_of_that_conversation(world: World) -> None:
+    own_it(world)
+    own_it(world, FOREIGN, owner=world.other_owner)
+    entry, at = _tool_entry()
+    stored = _store(world, entry, at)
+    legacy = say_it(world, "user", "an old question")
+    with world.db.transaction() as unit:
+        assert world.timeline.has_entry(unit, CONVERSATION, stored) is True
+        assert world.timeline.has_entry(unit, FOREIGN, stored) is False
+        assert world.timeline.has_entry(unit, CONVERSATION, timeline_store.new_entry_id()) is False
+        assert world.timeline.has_entry(unit, CONVERSATION, str(legacy)) is False
+
+
+def test_a_tool_entry_is_replaced_in_place_and_reads_back_as_its_new_invocation(world: World) -> None:
+    own_it(world)
+    entry, at = _tool_entry()
+    stored = _store(world, entry, at)
+    [before] = _entries(world)
+    moved, _ = _tool_entry(moment=at, entry_id=stored, status="failed", updated=at + timedelta(seconds=3))
+    assert _replace(world, moved, at) == stored
+    [after] = _entries(world)
+    assert (after.entry_id, after.created_at, after.seq) == (before.entry_id, before.created_at, before.seq)
+    assert after.payload["invocation"]["status"] == "failed"
+    assert after.payload["invocation"]["error"]["code"] == "provider_timeout"
+    assert after.payload["invocation"]["updated_at"] != before.payload["invocation"]["updated_at"]
+
+
+@pytest.mark.parametrize("change", ["invocation", "tool", "created_at", "entry_id", "owner", "conversation"])
+def test_a_replace_that_is_not_the_same_turn_is_refused_by_the_guard(world: World, change: str) -> None:
+    """C-19: the stored row must be this conversation's tool entry, on this id
+    and instant, carrying the same invocation of the same tool, in a
+    conversation of the caller's. Every miss is the one refusal, and in
+    PostgreSQL it is zero rows, so the transaction commits afterwards."""
+    own_it(world)
+    own_it(world, FOREIGN, owner=world.other_owner)
+    entry, at = _tool_entry()
+    stored = _store(world, entry, at)
+    moment = at + timedelta(seconds=1) if change == "created_at" else at
+    moved, _ = _tool_entry(
+        moment=moment, entry_id=timeline_store.new_entry_id() if change == "entry_id" else stored,
+        invocation_id="inv_another_one_000001" if change == "invocation" else INVOCATION,
+        tool_id="monster" if change == "tool" else "npc", status="failed",
+    )
+    with world.db.transaction() as unit:
+        with pytest.raises(timeline_store.EntryNotStored):
+            world.timeline.replace_tool_invocation(
+                unit, FOREIGN if change == "conversation" else CONVERSATION, moved, moment,
+                owner_id=world.other_owner if change == "owner" else world.owner,
+            )
+        assert world.timeline.has_entry(unit, CONVERSATION, stored), "the transaction is still usable"
+    [kept] = _entries(world)
+    assert kept.payload["invocation"]["status"] == "working"
+
+
+def test_only_a_tool_entry_is_ever_replaced_and_the_refusal_comes_before_any_statement(world: World) -> None:
+    own_it(world)
+    chat, at = _chat_entry()
+    stored = _store(world, chat, at)
+    with pytest.raises(timeline_store.EntryMismatch):
+        _replace(world, chat, at)
+    as_tool, _ = _tool_entry(moment=at, entry_id=stored)
+    with pytest.raises(timeline_store.EntryNotStored):
+        _replace(world, as_tool, at)
+    [kept] = _entries(world)
+    assert kept.payload["entry_kind"] == "chat"
+
+
+def test_a_replace_in_a_unit_that_rolls_back_leaves_the_stored_turn_as_it_was(world: World) -> None:
+    own_it(world)
+    entry, at = _tool_entry()
+    stored = _store(world, entry, at)
+    moved, _ = _tool_entry(moment=at, entry_id=stored, status="failed")
+    with pytest.raises(RuntimeError), world.db.transaction() as unit:
+        world.timeline.replace_tool_invocation(unit, CONVERSATION, moved, at, owner_id=world.owner)
+        raise RuntimeError("the rest of the transaction failed")
+    [kept] = _entries(world)
+    assert kept.payload["invocation"]["status"] == "working"
+
+
+@needs_db
+def test_a_row_of_another_kind_is_never_replaced_whatever_its_payload_says(dsn: str) -> None:
+    """C-19 past `append`: a row whose kind is not `tool` stays as it is even
+    when its payload, written by raw SQL, names the very invocation a replace
+    carries — the kind column is the authority, not the payload."""
+    database, messages, store = _pg_stores(dsn)
+    owner = _a_user(dsn, "gm@example.com")
+    messages.claim_conversation(CONVERSATION, owner)
+    entry, at = _tool_entry()
+    with connect(dsn) as conn:
+        conn.execute(
+            "INSERT INTO chat.timeline_entries (entry_id, conversation_id, entry_kind, schema_version, "
+            "created_at, payload) VALUES (%s, %s, 'opaque', 1, %s, %s::jsonb)",
+            (entry["entry_id"], CONVERSATION, at, json.dumps(entry, default=lambda d: d.isoformat())),
+        )
+    before = _every_entry_row(dsn)
+    moved, _ = _tool_entry(moment=at, entry_id=entry["entry_id"], status="failed")
+    with pytest.raises(timeline_store.EntryNotStored), database.transaction() as unit:
+        store.replace_tool_invocation(unit, CONVERSATION, moved, at, owner_id=owner)
     assert _every_entry_row(dsn) == before
