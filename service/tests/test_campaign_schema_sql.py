@@ -415,7 +415,7 @@ def test_the_session_access_migration_is_exactly_its_five_changes():
     }
     assert "ALTER TABLE audit.events DROP CONSTRAINT events_actor_kind_check;" in body
     assert "CONCURRENTLY" not in body
-    assert not re.search(r"(BEGIN|COMMIT|END|ROLLBACK)\s*;", body)
+    assert not re.search(r"\b(BEGIN|COMMIT|END|ROLLBACK)\s*;", body)
 
 
 def test_the_session_access_migration_states_its_three_proofs():
