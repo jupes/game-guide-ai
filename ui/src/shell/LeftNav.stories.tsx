@@ -160,3 +160,18 @@ export const DarkNoConversations: Story = {
   globals: { theme: 'dark' },
   decorators: [withShell()],
 }
+
+/**
+ * agent-forge-harness-0rn: the rename input was 40px tall. A text-entry box
+ * meets the same 44px floor as the controls around it, at every width.
+ */
+export const RenameInputMeetsTheFloor: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: 'Rename Shield spell: what does it stop?' }))
+    const input = canvas.getByRole('textbox', {
+      name: 'Conversation title for Shield spell: what does it stop?',
+    })
+    await expect(input.getBoundingClientRect().height).toBeGreaterThanOrEqual(44)
+  },
+}

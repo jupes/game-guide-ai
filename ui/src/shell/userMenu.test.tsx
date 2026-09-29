@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { ReactElement } from 'react'
-import { render, screen, within } from '@testing-library/react'
+import { createEvent, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppNavContext } from './AppNav'
 import type { AppNavState } from './AppNav'
@@ -284,5 +284,33 @@ describe('UserMenu popover (agent-forge-harness-3j4)', () => {
 
     await userEvent.click(screen.getByText('Dungeon Master'))
     expect(screen.getByRole('group', { name: 'User menu' })).toBeInTheDocument()
+  })
+})
+
+describe('UserMenu Escape is marked handled (agent-forge-harness-0rn, T-UM-1)', () => {
+  function renderMenu() {
+    return renderWithTheme(
+      <CurrentUserContext.Provider value={makeUserState()}>
+        <UserMenu />
+      </CurrentUserContext.Provider>,
+    )
+  }
+
+  it('prevents the default of the Escape that closes it, so an enclosing drawer stays open', async () => {
+    renderMenu()
+    const trigger = screen.getByRole('button', { name: /open user menu/i })
+    await userEvent.click(trigger)
+    const escape = createEvent.keyDown(trigger, { key: 'Escape' })
+    fireEvent(trigger, escape)
+    expect(escape.defaultPrevented).toBe(true)
+    expect(screen.queryByRole('group', { name: 'User menu' })).not.toBeInTheDocument()
+  })
+
+  it('leaves an Escape it does not act on (menu closed) unhandled', () => {
+    renderMenu()
+    const trigger = screen.getByRole('button', { name: /open user menu/i })
+    const escape = createEvent.keyDown(trigger, { key: 'Escape' })
+    fireEvent(trigger, escape)
+    expect(escape.defaultPrevented).toBe(false)
   })
 })

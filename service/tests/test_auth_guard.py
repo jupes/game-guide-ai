@@ -80,6 +80,8 @@ PROTECTED_ROUTES: list[Route] = [
     ("GET", "/campaigns/{campaign_id}", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa", None),
     ("PATCH", "/campaigns/{campaign_id}", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa",
      {"schema_version": 1, "archived": True}),
+    ("POST", "/campaigns/{campaign_id}/conclude", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/conclude", None),
+    ("POST", "/campaigns/{campaign_id}/reopen", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/reopen", None),
     ("GET", "/campaigns/{campaign_id}/participants", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/participants", None),
     ("POST", "/campaigns/{campaign_id}/participants", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/participants",
      {"schema_version": 1, "alias": "Rook"}),
