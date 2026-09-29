@@ -2175,14 +2175,13 @@ DOCUMENT_INDEXES = {
         "CREATE UNIQUE INDEX documents_participant_uidx ON campaign.documents USING btree "
         "(linked_participant_id) WHERE (linked_participant_id IS NOT NULL)"
     ),
-    # 0018 (1ir.2.1): the one NON-partial unique index, for the composite
-    # foreign keys of field_eligibility and projection_queue. It is over `id`
-    # and `campaign_id`, which no statement updates, so no UPDATE of a document
-    # becomes a key update; tests/test_migrations_db.py's T-A10 proves it
-    # against every UPDATE the store runs.
+    # 1kg.7.1 (migration 0018): the one NON-partial unique index, the target of
+    # the reveal tables' composite foreign keys. It covers `id` and
+    # `campaign_id`, which no document write updates, so it escalates no
+    # UPDATE's lock; `tests/test_reveal_db.py` proves a document write still
+    # never makes a referencing insert wait.
     "documents_id_campaign_key": (
-        "CREATE UNIQUE INDEX documents_id_campaign_key ON campaign.documents USING btree "
-        "(id, campaign_id)"
+        "CREATE UNIQUE INDEX documents_id_campaign_key ON campaign.documents USING btree (id, campaign_id)"
     ),
 }
 

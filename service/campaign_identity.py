@@ -62,6 +62,13 @@ SEAT_OFFER: Final = "sof_"
 #: SEC-4 names this one too: a GM-side media asset (1kg.8.1.1). The row holds
 #: object keys, never bytes, and a table client never sees this id (SEC-15).
 ASSET: Final = "ast_"
+#: One Confirm's worth of display (1kg.7.1, O-3): a document, its pinned
+#: version, a mask and an audience kind. GM-side only; a table client never
+#: sees it (SEC-15).
+DISCLOSURE: Final = "dsc_"
+#: One audience slot of one table session (1kg.7.1): the table slot or one
+#: participant's. GM-side only, like the disclosure it points at.
+REVEAL_SLOT: Final = "rsl_"
 #: A GM's named group of seats (1ir.2.1, owner decision O-3). A disclosure will
 #: remember the group it came from, so a group is marked removed and never
 #: deleted, and its id is never reused.
@@ -77,6 +84,8 @@ PREFIXES: Final[tuple[str, ...]] = (
     DOCUMENT,
     SEAT_OFFER,
     ASSET,
+    DISCLOSURE,
+    REVEAL_SLOT,
     GROUP,
 )
 
@@ -91,6 +100,8 @@ _KINDS: Final[dict[str, str]] = {
     DOCUMENT: "document identifier",
     SEAT_OFFER: "seat-offer identifier",
     ASSET: "asset identifier",
+    DISCLOSURE: "disclosure identifier",
+    REVEAL_SLOT: "reveal-slot identifier",
     GROUP: "group identifier",
 }
 

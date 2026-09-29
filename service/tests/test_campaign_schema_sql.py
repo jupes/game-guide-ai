@@ -32,6 +32,7 @@ from service import (
     eligibility_store,
     participant_store,
     reconciliation,
+    reveal_store,
     seat_offer_store,
     table_session_store,
     table_sessions,
@@ -62,6 +63,9 @@ SESSION_ACCESS_SQL = (MIGRATIONS / "0016_table_session_access.sql").read_text(en
 #: merge when a parallel bead takes the number first (R-7).
 [MEDIA_SQL_PATH] = sorted(MIGRATIONS.glob("*_media_assets.sql"))
 MEDIA_SQL = MEDIA_SQL_PATH.read_text(encoding="utf-8")
+#: `1kg.7.1`'s disclosures and slots, found by name for the same reason.
+[REVEAL_SQL_PATH] = sorted(MIGRATIONS.glob("*_reveal_disclosures.sql"))
+REVEAL_SQL = REVEAL_SQL_PATH.read_text(encoding="utf-8")
 
 #: Every migration, sorted and concatenated. The two identifier tests below read
 #: THIS rather than one file: the prefix registry is service-wide, so a prefix
@@ -80,6 +84,7 @@ STORE_MODULES = (
     audit_log,
     seat_offer_store,
     reconciliation,
+    reveal_store,
     eligibility_store,
 )
 
@@ -157,6 +162,7 @@ MIGRATION_FILES = [
     pytest.param("0005", AUDIT_SQL, id="0005"),
     pytest.param("0007", DOCUMENT_SQL, id="0007"),
     pytest.param("media_assets", MEDIA_SQL, id="media_assets"),
+    pytest.param("reveal_disclosures", REVEAL_SQL, id="reveal_disclosures"),
 ]
 
 #: Files that deliberately store no digest at all, each for its own reason, and
@@ -167,6 +173,7 @@ NO_DIGEST_FILES = {
     "0005": "the audit ledger stores no digest of anything (ED-26)",
     "0007": "a document holds field content, never a secret (SEC-20)",
     "media_assets": "an asset row holds object keys, never a secret",
+    "reveal_disclosures": "a disclosure holds ids, a version, field keys and codes, never a secret",
 }
 
 
@@ -727,6 +734,107 @@ def test_the_media_migration_says_why_in_its_own_words():
     assert "PostgreSQL REFUSES to delete a campaign that still has any asset row" in prose
 
 
+# ── 1kg.7.1: disclosures and slots ───────────────────────────────────────────
+
+
+def test_the_reveal_migration_is_the_agreed_text():
+    """T-A1. The brief's section 10.2, pinned clause by clause, so that each of
+    these changes turns this red: the one-live index losing its predicate, a
+    composite key losing a column, a delete action on the slot -> disclosure
+    key, a database clock, or a column added to a document table (ED-6)."""
+    body = _statements(REVEAL_SQL)
+    assert re.findall(r"ALTER TABLE ([\w.]+)\s+ADD CONSTRAINT (\w+) UNIQUE \(id, campaign_id\);", body) == [
+        ("campaign.table_sessions", "table_sessions_id_campaign_key"),
+        ("campaign.documents", "documents_id_campaign_key"),
+    ], "the only change to a released table is the two redundant keys"
+    assert len(re.findall(r"\bALTER TABLE\b", body)) == 2
+    assert "ADD COLUMN" not in body, "no column on documents or document_versions (ED-6)"
+    assert re.search(
+        r"CREATE UNIQUE INDEX reveal_disclosures_one_live_per_document_uidx\s+"
+        r"ON campaign\.reveal_disclosures \(document_id\) WHERE ended_at IS NULL;",
+        body,
+    ), "one live disclosure per document, and PARTIAL so that ended_at is not a key"
+    assert re.search(
+        r"CREATE UNIQUE INDEX reveal_disclosures_command_uidx\s+"
+        r"ON campaign\.reveal_disclosures \(session_id, command_id\);",
+        body,
+    )
+    for key in (
+        "FOREIGN KEY (session_id, campaign_id)\n    REFERENCES campaign.table_sessions (id, campaign_id) "
+        "ON DELETE CASCADE",
+        "FOREIGN KEY (document_id, campaign_id)\n    REFERENCES campaign.documents (id, campaign_id) "
+        "ON DELETE CASCADE",
+        "FOREIGN KEY (document_id, version_number)\n    REFERENCES campaign.document_versions "
+        "(document_id, number) ON DELETE CASCADE",
+        "FOREIGN KEY (participant_id, campaign_id)\n    REFERENCES campaign.participants (id, campaign_id) "
+        "ON DELETE CASCADE",
+        "UNIQUE (id, session_id, audience_kind)",
+        "UNIQUE NULLS NOT DISTINCT (session_id, participant_id)",
+        "CHECK ((audience_kind = 'table') = (participant_id IS NULL))",
+        "CHECK ((ended_at IS NULL) = (ended_reason IS NULL))",
+        "source_group_id TEXT CHECK (source_group_id IS NULL)",
+        "content_kind    TEXT NOT NULL DEFAULT 'document' CHECK (content_kind = 'document')",
+    ):
+        assert key in body, key
+    assert body.count("REFERENCES campaign.table_sessions (id, campaign_id) ON DELETE CASCADE") == 2
+    slot_key = re.search(
+        r"FOREIGN KEY \(disclosure_id, session_id, audience_kind\)\s+"
+        r"REFERENCES campaign\.reveal_disclosures \(id, session_id, audience_kind\)(.*?)\n\);",
+        body,
+        re.S,
+    )
+    assert slot_key is not None, "a slot points only at a disclosure of its session and audience kind"
+    assert "ON DELETE" not in slot_key.group(1), "NO ACTION: a live copy blocks a document's deletion"
+    assert "now()" not in body.lower(), "the clock is the application's"
+    assert "CONCURRENTLY" not in body
+    assert not re.search(r"(BEGIN|COMMIT|END|ROLLBACK)\s*;", body)
+    assert "ended_at >= created_at" not in body.replace(" ", "")
+
+
+def test_end_reasons_in_python_equal_the_migration_check():
+    """T-A5 (text half; `tests/test_reveal_db.py` reads the server's). A reason
+    added on one side only is a CheckViolation in the middle of a narrowing."""
+    from service.reveal_scope import EndReason
+
+    found = re.search(r"ended_reason\s+TEXT CHECK \(ended_reason IN \(([^)]*)\)\)", REVEAL_SQL, re.S)
+    assert found is not None
+    in_sql = [value.strip().strip("'") for value in found.group(1).replace("\n", " ").split(",")]
+    assert in_sql == [member.value for member in EndReason], "the same set, in the same order"
+    assert "link_rotated" in in_sql and "rotated" not in in_sql, "ED-17's spelling"
+
+
+def test_the_prefix_registry_holds_dsc_and_rsl():
+    """T-A30. Both new ids are constrained by the registry's own regex, and the
+    command id by the wire contract's."""
+    for prefix in (ident.DISCLOSURE, ident.REVEAL_SLOT):
+        assert prefix in ident.PREFIXES
+        assert f"CHECK (id ~ '{ident.id_check_regex(prefix)}')" in REVEAL_SQL
+    assert f"command_id ~ '{COMMAND_ID_PATTERN}'" in REVEAL_SQL
+    assert COMMAND_ID_PATTERN == table_session_store.COMMAND_ID.pattern
+
+
+def test_the_mask_check_is_the_contracts_field_key_bounded_by_mask_max_keys():
+    """The mask CHECK's bound and key shape are the wire contract's, so the twin
+    (which checks in Python) and the database refuse the same masks."""
+    assert f"cardinality(mask) BETWEEN 1 AND {workbench_contracts.MASK_MAX_KEYS}" in REVEAL_SQL
+    assert reveal_store.FIELD_KEY.pattern == "^[a-z][a-z0-9_]{0,39}$"
+    assert "array_to_string(mask, ',') ~ '^[a-z][a-z0-9_]{0,39}(,[a-z][a-z0-9_]{0,39})*$'" in REVEAL_SQL
+    assert "array_position(mask, NULL) IS NULL" in REVEAL_SQL
+    assert "strpos(array_to_string(mask, ''), ',') = 0" in REVEAL_SQL, "no comma inside a key"
+    assert "NOT ('all' = ANY (mask))" in REVEAL_SQL
+
+
+def test_the_reveal_migration_states_its_three_proofs():
+    prose = " ".join(line.lstrip("- ").strip() for line in REVEAL_SQL.splitlines() if line.startswith("--"))
+    for claim in (
+        "It is an expansion",
+        "The two UNIQUE constraints cannot fail and change no lock mode",
+        "No deployed build has a campaign schema",
+        "FOR NO KEY UPDATE",
+    ):
+        assert claim in prose, claim
+
+
 # ── Field eligibility and groups (bead 1ir.2.1) ──────────────────────────────
 
 #: Found by name, never by number (R-7).
@@ -767,22 +875,26 @@ def test_the_bounds_the_eligibility_migration_checks_are_the_modules():
 
 
 def test_the_eligibility_migration_states_why_each_check_on_an_existing_table_is_safe():
-    """T-B4, the 0009 precedent (M-B4): the two changes to existing tables
-    each say why they are safe, there is no backfill, and no transaction
-    control; `unclassified` and `suggested` are never storable."""
+    """T-B4, the 0009 precedent (M-B4): the one change to an existing table
+    says why it is safe, there is no backfill, and no transaction control;
+    `unclassified` and `suggested` are never storable. The documents key the
+    composite foreign keys target is the reveal migration's, which sorts first,
+    so this file adds no second copy of it."""
     prose = " ".join(line.lstrip("- ").strip() for line in ELIGIBILITY_SQL.splitlines() if line.startswith("--"))
     for reason in (
         "THE CHECK IS SAFE ON AN EXISTING TABLE",
-        "THE KEY IS SAFE ON AN EXISTING TABLE",
+        "NO KEY IS ADDED TO campaign.documents",
         "NO BACKFILL",
         "ACCESS EXCLUSIVE",
-        "not built CONCURRENTLY",
         "Rollback is sending traffic back to the previous image",
     ):
         assert reason in prose, reason
     body = _statements(ELIGIBILITY_SQL)
     assert not re.search(r"\b(BEGIN|COMMIT|END|ROLLBACK)\s*;", body)
     assert "UPDATE " not in body.upper(), "no existing row is rewritten"
-    assert set(re.findall(r"ALTER TABLE ([\w.]+)", body)) == {"campaign.authz_state", "campaign.documents"}
+    assert set(re.findall(r"ALTER TABLE ([\w.]+)", body)) == {"campaign.authz_state"}
+    assert "ADD CONSTRAINT documents_id_campaign_key" not in body
+    assert "ADD CONSTRAINT documents_id_campaign_key UNIQUE (id, campaign_id);" in _statements(REVEAL_SQL)
+    assert REVEAL_SQL_PATH.name < ELIGIBILITY_SQL_PATH.name, "the key exists before the foreign keys name it"
     assert "'unclassified'" not in body and "'suggested'" not in body
     assert "CREATE TABLE campaign.characters" not in body, "a character is a character-sheet document (R-6)"

@@ -162,7 +162,7 @@ EXCLUSIVE = "exclusive"
 # ── The projection queue's item (1ir.2.1) ────────────────────────────────────
 
 #: `FieldKey`'s pattern, spelled here because db.py imports no wire module;
-#: pinned to `workbench_contracts.FieldKey` and to migration 0018 by
+#: pinned to `workbench_contracts.FieldKey` and to migration 0019 by
 #: `service/tests/test_campaign_schema_sql.py`.
 FIELD_KEY_PATTERN: Final = r"^[a-z][a-z0-9_]{0,39}$"
 _FIELD_KEY: Final = re.compile(FIELD_KEY_PATTERN)
@@ -978,7 +978,7 @@ class InMemoryTransaction(_CampaignLockOrder):
         return self._authz_state.get(campaign_id)
 
     def _stage_projection(self, campaign_id: str, revision: int) -> None:
-        """`_stage_authz`'s twin for `projection_revision`, and the CHECK 0018
+        """`_stage_authz`'s twin for `projection_revision`, and the CHECK 0019
         puts on it: never above the authorisation revision this unit sees."""
         current = self.authz_revision(campaign_id)
         if current is None or not 0 <= revision <= current:

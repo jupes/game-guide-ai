@@ -9,13 +9,13 @@ than trusting it.
 
 **The action set is closed** (`AuditAction`). Adding a member is a code change a
 reviewer sees, not a string a caller invents, so the ledger cannot quietly grow
-a vocabulary nobody agreed to. Reveal's three actions and the export ones are
-not here: ED-18(a) makes the table shared, and those belong to `1kg.7.1` and
-`1kg.5.2`, which add their own members without a migration. Nor is there one
-writer for the twenty that are here: the session and screen rows are
-written by `service/table_sessions.py` (`1kg.2.3`), the campaign's Conclude and
-Reopen by the tavern's route (bead cfx), `asset.deleted` by the media bead's
-delete route (`1kg.8.1.3`), the rest by `1kg.2.2`'s campaign and seat routes.
+a vocabulary nobody agreed to. The export actions are not here: ED-18(a) makes
+the table shared, and they belong to `1kg.5.2`, which adds its own members
+without a migration. Nor is there one writer for the twenty-three that are here:
+the session and screen rows are written by `service/table_sessions.py`
+(`1kg.2.3`), the campaign's Conclude and Reopen by the tavern's route (bead cfx),
+`asset.deleted` by the media bead's delete route (`1kg.8.1.3`), reveal's three
+by `1kg.7.1`'s reveal service, the rest by `1kg.2.2`'s campaign and seat routes.
 The reason is ownership, not use.
 
 **A row carries identifiers, never content** (SEC-20, ED-26) — and no hash of
@@ -46,10 +46,14 @@ construction, and a caller has to know which:
   declared keys before it gets here — the bound on the list is a bound, not a
   closure.
 
+* `Shape.COMMAND_ID` is the wire contract's `CommandId` — 16 to 64 characters
+  of `[A-Za-z0-9_-]` that the GM's own client mints, which ED-18(a) puts on a
+  reveal row (`1kg.7.1`). It is open in the way `MintedId` is: a client could
+  choose which characters go there, and nothing else. Every record that holds
+  one hides it from `repr()`.
+
 Everything else is a closed set: the action, the actor kind, the object kind,
-the decision, a `OneOf`'s codes, and the reason codes each action declares. No
-kind holds the client-minted command id ED-18(a) wants on a reveal row, and none
-is added here: how that row records it is `1kg.7.1`'s decision.
+the decision, a `OneOf`'s codes, and the reason codes each action declares.
 
 The same closure applies to the columns beside `detail`: `campaign_id_tombstone`
 is a minted `cmp_` identifier, `actor_ref` and `object_ref` are minted
@@ -80,6 +84,7 @@ from typing import Protocol
 from . import campaign_identity as ident
 from .campaign_store import fake, now_or, pg
 from .db import InMemoryTransaction, UnitOfWork
+from .table_session_store import COMMAND_ID
 
 DetailValue = str | int | bool | list[str] | None
 
@@ -99,6 +104,8 @@ DETAIL_MAX_FIELD_KEYS = 40
 WHOLE_NUMBER_MAX = 2**63 - 1
 #: No action's registry entry may grow past this without a second look.
 DETAIL_MAX_KEYS = 20
+#: A reveal names at most this many participants (`PRESENCE_MAX_PARTICIPANTS`).
+DETAIL_MAX_PARTICIPANT_IDS = 100
 
 
 class AuditAction(str, Enum):
@@ -153,6 +160,18 @@ class AuditAction(str, Enum):
     #: 8.1#4): deletion is the irreversible act. A campaign's deletion records
     #: one `campaign.deleted` row, not one row per asset.
     ASSET_DELETED = "asset.deleted"
+    #: The GM's Confirm displayed a document for the first time, or to a new
+    #: audience (actor `gm`; `1kg.7.1`, ED-18(a), SEC-38). One row per Confirm.
+    REVEAL_DISPLAYED = "reveal.displayed"
+    #: The GM's Confirm re-displayed a document to exactly the same slots, with a
+    #: new version or mask (actor `gm`; E-3).
+    REVEAL_UPDATED = "reveal.updated"
+    #: A display, or some of its copies, stopped by a GM action: a Stop, a
+    #: Stop-all, or a Confirm that moved or replaced it. One row per disclosure
+    #: the action took copies from; a Stop that ended nothing writes one row.
+    #: Narrowings (End, expiry, Rotate, Remove, archive) write none: each has its
+    #: own row, and the disclosure keeps its `ended_reason`.
+    REVEAL_STOPPED = "reveal.stopped"
 
 
 class ActorKind(str, Enum):
@@ -167,7 +186,7 @@ class ActorKind(str, Enum):
 
 
 class ObjectKind(str, Enum):
-    """What the decision was **about** — one of the five things the twenty
+    """What the decision was **about** — one of the five things the twenty-three
     actions act on, and nothing else. A table screen's `object_ref` is its
     grant's `tcr_` id.
 
@@ -217,19 +236,28 @@ class Shape(Enum):
     FIELD_KEYS = "a list of Workbench field keys"
     WHOLE_NUMBER = "a whole number"
     FLAG = "a boolean"
+    COMMAND_ID = "a client-minted command id"
 
 
-Kind = MintedId | OneOf | Shape
+@dataclass(frozen=True)
+class MintedIds:
+    """A list of distinct minted identifiers of one prefix, at most `max_items`
+    of them — how a reveal row lists the participants it reached (O-3). One
+    prefix, so a list of seats cannot carry the id of another kind of thing."""
+
+    prefix: str
+    max_items: int
+
+
+Kind = MintedId | MintedIds | OneOf | Shape
 
 
 def accepts(kind: Kind, value: DetailValue) -> bool:
     """Whether `value` is of `kind`. Pure, and public because a later bead adds
-    its own `ACTION_DETAIL` entry and has to be able to test it — `1kg.7.1`'s
-    reveal rows carry `Shape.FIELD_KEYS`, the mask ED-18(a) asks for, and this
-    function already answers for it. What that bead still has to decide is what
-    the rest of a reveal row holds: **no kind here fits the command id** ED-18(a)
-    puts on one, because the wire contract has the client mint it and no prefix
-    of this schema's registry is its. And `Shape.FIELD_KEYS` checks the shape of
+    its own `ACTION_DETAIL` entry and has to be able to test it. `1kg.7.1`'s
+    reveal rows carry `Shape.FIELD_KEYS` for the mask ED-18(a) asks for,
+    `Shape.COMMAND_ID` for the command id it puts on the row, and `MintedIds`
+    for the participants reached. `Shape.FIELD_KEYS` checks the shape of
     a mask's keys, never that they are keys of the document type in question —
     that comparison is the recording caller's, and there is nowhere in an audit
     row to do it.
@@ -241,6 +269,15 @@ def accepts(kind: Kind, value: DetailValue) -> bool:
         return True
     if isinstance(kind, MintedId):
         return isinstance(value, str) and ident.is_id(kind.prefix, value)
+    if isinstance(kind, MintedIds):
+        return (
+            isinstance(value, list)
+            and len(value) <= kind.max_items
+            and len(set(value)) == len(value)
+            and all(isinstance(item, str) and ident.is_id(kind.prefix, item) for item in value)
+        )
+    if kind is Shape.COMMAND_ID:
+        return isinstance(value, str) and COMMAND_ID.fullmatch(value) is not None
     if isinstance(kind, OneOf):
         return isinstance(value, str) and value in kind.codes
     if kind is Shape.FIELD_KEY:
@@ -266,6 +303,8 @@ def _describes(kind: Kind) -> str:
     so none of it can repeat what a caller supplied."""
     if isinstance(kind, MintedId):
         return f"a minted {kind.prefix} identifier"
+    if isinstance(kind, MintedIds):
+        return f"a list of at most {kind.max_items} distinct minted {kind.prefix} identifiers"
     if isinstance(kind, OneOf):
         return f"one of {', '.join(kind.codes)}"
     return kind.value
@@ -289,6 +328,23 @@ _SESSION_CLOSED: dict[str, Kind] = {
     "session_id": _SESSION,
     "generation": Shape.WHOLE_NUMBER,
     "screens_revoked": Shape.WHOLE_NUMBER,
+}
+
+#: What every reveal row records, exactly ED-18(a)'s list and nothing more: the
+#: session, the command, the document and its pinned version, the mask's keys,
+#: the audience kind and the participants reached (None for the table), and the
+#: reveal epoch after the action. No disclosure id (the list is exact), no
+#: recipient's name, no hash (ED-26) and no text. A Stop that ended nothing
+#: names its document, or nothing for a Stop-all, and leaves the rest None.
+_REVEAL: dict[str, Kind] = {
+    "session_id": _SESSION,
+    "command_id": Shape.COMMAND_ID,
+    "document_id": _DOCUMENT,
+    "version": Shape.WHOLE_NUMBER,
+    "mask": Shape.FIELD_KEYS,
+    "audience": OneOf(("table", "participant")),
+    "participant_ids": MintedIds(ident.PARTICIPANT, DETAIL_MAX_PARTICIPANT_IDS),
+    "reveal_epoch": Shape.WHOLE_NUMBER,
 }
 
 #: The closed, per-action `detail` of ED-18(a). A bead that adds an action adds
@@ -321,6 +377,9 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     AuditAction.SCREEN_MINTED: {"session_id": _SESSION, "generation": Shape.WHOLE_NUMBER},
     AuditAction.SCREEN_REVOKED: {"session_id": _SESSION},
     AuditAction.ASSET_DELETED: {"asset_id": _ASSET},
+    AuditAction.REVEAL_DISPLAYED: _REVEAL,
+    AuditAction.REVEAL_UPDATED: _REVEAL,
+    AuditAction.REVEAL_STOPPED: _REVEAL,
 }
 
 #: The closed set of reason codes **per action**, beside `ACTION_DETAIL` and
@@ -354,6 +413,9 @@ ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
     AuditAction.SCREEN_MINTED: frozenset(),
     AuditAction.SCREEN_REVOKED: frozenset({"gm_revoked", "left"}),
     AuditAction.ASSET_DELETED: frozenset(),
+    AuditAction.REVEAL_DISPLAYED: frozenset(),
+    AuditAction.REVEAL_UPDATED: frozenset(),
+    AuditAction.REVEAL_STOPPED: frozenset({"gm_stop", "stop_all", "replaced", "moved"}),
 }
 
 

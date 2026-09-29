@@ -158,6 +158,8 @@ def test_a_fresh_database_gets_every_migration_once(dsn):
         "campaign.table_credentials",
         "campaign.seat_offers",
         "campaign.seat_blocks",
+        "campaign.reveal_disclosures",
+        "campaign.reveal_slots",
         "campaign.groups",
         "campaign.group_members",
         "campaign.field_eligibility",
@@ -169,7 +171,7 @@ def test_a_fresh_database_gets_every_migration_once(dsn):
             "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
             "WHERE table_schema = 'campaign' AND table_name = 'authz_state' "
             "AND column_name = 'projection_revision'"
-        ).fetchone() == ("bigint", "NO", "0"), "0018 adds projection_revision, NOT NULL DEFAULT 0"
+        ).fetchone() == ("bigint", "NO", "0"), "0019 adds projection_revision, NOT NULL DEFAULT 0"
     for retired in (
         "campaign.enrolment_codes",
         "campaign.device_credentials",
@@ -291,6 +293,8 @@ CAMPAIGN_TABLES = (
     "campaign.documents",
     "campaign.document_versions",
     "campaign.seat_offers",
+    "campaign.reveal_disclosures",
+    "campaign.reveal_slots",
     "campaign.groups",
     "campaign.group_members",
     "campaign.field_eligibility",
@@ -305,8 +309,12 @@ PARTICIPANT_ID = "prt_" + "a" * 22
 
 def _a_whole_campaign(conn, owner: int) -> None:
     """One row in every table of 0004 that 0009 and the table-session migration
-    kept, and of the seat migration's offers, so the cascade has something to
-    lose."""
+    kept, of the seat migration's offers, and of the reveal migration's
+    disclosures and slots (1kg.7.1), so the cascade has something to lose. The
+    slot is the TABLE slot, which only the session's cascade reaches, and the
+    disclosure is ended: a live copy would make deleting its document fail by
+    design, which `tests/test_reveal_db.py` proves, together with an account's
+    deletion taking a live copy with it."""
     conn.execute(
         "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
         (CAMPAIGN_ID, owner),
@@ -343,11 +351,22 @@ def _a_whole_campaign(conn, owner: int) -> None:
         "expires_at) VALUES (%s, %s, %s, %s, 'wren@example.com', 'wren@example.com', now() + interval '14 days')",
         ("sof_" + "a" * 22, CAMPAIGN_ID, PARTICIPANT_ID, owner),
     )
+    conn.execute(
+        "INSERT INTO campaign.reveal_disclosures (id, campaign_id, session_id, document_id, version_number, "
+        "mask, audience_kind, command_id, created_at, ended_at, ended_reason) "
+        "VALUES (%s, %s, %s, %s, 1, ARRAY['name'], 'table', %s, now(), now(), 'gm_stop')",
+        ("dsc_" + "a" * 22, CAMPAIGN_ID, "ses_" + "a" * 22, DOCUMENT_ID, "c" * 22),
+    )
+    conn.execute(
+        "INSERT INTO campaign.reveal_slots (id, campaign_id, session_id, audience_kind, participant_id, seq, "
+        "disclosure_id, updated_at) VALUES (%s, %s, %s, 'table', NULL, 2, NULL, now())",
+        ("rsl_" + "a" * 22, CAMPAIGN_ID, "ses_" + "a" * 22),
+    )
     _eligibility_rows(conn)
 
 
 def _eligibility_rows(conn, campaign: str = CAMPAIGN_ID, document: str = DOCUMENT_ID) -> None:
-    """0018's four tables, one row each: a group with the campaign's seat in it,
+    """0019's four tables, one row each: a group with the campaign's seat in it,
     a field classified for that group, and a queued projection of it."""
     conn.execute(
         "INSERT INTO campaign.groups (id, campaign_id, name, name_fold) VALUES (%s, %s, 'Scouts', 'scouts')",
@@ -1305,7 +1324,7 @@ def test_a_command_id_column_holds_the_contracts_shape_or_nothing(dsn):
             )
 
 
-# ── Field eligibility, groups and the projection revision (0018, 1ir.2.1) ────
+# ── Field eligibility, groups and the projection revision (0019, 1ir.2.1) ────
 
 #: Found by name, like SEAT_OFFERS, so a renumbering at merge is an edit elsewhere.
 ELIGIBILITY = next(m for m in PACKAGED if m.name == "field_eligibility_and_groups")
@@ -1317,7 +1336,7 @@ OTHER_PARTICIPANT_ID = "prt_" + "b" * 22
 
 
 def _two_campaigns(conn) -> None:
-    """Campaign A with the whole campaign (its seat, sheet and 0018 rows), and
+    """Campaign A with the whole campaign (its seat, sheet and 0019 rows), and
     campaign B with a seat and a sheet of its own and nothing classified."""
     owner = _one_user(conn)
     _a_whole_campaign(conn, owner)
@@ -1532,7 +1551,7 @@ def test_rows_naming_another_campaigns_document_or_seat_are_refused(dsn, stateme
 
 def test_deleting_a_document_takes_its_eligibility_rows_and_queue_items(dsn):
     """T-A8's document half (the account half is the cascade test above, whose
-    CAMPAIGN_TABLES now names 0018's four tables): kills a dropped
+    CAMPAIGN_TABLES now names 0019's four tables): kills a dropped
     `ON DELETE CASCADE` (M-A13)."""
     mig.migrate(dsn)
     with connect(dsn) as conn:
@@ -1577,9 +1596,10 @@ def test_the_documents_composite_key_leaves_every_document_write_a_no_key_update
     eligibility row AND an uncommitted queue item for the sheet: each takes
     FOR KEY SHARE on the document row through its foreign key. Connection B
     then runs every `PostgresDocumentStore` method that UPDATEs
-    `campaign.documents`, each under a 200 ms lock timeout. If the new key made
-    an updated column a key column (M-A15: `UNIQUE (id, campaign_id,
-    updated_at)`), that UPDATE would need FOR UPDATE and wait on A."""
+    `campaign.documents`, each under a 200 ms lock timeout. If the key those
+    foreign keys target (0018's `documents_id_campaign_key`) made an updated
+    column a key column (M-A15: `UNIQUE (id, campaign_id, updated_at)`), that
+    UPDATE would need FOR UPDATE and wait on A."""
     from datetime import UTC, datetime
 
     from service.db import Database, PoolSettings

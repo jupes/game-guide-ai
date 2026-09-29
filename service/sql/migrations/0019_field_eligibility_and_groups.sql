@@ -3,7 +3,7 @@
 --
 -- The shared eligibility / display / disclosure ADR (docs/adr/
 -- shared-eligibility-display-disclosure.md, ACCEPTED) and the live-session
--- plan's section 4.3. It is expand-only: 0001 to 0017 are released and are not
+-- plan's section 4.3. It is expand-only: 0001 to 0018 are released and are not
 -- edited, nothing is dropped and no existing row is rewritten.
 --
 -- WHAT THIS FILE DOES NOT ADD. There is no characters table: a character IS a
@@ -27,15 +27,13 @@
 --    Adding the column briefly takes ACCESS EXCLUSIVE on authz_state; it waits at
 --    most for in-flight campaign-lock holders, which RQ-8 bounds at 5 s.
 --
--- 2. documents_id_campaign_key UNIQUE (id, campaign_id), for the composite
---    foreign keys below. THE KEY IS SAFE ON AN EXISTING TABLE: it is over values
---    that are already unique, because id is the primary key. Neither column is
---    ever updated (0008 lists what a document UPDATE changes), so no document
---    UPDATE becomes a key update and every one stays FOR NO KEY UPDATE (RQ-3).
---    ADD CONSTRAINT takes ACCESS EXCLUSIVE on campaign.documents while its index
---    builds. It is not built CONCURRENTLY because the runner has no
---    no-transaction mode (docs/migrations.md section 2), and master's production
---    build has no campaign schema.
+-- 2. NO KEY IS ADDED TO campaign.documents. The composite foreign keys below
+--    target documents_id_campaign_key UNIQUE (id, campaign_id), which 0018
+--    (1kg.7.1, reveal disclosures) added as the target of its own composite
+--    keys, with the proof this file would otherwise carry: it covers id, which
+--    the primary key already makes unique, and no document UPDATE changes id or
+--    campaign_id, so every one stays FOR NO KEY UPDATE (RQ-3). The only existing
+--    table this file alters is authz_state (point 1).
 --
 -- 3. campaign.principal_ids_ok: one list of principal ids, 1 to 100 of one
 --    prefix, no NULL element, one dimension, strictly ascending in code-point
@@ -75,9 +73,6 @@ ALTER TABLE campaign.authz_state
   ADD COLUMN projection_revision BIGINT NOT NULL DEFAULT 0,
   ADD CONSTRAINT authz_state_projection_not_ahead_chk
     CHECK (projection_revision >= 0 AND projection_revision <= authz_revision);
-
-ALTER TABLE campaign.documents
-  ADD CONSTRAINT documents_id_campaign_key UNIQUE (id, campaign_id);
 
 CREATE FUNCTION campaign.principal_ids_ok(ids TEXT[], pattern TEXT) RETURNS boolean
   LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
