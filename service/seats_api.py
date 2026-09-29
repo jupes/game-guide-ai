@@ -38,6 +38,12 @@ its own verified address.
 
 Nothing on this side names an address, a campaign owner or a participant id
 (SEC-43, SEC-50(4)), and no handler logs anything but an exception's type.
+
+**A seat is also a tavern card** (bead cfx): each one carries the table's facts
+— the GM's tone line and system, the avatar, Concluded, when the table last met
+and whether it is LIVE now — read by `CampaignSummaryStore.for_seated`, which
+names the caller's own seat in its statement. Nothing about other players and
+no signal of the GM's private prep reaches this side.
 """
 
 from __future__ import annotations
@@ -52,6 +58,7 @@ from .audit_log import ActorKind, AuditAction, Decision, ObjectKind
 from .auth_store import User, verified_address
 from .campaign_store import InvalidCursor
 from .campaign_store import SeatUnavailable as _SeatUnavailable
+from .campaign_summary_store import SeatedFacts, avatar_for
 from .campaigns_api import (
     WIRE_VERSION,
     CampaignStores,
@@ -71,6 +78,7 @@ from .seat_offer_store import ACCEPTED, DECLINED, InviteeOffer, address_key
 from .session import SessionData
 from .workbench_api import SessionDependency, account_router, not_found
 from .workbench_contracts import (
+    GameSystem,
     PlayerSeat,
     PlayerSeatPage,
     SeatDeclineRequest,
@@ -91,9 +99,15 @@ def _utc(moment: datetime | None) -> datetime | None:
     return None if moment is None else moment.astimezone(UTC)
 
 
-def player_seat(held: HeldSeat) -> PlayerSeat:
+def player_seat(held: HeldSeat, facts: SeatedFacts | None) -> PlayerSeat:
     """One of the caller's seats: the campaign's id (the table address will
-    name it, SEC-43), never the participant's."""
+    name it, SEC-43), never the participant's, and the table's card facts.
+
+    `facts` is read in the transaction that read the seat, under the same rule,
+    so it is there; if it ever were not, the card says the least — no tone, not
+    live, not concluded — rather than guess."""
+    known = facts or SeatedFacts(held.seat.campaign_id, None, GameSystem.DND5E.value, False, None, False)
+    icon, tone = avatar_for(held.seat.campaign_id)
     return PlayerSeat.model_validate(
         {
             "schema_version": WIRE_VERSION,
@@ -102,8 +116,24 @@ def player_seat(held: HeldSeat) -> PlayerSeat:
             "alias": held.seat.alias,
             "accepted_at": _utc(held.seat.accepted_at),
             "confirmed": held.seat.confirmed_at is not None,
+            "tone": known.tone,
+            "game_system": known.game_system,
+            "avatar_icon": icon,
+            "avatar_tone": tone,
+            "concluded": known.concluded,
+            "last_played_at": _utc(known.last_played_at),
+            "live": known.live,
         }
     )
+
+
+def seated_facts(
+    db: TransactionalDatabase, stores: CampaignStores, *, user_id: int, campaign_id: str, now: datetime
+) -> SeatedFacts | None:
+    """One seat's card facts, read after an accept committed, in a transaction
+    of its own that takes no lock."""
+    with db.transaction() as unit:
+        return stores.summaries.for_seated(unit, user_id, [campaign_id], now=now).get(campaign_id)
 
 
 def seat_offer(found: InviteeOffer) -> SeatOffer:
@@ -263,10 +293,12 @@ def build_router(
         cursor: str | None = None,
         stores: CampaignStores = Depends(get_campaign_stores),
         db: TransactionalDatabase | None = Depends(database),
+        now: datetime = Depends(get_clock),
     ) -> PlayerSeatPage:
         """The caller's accepted, live seats in campaigns that are not archived.
         It does not consult the verified address: a seat once accepted is the
-        caller's, whatever became of the offer."""
+        caller's, whatever became of the offer. Each carries its card's facts,
+        read in the same transaction."""
         query = parse_page_query(limit, cursor)
         live_db = _database(db)
 
@@ -275,8 +307,13 @@ def build_router(
                 page = stores.participants.seat_page_for_user(
                     unit, user.user_id, cursor=query.cursor, limit=query.limit
                 )
+                facts = stores.summaries.for_seated(
+                    unit, user.user_id, [h.seat.campaign_id for h in page.items], now=now
+                )
             return PlayerSeatPage(
-                schema_version=WIRE_VERSION, items=[player_seat(h) for h in page.items], next_cursor=page.next_cursor
+                schema_version=WIRE_VERSION,
+                items=[player_seat(h, facts.get(h.seat.campaign_id)) for h in page.items],
+                next_cursor=page.next_cursor,
             )
 
         try:
@@ -334,7 +371,12 @@ def build_router(
         held = guarded(
             lambda: accept_offer(live_db, stores, offer_id=offer_id, user_id=user.user_id, address=verified, now=now)
         )
-        return player_seat(held)
+        facts = guarded(
+            lambda: seated_facts(
+                live_db, stores, user_id=user.user_id, campaign_id=held.seat.campaign_id, now=now
+            )
+        )
+        return player_seat(held, facts)
 
     @router.post("/seats/offers/{offer_id}/decline", status_code=204)
     def decline(

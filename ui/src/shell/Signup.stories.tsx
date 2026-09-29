@@ -10,6 +10,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
 import { json, pending, stubFetch, withShell } from '../../.storybook/shellHarness'
+import { expectTouchTarget } from '../../.storybook/touchTarget'
+import { atViewport, expectNoPageOverflow, expectSpans, expectViewport, type ViewportName } from '../../.storybook/viewports'
 import { Signup } from './Signup'
 
 const meta = {
@@ -162,4 +164,39 @@ export const DarkWithError: Story = {
     await userEvent.keyboard('{Enter}')
     await expect(await canvas.findByRole('alert')).toBeVisible()
   },
+}
+
+/**
+ * agent-forge-harness-0rn: on a phone, "Already have an account? Sign in" is a
+ * card action, so it spans the card instead of sitting as a centred link.
+ */
+async function expectPhoneSignup(canvasElement: HTMLElement, viewport: ViewportName): Promise<void> {
+  await expectViewport(viewport)
+  const canvas = within(canvasElement)
+  await expectNoPageOverflow()
+  const card = canvasElement.querySelector('.auth-screen__card')
+  if (!(card instanceof HTMLElement)) throw new Error('no signup card')
+  const toSignIn = canvas.getByRole('button', { name: 'Already have an account? Sign in' })
+  await expectSpans(toSignIn, card)
+  await expectTouchTarget(canvas, 'Already have an account? Sign in')
+}
+
+export const Phone390: Story = {
+  ...atViewport('phone390'),
+  play: async ({ canvasElement }) => expectPhoneSignup(canvasElement, 'phone390'),
+}
+
+/** AC-1's narrowest phone. A regression pin, not the phone rule's killer:
+ * at 320px the link's wrapped text already fills the card, so it spans with
+ * or without the rule. Phone390 and Edge599 are the widths that catch a
+ * narrowed or dropped rule. */
+export const Phone320: Story = {
+  ...atViewport('phone320'),
+  play: async ({ canvasElement }) => expectPhoneSignup(canvasElement, 'phone320'),
+}
+
+/** One pixel inside the phone rule: the link still spans the card. */
+export const Edge599: Story = {
+  ...atViewport('edge599'),
+  play: async ({ canvasElement }) => expectPhoneSignup(canvasElement, 'edge599'),
 }
