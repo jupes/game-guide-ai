@@ -1,0 +1,46 @@
+-- Migration 0017 — one session divider per thread, session and boundary
+-- (agent-forge-harness-1kg.3.5).
+--
+-- A live table session's Start and its end (End, or expiry) each leave one
+-- `session_divider` entry in every live thread of the session's campaign.
+-- The lifecycle enqueues a job in the transaction that makes the transition,
+-- and `service/session_dividers.py` writes the entries. Job claims are leases
+-- and can repeat or overlap, so only the database can make "at most one
+-- divider for this conversation, session and boundary" true under every
+-- interleaving. This index is that rule. The divider insert in
+-- `service/session_divider_store.py` names this index's exact expressions and
+-- predicate as its ON CONFLICT target, so a repeat is zero rows, while any
+-- other unique violation, such as an `entry_id` collision, still raises.
+--
+-- THE FOUR PROOFS THIS FILE CARRIES.
+--
+-- 1. Expand-only (docs/migrations.md section 3). One partial index; nothing is
+--    rewritten, backfilled or dropped. The previous release neither reads nor
+--    writes a divider row: `git grep session_divider -- service tests` on the
+--    base finds the contract's enum and model, 0010's CHECK and one test
+--    constant, and no writer. So the previous build works unchanged against the
+--    migrated database, and a roll-forward after a rollback loses nothing.
+--
+-- 2. It can be built. A unique index fails on existing duplicates, and no
+--    release has ever written a `session_divider` row (proof 1), so the
+--    predicate selects no row on any database.
+--
+-- 3. The cost. The build scans chat.timeline_entries under a SHARE lock, so
+--    `/chat`'s best-effort entry write waits for the build's duration. The
+--    table is small, and that writer never fails an answer (1kg.4.2,
+--    requirement 8). Not CONCURRENTLY: the runner wraps each file in its own
+--    transaction, and this file carries no transaction control.
+--
+-- 4. Why an expression index and not two new columns. It adds nothing to keep
+--    in step beside the payload: no second copy of the session id that could
+--    disagree with it, and no CHECK that must scan and validate existing rows.
+--    It constrains divider rows only. The index is over two identifiers: a
+--    divider carries no text, so nothing here is derived from text (ED-26).
+--    Partial and expressional, it is never a key for FOR KEY SHARE, so an
+--    UPDATE of an entry's payload still takes FOR NO KEY UPDATE (RQ-3). No
+--    foreign key reaches campaign.table_sessions: a divider is part of its
+--    conversation's history and cascades with it, like every entry.
+
+CREATE UNIQUE INDEX timeline_entries_divider_uidx
+  ON chat.timeline_entries (conversation_id, (payload->>'session_id'), (payload->>'boundary'))
+  WHERE entry_kind = 'session_divider';

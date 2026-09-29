@@ -4502,8 +4502,11 @@ def test_the_apps_own_expiry_handler_leaves_one_reconciliation(
     nothing there would notice `service/app.py`'s going missing. This drives
     the composition production runs — `_build_stores` on a real database, and
     the driver it leaves — through one due `table_session.expire`, and asks for
-    exactly one `campaign.reconcile` `{campaign_id}` behind it."""
+    exactly one `campaign.reconcile` `{campaign_id}` behind it — and, since
+    1kg.3.5 wired session dividers into the same composition, exactly one `end`
+    divider job after it, carrying the session's id and nothing else."""
     from service import app as appmod
+    from service.session_dividers import DIVIDER_KIND
 
     monkeypatch.setattr(appmod, "_state", {"migrations": "current"})
     db = _database(dsn, PATIENT)
@@ -4519,7 +4522,10 @@ def test_the_apps_own_expiry_handler_leaves_one_reconciliation(
         queued = conn.execute(
             "SELECT kind, payload, dedupe_key FROM app.jobs WHERE kind <> %s ORDER BY id", (EXPIRE_KIND,)
         ).fetchall()
-    assert queued == [(RECONCILE, {"campaign_id": CAMPAIGN}, None)]
+    assert queued == [
+        (RECONCILE, {"campaign_id": CAMPAIGN}, None),
+        (DIVIDER_KIND, {"session_id": session.id, "boundary": "end"}, None),
+    ]
 
 
 @needs_db

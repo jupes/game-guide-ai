@@ -304,12 +304,16 @@ def _build_stores(db: Database) -> None:
     # each retried until it succeeds (registering one turns the request hook on
     # for every signed-in request): `campaign.reconcile`, which every revocation
     # leaves behind (1kg.2.2, RQ-5), its slot step `reconcile_slots` passed by
-    # name and empty until 1kg.7.1 gives it a body; and `table_session.expire`
-    # (1kg.2.3), the delayed job a Start enqueues at `expires_at`. End, Rotate and
-    # expiry enqueue their reconciliation through 1kg.2.2's helper, never naming
-    # the kind here.
+    # name and empty until 1kg.7.1 gives it a body; `table_session.expire`
+    # (1kg.2.3), the delayed job a Start enqueues at `expires_at`; and
+    # `timeline.session_divider` (1kg.3.5), which a Start and an ending leave
+    # behind to write the session's dividers. End, Rotate and expiry enqueue their
+    # reconciliation through 1kg.2.2's helper, and the lifecycle its divider jobs
+    # through 1kg.3.5's enqueuer, never naming either kind here.
     from .audit_log import PostgresAuditLog
     from .campaign_store import PostgresCampaignStore
+    from .session_divider_store import PostgresSessionDividerStore
+    from .session_dividers import DIVIDER_KIND, SessionDividers, enqueuer
     from .table_session_store import PostgresTableSessionStore, no_slots
     from .table_sessions import EXPIRE_KIND, TableSessions
 
@@ -317,15 +321,21 @@ def _build_stores(db: Database) -> None:
     runner = JobRunner(queue, single_flight=job_driver.JOB_LOCK)
     runner.register(reconciliation.RECONCILE_KIND, reconciliation.handler(db, slots=reconciliation.reconcile_slots))
     _state["job_queue"] = queue
+    sessions = PostgresTableSessionStore(slot_clear=no_slots)
     table_sessions = TableSessions(
         db,
         campaigns=PostgresCampaignStore(),
-        sessions=PostgresTableSessionStore(slot_clear=no_slots),
+        sessions=sessions,
         audit=PostgresAuditLog(),
         jobs=queue,
         reconcile=lambda unit, campaign_id: reconciliation.enqueue_reconciliation(unit, queue, campaign_id),
+        dividers=enqueuer(queue),
     )
+    _state["table_sessions"] = table_sessions
     runner.register(EXPIRE_KIND, table_sessions.expire_handler())
+    runner.register(
+        DIVIDER_KIND, SessionDividers(db, sessions=sessions, store=PostgresSessionDividerStore()).handler()
+    )
     _state["jobs"] = job_driver.JobDriver(runner, healthy=_schema_understood)
 
 
