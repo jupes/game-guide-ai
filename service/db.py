@@ -42,18 +42,22 @@ is released on commit only. Every store keeps the repository's pattern: a
 from __future__ import annotations
 
 import hashlib
+import itertools
 import logging
 import os
 import re
 import threading
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import IntEnum
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 import psycopg
 from psycopg_pool import AsyncConnectionPool, PoolClosed, PoolTimeout
+
+from . import campaign_identity as ident
 
 log = logging.getLogger(__name__)
 
@@ -153,6 +157,70 @@ class CampaignLockOrder(CampaignLockRefused):
 #: is FOR UPDATE on the `authz_state` row.
 SHARE = "share"
 EXCLUSIVE = "exclusive"
+
+
+# ── The projection queue's item (1ir.2.1) ────────────────────────────────────
+
+#: `FieldKey`'s pattern, spelled here because db.py imports no wire module;
+#: pinned to `workbench_contracts.FieldKey` and to migration 0017 by
+#: `service/tests/test_campaign_schema_sql.py`.
+FIELD_KEY_PATTERN: Final = r"^[a-z][a-z0-9_]{0,39}$"
+_FIELD_KEY: Final = re.compile(FIELD_KEY_PATTERN)
+#: The word a field key may never be (ED-8), pinned to
+#: `workbench_contracts.RESERVED_MASK_KEYS` by the same test.
+RESERVED_FIELD_KEYS: Final = frozenset({"all"})
+#: The most items one advance may queue: one Confirm's changed-field bound,
+#: pinned to `workbench_contracts.MAX_CHANGED_FIELDS` (SEC-35).
+PROJECTION_ITEMS_MAX: Final = 64
+
+
+@dataclass(frozen=True)
+class ProjectionItem:
+    """One field whose table-namespace rows the projector must rebuild. Ids and
+    a key only — never a class, a list of ids or any text (plan section 4.3
+    rule 6: the queue carries no decision payload). Both are checked here, so
+    no malformed item can reach a statement; the refusals name the field and
+    never the value (SEC-20)."""
+
+    document_id: str
+    field_key: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.document_id, str) or not isinstance(self.field_key, str):
+            raise TypeError("a projection item's document_id and field_key are str")
+        if not ident.is_id(ident.DOCUMENT, self.document_id):
+            raise ValueError("a projection item names a document identifier")
+        if _FIELD_KEY.fullmatch(self.field_key) is None or self.field_key in RESERVED_FIELD_KEYS:
+            raise ValueError("a projection item names one flat field key, never a wildcard")
+
+
+@dataclass(frozen=True)
+class QueuedProjection:
+    """A row of `campaign.projection_queue`: an item, the campaign, and the
+    authorisation revision that queued it. `id` orders the queue and is never
+    served (the 0003/0005 precedent for a `BIGSERIAL`)."""
+
+    id: int
+    campaign_id: str
+    document_id: str
+    field_key: str
+    authz_revision: int
+    created_at: datetime
+
+
+def _check_projection(project: object) -> tuple[ProjectionItem, ...]:
+    """Every item, checked before anything is written: a sequence of at most
+    `PROJECTION_ITEMS_MAX` `ProjectionItem`s. A `str` is a sequence and is not
+    one of these. Typed `object` because it checks what a caller that ignored
+    the annotation actually passed."""
+    if isinstance(project, str | bytes) or not isinstance(project, Sequence):
+        raise TypeError("project is a sequence of ProjectionItem")
+    if len(project) > PROJECTION_ITEMS_MAX:
+        raise ValueError(f"one advance queues at most {PROJECTION_ITEMS_MAX} projection items")
+    items = tuple(project)
+    if not all(isinstance(item, ProjectionItem) for item in items):
+        raise TypeError("project is a sequence of ProjectionItem")
+    return items
 
 
 class _CampaignLockOrder:
@@ -266,6 +334,12 @@ class _CampaignLockOrder:
                 "the authorisation revision advances only in a transaction that holds "
                 "that campaign's lock exclusively"
             )
+
+    def require_exclusive_campaign_lock(self, campaign_id: str) -> None:
+        """`CampaignLockNotHeld` unless this transaction holds that campaign's
+        lock exclusively — the same answer `advance_authz_revision` gives, and
+        the guard every eligibility and group write calls first (1ir.2.1)."""
+        self._require_exclusive(campaign_id)
 
 
 def _int_setting(env: Mapping[str, str], name: str, default: int, low: int, high: int) -> int:
@@ -505,10 +579,36 @@ class UnitOfWork(Protocol):
         """
         ...  # pragma: no cover - structural type
 
-    def advance_authz_revision(self, campaign_id: str) -> int:
-        """Increment and return the campaign's authorisation revision — the only
-        code that writes it. Refused unless this transaction holds that
-        campaign's lock exclusively."""
+    def require_exclusive_campaign_lock(self, campaign_id: str) -> None:
+        """`CampaignLockNotHeld` unless this transaction holds that campaign's
+        lock exclusively. The guard every eligibility and group write calls."""
+        ...  # pragma: no cover - structural type
+
+    def advance_authz_revision(
+        self, campaign_id: str, *, project: Sequence[ProjectionItem] = ()
+    ) -> int:
+        """Advance `authz_revision` by one and return it: the only writer of the
+        column (RQ-10), refused unless this transaction holds that campaign's
+        lock exclusively. It is also the only writer of `projection_revision`
+        outside the projector (`1ir.2.3`).
+
+        **Rule 3** (plan section 4.3). With no `project` items,
+        `projection_revision` advances with it ONLY when it equalled the old
+        `authz_revision`: nothing was pending, and a change that rewrites no
+        table-namespace row leaves nothing pending. It never catches up a
+        lagging one — "revision ahead, queue empty" is work for the projector,
+        and it is exactly what the previous release's helper leaves (RQ-10).
+        With items, `projection_revision` stays where it is and each item is
+        queued in this call, stamped with the new revision.
+
+        The items are checked — count, type, shape — before anything is written.
+        **Precondition:** every item names a document this transaction read,
+        under this lock, from `DocumentStore.get` for this campaign; PostgreSQL's
+        composite foreign key otherwise aborts the transaction.
+
+        **Lock order:** a caller that passes `project` calls this before it takes
+        any session or slot row lock. The queue insert takes `FOR KEY SHARE` on
+        the document row, which sits above the session row in RQ-3's order."""
         ...  # pragma: no cover - structural type
 
 
@@ -579,16 +679,36 @@ class PgTransaction(_CampaignLockOrder):
             raise CampaignAuthzMissing("that campaign has no authorisation row")
         self._note_campaign_lock(campaign_id, mode)
 
-    def advance_authz_revision(self, campaign_id: str) -> int:
+    def advance_authz_revision(
+        self, campaign_id: str, *, project: Sequence[ProjectionItem] = ()
+    ) -> int:
         self._require_exclusive(campaign_id)
+        items = _check_projection(project)
+        # One guarded statement. Every SET expression reads the OLD row, so rule
+        # 3 compares the projection with the revision as it stood before this
+        # advance — never with the one it is being given.
         advanced = self.conn.execute(
-            "UPDATE campaign.authz_state SET authz_revision = authz_revision + 1 "
+            "UPDATE campaign.authz_state SET authz_revision = authz_revision + 1, "
+            "projection_revision = CASE WHEN %s AND projection_revision = authz_revision "
+            "THEN authz_revision + 1 ELSE projection_revision END "
             "WHERE campaign_id = %s RETURNING authz_revision",
-            (campaign_id,),
+            (not items, campaign_id),
         ).fetchone()
         if advanced is None:
             raise CampaignAuthzMissing("that campaign has no authorisation row")
-        return int(advanced[0])
+        revision = int(advanced[0])
+        if items:
+            self.conn.execute(
+                "INSERT INTO campaign.projection_queue (campaign_id, document_id, field_key, authz_revision) "
+                "SELECT %s, d, k, %s FROM unnest(%s::text[], %s::text[]) AS t(d, k)",
+                (
+                    campaign_id,
+                    revision,
+                    [item.document_id for item in items],
+                    [item.field_key for item in items],
+                ),
+            )
+        return revision
 
 
 class TransactionalDatabase(Protocol):
@@ -778,6 +898,14 @@ class InMemoryTransaction(_CampaignLockOrder):
         # Rows this transaction has created and nobody else may see yet — the
         # AFTER INSERT trigger's output before the insert that caused it commits.
         self._authz_staged: dict[str, int] = {}
+        # The committed projection revisions and queue (1ir.2.1) — the
+        # database's, or this unit's own when it was built with none — and this
+        # unit's staged changes to them, published on commit like the revision.
+        self._projection_state: dict[str, int] = {} if database is None else database.projection_state
+        self._projection_queue: list[QueuedProjection] = [] if database is None else database.projection_queue
+        self._queue_ids: Iterator[int] = itertools.count(1) if database is None else database.queue_ids
+        self._projection_staged: dict[str, int] = {}
+        self._queue_staged: list[QueuedProjection] = []
         self._after_commit: list[Callable[[], None]] = []
         self._publish: list[Callable[[], None]] = []
         self._undo: list[Callable[[], None]] = []
@@ -841,12 +969,55 @@ class InMemoryTransaction(_CampaignLockOrder):
         insert covers is proved against the database instead.
         """
         self._stage_authz(campaign_id, 0)
+        self._stage_projection(campaign_id, 0)
 
     def authz_revision(self, campaign_id: str) -> int | None:
         """The revision this transaction can see: committed, plus its own."""
         if campaign_id in self._authz_staged:
             return self._authz_staged[campaign_id]
         return self._authz_state.get(campaign_id)
+
+    def _stage_projection(self, campaign_id: str, revision: int) -> None:
+        """`_stage_authz`'s twin for `projection_revision`, and the CHECK 0017
+        puts on it: never above the authorisation revision this unit sees."""
+        current = self.authz_revision(campaign_id)
+        if current is None or not 0 <= revision <= current:
+            raise ValueError("a projection revision never runs ahead of the authorisation revision")
+        self.claim_writer()
+        if campaign_id not in self._projection_staged:
+            self.on_publish(
+                lambda: self._projection_state.__setitem__(campaign_id, self._projection_staged[campaign_id])
+            )
+        self._projection_staged[campaign_id] = revision
+
+    def _stage_queued(self, campaign_id: str, items: tuple[ProjectionItem, ...], revision: int) -> None:
+        """Queue items for this unit alone, published on commit in order."""
+        self.claim_writer()
+        if not self._queue_staged:
+            self.on_publish(lambda: self._projection_queue.extend(self._queue_staged))
+        moment = datetime.now(UTC)
+        self._queue_staged.extend(
+            QueuedProjection(next(self._queue_ids), campaign_id, item.document_id, item.field_key, revision, moment)
+            for item in items
+        )
+
+    def projection_revision(self, campaign_id: str) -> int | None:
+        """The projection revision this transaction can see, or None when the
+        campaign has no authorisation row. A campaign with no entry reads 0, as
+        a row that predates the column reads PostgreSQL's `DEFAULT 0`."""
+        if self.authz_revision(campaign_id) is None:
+            return None
+        if campaign_id in self._projection_staged:
+            return self._projection_staged[campaign_id]
+        return self._projection_state.get(campaign_id, 0)
+
+    def projected_items(self, campaign_id: str) -> list[QueuedProjection]:
+        """The campaign's queue as this transaction sees it: committed, plus its
+        own, in id order."""
+        return sorted(
+            (item for item in [*self._projection_queue, *self._queue_staged] if item.campaign_id == campaign_id),
+            key=lambda item: item.id,
+        )
 
     def lock_campaign(
         self,
@@ -881,12 +1052,20 @@ class InMemoryTransaction(_CampaignLockOrder):
             self._database._refuse_a_conflicting_lock(self, campaign_id, mode)
         self._note_campaign_lock(campaign_id, mode)
 
-    def advance_authz_revision(self, campaign_id: str) -> int:
+    def advance_authz_revision(
+        self, campaign_id: str, *, project: Sequence[ProjectionItem] = ()
+    ) -> int:
         self._require_exclusive(campaign_id)
+        items = _check_projection(project)
         current = self.authz_revision(campaign_id)
         if current is None:
             raise CampaignAuthzMissing("that campaign has no authorisation row")
+        pending = self.projection_revision(campaign_id) != current
         self._stage_authz(campaign_id, current + 1)
+        if items:
+            self._stage_queued(campaign_id, items, current + 1)
+        elif not pending:
+            self._stage_projection(campaign_id, current + 1)
         return current + 1
 
 
@@ -905,6 +1084,16 @@ class InMemoryDatabase:
         #: stages a campaign at revision 0 — standing in for the AFTER INSERT
         #: trigger PostgreSQL has — and the commit publishes it here.
         self.authz_state: dict[str, int] = {}
+        #: `authz_state.projection_revision` as committed (1ir.2.1). A campaign
+        #: with no entry reads 0, as PostgreSQL's `DEFAULT 0` does for a row
+        #: that predates the column; `authz_state` stays a plain `int` map
+        #: because existing tests seed it that way.
+        self.projection_state: dict[str, int] = {}
+        #: `campaign.projection_queue` as committed, in id order, and the
+        #: sequence its ids come from: a rolled-back item leaves a gap, as a
+        #: `BIGSERIAL` does.
+        self.projection_queue: list[QueuedProjection] = []
+        self.queue_ids: Iterator[int] = itertools.count(1)
         #: The fakes' tables, by name, reached through
         #: `service/campaign_store.shared_rows`. One state for every twin on this
         #: database, so that a fake refuses a row whose parent is not there —

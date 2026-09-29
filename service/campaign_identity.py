@@ -62,6 +62,10 @@ SEAT_OFFER: Final = "sof_"
 #: SEC-4 names this one too: a GM-side media asset (1kg.8.1.1). The row holds
 #: object keys, never bytes, and a table client never sees this id (SEC-15).
 ASSET: Final = "ast_"
+#: A GM's named group of seats (1ir.2.1, owner decision O-3). A disclosure will
+#: remember the group it came from, so a group is marked removed and never
+#: deleted, and its id is never reused.
+GROUP: Final = "grp_"
 
 PREFIXES: Final[tuple[str, ...]] = (
     CAMPAIGN,
@@ -73,6 +77,7 @@ PREFIXES: Final[tuple[str, ...]] = (
     DOCUMENT,
     SEAT_OFFER,
     ASSET,
+    GROUP,
 )
 
 #: What each prefix is called in a refusal. Never the value, only the kind (SEC-20).
@@ -86,6 +91,7 @@ _KINDS: Final[dict[str, str]] = {
     DOCUMENT: "document identifier",
     SEAT_OFFER: "seat-offer identifier",
     ASSET: "asset identifier",
+    GROUP: "group identifier",
 }
 
 #: 16 bytes = 128 bits, SEC-4's floor, which `token_urlsafe` renders as 22 characters.

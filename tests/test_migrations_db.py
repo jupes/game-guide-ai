@@ -158,8 +158,18 @@ def test_a_fresh_database_gets_every_migration_once(dsn):
         "campaign.table_credentials",
         "campaign.seat_offers",
         "campaign.seat_blocks",
+        "campaign.groups",
+        "campaign.group_members",
+        "campaign.field_eligibility",
+        "campaign.projection_queue",
     ):
         assert _exists(dsn, relation), f"{relation} was not created"
+    with connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
+            "WHERE table_schema = 'campaign' AND table_name = 'authz_state' "
+            "AND column_name = 'projection_revision'"
+        ).fetchone() == ("bigint", "NO", "0"), "0017 adds projection_revision, NOT NULL DEFAULT 0"
     for retired in (
         "campaign.enrolment_codes",
         "campaign.device_credentials",
@@ -281,7 +291,12 @@ CAMPAIGN_TABLES = (
     "campaign.documents",
     "campaign.document_versions",
     "campaign.seat_offers",
+    "campaign.groups",
+    "campaign.group_members",
+    "campaign.field_eligibility",
+    "campaign.projection_queue",
 )
+GROUP_ID = "grp_" + "a" * 22
 
 #: A character sheet linked to the whole campaign's one participant.
 DOCUMENT_ID = "doc_" + "a" * 22
@@ -327,6 +342,30 @@ def _a_whole_campaign(conn, owner: int) -> None:
         "INSERT INTO campaign.seat_offers (id, campaign_id, participant_id, offered_by, address, address_key, "
         "expires_at) VALUES (%s, %s, %s, %s, 'wren@example.com', 'wren@example.com', now() + interval '14 days')",
         ("sof_" + "a" * 22, CAMPAIGN_ID, PARTICIPANT_ID, owner),
+    )
+    _eligibility_rows(conn)
+
+
+def _eligibility_rows(conn, campaign: str = CAMPAIGN_ID, document: str = DOCUMENT_ID) -> None:
+    """0017's four tables, one row each: a group with the campaign's seat in it,
+    a field classified for that group, and a queued projection of it."""
+    conn.execute(
+        "INSERT INTO campaign.groups (id, campaign_id, name, name_key) VALUES (%s, %s, 'Scouts', 'scouts')",
+        (GROUP_ID, campaign),
+    )
+    conn.execute(
+        "INSERT INTO campaign.group_members (group_id, participant_id, campaign_id) VALUES (%s, %s, %s)",
+        (GROUP_ID, PARTICIPANT_ID, campaign),
+    )
+    conn.execute(
+        "INSERT INTO campaign.field_eligibility (document_id, field_key, campaign_id, eligibility_class, "
+        "principal_ids, classification_source) VALUES (%s, 'portrait', %s, 'groups', %s, 'gm')",
+        (document, campaign, [GROUP_ID]),
+    )
+    conn.execute(
+        "INSERT INTO campaign.projection_queue (campaign_id, document_id, field_key, authz_revision) "
+        "VALUES (%s, %s, 'portrait', 1)",
+        (campaign, document),
     )
 
 
@@ -1264,3 +1303,334 @@ def test_a_command_id_column_holds_the_contracts_shape_or_nothing(dsn):
                 "WHERE id = %s",
                 ("ses_" + "1" * 22,),
             )
+
+
+# ── Field eligibility, groups and the projection revision (0017, 1ir.2.1) ────
+
+#: Found by name, like SEAT_OFFERS, so a renumbering at merge is an edit elsewhere.
+ELIGIBILITY = next(m for m in PACKAGED if m.name == "field_eligibility_and_groups")
+_BEFORE_ELIGIBILITY = tuple(m for m in PACKAGED if m.version < ELIGIBILITY.version)
+_THROUGH_ELIGIBILITY = tuple(m for m in PACKAGED if m.version <= ELIGIBILITY.version)
+OTHER_CAMPAIGN_ID = "cmp_" + "b" * 22
+OTHER_DOCUMENT_ID = "doc_" + "b" * 22
+OTHER_PARTICIPANT_ID = "prt_" + "b" * 22
+
+
+def _two_campaigns(conn) -> None:
+    """Campaign A with the whole campaign (its seat, sheet and 0017 rows), and
+    campaign B with a seat and a sheet of its own and nothing classified."""
+    owner = _one_user(conn)
+    _a_whole_campaign(conn, owner)
+    conn.execute(
+        "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Other')", (OTHER_CAMPAIGN_ID, owner)
+    )
+    conn.execute(
+        "INSERT INTO campaign.participants (id, campaign_id, alias, alias_key) VALUES (%s, %s, 'Wren', 'wren')",
+        (OTHER_PARTICIPANT_ID, OTHER_CAMPAIGN_ID),
+    )
+    conn.execute(
+        "INSERT INTO campaign.documents (id, campaign_id, type, type_version, data, write_revision, "
+        "field_revisions, name_key, search_key) VALUES (%s, %s, 'character-sheet', 1, %s::jsonb, 1, "
+        "%s::jsonb, 'wren', 'wren')",
+        (OTHER_DOCUMENT_ID, OTHER_CAMPAIGN_ID, '{"name": "Wren"}', '{"name": 1}'),
+    )
+
+
+def test_a_database_upgraded_across_the_eligibility_migration_converges_on_a_fresh_one(dsn):
+    """T-A2: an existing campaign keeps its revision and reads projection 0 —
+    'revision ahead, queue empty', no backfill (I-6) — its seat and sheet are
+    untouched, the shape equals a fresh database's, and a second run applies
+    nothing. Kills a backfill (M-A2) and a nullable or default-less column
+    (M-A3)."""
+    mig.migrate(dsn, packaged=_BEFORE_ELIGIBILITY)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')", (CAMPAIGN_ID, owner)
+        )
+        conn.execute("UPDATE campaign.authz_state SET authz_revision = 3 WHERE campaign_id = %s", (CAMPAIGN_ID,))
+        conn.execute(
+            "INSERT INTO campaign.participants (id, campaign_id, alias, alias_key) VALUES (%s, %s, 'Rook', 'rook')",
+            (PARTICIPANT_ID, CAMPAIGN_ID),
+        )
+        conn.execute(
+            "INSERT INTO campaign.documents (id, campaign_id, type, type_version, data, write_revision, "
+            "field_revisions, name_key, search_key, linked_participant_id) VALUES (%s, %s, 'character-sheet', "
+            "1, %s::jsonb, 1, %s::jsonb, 'rook', 'rook', %s)",
+            (DOCUMENT_ID, CAMPAIGN_ID, '{"name": "Rook"}', '{"name": 1}', PARTICIPANT_ID),
+        )
+    assert mig.migrate(dsn, packaged=_THROUGH_ELIGIBILITY).applied == (ELIGIBILITY.filename,)
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT authz_revision, projection_revision FROM campaign.authz_state WHERE campaign_id = %s",
+            (CAMPAIGN_ID,),
+        ).fetchone() == (3, 0)
+        assert conn.execute(
+            "SELECT alias, removed_at FROM campaign.participants WHERE id = %s", (PARTICIPANT_ID,)
+        ).fetchone() == ("Rook", None)
+        assert conn.execute(
+            "SELECT linked_participant_id, write_revision FROM campaign.documents WHERE id = %s", (DOCUMENT_ID,)
+        ).fetchone() == (PARTICIPANT_ID, 1)
+        assert conn.execute("SELECT count(*) FROM campaign.projection_queue").fetchone() == (0,)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'New')", (OTHER_CAMPAIGN_ID, owner)
+        )
+        assert conn.execute(
+            "SELECT authz_revision, projection_revision FROM campaign.authz_state WHERE campaign_id = %s",
+            (OTHER_CAMPAIGN_ID,),
+        ).fetchone() == (0, 0), "the trigger's row picks the new column's default up"
+    assert mig.migrate(dsn).applied == ()
+    with throwaway_database("fresh") as fresh:
+        mig.migrate(fresh)
+        assert _shape(dsn) == _shape(fresh)
+
+
+def test_the_database_refuses_a_projection_revision_ahead_of_the_authorisation_revision(dsn):
+    """T-A3: kills a dropped CHECK (M-A4)."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')", (CAMPAIGN_ID, owner)
+        )
+        conn.execute(
+            "UPDATE campaign.authz_state SET authz_revision = 2, projection_revision = 2 WHERE campaign_id = %s",
+            (CAMPAIGN_ID,),
+        )
+        for projection in (3, -1):
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute(
+                    "UPDATE campaign.authz_state SET projection_revision = %s WHERE campaign_id = %s",
+                    (projection, CAMPAIGN_ID),
+                )
+
+
+_WILDCARDS = ["all", "*", "%", "motives.hidden_identity", "Name", "", "a" * 41, "1abc"]
+
+
+@pytest.mark.parametrize("key", _WILDCARDS)
+def test_the_database_refuses_a_wildcard_or_nested_field_key(dsn, key):
+    """T-A4, for both tables that hold a key: kills a dropped `<> 'all'`
+    (M-A5) and a regex widened to admit `.` or `*` (M-A6)."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        _a_whole_campaign(conn, _one_user(conn))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO campaign.field_eligibility (document_id, field_key, campaign_id, eligibility_class, "
+                "classification_source) VALUES (%s, %s, %s, 'public', 'gm')",
+                (DOCUMENT_ID, key, CAMPAIGN_ID),
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO campaign.projection_queue (campaign_id, document_id, field_key, authz_revision) "
+                "VALUES (%s, %s, %s, 1)",
+                (CAMPAIGN_ID, DOCUMENT_ID, key),
+            )
+
+
+def _classify(conn, eligibility_class: str, ids, source: str = "gm", key: str = "hp") -> None:
+    conn.execute(
+        "INSERT INTO campaign.field_eligibility (document_id, field_key, campaign_id, eligibility_class, "
+        "principal_ids, classification_source) VALUES (%s, %s, %s, %s, %s, %s)",
+        (DOCUMENT_ID, key, CAMPAIGN_ID, eligibility_class, ids, source),
+    )
+
+
+_P = ["prt_" + c * 22 for c in "abc"]
+
+
+@pytest.mark.parametrize(
+    ("eligibility_class", "ids"),
+    [
+        pytest.param("participants", None, id="null-list"),
+        pytest.param("participants", [], id="empty-list"),
+        pytest.param("participants", [None], id="null-element"),
+        pytest.param("participants", ["grp_" + "a" * 22], id="wrong-prefix"),
+        pytest.param("participants", [_P[0], _P[0]], id="duplicate"),
+        pytest.param("participants", [_P[1], _P[0]], id="unsorted"),
+        pytest.param("participants", [f"prt_{n:022d}" for n in range(101)], id="101-ids"),
+        pytest.param("participants", [[_P[0]], [_P[1]]], id="two-dimensional"),
+        pytest.param("characters", [_P[0]], id="participant-as-character"),
+        pytest.param("gm_only", [_P[0]], id="list-on-gm-only"),
+        pytest.param("campaign", [_P[0]], id="list-on-campaign"),
+        pytest.param("public", [_P[0]], id="list-on-public"),
+    ],
+)
+def test_the_database_refuses_a_malformed_principal_list(dsn, eligibility_class, ids):
+    """T-A5: kills removing the COALESCE (M-A7), a lower bound of 0 (M-A8),
+    `ELSE true` (M-A9) and a dropped ordering clause (M-A10)."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        _a_whole_campaign(conn, _one_user(conn))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _classify(conn, eligibility_class, ids)
+
+
+def test_a_well_formed_principal_list_and_each_listless_class_are_accepted(dsn):
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        _a_whole_campaign(conn, _one_user(conn))
+        _classify(conn, "participants", [f"prt_{n:022d}" for n in range(100)], key="ac")
+        _classify(conn, "characters", [DOCUMENT_ID], key="hp")
+        for key, eligibility_class in (("speed", "gm_only"), ("notes", "campaign"), ("name", "public")):
+            _classify(conn, eligibility_class, None, key=key)
+        assert conn.execute("SELECT count(*) FROM campaign.field_eligibility").fetchone() == (6,)
+
+
+def test_only_a_gm_classification_is_wider_than_gm_only(dsn):
+    """T-A6: kills a dropped `field_eligibility_only_gm_widens_chk` (M-A11)."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        _a_whole_campaign(conn, _one_user(conn))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _classify(conn, "public", None, source="default")
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _classify(conn, "gm_only", None, source="suggested")
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _classify(conn, "unclassified", None)
+        _classify(conn, "gm_only", None, source="default")
+
+
+@pytest.mark.parametrize(
+    ("statement", "params"),
+    [
+        pytest.param(
+            "INSERT INTO campaign.field_eligibility (document_id, field_key, campaign_id, eligibility_class, "
+            "classification_source) VALUES (%s, 'hp', %s, 'public', 'gm')",
+            (OTHER_DOCUMENT_ID, CAMPAIGN_ID),
+            id="eligibility-row",
+        ),
+        pytest.param(
+            "INSERT INTO campaign.projection_queue (campaign_id, document_id, field_key, authz_revision) "
+            "VALUES (%s, %s, 'hp', 1)",
+            (CAMPAIGN_ID, OTHER_DOCUMENT_ID),
+            id="queue-item",
+        ),
+        pytest.param(
+            "INSERT INTO campaign.group_members (group_id, participant_id, campaign_id) VALUES (%s, %s, %s)",
+            (GROUP_ID, OTHER_PARTICIPANT_ID, CAMPAIGN_ID),
+            id="membership-of-a-foreign-seat",
+        ),
+        pytest.param(
+            "INSERT INTO campaign.group_members (group_id, participant_id, campaign_id) VALUES (%s, %s, %s)",
+            (GROUP_ID, OTHER_PARTICIPANT_ID, OTHER_CAMPAIGN_ID),
+            id="membership-of-a-foreign-group",
+        ),
+    ],
+)
+def test_rows_naming_another_campaigns_document_or_seat_are_refused(dsn, statement, params):
+    """T-A7: kills a foreign key to `documents (id)` or `participants (id)`
+    alone (M-A12)."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        _two_campaigns(conn)
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            conn.execute(statement, params)
+
+
+def test_deleting_a_document_takes_its_eligibility_rows_and_queue_items(dsn):
+    """T-A8's document half (the account half is the cascade test above, whose
+    CAMPAIGN_TABLES now names 0017's four tables): kills a dropped
+    `ON DELETE CASCADE` (M-A13)."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        _two_campaigns(conn)
+        conn.execute("DELETE FROM campaign.documents WHERE id = %s", (DOCUMENT_ID,))
+        assert conn.execute("SELECT count(*) FROM campaign.field_eligibility").fetchone() == (0,)
+        assert conn.execute("SELECT count(*) FROM campaign.projection_queue").fetchone() == (0,)
+        assert conn.execute("SELECT count(*) FROM campaign.group_members").fetchone() == (1,)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        pytest.param("id", "grp_short", id="too-few-bits"),
+        pytest.param("id", "group_" + "a" * 22, id="no-prefix"),
+        pytest.param("name", "", id="empty-name"),
+        pytest.param("name", "n" * 41, id="41-character-name"),
+        pytest.param("name_key", "", id="empty-key"),
+        pytest.param("name_key", "k" * 201, id="201-character-key"),
+        pytest.param("created_command_id", "short", id="malformed-command-id"),
+    ],
+)
+def test_the_database_refuses_a_group_row_the_application_would_never_mint(dsn, column, value):
+    """T-A9: kills a loosened group CHECK (M-A14)."""
+    mig.migrate(dsn)
+    row = {"id": GROUP_ID, "name": "Scouts", "name_key": "scouts", "created_command_id": None} | {column: value}
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')", (CAMPAIGN_ID, owner)
+        )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO campaign.groups (id, campaign_id, name, name_key, created_command_id) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (row["id"], CAMPAIGN_ID, row["name"], row["name_key"], row["created_command_id"]),
+            )
+
+
+def test_the_documents_composite_key_leaves_every_document_write_a_no_key_update(dsn):
+    """T-A10, as critic item 10 rewrote it. Connection A holds an uncommitted
+    eligibility row AND an uncommitted queue item for the sheet: each takes
+    FOR KEY SHARE on the document row through its foreign key. Connection B
+    then runs every `PostgresDocumentStore` method that UPDATEs
+    `campaign.documents`, each under a 200 ms lock timeout. If the new key made
+    an updated column a key column (M-A15: `UNIQUE (id, campaign_id,
+    updated_at)`), that UPDATE would need FOR UPDATE and wait on A."""
+    from datetime import UTC, datetime
+
+    from service.db import Database, PoolSettings
+    from service.document_store import PostgresDocumentStore
+    from service.workbench_contracts import Author, DocumentTypeId
+
+    mig.migrate(dsn)
+    store = PostgresDocumentStore()
+    database = Database(dsn, PoolSettings(sync_max=2, async_max=0, acquire_timeout_s=5))
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')", (CAMPAIGN_ID, owner)
+        )
+        conn.execute(
+            "INSERT INTO campaign.participants (id, campaign_id, alias, alias_key) VALUES (%s, %s, 'Rook', 'rook')",
+            (PARTICIPANT_ID, CAMPAIGN_ID),
+        )
+    with database.transaction() as unit:
+        sheet = store.create(
+            unit,
+            CAMPAIGN_ID,
+            doc_type=DocumentTypeId.CHARACTER_SHEET,
+            type_version=1,
+            data={"name": "Rook", "qualifier": "", "tags": []},
+            author=Author.GM,
+        ).id
+    later = datetime(2030, 1, 1, tzinfo=UTC)
+    writes = [
+        lambda unit: store.write_fields(
+            unit, CAMPAIGN_ID, sheet, fields={"qualifier": "Rogue"}, author=Author.GM,
+            base_write_revision=None, now=later,
+        ),
+        lambda unit: store.restore(unit, CAMPAIGN_ID, sheet, version_number=1, now=later),
+        lambda unit: store.set_archived(unit, CAMPAIGN_ID, sheet, archived=True, now=later),
+        lambda unit: store.link_character_sheet(unit, CAMPAIGN_ID, sheet, participant_id=PARTICIPANT_ID),
+        lambda unit: store.unlink_character_sheet(unit, CAMPAIGN_ID, sheet),
+    ]
+    with connect(dsn, autocommit=False) as holder:
+        holder.execute(
+            "INSERT INTO campaign.field_eligibility (document_id, field_key, campaign_id, eligibility_class, "
+            "classification_source) VALUES (%s, 'hp', %s, 'public', 'gm')",
+            (sheet, CAMPAIGN_ID),
+        )
+        holder.execute(
+            "INSERT INTO campaign.projection_queue (campaign_id, document_id, field_key, authz_revision) "
+            "VALUES (%s, %s, 'hp', 1)",
+            (CAMPAIGN_ID, sheet),
+        )
+        for write in writes:
+            with database.transaction() as unit:
+                unit.conn.execute("SET LOCAL lock_timeout = '200ms'")
+                write(unit)
+        holder.rollback()
