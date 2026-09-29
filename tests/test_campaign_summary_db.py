@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -25,7 +25,7 @@ import pytest
 from _pg import connect, needs_db, throwaway_database
 
 from service import migrations as mig
-from service.campaign_store import InMemoryCampaignStore, PostgresCampaignStore, pg
+from service.campaign_store import InMemoryCampaignStore, PostgresCampaignStore, Staging, pg, shared_rows
 from service.campaign_summary_store import (
     AVATAR_ICONS,
     AVATAR_TONES,
@@ -45,7 +45,7 @@ from service.db import CampaignLockSettings, Database, InMemoryDatabase, PoolSet
 from service.document_store import InMemoryDocumentStore, PostgresDocumentStore
 from service.history import InMemoryMessageStore
 from service.participant_store import InMemoryParticipantStore, PostgresParticipantStore
-from service.table_session_store import InMemoryTableSessionStore, PostgresTableSessionStore, no_slots
+from service.table_session_store import InMemoryTableSessionStore, PostgresTableSessionStore, TableSession, no_slots
 from service.workbench_contracts import Author, DocumentTypeId
 
 T0 = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
@@ -157,6 +157,21 @@ def _end(world: World, campaign: str, session: str, *, at: datetime, expired: bo
             assert world.sessions.expire(unit, session, campaign, now=at) is not None
         else:
             assert world.sessions.end(unit, campaign, session, owner_id=world.owner, now=at) is not None
+
+
+def _ended_late(world: World, session: str, *, at: datetime) -> None:
+    """An `ended` row stamped `ended_at = at`, written directly. No store path
+    makes one after its expiry — End finalises an overdue session as an expiry
+    (`1kg.2.3`) — so the card's rule is asserted of the row itself, whichever
+    writer ended it."""
+    with world.db.transaction() as unit:
+        if world.kind == "fake":
+            rows: Staging[TableSession] = shared_rows(world.db, "table_sessions")
+            rows.replace(unit, session, replace(rows.visible(unit)[session], state="ended", ended_at=at))
+            return
+        pg(unit).conn.execute(
+            "UPDATE campaign.table_sessions SET state = 'ended', ended_at = %s WHERE id = %s", (at, session)
+        )
 
 
 def _document(world: World, campaign: str, *, at: datetime) -> str:
@@ -352,6 +367,49 @@ def test_an_unswept_overdue_session_reads_as_the_sweep_will_mark_it(world: World
     assert badge(_row(world, campaign), swept) is None
 
 
+def test_a_late_end_of_an_overdue_table_does_not_move_last_played(world: World) -> None:
+    """Review L2 (pr160-post): the GM presses End on a table that ran out two
+    days ago and was never swept. The table stopped at its expiry, so the End
+    is not a later session: "last played" stays at the expiry and prep written
+    in between is still waiting — as it read before the End."""
+    campaign = _campaign(world)
+    started = T0 + timedelta(days=1)
+    expiry = started + timedelta(hours=4)
+    session = _session(world, campaign, at=started, hours=4)
+    _document(world, campaign, at=expiry + timedelta(days=1))
+
+    before = _facts(world, campaign, at=expiry + timedelta(days=1, hours=1))
+    assert before is not None and (before.live, before.last_played_at) == (False, expiry)
+    assert badge(_row(world, campaign), before) == READY, "prep written after the table stopped is waiting"
+
+    _end(world, campaign, session, at=expiry + timedelta(days=2))
+    after = _facts(world, campaign, at=expiry + timedelta(days=3))
+    assert after is not None and (after.live, after.last_played_at) == (False, expiry), "a late End is not play"
+    assert badge(_row(world, campaign), after) == READY, "and the prep is still waiting"
+
+
+def test_an_ended_row_stamped_after_its_expiry_was_played_by_its_expiry(world: World) -> None:
+    """Review L2, the rule itself: an ended row is dated `LEAST(ended_at,
+    expires_at)` — a table cannot meet past its expiry, whichever writer ended
+    the row — on the owner's card and on a seated player's alike."""
+    player = world.players[0]
+    campaign = _campaign(world)
+    _seat(world, campaign, "Wren", player=player)
+    started = T0 + timedelta(days=1)
+    expiry = started + timedelta(hours=4)
+    session = _session(world, campaign, at=started, hours=4)
+    _document(world, campaign, at=expiry + timedelta(days=1))
+    _ended_late(world, session, at=expiry + timedelta(days=2))
+
+    later = expiry + timedelta(days=3)
+    facts = _facts(world, campaign, at=later)
+    assert facts is not None and (facts.live, facts.last_played_at) == (False, expiry)
+    assert badge(_row(world, campaign), facts) == READY
+    with world.db.transaction() as unit:
+        card = world.summaries.for_seated(unit, player, [campaign], now=later)[campaign]
+    assert (card.live, card.last_played_at) == (False, expiry)
+
+
 # ── READY ────────────────────────────────────────────────────────────────────
 
 
@@ -492,6 +550,11 @@ def test_a_seated_card_is_the_tables_and_answers_only_a_live_accepted_seat(world
         )
         assert world.summaries.for_seated(unit, stranger, [campaign], now=started) == {}
         assert world.summaries.for_seated(unit, world.owner, [campaign], now=started) == {}, "the GM holds no seat"
+
+    expiry = started + timedelta(hours=12)
+    with world.db.transaction() as unit:
+        overdue = world.summaries.for_seated(unit, player, [campaign], now=expiry + timedelta(days=2))[campaign]
+        assert (overdue.live, overdue.last_played_at) == (False, expiry), "review L1: unswept, played by its expiry"
 
     with world.db.transaction() as unit:
         world.participants.remove(unit, campaign, seat, now=started)
