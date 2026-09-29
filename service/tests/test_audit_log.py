@@ -39,6 +39,7 @@ from service.audit_log import (
     DetailValue,
     InMemoryAuditLog,
     MintedId,
+    MintedIds,
     ObjectKind,
     OneOf,
     Shape,
@@ -121,10 +122,12 @@ def test_the_action_set_is_closed_and_a_caller_cannot_invent_one():
             assert value not in str(refused.value), "a refusal never repeats what it refused"
 
 
-def test_the_twenty_actions_that_ship_are_sec38s_the_tavern_s_two_and_the_media_delete():
-    """Reveal's three and the export ones are not here: ED-18(a) makes the table
-    shared, and they belong to the beads that will write them (1kg.7.1, 1kg.5.2),
-    which add their own members without a migration.
+def test_the_twenty_three_actions_that_ship_are_sec38s_the_tavern_s_two_the_media_delete_and_reveals_three():
+    """The export actions are not here: ED-18(a) makes the table shared, and they
+    belong to the bead that will write them (1kg.5.2), which adds its own members
+    without a migration. `1kg.7.1` adds reveal's three — displayed, updated and
+    stopped — and no fourth: a narrowing's clear is recorded by the narrowing's
+    own row, never as a reveal row.
 
     `agent-forge-harness-fma` retired the enrolment code and the device
     credential (D-1, D-4), so their four actions went with them, and a seat is
@@ -148,9 +151,13 @@ def test_the_twenty_actions_that_ship_are_sec38s_the_tavern_s_two_and_the_media_
         "campaign.archived", "campaign.restored", "campaign.deleted",
         "campaign.concluded", "campaign.reopened",
         "screen.minted", "screen.revoked", "asset.deleted",
+        "reveal.displayed", "reveal.updated", "reveal.stopped",
     }
     assert "join.burst_refused" not in {a.value for a in AuditAction}, "retired with the join"
-    assert not [a for a in AuditAction if a.value.startswith(("reveal.", "export."))]
+    assert not [a for a in AuditAction if a.value.startswith("export.")]
+    assert {a.value for a in AuditAction if a.value.startswith("reveal.")} == {
+        "reveal.displayed", "reveal.updated", "reveal.stopped"
+    }, "reveal's three and no fourth"
     assert not [a for a in AuditAction if a.value.startswith(("code.", "device."))], "retired"
     assert "seat.removed" not in {a.value for a in AuditAction}
 
@@ -169,6 +176,7 @@ def test_a_seat_row_carries_the_seat_and_nothing_else():
 
 _WORDS = {
     3: "three", 4: "four", 5: "five", 14: "fourteen", 16: "sixteen", 18: "eighteen", 19: "nineteen", 20: "twenty",
+    23: "twenty-three",
 }
 
 
@@ -653,3 +661,67 @@ def test_an_asset_deletion_is_recorded_about_an_asset():
             detail={"asset_id": "ast_" + "b" * 22},
         )
     assert (event.action, event.object_kind) == ("asset.deleted", "asset")
+
+
+# ── Reveal's three actions (1kg.7.1) ─────────────────────────────────────────
+
+
+def test_the_audit_vocabulary_holds_the_three_reveal_actions_and_their_exact_detail() -> None:
+    """T-A29. ED-18(a)'s list, exactly: the session, the command, the document
+    and its version, the mask's keys, the audience kind and the participants
+    reached, and the epoch after — no disclosure id, no recipient, no hash, no
+    text. `stopped` carries the reasons of a GM action only; a narrowing writes
+    no reveal row, so its reasons are none of these."""
+    reveal = (AuditAction.REVEAL_DISPLAYED, AuditAction.REVEAL_UPDATED, AuditAction.REVEAL_STOPPED)
+    for action in reveal:
+        assert set(ACTION_DETAIL[action]) == {
+            "session_id", "command_id", "document_id", "version", "mask", "audience", "participant_ids",
+            "reveal_epoch",
+        }, action
+    assert ACTION_REASONS[AuditAction.REVEAL_DISPLAYED] == frozenset()
+    assert ACTION_REASONS[AuditAction.REVEAL_UPDATED] == frozenset()
+    assert ACTION_REASONS[AuditAction.REVEAL_STOPPED] == {"gm_stop", "stop_all", "replaced", "moved"}
+
+    detail = ACTION_DETAIL[AuditAction.REVEAL_STOPPED]
+    assert detail["command_id"] is Shape.COMMAND_ID
+    assert detail["participant_ids"] == MintedIds(ident.PARTICIPANT, 100)
+    assert detail["audience"] == OneOf(("table", "participant"))
+    assert detail["mask"] is Shape.FIELD_KEYS
+
+    seats = [ident.new_id(ident.PARTICIPANT) for _ in range(101)]
+    listed = detail["participant_ids"]
+    assert accepts(listed, seats[:100]) and accepts(listed, []) and accepts(listed, None)
+    for refused in (
+        seats,  # 101
+        [seats[0], seats[0]],  # a duplicate
+        [ident.new_id(ident.DOCUMENT)],  # another prefix
+        ["Ana"],
+        seats[0],  # not a list
+    ):
+        assert not accepts(listed, refused), refused
+
+    command = detail["command_id"]
+    for ok in ("a" * 16, "a" * 64, "A-z_0" * 4):
+        assert accepts(command, ok), ok
+    for refused_command in ("a" * 15, "a" * 65, "a" * 15 + " ", "Rook saw the card", 16, ["a" * 16]):
+        assert not accepts(command, refused_command), refused_command
+
+    row: dict[str, DetailValue] = {
+        "session_id": ident.new_id(ident.TABLE_SESSION),
+        "command_id": "a" * 22,
+        "document_id": ident.new_id(ident.DOCUMENT),
+        "version": 3,
+        "mask": ["name", "voice"],
+        "audience": "participant",
+        "participant_ids": seats[:2],
+        "reveal_epoch": 7,
+    }
+    for action in reveal:
+        assert check_detail(action, row) == row
+    with pytest.raises(ValueError, match="no such detail key"):
+        check_detail(AuditAction.REVEAL_DISPLAYED, {**row, "disclosure_id": ident.new_id(ident.DISCLOSURE)})
+    with pytest.raises(ValueError, match="never text") as refused_text:
+        check_detail(AuditAction.REVEAL_STOPPED, {"command_id": "Rook saw the card!"})
+    assert "Rook" not in str(refused_text.value)
+    with pytest.raises(ValueError, match="never text"):
+        check_reason_code(AuditAction.REVEAL_STOPPED, "reconciled")
