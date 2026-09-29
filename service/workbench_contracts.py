@@ -440,6 +440,12 @@ class ErrorCode(str, Enum):
     #: A Remove whose password did not check out (SEC-40). A 403, never a 401:
     #: the client signs out on any 401.
     REAUTH_FAILED = "reauth_failed"
+    #: A stored document this build cannot read or write over (1kg.5.2): an
+    #: unknown stored type, a stored type version this build does not write,
+    #: stored data that is not an object or fails the tolerant read, or — for a
+    #: write that merges over it — a stored key or sub-key this build does not
+    #: declare. Reachable only by the document's owner; fail closed, not retryable.
+    DOCUMENT_UNSUPPORTED = "document_unsupported"
 
 
 # ── Registry facts the validators need (pinned by registry.json) ─────────────

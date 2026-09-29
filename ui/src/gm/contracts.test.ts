@@ -1885,4 +1885,8 @@ describe('campaigns and seats (1kg.2.2)', () => {
       expect(isKnownErrorCode(code)).toBe(true)
     }
   })
+
+  it('knows the document family's unsupported-document code (1kg.5.2)', () => {
+    expect(isKnownErrorCode('document_unsupported')).toBe(true)
+  })
 })
