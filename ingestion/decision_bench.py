@@ -15,8 +15,11 @@ Four arms decide {stat_block, spell_card, none} for every item of the block-choi
    (the report's ``adversarial``/``hard_positive`` sections), and once more grouped by
    ``category`` — the template family — so no fold trains on a template sibling of what it
    scores (the report's ``*_template_grouped`` sections; ``eval_data/block_choice/README.md``
-   Limitations, ``agent-forge-harness-69h``; a committed group spanning two categories can
-   still be split there, ``agent-forge-harness-uhc``).
+   Limitations, ``agent-forge-harness-69h``). That second pass folds on connected components of
+   (``group`` OR ``category``), not ``category`` alone, so a committed group spanning two
+   categories is never split between train and test (``agent-forge-harness-uhc``). When every
+   item lands in one such component, that pass reports itself skipped instead of raising
+   (``agent-forge-harness-xrx``).
 3. ``llm`` — ``gpt-4o-mini`` answering one token (A/B/C) with ``logprobs``; the probabilities
    are the renormalised top-logprob mass of the three letters.
 4. ``jev`` — a stub. It refuses to run without ``TYPESAFE_API_KEY``, and even with one it has
@@ -263,6 +266,31 @@ def grouped_folds(groups: Sequence[str], labels: Sequence[str], k: int, seed: in
     return [fold_of[g] for g in groups]
 
 
+def connected_groups(items: Sequence[Item]) -> dict[str, str]:
+    """Union-find over each item's ``group`` and ``category``: two items land in the same key
+    when they share EITHER field, transitively. A committed group can span two categories (8
+    ``rules:*`` groups sit in both ``rules_prose`` and ``prompt_injection`` — one holds the
+    other's text plus an injection); folding the template-grouped pass on ``category`` alone can
+    then split that group between train and test. Folding on these components instead never
+    splits a committed group there — and, since every pair of items sharing one ``category`` is
+    already directly connected here (they name the same ``category:`` node), never splits a
+    category either (``agent-forge-harness-uhc``)."""
+    parent: dict[str, str] = {}
+
+    def find(node: str) -> str:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for it in items:
+        group_root, category_root = find(f"group:{it.group}"), find(f"category:{it.category}")
+        if group_root != category_root:
+            parent[group_root] = category_root
+    return {it.id: find(f"group:{it.group}") for it in items}
+
+
 @dataclass(frozen=True)
 class Embedding:
     vector: list[float]
@@ -323,12 +351,18 @@ def run_embedding(items: Sequence[Item], embeddings: Mapping[str, Embedding], k:
     rules topic). ``"category"`` is the template family: every item of one adversarial or
     hard-positive template (for example all 12 ``prose_ac_hp`` items) then lands in the same
     fold, so no fold trains on a template sibling of what it scores (README Limitations,
-    ``agent-forge-harness-69h``). Grouping by ``category`` can still split a committed group
-    that spans two categories (8 ``rules:*`` topics sit in both ``rules_prose`` and
-    ``prompt_injection``), depending on k and seed: ``agent-forge-harness-uhc``."""
+    ``agent-forge-harness-69h``). That pass folds on ``connected_groups(items)`` -- connected
+    components of (``group`` OR ``category``) -- instead of ``category`` alone, so a committed
+    group that spans two categories (8 ``rules:*`` topics sit in both ``rules_prose`` and
+    ``prompt_injection``) is never split between train and test: ``agent-forge-harness-uhc``.
+    When a fold has test items but no training items -- every item landed in one group or
+    category, most often on the ``"category"`` pass -- ``NearestCentroid``/``_softmax`` would
+    raise on an empty fit; this returns a ``"skipped"`` result with a reason instead, without
+    touching the other ``group_field``'s pass over the same items: ``agent-forge-harness-xrx``."""
     if group_field not in ("group", "category"):
         raise ValueError(f"group_field must be 'group' or 'category', got {group_field!r}")
-    groups = [getattr(it, group_field) for it in items]
+    group_of = connected_groups(items) if group_field == "category" else {it.id: it.group for it in items}
+    groups = [group_of[it.id] for it in items]
     folds = grouped_folds(groups, [it.label for it in items], k, seed)
     decisions: dict[str, Decision] = {}
     fold_log = []
@@ -337,10 +371,22 @@ def run_embedding(items: Sequence[Item], embeddings: Mapping[str, Embedding], k:
         test = [it for it, fo in zip(items, folds, strict=True) if fo == f]
         if not test:
             continue
+        if not train:
+            # Every item shares one group/category, so this fold's whole training set is the
+            # test set itself: nothing is left to fit a classifier on. Report the pass skipped
+            # rather than let NearestCentroid.fit([], []) leave predict_proba's max() to raise
+            # on an empty iterable (agent-forge-harness-xrx).
+            return ArmResult(
+                "embedding", "skipped",
+                f"fold {f} of {k} (group_field={group_field!r}) has {len(test)} test item(s) and no "
+                "training items: every item landed in one group/category, so this pass cannot hold "
+                "anything out",
+                extra={"group_field": group_field},
+            )
         # Temperature: fit centroids on an inner grouped split of the training fold, tune T on
         # its held-out part, then refit the centroids on the whole training fold. The inner
         # split is grouped the same way, so tuning never sees a group's own fold-mates either.
-        inner = grouped_folds([getattr(it, group_field) for it in train], [it.label for it in train], 5,
+        inner = grouped_folds([group_of[it.id] for it in train], [it.label for it in train], 5,
                               seed + f + 1)
         fit_part = [it for it, fo in zip(train, inner, strict=True) if fo != 0]
         tune_part = [it for it, fo in zip(train, inner, strict=True) if fo == 0]
@@ -465,7 +511,11 @@ def evaluate(items: Sequence[Item], result: ArmResult, baseline: Mapping[str, st
     """``template``, when given an ``"ok"`` embedding-arm result scored with a different
     ``group_field`` (see ``run_embedding``), adds the ``adversarial_template_grouped`` and
     ``hard_positive_template_grouped`` sections beside the per-instance ``adversarial`` and
-    ``hard_positive`` ones (README Limitations, ``agent-forge-harness-69h``)."""
+    ``hard_positive`` ones (README Limitations, ``agent-forge-harness-69h``). When ``template``
+    is given but is not ``"ok"`` (for example ``"skipped"`` -- every item shared one group or
+    category, ``agent-forge-harness-xrx``), those two sections are left out and the report
+    instead carries ``template_grouped_status``/``template_grouped_reason``, so a consumer can
+    tell "no template-grouped pass ran" apart from "the arm itself never ran"."""
     report: dict[str, Any] = {"arm": result.arm, "status": result.status, "reason": result.reason, **result.extra}
     if result.status != "ok":
         return report
@@ -519,6 +569,9 @@ def evaluate(items: Sequence[Item], result: ArmResult, baseline: Mapping[str, st
             "n": len(hp), "group_field": group_field,
             "accuracy": dm.accuracy([gold[i] for i in hp], [t_pred[i] for i in hp]),
         }
+    elif template is not None:
+        report["template_grouped_status"] = template.status
+        report["template_grouped_reason"] = template.reason
     return report
 
 
@@ -531,20 +584,28 @@ def _fmt(v: Any, pct: bool = False) -> str:
 
 
 def summary_table(reports: Sequence[Mapping[str, Any]]) -> str:
-    """Markdown summary: one row per arm."""
+    """Markdown summary: one row per arm. The template-grouped adversarial column reads
+    ``adversarial_template_grouped`` (only the embedding arm carries it, and only when that
+    pass came back ``"ok"``, see ``run_embedding``/``evaluate``) and prints n/a for every arm
+    without one -- README Limitations says Pilot 1 test 3 must read this score, not the
+    per-instance ``Adversarial held @0.99`` column beside it (``agent-forge-harness-fzx``)."""
     head = ("| Arm | Status | Macro-F1 | ECE | Coverage / precision @0.99 | None-veto precision / coverage @0.99 "
-            "| Adversarial held @0.99 | p50 / p95 ms | $ per 1,000 | Wasted calls / missed cards per 1,000 |")
-    rows = [head, "|" + "---|" * 10]
+            "| Adversarial held @0.99 | Adversarial held @0.99 (template-grouped) | p50 / p95 ms | $ per 1,000 "
+            "| Wasted calls / missed cards per 1,000 |")
+    rows = [head, "|" + "---|" * 11]
     for r in reports:
         if r["status"] != "ok":
-            rows.append(f"| {r['arm']} | {r['status']}: {r['reason']} |" + " n/a |" * 8)
+            rows.append(f"| {r['arm']} | {r['status']}: {r['reason']} |" + " n/a |" * 9)
             continue
         cov, veto, ds = r["coverage"]["0.99"], r["none_veto_on_heuristic_positives"]["0.99"], r["downstream_per_1000"]
+        template_adv = r.get("adversarial_template_grouped")
+        template_held = template_adv["held_to_none_at_0.99"] if template_adv else None
         rows.append(
             f"| {r['arm']} | ok (n={r['n']}) | {_fmt(r['macro_f1'])} | {_fmt(r['ece_10_bins'])} "
             f"| {_fmt(cov['coverage'], True)} / {_fmt(cov['precision'], True)} "
             f"| {_fmt(veto['precision'], True)} / {_fmt(veto['coverage'], True)} "
             f"| {_fmt(r['adversarial']['held_to_none_at_0.99'], True)} "
+            f"| {_fmt(template_held, True)} "
             f"| {_fmt(r['latency_ms']['p50'])} / {_fmt(r['latency_ms']['p95'])} "
             f"| {r['cost_per_1000_usd']:.4f} | {ds['wasted_calls']:.0f} / {ds['missed_cards']:.0f} |"
         )

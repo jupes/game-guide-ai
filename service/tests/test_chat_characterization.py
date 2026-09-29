@@ -1057,6 +1057,30 @@ def test_gm_channel_refuses_a_non_dm_session_before_retrieval(post_chat: Callabl
     assert run.store.calls["claim_conversation"] == 0
 
 
+def test_per_user_throttle_refuses_a_chat_call_before_ownership_or_strategy(
+    post_chat: Callable[..., ChatRun], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent-forge-harness-74x (PR #165 review, M9 survivor): the "per_user_throttle"
+    row of test_pre_retrieval_gates_fail_closed_without_spending_retrieval only
+    checks assert_no_spend, which -- like the GM-channel case above (T-23b) --
+    never touches ownership or strategy. A throttled (429) call must claim no
+    ownership and bind no strategy too (mutant M9: moving `_throttle_chat` below
+    `_authorize_conversation` / `claim_conversation_strategy` in service/app.py
+    survives the full unit suite without this)."""
+    budget = CountingBudget(service_app.check_chat_request, exc=RateLimited(7))
+    monkeypatch.setattr(service_app, "check_chat_request", budget)
+    run = post_chat(FAILING_PROMPT, rows=HIT)
+    assert run.response.status_code == 429
+    assert run.response.headers.get("retry-after") == "7"
+    assert run.response.headers.get("x-chat-throttled") == "user"
+    assert budget.calls == 1
+    assert_no_spend(run)
+    assert_content_free(run, fault=False)
+    assert run.store.owner_of(CONV) is None
+    assert run.store.conversation_strategy(CONV) is None
+    assert run.store.calls["claim_conversation"] == 0
+
+
 def _strategy_claim_outage(post_chat: Callable[..., ChatRun]) -> ChatRun:
     store = ProbedStore(faults={"claim_conversation_strategy": db_down("strategy binding")})
     run = post_chat(FAILING_PROMPT, rows=HIT, store=store)

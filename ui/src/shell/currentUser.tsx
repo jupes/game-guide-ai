@@ -25,15 +25,22 @@
  * for the pilot).
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as React from 'react'
 import { deriveInitials, type AvatarTone } from '../ds/Avatar'
 import {
   getMe,
   logout as apiLogout,
   setUnauthorizedHandler,
+  type AuthResult,
   type AuthUser,
 } from '../api'
+import {
+  defaultChannelFactory,
+  openIdentityBroadcast,
+  type IdentityBroadcast,
+  type IdentityChannelFactory,
+} from './identityBroadcast'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -166,9 +173,26 @@ export const CurrentUserContext = createContext<CurrentUserContextValue | null>(
 
 interface CurrentUserProviderProps {
   children: ReactNode
+  /** Where the cross-tab identity signal travels (I-9). Tests inject a fake;
+   * the default is the platform's `BroadcastChannel`, opened at mount. */
+  identityChannelFactory?: IdentityChannelFactory
 }
 
-export function CurrentUserProvider({ children }: CurrentUserProviderProps): React.JSX.Element {
+/** What the handlers below read: the committed auth state, kept in step by
+ * `transition` itself so two events in one tick see each other. */
+interface LiveAuth {
+  status: AuthStatus
+  user: AuthUser | null
+  /** Bumped by every auth transition: an answer requested before one is dropped. */
+  generation: number
+  /** A background re-check is in flight; signals meanwhile coalesce into it. */
+  rechecking: boolean
+  broadcast: IdentityBroadcast | null
+}
+
+export function CurrentUserProvider(
+  { children, identityChannelFactory = defaultChannelFactory }: CurrentUserProviderProps,
+): React.JSX.Element {
   const [authStatus, setAuthStatus] = useState<AuthStatus>('checking')
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const userId = authUser?.email ?? 'guest'
@@ -176,6 +200,16 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
   // identity rather than mirrored into state, so switching accounts can't leave
   // the previous user's name/avatar on screen (and needs no syncing effect).
   const [edits, setEdits] = useState<Record<string, StoredProfile>>({})
+  const live = useRef<LiveAuth>({ status: 'checking', user: null, generation: 0, rechecking: false, broadcast: null })
+
+  const transition = useCallback((user: AuthUser | null, status: AuthStatus) => {
+    const state = live.current
+    state.generation += 1
+    state.status = status
+    state.user = user
+    setAuthUser(user)
+    setAuthStatus(status)
+  }, [])
 
   // Session check on mount, re-runnable via retryAuthCheck. getMe() never
   // throws (network errors and non-2xx both resolve to a normal AuthResult), so
@@ -186,21 +220,19 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
     getMe().then((result) => {
       if (cancelled) return
       if (result.kind === 'ok') {
-        setAuthUser(result.user)
-        setAuthStatus('authenticated')
+        transition(result.user, 'authenticated')
         return
       }
       // Only a 401 means "signed out". A 5xx or a network failure means the
       // question went unanswered — sending the user to Login there would ask
       // them to prove an identity to a service that cannot check it, and would
       // silently discard a session that is still perfectly valid.
-      setAuthUser(null)
-      setAuthStatus(result.status === UNAUTHORIZED ? 'unauthenticated' : 'unavailable')
+      transition(null, result.status === UNAUTHORIZED ? 'unauthenticated' : 'unavailable')
     })
     return () => {
       cancelled = true
     }
-  }, [checkNonce])
+  }, [checkNonce, transition])
 
   // Back to `checking` for the duration of the retry, so App shows the loading
   // gate rather than leaving the error screen up with a dead button. Set here
@@ -208,25 +240,61 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
   // effect never needs to write it (and writing state from an effect is exactly
   // what react-hooks/set-state-in-effect is there to stop).
   const retryAuthCheck = useCallback(() => {
+    live.current.generation += 1
+    live.current.status = 'checking'
     setAuthStatus('checking')
     setCheckNonce((n) => n + 1)
   }, [])
 
   // Centralized 401: any guarded call that finds the session gone drops the app
   // back to Login, instead of trapping the user in an authenticated-looking
-  // shell where every request fails.
+  // shell where every request fails. Only the transition OUT of authenticated
+  // tells the other tabs, so a burst of 401s is one signal.
   useEffect(() => {
     setUnauthorizedHandler(() => {
-      setAuthUser(null)
-      setAuthStatus('unauthenticated')
+      const wasSignedIn = live.current.status === 'authenticated'
+      transition(null, 'unauthenticated')
+      if (wasSignedIn) live.current.broadcast?.post()
     })
     return () => setUnauthorizedHandler(null)
-  }, [])
+  }, [transition])
+
+  // The cross-tab identity signal (SEC-49, I-9; agent-forge-harness-1kg.2.5):
+  // another tab signed in or out. Ask the server in the BACKGROUND -- no
+  // Loading gate -- and change nothing unless its answer is a 401 or another
+  // account (critic 12): a 5xx or a network failure changes nothing, a stale
+  // answer is dropped, and a signal received here is never posted on.
+  useEffect(() => {
+    const state = live.current
+    const recheck = (): void => {
+      if (state.status === 'checking' || state.rechecking) return
+      state.rechecking = true
+      const generation = state.generation
+      const settle = (result: AuthResult | null): void => {
+        state.rechecking = false
+        if (result === null || generation !== state.generation) return
+        if (result.kind === 'ok') {
+          const known = state.status === 'authenticated' ? state.user : null
+          if (known?.email === result.user.email && known.role === result.user.role) return
+          transition(result.user, 'authenticated')
+        } else if (result.status === UNAUTHORIZED && state.status !== 'unauthenticated') {
+          transition(null, 'unauthenticated')
+        }
+      }
+      getMe().then(settle, () => settle(null))
+    }
+    const broadcast = openIdentityBroadcast(recheck, identityChannelFactory)
+    state.broadcast = broadcast
+    return () => {
+      broadcast.close()
+      if (state.broadcast === broadcast) state.broadcast = null
+    }
+  }, [identityChannelFactory, transition])
 
   const signIn = useCallback((next: AuthUser) => {
-    setAuthUser(next)
-    setAuthStatus('authenticated')
-  }, [])
+    transition(next, 'authenticated')
+    live.current.broadcast?.post()
+  }, [transition])
 
   const signOut = useCallback(async (): Promise<boolean> => {
     // Only the server can clear an httpOnly cookie. If it refuses, stay signed
@@ -234,10 +302,10 @@ export function CurrentUserProvider({ children }: CurrentUserProviderProps): Rea
     // session the user believes they ended.
     const ok = await apiLogout()
     if (!ok) return false
-    setAuthUser(null)
-    setAuthStatus('unauthenticated')
+    transition(null, 'unauthenticated')
+    live.current.broadcast?.post()
     return true
-  }, [])
+  }, [transition])
 
   const profile = useMemo(
     () => edits[userId] ?? loadProfile(userId),

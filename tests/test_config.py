@@ -33,7 +33,16 @@ KNOBS = (
     ("RAG_HISTORY_LIMIT", "HISTORY_LIMIT", 50),
     ("RAG_ATTACHMENT_MAX_BYTES", "ATTACHMENT_MAX_BYTES", 2_000_000),
     ("RAG_ATTACHMENT_MAX_CHARS", "ATTACHMENT_MAX_CHARS", 6000),
+    ("RAG_LLM_REQUEST_TIMEOUT_S", "LLM_REQUEST_TIMEOUT_S", 60.0),
+    ("RAG_LLM_CONNECT_TIMEOUT_S", "LLM_CONNECT_TIMEOUT_S", 5.0),
 )
+
+# The two RAG_LLM_* knobs above are validated (config._seconds): reload must refuse an
+# env value that would unbound or break generation, for EACH name -- pins the
+# env var name each constant reads (agent-forge-harness-52o M8) and that
+# LLM_CONNECT_TIMEOUT_S is validated as strictly as LLM_REQUEST_TIMEOUT_S,
+# never with the bare `_float` that accepts "inf" (M9).
+VALIDATED_TIMEOUTS = ("RAG_LLM_REQUEST_TIMEOUT_S", "RAG_LLM_CONNECT_TIMEOUT_S")
 
 OVERRIDES = {
     "RAG_TOP_K": ("25", "TOP_K", 25),
@@ -49,6 +58,8 @@ OVERRIDES = {
     "RAG_HISTORY_LIMIT": ("200", "HISTORY_LIMIT", 200),
     "RAG_ATTACHMENT_MAX_BYTES": ("500000", "ATTACHMENT_MAX_BYTES", 500_000),
     "RAG_ATTACHMENT_MAX_CHARS": ("2500", "ATTACHMENT_MAX_CHARS", 2500),
+    "RAG_LLM_REQUEST_TIMEOUT_S": ("12.5", "LLM_REQUEST_TIMEOUT_S", 12.5),
+    "RAG_LLM_CONNECT_TIMEOUT_S": ("2.5", "LLM_CONNECT_TIMEOUT_S", 2.5),
 }
 
 
@@ -94,6 +105,20 @@ def test_embed_timeout_knobs(monkeypatch, var, raw):
             importlib.reload(config)
     finally:
         monkeypatch.delenv(var)
+
+
+@pytest.mark.parametrize("var", VALIDATED_TIMEOUTS)
+@pytest.mark.parametrize("raw", ["inf", "nan", "0"])
+def test_a_generation_timeout_that_would_unbound_or_break_it_is_refused_on_reload(monkeypatch, var, raw):
+    """Reload-based, unlike test_providers.py's test_a_timeout_setting_that_...
+    (which calls config._seconds(name, ...) with the name it passes in, so it
+    cannot catch that name being wired wrong in config.py itself). Reloading
+    the module re-runs config.py's own top-level `_seconds("RAG_LLM_..._S", …)`
+    calls, so a wrong env-var name (M8) or a wrong reader -- e.g.
+    LLM_CONNECT_TIMEOUT_S read with `_float`, which accepts "inf" (M9) --
+    shows up here as either no ValueError, or one that names the wrong var."""
+    monkeypatch.setenv(var, raw)
+    with pytest.raises(ValueError, match=var):
         importlib.reload(config)
 
 

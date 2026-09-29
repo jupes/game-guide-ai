@@ -211,6 +211,8 @@ fails CI if either front end is missing one; see also the proxy invariant in
 | `RAG_EMBED_CONNECT_TIMEOUT_S` | `5` | connect bound for the same embeddings client |
 | `RAG_DEFAULT_MODEL` | `gpt-4o-mini` | generation model |
 | `RAG_TEMPERATURE` | `0.2` | generation temperature |
+| `RAG_LLM_REQUEST_TIMEOUT_S` | `60` | per-attempt provider request timeout (agent-forge-harness-ihz); must be finite and > 0 |
+| `RAG_LLM_CONNECT_TIMEOUT_S` | `5` | per-attempt provider connect timeout; must be finite and > 0 |
 | `RAG_HISTORY_LIMIT` | `50` | messages returned per conversation |
 | `RAG_ATTACHMENT_MAX_BYTES` | `2000000` | max decoded upload size |
 | `RAG_ATTACHMENT_MAX_CHARS` | `6000` | max attachment chars injected into the prompt |
