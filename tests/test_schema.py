@@ -361,6 +361,16 @@ def test_calls_today_counts_the_same_rows_as_the_in_memory_fake(db):
     Asserted as a DELTA, not an absolute: `calls_today()` counts the whole
     database and the `db` fixture is module-scoped, so an absolute count would
     depend on which other tests ran first.
+
+    The fixture's reference instant is pinned to mid-day UTC rather than the
+    raw ambient clock (agent-forge-harness-01z): `now - 5 minutes` used to be
+    built from `datetime.now(UTC)` directly, which lands on *yesterday's* UTC
+    date for the first five minutes after midnight — undercounting "today" by
+    one and failing this assertion on a clock, not a bug (CI run 36500893320,
+    00:03 UTC, PR #136). Pinning to noon keeps every row on the same calendar
+    day no matter what wall-clock minute the suite happens to run at, in both
+    the Postgres rows and the in-memory fake. See
+    test_calls_today_boundary_survives_utc_midnight below for a DB-free proof.
     """
     from datetime import UTC, datetime, timedelta
 
@@ -373,7 +383,8 @@ def test_calls_today_counts_the_same_rows_as_the_in_memory_fake(db):
     real = PostgresMessageStore(dsn=_target_dsn(DSN, current))
     before = real.calls_today()
 
-    now = datetime.now(UTC)
+    # Pinned to mid-day, not datetime.now(UTC) — see the docstring above.
+    now = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
     rows = [
         ("today-user-1", "user", now),
         ("today-assistant", "assistant", now),
@@ -408,6 +419,63 @@ def test_calls_today_counts_the_same_rows_as_the_in_memory_fake(db):
     assert real.calls_today() - before == fake.calls_today() == 2, (
         "both stores must count today's USER rows only — two of these four"
     )
+
+
+def test_calls_today_boundary_survives_utc_midnight():
+    """Regression for agent-forge-harness-01z, without DATABASE_URL.
+
+    `calls_today()`'s chained assertion above fails at `fake.calls_today() ==
+    2` regardless of what the real store returns, so the in-memory half alone
+    is a faithful, DB-free repro of the CI flake (run 36500893320, 00:03 UTC,
+    on the UI-only PR #136) — this simulates that ambient clock directly.
+
+    Two fixture builds against the SAME simulated 00:02 UTC instant:
+    naive (the old bug — reference is the raw ambient clock, so
+    `reference - 5 minutes` lands on yesterday's UTC date and "today" only
+    has one USER row) and pinned (the fix — reference is mid-day, so no
+    5-minute step can cross a date line). Both must hold, or either the fixed
+    construction stopped being midnight-safe (this test is wrong to be green)
+    or the bug it documents has silently stopped reproducing (this guard has
+    nothing left to guard and should be removed).
+    """
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import patch
+
+    import service.history as history_module
+    from service.history import InMemoryMessageStore, _Row
+
+    simulated_now = datetime(2026, 9, 29, 0, 2, tzinfo=UTC)  # 00:02 UTC
+
+    def build(reference: datetime) -> InMemoryMessageStore:
+        rows = [
+            ("today-user-1", "user", reference),
+            ("today-assistant", "assistant", reference),
+            ("today-user-2", "user", reference - timedelta(minutes=5)),
+            ("yesterday-user", "user", reference - timedelta(days=1)),
+        ]
+        fake = InMemoryMessageStore()
+        fake._rows.extend([
+            _Row(id=i, conversation_id="cap", mode="sage", role=role,
+                 content=content, suggestions=None, created_at=created)
+            for i, (content, role, created) in enumerate(rows, start=1)
+        ])
+        return fake
+
+    with patch.object(history_module, "datetime") as mock_dt:
+        mock_dt.now.return_value = simulated_now
+
+        naive = build(simulated_now)
+        assert naive.calls_today() == 1, (
+            "the unpinned construction should undercount at 00:02 UTC — if "
+            "it doesn't, the boundary bug this guards against is gone"
+        )
+
+        pinned_reference = simulated_now.replace(hour=12, minute=0, second=0, microsecond=0)
+        fixed = build(pinned_reference)
+        assert fixed.calls_today() == 2, (
+            "pinning the reference instant to mid-day must count both of "
+            "today's USER rows even when the ambient clock reads 00:02 UTC"
+        )
 
 
 # ── Conversation strategy binding (b8o.2, D1/D6) — behaviour, not just shape ──
