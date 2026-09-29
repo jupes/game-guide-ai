@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-import httpx
 import openai
 import psycopg
 
@@ -76,7 +75,9 @@ def _openai_client(*, bounded: bool = True):
     agent-forge-harness-xiu.2.3): no SDK retries, because `embed` owns the
     attempts, and every wait bounded by config's embed timeouts, read here at
     build. Unbounded (`embed_query`'s no-client fallback, i.e. the eval_golden
-    CLI): exactly the SDK's defaults, as before."""
+    CLI): exactly the SDK's defaults, as before. The timeout is `openai.Timeout`,
+    the SDK's own re-export of httpx's class, so this module imports nothing
+    that is not a declared dependency (agent-forge-harness-0oh)."""
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key or api_key == "sk-replace-me":
         raise EmbeddingUnavailableError(
@@ -86,7 +87,7 @@ def _openai_client(*, bounded: bool = True):
         return openai.OpenAI(api_key=api_key)
     return openai.OpenAI(
         api_key=api_key, max_retries=0,
-        timeout=httpx.Timeout(config.EMBED_REQUEST_TIMEOUT_S, connect=config.EMBED_CONNECT_TIMEOUT_S),
+        timeout=openai.Timeout(config.EMBED_REQUEST_TIMEOUT_S, connect=config.EMBED_CONNECT_TIMEOUT_S),
     )
 
 

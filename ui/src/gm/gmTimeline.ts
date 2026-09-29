@@ -62,8 +62,19 @@ export type GmTurn =
    * only a `gm` one; a live turn (`turnFromExchange`) is always `gm`, since
    * that is the only channel that builds one. */
   | { kind: 'chat'; key: string; prompt: string | null; answer: AnswerState; mode: ChatMode }
-  /** RAIL-9: a tool and a brief, never the slash string. */
-  | { kind: 'tool'; key: string; entryId: string; brief: string; invocation: ToolInvocation }
+  /** RAIL-9: a tool and a brief, never the slash string. `entryId` is `null`
+   * for a run this client started that is not stored yet. `live` marks a run
+   * the pending-work model holds (1kg.3.5, `pendingWork.ts`): its lane is
+   * watched, not hydrated, and `lost` is RAIL-21's checking. A stored turn the
+   * model does not hold has no `live`. */
+  | {
+      kind: 'tool'
+      key: string
+      entryId: string | null
+      brief: string
+      invocation: ToolInvocation
+      live?: { lost: boolean }
+    }
   /** An `opaque` entry or one this client cannot read: RAIL-24's placeholder (X-8). */
   | { kind: 'unreadable'; key: string }
   /** An AI edit. Known, but its lane is 1kg.6.5's, so it says so rather than guessing. */
