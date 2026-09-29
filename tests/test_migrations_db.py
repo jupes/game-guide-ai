@@ -156,13 +156,16 @@ def test_a_fresh_database_gets_every_migration_once(dsn):
         "campaign.participants",
         "campaign.table_sessions",
         "campaign.table_credentials",
-        "campaign.session_join_counters",
         "campaign.seat_offers",
         "campaign.seat_blocks",
     ):
         assert _exists(dsn, relation), f"{relation} was not created"
-    for retired in ("campaign.enrolment_codes", "campaign.device_credentials"):
-        assert not _exists(dsn, retired), f"{retired} outlived 0009"
+    for retired in (
+        "campaign.enrolment_codes",
+        "campaign.device_credentials",
+        "campaign.session_join_counters",
+    ):
+        assert not _exists(dsn, retired), f"{retired} outlived the migration that retired it"
 
     again = mig.migrate(dsn)
     assert again.applied == () and again.state == "current"
@@ -266,7 +269,7 @@ def test_the_database_refuses_a_campaign_row_the_application_would_never_mint(ds
             )
 
 
-#: Every table 0004 hangs off a campaign that 0009 kept, with the column that
+#: Every table 0004 hangs off a campaign that 0009 and 0016 kept, with the column that
 #: reaches a user, and 0008's two document tables (1kg.5.1): a document hangs
 #: off its campaign and a version off its document, both ON DELETE CASCADE.
 CAMPAIGN_TABLES = (
@@ -275,7 +278,6 @@ CAMPAIGN_TABLES = (
     "campaign.participants",
     "campaign.table_sessions",
     "campaign.table_credentials",
-    "campaign.session_join_counters",
     "campaign.documents",
     "campaign.document_versions",
     "campaign.seat_offers",
@@ -287,8 +289,9 @@ PARTICIPANT_ID = "prt_" + "a" * 22
 
 
 def _a_whole_campaign(conn, owner: int) -> None:
-    """One row in every table of 0004 that 0009 kept, and of 0012's offers, so
-    the cascade has something to lose."""
+    """One row in every table of 0004 that 0009 and the table-session migration
+    kept, and of the seat migration's offers, so the cascade has something to
+    lose."""
     conn.execute(
         "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
         (CAMPAIGN_ID, owner),
@@ -307,11 +310,6 @@ def _a_whole_campaign(conn, owner: int) -> None:
         "INSERT INTO campaign.table_credentials "
         "(id, session_id, link_generation, credential_digest) VALUES (%s, %s, 1, %s)",
         ("tcr_" + "a" * 22, "ses_" + "a" * 22, "2" * 64),
-    )
-    conn.execute(
-        "INSERT INTO campaign.session_join_counters (session_id, link_generation, joins) "
-        "VALUES (%s, 1, 3)",
-        ("ses_" + "a" * 22,),
     )
     conn.execute(
         "INSERT INTO campaign.documents (id, campaign_id, type, type_version, data, "
@@ -865,7 +863,9 @@ def test_the_seat_migration_adopts_an_accepted_seat_as_not_confirmed(dsn):
             "VALUES (%s, %s, 'Rook', 'rook', %s, now())",
             (PARTICIPANT_ID, CAMPAIGN_ID, player),
         )
-    assert mig.migrate(dsn, packaged=through).applied[-1] == SEAT_OFFERS.filename
+    # Exactly the seat migration: a later one is not the expansion under test,
+    # so it neither runs here nor stands in the report.
+    assert mig.migrate(dsn, packaged=through).applied == (SEAT_OFFERS.filename,)
     with connect(dsn) as conn:
         row = conn.execute(
             "SELECT accepted_at IS NOT NULL, confirmed_at FROM campaign.participants WHERE id = %s",
@@ -1145,3 +1145,122 @@ def test_media_usage_cascades_with_its_campaign(dsn):
         assert _usage(conn) == (0, 0)
         conn.execute("DELETE FROM campaign.campaigns WHERE id = %s", (CAMPAIGN_ID,))
         assert _usage(conn) is None
+
+
+# ── 0016: the table session without a link or a join (1kg.2.3) ──────────────
+
+#: Found by name, like 1kg.2.2's `SEAT_OFFERS`: every migration before it.
+SESSION_ACCESS = next(m for m in PACKAGED if m.name == "table_session_access")
+_BEFORE_SESSION_ACCESS = tuple(m for m in PACKAGED if m.version < SESSION_ACCESS.version)
+
+
+def _actor_kind_check(dsn: str) -> list[tuple[str, str]]:
+    """`(name, definition)` of every CHECK on `audit.events` that reads
+    `actor_kind`, as the server has it."""
+    with connect(dsn) as conn:
+        return conn.execute(
+            "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'audit.events'::regclass AND contype = 'c' "
+            "AND pg_get_constraintdef(oid) LIKE '%%actor_kind%%'"
+        ).fetchall()
+
+
+@needs_db
+def test_the_actor_kind_check_0016_replaces_is_the_one_0005_created(dsn):
+    """0016 drops a constraint by name, so the name is read off a database
+    migrated to 0015 rather than assumed — and after 0016 there is still exactly
+    one such CHECK, under the same name, with `screen` where `guest` was."""
+    mig.migrate(dsn, packaged=_BEFORE_SESSION_ACCESS)
+    [(name, definition)] = _actor_kind_check(dsn)
+    assert name == "events_actor_kind_check" and "guest" in definition
+
+    mig.migrate(dsn)
+    [(name, definition)] = _actor_kind_check(dsn)
+    assert name == "events_actor_kind_check"
+    assert "screen" in definition and "guest" not in definition
+
+
+@needs_db
+def test_a_fresh_database_keeps_no_link_digest_and_one_digest_column_in_the_campaign_schema(dsn):
+    """SEC-48: the screen grant's digest is the only secret's digest left in
+    the campaign schema; the link's is gone with its index, and so is the
+    join counter nothing ever wrote."""
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        digests = conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'campaign' AND column_name LIKE '%%digest' "
+            "ORDER BY table_name, column_name"
+        ).fetchall()
+        commands = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'campaign' AND table_name = 'table_sessions' "
+            "AND column_name LIKE '%%command_id' ORDER BY column_name"
+        ).fetchall()
+        indexes = conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'campaign' "
+            "AND tablename = 'table_sessions' ORDER BY indexname"
+        ).fetchall()
+    assert digests == [("table_credentials", "credential_digest")]
+    assert commands == [("rotate_command_id",), ("start_command_id",)]
+    assert ("table_sessions_link_digest_uidx",) not in indexes
+    assert ("table_sessions_start_command_uidx",) in indexes
+    assert not _exists(dsn, "campaign.session_join_counters")
+
+
+def _an_audit_row(conn, actor_kind: str) -> None:
+    conn.execute(
+        "INSERT INTO audit.events (campaign_id_tombstone, actor_kind, action, object_kind, "
+        "decision) VALUES (%s, %s, 'screen.revoked', 'table_screen', 'allowed')",
+        (CAMPAIGN_ID, actor_kind),
+    )
+
+
+@needs_db
+def test_the_ledger_refuses_a_guest_and_accepts_a_screen(dsn):
+    """D-1: there are no guests. A table screen acts only to leave (SEC-38)."""
+    import psycopg
+
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        _an_audit_row(conn, "screen")
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _an_audit_row(conn, "guest")
+        assert conn.execute("SELECT count(*) FROM audit.events").fetchone()[0] == 1
+
+
+@needs_db
+def test_a_command_id_column_holds_the_contracts_shape_or_nothing(dsn):
+    """0016's two CHECKs, and the start index: one session per command per
+    campaign, while any number of sessions have none."""
+    import psycopg
+
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
+            (CAMPAIGN_ID, owner),
+        )
+
+        def session(number: int, command: str | None, *, state: str = "ended") -> None:
+            conn.execute(
+                "INSERT INTO campaign.table_sessions (id, campaign_id, gm_user_id, state, "
+                "expires_at, ended_at, start_command_id) VALUES (%s, %s, %s, %s, "
+                "now() + interval '12 hours', CASE WHEN %s = 'live' THEN NULL ELSE now() END, %s)",
+                ("ses_" + str(number) * 22, CAMPAIGN_ID, owner, state, state, command),
+            )
+
+        session(1, None)
+        session(2, None)
+        session(3, "A" * 16)
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            session(4, "A" * 16)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            session(5, "too-short")
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE campaign.table_sessions SET rotate_command_id = 'has spaces in it ok' "
+                "WHERE id = %s",
+                ("ses_" + "1" * 22,),
+            )

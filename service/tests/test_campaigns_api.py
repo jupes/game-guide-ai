@@ -245,7 +245,8 @@ def test_a_card_carries_its_facts_on_every_answer(client: TestClient, world: _Wo
     world.now[0] = T0 + timedelta(hours=1)
     with world.db.transaction() as unit:
         world.stores.sessions.start(
-            unit, campaign, owner_id=GM_A, expires_at=world.now[0] + timedelta(hours=12), now=world.now[0]
+            unit, campaign, owner_id=GM_A, expires_at=world.now[0] + timedelta(hours=12),
+            command_id="tavern-card-live-start", now=world.now[0],
         )
     live = client.get(f"/campaigns/{campaign}").json()
     assert (live["badge"], live["seat_count"], live["last_played_at"]) == ("live", 2, "2026-09-01T13:00:00Z")
@@ -561,8 +562,14 @@ def test_remove_narrows_withdraws_audits_and_leaves_one_reconciliation(client: T
     seat = world.seat(campaign)
     assert _offer(client, campaign, seat, "wren@example.com").status_code == 204
     with world.db.transaction() as unit:
-        session, _ = world.stores.sessions.start(unit, campaign, owner_id=GM_A, expires_at=T0 + timedelta(hours=12),
-                                                 now=T0)
+        session = world.stores.sessions.start(
+            unit,
+            campaign,
+            owner_id=GM_A,
+            expires_at=T0 + timedelta(hours=12),
+            command_id="remove-narrows-start",
+            now=T0,
+        )
     removed = _remove(client, campaign, seat)
     assert (removed.status_code, removed.content) == (204, b"")
     with world.db.transaction() as unit:

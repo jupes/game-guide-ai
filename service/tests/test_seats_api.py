@@ -177,7 +177,8 @@ def test_a_seat_is_a_tavern_card_of_the_tables_facts_and_nothing_about_other_pla
     world.seat(campaign, "Open")
     with world.db.transaction() as unit:
         world.stores.sessions.start(
-            unit, campaign, owner_id=GM_A, expires_at=T0 + timedelta(hours=12), now=T0
+            unit, campaign, owner_id=GM_A, expires_at=T0 + timedelta(hours=12),
+            command_id="seated-card-facts-start", now=T0,
         )
     _as(PLAYER, "player")
     items = client.get("/seats").json()["items"]
@@ -208,7 +209,10 @@ def test_the_accept_answer_is_the_tables_card_not_the_least_said_fallback(
     offer = _offer_id(world, seat)
     assert client.patch(f"/campaigns/{campaign}", json={"schema_version": 1, "tone": "Grim"}).status_code == 200
     with world.db.transaction() as unit:
-        world.stores.sessions.start(unit, campaign, owner_id=GM_A, expires_at=T0 + timedelta(hours=12), now=T0)
+        world.stores.sessions.start(
+            unit, campaign, owner_id=GM_A, expires_at=T0 + timedelta(hours=12),
+            command_id="accept-answer-card-start", now=T0,
+        )
     assert client.post(f"/campaigns/{campaign}/conclude").status_code == 200
     _as(PLAYER, "player")
     _verified("wren@example.com")
@@ -227,15 +231,16 @@ def test_a_seated_card_after_the_table_ends_is_not_live_and_was_played_when_it_e
     campaign = world.campaign()
     world.accepted(campaign, "Rook", PLAYER, "wren@example.com")
     with world.db.transaction() as unit:
-        session, _link = world.stores.sessions.start(
-            unit, campaign, owner_id=GM_A, expires_at=T0 + timedelta(hours=12), now=T0
+        session = world.stores.sessions.start(
+            unit, campaign, owner_id=GM_A, expires_at=T0 + timedelta(hours=12),
+            command_id="seated-card-ended-start", now=T0,
         )
     _as(PLAYER, "player")
     running = PlayerSeat.model_validate(client.get("/seats").json()["items"][0])
     assert (running.live, running.last_played_at) == (True, T0), "the positive control"
     ended = T0 + timedelta(hours=3)
     with world.db.transaction() as unit:
-        assert world.stores.sessions.end(unit, campaign, session.id, now=ended) is not None
+        assert world.stores.sessions.end(unit, campaign, session.id, owner_id=GM_A, now=ended) is not None
     world.now[0] = T0 + timedelta(hours=4)
     card = PlayerSeat.model_validate(client.get("/seats").json()["items"][0])
     assert (card.live, card.last_played_at) == (False, ended)

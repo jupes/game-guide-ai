@@ -300,15 +300,32 @@ def _build_stores(db: Database) -> None:
     from .usage_ledger import LedgerWriter, PostgresUsageLedgerStore
 
     _state["ledger"] = LedgerWriter(PostgresUsageLedgerStore(), db)
-    # The job outbox's drivers (1kg.2.7), and its one registered kind:
-    # `campaign.reconcile`, which every revocation leaves behind (1kg.2.2, RQ-5)
-    # and which the runner retries until it succeeds. Registering it turns the
-    # request hook on for every signed-in request. The slot step is
-    # `reconcile_slots`, passed by name: empty until 1kg.7.1 gives it a body.
+    # The job outbox's drivers (1kg.2.7), and the kinds this build registers,
+    # each retried until it succeeds (registering one turns the request hook on
+    # for every signed-in request): `campaign.reconcile`, which every revocation
+    # leaves behind (1kg.2.2, RQ-5), its slot step `reconcile_slots` passed by
+    # name and empty until 1kg.7.1 gives it a body; and `table_session.expire`
+    # (1kg.2.3), the delayed job a Start enqueues at `expires_at`. End, Rotate and
+    # expiry enqueue their reconciliation through 1kg.2.2's helper, never naming
+    # the kind here.
+    from .audit_log import PostgresAuditLog
+    from .campaign_store import PostgresCampaignStore
+    from .table_session_store import PostgresTableSessionStore, no_slots
+    from .table_sessions import EXPIRE_KIND, TableSessions
+
     queue = PostgresJobQueue(db)
     runner = JobRunner(queue, single_flight=job_driver.JOB_LOCK)
     runner.register(reconciliation.RECONCILE_KIND, reconciliation.handler(db, slots=reconciliation.reconcile_slots))
     _state["job_queue"] = queue
+    table_sessions = TableSessions(
+        db,
+        campaigns=PostgresCampaignStore(),
+        sessions=PostgresTableSessionStore(slot_clear=no_slots),
+        audit=PostgresAuditLog(),
+        jobs=queue,
+        reconcile=lambda unit, campaign_id: reconciliation.enqueue_reconciliation(unit, queue, campaign_id),
+    )
+    runner.register(EXPIRE_KIND, table_sessions.expire_handler())
     _state["jobs"] = job_driver.JobDriver(runner, healthy=_schema_understood)
 
 

@@ -11,10 +11,11 @@ than trusting it.
 reviewer sees, not a string a caller invents, so the ledger cannot quietly grow
 a vocabulary nobody agreed to. Reveal's three actions and the export ones are
 not here: ED-18(a) makes the table shared, and those belong to `1kg.7.1` and
-`1kg.5.2`, which add their own members without a migration. Nor is there a
-writer in this bead for the nineteen that are here — their callers are
-`1kg.2.2`'s and `1kg.2.3`'s routes, the tavern's Conclude and Reopen (bead
-cfx), and the media bead's delete route for `asset.deleted` (`1kg.8.1.3`).
+`1kg.5.2`, which add their own members without a migration. Nor is there one
+writer for the twenty that are here: the session and screen rows are
+written by `service/table_sessions.py` (`1kg.2.3`), the campaign's Conclude and
+Reopen by the tavern's route (bead cfx), `asset.deleted` by the media bead's
+delete route (`1kg.8.1.3`), the rest by `1kg.2.2`'s campaign and seat routes.
 The reason is ownership, not use.
 
 **A row carries identifiers, never content** (SEC-20, ED-26) — and no hash of
@@ -70,7 +71,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -138,7 +139,14 @@ class AuditAction(str, Enum):
     CAMPAIGN_CONCLUDED = "campaign.concluded"
     CAMPAIGN_REOPENED = "campaign.reopened"
     CAMPAIGN_DELETED = "campaign.deleted"
-    JOIN_BURST_REFUSED = "join.burst_refused"
+    #: The owner made this browser a table screen (SEC-48, D-13; actor `gm`).
+    #: There is no join any more (threat model section 15), so no row of a
+    #: refused join either: SEC-47's refusal bursts arrive with `1kg.7.5`.
+    SCREEN_MINTED = "screen.minted"
+    #: A screen grant was revoked on its own — by the GM (`gm_revoked`, actor
+    #: `gm`) or by the screen's own Leave (`left`, actor `screen`). An End or a
+    #: Rotate revokes every grant of the session and records it on its own row.
+    SCREEN_REVOKED = "screen.revoked"
     #: The GM deleted an asset (actor `gm`; `1kg.8.1.1`). The row names the asset
     #: and nothing else: its `campaign_id_tombstone` names the campaign, as the
     #: seat rows do, and alt text is private. Uploads are not audited (ruling
@@ -148,17 +156,20 @@ class AuditAction(str, Enum):
 
 
 class ActorKind(str, Enum):
-    """Who acted, as `0005_audit_events.sql`'s CHECK has it."""
+    """Who acted, as `0016_table_session_access.sql`'s CHECK has it. There are
+    no guests (D-1); a table screen acts only to leave, and its `actor_ref` is
+    its own grant's id (SEC-38)."""
 
     GM = "gm"
     PARTICIPANT = "participant"
-    GUEST = "guest"
+    SCREEN = "screen"
     SYSTEM = "system"
 
 
 class ObjectKind(str, Enum):
-    """What the decision was **about** — one of the four things the nineteen
-    actions act on, and nothing else.
+    """What the decision was **about** — one of the five things the twenty
+    actions act on, and nothing else. A table screen's `object_ref` is its
+    grant's `tcr_` id.
 
     Closed for the same reason `AuditAction` is, and for one more: a lower-case
     key is a *shape*, so `rook` and `the_hooded_stranger_is_ondrey` both passed
@@ -170,6 +181,7 @@ class ObjectKind(str, Enum):
     CAMPAIGN = "campaign"
     TABLE_SESSION = "table_session"
     PARTICIPANT = "participant"
+    TABLE_SCREEN = "table_screen"
     ASSET = "asset"
 
 
@@ -271,14 +283,12 @@ _DOCUMENT = MintedId(ident.DOCUMENT)
 #: A deleted asset, by its id alone: never its alt text, a key or a filename.
 _ASSET = MintedId(ident.ASSET)
 
-#: SEC-10 bounds a generation two ways — 24 credentials, and 60 joins in ten
-#: minutes. Which one a refused join hit is a closed code, not a sentence.
-JOIN_BOUND = OneOf(("credentials_per_generation", "joins_per_window"))
-
+#: What an End, an expiry and a Rotate record: the session, the admission
+#: generation it closed, and how many screen grants that revoked.
 _SESSION_CLOSED: dict[str, Kind] = {
     "session_id": _SESSION,
     "generation": Shape.WHOLE_NUMBER,
-    "credentials_revoked": Shape.WHOLE_NUMBER,
+    "screens_revoked": Shape.WHOLE_NUMBER,
 }
 
 #: The closed, per-action `detail` of ED-18(a). A bead that adds an action adds
@@ -288,7 +298,7 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     AuditAction.SESSION_STARTED: {"session_id": _SESSION, "generation": Shape.WHOLE_NUMBER},
     AuditAction.SESSION_ENDED: _SESSION_CLOSED,
     AuditAction.SESSION_EXPIRED: _SESSION_CLOSED,
-    AuditAction.SESSION_ROTATED: {**_SESSION_CLOSED, "personal_links_reset": Shape.FLAG},
+    AuditAction.SESSION_ROTATED: _SESSION_CLOSED,
     AuditAction.PARTICIPANT_ADDED: {"participant_id": _PARTICIPANT},
     AuditAction.PARTICIPANT_REMOVED: {"participant_id": _PARTICIPANT},
     AuditAction.PARTICIPANT_LINKED: {"participant_id": _PARTICIPANT, "document_id": _DOCUMENT},
@@ -308,11 +318,8 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
         "participants": Shape.WHOLE_NUMBER,
         "sessions": Shape.WHOLE_NUMBER,
     },
-    AuditAction.JOIN_BURST_REFUSED: {
-        "session_id": _SESSION,
-        "generation": Shape.WHOLE_NUMBER,
-        "bound": JOIN_BOUND,
-    },
+    AuditAction.SCREEN_MINTED: {"session_id": _SESSION, "generation": Shape.WHOLE_NUMBER},
+    AuditAction.SCREEN_REVOKED: {"session_id": _SESSION},
     AuditAction.ASSET_DELETED: {"asset_id": _ASSET},
 }
 
@@ -344,7 +351,8 @@ ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
     AuditAction.CAMPAIGN_CONCLUDED: frozenset(),
     AuditAction.CAMPAIGN_REOPENED: frozenset(),
     AuditAction.CAMPAIGN_DELETED: frozenset(),
-    AuditAction.JOIN_BURST_REFUSED: frozenset(JOIN_BOUND.codes),
+    AuditAction.SCREEN_MINTED: frozenset(),
+    AuditAction.SCREEN_REVOKED: frozenset({"gm_revoked", "left"}),
     AuditAction.ASSET_DELETED: frozenset(),
 }
 
@@ -533,6 +541,20 @@ class AuditLog(Protocol):
         has since been deleted, which is the point of the tombstone."""
         ...  # pragma: no cover - structural type
 
+    def count_since(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        actions: Collection[AuditAction],
+        *,
+        since: datetime,
+    ) -> int:
+        """How many rows of those actions that campaign's ledger holds from
+        after `since` — SEC-35's per-campaign fan-out bound is read from the
+        ledger (`1kg.2.3`), over `events_campaign_created_idx`. A count, never a
+        row: the caller needs a number and nothing a row carries."""
+        ...  # pragma: no cover - structural type
+
 
 @dataclass(frozen=True)
 class _Row:
@@ -657,6 +679,21 @@ class PostgresAuditLog:
         ).fetchall()
         return [_event(row) for row in rows]
 
+    def count_since(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        actions: Collection[AuditAction],
+        *,
+        since: datetime,
+    ) -> int:
+        row = pg(unit).conn.execute(
+            "SELECT count(*) FROM audit.events "
+            "WHERE campaign_id_tombstone = %s AND created_at > %s AND action = ANY(%s)",
+            (campaign_id, since, [check_action(a).value for a in actions]),
+        ).fetchone()
+        return int(row[0])
+
 
 class InMemoryAuditLog:
     """The twin, with the same validation and the same commit-time visibility:
@@ -743,4 +780,19 @@ class InMemoryAuditLog:
         return sorted(
             (e for e in visible if e.campaign_id_tombstone == campaign_id),
             key=lambda e: (e.created_at, e.id),
+        )
+
+    def count_since(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        actions: Collection[AuditAction],
+        *,
+        since: datetime,
+    ) -> int:
+        wanted = {check_action(a).value for a in actions}
+        return sum(
+            1
+            for event in self.for_campaign(unit, campaign_id)
+            if event.action in wanted and event.created_at > since
         )

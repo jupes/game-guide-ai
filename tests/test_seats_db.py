@@ -447,7 +447,11 @@ def _live_session(db: Database, owner: int) -> Any:
     returns (the session alone, rather than the session and a link token)."""
     with db.transaction() as unit:
         started = PostgresTableSessionStore(slot_clear=no_slots).start(
-            unit, CAMPAIGN, owner_id=owner, expires_at=datetime.now(UTC) + timedelta(hours=12)
+            unit,
+            CAMPAIGN,
+            owner_id=owner,
+            expires_at=datetime.now(UTC) + timedelta(hours=12),
+            command_id="rc15-archive-start",
         )
     return started[0] if isinstance(started, tuple) else started
 

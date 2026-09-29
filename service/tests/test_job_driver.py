@@ -672,10 +672,14 @@ def test_the_stores_bring_a_driver_that_shares_the_one_job_lock():
         driver = appmod._state["jobs"]
         assert isinstance(driver, JobDriver)
         assert driver.lock is JOB_LOCK and driver.runner._single_flight is JOB_LOCK
-        registered = driver.runner._handlers
-        assert set(registered) == {"campaign.reconcile"} and all(
-            handler.max_attempts is None for handler in registered.values()
-        ), "exactly the kinds this build registers, each retried until it succeeds"
+        handlers = driver.runner._handlers
+        assert set(handlers) == {"campaign.reconcile", "table_session.expire"}, (
+            "the kinds this build registers, by value"
+        )
+        assert handlers["table_session.expire"].max_attempts is None, "an expiry is retried until it runs"
+        assert all(handler.max_attempts is None for handler in handlers.values()), (
+            "each kind is retried until it succeeds"
+        )
         appmod._state["migrations"] = "current"
         assert driver.healthy()
         appmod._state["migrations"] = "failed"

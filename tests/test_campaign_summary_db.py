@@ -14,6 +14,7 @@ inferred decisions are interactions ADR §19 A-31. From the repo root:
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -141,15 +142,21 @@ def _campaign(world: World, *, owner: int | None = None, tone: str | None = None
 
 def _session(world: World, campaign: str, *, at: datetime, hours: int = 12) -> str:
     with world.db.transaction() as unit:
-        session, _link = world.sessions.start(
-            unit, campaign, owner_id=world.owner, expires_at=at + timedelta(hours=hours), now=at
+        session = world.sessions.start(
+            unit, campaign, owner_id=world.owner, expires_at=at + timedelta(hours=hours),
+            command_id=secrets.token_urlsafe(16), now=at,
         )
         return str(session.id)
 
 
 def _end(world: World, campaign: str, session: str, *, at: datetime, expired: bool = False) -> None:
+    """The GM's End, or — `expired` — the system's expiry of a session already
+    past `expires_at` (`1kg.2.3`), which stamps `ended_at = expires_at`."""
     with world.db.transaction() as unit:
-        assert world.sessions.end(unit, campaign, session, expired=expired, now=at) is not None
+        if expired:
+            assert world.sessions.expire(unit, session, campaign, now=at) is not None
+        else:
+            assert world.sessions.end(unit, campaign, session, owner_id=world.owner, now=at) is not None
 
 
 def _document(world: World, campaign: str, *, at: datetime) -> str:

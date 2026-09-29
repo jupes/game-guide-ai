@@ -11,10 +11,15 @@ sequential id leaks volume and invites probing. Ids are **not** secrets — ever
 authorisation rule still applies to the row they name — but they are opaque, and
 they must fit the wire contract's ``OpaqueId`` (``^[A-Za-z0-9_-]{1,64}$``).
 
-**SEC-5 — secrets.** A table link token and a join credential are each 32
-random bytes, and the server stores **only a SHA-256 digest**, looked up by that
-digest. (The enrolment code and the device credential were the other two until
-the owner's decisions D-1 and D-4 retired them; bead `fma`, migration 0009.) A slow password hash is deliberately *not*
+**SEC-5 — secrets.** The one bearer secret the campaign domain still mints is
+the **screen grant** (SEC-48): 32 random bytes, of which the server stores
+**only a SHA-256 digest**, looked up by that digest. The table link token and
+the join credential are gone — threat model section 15 retired the join, and
+migration 0016 dropped the link's digest (`1kg.2.3`) — as the enrolment code
+and the device credential went before them (the owner's decisions D-1 and D-4;
+bead `fma`, migration 0009). A screen grant is a row of
+`campaign.table_credentials`, which is why its prefix is still `tcr_`. A slow
+password hash is deliberately *not*
 used here: these are 256-bit random values with nothing to brute-force, and a slow
 hash on a route anyone can call is a denial-of-service lever. ``service/hashing.py``
 is the other case — human-chosen passwords — and the two must not be confused.
