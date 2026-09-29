@@ -10,8 +10,9 @@ four conversation routes (`service/conversations_api.py`) and the conversation
 timeline (`service/timeline_api.py`, moved here by `agent-forge-harness-oqx`),
 the GM's campaigns and seats (`service/campaigns_api.py`), an account's own
 offers and seats (`service/seats_api.py`, on `account_router`), the GM's table
-session (`service/table_session_api.py`) and the table routes
-(`service/table_api.py`, on their own router with their own route class).
+session (`service/table_session_api.py`), the table routes
+(`service/table_api.py`, on their own router with their own route class), and
+the GM's tool invocations (`service/tool_invocations_api.py`, bead 1kg.4.1).
 
 What makes a route a Workbench route
 ------------------------------------
@@ -85,9 +86,9 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from types import MappingProxyType
-from typing import ClassVar, NoReturn
+from typing import Any, ClassVar, NoReturn
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, params
@@ -314,6 +315,40 @@ def account_router(
         route_class=WorkbenchRoute,
         dependencies=[Depends(origin_check(content_types)), Depends(session)],
     )
+
+
+# justification: `Coroutine`'s send and yield types; FastAPI awaits the dependency and
+# uses only its `bytes` result.
+def body_reader(max_bytes: int) -> Callable[[Request], Coroutine[Any, Any, bytes]]:
+    """A dependency that reads a route's raw body, at most `max_bytes` (1kg.4.1,
+    I-23). A longer one is refused as soon as it is known to be longer — by its
+    declared length, or by the first chunk that crosses the line — and the rest
+    is never read. The refusal is the Workbench `422 validation_failed` naming
+    no field, which the one validation handler answers (SEC-23).
+
+    `service/conversations_api.read_body` is the same algorithm at 8 KiB; a
+    route whose body can be longer — a 2,000-code-point brief sent as escaped
+    JSON is about 24 KiB — takes its own bound from here."""
+    if max_bytes < 1:
+        raise ValueError("a body bound is at least one byte")
+
+    async def read(request: Request) -> bytes:
+        declared = request.headers.get("content-length")
+        if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+            raise _too_long()
+        received = bytearray()
+        async for chunk in request.stream():
+            received += chunk
+            if len(received) > max_bytes:
+                raise _too_long()
+        return bytes(received)
+
+    return read
+
+
+def _too_long() -> RequestValidationError:
+    """A body past its bound: `validation_failed`, no field, nothing echoed."""
+    return RequestValidationError([{"type": "value_error", "loc": (), "msg": "the body is too long"}])
 
 
 def api_routes(app: FastAPI) -> list[tuple[str, APIRoute]]:

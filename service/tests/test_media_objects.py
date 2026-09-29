@@ -761,13 +761,26 @@ def test_the_settings_are_read_from_the_process_environment_by_default(monkeypat
     assert mo.MediaSettings.from_env().enabled is True
 
 
-def test_nothing_in_the_running_service_reads_these_settings_yet() -> None:
-    """L-12: slice b wires them. Until then no module but this one names them."""
-    naming = [
-        path.name
-        for path in SERVICE.glob("*.py")
-        if path.name != "media_objects.py" and "WORKBENCH_MEDIA_" in path.read_text(encoding="utf-8")
-    ]
+def test_the_running_service_reads_these_settings_once_at_startup() -> None:
+    """L-12, updated deliberately by slice b (`1kg.8.1.2`), which wires them, as
+    the slice-a design comment asked. The settings are read in exactly one
+    place outside this module — `service/app.py`'s startup, through
+    `startup_settings` — and no other module holds a variable's name as a
+    string to read the environment with (a docstring may still name one)."""
+    variables = {"WORKBENCH_MEDIA_ENABLED", "WORKBENCH_MEDIA_STORE", "WORKBENCH_MEDIA_DIR"}
+    readers: list[tuple[str, str]] = []
+    naming: list[str] = []
+    for path in sorted(SERVICE.glob("*.py")):
+        if path.name == "media_objects.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Constant) and node.value in variables:
+                naming.append(path.name)
+            if isinstance(node, ast.Call):
+                spelled = ast.unparse(node.func)
+                if spelled.endswith(("startup_settings", "MediaSettings.from_env")):
+                    readers.append((path.name, spelled))
+    assert readers == [("app.py", "media_objects.startup_settings")]
     assert naming == []
 
 
