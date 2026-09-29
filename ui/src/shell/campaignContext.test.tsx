@@ -4,8 +4,9 @@
  * sections 7.4-7.6, 9 and the Critic's items 3, 4, 6, 7, 12, 14, 15, 22).
  *
  * Every request goes through a recording stub that can hold an answer back
- * (`defer`), so each race below really interleaves; every "no request" sits
- * beside a positive control in the same test.
+ * (`defer`), so each race below really interleaves; a "no request" sits beside
+ * a positive control in the same test wherever the mount allows one (the player
+ * and abandon cases' controls are the dm mounts of the same calls).
  */
 
 import * as React from 'react'
@@ -44,7 +45,7 @@ const thread = (over: Record<string, unknown> = {}) => ({
 })
 
 type Reply = { status: number; body?: unknown } | 'network'
-interface Call { url: string; method: string; body: string | null; reply: (r: Reply) => void }
+interface Call { url: string; method: string; body: string | null; signal: AbortSignal | null; reply: (r: Reply) => void }
 type Route = (call: Call) => Reply | 'defer'
 
 const defaultRoute: Route = ({ url, method }) => {
@@ -61,6 +62,7 @@ function stubServer(route: Route = defaultRoute) {
   const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
     const call: Call = {
       url: String(input), method: init?.method ?? 'GET', body: typeof init?.body === 'string' ? init.body : null,
+      signal: init?.signal ?? null,
       reply: (r) => (r === 'network'
         ? reject(new TypeError('Failed to fetch'))
         : resolve(new Response(JSON.stringify(r.body ?? {}), { status: r.status }))),
@@ -93,18 +95,19 @@ function channels() {
 }
 
 const live = {} as { c: CampaignContextValue; nav: AppNavState; user: CurrentUserContextValue }
-const rendered: Array<{ mode: ChatMode; id: string | null }> = []
+/** One entry per committed render: what the Probe's consumers were handed. */
+const rendered: Array<{ account: string; mode: ChatMode; id: string | null; selection: string; names: string }> = []
 function Probe(): React.JSX.Element {
   const c = useCampaign()
   const nav = useAppNav()
   const user = useCurrentUser()
+  const names = c.list.kind === 'idle' ? '' : c.list.items.map((i) => i.name).join(',')
   React.useLayoutEffect(() => {
-    rendered.push({ mode: nav.mode, id: nav.conversationId })
+    rendered.push({ account: user.user.id, mode: nav.mode, id: nav.conversationId, selection: c.selection.kind, names })
     live.c = c
     live.nav = nav
     live.user = user
   })
-  const names = c.list.kind === 'idle' ? '' : c.list.items.map((i) => i.name).join(',')
   return <p data-testid="probe">{`${c.selection.kind}|${names}`}</p>
 }
 
@@ -141,6 +144,12 @@ async function loaded(): Promise<void> {
 async function signOut(ok = true): Promise<boolean> {
   vi.spyOn(api, 'logout').mockResolvedValue(ok)
   return run(() => live.user.user.signOut())
+}
+/** Another tab changed the session: the signal's background check answers `email`. */
+async function switchAccount(signal: ReturnType<typeof channels>, email: string, role: 'dm' | 'player' = 'dm'): Promise<void> {
+  vi.mocked(api.getMe).mockResolvedValue({ kind: 'ok', user: { email, role } })
+  await signal.receive({ v: 1, kind: 'identity-changed' })
+  await waitFor(() => expect([live.user.user.id, live.user.user.role]).toEqual([email, role]))
 }
 
 beforeEach(() => {
@@ -401,6 +410,24 @@ describe('restore', () => {
     expect(live.nav.conversationId).toBeNull()
   })
 
+  it('an unavailable first status and its checking retry write nothing: the deep link survives, then restores (critic 3, 7.4)', async () => {
+    const DEEP = '#campaign=cmp_A&conversation=cnv_1'
+    const { server } = await mount({
+      hash: DEEP, restore: { campaignId: 'cmp_A', conversationId: 'cnv_1' }, me: { kind: 'error', status: 503, message: 'down' },
+    })
+    await flush()
+    expect([live.user.authStatus, window.location.hash, server.calls.length]).toEqual(['unavailable', DEEP, 0])
+    const answer = deferred<api.AuthResult>()
+    vi.mocked(api.getMe).mockReturnValue(answer.promise)
+    act(() => live.user.retryAuthCheck())
+    await flush()
+    expect([live.user.authStatus, window.location.hash]).toEqual(['checking', DEEP])
+    await act(async () => { answer.resolve({ kind: 'ok', user: { email: ADA, role: 'dm' } }) })
+    await waitFor(() => expect(live.nav.conversationId).toBe('cnv_1'))
+    expect(server.lines()).toEqual(['GET /campaigns/cmp_A', 'GET /conversations/cnv_1'])
+    expect(window.location.hash).toBe(DEEP)
+  })
+
   it('the thread is read only after the campaign answers, and is set only when it is one of its GM threads (T1-2)', async () => {
     const { server } = await mount({
       hash: '#campaign=cmp_A&conversation=cnv_1', restore: { campaignId: 'cmp_A', conversationId: 'cnv_1' },
@@ -496,6 +523,52 @@ describe('identity transitions', () => {
     expect(window.location.hash).toBe('')
   })
 
+  it("ada's create answered after a direct switch to bob is aborted, then neither listed nor selected for bob (M-N2)", async () => {
+    const { server, signal } = await mount({ route: (call) => (call.method === 'POST' ? 'defer' : defaultRoute(call)) })
+    let outcome: Promise<unknown> = Promise.resolve()
+    act(() => { outcome = live.c.createCampaign('Ada typed name') })
+    await waitFor(() => expect(server.lines()).toEqual(['POST /campaigns']))
+    await switchAccount(signal, BOB)
+    const post = server.calls[0]
+    expect(post.signal?.aborted).toBe(true)
+    await loaded()
+    act(() => post.reply({ status: 201, body: campaign('cmp_ada') }))
+    expect(await outcome).toEqual({ kind: 'failed' })
+    await flush()
+    expect(live.c.selection).toEqual({ kind: 'none' })
+    expect(live.c.scope).toBeNull()
+    expect(live.c.list.kind === 'ready' && live.c.list.items.map((c) => c.campaign_id)).toEqual(['cmp_A', 'cmp_B'])
+  })
+
+  it("ada's Load more answered after a direct switch to bob never reaches bob's list (M-N4)", async () => {
+    const { server, signal } = await mount({
+      route: (call) => {
+        if (call.url === '/campaigns?cursor=c2') return 'defer'
+        return call.url === '/campaigns' ? { status: 200, body: page([A], 'c2') } : defaultRoute(call)
+      },
+    })
+    await loaded()
+    act(() => live.c.loadMoreCampaigns())
+    await switchAccount(signal, BOB)
+    const more = server.calls[1]
+    expect([more.url, more.signal?.aborted]).toEqual(['/campaigns?cursor=c2', true])
+    await loaded()
+    act(() => more.reply({ status: 200, body: page([campaign('cmp_adaonly')]) }))
+    await flush()
+    expect(live.c.list).toEqual({ kind: 'ready', items: [A], nextCursor: 'c2', loadingMore: false, moreFailed: false })
+  })
+
+  it("a direct switch from ada to bob never commits a render that carries ada's state (7.5, snapshotFor)", async () => {
+    const { signal } = await mount({ hash: '#campaign=cmp_A&conversation=cnv_1', restore: { campaignId: 'cmp_A', conversationId: 'cnv_1' } })
+    await waitFor(() => expect(live.nav.conversationId).toBe('cnv_1'))
+    await loaded()
+    expect(rendered.at(-1)).toEqual({ account: ADA, mode: 'gm', id: 'cnv_1', selection: 'selected', names: 'Name of cmp_A,Name of cmp_B' })
+    await switchAccount(signal, BOB)
+    const bob = rendered.filter((r) => r.account === BOB)
+    expect(bob.length).toBeGreaterThan(0)
+    expect(bob.filter((r) => r.selection !== 'none' || r.names !== '' || r.id !== null)).toEqual([])
+  })
+
   it('nothing campaign-shaped is ever written to web storage (T1-13)', async () => {
     await mount({ hash: '#campaign=cmp_A&conversation=cnv_1', restore: { campaignId: 'cmp_A', conversationId: 'cnv_1' } })
     await waitFor(() => expect(live.nav.conversationId).toBe('cnv_1'))
@@ -559,6 +632,15 @@ describe('the cross-tab identity signal', () => {
     expect(signal.posts()).toEqual([])
   })
 
+  it('a signal answering the same account with another role takes that role and clears the campaign state (T1-18, critic 12d)', async () => {
+    const { signal } = await mount({ hash: '#campaign=cmp_A', restore: { campaignId: 'cmp_A', conversationId: null } })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await loaded()
+    await switchAccount(signal, ADA, 'player')
+    expect([live.c.enabled, live.c.selection, live.c.list, live.c.scope]).toEqual([false, { kind: 'none' }, { kind: 'idle' }, null])
+    await waitFor(() => expect(window.location.hash).toBe(''))
+  })
+
   it('coalesces a burst into one check, and drops an answer that lands after a local sign-out (critic 12b, 12c)', async () => {
     const { signal } = await mount()
     const me = vi.mocked(api.getMe)
@@ -612,6 +694,19 @@ describe('a fragment changed outside the app', () => {
     await waitFor(() => expect(live.c.selection).toEqual({ kind: 'selected', campaign: A }))
     expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
     expect(server.lines()).toEqual(['GET /campaigns/cmp_A', 'GET /campaigns/cmp_B', 'GET /conversations/cnv_1', 'GET /campaigns/cmp_A'])
+  })
+
+  it.each(['/', '/profile'])('on %s it neither requests nor switches; the same edit on /workspace does (critic 4)', async (path) => {
+    const { server } = await mount({ hash: '#campaign=cmp_A', restore: { campaignId: 'cmp_A', conversationId: null } })
+    await waitFor(() => expect(live.c.selection).toEqual({ kind: 'selected', campaign: A }))
+    window.history.replaceState(null, '', `${path}#campaign=cmp_B`)
+    act(() => { window.dispatchEvent(new HashChangeEvent('hashchange')) })
+    await flush()
+    expect(live.c.selection).toEqual({ kind: 'selected', campaign: A })
+    expect(server.lines()).toEqual(['GET /campaigns/cmp_A'])
+    edit('#campaign=cmp_B')
+    await waitFor(() => expect(live.c.selection).toEqual({ kind: 'selected', campaign: B }))
+    expect(server.lines()).toEqual(['GET /campaigns/cmp_A', 'GET /campaigns/cmp_B'])
   })
 
   it('is ignored for a player, whose keys are stripped', async () => {
