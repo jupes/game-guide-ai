@@ -536,9 +536,53 @@ cleared and then pointed, so its `seq` rises by exactly one. A narrowing clears
 by **scope** (`reveal_scope`): every slot (End, expiry, Rotate, archive,
 Stop-all), one member's slots (Remove, A-20), one document's copies (a Stop,
 and later a document's archive, deletion or unlink), or none (audio off); the
-default is every slot, so a caller that forgets over-clears. Wiring the clear
-into `narrow`, the service that orders a Confirm and a Stop, and the
-reconciliation's fill are the bead's second change.
+default is every slot, so a caller that forgets over-clears.
+
+**The fills and the service** (`service/reveals.py`). `narrow` and its
+extension point carry a scope and the request's clock (`SlotClear = (unit,
+session_id, scope, now)`), and **every production session store is built with
+the fill** `reveals.slot_clear_for(PostgresRevealStore())` — `app.py`'s and
+`campaigns_api.get_campaign_stores`'s — so every narrowing already shipped
+clears exactly the displays it invalidates (RQ-7). `no_slots` stays, as the
+empty one tests pass. `campaign.reconcile` is registered with
+`reveals.make_reconcile_slots(...)`, which, under the exclusive campaign lock,
+narrows each dead session's every slot and each live session's removed seats
+as `reconciled`; `reconciliation.reconcile_slots` is the empty one tests pass.
+Every production `narrow(` names `clears=` and `now=`, and
+`service/tests/test_reveals.py` reads the source to prove it.
+
+| Narrowing | Scope | `ended_reason` | Campaign lock |
+|---|---|---|---|
+| End (`_close`) | every slot | `gm_end` | never |
+| Expiry — the job, found by End, or finalised by Start (`_close`) | every slot | `expired` | never |
+| Rotate | every slot | `link_rotated` | never |
+| Remove (`remove_seat`) | that member's slots (A-20) | `participant_removed` | never |
+| Campaign archive, step 1 and step 2 | every slot | `campaign_archived` | step 2 only, exclusive |
+| A Stop of one document | that document's copies | `gm_stop` | never |
+| Stop-all | every slot | `stop_all` | never |
+| The reconciliation | a dead session's every slot; a live session's removed seats | `reconciled` | exclusive |
+| `narrow` naming no scope | every slot (fail closed) | `narrowed` | — |
+| Later: document archive, delete, unlink (`1kg.5.2`) | that document's copies | `document_archived`, `document_deleted`, `character_unlinked` | — |
+| Later: table audio off (`1kg.8.6`, `1kg.8.7`) | no reveal slot | — | — |
+
+A **Confirm** (`Reveals.display`) is a locked widening in a fixed order:
+ownership read unlocked (one not-found answer for a stranger, and no lock
+before it); replay unlocked; the courtesy check (not live, or a stale epoch, is
+a conflict before any lock); the campaign lock **shared**; validation with
+reads only — the document not archived, the version sealed, each masked key
+revealable, present and non-empty by the contract's per-kind rule, and the
+audience (active seats, or *Everyone seated* expanded here to the confirmed
+ones); the session row, owner-scoped; replay and state again under it,
+including a campaign archived meanwhile; the write and **one** epoch advance;
+the audit rows (`reveal.displayed` or `reveal.updated`, and a `reveal.stopped`
+per disclosure a move or a replacement took copies from). A **Stop** never
+takes the campaign lock, is never refused for state, always advances the epoch,
+writes one `reveal.stopped` per disclosure it took copies from (or one naming
+its document), and commits before it reads the picture. Neither advances
+`authz_revision`, enqueues a job or notifies. Deadlock victims are retried
+three times, then busy; the races are proved against PostgreSQL in
+`tests/test_reveal_db.py`. No HTTP route exists yet: `1kg.7.2` builds the
+routes, the projection and the headers on this service.
 
 | Invariant | Held by |
 |---|---|
