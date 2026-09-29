@@ -35,6 +35,7 @@ from service.job_driver import (
     SCHEDULER_PATH,
     SCHEDULER_SECRET_ENV,
     SCHEDULER_SECRET_HEADER,
+    SCHEDULER_SECRET_MIN_LENGTH,
     JobDriver,
     JobHookMiddleware,
     build_router,
@@ -404,6 +405,13 @@ _CREDENTIALS = {
     "wrong secret": (SECRET, {SCHEDULER_SECRET_HEADER: "x" * len(SECRET)}),
     "right secret, route unconfigured": (None, {SCHEDULER_SECRET_HEADER: SECRET}),
     "configured secret too short": ("short", {SCHEDULER_SECRET_HEADER: "short"}),
+    # agent-forge-harness-ttda M1: one character short of SCHEDULER_SECRET_MIN_LENGTH,
+    # presented correctly (not merely "wrong") — mutant A1 (`< SCHEDULER_SECRET_MIN_LENGTH`
+    # -> `< 6`) treats this as configured and lets it through; the 5-character case above
+    # is too short to tell the two bounds apart.
+    "configured secret 31 chars, one short of the minimum": (
+        "x" * (SCHEDULER_SECRET_MIN_LENGTH - 1), {SCHEDULER_SECRET_HEADER: "x" * (SCHEDULER_SECRET_MIN_LENGTH - 1)},
+    ),
 }
 
 
@@ -462,6 +470,20 @@ def test_with_the_credential_any_other_method_is_still_a_missing_path(monkeypatc
     for mount in (None, dist):
         client = TestClient(_scheduler_app(lambda: None, mount))
         assert _answer(client, method, "/internal/jobs", headers) == _answer(client, method, "/nope", headers)
+
+
+def test_a_32_character_secret_is_exactly_long_enough_to_be_accepted(monkeypatch):
+    """agent-forge-harness-ttda M1, the boundary's other side: paired with the 31-character
+    case in `_CREDENTIALS`, this pins `SCHEDULER_SECRET_MIN_LENGTH` exactly — a mutant that
+    moved the boundary either up or down fails one case or the other."""
+    secret = "x" * SCHEDULER_SECRET_MIN_LENGTH
+    assert len(secret) == 32
+    monkeypatch.setenv(SCHEDULER_SECRET_ENV, secret)
+    queue = _CountingQueue()
+    _enqueue(queue)
+    client = TestClient(_scheduler_app(lambda: _driver(queue)))
+    response = client.post("/internal/jobs", headers={SCHEDULER_SECRET_HEADER: secret})
+    assert (response.status_code, response.json()) == (200, {"ran": 1, "failed": 0, "remaining": False})
 
 
 @pytest.mark.parametrize("topology", ["no static mount", "root static mount"])

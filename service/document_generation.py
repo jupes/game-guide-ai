@@ -818,6 +818,21 @@ def _outcome(config: dict[str, Any], outcome: str) -> None:
     usage_capture.record_structuring_outcome(config, purpose=PURPOSE, outcome=outcome)
 
 
+def _refuse_if_tampered(doc_type: DocumentTypeId, data: Mapping[str, Any], must_fill: frozenset[str]) -> None:
+    """Re-run I-16 and the must-fill check :func:`parse_generated` already ran, against the
+    data a :class:`GeneratedDocument` carries right before it is written. ``GeneratedDocument``
+    is a plain frozen dataclass: its ``data`` dict is mutable, and a caller could hand-build one
+    directly, so nothing prevents ``data`` from diverging from what actually passed those checks
+    between then and now. The store re-checks only ``check_fields`` (shape and kind, not I-16's
+    remote-reference markers or a type's must-fill set), so this is the last chance to refuse."""
+    declared = _declared(doc_type)
+    folded = (item.casefold() for item, _ in _walk(data) if isinstance(item, str))
+    if any(marker in text for text in folded for marker in REMOTE_REFERENCE_MARKERS):
+        raise InvalidGeneration(InvalidOutput.REMOTE_REFERENCE)
+    if any(key not in data or is_empty_value(declared[key], data[key]) for key in must_fill):
+        raise InvalidGeneration(InvalidOutput.MISSING_SUBSTANCE)
+
+
 def persist_generated(
     unit: UnitOfWork, store: DocumentStore, campaign_id: str, generated: GeneratedDocument, *, now: datetime
 ) -> DocumentRecord:
@@ -825,8 +840,11 @@ def persist_generated(
     as a sealed version 1 by ``assistant``, with the closed summary and **no
     command id** (I-18: exactly-once is the caller's fence). The caller checked
     ownership in this transaction (SEC-2); ``MissingParent``, ``StaleTypeVersion``
-    and ``ValueError`` propagate so it rolls back."""
+    and ``ValueError`` propagate so it rolls back — ``InvalidGeneration`` (a
+    ``ValueError``) included, for a ``generated.data`` that no longer passes I-16 or
+    its type's must-fill set (agent-forge-harness-eqgd): nothing is written first."""
     spec = spec_for(generated.doc_type)
+    _refuse_if_tampered(generated.doc_type, generated.data, spec.must_fill)
     return store.create(
         unit, campaign_id, doc_type=spec.doc_type, type_version=generated.type_version, data=dict(generated.data),
         author=Author.ASSISTANT, command_id=None, summary=version_summary(generated.provenance), now=now,

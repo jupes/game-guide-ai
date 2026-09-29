@@ -8,7 +8,10 @@
  *     renders on the player lane in this channel.
  *  3. **The assistant**, directly beneath the turn that asked. A tool entry is
  *     an `AssistantLane`, hydrated, so a stored `working` run is RAIL-21's
- *     `Checking on…` and never re-runs. A plain turn is answered here too
+ *     `Checking on…` and never re-runs — unless it is a run this client is
+ *     watching (a turn with `live`, from `pendingWork.ts`, 1kg.3.5): then it
+ *     is RAIL-15's working lane, or RAIL-21's checking once `lost`. The thread
+ *     still passes no lane actions (1kg.4.5). A plain turn is answered here too
  *     (RAIL-14): prose in the lane's sans, cards compact, citations compact, and
  *     the creative disclaimer kept.
  *
@@ -265,10 +268,13 @@ function Outcome({
     case 'chat':
       return <AnswerLane answer={turn.answer} mode={turn.mode} />
     case 'tool':
+      // 1kg.3.5: a run the pending-work model holds is watched (RAIL-15's
+      // working lane, or RAIL-21's checking once lost); any other is hydrated.
       return (
         <AssistantLane
           invocation={turn.invocation}
-          hydrated
+          hydrated={turn.live === undefined}
+          lost={turn.live?.lost === true}
           sourceEntryId={turn.entryId}
           onOpenDocument={onOpenDocument}
         />

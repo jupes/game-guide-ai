@@ -12,15 +12,19 @@ import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { GmThread } from './GmThread'
 import { collapseSessionSpans, turnsFromTimeline } from './gmTimeline'
 import { LANE_COPY } from './laneState'
+import { emptyPendingWork, reducePendingWork, turnsWithPendingWork } from './pendingWork'
+import type { PendingEvent } from './pendingWork'
 import {
   DIVIDER_ENTRY,
   EDIT_ENTRY,
   END_DIVIDER_ENTRY,
+  LIVE_CONVERSATION,
   OPAQUE_ENTRY,
   QUIET_SESSION,
   SOURCED_ANSWER,
   chatEntry,
   toolEntry,
+  toolRequest,
 } from './threadFixtures'
 
 const meta = {
@@ -259,4 +263,105 @@ export const DividersOnAPhone320Dark: Story = {
   args: { turns: PHONE_TURNS, hasEarlier: true, onLoadEarlier: fn() },
   ...atViewport('phone320', 'dark'),
   play: async ({ canvasElement }) => playOnAPhone(canvasElement, 'dark'),
+}
+
+// ── Runs this client is watching (1kg.3.5, pendingWork.ts) ───────────────────
+// Built through the pending-work model itself, so a story shows only what the
+// model can draw. Each state runs in both themes through the addon-a11y gate:
+// a watched lane adds no live region beyond the lane's own status (A-29), and
+// the thread passes no lane actions yet (1kg.4.5), so it adds no control.
+
+const WATCHED_AT = Date.parse('2026-09-16T19:40:00Z')
+const WORKING_RUN = 'inv_11ve0000000000a1'
+const CANCELLING_RUN = 'inv_11ve0000000000a2'
+const LOST_RUN = 'inv_11ve0000000000a3'
+const REFUSED_RUN = 'inv_11ve0000000000a4'
+
+const WATCHED_EVENTS: readonly PendingEvent[] = [
+  { type: 'submitted', request: toolRequest({ invocation_id: WORKING_RUN }), at: WATCHED_AT },
+  {
+    type: 'submitted',
+    request: toolRequest({ invocation_id: CANCELLING_RUN, tool_id: 'monster', brief: 'a drowned thing that guards the ford, CR 5' }),
+    at: WATCHED_AT,
+  },
+  { type: 'cancel-requested', invocationId: CANCELLING_RUN },
+  { type: 'submitted', request: toolRequest({ invocation_id: LOST_RUN, tool_id: 'loot', brief: "a smuggler's hoard under the chapel" }), at: WATCHED_AT },
+  { type: 'lost', invocationId: LOST_RUN },
+  { type: 'submitted', request: toolRequest({ invocation_id: REFUSED_RUN, brief: 'the harbourmaster' }), at: WATCHED_AT },
+  {
+    type: 'refused',
+    invocationId: REFUSED_RUN,
+    error: { code: 'throttled_user', message: 'Too many at once.', retryable: true, retry_after_s: 60 },
+    at: WATCHED_AT,
+  },
+]
+
+const WATCHED = (() => {
+  const state = WATCHED_EVENTS.reduce(reducePendingWork, emptyPendingWork())
+  const { turns, liveTools } = turnsWithPendingWork(
+    turnsFromTimeline([chatEntry({ entry_id: 'ent_1', answer: null })]),
+    state,
+    LIVE_CONVERSATION,
+  )
+  return [...turns, ...liveTools.map((live) => live.turn)]
+})()
+
+/** Each watched lane in its state, each carrying one status of its own and no control. */
+async function expectWatchedLanes(canvasElement: HTMLElement): Promise<HTMLElement[]> {
+  const lanes = [...canvasElement.querySelectorAll<HTMLElement>('.assistant-lane')]
+  await expect(lanes.map((lane) => lane.dataset.state)).toEqual(['working', 'working', 'checking', 'error'])
+  const [working, cancelling, lost, refused] = lanes
+  await expect(within(working).getByText('Writing the dossier…')).toBeVisible()
+  await expect(within(cancelling).getByText(LANE_COPY.cancelling)).toBeVisible()
+  await expect(within(lost).getByText('Checking on Loot…')).toBeVisible()
+  await expect(within(refused).getByText("That's a lot at once — try again in 1 minute")).toBeVisible()
+  const regions = [...canvasElement.querySelectorAll('[role="status"], [role="alert"], [aria-live]')]
+  await expect(regions).toHaveLength(lanes.length)
+  for (const region of regions) await expect(region.closest('.assistant-lane')).not.toBeNull()
+  await expect(within(canvasElement).queryAllByRole('button')).toEqual([])
+  return lanes
+}
+
+/** A working run, one being cancelled, one checked on after its answer was lost, and one the server refused. */
+export const WatchedRuns: Story = {
+  args: { turns: WATCHED },
+  globals: { theme: 'light' },
+  play: async ({ canvasElement }) => {
+    await expectTheme('light')
+    await expectWatchedLanes(canvasElement)
+  },
+}
+
+export const WatchedRunsDark: Story = {
+  args: { turns: WATCHED },
+  globals: { theme: 'dark' },
+  play: async ({ canvasElement }) => {
+    await expectTheme('dark')
+    await expectWatchedLanes(canvasElement)
+  },
+}
+
+/** agent-forge-harness-0rn: one column on a 320px phone; every lane and its
+ * brief wrap inside the page, which never scrolls sideways. */
+async function playWatchedOnAPhone(canvasElement: HTMLElement, theme: 'light' | 'dark'): Promise<void> {
+  await expectViewport('phone320')
+  await expectTheme(theme)
+  const lanes = await expectWatchedLanes(canvasElement)
+  await expectNoPageOverflow()
+  for (const lane of lanes) await expect(lane.scrollWidth).toBeLessThanOrEqual(lane.clientWidth)
+  for (const exchange of canvasElement.querySelectorAll<HTMLElement>('.gm-thread__exchange')) {
+    await expect(exchange.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth)
+  }
+}
+
+export const WatchedRunsOnAPhone320: Story = {
+  args: { turns: WATCHED },
+  ...atViewport('phone320'),
+  play: async ({ canvasElement }) => playWatchedOnAPhone(canvasElement, 'light'),
+}
+
+export const WatchedRunsOnAPhone320Dark: Story = {
+  args: { turns: WATCHED },
+  ...atViewport('phone320', 'dark'),
+  play: async ({ canvasElement }) => playWatchedOnAPhone(canvasElement, 'dark'),
 }
