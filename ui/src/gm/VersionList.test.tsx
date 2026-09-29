@@ -7,7 +7,8 @@
  * the empty / loading / error rows of §12.2, and the restore affordance.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { MockInstance } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { VersionList } from './VersionList'
@@ -176,6 +177,114 @@ describe('CANVAS-27 — paging, 20 at a time', () => {
     const { rerender } = render(<VersionList versions={first} currentVersionNumber={100} />)
     rerender(<VersionList versions={[...first, ...page(3, 80)]} currentVersionNumber={100} />)
     expect(document.body).toHaveFocus()
+  })
+
+  // agent-forge-harness-alf, same class of bug as GmThread's Load earlier
+  // (1kg.3.7, PR #136): a focused button that becomes disabled drops
+  // document.activeElement to <body> in real Chromium, and nothing restored
+  // it because the effect returned early whenever the button survived
+  // another page ("leave focus where the reader put it"). jsdom never drops
+  // focus off a disabled button, so these tests drop it there themselves: a
+  // stand-in is focused, then removed.
+  function dropFocusToBody(): void {
+    const standIn = document.createElement('input')
+    document.body.append(standIn)
+    standIn.focus()
+    standIn.remove()
+    expect(document.activeElement).toBe(document.body)
+  }
+
+  it('restores focus to Load more if the browser already dropped it to body while disabled', async () => {
+    const first = page(HISTORY_PAGE_SIZE)
+    const { rerender } = render(
+      <VersionList versions={first} currentVersionNumber={100} hasMore onLoadMore={vi.fn()} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Load more' }))
+    rerender(
+      <VersionList versions={first} currentVersionNumber={100} hasMore loadingMore onLoadMore={vi.fn()} />,
+    )
+    dropFocusToBody()
+    rerender(
+      <VersionList
+        versions={[...first, ...page(5, 80)]}
+        currentVersionNumber={100}
+        hasMore
+        onLoadMore={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Load more' })).toHaveFocus()
+  })
+
+  it('never takes focus from wherever the reader moved it while the page loaded', async () => {
+    const first = page(HISTORY_PAGE_SIZE)
+    const { rerender } = render(
+      <VersionList versions={first} currentVersionNumber={100} hasMore onLoadMore={vi.fn()} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Load more' }))
+    rerender(
+      <VersionList versions={first} currentVersionNumber={100} hasMore loadingMore onLoadMore={vi.fn()} />,
+    )
+    const elsewhere = document.createElement('input')
+    document.body.append(elsewhere)
+    try {
+      elsewhere.focus()
+      rerender(
+        <VersionList
+          versions={[...first, ...page(5, 80)]}
+          currentVersionNumber={100}
+          hasMore
+          onLoadMore={vi.fn()}
+        />,
+      )
+      expect(document.activeElement).toBe(elsewhere)
+    } finally {
+      // A failing run must not leave a focused input behind for later tests
+      // (PR #142 review L1).
+      elsewhere.remove()
+    }
+  })
+
+  describe('without scrolling the list the reader holds (PR #142 review H1)', () => {
+    // In a real browser focus() scrolls its target into view, and the page
+    // that just arrived has pushed Load more below the fold, so a bare focus()
+    // would jump the list. jsdom never scrolls, so this reads the options the
+    // restore's focus() call was made with; the real-Chromium half is the
+    // story RestoresFocusAfterARealBrowserDropsIt, which holds scrollTop.
+    let focusSpy: MockInstance<HTMLElement['focus']>
+    beforeEach(() => {
+      focusSpy = vi.spyOn(HTMLElement.prototype, 'focus')
+    })
+    afterEach(() => focusSpy.mockRestore())
+
+    /** The options of the last focus() call made on `el`. */
+    function lastFocusOptions(el: Element): FocusOptions | undefined {
+      const index = focusSpy.mock.contexts.lastIndexOf(el)
+      expect(index).toBeGreaterThanOrEqual(0)
+      return focusSpy.mock.calls[index][0]
+    }
+
+    it('restores focus to Load more with preventScroll once the browser dropped it', async () => {
+      const first = page(HISTORY_PAGE_SIZE)
+      const { rerender } = render(
+        <VersionList versions={first} currentVersionNumber={100} hasMore onLoadMore={vi.fn()} />,
+      )
+      await userEvent.click(screen.getByRole('button', { name: 'Load more' }))
+      rerender(
+        <VersionList versions={first} currentVersionNumber={100} hasMore loadingMore onLoadMore={vi.fn()} />,
+      )
+      dropFocusToBody()
+      rerender(
+        <VersionList
+          versions={[...first, ...page(5, 80)]}
+          currentVersionNumber={100}
+          hasMore
+          onLoadMore={vi.fn()}
+        />,
+      )
+      const button = screen.getByRole('button', { name: 'Load more' })
+      expect(button).toHaveFocus()
+      expect(lastFocusOptions(button)).toEqual({ preventScroll: true })
+    })
   })
 })
 
