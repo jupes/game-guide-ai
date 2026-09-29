@@ -963,8 +963,9 @@ EXPECTED_LEGACY_ROUTES = {
 #: (agent-forge-harness-1kg.2.10): the GM's table session, three more on
 #: `workbench_router`, and the first two table routes, on the table router,
 #: whose route class is a `WorkbenchRoute`; then 1kg.4.1 slice B: the GM's
-#: tool invocations, three more on `workbench_router`. No exemption list and
-#: nothing pending.
+#: tool invocations, three more on `workbench_router`; then btb PR-2: the GM's
+#: named groups, six more on `workbench_router`. No exemption list and nothing
+#: pending.
 EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/conversations"), ("POST", "/conversations"),
     ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
@@ -997,6 +998,11 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("POST", "/campaigns/{campaign_id}/tool-invocations"),
     ("GET", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}"),
     ("POST", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel"),
+    ("GET", "/campaigns/{campaign_id}/groups"), ("POST", "/campaigns/{campaign_id}/groups"),
+    ("PATCH", "/campaigns/{campaign_id}/groups/{group_id}"),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/remove"),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/members/{participant_id}"),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/members/{participant_id}/remove"),
 }
 
 
@@ -1303,6 +1309,7 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "table_session_api.py").resolve(),
         (REPO_ROOT / "service" / "table_api.py").resolve(),
         (REPO_ROOT / "service" / "tool_invocations_api.py").resolve(),
+        (REPO_ROOT / "service" / "groups_api.py").resolve(),
     }
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []
 

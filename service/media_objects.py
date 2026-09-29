@@ -1,12 +1,14 @@
 """Where media bytes live: the object store, its keys and its settings
 (agent-forge-harness-1kg.8.1.1, slice a of the media bead).
 
-**What an object store is.** One `ObjectStore` protocol and, in this slice, two
+**What an object store is.** One `ObjectStore` protocol and three
 implementations of it (media ADR MS-10): `InMemoryObjectStore` for tests and the
-end-to-end app, and `FilesystemObjectStore` under `WORKBENCH_MEDIA_DIR` for
-Compose and E2E. Cloud Storage is slice d's (`1kg.8.1.4`); the factory refuses
-it by name until then. A store knows keys and bytes and nothing else: no method
-takes or returns a filename, a campaign, a document or a cue (requirement 2.2).
+end-to-end app, `FilesystemObjectStore` under `WORKBENCH_MEDIA_DIR` for Compose
+and E2E, and `service.media_gcs.CloudStorageObjectStore` on the bucket named by
+`WORKBENCH_MEDIA_BUCKET` for production (slice d, `1kg.8.1.4`). The factory
+imports that module, and through it the Cloud Storage client, only when `gcs`
+is chosen. A store knows keys and bytes and nothing else: no method takes or
+returns a filename, a campaign, a document or a cue (requirement 2.2).
 
 **What a key is, and what it is not** (MS-2, SEC-28). A key is
 `tmp/<32 hex>` for an upload in flight, `assets/<32 hex>` for a processed
@@ -32,11 +34,11 @@ limiter; `service/tests/test_media_objects.py` checks every module by `ast`.
 The asset store imports nothing from here at all, so no transaction there can
 hold a connection while bytes move (requirement 3.8).
 
-**Off by default** (Q-5, L-12). `MediaSettings.from_env` reads two switches;
-the running service reads them once, at startup, through `startup_settings`
-(slice b, `service/app.py`). `memory` is never selectable from the environment
-— a deployment on it would lose bytes between instances — and is built in code
-only.
+**Off by default** (Q-5, L-12). `MediaSettings.from_env` reads two switches, and
+the directory or bucket the chosen store needs; the running service reads them
+once, at startup, through `startup_settings` (slice b, `service/app.py`).
+`memory` is never selectable from the environment — a deployment on it would
+lose bytes between instances — and is built in code only.
 """
 
 from __future__ import annotations
@@ -126,8 +128,9 @@ class MediaSettingsError(ValueError):
 
 
 class MediaStoreNotBuilt(MediaSettingsError):
-    """`WORKBENCH_MEDIA_STORE` names Cloud Storage, which is slice d's
-    (`1kg.8.1.4`). Refused by name rather than by falling back to anything."""
+    """`WORKBENCH_MEDIA_STORE` names Cloud Storage, and this build does not
+    include its client (the `gcs` extra). Refused by name, when the store is
+    built, rather than by falling back to anything."""
 
 
 # ── Keys ─────────────────────────────────────────────────────────────────────
@@ -538,7 +541,11 @@ _TRUE = frozenset({"true", "1"})
 _FALSE = frozenset({"false", "0", ""})
 #: What `WORKBENCH_MEDIA_STORE` may name from the environment. `memory` is not
 #: here: it is built in code only.
-_FROM_ENVIRONMENT = frozenset({"filesystem"})
+_FROM_ENVIRONMENT = frozenset({"filesystem", "gcs"})
+#: A bucket name as `docs/deploy-gcp.md` section 13 makes one: lower-case
+#: letters, digits, `-` and `_`, 3 to 63 characters, starting and ending with a
+#: letter or a digit. Dotted (domain) bucket names are not accepted.
+_BUCKET_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$")
 _GCS = "gcs"
 _MEMORY = "memory"
 _FILESYSTEM = "filesystem"
@@ -557,9 +564,11 @@ class MediaSettings:
     """
 
     enabled: bool = False
-    #: None, "filesystem", "gcs" (refused until slice d) or, in code only, "memory".
+    #: None, "filesystem", "gcs" or, in code only, "memory".
     store: str | None = None
     media_dir: Path | None = None
+    #: The Cloud Storage bucket, for `gcs` only.
+    bucket: str | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> MediaSettings:
@@ -574,24 +583,37 @@ class MediaSettings:
         raw_store = source.get("WORKBENCH_MEDIA_STORE", "")
         if raw_store == "":
             return cls(enabled=enabled)
-        if raw_store == _GCS:
-            raise MediaStoreNotBuilt("WORKBENCH_MEDIA_STORE names a store this build does not include yet")
         if raw_store not in _FROM_ENVIRONMENT:
             raise MediaSettingsError("WORKBENCH_MEDIA_STORE must be unset or name a store this build provides")
+        if raw_store == _GCS:
+            return cls(enabled=enabled, store=_GCS, bucket=_check_bucket(source.get("WORKBENCH_MEDIA_BUCKET", "")))
         directory = source.get("WORKBENCH_MEDIA_DIR", "")
         if not directory or not Path(directory).is_absolute():
             raise MediaSettingsError("WORKBENCH_MEDIA_DIR must name an absolute directory for this store")
         return cls(enabled=enabled, store=_FILESYSTEM, media_dir=Path(directory))
 
 
+def _check_bucket(name: object) -> str:
+    if isinstance(name, str) and _BUCKET_NAME.fullmatch(name):
+        return name
+    raise MediaSettingsError("WORKBENCH_MEDIA_BUCKET must name a Cloud Storage bucket for this store")
+
+
 def startup_settings(env: Mapping[str, str] | None = None) -> MediaSettings:
     """What the running service reads at startup (slice b, `1kg.8.1.2`):
-    `MediaSettings.from_env`, plus the one rule only a running service needs —
-    the routes cannot be switched on with no store to put bytes in. Refused by
-    name at startup, so a misconfigured deployment fails loudly (AC 11)."""
+    `MediaSettings.from_env`, plus the rules only a running service needs —
+    the routes cannot be switched on with no store to put bytes in, and a `gcs`
+    store needs a build that carries its client (`1kg.8.1.4`; asked without
+    importing it, since the factory's own refusal waits for the stores to be
+    built, which a database away at startup defers). Refused by name at
+    startup, so a misconfigured deployment fails loudly (AC 11)."""
     settings = MediaSettings.from_env(env)
     if settings.enabled and settings.store is None:
         raise MediaSettingsError("WORKBENCH_MEDIA_ENABLED needs WORKBENCH_MEDIA_STORE to name a store")
+    if settings.store == _GCS:
+        from .media_gcs import check_client_installed
+
+        check_client_installed()
     return settings
 
 
@@ -600,7 +622,8 @@ def build_object_store(
 ) -> ObjectStore | None:
     """The configured store, or `None` when none is. Builds whatever is
     configured, whatever `enabled` says: the capability gates the routes and
-    never the deletions a store still owes (MS-3)."""
+    never the deletions a store still owes (MS-3). Only `gcs` imports the
+    Cloud Storage client, and only here."""
     if settings.store is None:
         return None
     if settings.store == _MEMORY:
@@ -610,5 +633,8 @@ def build_object_store(
             raise MediaSettingsError("WORKBENCH_MEDIA_DIR must name an absolute directory for this store")
         return FilesystemObjectStore(settings.media_dir)
     if settings.store == _GCS:
-        raise MediaStoreNotBuilt("WORKBENCH_MEDIA_STORE names a store this build does not include yet")
+        bucket = _check_bucket(settings.bucket)
+        from .media_gcs import build_gcs_store
+
+        return build_gcs_store(bucket)
     raise MediaSettingsError("WORKBENCH_MEDIA_STORE must be unset or name a store this build provides")

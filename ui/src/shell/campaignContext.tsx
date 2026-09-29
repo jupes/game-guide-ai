@@ -197,11 +197,13 @@ class CampaignStore {
   private created: Campaign | null = null
   private transitional: { base: Snapshot; account: string; value: Snapshot } | null = null
 
-  constructor(restore: CampaignRestore | null, fetchImpl: typeof fetch | undefined, win: Window, account: string) {
+  constructor(restore: CampaignRestore | null, fetchImpl: typeof fetch | undefined, win: Window, account: string, enabled: boolean) {
     this.restore = restore
     this.fetchImpl = fetchImpl
     this.win = win
-    this.snap = this.fresh(account, false, [])
+    // Enabled already when mounted for a signed-in account that can use
+    // campaigns (a later mount, a story): the key would never change to enable it.
+    this.snap = this.fresh(account, enabled, [])
   }
 
   // ── useSyncExternalStore ──
@@ -639,7 +641,7 @@ export function CampaignProvider({ children, restore = null, fetchImpl }: Campai
   const enabled = authStatus === 'authenticated' && canUseCampaigns(currentUser?.user.role ?? 'player')
   const settled = authStatus === 'authenticated' || authStatus === 'unauthenticated'
   const account = `${enabled ? 'campaigns' : 'none'}:${userId}`
-  const [store] = React.useState(() => new CampaignStore(restore, fetchImpl, window, account))
+  const [store] = React.useState(() => new CampaignStore(restore, fetchImpl, window, account, enabled))
   const getSnapshot = React.useCallback(() => store.snapshotFor(account, enabled), [store, account, enabled])
   const snap = React.useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot)
 

@@ -23,7 +23,11 @@ and the store refuses every write but a rename without that lock.
   one, so that no display outlives the change. Step 2 is in the request: the
   exclusive lock, the fact, the session narrowed again (one started between the
   steps), and the advance. If step 2 cannot have the lock it answers
-  `NotAppliedYet` — honestly, and never replayed from a job.
+  `NotAppliedYet` — honestly, and never replayed from a job. Both steps clear
+  **every** reveal slot, as `narrowed` (`NARROWED`, the fail-closed scope), at
+  the one clock the request read (lead ruling on `1kg.7.1`): a disclosure does
+  not record the group it went to yet (`source_group_id` is NULL), so a
+  narrower participant or group scope waits for `1ir.2.x`.
 - **Neither** — `create_group` (an empty group widens nothing) and
   `rename_group` (a name is not a fact a display reads) — advances nothing, and
   a rename takes no campaign lock at all.
@@ -53,7 +57,7 @@ from typing import TypeVar
 
 import psycopg
 
-from .campaign_store import MissingParent
+from .campaign_store import MissingParent, now_or
 from .db import CampaignAuthzMissing, ProjectionItem, TransactionalDatabase, UnitOfWork
 from .document_store import DocumentStore
 from .eligibility_store import (
@@ -68,6 +72,7 @@ from .eligibility_store import (
     classifiable_keys,
     is_field_key,
 )
+from .reveal_scope import NARROWED
 from .table_session_store import TableSessionStore, check_command_id
 
 log = logging.getLogger(__name__)
@@ -258,12 +263,13 @@ def add_member_locked(
     return Change(True, revision)
 
 
-def narrow_step_one(unit: UnitOfWork, stores: EligibilityStores, campaign_id: str) -> None:
+def narrow_step_one(unit: UnitOfWork, stores: EligibilityStores, campaign_id: str, *, now: datetime) -> None:
     """Step 1 of every narrowing here: never the campaign lock, never refused on
-    state. Narrow the campaign's live session, if it has one."""
+    state. Narrow the campaign's live session, if it has one: its reveal epoch,
+    and every slot cleared as `narrowed`, stamped with the request's `now`."""
     live = stores.sessions.live_session_for_campaign(unit, campaign_id)
     if live is not None:
-        stores.sessions.narrow(unit, campaign_id, live.id)
+        stores.sessions.narrow(unit, campaign_id, live.id, clears=NARROWED, now=now)
 
 
 #: The names the brief gives step 1 of each narrowing: one body serves both.
@@ -271,21 +277,29 @@ remove_member_step_one = narrow_step_one
 remove_group_step_one = narrow_step_one
 
 
-def _narrow_again_and_advance(unit: UnitOfWork, stores: EligibilityStores, campaign_id: str) -> int:
+def _narrow_again_and_advance(unit: UnitOfWork, stores: EligibilityStores, campaign_id: str, now: datetime) -> int:
+    """Step 2's narrowing: step 1's scope and clock, for a session started
+    between the steps."""
     live = stores.sessions.live_session_for_campaign(unit, campaign_id)
     if live is not None:
-        stores.sessions.narrow(unit, campaign_id, live.id)
+        stores.sessions.narrow(unit, campaign_id, live.id, clears=NARROWED, now=now)
     return unit.advance_authz_revision(campaign_id)
 
 
 def remove_member_step_two(
-    unit: UnitOfWork, stores: EligibilityStores, campaign_id: str, group_id: str, participant_id: str
+    unit: UnitOfWork,
+    stores: EligibilityStores,
+    campaign_id: str,
+    group_id: str,
+    participant_id: str,
+    *,
+    now: datetime,
 ) -> Change:
     """Step 2, in the request: lock, change the fact, narrow again, advance."""
     unit.lock_campaign(campaign_id, shared=False)
     if not stores.eligibility.remove_member(unit, campaign_id, group_id, participant_id):
         return Change(False)
-    revision = _narrow_again_and_advance(unit, stores, campaign_id)
+    revision = _narrow_again_and_advance(unit, stores, campaign_id, now)
     stores.record(
         unit,
         ChangeRecord(
@@ -296,13 +310,13 @@ def remove_member_step_two(
 
 
 def remove_group_step_two(
-    unit: UnitOfWork, stores: EligibilityStores, campaign_id: str, group_id: str, *, now: datetime | None = None
+    unit: UnitOfWork, stores: EligibilityStores, campaign_id: str, group_id: str, *, now: datetime
 ) -> Change:
     """Step 2 of removing a group: as `remove_member_step_two`."""
     unit.lock_campaign(campaign_id, shared=False)
     if not stores.eligibility.remove_group(unit, campaign_id, group_id, now=now):
         return Change(False)
-    revision = _narrow_again_and_advance(unit, stores, campaign_id)
+    revision = _narrow_again_and_advance(unit, stores, campaign_id, now)
     stores.record(unit, ChangeRecord(ChangeOperation.GROUP_REMOVED, campaign_id, revision, group_id=group_id))
     return Change(True, revision)
 
@@ -451,30 +465,43 @@ class EligibilityMutations:
             BackendUnavailable,
         )
 
-    def _narrowing(self, operation: str, step_two: Callable[[UnitOfWork], Change], campaign_id: str) -> Change:
-        """RQ-5's two steps. Step 2 runs only once step 1 has committed."""
+    def _narrowing(
+        self, operation: str, step_two: Callable[[UnitOfWork], Change], campaign_id: str, now: datetime
+    ) -> Change:
+        """RQ-5's two steps, at one clock. Step 2 runs only once step 1 has
+        committed."""
         self._attempt(
             f"{operation} (step 1)",
-            lambda unit: narrow_step_one(unit, self._stores, campaign_id),
+            lambda unit: narrow_step_one(unit, self._stores, campaign_id, now=now),
             BackendUnavailable,
         )
         return self._attempt(f"{operation} (step 2)", step_two, NotAppliedYet)
 
-    def remove_member(self, campaign_id: str, group_id: str, participant_id: str) -> Change:
-        """Remove a seat from a group: a fact-changing narrowing."""
+    def remove_member(
+        self, campaign_id: str, group_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> Change:
+        """Remove a seat from a group: a fact-changing narrowing. The clock is
+        read once, so both steps stamp what they clear with the same moment."""
         check_types(campaign_id=campaign_id, group_id=group_id, participant_id=participant_id)
+        moment = now_or(now)
         return self._narrowing(
             "remove_member",
-            lambda unit: remove_member_step_two(unit, self._stores, campaign_id, group_id, participant_id),
+            lambda unit: remove_member_step_two(
+                unit, self._stores, campaign_id, group_id, participant_id, now=moment
+            ),
             campaign_id,
+            moment,
         )
 
     def remove_group(self, campaign_id: str, group_id: str, *, now: datetime | None = None) -> Change:
-        """Mark a group removed: a fact-changing narrowing. A removed group is
-        never restored; a restore would be a locked widening."""
+        """Mark a group removed: a fact-changing narrowing, at one clock as
+        `remove_member`. A removed group is never restored; a restore would be
+        a locked widening."""
         check_types(campaign_id=campaign_id, group_id=group_id)
+        moment = now_or(now)
         return self._narrowing(
             "remove_group",
-            lambda unit: remove_group_step_two(unit, self._stores, campaign_id, group_id, now=now),
+            lambda unit: remove_group_step_two(unit, self._stores, campaign_id, group_id, now=moment),
             campaign_id,
+            moment,
         )

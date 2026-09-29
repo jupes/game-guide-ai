@@ -11,12 +11,13 @@ than trusting it.
 reviewer sees, not a string a caller invents, so the ledger cannot quietly grow
 a vocabulary nobody agreed to. The export actions are not here: ED-18(a) makes
 the table shared, and they belong to `1kg.5.2`, which adds its own members
-without a migration. Nor is there one writer for the twenty-six that are here:
+without a migration. Nor is there one writer for the thirty-one that are here:
 the session and screen rows are written by `service/table_sessions.py`
 (`1kg.2.3`), the campaign's Conclude and Reopen by the tavern's route (bead cfx),
 `asset.deleted` by the media bead's delete route (`1kg.8.1.3`), reveal's three
 by `1kg.7.1`'s reveal service, a document's archive, unarchive and delete by
-`service/document_lifecycle_api.py` (`1kg.5.2`), the rest by `1kg.2.2`'s
+`service/document_lifecycle_api.py` (`1kg.5.2`), the five `group.*` rows by
+`btb`'s group routes (`service/groups_api.py`), the rest by `1kg.2.2`'s
 campaign and seat routes.
 The reason is ownership, not use.
 
@@ -184,6 +185,18 @@ class AuditAction(str, Enum):
     DOCUMENT_ARCHIVED = "document.archived"
     DOCUMENT_UNARCHIVED = "document.unarchived"
     DOCUMENT_DELETED = "document.deleted"
+    #: The GM made a named group of seats (actor `gm`; `btb`, O-3). An empty
+    #: group widens nothing, so the row carries no revision.
+    GROUP_CREATED = "group.created"
+    #: The GM renamed a group (actor `gm`; `btb`). No revision (RQ-10), but
+    #: accountable: a rename can mislead the GM's own choice of audience.
+    GROUP_RENAMED = "group.renamed"
+    #: The GM removed a group, which is never restored (actor `gm`; `btb`).
+    GROUP_REMOVED = "group.removed"
+    #: The GM put a seat in a group (actor `gm`; `btb`): a locked widening.
+    GROUP_MEMBER_ADDED = "group.member_added"
+    #: The GM took a seat out of a group (actor `gm`; `btb`): a narrowing.
+    GROUP_MEMBER_REMOVED = "group.member_removed"
 
 
 class ActorKind(str, Enum):
@@ -198,9 +211,10 @@ class ActorKind(str, Enum):
 
 
 class ObjectKind(str, Enum):
-    """What the decision was **about** — one of the six things the twenty-six
+    """What the decision was **about** — one of the seven things the thirty-one
     actions act on, and nothing else. A table screen's `object_ref` is its
-    grant's `tcr_` id, and a document's its `doc_` id.
+    grant's `tcr_` id, a document's its `doc_` id, and a group's its `grp_` id
+    (`btb`).
 
     Closed for the same reason `AuditAction` is, and for one more: a lower-case
     key is a *shape*, so `rook` and `the_hooded_stranger_is_ondrey` both passed
@@ -215,6 +229,7 @@ class ObjectKind(str, Enum):
     TABLE_SCREEN = "table_screen"
     ASSET = "asset"
     DOCUMENT = "document"
+    GROUP = "group"
 
 
 class Decision(str, Enum):
@@ -335,6 +350,8 @@ _SESSION = MintedId(ident.TABLE_SESSION)
 _DOCUMENT = MintedId(ident.DOCUMENT)
 #: A deleted asset, by its id alone: never its alt text, a key or a filename.
 _ASSET = MintedId(ident.ASSET)
+#: A GM's named group (`btb`), by its id alone: its name is private (SEC-20).
+_GROUP = MintedId(ident.GROUP)
 
 #: What an End, an expiry and a Rotate record: the session, the admission
 #: generation it closed, and how many screen grants that revoked.
@@ -397,6 +414,11 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     AuditAction.DOCUMENT_ARCHIVED: {"document_id": _DOCUMENT},
     AuditAction.DOCUMENT_UNARCHIVED: {"document_id": _DOCUMENT},
     AuditAction.DOCUMENT_DELETED: {"document_id": _DOCUMENT},
+    AuditAction.GROUP_CREATED: {"group_id": _GROUP},
+    AuditAction.GROUP_RENAMED: {"group_id": _GROUP},
+    AuditAction.GROUP_REMOVED: {"group_id": _GROUP},
+    AuditAction.GROUP_MEMBER_ADDED: {"group_id": _GROUP, "participant_id": _PARTICIPANT},
+    AuditAction.GROUP_MEMBER_REMOVED: {"group_id": _GROUP, "participant_id": _PARTICIPANT},
 }
 
 #: The closed set of reason codes **per action**, beside `ACTION_DETAIL` and
@@ -436,6 +458,11 @@ ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
     AuditAction.DOCUMENT_ARCHIVED: frozenset(),
     AuditAction.DOCUMENT_UNARCHIVED: frozenset(),
     AuditAction.DOCUMENT_DELETED: frozenset(),
+    AuditAction.GROUP_CREATED: frozenset(),
+    AuditAction.GROUP_RENAMED: frozenset(),
+    AuditAction.GROUP_REMOVED: frozenset(),
+    AuditAction.GROUP_MEMBER_ADDED: frozenset(),
+    AuditAction.GROUP_MEMBER_REMOVED: frozenset(),
 }
 
 
