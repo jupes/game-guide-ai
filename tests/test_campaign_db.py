@@ -73,6 +73,7 @@ from service.campaign_store import (
     check_name,
     encode_cursor,
 )
+from service.campaign_summary_store import InMemoryCampaignSummaryStore, PostgresCampaignSummaryStore
 from service.campaigns_api import CampaignStores, archive, archive_step_one, archive_step_two, restore
 from service.db import (
     CampaignAuthzMissing,
@@ -84,6 +85,7 @@ from service.db import (
     PoolSettings,
     TwinWouldBlock,
 )
+from service.history import InMemoryMessageStore
 from service.jobs import InMemoryJobQueue, Job, JobContext, JobRunner, PostgresJobQueue
 from service.participant_store import (
     InMemoryParticipantStore,
@@ -663,7 +665,7 @@ def test_rotating_does_not_block_a_screen_grant_that_references_the_session(
     dsn: str, owner: int
 ) -> None:
     """Why `rotate_command_id` has no index at all, and the start index is
-    PARTIAL (0013, RQ-3).
+    PARTIAL (0014, RQ-3).
 
     PostgreSQL treats the columns of a non-partial unique index as key columns,
     so an index over `rotate_command_id` would turn Rotate's `UPDATE ... SET
@@ -1657,7 +1659,7 @@ def test_a_session_that_expires_before_it_starts_is_refused(world: World) -> Non
 
 
 def test_a_start_command_opens_one_session_per_campaign_in_both_worlds(world: World) -> None:
-    """0013's partial unique index over `(campaign_id, start_command_id)`, kept
+    """0014's partial unique index over `(campaign_id, start_command_id)`, kept
     by the twin too. A caller that holds the campaign lock reads the replay
     first; one that did not gets this named refusal, not a unique violation.
     The same command in another campaign is another command, and a command id
@@ -3123,8 +3125,16 @@ def _job_queue(world: World) -> Any:
     return InMemoryJobQueue(world.db) if world.kind == "fake" else PostgresJobQueue(world.db)
 
 
+def _summary_store(world: World) -> Any:
+    if world.kind == "fake":
+        return InMemoryCampaignSummaryStore(world.db, messages=InMemoryMessageStore())
+    return PostgresCampaignSummaryStore()
+
+
 def _stores(world: World) -> CampaignStores:
-    return CampaignStores(world.campaigns, world.participants, world.sessions, _offer_store(world), world.audit)
+    return CampaignStores(
+        world.campaigns, world.participants, world.sessions, _offer_store(world), world.audit, _summary_store(world)
+    )
 
 
 class _Recording:

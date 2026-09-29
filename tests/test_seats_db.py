@@ -30,6 +30,7 @@ from fastapi import HTTPException
 from service import migrations as mig
 from service.audit_log import PostgresAuditLog
 from service.campaign_store import PostgresCampaignStore, SeatUnavailable
+from service.campaign_summary_store import PostgresCampaignSummaryStore
 from service.campaigns_api import (
     NOT_APPLIED_MESSAGE,
     SEAT_CAP,
@@ -103,6 +104,7 @@ def _stores() -> CampaignStores:
         PostgresTableSessionStore(slot_clear=no_slots),
         PostgresSeatOfferStore(),
         PostgresAuditLog(),
+        PostgresCampaignSummaryStore(),
     )
 
 

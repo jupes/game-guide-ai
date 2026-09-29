@@ -82,7 +82,7 @@ export function Signup({ invite, onUseLogin }: SignupProps): React.JSX.Element {
           </Button>
         </form>
         <p className="auth-screen__switch">
-          <Button variant="text" onClick={onUseLogin}>
+          <Button variant="text" onClick={onUseLogin} className="auth-screen__switch-button">
             Already have an account? Sign in
           </Button>
         </p>

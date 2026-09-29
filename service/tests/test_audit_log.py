@@ -57,9 +57,9 @@ PARTICIPANT = "prt_" + "a" * 22
 AUDIT_SQL = (
     Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0005_audit_events.sql"
 ).read_text(encoding="utf-8")
-#: 0013 replaced 0005's actor-kind CHECK (`1kg.2.3`): `guest` went, `screen` came.
+#: 0014 replaced 0005's actor-kind CHECK (`1kg.2.3`): `guest` went, `screen` came.
 SESSION_ACCESS_SQL = (
-    Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0013_table_session_access.sql"
+    Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0014_table_session_access.sql"
 ).read_text(encoding="utf-8")
 
 
@@ -121,7 +121,7 @@ def test_the_action_set_is_closed_and_a_caller_cannot_invent_one():
             assert value not in str(refused.value), "a refusal never repeats what it refused"
 
 
-def test_the_seventeen_actions_sec38_names_are_the_ones_that_ship():
+def test_the_nineteen_actions_that_ship_are_sec38s_and_the_tavern_s_two():
     """Reveal's three and the export ones are not here: ED-18(a) makes the table
     shared, and they belong to the beads that will write them (1kg.7.1, 1kg.5.2),
     which add their own members without a migration.
@@ -132,6 +132,9 @@ def test_the_seventeen_actions_sec38_names_are_the_ones_that_ship():
     `seat.removed`: `participant.removed` already records a seat's removal, and
     two words for one event is the drift a closed vocabulary exists to stop.
 
+    Bead cfx adds `campaign.concluded` and `campaign.reopened`: the GM's Mark
+    concluded and its reversal, which are not archive and restore.
+
     `1kg.2.3` retired the join (threat model section 15), and its refused-burst
     row with it; the screen grant brought two: minted and revoked (SEC-48)."""
     assert {a.value for a in AuditAction} == {
@@ -140,6 +143,7 @@ def test_the_seventeen_actions_sec38_names_are_the_ones_that_ship():
         "participant.unlinked", "seat.offered", "seat.accepted",
         "seat.declined", "seat.confirmed",
         "campaign.archived", "campaign.restored", "campaign.deleted",
+        "campaign.concluded", "campaign.reopened",
         "screen.minted", "screen.revoked",
     }
     assert "join.burst_refused" not in {a.value for a in AuditAction}, "retired with the join"
@@ -160,7 +164,7 @@ def test_a_seat_row_carries_the_seat_and_nothing_else():
             check_detail(action, {"user_id": 7})
 
 
-_WORDS = {4: "four", 17: "seventeen"}
+_WORDS = {4: "four", 19: "nineteen"}
 
 
 def test_the_module_docstrings_count_what_the_enums_hold():
@@ -487,12 +491,12 @@ def test_the_python_vocabularies_are_the_ones_the_migration_checks():
     assert decision is not None, "0005 no longer constrains decision with an IN list"
     in_sql = {value.strip().strip("'") for value in decision.group(1).split(",")}
     assert in_sql == {member.value for member in Decision}
-    # 0013 replaced 0005's actor-kind CHECK, so the one in force is 0013's.
+    # 0014 replaced 0005's actor-kind CHECK, so the one in force is 0014's.
     actor = re.search(
         r"ADD CONSTRAINT events_actor_kind_check\s+CHECK \(actor_kind IN \(([^)]*)\)\)",
         SESSION_ACCESS_SQL,
     )
-    assert actor is not None, "0013 no longer constrains actor_kind with an IN list"
+    assert actor is not None, "0014 no longer constrains actor_kind with an IN list"
     in_sql = {value.strip().strip("'") for value in actor.group(1).split(",")}
     assert in_sql == {member.value for member in ActorKind}
 

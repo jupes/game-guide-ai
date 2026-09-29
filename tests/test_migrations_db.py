@@ -269,7 +269,7 @@ def test_the_database_refuses_a_campaign_row_the_application_would_never_mint(ds
             )
 
 
-#: Every table 0004 hangs off a campaign that 0009 and 0013 kept, with the column that
+#: Every table 0004 hangs off a campaign that 0009 and 0014 kept, with the column that
 #: reaches a user, and 0008's two document tables (1kg.5.1): a document hangs
 #: off its campaign and a version off its document, both ON DELETE CASCADE.
 CAMPAIGN_TABLES = (
@@ -849,6 +849,9 @@ def test_the_seat_migration_adopts_an_accepted_seat_as_not_confirmed(dsn):
     """0012's CHECK is safe because `confirmed_at` is new: a seat the previous
     build accepted survives the expansion, and reads as not confirmed."""
     before = tuple(m for m in PACKAGED if m.version < SEAT_OFFERS.version)
+    # Up to and including 0012, so that a later migration (0013, bead cfx)
+    # cannot be the one this run applies last.
+    through = tuple(m for m in PACKAGED if m.version <= SEAT_OFFERS.version)
     mig.migrate(dsn, packaged=before)
     with connect(dsn) as conn:
         owner, player = _one_user(conn), _one_user(conn, "wren@example.com")
@@ -860,9 +863,9 @@ def test_the_seat_migration_adopts_an_accepted_seat_as_not_confirmed(dsn):
             "VALUES (%s, %s, 'Rook', 'rook', %s, now())",
             (PARTICIPANT_ID, CAMPAIGN_ID, player),
         )
-    # Through the seat migration and no further: a later migration is not the
-    # expansion under test, so it neither runs here nor stands in the report.
-    assert mig.migrate(dsn, packaged=(*before, SEAT_OFFERS)).applied == (SEAT_OFFERS.filename,)
+    # Exactly the seat migration: a later one is not the expansion under test,
+    # so it neither runs here nor stands in the report.
+    assert mig.migrate(dsn, packaged=through).applied == (SEAT_OFFERS.filename,)
     with connect(dsn) as conn:
         row = conn.execute(
             "SELECT accepted_at IS NOT NULL, confirmed_at FROM campaign.participants WHERE id = %s",
@@ -875,6 +878,30 @@ def test_the_seat_migration_adopts_an_accepted_seat_as_not_confirmed(dsn):
                 "VALUES (%s, %s, 'Wren', 'wren', now())",
                 ("prt_" + "b" * 22, CAMPAIGN_ID),
             )
+
+
+#: Found by name, like SEAT_OFFERS, so a renumbering at merge is an edit elsewhere.
+CAMPAIGN_SUMMARY = next(m for m in PACKAGED if m.name == "campaign_summary")
+
+
+def test_the_card_migration_adopts_an_existing_campaign_as_untoned_5e_and_not_concluded(dsn):
+    """0013 (bead cfx) adds three columns to a table that already holds rows,
+    one NOT NULL: a campaign the previous build made survives the expansion
+    with no tone line, as D&D 5e, and not concluded."""
+    before = tuple(m for m in PACKAGED if m.version < CAMPAIGN_SUMMARY.version)
+    through = tuple(m for m in PACKAGED if m.version <= CAMPAIGN_SUMMARY.version)
+    mig.migrate(dsn, packaged=before)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')", (CAMPAIGN_ID, owner)
+        )
+    assert mig.migrate(dsn, packaged=through).applied[-1] == CAMPAIGN_SUMMARY.filename
+    with connect(dsn) as conn:
+        row = conn.execute(
+            "SELECT tone, game_system, concluded_at FROM campaign.campaigns WHERE id = %s", (CAMPAIGN_ID,)
+        ).fetchone()
+        assert row == (None, "dnd5e", None)
 
 
 @pytest.mark.parametrize(
@@ -923,7 +950,7 @@ def test_a_seat_holds_one_open_offer_by_the_partial_unique_index(dsn):
             )
 
 
-# ── 0013: the table session without a link or a join (1kg.2.3) ──────────────
+# ── 0014: the table session without a link or a join (1kg.2.3) ──────────────
 
 #: Found by name, like 1kg.2.2's `SEAT_OFFERS`: every migration before it.
 SESSION_ACCESS = next(m for m in PACKAGED if m.name == "table_session_access")
@@ -942,9 +969,9 @@ def _actor_kind_check(dsn: str) -> list[tuple[str, str]]:
 
 
 @needs_db
-def test_the_actor_kind_check_0013_replaces_is_the_one_0005_created(dsn):
-    """0013 drops a constraint by name, so the name is read off a database
-    migrated to 0012 rather than assumed — and after 0013 there is still exactly
+def test_the_actor_kind_check_0014_replaces_is_the_one_0005_created(dsn):
+    """0014 drops a constraint by name, so the name is read off a database
+    migrated to 0013 rather than assumed — and after 0014 there is still exactly
     one such CHECK, under the same name, with `screen` where `guest` was."""
     mig.migrate(dsn, packaged=_BEFORE_SESSION_ACCESS)
     [(name, definition)] = _actor_kind_check(dsn)
@@ -1007,7 +1034,7 @@ def test_the_ledger_refuses_a_guest_and_accepts_a_screen(dsn):
 
 @needs_db
 def test_a_command_id_column_holds_the_contracts_shape_or_nothing(dsn):
-    """0013's two CHECKs, and the start index: one session per command per
+    """0014's two CHECKs, and the start index: one session per command per
     campaign, while any number of sessions have none."""
     import psycopg
 

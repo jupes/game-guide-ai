@@ -12,9 +12,10 @@ reviewer sees, not a string a caller invents, so the ledger cannot quietly grow
 a vocabulary nobody agreed to. Reveal's three actions and the export ones are
 not here: ED-18(a) makes the table shared, and those belong to `1kg.7.1` and
 `1kg.5.2`, which add their own members without a migration. Nor is there one
-writer for the seventeen that are here: the session and screen rows are
-written by `service/table_sessions.py` (`1kg.2.3`), the rest by `1kg.2.2`'s
-campaign and seat routes. The reason is ownership, not use.
+writer for the nineteen that are here: the session and screen rows are
+written by `service/table_sessions.py` (`1kg.2.3`), the campaign's Conclude and
+Reopen by the tavern's route (bead cfx), the rest by `1kg.2.2`'s campaign and
+seat routes. The reason is ownership, not use.
 
 **A row carries identifiers, never content** (SEC-20, ED-26) — and no hash of
 any content either: ED-26 is explicit that no value derived from field text may
@@ -132,6 +133,10 @@ class AuditAction(str, Enum):
     SEAT_CONFIRMED = "seat.confirmed"
     CAMPAIGN_ARCHIVED = "campaign.archived"
     CAMPAIGN_RESTORED = "campaign.restored"
+    #: The GM marked the campaign concluded, or reopened it (actor `gm`; bead
+    #: cfx). Not an authorisation fact, so neither row carries a revision.
+    CAMPAIGN_CONCLUDED = "campaign.concluded"
+    CAMPAIGN_REOPENED = "campaign.reopened"
     CAMPAIGN_DELETED = "campaign.deleted"
     #: The owner made this browser a table screen (SEC-48, D-13; actor `gm`).
     #: There is no join any more (threat model section 15), so no row of a
@@ -144,7 +149,7 @@ class AuditAction(str, Enum):
 
 
 class ActorKind(str, Enum):
-    """Who acted, as `0013_table_session_access.sql`'s CHECK has it. There are
+    """Who acted, as `0014_table_session_access.sql`'s CHECK has it. There are
     no guests (D-1); a table screen acts only to leave, and its `actor_ref` is
     its own grant's id (SEC-38)."""
 
@@ -155,7 +160,7 @@ class ActorKind(str, Enum):
 
 
 class ObjectKind(str, Enum):
-    """What the decision was **about** — one of the four things the seventeen
+    """What the decision was **about** — one of the four things the nineteen
     actions act on, and nothing else. A table screen's `object_ref` is its
     grant's `tcr_` id.
 
@@ -296,6 +301,8 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     AuditAction.SEAT_CONFIRMED: {"participant_id": _PARTICIPANT},
     AuditAction.CAMPAIGN_ARCHIVED: {"campaign_id": _CAMPAIGN},
     AuditAction.CAMPAIGN_RESTORED: {"campaign_id": _CAMPAIGN},
+    AuditAction.CAMPAIGN_CONCLUDED: {"campaign_id": _CAMPAIGN},
+    AuditAction.CAMPAIGN_REOPENED: {"campaign_id": _CAMPAIGN},
     AuditAction.CAMPAIGN_DELETED: {
         "campaign_id": _CAMPAIGN,
         "participants": Shape.WHOLE_NUMBER,
@@ -330,6 +337,8 @@ ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
     AuditAction.SEAT_CONFIRMED: frozenset(),
     AuditAction.CAMPAIGN_ARCHIVED: frozenset(),
     AuditAction.CAMPAIGN_RESTORED: frozenset(),
+    AuditAction.CAMPAIGN_CONCLUDED: frozenset(),
+    AuditAction.CAMPAIGN_REOPENED: frozenset(),
     AuditAction.CAMPAIGN_DELETED: frozenset(),
     AuditAction.SCREEN_MINTED: frozenset(),
     AuditAction.SCREEN_REVOKED: frozenset({"gm_revoked", "left"}),

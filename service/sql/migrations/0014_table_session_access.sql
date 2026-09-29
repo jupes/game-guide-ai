@@ -1,4 +1,4 @@
--- Migration 0013 — a live table session with no link and no join
+-- Migration 0014 — a live table session with no link and no join
 -- (agent-forge-harness-1kg.2.3).
 --
 -- Threat model section 15 (TA-5) retired the table link and the join: a player
@@ -50,7 +50,7 @@
 --    ActorKind.GUEST and nothing used it), and no deployed build has written an
 --    audit row at all. The constraint's name is PostgreSQL's own for 0005's
 --    column CHECK; tests/test_migrations_db.py reads it out of pg_constraint on a
---    database migrated to 0012 rather than assuming it.
+--    database migrated to 0013 rather than assuming it.
 --
 -- No transaction control and not CONCURRENTLY: the runner owns the transaction
 -- (docs/migrations.md section 2), and none of these tables has ever held a

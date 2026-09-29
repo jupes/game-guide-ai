@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import * as React from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ThemeProvider } from '../ds/theme'
@@ -143,5 +144,44 @@ describe('TopBar active conversation title', () => {
 
     expect(screen.getAllByText('Basilisk lore')).toHaveLength(2)
     expect(store.get(active.id)?.title).toBe('Basilisk lore')
+  })
+})
+
+describe('TopBar menu button (agent-forge-harness-0rn, T-TB-1)', () => {
+  function renderTopBar(navToggle?: React.ComponentProps<typeof TopBar>['navToggle']) {
+    return render(
+      <AppNavContext.Provider value={makeNavState()}>
+        <ConversationStoreProvider store={new MemoryConversationStore()}>
+          <TopBar navToggle={navToggle} />
+        </ConversationStoreProvider>
+      </AppNavContext.Provider>,
+    )
+  }
+
+  it('renders no button without a navToggle', () => {
+    renderTopBar()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('is a disclosure that opens — never toggles — the drawer', async () => {
+    const onOpen = vi.fn()
+    const buttonRef = React.createRef<HTMLButtonElement>()
+    renderTopBar({ expanded: false, controls: 'drawer-host', onOpen, buttonRef })
+    const button = screen.getByRole('button', { name: 'Open navigation' })
+    expect(button).toHaveAttribute('aria-expanded', 'false')
+    expect(button).toHaveAttribute('aria-controls', 'drawer-host')
+    expect(button).not.toHaveAttribute('aria-pressed')
+    expect(buttonRef.current).toBe(button)
+    expect(button.closest('.top-bar__brand')).not.toBeNull()
+
+    await userEvent.click(button)
+    await userEvent.click(button)
+    expect(onOpen).toHaveBeenCalledTimes(2)
+    expect(button).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('reports an open drawer through aria-expanded', () => {
+    renderTopBar({ expanded: true, controls: 'drawer-host', onOpen: vi.fn(), buttonRef: React.createRef() })
+    expect(screen.getByRole('button', { name: 'Open navigation' })).toHaveAttribute('aria-expanded', 'true')
   })
 })

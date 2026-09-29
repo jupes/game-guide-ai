@@ -330,3 +330,53 @@ describe('TopBar theme ownership (eiio.3)', () => {
     expect(screen.queryByRole('switch', { name: /dark theme/i })).not.toBeInTheDocument()
   })
 })
+
+// ── agent-forge-harness-0rn — the narrow drawer's hooks into LeftNav ─────────
+
+describe('LeftNav onNavigate and settings (0rn, T-LN-1)', () => {
+  function NavWithState({ onNavigate, store }: { onNavigate: () => void; store: MemoryConversationStore }) {
+    const [mode, setMode] = useState<AppNavState['mode']>('sage')
+    const [conversationId, setConversationId] = useState<string | null>(null)
+    return (
+      <ThemeProvider>
+        <AppNavContext.Provider value={makeNavState({ mode, setMode, conversationId, setConversationId })}>
+          <CurrentUserContext.Provider value={makeUserState('dm')}>
+            <ConversationStoreProvider store={store}>
+              <LeftNav onNavigate={onNavigate} settings={<div data-testid="nav-settings">settings</div>} />
+            </ConversationStoreProvider>
+          </CurrentUserContext.Provider>
+        </AppNavContext.Provider>
+      </ThemeProvider>
+    )
+  }
+
+  it('calls onNavigate once after each navigation action, and never for a rename', async () => {
+    const store = new MemoryConversationStore()
+    const existing = store.create('sage', 'Owlbear tactics')
+    const onNavigate = vi.fn()
+    render(<NavWithState onNavigate={onNavigate} store={store} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Rename Owlbear tactics' }))
+    expect(onNavigate).not.toHaveBeenCalled()
+    await userEvent.keyboard('{Escape}')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Owlbear tactics' }))
+    expect(onNavigate).toHaveBeenCalledTimes(1)
+
+    await userEvent.click(screen.getByRole('button', { name: 'New conversation' }))
+    expect(onNavigate).toHaveBeenCalledTimes(2)
+    expect(store.list('sage').some((c) => c.id !== existing.id)).toBe(true)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Rules' }))
+    expect(onNavigate).toHaveBeenCalledTimes(3)
+  })
+
+  it('renders settings between the conversation list and the footer', () => {
+    render(<NavWithState onNavigate={vi.fn()} store={new MemoryConversationStore()} />)
+    const settings = screen.getByTestId('nav-settings')
+    const list = document.querySelector('.left-nav__conversations')
+    const footer = document.querySelector('.left-nav__footer')
+    expect(list?.nextElementSibling).toBe(settings)
+    expect(settings.nextElementSibling).toBe(footer)
+  })
+})

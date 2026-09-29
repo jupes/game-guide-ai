@@ -1,16 +1,18 @@
 """The GM's campaigns and the seats at their table (bead 1kg.2.2).
 
-Nine Workbench routes on a `workbench_router` (`agent-forge-harness-oe6`), wired
-into `service/app.py` and importing nothing from it: the application hands
+Eleven Workbench routes on a `workbench_router` (`agent-forge-harness-oe6`),
+wired into `service/app.py` and importing nothing from it: the application hands
 `build_router` its GM gate, its database getter, the re-authentication callable
 Remove needs, and the job queue and driver its reconciliation needs.
 
 | Route | Answers |
 | --- | --- |
-| `GET /campaigns` | the caller's campaigns, newest first |
-| `POST /campaigns` | `201`, a campaign whose GM is the caller (D-5) |
+| `GET /campaigns` | the caller's campaigns, newest first, each with its card's facts (bead cfx) |
+| `POST /campaigns` | `201`, a campaign whose GM is the caller (D-5); a tone line is optional |
 | `GET /campaigns/{campaign_id}` | one campaign, archived or not |
-| `PATCH /campaigns/{campaign_id}` | rename, archive, restore |
+| `PATCH /campaigns/{campaign_id}` | rename, archive, restore, set or clear the tone line |
+| `POST /campaigns/{campaign_id}/conclude` | the campaign, marked concluded (bead cfx) |
+| `POST /campaigns/{campaign_id}/reopen` | the campaign, no longer concluded |
 | `GET /campaigns/{campaign_id}/participants` | the seats, oldest first |
 | `POST /campaigns/{campaign_id}/participants` | `201`, an open seat |
 | `POST …/participants/{participant_id}/offer` | `204`, whatever the address holds |
@@ -38,6 +40,9 @@ offer takes the exclusive lock only to serialise its repeat check and advances
 nothing; Remove is a revocation that NEVER asks for the campaign lock and
 leaves `campaign.reconcile` behind (`service/reconciliation.py`). A lock timeout
 or a deadlock victim is one retryable `503`, with only its SQLSTATE logged.
+Conclude and Reopen are a rename's kind of write (interactions ADR §19 A-31):
+one statement with the owner in it, no lock and no revision, because concluded
+narrows and widens nothing — but each change is audited, in its transaction.
 
 **No private text anywhere.** No handler logs a name, an alias, an address or
 a password, and no refusal repeats what it was sent. Every 422 is raised as a
@@ -66,6 +71,15 @@ from .audit_log import ActorKind, AuditAction, AuditLog, Decision, ObjectKind, P
 from .campaign_store import AliasTaken, CampaignStore, InvalidCursor, PostgresCampaignStore, SeatNotAccepted
 from .campaign_store import Campaign as StoredCampaign
 from .campaign_store import SeatUnavailable as _SeatUnavailable
+from .campaign_summary_store import (
+    CampaignSummaryStore,
+    OwnerFacts,
+    PostgresCampaignSummaryStore,
+    avatar_for,
+    badge,
+    dormant,
+    last_activity,
+)
 from .conversations_api import read_body
 from .db import AdvisoryLock, CampaignAuthzMissing, TransactionalDatabase, UnitOfWork
 from .job_driver import JobDriver, run_after_response
@@ -86,6 +100,7 @@ from .table_session_store import PostgresTableSessionStore, TableSessionStore, n
 from .workbench_api import SessionDependency, not_found, workbench_router
 from .workbench_contracts import (
     CAMPAIGN_PAGE_MAX_ITEMS,
+    CAMPAIGN_SEATS_MAX,
     CONTRACT_VERSION,
     Campaign,
     CampaignCreateRequest,
@@ -109,8 +124,9 @@ log = logging.getLogger(__name__)
 #: `Literal[1]` on the wire, `int` as a constant: spelled once.
 WIRE_VERSION = cast("SchemaVersion", CONTRACT_VERSION)
 #: SEC-50(3), *suggested*: a campaign seats at most this many, open, offered
-#: and accepted alike — each is a seat row.
-SEAT_CAP = 40
+#: and accepted alike — each is a seat row. The wire's bound on a card's seat
+#: count is the same number, spelled once.
+SEAT_CAP = CAMPAIGN_SEATS_MAX
 
 #: Fixed sentences. A refusal never interpolates anything it was sent (X-7).
 UNAVAILABLE_MESSAGE = "Campaigns are briefly unavailable. Try again."
@@ -144,6 +160,8 @@ class CampaignStores:
     sessions: TableSessionStore
     offers: SeatOfferStore
     audit: AuditLog
+    #: The cards' derived facts (bead cfx): read-only, and never locked.
+    summaries: CampaignSummaryStore
 
 
 def get_campaign_stores() -> CampaignStores:
@@ -155,6 +173,7 @@ def get_campaign_stores() -> CampaignStores:
         PostgresTableSessionStore(slot_clear=no_slots),
         PostgresSeatOfferStore(),
         PostgresAuditLog(),
+        PostgresCampaignSummaryStore(),
     )
 
 
@@ -293,7 +312,17 @@ def _utc(moment: datetime | None) -> datetime | None:
     return None if moment is None else moment.astimezone(UTC)
 
 
-def campaign_to_wire(row: StoredCampaign) -> Campaign:
+def facts_of(facts: dict[str, OwnerFacts], row: StoredCampaign) -> OwnerFacts:
+    """That campaign's facts from a `for_owner` answer. Read in the transaction
+    that read the row, so it is there; a campaign with none to report — a new
+    one — reads as nothing yet."""
+    return facts.get(row.id) or OwnerFacts.nothing_yet(row.id)
+
+
+def campaign_to_wire(row: StoredCampaign, facts: OwnerFacts, now: datetime) -> Campaign:
+    """The stored row, and the card's facts derived from `facts` by the one
+    rule each (`service/campaign_summary_store.py`)."""
+    icon, tone = avatar_for(row.id)
     return Campaign.model_validate(
         {
             "schema_version": WIRE_VERSION,
@@ -302,8 +331,32 @@ def campaign_to_wire(row: StoredCampaign) -> Campaign:
             "created_at": _utc(row.created_at),
             "updated_at": _utc(row.updated_at),
             "archived_at": _utc(row.archived_at),
+            "concluded_at": _utc(row.concluded_at),
+            "tone": row.tone,
+            "game_system": row.game_system,
+            "avatar_icon": icon,
+            "avatar_tone": tone,
+            "badge": badge(row, facts),
+            "seat_count": facts.seat_count,
+            "last_activity_at": _utc(last_activity(row, facts)),
+            "last_played_at": _utc(facts.last_played_at),
+            "dormant": dormant(row, facts, now),
         }
     )
+
+
+def answer_campaign(
+    db: TransactionalDatabase, stores: CampaignStores, row: StoredCampaign, *, owner_id: int, now: datetime
+) -> Campaign:
+    """A written campaign on the wire: its facts read in a transaction of their
+    own after the write committed, which takes no lock, so the answer is at
+    least as new as the write."""
+
+    def work() -> OwnerFacts:
+        with db.transaction() as unit:
+            return facts_of(stores.summaries.for_owner(unit, owner_id, [row.id], now=now), row)
+
+    return campaign_to_wire(row, guarded(work), now)
 
 
 def seat_to_wire(seat: Participant, latest: SeatOffer | None, now: datetime) -> Seat:
@@ -359,6 +412,35 @@ def _audit(
     )
 
 
+@dataclass(frozen=True)
+class ToneChange:
+    """A tone line a PATCH sent (bead cfx): a value to set, or `None` to clear.
+    A PATCH that sent no `tone` carries no `ToneChange` at all."""
+
+    tone: str | None
+
+
+def _edit_details(
+    stores: CampaignStores,
+    unit: UnitOfWork,
+    *,
+    campaign_id: str,
+    owner_id: int,
+    name: str | None,
+    tone: ToneChange | None,
+    now: datetime,
+) -> StoredCampaign | None:
+    """The name and the tone line, each one statement with the owner in it —
+    neither is an authorisation fact (L-4) — in the caller's transaction. None
+    when the campaign is not the owner's, or when nothing was asked."""
+    edited: StoredCampaign | None = None
+    if name is not None:
+        edited = stores.campaigns.rename(unit, campaign_id, owner_id=owner_id, name=name, now=now)
+    if tone is not None:
+        edited = stores.campaigns.set_tone(unit, campaign_id, owner_id=owner_id, tone=tone.tone, now=now)
+    return edited
+
+
 def archive(
     db: TransactionalDatabase,
     stores: CampaignStores,
@@ -367,10 +449,11 @@ def archive(
     owner_id: int,
     now: datetime,
     name: str | None = None,
+    tone: ToneChange | None = None,
 ) -> StoredCampaign:
     """Archive is a fact-changing narrowing in RQ-5's two steps (L-4)."""
     archive_step_one(db, stores, campaign_id=campaign_id, owner_id=owner_id)
-    return archive_step_two(db, stores, campaign_id=campaign_id, owner_id=owner_id, now=now, name=name)
+    return archive_step_two(db, stores, campaign_id=campaign_id, owner_id=owner_id, now=now, name=name, tone=tone)
 
 
 def archive_step_one(db: TransactionalDatabase, stores: CampaignStores, *, campaign_id: str, owner_id: int) -> None:
@@ -397,6 +480,7 @@ def archive_step_two(
     owner_id: int,
     now: datetime,
     name: str | None = None,
+    tone: ToneChange | None = None,
 ) -> StoredCampaign:
     """In the request, its own transaction: the exclusive lock first (ownership
     was shown in step 1, and the owner never changes), the campaign read again,
@@ -408,8 +492,7 @@ def archive_step_two(
         campaign = stores.campaigns.get(unit, campaign_id, owner_id=owner_id)
         if campaign is None:
             not_found()
-        if name is not None:
-            stores.campaigns.rename(unit, campaign_id, owner_id=owner_id, name=name, now=now)
+        _edit_details(stores, unit, campaign_id=campaign_id, owner_id=owner_id, name=name, tone=tone, now=now)
         if not campaign.is_archived:
             live = stores.sessions.live_session_for_campaign(unit, campaign_id)
             if live is not None:
@@ -435,6 +518,7 @@ def restore(
     owner_id: int,
     now: datetime,
     name: str | None = None,
+    tone: ToneChange | None = None,
 ) -> StoredCampaign:
     """A locked widening (RQ-4), one transaction: the plain read with the owner,
     and no lock at all for a campaign that is not archived."""
@@ -455,8 +539,7 @@ def restore(
                     action=AuditAction.CAMPAIGN_RESTORED, object_kind=ObjectKind.CAMPAIGN, object_ref=campaign_id,
                     detail={"campaign_id": campaign_id}, revision=revision, now=now,
                 )
-        if name is not None:
-            stores.campaigns.rename(unit, campaign_id, owner_id=owner_id, name=name, now=now)
+        _edit_details(stores, unit, campaign_id=campaign_id, owner_id=owner_id, name=name, tone=tone, now=now)
         final = stores.campaigns.get(unit, campaign_id, owner_id=owner_id)
         if final is None:
             not_found()
@@ -464,14 +547,53 @@ def restore(
 
 
 def rename(
-    db: TransactionalDatabase, stores: CampaignStores, *, campaign_id: str, owner_id: int, name: str, now: datetime
+    db: TransactionalDatabase,
+    stores: CampaignStores,
+    *,
+    campaign_id: str,
+    owner_id: int,
+    name: str | None,
+    now: datetime,
+    tone: ToneChange | None = None,
 ) -> StoredCampaign:
-    """No lock, no revision, no audit row: one statement, the owner in it."""
+    """No lock, no revision, no audit row: the name and the tone line, each one
+    statement with the owner in it, in one transaction."""
     with db.transaction() as unit:
-        renamed = stores.campaigns.rename(unit, campaign_id, owner_id=owner_id, name=name, now=now)
-    if renamed is None:
+        edited = _edit_details(
+            stores, unit, campaign_id=campaign_id, owner_id=owner_id, name=name, tone=tone, now=now
+        )
+    if edited is None:
         not_found()
-    return renamed
+    return edited
+
+
+def set_concluded(
+    db: TransactionalDatabase,
+    stores: CampaignStores,
+    *,
+    campaign_id: str,
+    owner_id: int,
+    concluded: bool,
+    now: datetime,
+) -> StoredCampaign:
+    """Mark concluded or reopen (bead cfx), in one transaction: the change in
+    one statement with the owner in it, then its audit row. Concluded is not an
+    authorisation fact (interactions ADR §19 A-31) — seats, sessions, documents
+    and reveals are untouched — so there is no lock and no revision. A repeat
+    changes nothing and writes no audit row; a campaign that is not the
+    caller's is the one 404, from the read that follows."""
+    with db.transaction() as unit:
+        if stores.campaigns.set_concluded(unit, campaign_id, owner_id=owner_id, concluded=concluded, now=now):
+            _audit(
+                stores, unit, campaign_id=campaign_id, owner_id=owner_id,
+                action=AuditAction.CAMPAIGN_CONCLUDED if concluded else AuditAction.CAMPAIGN_REOPENED,
+                object_kind=ObjectKind.CAMPAIGN, object_ref=campaign_id, detail={"campaign_id": campaign_id},
+                revision=None, now=now,
+            )
+        final = stores.campaigns.get(unit, campaign_id, owner_id=owner_id)
+    if final is None:
+        not_found()
+    return final
 
 
 def add_seat(
@@ -683,7 +805,12 @@ def build_router(
         include_archived: str | None = None,
         stores: CampaignStores = Depends(get_campaign_stores),
         db: TransactionalDatabase | None = Depends(database),
+        now: datetime = Depends(get_clock),
     ) -> CampaignPage:
+        """Newest first, each campaign with its card's facts read in the same
+        transaction as the page. The tavern orders by `last_activity_at` on the
+        client: it reads every page anyway, because "Concluded (N)" counts them
+        all."""
         query = parse_page_query(limit, cursor, include_archived, "include_archived")
         live_db = _database(db)
 
@@ -692,9 +819,10 @@ def build_router(
                 page = stores.campaigns.page_for_owner(
                     unit, user.user_id, include_archived=query.flag, cursor=query.cursor, limit=query.limit
                 )
+                facts = stores.summaries.for_owner(unit, user.user_id, [row.id for row in page.items], now=now)
             return CampaignPage(
                 schema_version=WIRE_VERSION,
-                items=[campaign_to_wire(row) for row in page.items],
+                items=[campaign_to_wire(row, facts_of(facts, row), now) for row in page.items],
                 next_cursor=page.next_cursor,
             )
 
@@ -714,15 +842,19 @@ def build_router(
         now: datetime = Depends(get_clock),
     ) -> Campaign:
         """A new campaign, the caller its GM (D-5). Duplicate names are allowed,
-        and a retried create makes a second campaign, which archive recovers."""
+        and a retried create makes a second campaign, which archive recovers.
+        Only a name is required; a tone line is optional (§19 A-31)."""
         request = parse_body(CampaignCreateRequest, raw)
         live_db = _database(db)
 
         def work() -> StoredCampaign:
             with live_db.transaction() as unit:
-                return stores.campaigns.create(unit, owner_id=user.user_id, name=request.name, now=now)
+                return stores.campaigns.create(
+                    unit, owner_id=user.user_id, name=request.name, tone=request.tone, now=now
+                )
 
-        return campaign_to_wire(guarded(work))
+        made = guarded(work)
+        return campaign_to_wire(made, OwnerFacts.nothing_yet(made.id), now)
 
     @router.get("/campaigns/{campaign_id}", response_model=Campaign)
     def read_campaign(
@@ -730,19 +862,24 @@ def build_router(
         user: SessionData = Depends(gm),
         stores: CampaignStores = Depends(get_campaign_stores),
         db: TransactionalDatabase | None = Depends(database),
+        now: datetime = Depends(get_clock),
     ) -> Campaign:
         live_db = _database(db)
         if not readable(ident.CAMPAIGN, campaign_id):
             not_found()
 
-        def work() -> StoredCampaign | None:
+        def work() -> Campaign | None:
             with live_db.transaction() as unit:
-                return stores.campaigns.get(unit, campaign_id, owner_id=user.user_id)
+                found = stores.campaigns.get(unit, campaign_id, owner_id=user.user_id)
+                if found is None:
+                    return None
+                facts = stores.summaries.for_owner(unit, user.user_id, [found.id], now=now)
+            return campaign_to_wire(found, facts_of(facts, found), now)
 
-        found = guarded(work)
-        if found is None:
+        answered = guarded(work)
+        if answered is None:
             not_found()
-        return campaign_to_wire(found)
+        return answered
 
     @router.patch("/campaigns/{campaign_id}", response_model=Campaign)
     def patch_campaign(
@@ -753,32 +890,77 @@ def build_router(
         db: TransactionalDatabase | None = Depends(database),
         now: datetime = Depends(get_clock),
     ) -> Campaign:
-        """Rename, archive and restore. With `archived`, a `name` is applied in
-        the transaction that changes the fact, so a `503` applies neither."""
+        """Rename, archive, restore, and set or clear the tone line. With
+        `archived`, a `name` and a `tone` are applied in the transaction that
+        changes the fact, so a `503` applies none of them."""
         patch = parse_body(CampaignPatchRequest, raw)
         live_db = _database(db)
         if not readable(ident.CAMPAIGN, campaign_id):
             not_found()
         owner = user.user_id
+        tone = ToneChange(patch.tone) if "tone" in patch.model_fields_set else None
         if patch.archived is True:
             guarded(lambda: archive_step_one(live_db, stores, campaign_id=campaign_id, owner_id=owner))
             final = guarded(
                 lambda: archive_step_two(
-                    live_db, stores, campaign_id=campaign_id, owner_id=owner, now=now, name=patch.name
+                    live_db, stores, campaign_id=campaign_id, owner_id=owner, now=now, name=patch.name, tone=tone
                 ),
                 busy_message=NOT_APPLIED_MESSAGE,
             )
         elif patch.archived is False:
             final = guarded(
-                lambda: restore(live_db, stores, campaign_id=campaign_id, owner_id=owner, now=now, name=patch.name)
+                lambda: restore(
+                    live_db, stores, campaign_id=campaign_id, owner_id=owner, now=now, name=patch.name, tone=tone
+                )
             )
         else:
-            name = patch.name
-            assert name is not None, "the contract refuses an empty patch"
+            assert patch.name is not None or tone is not None, "the contract refuses an empty patch"
             final = guarded(
-                lambda: rename(live_db, stores, campaign_id=campaign_id, owner_id=owner, name=name, now=now)
+                lambda: rename(
+                    live_db, stores, campaign_id=campaign_id, owner_id=owner, name=patch.name, now=now, tone=tone
+                )
             )
-        return campaign_to_wire(final)
+        return answer_campaign(live_db, stores, final, owner_id=owner, now=now)
+
+    def _conclusion(
+        campaign_id: str, owner: int, concluded: bool, stores: CampaignStores, db: TransactionalDatabase | None,
+        now: datetime,
+    ) -> Campaign:
+        """Conclude and Reopen share everything but the direction: the database
+        (503), the id's shape (the one 404), then the write with the owner in
+        its statement (the one 404 again, from the same call)."""
+        live_db = _database(db)
+        if not readable(ident.CAMPAIGN, campaign_id):
+            not_found()
+        final = guarded(
+            lambda: set_concluded(
+                live_db, stores, campaign_id=campaign_id, owner_id=owner, concluded=concluded, now=now
+            )
+        )
+        return answer_campaign(live_db, stores, final, owner_id=owner, now=now)
+
+    @router.post("/campaigns/{campaign_id}/conclude", response_model=Campaign)
+    def conclude(
+        campaign_id: str,
+        user: SessionData = Depends(gm),
+        stores: CampaignStores = Depends(get_campaign_stores),
+        db: TransactionalDatabase | None = Depends(database),
+        now: datetime = Depends(get_clock),
+    ) -> Campaign:
+        """The spec's Mark concluded (E-4, E-5). Idempotent: concluding a
+        concluded campaign answers it unchanged, `concluded_at` included."""
+        return _conclusion(campaign_id, user.user_id, True, stores, db, now)
+
+    @router.post("/campaigns/{campaign_id}/reopen", response_model=Campaign)
+    def reopen(
+        campaign_id: str,
+        user: SessionData = Depends(gm),
+        stores: CampaignStores = Depends(get_campaign_stores),
+        db: TransactionalDatabase | None = Depends(database),
+        now: datetime = Depends(get_clock),
+    ) -> Campaign:
+        """Concluded is reversible: this clears it. Idempotent the same way."""
+        return _conclusion(campaign_id, user.user_id, False, stores, db, now)
 
     @router.get("/campaigns/{campaign_id}/participants", response_model=SeatPage)
     def list_seats(

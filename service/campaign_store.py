@@ -35,7 +35,7 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -68,7 +68,7 @@ class LiveSessionExists(CampaignStoreError):
 
 class StartReplayed(CampaignStoreError):
     """That campaign already has a session started by this command id
-    (`table_sessions_start_command_uidx`, migration 0013). A caller that holds
+    (`table_sessions_start_command_uidx`, migration 0014). A caller that holds
     the campaign lock reads the replay first and answers the session it finds
     (`service/table_sessions.py`), so this is what a caller that skipped that
     read gets instead of a unique violation. The message names no id."""
@@ -355,13 +355,27 @@ class Campaign:
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None = None
+    #: The GM's "this story is finished" (bead cfx, migration 0013). Not
+    #: `archived_at`: archive is an authorisation fact, and this is a label that
+    #: narrows and widens nothing (interactions ADR §19 A-31).
+    concluded_at: datetime | None = None
+    #: The card's tone line — optional (§12.2: "only a name is required") and
+    #: private text, hidden from `repr()` for the reason `name` is.
+    tone: str | None = field(default=None, repr=False)
+    game_system: str = "dnd5e"
 
     @property
     def is_archived(self) -> bool:
         return self.archived_at is not None
 
+    @property
+    def is_concluded(self) -> bool:
+        return self.concluded_at is not None
+
 
 NAME_MAX_CHARS = 120
+#: `campaigns_tone_chk` in 0013.
+TONE_MAX_CHARS = 80
 
 
 def check_name(name: str) -> str:
@@ -383,15 +397,41 @@ def check_name(name: str) -> str:
     return name
 
 
+def check_tone(tone: str | None) -> str | None:
+    """`campaigns_tone_chk`, applied before the statement, and the one rule for
+    stored text — the `check_name` precedent. `None` is no tone line at all.
+    Each refusal names the rule, never the tone."""
+    if tone is None:
+        return None
+    try:
+        check_stored_text(tone)
+    except ValueError:
+        refused = True
+    else:
+        refused = False
+    if refused:  # outside the handler: the refusal chains nothing
+        raise ValueError("a tone line carries no control or formatting characters")
+    if not 1 <= len(tone) <= TONE_MAX_CHARS:
+        raise ValueError(f"a tone line is 1 to {TONE_MAX_CHARS} characters")
+    return tone
+
+
 class CampaignStore(Protocol):
     """Campaigns, and the authorisation revision every check reads."""
 
     def create(
-        self, unit: UnitOfWork, *, owner_id: int, name: str, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        *,
+        owner_id: int,
+        name: str,
+        tone: str | None = None,
+        now: datetime | None = None,
     ) -> Campaign:
         """Make a campaign owned by `owner_id`, together with its `authz_state`
         row at revision 0 — in PostgreSQL the AFTER INSERT trigger writes it, so
-        that no path can leave a campaign without one (RQ-1)."""
+        that no path can leave a campaign without one (RQ-1). A tone line is
+        optional (bead cfx)."""
         ...  # pragma: no cover - structural type
 
     def get(self, unit: UnitOfWork, campaign_id: str, *, owner_id: int) -> Campaign | None:
@@ -438,17 +478,47 @@ class CampaignStore(Protocol):
         """Archive or restore; reports whether a row of that owner's changed."""
         ...  # pragma: no cover - structural type
 
+    def set_tone(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        tone: str | None,
+        now: datetime | None = None,
+    ) -> Campaign | None:
+        """Set or clear (`None`) the tone line in one statement, the owner in
+        it; None for a campaign that is not theirs. Setting the tone it already
+        has changes nothing, `updated_at` included — `rename`'s rule, and like a
+        name it is not an authorisation fact: no lock, no revision, no audit."""
+        ...  # pragma: no cover - structural type
+
+    def set_concluded(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        concluded: bool,
+        now: datetime | None = None,
+    ) -> bool:
+        """Mark concluded or reopen, in one statement with the owner in it;
+        reports whether a row of that owner's changed, so a repeat is not an
+        error. An archived campaign may be either: concluded is a label, not a
+        state the archive rules read."""
+        ...  # pragma: no cover - structural type
+
     def authz_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
         """The campaign's authorisation revision, read under the shared campaign
         lock. It is written only by `UnitOfWork.advance_authz_revision`."""
         ...  # pragma: no cover - structural type
 
 
-_COLUMNS = "id, owner_id, name, created_at, updated_at, archived_at"
+_COLUMNS = "id, owner_id, name, created_at, updated_at, archived_at, concluded_at, tone, game_system"
 
 
 def _campaign(row: tuple) -> Campaign:
-    return Campaign(row[0], int(row[1]), row[2], row[3], row[4], row[5])
+    return Campaign(row[0], int(row[1]), row[2], row[3], row[4], row[5], row[6], row[7], row[8])
 
 
 def _newest_key(campaign: Campaign) -> tuple[datetime, str]:
@@ -456,16 +526,22 @@ def _newest_key(campaign: Campaign) -> tuple[datetime, str]:
 
 
 class PostgresCampaignStore:
-    """`campaign.campaigns` and `campaign.authz_state` (migration 0004)."""
+    """`campaign.campaigns` and `campaign.authz_state` (migrations 0004, 0013)."""
 
     def create(
-        self, unit: UnitOfWork, *, owner_id: int, name: str, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        *,
+        owner_id: int,
+        name: str,
+        tone: str | None = None,
+        now: datetime | None = None,
     ) -> Campaign:
         moment = now_or(now)
         row = pg(unit).conn.execute(
-            f"INSERT INTO campaign.campaigns (id, owner_id, name, created_at, updated_at) "
-            f"VALUES (%s, %s, %s, %s, %s) RETURNING {_COLUMNS}",
-            (ident.new_id(ident.CAMPAIGN), owner_id, check_name(name), moment, moment),
+            f"INSERT INTO campaign.campaigns (id, owner_id, name, tone, created_at, updated_at) "
+            f"VALUES (%s, %s, %s, %s, %s, %s) RETURNING {_COLUMNS}",
+            (ident.new_id(ident.CAMPAIGN), owner_id, check_name(name), check_tone(tone), moment, moment),
         ).fetchone()
         return _campaign(row)
 
@@ -545,6 +621,43 @@ class PostgresCampaignStore:
         ).fetchone()
         return changed is not None
 
+    def set_tone(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        tone: str | None,
+        now: datetime | None = None,
+    ) -> Campaign | None:
+        checked = check_tone(tone)
+        # `IS NOT DISTINCT FROM`, because clearing a tone that is already NULL
+        # must change nothing either, and `=` answers NULL for that pair.
+        row = pg(unit).conn.execute(
+            f"UPDATE campaign.campaigns SET tone = %(tone)s, "
+            f"updated_at = CASE WHEN tone IS NOT DISTINCT FROM %(tone)s THEN updated_at ELSE %(now)s END "
+            f"WHERE id = %(id)s AND owner_id = %(owner)s RETURNING {_COLUMNS}",
+            {"tone": checked, "now": now_or(now), "id": campaign_id, "owner": owner_id},
+        ).fetchone()
+        return None if row is None else _campaign(row)
+
+    def set_concluded(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        concluded: bool,
+        now: datetime | None = None,
+    ) -> bool:
+        moment = now_or(now)
+        changed = pg(unit).conn.execute(
+            "UPDATE campaign.campaigns SET concluded_at = %s, updated_at = %s "
+            "WHERE id = %s AND owner_id = %s AND (concluded_at IS NULL) = %s RETURNING id",
+            (moment if concluded else None, moment, campaign_id, owner_id, concluded),
+        ).fetchone()
+        return changed is not None
+
     def authz_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
         row = pg(unit).conn.execute(
             "SELECT authz_revision FROM campaign.authz_state WHERE campaign_id = %s",
@@ -565,7 +678,13 @@ class InMemoryCampaignStore:
         self._rows: Staging[Campaign] = shared_rows(db, "campaigns")
 
     def create(
-        self, unit: UnitOfWork, *, owner_id: int, name: str, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        *,
+        owner_id: int,
+        name: str,
+        tone: str | None = None,
+        now: datetime | None = None,
     ) -> Campaign:
         moment = now_or(now)
         campaign = Campaign(
@@ -574,6 +693,7 @@ class InMemoryCampaignStore:
             name=check_name(name),
             created_at=moment,
             updated_at=moment,
+            tone=check_tone(tone),
         )
         twin = fake(unit)
         self._rows.add(twin, campaign.id, campaign)
@@ -622,14 +742,9 @@ class InMemoryCampaignStore:
             return None
         if found.name == named:
             return found
-        renamed = Campaign(
-            id=found.id,
-            owner_id=found.owner_id,
-            name=named,
-            created_at=found.created_at,
-            updated_at=now_or(now),
-            archived_at=found.archived_at,
-        )
+        # `replace`, never a constructor call naming the fields: a column added
+        # later (0013's among them) is then carried rather than dropped.
+        renamed = replace(found, name=named, updated_at=now_or(now))
         self._rows.replace(twin, campaign_id, renamed)
         return renamed
 
@@ -648,16 +763,46 @@ class InMemoryCampaignStore:
             return False
         moment = now_or(now)
         self._rows.replace(
-            twin,
-            campaign_id,
-            Campaign(
-                id=found.id,
-                owner_id=found.owner_id,
-                name=found.name,
-                created_at=found.created_at,
-                updated_at=moment,
-                archived_at=moment if archived else None,
-            ),
+            twin, campaign_id, replace(found, updated_at=moment, archived_at=moment if archived else None)
+        )
+        return True
+
+    def set_tone(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        tone: str | None,
+        now: datetime | None = None,
+    ) -> Campaign | None:
+        checked = check_tone(tone)
+        twin = fake(unit)
+        found = self._rows.visible(twin).get(campaign_id)
+        if found is None or found.owner_id != owner_id:
+            return None
+        if found.tone == checked:
+            return found
+        changed = replace(found, tone=checked, updated_at=now_or(now))
+        self._rows.replace(twin, campaign_id, changed)
+        return changed
+
+    def set_concluded(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        concluded: bool,
+        now: datetime | None = None,
+    ) -> bool:
+        twin = fake(unit)
+        found = self._rows.visible(twin).get(campaign_id)
+        if found is None or found.owner_id != owner_id or found.is_concluded == concluded:
+            return False
+        moment = now_or(now)
+        self._rows.replace(
+            twin, campaign_id, replace(found, updated_at=moment, concluded_at=moment if concluded else None)
         )
         return True
 
