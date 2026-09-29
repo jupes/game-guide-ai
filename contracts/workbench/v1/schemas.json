@@ -16,6 +16,7 @@
     "FieldPatchRequest",
     "DocumentCreateRequest",
     "RestoreRequest",
+    "DocumentDeleteRequest",
     "EditRequest",
     "EditInvocation",
     "LibraryQuery",
