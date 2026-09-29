@@ -3420,7 +3420,13 @@ def test_an_offer_is_created_open_for_fourteen_days_and_names_no_account(world: 
     assert (made.campaign_id, made.participant_id, made.offered_by) == (campaign, seat, world.owner)
     assert (made.address, made.address_key) == ("Wren@Example.com", "wren@example.com")
     assert made.expires_at - made.created_at == OFFER_LIFETIME and made.outcome is None
-    assert "Wren" not in repr(made) and "example" not in repr(made)
+    # `repr(made)` also prints the offer's three random ids (secrets.token_urlsafe),
+    # and "Wren" or "example" can turn up in one by chance. Take those ids out
+    # and look at everything else the record prints.
+    rendered = repr(made)
+    for random_id in (made.id, made.campaign_id, made.participant_id):
+        rendered = rendered.replace(random_id, "")
+    assert "Wren" not in rendered and "example" not in rendered
 
 
 def test_a_seat_holds_one_open_offer_and_the_refusal_names_nothing(world: World) -> None:
