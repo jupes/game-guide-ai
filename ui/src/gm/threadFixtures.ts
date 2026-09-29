@@ -7,8 +7,8 @@
  * follow `contracts/workbench/v1/TimelineEntry.json`.
  */
 
-import { parseTimelineEntry } from './contracts'
-import type { TimelineItem } from './contracts'
+import { ToolInvocationRequestSchema, parseTimelineEntry } from './contracts'
+import type { TimelineItem, ToolInvocationRequest } from './contracts'
 import type { LoadTimelinePageFn } from './gmTimeline'
 
 function entry(raw: Record<string, unknown>): TimelineItem {
@@ -181,4 +181,26 @@ export function pagedTimeline(pages: readonly (readonly TimelineItem[])[]): Load
     return { kind: 'ok' as const, page: { conversation_id: conversationId, items: [...(pages[index] ?? [])], next_cursor: next } }
   }
   return Object.assign(load, { cursors })
+}
+
+/** The conversation and campaign the pending-work fixtures belong to (1kg.3.5). */
+export const LIVE_CONVERSATION = '0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d'
+export const LIVE_CAMPAIGN = 'cmp_4b1d9e7a'
+
+/**
+ * A start as the client sends it (1kg.3.5's pending-work model), parsed by the
+ * contract's own strict schema so no test or story can hold a request the
+ * server would refuse as malformed. An `/npc` start in LIVE_CONVERSATION
+ * unless overridden.
+ */
+export function toolRequest(overrides: Record<string, unknown> = {}): ToolInvocationRequest {
+  return ToolInvocationRequestSchema.parse({
+    schema_version: 1,
+    invocation_id: 'inv_11ve000000000001',
+    tool_id: 'npc',
+    brief: 'the hooded stranger at the bar',
+    campaign_id: LIVE_CAMPAIGN,
+    conversation_id: LIVE_CONVERSATION,
+    ...overrides,
+  })
 }

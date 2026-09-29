@@ -115,10 +115,10 @@ Attachment **metadata** only (extracted text never leaves the server); health + 
 | --- | --- |
 | `401` | No / invalid / expired session, or the account no longer exists |
 | `403` | Wrong role for the channel (GM is DM-only), or another user's conversation |
-| `422` | Validation (empty prompt, unknown mode, bad upload body, bad credentials shape) |
+| `422` | Validation (empty prompt, unknown mode, bad upload body, bad credentials shape), or a request the model provider rejects as invalid, at generation or at query embedding (`invalid_request`) |
 | `429` | Auth attempt budget exhausted for this account or source — carries `Retry-After` and `X-Auth-Throttled: 1`. That header marks the response as *ours*: Cloud Run also returns 429 when no instance is available, and nothing else distinguishes them |
-| `502` | LLM upstream failed (timeout/rate limit) — retryable |
-| `503` | Retrieval backend, embedding (missing `OPENAI_API_KEY`), store or auth unavailable, `SESSION_SECRET` unusable, or hashing capacity exhausted |
+| `502` | Generation's LLM upstream failed (timeout, connection, 5xx, credentials, quota) — retryable where the body says so. Never an embedding failure: that is a `503` |
+| `503` | Retrieval backend (vector search, chunk fetch, the GM secondary corpus), embedding (a missing `OPENAI_API_KEY`, or any embeddings API failure except an invalid request), store or auth unavailable, the conversation routing store (strategy binding) unavailable, `SESSION_SECRET` unusable, or hashing capacity exhausted. A reranker failure is not an error: the answer keeps the vector order |
 | `500` | Bug in our code (full traceback logged) |
 
 History writes are **best-effort by design**: a failed persist logs a warning and never

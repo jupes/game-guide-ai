@@ -55,6 +55,7 @@ from . import (
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .db import Database, PoolSettings
+from .evidence import RetrievalStageError
 from .hashing import (
     DUMMY_PASSWORD_HASH,
     HashingCapacityError,
@@ -181,6 +182,25 @@ _ERROR_DETAIL: dict[str, str] = {
     "upstream_unavailable": "the model provider is temporarily unavailable",
     "unknown": "an unexpected upstream error occurred",
 }
+
+
+def _retrieval_stage_error(exc: RetrievalStageError) -> HTTPException:
+    """The /chat answer to a typed retrieval-stage fault (agent-forge-harness-xiu.2.3).
+
+    A request the provider refused as invalid (an over-long prompt the
+    embeddings API rejects, say) keeps the D4 `invalid_request` 422: retrying
+    cannot help, so a 503 "try again" would be false. Any other embed fault is
+    the embedding backend's 503, and any other stage the retrieval backend's.
+    Never the cause's `Retry-After`: the 429 belonged to a provider call the
+    client did not make."""
+    if exc.outcome == "rejected":
+        status_code, retryable = ERROR_STATUS["invalid_request"]
+        return HTTPException(status_code=status_code, detail={
+            "category": "invalid_request", "retryable": retryable, "message": _ERROR_DETAIL["invalid_request"],
+        })
+    if exc.stage == "embed":
+        return HTTPException(status_code=503, detail="embedding backend unavailable")
+    return HTTPException(status_code=503, detail="retrieval backend unavailable")
 
 
 def normalize_llm_error(exc: BaseException) -> str:
@@ -523,6 +543,26 @@ def _auth_lookup[T](what: str, call: Callable[[], T]) -> T:
     except _AUTH_BACKEND_ERRORS as exc:
         log.warning("auth store unavailable (%s)", what, exc_info=True)
         raise HTTPException(status_code=503, detail="auth backend unavailable") from exc
+
+
+def _routing_store[T](conversation_id: str, call: Callable[[], T]) -> T:
+    """Run a conversation-routing (strategy binding) store call, failing CLOSED
+    on a backend outage with the ownership lookup's handled 503 (xiu.2.3, N-6).
+
+    The binding lives on the same `chat.conversations` row as ownership. An
+    outage here used to escape `chat()` before its `try:` as Starlette's raw
+    500, with no JSON body, no security headers and no chat metrics. Only
+    `_AUTH_BACKEND_ERRORS` are translated: the block's own 409 and 422 pass
+    through, and a bug stays a 500. The log line names the class, never the
+    message, and says which store it was, apart from the ownership lookup's."""
+    try:
+        return call()
+    except _AUTH_BACKEND_ERRORS as exc:
+        log.warning(
+            "conversation routing store unavailable (conversation_id=%s, error=%s)",
+            conversation_id, type(exc).__name__,
+        )
+        raise HTTPException(status_code=503, detail="authorization backend unavailable") from exc
 
 
 # Any secret shipped in an example/template is public by definition — copying it
@@ -1163,7 +1203,10 @@ def chat(
     # again instead of refusing a retired id the client was never told about
     # (pr156 M-1). A client that ignores `routing` altogether keeps being
     # answered by the successor on every turn.
-    existing_binding = store.conversation_binding(conversation_id) if store is not None else None
+    existing_binding = (
+        _routing_store(conversation_id, lambda: store.conversation_binding(conversation_id))
+        if store is not None else None
+    )
     strategy: Literal["auto", "manual"]
     manual_alias: str | None
     requested: str
@@ -1198,10 +1241,10 @@ def chat(
         if req.model_preference == requested:
             # The client already names the successor: it has seen a healed
             # turn, so the stored binding follows it and this turn is ordinary.
-            store.rebind_conversation_strategy(
+            _routing_store(conversation_id, lambda: store.rebind_conversation_strategy(
                 conversation_id, strategy=strategy, manual_alias=manual_alias,
                 catalog_revision=CATALOG_REVISION,
-            )
+            ))
         else:
             # A healed turn. `fallback_from` is the retired pick's public id;
             # PUBLIC_MODELS.get, not public_model_id, since a removed alias
@@ -1220,7 +1263,9 @@ def chat(
         requested = req.model_preference
         requested_profile = None if requested == "auto" else get_profile_by_public_id(requested)
         if requested != "auto" and requested_profile is None:
-            requested_profile = _pre_d9_binding(store, conversation_id, requested)
+            requested_profile = _routing_store(
+                conversation_id, lambda: _pre_d9_binding(store, conversation_id, requested),
+            )
             if requested_profile is None:
                 raise HTTPException(
                     status_code=422, detail=f"unknown or disabled model: {requested!r}",
@@ -1229,10 +1274,10 @@ def chat(
         strategy = "auto" if requested == "auto" else "manual"
         manual_alias = None if requested_profile is None else requested_profile.alias
         if store is not None:
-            bound_strategy, bound_alias = store.claim_conversation_strategy(
+            bound_strategy, bound_alias = _routing_store(conversation_id, lambda: store.claim_conversation_strategy(
                 conversation_id, strategy=strategy, manual_alias=manual_alias,
                 catalog_revision=CATALOG_REVISION,
-            )
+            ))
             if (bound_strategy, bound_alias) != (strategy, manual_alias):
                 raise HTTPException(
                     status_code=409,
@@ -1307,14 +1352,26 @@ def chat(
             user_message_id=user_message_id, assistant_message_id=assistant_message_id,
         )
         return resp
+    except RetrievalStageError as exc:
+        # xiu.2.3: a typed retrieval-stage fault, never a generation error. One
+        # content-free line per lost stage the turn carries.
+        for attempt in exc.attempts or (exc.attempt(),):
+            log.warning(
+                "retrieval stage failed on /chat (mode=%s, conversation_id=%s, source=%s, stage=%s, "
+                "outcome=%s, error=%s)",
+                req.mode.value, conversation_id, attempt.source_kind, attempt.stage, attempt.outcome,
+                attempt.error_class,
+            )
+        raise _retrieval_stage_error(exc) from exc
     except _LLM_ERRORS as exc:
         # D4: normalize to a bounded category, then look up its status/
         # retryable pair — replaces the old blanket "LLM error -> 502".
         category = normalize_llm_error(exc)
         status_code, retryable = ERROR_STATUS[category]
+        # The class, never the message: a provider error can echo the prompt (N-1).
         log.warning(
-            "LLM error on /chat (mode=%s, conversation_id=%s, category=%s): %s: %s",
-            req.mode.value, conversation_id, category, type(exc).__name__, exc,
+            "LLM error on /chat (mode=%s, conversation_id=%s, category=%s, error=%s)",
+            req.mode.value, conversation_id, category, type(exc).__name__,
         )
         headers: dict[str, str] = {}
         if category == "rate_limit":
@@ -1333,16 +1390,16 @@ def chat(
     except _DB_ERRORS as exc:
         # Retrieval backend (Postgres/pgvector) unavailable — upstream, retryable.
         log.warning(
-            "retrieval backend error on /chat (mode=%s, conversation_id=%s): %s: %s",
-            req.mode.value, conversation_id, type(exc).__name__, exc,
+            "retrieval backend error on /chat (mode=%s, conversation_id=%s, error=%s)",
+            req.mode.value, conversation_id, type(exc).__name__,
         )
         raise HTTPException(status_code=503, detail="retrieval backend unavailable") from exc
     except EmbeddingUnavailableError as exc:
         # Embedding can't run (missing OPENAI_API_KEY) — service-side
         # unavailability, not a crash (1em.3; previously sys.exit killed the worker).
         log.warning(
-            "embedding unavailable on /chat (mode=%s, conversation_id=%s): %s",
-            req.mode.value, conversation_id, exc,
+            "embedding unavailable on /chat (mode=%s, conversation_id=%s, error=%s)",
+            req.mode.value, conversation_id, type(exc).__name__,
         )
         raise HTTPException(status_code=503, detail="embedding backend unavailable") from exc
     except Exception:

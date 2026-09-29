@@ -29,6 +29,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from httpx import Response
 from langchain_core.messages import AIMessage
+from pydantic import TypeAdapter, ValidationError
 
 import config
 from service import ratelimit, tool_invocations, tool_invocations_api, tracing, usage_capture, workbench_api
@@ -742,6 +743,29 @@ def test_c6_a_timeout_then_a_repeat_passes_every_guard_again_and_keeps_one_entry
         assert world.stores.invocations.attempts_since(unit, T0) == 2
 
 
+def test_c6b_while_a_retry_runs_its_entry_and_a_read_agree(world: World, client: TestClient) -> None:
+    """I-17 (§5.6 "entry replaced"): admitting a retry rewrites the timeline
+    entry in T1, so during attempt 2 a GET and the entry say the same thing."""
+    table = world.table()
+    world.executors[ToolId.NPC].behaviour = _raise(_timeout())
+    assert post(client, table).json()["status"] == "failed"
+    [failed_entry] = world.entries(table)
+    assert (failed_entry["invocation"]["status"], failed_entry["invocation"]["attempt"]) == ("failed", 1)
+    seen: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    def look_while_working(ctx: ExecutionContext) -> Any:
+        [entry] = world.entries(table)
+        seen.append((status_of(TestClient(app), table).json(), entry["invocation"]))
+        return npc_result()
+
+    world.executors[ToolId.NPC].behaviour = look_while_working
+    world.now[0] = T0 + timedelta(seconds=30)
+    assert post(client, table).json()["status"] == "done"
+    [(read, entry)] = seen
+    assert (read["status"], read["attempt"], read["error"]) == ("working", 2, None)
+    assert entry == read
+
+
 def test_c7_a_final_failure_is_answered_unchanged(world: World, client: TestClient) -> None:
     """M-C7, C-9: content_filter is final."""
     import openai
@@ -875,6 +899,32 @@ def test_d7_a_cancel_past_the_deadline_ends_the_attempt_expired_and_flags_nothin
     assert status_of(client, table).json() == answer
     assert world.entries(table)[0]["invocation"] == answer
     assert [a.outcome for a in world.attempts(table)] == ["expired"]
+
+
+def test_d8_a_cancel_is_never_throttled_and_never_counted(world: World, client: TestClient,
+                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    """I-15: with the GM's window spent, a cancel of a working invocation, its
+    repeat and a cancel of a done one still answer 200 and spend no token of
+    the window /chat shares (I-10), add no attempt and write no ledger row."""
+    table = world.table()
+    _admit(world, table)
+    world.executors[ToolId.NPC].behaviour = _one_provider_call
+    assert post(client, table, invocation_id=INV2).json()["status"] == "done"
+    _spend_the_window(GM_A)
+    spent = _spent_throttle(monkeypatch)
+    assert post(client, table, invocation_id=INV3).status_code == 429
+    assert spent == [GM_A], "the positive control: the spy sees a spend and the window is shut"
+    rows_before, ledger_before = world.rows(), list(world.sink.rows)
+    assert len(ledger_before) == 1, "the positive control: INV2's attempt wrote its row"
+    answers = [cancel_of(client, table), cancel_of(client, table), cancel_of(client, table, INV2)]
+    assert [r.status_code for r in answers] == [200, 200, 200]
+    assert [(r.json()["status"], r.json()["cancel_requested"]) for r in answers] == [
+        ("working", True), ("working", True), ("done", True)]
+    assert spent == [GM_A]
+    assert world.sink.rows == ledger_before
+    _, attempts_before, _ = rows_before
+    _, attempts_after, _ = world.rows()
+    assert attempts_after == attempts_before
 
 
 # ── E. Expiry and fencing ────────────────────────────────────────────────────
@@ -1355,7 +1405,49 @@ def test_a7_the_brief_never_leaves_through_any_answer_or_log(world: World, clien
         assert all(CANARY not in str(arg) for arg in (record.args or ()))
 
 
+@pytest.mark.parametrize(("where", "raised"), [
+    ("run", lambda: ValueError(f"could not parse {CANARY}")),
+    ("run", lambda: _canary_validation_error()),
+    ("finish", lambda: ValueError(f"document title {CANARY} refused")),
+    ("finish", lambda: _canary_validation_error()),
+], ids=["run-value-error", "run-validation-error", "finish-value-error", "finish-validation-error"])
+def test_a7b_what_an_executor_raises_is_logged_by_its_class_only(
+        world: World, client: TestClient, caplog: pytest.LogCaptureFixture, where: str,
+        raised: Callable[[], Exception]) -> None:
+    """I-24, SEC-20/21 (M-A10): an exception's text can quote the brief or a
+    provider's answer, so `execute` and `_finished` log its class alone. A run
+    that raises is a failed attempt; a finish that raises is the 503."""
+    caplog.set_level(logging.DEBUG)
+    exc = raised()
+    assert CANARY in str(exc), "the positive control: the text a leak would log"
+    table = world.table()
+    if where == "run":
+        world.executors[ToolId.NPC].behaviour = _raise(exc)
+    else:
+        world.executors[ToolId.NPC].finish = _raise_now(exc)  # type: ignore[method-assign]
+    response = post(client, table)
+    assert response.status_code == (200 if where == "run" else 503)
+    assert where == "finish" or response.json()["status"] == "failed"
+    assert CANARY not in response.text
+    failed = "tool attempt failed" if where == "run" else "tool finish failed"
+    [logged] = [record.getMessage() for record in caplog.records if record.getMessage().startswith(failed)]
+    for record in caplog.records:
+        assert CANARY not in record.getMessage()
+        assert all(CANARY not in str(arg) for arg in (record.args or ()))
+    assert CANARY not in caplog.text
+    assert logged.endswith(f"error={type(exc).__name__})")
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _canary_validation_error() -> ValidationError:
+    """A pydantic error whose text quotes its input, as `input_value=...`."""
+    try:
+        TypeAdapter(int).validate_python(CANARY)
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("the canary validated as an int")
 
 
 class _ChatService:

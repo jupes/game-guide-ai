@@ -36,8 +36,9 @@ off by default — see tracing.py).
 from __future__ import annotations
 
 import logging
+import operator
 from collections.abc import Hashable
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypedDict
 
 # Runtime import (not TYPE_CHECKING): `add_node` resolves each node's type hints.
 from langchain_core.runnables import RunnableConfig
@@ -49,6 +50,19 @@ from ingestion.scope import scope_for_mode
 
 from . import usage_capture
 from .attachments import cap_text
+
+# Runtime imports (not TYPE_CHECKING): GraphState's `attempts` annotation is
+# resolved when LangGraph builds the state schema, reducer included.
+from .evidence import (
+    CORPUS_DB_FAULTS,
+    EMBED_FAULTS,
+    SECONDARY_FAULTS,
+    SECONDARY_NEVER_TYPED,
+    EvidenceAttempt,
+    RerankOrderInvalid,
+    RetrievalStageError,
+    attempt_for_fault,
+)
 from .generate import (
     _looks_like_statblock,
     assemble_context,
@@ -86,6 +100,10 @@ class GraphState(TypedDict, total=False):
     chunks: list[RetrievedChunk]
     result: RetrievalResult
     secondary_result: SecondaryResult     # GM parallel branch output (gm only)
+    # Degraded retrieval stages (xiu.2.3; internal, content-free). A list
+    # reducer, not last-value-wins: in GM both fan-out branches may write in
+    # one superstep.
+    attempts: Annotated[list[EvidenceAttempt], operator.add]
     # File attachments (swe1.6) — a conversation's uploaded-file text, injected
     # as a sibling context source. Present ⇒ the gate relaxes (an off-corpus
     # "ask about my file" question must still generate, not refuse).
@@ -131,6 +149,10 @@ def build_rag_graph(svc: RagService) -> Any:
         token = usage_capture.begin_embedding_scope(config)
         try:
             return {"emb": svc.retriever.embed(state["prompt"])}
+        except EMBED_FAULTS as exc:
+            # xiu.2.3: an embeddings fault is a retrieval-stage fault, never
+            # the generation branch's D4 category.
+            raise RetrievalStageError.from_fault("embed", exc) from exc
         finally:
             usage_capture.end_embedding_scope(token)
 
@@ -153,18 +175,29 @@ def build_rag_graph(svc: RagService) -> Any:
         return ["search"]
 
     def secondary_node(state: GraphState) -> GraphState:
-        return {"secondary_result": svc.secondary.retrieve(state["prompt"])}
+        try:
+            return {"secondary_result": svc.secondary.retrieve(state["prompt"])}
+        except SECONDARY_NEVER_TYPED:
+            raise  # an authorization denial is never an outage (see evidence.py)
+        except SECONDARY_FAULTS as exc:
+            raise RetrievalStageError.from_fault("secondary", exc) from exc
 
     def search_node(state: GraphState) -> GraphState:
-        chunks = svc.retriever.search(
-            state["emb"], state["prompt"], TOP_K,
-            state["classes"], state["entities"],
-            state["effective_ctypes"], state["allowed_books"],
-        )
+        try:
+            chunks = svc.retriever.search(
+                state["emb"], state["prompt"], TOP_K,
+                state["classes"], state["entities"],
+                state["effective_ctypes"], state["allowed_books"],
+            )
+        except CORPUS_DB_FAULTS as exc:
+            raise RetrievalStageError.from_fault("vector_search", exc) from exc
         return {"chunks": chunks}
 
     def fetch_texts_node(state: GraphState) -> GraphState:
-        full, book_by_id = svc.retriever.fetch(state["chunks"])
+        try:
+            full, book_by_id = svc.retriever.fetch(state["chunks"])
+        except CORPUS_DB_FAULTS as exc:
+            raise RetrievalStageError.from_fault("fetch", exc) from exc
         result = assemble_result(
             state["chunks"], full, book_by_id,
             state["classes"], state["entities"], state["ctypes"],
@@ -183,9 +216,18 @@ def build_rag_graph(svc: RagService) -> Any:
 
     def rerank_node(state: GraphState) -> GraphState:
         # top1/answerable stay pre-rerank (parity with the composed retrieve()).
+        # xiu.2.3: ranking is garnish. A reranker fault, or an order that is not
+        # a permutation of the texts (which would drop or repeat evidence), is
+        # recorded and the vector order kept; the chunks are only reordered
+        # after the order is known to be valid.
         result = state["result"]
         texts = [result.text_for(c) for c in result.chunks]
-        order = svc.reranker.rerank(state["prompt"], texts)
+        try:
+            order = list(svc.reranker.rerank(state["prompt"], texts))
+            if sorted(order) != list(range(len(texts))):
+                raise RerankOrderInvalid("the reranker did not return a permutation of the texts")
+        except Exception as exc:
+            return {"attempts": [attempt_for_fault("rerank", exc)]}
         result.chunks = [result.chunks[i] for i in order]
         return {"result": result}
 
