@@ -111,7 +111,7 @@ export function CampaignPicker(props: CampaignPickerProps): React.JSX.Element {
 }
 
 function Picker({ onSelected }: CampaignPickerProps): React.JSX.Element {
-  const { list, selection, loadCampaigns, loadMoreCampaigns, selectCampaign, createCampaign } = useCampaign()
+  const { enabled, list, selection, loadCampaigns, loadMoreCampaigns, selectCampaign, createCampaign } = useCampaign()
   const heading = React.useRef<HTMLHeadingElement>(null)
   const nameField = React.useRef<HTMLInputElement | HTMLTextAreaElement>(null)
   const ids = React.useId()
@@ -124,9 +124,11 @@ function Picker({ onSelected }: CampaignPickerProps): React.JSX.Element {
   const [createNote, setCreateNote] = React.useState('')
   const [retryShown, pressRetry] = useRetrying(list.kind === 'failed', list.kind === 'loading')
 
+  // `enabled` too: the same user id losing and regaining campaigns keeps the
+  // list 'idle' across the reset, and the new account must still be read.
   React.useEffect(() => {
-    if (list.kind === 'idle') loadCampaigns()
-  }, [list.kind, loadCampaigns])
+    if (enabled && list.kind === 'idle') loadCampaigns()
+  }, [enabled, list.kind, loadCampaigns])
 
   const items = list.kind === 'idle' ? [] : list.items
   const announcement = track === 'create' ? createNote : track === 'list' ? listAnnouncement(list) : ''
@@ -155,8 +157,11 @@ function Picker({ onSelected }: CampaignPickerProps): React.JSX.Element {
         onSelected?.(outcome.campaign)
         return
       }
-      setNameError(outcome.kind === 'invalid' ? NAME_INVALID : CREATE_FAILED)
-      if (outcome.kind === 'failed') setCreateNote(CREATE_FAILED)
+      // Announced as well as described: focus already on the field (an Enter)
+      // moves nowhere, so nothing would re-read the new description.
+      const problem = outcome.kind === 'invalid' ? NAME_INVALID : CREATE_FAILED
+      setNameError(problem)
+      setCreateNote(problem)
       nameField.current?.focus()
     })
   }

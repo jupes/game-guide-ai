@@ -83,7 +83,9 @@ export const LoadingDark = dark(Loading)
 export const Failed = state(() => json({}, 503), async ({ canvasElement }) => {
   const canvas = within(canvasElement)
   await expect(await canvas.findByRole('button', { name: 'Retry' })).toBeVisible()
-  await expect(canvas.getAllByText("Couldn't load campaigns")[0]).toBeInTheDocument()
+  // The visible line, not the status node; a failed read never invites a create.
+  await expect(canvas.getByText("Couldn't load campaigns", { selector: 'p:not([role])' })).toBeVisible()
+  await expect(canvas.queryByText('Create your first campaign — only a name is required')).toBeNull()
   await expectTouchTargets(canvas, ['Retry', 'Create campaign'])
 })
 export const FailedDark = dark(Failed)

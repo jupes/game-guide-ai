@@ -46,13 +46,14 @@ function stubServer(route: (call: Call) => Reply | 'defer') {
   return { fetchImpl, calls, lines: () => calls.map((c) => `${c.method} ${c.url}`) }
 }
 
-const live = {} as { c: CampaignContextValue; userId: string }
+const live = {} as { c: CampaignContextValue; userId: string; role: string }
 function Probe(): null {
   const c = useCampaign()
   const { user } = useCurrentUser()
   React.useLayoutEffect(() => {
     live.c = c
     live.userId = user.id
+    live.role = user.role
   })
   return null
 }
@@ -85,13 +86,13 @@ async function mount(route: (call: Call) => Reply | 'defer') {
   const status = view.container.querySelector('[role="status"]')
   const statusAtMount = status?.textContent
   await waitFor(() => expect(live.c.enabled).toBe(true))
-  /** Another tab signed in as `email`: this tab's background re-check sees it. */
-  const switchTo = async (email: string) => {
-    vi.mocked(api.getMe).mockResolvedValue({ kind: 'ok', user: { email, role: 'dm' } })
+  /** Another tab signed in as `email` with `role`: this tab's background re-check sees it. */
+  const switchTo = async (email: string, role: 'dm' | 'player' = 'dm') => {
+    vi.mocked(api.getMe).mockResolvedValue({ kind: 'ok', user: { email, role } })
     act(() => {
       for (const c of channels) c.onmessage?.(new MessageEvent('message', { data: { v: 1, kind: 'identity-changed' } }))
     })
-    await waitFor(() => expect(live.userId).toBe(email))
+    await waitFor(() => expect([live.userId, live.role]).toEqual([email, role]))
   }
   return { server, onSelected, announced, statusAtMount, switchTo, stop: () => observer.disconnect() }
 }
@@ -130,7 +131,9 @@ describe('the picker states (§12.2, T2-8, T2-9)', () => {
       return reads === 1 ? { status: 503 } : 'defer'
     })
     const retry = await screen.findByRole('button', { name: 'Retry' })
-    expect(screen.getAllByText("Couldn't load campaigns").length).toBeGreaterThan(0)
+    // The visible line, not the status node (H-1); a failed read never invites a create.
+    expect(screen.getByText("Couldn't load campaigns", { selector: 'p:not([role])' })).toBeVisible()
+    expect(screen.queryByText('Create your first campaign — only a name is required')).toBeNull()
     await userEvent.click(retry)
     expect(retry).toBeInTheDocument()
     expect(retry).toHaveAttribute('aria-disabled', 'true')
@@ -152,6 +155,20 @@ describe('the picker states (§12.2, T2-8, T2-9)', () => {
     expect(m.server.lines().at(-1)).toBe('GET /campaigns?cursor=next_1')
     expect(Array.from(screen.getByRole('list').querySelectorAll('button'), (b) => b.textContent)).toEqual(['Name of cmp_C', 'Name of cmp_B', 'Name of cmp_A'])
     expect(screen.getByRole('heading', { name: 'Your campaigns' })).toHaveFocus()
+  })
+
+  it('a Load more that fails says so in visible text, keeps the list and keeps Load more focused (D-5)', async () => {
+    const m = await mount(({ url }) => (url === '/campaigns'
+      ? { status: 200, body: page([campaign('cmp_C')], 'next_1') }
+      : { status: 503 }))
+    const more = await screen.findByRole('button', { name: 'Load more' })
+    await userEvent.click(more)
+    expect(await screen.findByText("Couldn't load campaigns", { selector: 'p:not([role])' })).toBeVisible()
+    expect(more).toHaveFocus()
+    expect(more).not.toHaveAttribute('aria-disabled')
+    expect(Array.from(screen.getByRole('list').querySelectorAll('button'), (b) => b.textContent)).toEqual(['Name of cmp_C'])
+    m.stop()
+    expect(m.announced).toEqual(['Loading campaigns…', 'Campaigns loaded', 'Loading campaigns…', "Couldn't load campaigns"])
   })
 
   it('choosing a campaign selects it and tells the host', async () => {
@@ -179,6 +196,45 @@ describe('a provider mounted for an account already signed in', () => {
     expect(await screen.findByRole('button', { name: 'Name of cmp_A' })).toBeInTheDocument()
     expect(server.lines()).toEqual(['GET /campaigns'])
   })
+
+  it('reads again when the same email can use campaigns again: dm, then player, then dm (M-2)', async () => {
+    const m = await mount(() => ({ status: 200, body: page([campaign('cmp_A')]) }))
+    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await m.switchTo('ada@example.com', 'player')
+    await waitFor(() => expect(live.c.enabled).toBe(false))
+    expect(screen.queryByRole('list')).toBeNull()
+    await m.switchTo('ada@example.com', 'dm')
+    expect(await screen.findByRole('button', { name: 'Name of cmp_A' })).toBeInTheDocument()
+    expect(m.server.lines()).toEqual(['GET /campaigns', 'GET /campaigns'])
+  })
+})
+
+describe('a switch guard that says no (D-3)', () => {
+  it('a vetoed choice and a vetoed create change nothing: no selection, no host call, no POST, no failure shown', async () => {
+    const m = await mount(({ method }) => (method === 'POST'
+      ? { status: 201, body: campaign('cmp_new') }
+      : { status: 200, body: page([campaign('cmp_A'), campaign('cmp_B')]) }))
+    const asked: (string | null)[] = []
+    live.c.registerSwitchGuard(({ campaignId }) => {
+      asked.push(campaignId)
+      return false
+    })
+    const chosen = await screen.findByRole('button', { name: 'Name of cmp_B' })
+    await userEvent.click(chosen)
+    const field = screen.getByLabelText('Campaign name')
+    await userEvent.type(field, 'The Drowned Crown')
+    const create = screen.getByRole('button', { name: 'Create campaign' })
+    await userEvent.click(create)
+    await waitFor(() => expect(create).toBeEnabled())
+    expect(asked).toEqual(['cmp_B', null])
+    expect(m.onSelected).not.toHaveBeenCalled()
+    expect(chosen).toHaveAttribute('aria-pressed', 'false')
+    expect(live.c.selection.kind).toBe('none')
+    expect(m.server.lines()).toEqual(['GET /campaigns'])
+    expect(field).not.toHaveAttribute('aria-invalid')
+    expect(screen.queryByText("Couldn't create the campaign")).toBeNull()
+    expect(field).toHaveValue('The Drowned Crown')
+  })
 })
 
 describe('the create form (T2-10, critic 15)', () => {
@@ -190,6 +246,19 @@ describe('the create form (T2-10, critic 15)', () => {
     expect(field).toHaveAccessibleDescription('Give the campaign a name of 1 to 120 characters on one line.')
     expect(field).toHaveFocus()
     expect(m.server.lines()).toEqual(['GET /campaigns'])
+  })
+
+  it('a refused name sent with Enter from the field is announced once, through the one status node (M-3)', async () => {
+    const m = await mount(() => ({ status: 200, body: page([]) }))
+    const field = await screen.findByLabelText('Campaign name')
+    await screen.findByText('Create your first campaign — only a name is required')
+    await userEvent.type(field, '{Enter}')
+    await waitFor(() => expect(field).toHaveAttribute('aria-invalid', 'true'))
+    expect(field).toHaveFocus()
+    expect(document.querySelectorAll('[role="status"], [aria-live]')).toHaveLength(1)
+    expect(m.server.lines()).toEqual(['GET /campaigns'])
+    m.stop()
+    expect(m.announced).toEqual(['Loading campaigns…', 'Campaigns loaded', 'Give the campaign a name of 1 to 120 characters on one line.'])
   })
 
   it('a failed create is sent once, announced, keeps the name, re-reads the list with a GET, and never retries', async () => {
