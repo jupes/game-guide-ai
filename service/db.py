@@ -108,6 +108,13 @@ class AdvisoryLock(IntEnum):
     #: It serialises one owner's offers ACROSS campaigns, which the campaign lock
     #: alone cannot, and it is the last lock an offer takes before its insert.
     SEAT_OFFERS = 3
+    #: Per GM, around the admission of a tool attempt (1kg.4.1, X-5, SEC-34): the
+    #: in-flight cap is counted and the new attempt written under it, across
+    #: every campaign, tab and instance. It is ALWAYS its transaction's first
+    #: lock, and nothing that holds an RQ-3 lock ever asks for it — so a
+    #: transaction holding it can never take a campaign lock afterwards
+    #: (`lock_campaign` refuses with `CampaignLockOrder`).
+    WORKBENCH_IN_FLIGHT = 4
 
 
 def advisory_key(key: str) -> int:

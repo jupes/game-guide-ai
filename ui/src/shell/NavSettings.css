@@ -20,6 +20,12 @@
   justify-content: space-between;
 }
 
+/* A select is as wide as its longest option; in a 232px drawer (a 280px
+   folding phone) that ran 2px past the panel. It shrinks instead. */
+.nav-settings .model-picker__select {
+  min-width: 0;
+}
+
 .nav-settings__theme {
   display: flex;
   align-items: center;

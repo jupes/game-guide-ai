@@ -75,12 +75,134 @@ export async function expectTheme(theme: 'light' | 'dark'): Promise<void> {
 /** WCAG 1.4.10: no page-level horizontal scroll. Internal scrollers (the
  * channel strip, a code block) are allowed; the document is not.
  *
- * Blind inside the workspace: `.workspace-shell`, its body and `<main>` are
- * all `overflow: hidden`, so anything too wide in there is clipped before it
- * reaches the document. The workspace stories add expectWorkspaceFits. */
+ * The document's scrollWidth alone is blind wherever a box clips: the ds
+ * Card, the transcript, the workspace's boxes and the open drawer all hide
+ * what is too wide for them before it reaches the document. So this also
+ * runs expectNothingClipped over the whole page. */
 export async function expectNoPageOverflow(): Promise<void> {
   const root = document.documentElement
   await expect(root.scrollWidth).toBeLessThanOrEqual(root.clientWidth)
+  await expectNothingClipped(document.body)
+}
+
+/** Horizontal scrollers by design: what passes their edge is scrolled to, not
+ * lost. Every other box that clips is checked. */
+const INTENDED_SCROLLERS = ['.app-header__channels', '.aether-markdown pre', '.aether-markdown table'] as const
+
+/** Controls that draw their own text: their DOM children (a select's options,
+ * a textarea's value) are not laid out where they sit. */
+const OPAQUE = new Set(['SELECT', 'TEXTAREA', 'SCRIPT', 'STYLE', 'TEMPLATE'])
+
+/** Sub-pixel slack: a fractional edge against an integer clientWidth. */
+const EDGE_SLACK = 0.5
+
+/** What a node is measured against: its nearest clipping box, the viewport,
+ * or nothing, inside a box that clips on purpose. */
+type ClipContext = Element | 'viewport' | 'exempt'
+
+/** Clipping on purpose: an ellipsised line, a visually hidden label (`clip`
+ * or `clip-path`), or an intended scroller. */
+function clipsOnPurpose(element: Element, style: CSSStyleDeclaration): boolean {
+  return (
+    style.textOverflow === 'ellipsis' ||
+    style.clip !== 'auto' ||
+    style.clipPath !== 'none' ||
+    INTENDED_SCROLLERS.some((selector) => element.matches(selector))
+  )
+}
+
+function describeNode(node: Node): string {
+  if (!(node instanceof Element)) return `text "${(node.textContent ?? '').trim().slice(0, 32)}"`
+  const classes = Array.from(node.classList, (name) => `.${name}`).join('')
+  const label = node.getAttribute('aria-label')
+  return `${node.tagName.toLowerCase()}${classes}${label === null ? '' : ` "${label}"`}`
+}
+
+/** What a node paints, left to right: an element's border box, or a text
+ * node's line boxes. Null when it paints nothing. */
+function paintedExtent(node: Node): { left: number; right: number } | null {
+  if (node instanceof Element) {
+    const box = node.getBoundingClientRect()
+    return box.width > 0 && box.height > 0 ? box : null
+  }
+  if ((node.textContent ?? '').trim() === '') return null
+  const range = document.createRange()
+  range.selectNodeContents(node)
+  const lines = Array.from(range.getClientRects()).filter((line) => line.width > 0)
+  if (lines.length === 0) return null
+  return { left: Math.min(...lines.map((line) => line.left)), right: Math.max(...lines.map((line) => line.right)) }
+}
+
+/**
+ * WCAG 1.4.10 where expectNoPageOverflow is blind: no box on the phone hides
+ * content off its side. A box clips when its `overflow-x` is not `visible`
+ * (the ds Card, the transcript, the workspace's boxes, the open drawer, whose
+ * `overflow-y: auto` computes `overflow-x: auto`). Every element and every
+ * line of text under `root` must lie inside the padding box of its nearest
+ * clipping box, on both sides; a `position: fixed` element (the drawer) is
+ * measured against the viewport, since no ancestor's overflow clips it.
+ * What only reaches into a box's padding is still painted, so it passes.
+ * Ellipsised lines, visually hidden labels and INTENDED_SCROLLERS are skipped
+ * with everything inside them. A failure names the outermost node that
+ * crosses and the box it crosses, not just a number.
+ */
+export async function expectNothingClipped(root: Element): Promise<void> {
+  await document.fonts.ready
+  const childContext = new Map<Node, ClipContext>()
+  const crossing = new Map<Node, ClipContext>()
+  const edges = new Map<Element, readonly [number, number]>()
+  const clipEdges = (context: Element | 'viewport'): readonly [number, number] => {
+    if (context === 'viewport') return [0, document.documentElement.clientWidth]
+    const known = edges.get(context)
+    if (known !== undefined) return known
+    const left = context.getBoundingClientRect().left + context.clientLeft
+    const measured = [left, left + context.clientWidth] as const
+    edges.set(context, measured)
+    return measured
+  }
+  const problems: string[] = []
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) =>
+      node.parentElement !== null && OPAQUE.has(node.parentElement.tagName)
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT,
+  })
+  for (let node: Node | null = root; node !== null; node = walker.nextNode()) {
+    const parent = node === root ? null : node.parentNode
+    let context = parent === null ? 'viewport' : (childContext.get(parent) ?? 'viewport')
+    if (context === 'exempt') {
+      childContext.set(node, 'exempt')
+      continue
+    }
+    const element = node instanceof Element ? node : node.parentElement
+    if (element === null) continue
+    const style = getComputedStyle(element)
+    if (node === element) {
+      if (clipsOnPurpose(element, style)) {
+        childContext.set(node, 'exempt')
+        continue
+      }
+      if (style.position === 'fixed') context = 'viewport'
+      childContext.set(node, style.overflowX === 'visible' ? context : element)
+    }
+    if (style.visibility === 'hidden') continue
+    const painted = paintedExtent(node)
+    if (painted === null) continue
+    const [left, right] = clipEdges(context)
+    const pastLeft = left - painted.left
+    const pastRight = painted.right - right
+    if (pastLeft <= EDGE_SLACK && pastRight <= EDGE_SLACK) continue
+    crossing.set(node, context)
+    // The outermost node only: what is inside it crosses with it.
+    if (parent !== null && crossing.get(parent) === context) continue
+    const sides = [
+      pastLeft > EDGE_SLACK ? `${Math.round(pastLeft)}px left` : '',
+      pastRight > EDGE_SLACK ? `${Math.round(pastRight)}px right` : '',
+    ].filter((side) => side !== '')
+    const box = context === 'viewport' ? 'the viewport' : describeNode(context)
+    problems.push(`${describeNode(node)} crosses ${box} by ${sides.join(' and ')}`)
+  }
+  await expect(problems).toEqual([])
 }
 
 /** The workspace's clipping boxes, outermost first. */
@@ -90,8 +212,9 @@ const WORKSPACE_CLIPS = ['.workspace-shell', '.workspace-shell__body', '.workspa
  * The workspace fits the viewport, measured where expectNoPageOverflow cannot
  * see. Each clipping box clips nothing (scrollWidth is never less than
  * clientWidth, so "clips nothing" is a difference of 0), and the composer,
- * its box and "Send message" lie inside the viewport from edge to edge. Each
- * failure names the box or control that broke, not just a number.
+ * its box and "Send message" lie inside the viewport from edge to edge. Then
+ * expectNothingClipped covers every other box. Each failure names the box or
+ * control that broke, not just a number.
  */
 export async function expectWorkspaceFits(canvasElement: HTMLElement): Promise<void> {
   await document.fonts.ready
@@ -115,6 +238,8 @@ export async function expectWorkspaceFits(canvasElement: HTMLElement): Promise<v
     return { name, pastLeft: Math.max(0, -left), pastRight: Math.max(0, right - window.innerWidth) }
   })
   await expect(offScreen).toEqual(controls.map(([name]) => ({ name, pastLeft: 0, pastRight: 0 })))
+  // Every other clipping box: the transcript, and the drawer when it is open.
+  await expectNothingClipped(canvasElement)
 }
 
 /** One column: each element starts at or below the bottom of the one before. */
