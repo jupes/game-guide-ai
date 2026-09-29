@@ -45,6 +45,7 @@ import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
 
+from service import authz_reconcile
 from service import migrations as mig
 from service.audit_log import (
     ActorKind,
@@ -112,7 +113,7 @@ OTHER_CAMPAIGN = "cmp_" + "b" * 22
 PARTICIPANT = "prt_" + "a" * 22
 SESSION = "ses_" + "a" * 22
 #: `1kg.2.2`'s reconciliation kind, by value: what End, Rotate and expiry enqueue.
-RECONCILE = "authz.reconcile"
+RECONCILE = authz_reconcile.KIND
 
 #: A second is long enough that a lock taken first is always taken first, and
 #: short enough that a test which should time out does not hold the job up.
@@ -3055,11 +3056,9 @@ def test_the_slot_clearing_extension_point_is_empty_in_this_bead() -> None:
 
 
 def _reconciliation(jobs: Any) -> Callable[[Any, str], int]:
-    """How the lifecycle enqueues `authz.reconcile` in these tests: the
-    kind's `{campaign_id}` payload with no dedupe key, standing in for
-    `1kg.2.2`'s `service/authz_reconcile.py` until that module is on the base,
-    when this becomes its own helper, the one `service/app.py` wires in."""
-    return lambda unit, campaign_id: jobs.enqueue(unit, RECONCILE, {"campaign_id": campaign_id})
+    """How the lifecycle enqueues `authz.reconcile` — `1kg.2.2`'s helper, the
+    one `service/app.py` wires in, and never a second kind."""
+    return lambda unit, campaign_id: authz_reconcile.enqueue(jobs, unit, campaign_id)
 
 
 def _lifecycle(

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import importlib
 import logging
 import os
 import threading
@@ -292,6 +291,7 @@ def _build_stores(db: Database) -> None:
     # The job outbox's drivers (1kg.2.7). A bead that adds a kind calls
     # `runner.register(kind, handler)` here; with one registered, the request
     # hook is on for signed-in requests.
+    from . import authz_reconcile
     from .audit_log import PostgresAuditLog
     from .campaign_store import PostgresCampaignStore
     from .table_session_store import PostgresTableSessionStore, no_slots
@@ -299,14 +299,6 @@ def _build_stores(db: Database) -> None:
 
     jobs = PostgresJobQueue(db)
     runner = JobRunner(jobs, single_flight=job_driver.JOB_LOCK)
-
-    def reconcile(unit: Any, campaign_id: str) -> int:
-        # justification: the unit is the lifecycle's own `UnitOfWork`, passed
-        # through. 1kg.2.2's module is resolved when a revocation first runs, so
-        # this build starts before that module is on its base (draft only).
-        enqueue = importlib.import_module(".authz_reconcile", __package__).enqueue
-        return int(enqueue(jobs, unit, campaign_id))
-
     # A table session's expiry (1kg.2.3): the delayed job its Start enqueues at
     # `expires_at`, retried until it succeeds. Its reconciliation is 1kg.2.2's
     # `authz.reconcile`, enqueued through that module and never named here.
@@ -316,7 +308,7 @@ def _build_stores(db: Database) -> None:
         sessions=PostgresTableSessionStore(slot_clear=no_slots),
         audit=PostgresAuditLog(),
         jobs=jobs,
-        reconcile=reconcile,
+        reconcile=lambda unit, campaign_id: authz_reconcile.enqueue(jobs, unit, campaign_id),
     )
     runner.register(EXPIRE_KIND, table_sessions.expire_handler())
     _state["jobs"] = job_driver.JobDriver(runner, healthy=_schema_understood)

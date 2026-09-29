@@ -24,6 +24,7 @@ from typing import Any
 import psycopg
 import pytest
 
+from service import authz_reconcile
 from service.audit_log import InMemoryAuditLog
 from service.campaign_store import InMemoryCampaignStore, MissingParent
 from service.db import InMemoryDatabase
@@ -62,9 +63,7 @@ class _Twin:
             sessions=self.sessions,
             audit=self.audit,
             jobs=self.jobs,
-            reconcile=lambda unit, campaign_id: self.jobs.enqueue(
-                unit, "authz.reconcile", {"campaign_id": campaign_id}
-            ),
+            reconcile=lambda unit, campaign_id: authz_reconcile.enqueue(self.jobs, unit, campaign_id),
             clock=clock,
         )
 
@@ -168,7 +167,7 @@ def test_three_deadlocks_are_the_database_unavailable_and_nothing_is_half_writte
     assert flaky.opened == 3
     with twin.db.transaction() as unit:
         untouched = twin.sessions.get(unit, session_id)
-        assert untouched is not None and untouched.is_live and untouched.link_generation == 1
+        assert untouched.is_live and untouched.link_generation == 1
         assert (untouched.reveal_epoch, untouched.audio_epoch) == (0, 0)
     assert len(twin.ledger(campaign)) == ledger and twin.queued() == queued
 
