@@ -262,7 +262,14 @@ def test_an_absorbed_enqueue_is_not_claimable_until_the_absorber_commits():
 def test_a_job_somebody_has_started_absorbs_nothing():
     """Its handler may already have read the state it acts on. Work requested
     after that must get a row of its own — absorbed into the running job, it
-    would be deleted with it, never having run."""
+    would be deleted with it, never having run.
+
+    The in-memory mirror of e7a R2 (mutant M25): the Postgres queue reaches
+    this same rule through a retry loop — a claim that wins the row between
+    the absorbing INSERT and its SELECT makes the loop's next turn insert
+    (`tests/test_db_postgres.py::test_a_claim_between_the_insert_and_the_select_makes_the_next_turn_insert`).
+    The twin has no such loop and needs none: a job already claimed before
+    `enqueue` is even called is enough to prove the same thing directly."""
     queue = _queue()
     first = _enqueue(queue, kind="upload.sweep", dedupe_key="session:S")
     (running,) = queue.claim(["upload.sweep"], now=T0)
