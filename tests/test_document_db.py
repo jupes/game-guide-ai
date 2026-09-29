@@ -2175,7 +2175,7 @@ DOCUMENT_INDEXES = {
         "CREATE UNIQUE INDEX documents_participant_uidx ON campaign.documents USING btree "
         "(linked_participant_id) WHERE (linked_participant_id IS NOT NULL)"
     ),
-    # 0017 (1ir.2.1): the one NON-partial unique index, for the composite
+    # 0018 (1ir.2.1): the one NON-partial unique index, for the composite
     # foreign keys of field_eligibility and projection_queue. It is over `id`
     # and `campaign_id`, which no statement updates, so no UPDATE of a document
     # becomes a key update; tests/test_migrations_db.py's T-A10 proves it

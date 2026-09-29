@@ -20,6 +20,13 @@ naming them are read-only `SELECT`s over the 0001 columns (and the `SELECT`
 inside `append`'s `INSERT`). It takes no explicit lock of any kind: an entry is
 an append-only child of a conversation, and nothing reads it under one.
 
+**The table's one other writer** (`1kg.3.5`). A session divider is written by
+`service/session_divider_store.py`, never through `append`, which refuses one
+before any statement: a divider must be guarded by the session's campaign as
+well as its owner, and this module never names `1kg.2.4`'s columns. That store
+validates through `validated_entry` and its twin writes `TwinEntryRow`s, so both
+writers keep one validation path and one row shape.
+
 **The one update** (`1kg.4.1`, I-17 and the lead's C-19). A `tool` entry carries
 its invocation, and an invocation moves on after the turn is stored — done,
 failed, retried, cancelled — so `replace_tool_invocation` rewrites that one
@@ -166,6 +173,23 @@ def _checked(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tuple
     return validated, json.dumps(validated.model_dump(mode="json"))
 
 
+def validated_entry(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tuple[AnyEntry, str]:
+    """`append`'s validation, for the table's other writer
+    (`service/session_divider_store.py`): the same refusals, before any
+    statement, and the same stored JSON."""
+    return _checked(entry, created_at)
+
+
+def _appendable(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tuple[AnyEntry, str]:
+    """`_checked`, and never a session divider (`1kg.3.5`, I-6). A divider's
+    only writer is the guarded divider store, so `append`, which guards the owner
+    alone, can never store one."""
+    validated, payload = _checked(entry, created_at)
+    if validated.entry_kind == "session_divider":
+        raise EntryInvalid(["entry_kind"])
+    return validated, payload
+
+
 def _checked_tool(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tuple[ToolEntry, str]:
     """`_checked`, and a `tool` entry: the only kind that is ever replaced."""
     validated, payload = _checked(entry, created_at)
@@ -256,7 +280,8 @@ class TimelineStore(Protocol):
         **The caller mints** (`new_entry_id`) and builds the entry around the
         id, and `created_at` is the row's time: an entry whose payload disagrees
         with either is `EntryMismatch`, and one the contract refuses is
-        `EntryInvalid` — both before any statement runs. A conversation that is
+        `EntryInvalid` — both before any statement runs, as is a session
+        divider, which only the divider store writes. A conversation that is
         missing or not `owner_id`'s, or a linked message row that is not this
         conversation's, or an entry or message row already stored, is
         `EntryNotStored`, from a guard in the statement.
@@ -389,7 +414,7 @@ class PostgresTimelineStore:
         user_message_id: int | None = None, assistant_message_id: int | None = None,
     ) -> str:
         conn = pg(unit).conn
-        validated, payload = _checked(entry, created_at)
+        validated, payload = _appendable(entry, created_at)
         row = conn.execute(_INSERT_ENTRY, (
             validated.entry_id, validated.entry_kind, validated.schema_version, created_at, payload,
             user_message_id, assistant_message_id,
@@ -456,9 +481,10 @@ _TWIN_SEQ = itertools.count(1)
 
 
 @dataclass(frozen=True)
-class _TwinRow:
+class TwinEntryRow:
     """One entry row as the twin holds it. The payload is kept as JSON text and
-    parsed on every read, as JSONB is: no reader can reach the stored value."""
+    parsed on every read, as JSONB is: no reader can reach the stored value.
+    Public because the divider store's twin writes the same rows (`1kg.3.5`)."""
 
     conversation_id: str
     entry_kind: str
@@ -469,6 +495,20 @@ class _TwinRow:
     payload_json: str
     user_message_id: int | None
     assistant_message_id: int | None
+
+    @classmethod
+    def new(
+        cls, conversation_id: str, validated: AnyEntry, payload_json: str, created_at: datetime, *,
+        user_message_id: int | None = None, assistant_message_id: int | None = None,
+    ) -> TwinEntryRow:
+        """A validated entry as a new row at the row's time: its own id, kind
+        and version, and the next value of the twin's `BIGSERIAL`."""
+        return cls(
+            conversation_id=conversation_id, entry_kind=validated.entry_kind,
+            schema_version=validated.schema_version, entry_id=validated.entry_id,
+            created_at=created_at, seq=next(_TWIN_SEQ), payload_json=payload_json,
+            user_message_id=user_message_id, assistant_message_id=assistant_message_id,
+        )
 
     def stored(self) -> StoredEntryRow:
         return StoredEntryRow(
@@ -490,7 +530,7 @@ class InMemoryTimelineStore:
     """
 
     def __init__(self, db: InMemoryDatabase, *, messages: MessageStore) -> None:
-        self._rows: Staging[_TwinRow] = shared_rows(db, "timeline_entries")
+        self._rows: Staging[TwinEntryRow] = shared_rows(db, "timeline_entries")
         self._messages = messages
 
     def owner_of(self, unit: UnitOfWork, conversation_id: str) -> int | None:
@@ -521,7 +561,7 @@ class InMemoryTimelineStore:
         user_message_id: int | None = None, assistant_message_id: int | None = None,
     ) -> str:
         tx = fake(unit)
-        validated, payload = _checked(entry, created_at)
+        validated, payload = _appendable(entry, created_at)
         linked = {i for i in (user_message_id, assistant_message_id) if i is not None}
         visible = self._rows.visible(tx)
         already = {
@@ -534,10 +574,8 @@ class InMemoryTimelineStore:
             or linked & already
         ):
             raise EntryNotStored("the entry was not stored")
-        self._rows.add(tx, validated.entry_id, _TwinRow(
-            conversation_id=conversation_id, entry_kind=validated.entry_kind,
-            schema_version=validated.schema_version, entry_id=validated.entry_id,
-            created_at=created_at, seq=next(_TWIN_SEQ), payload_json=payload,
+        self._rows.add(tx, validated.entry_id, TwinEntryRow.new(
+            conversation_id, validated, payload, created_at,
             user_message_id=user_message_id, assistant_message_id=assistant_message_id,
         ))
         return validated.entry_id

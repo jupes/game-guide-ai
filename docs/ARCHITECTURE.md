@@ -242,10 +242,10 @@ retired, and `0009` drops their tables.
 | `campaign.table_sessions` | a GM running a table now | at most one `live` session **per GM across campaigns** (a partial unique index), both epochs, and `link_generation`, which **is the admission generation** (SEC-42; renamed in prose only); `start_command_id` (one session per start command per campaign, a partial unique index, so a retried Start answers its session) and `rotate_command_id` (no index: it is read from the row its Rotate already holds, and an index would make Rotate block every screen-grant insert, RQ-3), both from `0016`; `(campaign_id, gm_user_id)` references `campaigns (id, owner_id)`, so the GM **is** the owner (AUD-1); `state` and `ended_at` are kept in step by a CHECK, and a row still `live` past `expires_at` is dead to every reader |
 | `campaign.table_credentials` | a **screen grant**: a browser the owner made a table screen (SEC-48, D-13) | bound to the admission generation it was minted in; live only while unrevoked, its session live and unexpired, and its generation the session's current one — the reader's test, never `revoked_at` alone (`1kg.2.3`). The table link and the join are gone (threat model section 15), and `0012` dropped the join counter |
 | `audit.events` | one recorded decision | append-only; `campaign_id_tombstone` has **no** foreign key, so rows outlive their campaign |
-| `campaign.field_eligibility` | one classified field of a document (`0017`, `1ir.2.1`): the flat field key, its class, a principal list for `participants` / `characters` / `groups`, and who set it (`gm` or `default`) | a revealable field with **no row is unclassified**, and a reset deletes the row; a key off the type's allowlist has no row and is `gm_only` by construction, and an orphan row is ignored (ED-5, ED-24); the key is never `all` (ED-8); only a `gm` row is wider than `gm_only` (ED-7); the list is 1 to 100 ids, strictly ascending, each checked live in this campaign when written; `(document_id, campaign_id)` → `documents`, cascading |
-| `campaign.groups` | a GM's named group of seats (`0017`, O-3) | the name is private GM text under the alias rules, unique among live groups by `name_fold` (a partial index); marked removed, never deleted, because a disclosure will remember its group; at most 50 live per campaign |
-| `campaign.group_members` | a seat in a group (`0017`) | removal is a DELETE; `(group_id, campaign_id)` and `(participant_id, campaign_id)` are composite foreign keys; a removed seat's row stays and is never read for it |
-| `campaign.projection_queue` | a field whose table-namespace rows the projector must rebuild, stamped with the `authz_revision` that queued it (`0017`) | written only by `advance_authz_revision(project=...)`; ids and a key, never a class, a list or text; drained by the projector (`1ir.2.3`) |
+| `campaign.field_eligibility` | one classified field of a document (`0018`, `1ir.2.1`): the flat field key, its class, a principal list for `participants` / `characters` / `groups`, and who set it (`gm` or `default`) | a revealable field with **no row is unclassified**, and a reset deletes the row; a key off the type's allowlist has no row and is `gm_only` by construction, and an orphan row is ignored (ED-5, ED-24); the key is never `all` (ED-8); only a `gm` row is wider than `gm_only` (ED-7); the list is 1 to 100 ids, strictly ascending, each checked live in this campaign when written; `(document_id, campaign_id)` → `documents`, cascading |
+| `campaign.groups` | a GM's named group of seats (`0018`, O-3) | the name is private GM text under the alias rules, unique among live groups by `name_fold` (a partial index); marked removed, never deleted, because a disclosure will remember its group; at most 50 live per campaign |
+| `campaign.group_members` | a seat in a group (`0018`) | removal is a DELETE; `(group_id, campaign_id)` and `(participant_id, campaign_id)` are composite foreign keys; a removed seat's row stays and is never read for it |
+| `campaign.projection_queue` | a field whose table-namespace rows the projector must rebuild, stamped with the `authz_revision` that queued it (`0018`) | written only by `advance_authz_revision(project=...)`; ids and a key, never a class, a list or text; drained by the projector (`1ir.2.3`) |
 
 ### The uncampaigned state
 
@@ -416,7 +416,7 @@ no server, database or role default can change what the lock is reasoning about.
 
 ### The authorisation revision and the projection revision
 
-Added by `1ir.2.1` (migration `0017`, the shared eligibility ADR's RQ-1 to
+Added by `1ir.2.1` (migration `0018`, the shared eligibility ADR's RQ-1 to
 RQ-12, the live-session plan's section 4.3). This is the helper contract every
 mutation that changes who may be shown something adopts.
 
@@ -472,7 +472,7 @@ widening with items gives `(8, 7)` and a queued item, and a following
 narrowing with no items gives `(9, 7)`. Only the projector sets
 `projection_revision := authz_revision`, and only in the slice that finds the
 queue empty (RQ-8). The previous release's helper leaves `(8, 7)` with an empty
-queue — work to do, not a failure. A campaign that existed before `0017` reads
+queue — work to do, not a failure. A campaign that existed before `0018` reads
 `(n, 0)` for the same reason: there is no backfill.
 
 **5. Lock order for these tables**, added to RQ-3's: `authz_state` → group row
@@ -866,6 +866,30 @@ row is taken from either source, because an older exchange may still wait
 below it. A page may therefore hold fewer entries than asked for — even none —
 with a non-null `next_cursor`; the walk still ends, and it never loses, repeats
 or reorders an entry.
+
+**Session dividers** (`agent-forge-harness-1kg.3.5`). A `session_divider` entry
+marks where a live table session started or ended in a thread, and `/recap`
+reads a thread from its latest start. The server writes every divider; no client
+and no route can. A Start that opened a session, and a closing whose outcome is
+`ended` or `expired` (an End, an expiry, or a Rotate or End of an overdue
+session), each enqueue one `timeline.session_divider` job `{session_id,
+boundary}`, last in the transaction that made the transition, so End, Rotate
+and expiry gain no lock, wait or refusal. A Rotate that rotated moves neither
+boundary (REVEAL-17), and a replayed Start or a repeated End enqueues nothing.
+The job (`service/session_dividers.py`, statements in
+`service/session_divider_store.py`) writes one divider into each conversation of
+the session's owner that is linked to the session's campaign, not archived and
+created by the boundary's time: the newest 100. A divider's `created_at` is the
+boundary's own time (`started_at`, or `ended_at`, which an expiry sets to
+`expires_at`), however late the job runs. `0017`'s partial unique index and the
+insert's matching conflict target keep one divider per thread, session and
+boundary under every job repeat. Dividers are ordinary stored entries: they
+page, reload and cascade like every other. Two consequences follow. A thread is
+only a divider target once it is linked to a campaign, and nothing in the client
+links one yet (`1kg.2.5`), so production writes no divider until it does; there
+is no backfill. And a thread created or linked mid-session gets the `end`
+without the `start`, so its recap reads from its beginning, which is not all
+play when the thread was created before the Start and linked after it.
 
 ## Workbench routes: the posture every new route inherits
 

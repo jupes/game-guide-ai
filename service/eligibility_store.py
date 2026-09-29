@@ -103,7 +103,7 @@ LIST_PREFIX: Final = {
     FieldClass.GROUPS: ident.GROUP,
 }
 #: The most ids one list may name: the participant roster's bound, pinned to
-#: `workbench_contracts.PRESENCE_MAX_PARTICIPANTS` and to 0017 by a test.
+#: `workbench_contracts.PRESENCE_MAX_PARTICIPANTS` and to 0018 by a test.
 PRINCIPAL_IDS_MAX: Final = 100
 #: The most live groups one campaign may hold (SEC-35).
 GROUPS_PER_CAMPAIGN_MAX: Final = 50
@@ -469,7 +469,7 @@ def _queued(row: tuple) -> QueuedProjection:
 
 class PostgresEligibilityStore:
     """`campaign.field_eligibility`, `campaign.groups` and
-    `campaign.group_members` (migration 0017), and reads of
+    `campaign.group_members` (migration 0018), and reads of
     `campaign.projection_queue`, which only `advance_authz_revision` writes."""
 
     # ── Reads ────────────────────────────────────────────────────────────────

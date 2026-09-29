@@ -169,7 +169,7 @@ def test_a_fresh_database_gets_every_migration_once(dsn):
             "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
             "WHERE table_schema = 'campaign' AND table_name = 'authz_state' "
             "AND column_name = 'projection_revision'"
-        ).fetchone() == ("bigint", "NO", "0"), "0017 adds projection_revision, NOT NULL DEFAULT 0"
+        ).fetchone() == ("bigint", "NO", "0"), "0018 adds projection_revision, NOT NULL DEFAULT 0"
     for retired in (
         "campaign.enrolment_codes",
         "campaign.device_credentials",
@@ -347,7 +347,7 @@ def _a_whole_campaign(conn, owner: int) -> None:
 
 
 def _eligibility_rows(conn, campaign: str = CAMPAIGN_ID, document: str = DOCUMENT_ID) -> None:
-    """0017's four tables, one row each: a group with the campaign's seat in it,
+    """0018's four tables, one row each: a group with the campaign's seat in it,
     a field classified for that group, and a queued projection of it."""
     conn.execute(
         "INSERT INTO campaign.groups (id, campaign_id, name, name_fold) VALUES (%s, %s, 'Scouts', 'scouts')",
@@ -1305,7 +1305,7 @@ def test_a_command_id_column_holds_the_contracts_shape_or_nothing(dsn):
             )
 
 
-# ── Field eligibility, groups and the projection revision (0017, 1ir.2.1) ────
+# ── Field eligibility, groups and the projection revision (0018, 1ir.2.1) ────
 
 #: Found by name, like SEAT_OFFERS, so a renumbering at merge is an edit elsewhere.
 ELIGIBILITY = next(m for m in PACKAGED if m.name == "field_eligibility_and_groups")
@@ -1317,7 +1317,7 @@ OTHER_PARTICIPANT_ID = "prt_" + "b" * 22
 
 
 def _two_campaigns(conn) -> None:
-    """Campaign A with the whole campaign (its seat, sheet and 0017 rows), and
+    """Campaign A with the whole campaign (its seat, sheet and 0018 rows), and
     campaign B with a seat and a sheet of its own and nothing classified."""
     owner = _one_user(conn)
     _a_whole_campaign(conn, owner)
@@ -1532,7 +1532,7 @@ def test_rows_naming_another_campaigns_document_or_seat_are_refused(dsn, stateme
 
 def test_deleting_a_document_takes_its_eligibility_rows_and_queue_items(dsn):
     """T-A8's document half (the account half is the cascade test above, whose
-    CAMPAIGN_TABLES now names 0017's four tables): kills a dropped
+    CAMPAIGN_TABLES now names 0018's four tables): kills a dropped
     `ON DELETE CASCADE` (M-A13)."""
     mig.migrate(dsn)
     with connect(dsn) as conn:

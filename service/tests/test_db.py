@@ -1157,7 +1157,7 @@ def test_a_nested_writer_that_would_queue_is_refused_and_leaves_nothing_behind()
 
 
 def test_the_twin_refuses_a_projection_revision_ahead_of_the_authorisation_revision():
-    """0017's CHECK, kept by the twin: only the projector (1ir.2.3) will stage
+    """0018's CHECK, kept by the twin: only the projector (1ir.2.3) will stage
     one directly, and it must not be able to run ahead."""
     db = InMemoryDatabase()
     campaign = _at(db, 3, 3)

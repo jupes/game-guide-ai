@@ -3,7 +3,7 @@
 --
 -- The shared eligibility / display / disclosure ADR (docs/adr/
 -- shared-eligibility-display-disclosure.md, ACCEPTED) and the live-session
--- plan's section 4.3. It is expand-only: 0001 to 0016 are released and are not
+-- plan's section 4.3. It is expand-only: 0001 to 0017 are released and are not
 -- edited, nothing is dropped and no existing row is rewritten.
 --
 -- WHAT THIS FILE DOES NOT ADD. There is no characters table: a character IS a
