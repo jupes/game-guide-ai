@@ -29,6 +29,14 @@
  * first exchange that arrived (tabIndex -1), as VersionList's Load more does
  * (1kg.3.7). Only a keyboard press scrolls to it; otherwise the reader's place,
  * which ChatPane holds still as the older turns arrive, stays where it is.
+ *
+ * **Session dividers** (1kg.3.5) are drawn between exchanges, never inside
+ * one: a line of visible text with the boundary's `<time>`, between two
+ * decorative rules. A divider is text, not a widget (I-11): no
+ * `role="separator"` (its children would become presentational and hide the
+ * label from assistive technology), no live region (a hydrated divider is not
+ * news, A-29), and not in the Tab order. It takes `tabIndex={-1}` only so
+ * Load earlier's hand-off above can land on it when it is the first item.
  */
 
 import * as React from 'react'
@@ -43,7 +51,8 @@ import { AssistantText } from './AssistantText'
 import { toSpellCardProps, toStatBlockCardProps } from './adapters'
 import type { ChatMode } from '../api'
 import type { DocumentLink } from './contracts'
-import type { AnswerState, GmTurn, LaneAnswer } from './gmTimeline'
+import { DIVIDER_COPY, formatDividerTime } from './gmTimeline'
+import type { AnswerState, DividerTurn, ExchangeTurn, GmTurn, LaneAnswer } from './gmTimeline'
 import { LANE_COPY } from './laneState'
 import { toolById } from './registry'
 import './AssistantLane.css'
@@ -73,6 +82,9 @@ export interface GmThreadProps {
   /** A failed walk (§12.2). STATE-1: the thread above stays exactly as it was. */
   earlierError?: string | null
   onLoadEarlier?: () => void
+  /** 1kg.3.5: how a divider writes its time. Defaults to the reader's locale
+   * (`formatDividerTime`); tests pin a zone and a locale. */
+  formatTime?: (iso: string) => string
 }
 
 export function GmThread({
@@ -82,6 +94,7 @@ export function GmThread({
   loadingEarlier = false,
   earlierError = null,
   onLoadEarlier,
+  formatTime = formatDividerTime,
 }: GmThreadProps): React.JSX.Element {
   const buttonRef = React.useRef<HTMLButtonElement>(null)
   const firstExchangeRef = React.useRef<HTMLDivElement>(null)
@@ -128,17 +141,26 @@ export function GmThread({
       {hasEarlier && onLoadEarlier && (
         <LoadEarlier loading={loadingEarlier} error={earlierError} onLoadEarlier={handleLoadEarlier} buttonRef={buttonRef} />
       )}
-      {turns.map((turn, index) => (
-        <div
-          key={turn.key}
-          className="gm-thread__exchange"
-          tabIndex={-1}
-          ref={index === 0 ? firstExchangeRef : undefined}
-        >
-          <Narration turn={turn} />
-          <Outcome turn={turn} onOpenDocument={onOpenDocument} />
-        </div>
-      ))}
+      {turns.map((turn, index) =>
+        turn.kind === 'divider' ? (
+          <Divider
+            key={turn.key}
+            turn={turn}
+            formatTime={formatTime}
+            ref={index === 0 ? firstExchangeRef : undefined}
+          />
+        ) : (
+          <div
+            key={turn.key}
+            className="gm-thread__exchange"
+            tabIndex={-1}
+            ref={index === 0 ? firstExchangeRef : undefined}
+          >
+            <Narration turn={turn} />
+            <Outcome turn={turn} onOpenDocument={onOpenDocument} />
+          </div>
+        ),
+      )}
     </>
   )
 }
@@ -182,7 +204,42 @@ function LoadEarlier({
   )
 }
 
-function Narration({ turn }: { turn: GmTurn }): React.JSX.Element | null {
+/**
+ * A session boundary (1kg.3.5, I-10, I-11): the copy, then its `<time>`; a
+ * quiet session's span reads "… to …" through a visually hidden word, never a
+ * spoken dash. The rules are drawn with borders (they survive forced colours)
+ * and are `aria-hidden`. `tabIndex={-1}`: reachable by Load earlier's hand-off
+ * alone, never by Tab.
+ */
+function Divider({
+  turn,
+  formatTime,
+  ref,
+}: {
+  turn: DividerTurn
+  formatTime: (iso: string) => string
+  ref?: React.Ref<HTMLDivElement>
+}): React.JSX.Element {
+  return (
+    <div ref={ref} className="gm-thread__divider" data-boundary={turn.boundary} tabIndex={-1}>
+      <span className="gm-thread__divider-rule" aria-hidden="true" />
+      <p className="gm-thread__divider-label">
+        {DIVIDER_COPY[turn.boundary]} <time dateTime={turn.at}>{formatTime(turn.at)}</time>
+        {turn.boundary === 'span' && (
+          <>
+            {' '}
+            <span aria-hidden="true">–</span>
+            <span className="gm-thread__sr-only">to</span>{' '}
+            <time dateTime={turn.endedAt}>{formatTime(turn.endedAt)}</time>
+          </>
+        )}
+      </p>
+      <span className="gm-thread__divider-rule" aria-hidden="true" />
+    </div>
+  )
+}
+
+function Narration({ turn }: { turn: ExchangeTurn }): React.JSX.Element | null {
   if (turn.kind === 'chat') {
     return turn.prompt === null ? null : <ChatMessage role="dm" author={GM_AUTHOR}>{turn.prompt}</ChatMessage>
   }
@@ -201,7 +258,7 @@ function Outcome({
   turn,
   onOpenDocument,
 }: {
-  turn: GmTurn
+  turn: ExchangeTurn
   onOpenDocument: (link: DocumentLink) => void
 }): React.JSX.Element | null {
   switch (turn.kind) {

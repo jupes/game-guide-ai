@@ -21,7 +21,13 @@ import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { toSpellCardProps, toStatBlockCardProps } from '../gm/adapters'
 import { GmThread } from '../gm/GmThread'
-import { exchangesForExport, turnFromExchange, turnsFromTimeline, useGmTimeline } from '../gm/gmTimeline'
+import {
+  collapseSessionSpans,
+  exchangesForExport,
+  turnFromExchange,
+  turnsFromTimeline,
+  useGmTimeline,
+} from '../gm/gmTimeline'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { useAppNav } from './AppNav'
 import { useConversationStore } from './ConversationStoreContext'
@@ -237,9 +243,12 @@ function ChatPaneBody({
   // 1kg.3.4: in the GM channel a stored entry and a live turn become the same
   // GmTurn, so a reload draws an answer exactly as it arrived. The thread's
   // empty, loading and error states are §12.2's, which are today's.
+  // 1kg.3.5 (I-10): a quiet session's start and end collapse over the WHOLE
+  // drawn list, so the pair still collapses once Load earlier prepends one
+  // half above the other.
   const timeline = useGmTimeline(conversationId, gm, loadTimeline)
   const gmTurns = React.useMemo(
-    () => (gm ? [...turnsFromTimeline(timeline.items), ...exchanges.map(turnFromExchange)] : []),
+    () => (gm ? collapseSessionSpans([...turnsFromTimeline(timeline.items), ...exchanges.map(turnFromExchange)]) : []),
     [gm, timeline.items, exchanges],
   )
   const threadError = gm ? timeline.error : historyError
