@@ -48,6 +48,8 @@ test = [
     "pytest",
     "httpx",
     "pytest-cov",
+    # The media Cloud Storage adapter's tests hold their fake to the real client.
+    "game-guide-ai[gcs]",
 ]
 # Everything CI needs to gate a change: the tests plus the static checks. Kept
 # separate from `test` so `--with '.[test]'` stays a lightweight "just run the
@@ -58,6 +60,15 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
+    "game-guide-ai[gcs]",
+]
+# The media object store on Cloud Storage (agent-forge-harness-1kg.8.1.4). An
+# extra, not a core dependency: the media capability ships off (media ADR Q-5),
+# so the default image carries no cloud client at all, and even an install that
+# has it imports it only when WORKBENCH_MEDIA_STORE=gcs (service/media_gcs.py).
+# Baking it into Dockerfile.cloud is 1kg.9.5's (docs/deploy-gcp.md section 13).
+gcs = [
+    "google-cloud-storage>=3,<4",
 ]
 # Answer-quality eval (ziw.3) — heavy + dev/CI-only, so NOT a core dependency
 # (the FastAPI service must not pull it). Run: uv run --with '.[eval]' python
