@@ -20,10 +20,18 @@ from __future__ import annotations
 import inspect
 import re
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
-from service import audit_log, campaign_store, participant_store, table_session_store
+from service import (
+    audit_log,
+    campaign_store,
+    participant_store,
+    table_session_store,
+    table_sessions,
+    workbench_contracts,
+)
 from service import campaign_identity as ident
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "sql" / "migrations"
@@ -32,6 +40,7 @@ AUDIT_SQL = (MIGRATIONS / "0005_audit_events.sql").read_text(encoding="utf-8")
 CONVERSATION_SQL = (MIGRATIONS / "0006_conversation_metadata.sql").read_text(encoding="utf-8")
 DOCUMENT_SQL = (MIGRATIONS / "0008_document_schema.sql").read_text(encoding="utf-8")
 SEAT_SQL = (MIGRATIONS / "0009_participant_accounts.sql").read_text(encoding="utf-8")
+SESSION_ACCESS_SQL = (MIGRATIONS / "0012_table_session_access.sql").read_text(encoding="utf-8")
 
 #: Every migration, sorted and concatenated. The two identifier tests below read
 #: THIS rather than one file: the prefix registry is service-wide, so a prefix
@@ -42,7 +51,7 @@ ALL_SQL = "\n".join(
     path.read_text(encoding="utf-8") for path in sorted(MIGRATIONS.glob("*.sql"))
 )
 
-STORE_MODULES = (campaign_store, participant_store, table_session_store, audit_log)
+STORE_MODULES = (campaign_store, participant_store, table_session_store, table_sessions, audit_log)
 
 
 # ── The identifier rule, spelled once ────────────────────────────────────────
@@ -331,17 +340,71 @@ def test_the_seat_migration_states_why_its_check_and_its_drops_are_safe():
     ) in prose
 
 
+
+# ── 0012: the table session without a link or a join (1kg.2.3) ──────────────
+
+#: The wire contract's `CommandId` pattern, read off the contract itself.
+COMMAND_ID_PATTERN = get_args(workbench_contracts.CommandId)[1].pattern
+
+
+def test_the_session_access_migration_is_exactly_its_five_changes():
+    """L-3, pinned as text: both drops, both columns with the contract's own
+    `CommandId` pattern, the start index's predicate, no index at all on the
+    rotate column, and the actor kinds. No transaction control, not
+    CONCURRENTLY: the runner owns the transaction."""
+    body = _statements(SESSION_ACCESS_SQL)
+    assert re.findall(r"ALTER TABLE campaign\.table_sessions DROP COLUMN (\w+);", body) == [
+        "link_digest"
+    ]
+    assert re.findall(r"DROP TABLE ([\w.]+);", body) == ["campaign.session_join_counters"]
+    for column in ("start_command_id", "rotate_command_id"):
+        check = re.search(
+            rf"ADD COLUMN {column} TEXT\s+CHECK \({column} IS NULL OR {column} ~ '([^']+)'\)", body
+        )
+        assert check is not None, column
+        assert check.group(1) == COMMAND_ID_PATTERN == table_session_store.COMMAND_ID.pattern
+    assert re.search(
+        r"CREATE UNIQUE INDEX \w+\s+ON campaign\.table_sessions \(campaign_id, start_command_id\)\s+"
+        r"WHERE start_command_id IS NOT NULL;",
+        body,
+    ), "one session per start command per campaign, partial so that it is not a key"
+    indexes = re.findall(r"CREATE (?:UNIQUE )?INDEX[^;]*;", body)
+    assert len(indexes) == 1 and not [i for i in indexes if "rotate_command_id" in i]
+    actor = re.search(
+        r"ADD CONSTRAINT events_actor_kind_check\s+CHECK \(actor_kind IN \(([^)]*)\)\);", body
+    )
+    assert actor is not None
+    assert {v.strip().strip("'") for v in actor.group(1).split(",")} == {
+        "gm", "participant", "screen", "system"
+    }
+    assert "ALTER TABLE audit.events DROP CONSTRAINT events_actor_kind_check;" in body
+    assert "CONCURRENTLY" not in body
+    assert not re.search(r"(BEGIN|COMMIT|END|ROLLBACK)\s*;", body)
+
+
+def test_the_session_access_migration_states_its_three_proofs():
+    """The file itself says why each change is safe, where the change is."""
+    prose = " ".join(
+        line.lstrip("- ").strip() for line in SESSION_ACCESS_SQL.splitlines() if line.startswith("--")
+    )
+    assert (
+        "no build that reads link_digest or session_join_counters has ever been deployed"
+    ) in prose
+    assert "the store that ships in the same change as this file reads neither" in prose
+    assert "The new columns' CHECKs validate only NULLs" in prose
+    assert "the previous build writes neither column" in prose
+    assert "no code has ever written 'guest' to audit.events" in prose
+
 # ── Digests only, in output ──────────────────────────────────────────────────
 
-#: The three methods that are allowed to hand a caller a secret in plain text —
-#: the moment it is minted, and the only moment it exists. Each returns it
-#: beside a record whose stored form is the digest. `rotate_link` is here
-#: because retiring a generation and minting the next one is a single act
-#: (SEC-9), so the new link leaves with the same call that revoked the old.
+#: The one method allowed to hand a caller a secret in plain text — the moment
+#: it is minted, and the only moment it exists — beside a record whose stored
+#: form is the digest. The table link and the join credential are gone
+#: (threat model section 15, `1kg.2.3`), so Start and Rotate mint nothing; the
+#: screen grant is the one bearer secret left (SEC-48). The lifecycle service's
+#: `mint_screen` carries it on in a record and is covered by the scan above.
 MINTING_METHODS = {
-    "start",
-    "issue_credential",
-    "rotate_link",
+    "mint_screen",
 }
 
 

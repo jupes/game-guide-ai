@@ -57,6 +57,10 @@ PARTICIPANT = "prt_" + "a" * 22
 AUDIT_SQL = (
     Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0005_audit_events.sql"
 ).read_text(encoding="utf-8")
+#: 0012 replaced 0005's actor-kind CHECK (`1kg.2.3`): `guest` went, `screen` came.
+SESSION_ACCESS_SQL = (
+    Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0012_table_session_access.sql"
+).read_text(encoding="utf-8")
 
 
 def _record(log: InMemoryAuditLog, unit: object, **changes: object) -> AuditEvent:
@@ -117,7 +121,7 @@ def test_the_action_set_is_closed_and_a_caller_cannot_invent_one():
             assert value not in str(refused.value), "a refusal never repeats what it refused"
 
 
-def test_the_fourteen_actions_sec38_names_are_the_ones_that_ship():
+def test_the_fifteen_actions_sec38_names_are_the_ones_that_ship():
     """Reveal's three and the export ones are not here: ED-18(a) makes the table
     shared, and they belong to the beads that will write them (1kg.7.1, 1kg.5.2),
     which add their own members without a migration.
@@ -126,14 +130,18 @@ def test_the_fourteen_actions_sec38_names_are_the_ones_that_ship():
     credential (D-1, D-4), so their four actions went with them, and a seat is
     now offered to an account and accepted by it. There is deliberately no
     `seat.removed`: `participant.removed` already records a seat's removal, and
-    two words for one event is the drift a closed vocabulary exists to stop."""
+    two words for one event is the drift a closed vocabulary exists to stop.
+
+    `1kg.2.3` retired the join (threat model section 15), and its refused-burst
+    row with it; the screen grant brought two: minted and revoked (SEC-48)."""
     assert {a.value for a in AuditAction} == {
         "session.started", "session.ended", "session.expired", "session.rotated",
         "participant.added", "participant.removed", "participant.linked",
         "participant.unlinked", "seat.offered", "seat.accepted",
         "campaign.archived", "campaign.restored", "campaign.deleted",
-        "join.burst_refused",
+        "screen.minted", "screen.revoked",
     }
+    assert "join.burst_refused" not in {a.value for a in AuditAction}, "retired with the join"
     assert not [a for a in AuditAction if a.value.startswith(("reveal.", "export."))]
     assert not [a for a in AuditAction if a.value.startswith(("code.", "device."))], "retired"
     assert "seat.removed" not in {a.value for a in AuditAction}
@@ -151,7 +159,7 @@ def test_a_seat_row_carries_the_seat_and_nothing_else():
             check_detail(action, {"user_id": 7})
 
 
-_WORDS = {3: "three", 14: "fourteen"}
+_WORDS = {4: "four", 15: "fifteen"}
 
 
 def test_the_module_docstrings_count_what_the_enums_hold():
@@ -272,20 +280,15 @@ def test_a_detail_of_ids_codes_keys_numbers_and_booleans_is_accepted():
     session = "ses_" + "b" * 22
     assert check_detail(
         AuditAction.SESSION_ROTATED,
-        {
-            "session_id": session,
-            "generation": 2,
-            "credentials_revoked": 3,
-            "personal_links_reset": True,
-        },
-    ) == {
-        "session_id": session,
-        "generation": 2,
-        "credentials_revoked": 3,
-        "personal_links_reset": True,
-    }
-    assert check_detail(AuditAction.JOIN_BURST_REFUSED, {"bound": "joins_per_window"}) == {
-        "bound": "joins_per_window"
+        {"session_id": session, "generation": 2, "screens_revoked": 3},
+    ) == {"session_id": session, "generation": 2, "screens_revoked": 3}
+    with pytest.raises(ValueError, match="no such detail key"):
+        check_detail(AuditAction.SESSION_ROTATED, {"personal_links_reset": True})
+    assert check_detail(
+        AuditAction.SCREEN_MINTED, {"session_id": session, "generation": 1}
+    ) == {"session_id": session, "generation": 1}
+    assert check_detail(AuditAction.SCREEN_REVOKED, {"session_id": session}) == {
+        "session_id": session
     }
     assert check_detail(AuditAction.CAMPAIGN_ARCHIVED, None) == {}
     assert check_detail(AuditAction.PARTICIPANT_ADDED, {"participant_id": None}) == {
@@ -293,9 +296,18 @@ def test_a_detail_of_ids_codes_keys_numbers_and_booleans_is_accepted():
     }, "a declared key may say that this row has no such value"
 
 
-def test_a_closed_code_is_one_of_the_agreed_set_and_nothing_else():
-    with pytest.raises(ValueError, match="one of credentials_per_generation"):
-        check_detail(AuditAction.JOIN_BURST_REFUSED, {"bound": "too_many"})
+def test_a_closed_code_is_one_of_the_agreed_set_and_nothing_else(monkeypatch):
+    """No action that ships carries a `OneOf` any more (the join's bound went
+    with the join), so the rule is proved on one this test registers itself:
+    a code outside the set is refused, naming the set and never the value."""
+    bound = OneOf(("credentials_per_generation", "joins_per_window"))
+    monkeypatch.setitem(ACTION_DETAIL, AuditAction.SCREEN_REVOKED, {"bound": bound})
+    assert check_detail(AuditAction.SCREEN_REVOKED, {"bound": "joins_per_window"}) == {
+        "bound": "joins_per_window"
+    }
+    with pytest.raises(ValueError, match="one of credentials_per_generation") as refused:
+        check_detail(AuditAction.SCREEN_REVOKED, {"bound": "too_many"})
+    assert "too_many" not in str(refused.value)
 
 
 @pytest.mark.parametrize(
@@ -408,13 +420,19 @@ def test_the_object_kind_is_one_of_the_ledgers_own_kinds():
 def test_every_kind_the_ledger_knows_is_a_thing_the_schema_mints_an_id_for():
     """The other direction, so the enum cannot quietly become somewhere to put a
     word: every member names one of the things `campaign_identity` mints an
-    identifier for. `table_credential` is not one of them because no registered
-    action is about a join credential — the bead that records one adds the
-    member together with its action, as `AuditAction`'s docstring says."""
-    minted = {audit_log.ObjectKind(kind) for kind in ("campaign", "participant", "table_session")}
-    assert minted <= set(ObjectKind)
-    assert {kind.value for kind in ObjectKind} == {"campaign", "table_session", "participant"}
-    assert len(ObjectKind) < len(ident.PREFIXES), "table_credential has no action yet"
+    identifier for — a table screen is a row of `table_credentials`, so its
+    `object_ref` is a `tcr_` id (`1kg.2.3`)."""
+    minted_as = {
+        audit_log.ObjectKind.CAMPAIGN: ident.CAMPAIGN,
+        audit_log.ObjectKind.PARTICIPANT: ident.PARTICIPANT,
+        audit_log.ObjectKind.TABLE_SESSION: ident.TABLE_SESSION,
+        audit_log.ObjectKind.TABLE_SCREEN: ident.TABLE_CREDENTIAL,
+    }
+    assert set(minted_as) == set(ObjectKind)
+    assert {kind.value for kind in ObjectKind} == {
+        "campaign", "participant", "table_session", "table_screen"
+    }
+    assert all(prefix in ident.PREFIXES for prefix in minted_as.values())
 
 
 @pytest.mark.parametrize("reason", ["", "r" * 41, "not eligible", "Rook may not see that", "rook"])
@@ -464,11 +482,18 @@ def test_the_widest_authorisation_revision_a_bigint_holds_is_accepted() -> None:
 def test_the_python_vocabularies_are_the_ones_the_migration_checks():
     """Two lists of the same strings, in two files: drift would surface as a
     production CheckViolation on a row nobody could re-send."""
-    for column, members in (("actor_kind", ActorKind), ("decision", Decision)):
-        found = re.search(rf"{column}\s+TEXT NOT NULL CHECK \({column} IN \(([^)]*)\)\)", AUDIT_SQL)
-        assert found is not None, f"0005 no longer constrains {column} with an IN list"
-        in_sql = {value.strip().strip("'") for value in found.group(1).split(",")}
-        assert in_sql == {member.value for member in members}, column
+    decision = re.search(r"decision\s+TEXT NOT NULL CHECK \(decision IN \(([^)]*)\)\)", AUDIT_SQL)
+    assert decision is not None, "0005 no longer constrains decision with an IN list"
+    in_sql = {value.strip().strip("'") for value in decision.group(1).split(",")}
+    assert in_sql == {member.value for member in Decision}
+    # 0012 replaced 0005's actor-kind CHECK, so the one in force is 0012's.
+    actor = re.search(
+        r"ADD CONSTRAINT events_actor_kind_check\s+CHECK \(actor_kind IN \(([^)]*)\)\)",
+        SESSION_ACCESS_SQL,
+    )
+    assert actor is not None, "0012 no longer constrains actor_kind with an IN list"
+    in_sql = {value.strip().strip("'") for value in actor.group(1).split(",")}
+    assert in_sql == {member.value for member in ActorKind}
 
     # `action` is deliberately NOT an IN list in the database: a later bead adds
     # a member without a migration (ED-18a). The closed set is Python's.
@@ -493,7 +518,9 @@ def test_the_audit_module_offers_no_update_and_no_delete_path():
 
     for writer in (audit_log.PostgresAuditLog, audit_log.InMemoryAuditLog):
         methods = [n for n in dir(writer) if not n.startswith("_")]
-        assert sorted(methods) == ["append", "for_campaign"], (writer.__name__, methods)
+        # `count_since` is the read SEC-35's fan-out bound needs (1kg.2.3, L-8):
+        # a count, and still no way to change or remove a row.
+        assert sorted(methods) == ["append", "count_since", "for_campaign"], (writer.__name__, methods)
 
     source = inspect.getsource(audit_log)
     statements = re.findall(r"\b(INSERT|SELECT|UPDATE|DELETE|TRUNCATE|DROP)\b\s", source)
@@ -529,14 +556,15 @@ def test_no_alias_title_or_secret_reaches_a_log_line_or_an_exception(caplog):
         with db.transaction() as unit:
             campaign = campaigns.create(unit, owner_id=1, name=PRIVATE["campaign name"])
             seat = participants.add(unit, campaign.id, alias=PRIVATE["alias"])
-            session, link = sessions.start(
+            session = sessions.start(
                 unit,
                 campaign.id,
                 owner_id=1,
                 expires_at=datetime.now(UTC) + timedelta(hours=12),
+                command_id="c" * 22,
             )
-            joined, join_secret = sessions.issue_credential(unit, campaign.id, session.id)
-            said += [repr(r) for r in (campaign, seat, session, joined)]
+            screen, screen_secret = sessions.mint_screen(unit, campaign.id, session.id, owner_id=1)
+            said += [repr(r) for r in (campaign, seat, session, screen)]
 
             with pytest.raises(ValueError) as refused:
                 participants.add(unit, campaign.id, alias="a" * 41)
@@ -553,13 +581,5 @@ def test_no_alias_title_or_secret_reaches_a_log_line_or_an_exception(caplog):
     spoken = "\n".join([*said, caplog.text])
     for kind, value in PRIVATE.items():
         assert value not in spoken, f"a {kind} reached a message"
-    for kind, value in (
-        ("table link", link),
-        ("join credential", join_secret),
-    ):
-        assert value not in spoken, f"a {kind} reached a message"
-    for kind, digest in (
-        ("link", session.link_digest or ""),
-        ("join", joined.credential_digest),
-    ):
-        assert digest not in spoken, f"a {kind} digest reached a message"
+    assert screen_secret not in spoken, "a screen grant reached a message"
+    assert screen.credential_digest not in spoken, "a screen grant's digest reached a message"

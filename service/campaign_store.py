@@ -62,6 +62,27 @@ class LiveSessionExists(CampaignStoreError):
     refuses it here, so the two cannot disagree."""
 
 
+class StartReplayed(CampaignStoreError):
+    """That campaign already has a session started by this command id
+    (`table_sessions_start_command_uidx`, migration 0012). A caller that holds
+    the campaign lock reads the replay first and answers the session it finds
+    (`service/table_sessions.py`), so this is what a caller that skipped that
+    read gets instead of a unique violation. The message names no id."""
+
+
+class NotDue(CampaignStoreError):
+    """The system's expiry was asked to finalise a session that has not reached
+    its `expires_at` yet. Refused, so that the one path that holds a session
+    without naming its owner can never be an End that skipped the owner check
+    (`1kg.2.3`, L-5)."""
+
+
+class ScreenLimit(CampaignStoreError):
+    """That session already has as many live screen grants as it may (SEC-48).
+    Raised identically by both worlds, under the session's advisory lock; the
+    message names no session, grant or account."""
+
+
 class MissingParent(CampaignStoreError, LookupError):
     """The row this write would hang off is not there: a campaign that never
     existed, one that is not this owner's, one that is archived, or a

@@ -288,9 +288,29 @@ def _build_stores(db: Database) -> None:
     from .usage_ledger import LedgerWriter, PostgresUsageLedgerStore
 
     _state["ledger"] = LedgerWriter(PostgresUsageLedgerStore(), db)
-    # The job outbox's drivers (1kg.2.7). No kind is registered yet, so the hook
-    # stays off; a bead that adds one calls `runner.register(kind, handler)` here.
-    runner = JobRunner(PostgresJobQueue(db), single_flight=job_driver.JOB_LOCK)
+    # The job outbox's drivers (1kg.2.7). A bead that adds a kind calls
+    # `runner.register(kind, handler)` here; with one registered, the request
+    # hook is on for signed-in requests.
+    from . import authz_reconcile
+    from .audit_log import PostgresAuditLog
+    from .campaign_store import PostgresCampaignStore
+    from .table_session_store import PostgresTableSessionStore, no_slots
+    from .table_sessions import EXPIRE_KIND, TableSessions
+
+    jobs = PostgresJobQueue(db)
+    runner = JobRunner(jobs, single_flight=job_driver.JOB_LOCK)
+    # A table session's expiry (1kg.2.3): the delayed job its Start enqueues at
+    # `expires_at`, retried until it succeeds. Its reconciliation is 1kg.2.2's
+    # `authz.reconcile`, enqueued through that module and never named here.
+    table_sessions = TableSessions(
+        db,
+        campaigns=PostgresCampaignStore(),
+        sessions=PostgresTableSessionStore(slot_clear=no_slots),
+        audit=PostgresAuditLog(),
+        jobs=jobs,
+        reconcile=lambda unit, campaign_id: authz_reconcile.enqueue(jobs, unit, campaign_id),
+    )
+    runner.register(EXPIRE_KIND, table_sessions.expire_handler())
     _state["jobs"] = job_driver.JobDriver(runner, healthy=_schema_understood)
 
 

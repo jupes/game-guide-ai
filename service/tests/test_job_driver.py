@@ -644,7 +644,9 @@ def test_the_stores_bring_a_driver_that_shares_the_one_job_lock():
         driver = appmod._state["jobs"]
         assert isinstance(driver, JobDriver)
         assert driver.lock is JOB_LOCK and driver.runner._single_flight is JOB_LOCK
-        assert not driver.runner.has_handlers(), "no job kind exists yet; the hook stays off"
+        handlers = driver.runner._handlers
+        assert set(handlers) == {"table_session.expire"}, "the kinds this build registers, by value"
+        assert handlers["table_session.expire"].max_attempts is None, "an expiry is retried until it runs"
         appmod._state["migrations"] = "current"
         assert driver.healthy()
         appmod._state["migrations"] = "failed"
