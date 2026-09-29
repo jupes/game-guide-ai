@@ -97,6 +97,17 @@ function SuggestionCards({ suggestions }: { suggestions: Suggestion[] }): React.
 // one named place rather than as a string literal repeated at each call site.
 const PENDING_ANNOUNCEMENT = 'Consulting the tomes…'
 
+// agent-forge-harness-8tt: crossing the composer's CHAT_TEXT_MAX_CHARS bound
+// (agent-forge-harness-764) — typically a paste, since typing one character
+// at a time past 764 is rare — is announced through the SAME single live
+// region, once each way. Deliberately generic (no character count): the
+// count is already visible text and the field's accessible description
+// (`chatPromptCounterMessage`, below the textarea) the instant it applies;
+// this only announces the crossing itself. See ADR gm-workbench-interactions
+// A-30 for the decision and docs/adr note below the announcer node.
+const OVER_LIMIT_ANNOUNCEMENT = 'Message is over the character limit.'
+const UNDER_LIMIT_ANNOUNCEMENT = 'Message is back under the character limit.'
+
 // agent-forge-harness-764: the composer's own bound, mirroring the server's
 // CHAT_TEXT_MAX_CHARS gate in service/app.py::chat() (same constant, same
 // ceiling, checked before any provider work happens). Counted in code points
@@ -208,6 +219,15 @@ function ChatPaneBody({
     conversationId,
     modelPreference,
     onConversationAdopted: setConversationId,
+    // j9w: the server healed this conversation off a retired manual pick —
+    // move the store onto the healed preference so the NEXT turn stops
+    // sending the retired id and ModelPicker shows it. Wrapped (not passed
+    // bare) so `rebindPreference` keeps its `this` — it is an ordinary
+    // method, not a bound field like the store's own getSnapshot/subscribe.
+    onPreferenceRebound: React.useCallback(
+      (id: string, preference: string) => conversationStore.rebindPreference(id, preference),
+      [conversationStore],
+    ),
     onTurnSettled: handleTurnSettled,
   })
   // Keeps ChatPane on this side of the GM boundary while a turn is in flight.
@@ -235,6 +255,25 @@ function ChatPaneBody({
   const draftLength = codePointLength(draft)
   const overLength = draftLength > CHAT_TEXT_MAX_CHARS
   const counterId = React.useId()
+  // agent-forge-harness-8tt: announce the crossing itself — once when the
+  // draft first goes over CHAT_TEXT_MAX_CHARS and once when it comes back
+  // under — through the SAME `.chat-pane__arrival` node, never a second live
+  // region. Keyed on the overLength→!overLength (and back) TRANSITION via
+  // this ref, not on overLength's value directly: the field is disabled
+  // while `pending` (so it cannot change mid-turn, never racing
+  // PENDING_ANNOUNCEMENT or a settle), and further edits that leave the
+  // draft over the bound — a paste growing an already-over-length draft, or
+  // one more keystroke — must NOT re-announce (the visible counter already
+  // updates every keystroke; the live region does not need to). No effect on
+  // conversation switches or a `side` remount: `draft` resets to '' there, so
+  // overLength starts false and matches this ref's own initial value.
+  const wasOverLengthRef = React.useRef(overLength)
+  React.useEffect(() => {
+    if (overLength !== wasOverLengthRef.current) {
+      setArrival(overLength ? OVER_LIMIT_ANNOUNCEMENT : UNDER_LIMIT_ANNOUNCEMENT)
+      wasOverLengthRef.current = overLength
+    }
+  }, [overLength])
   // Scoped like useChat's history state: derive "this scope's attachments" from
   // scopeId===conversationId rather than resetting via setState-in-effect (a
   // synchronous setState in an effect body triggers cascading renders).
@@ -597,16 +636,24 @@ function ChatPaneBody({
           above), and to the settle outcome the moment the turn SETTLES
           (`handleTurnSettled`, above) — or, for a settle that is never shown
           (the user left its conversation), silently back to empty instead
-          (agent-forge-harness-swg, pr129 M-2). Apart from Load earlier
-          (below), nothing else ever changes it — not a history recall, not a
-          conversation switch. Shape copied from `gm/ToolComposer.tsx`'s own
-          persistent `role="status"` node.
+          (agent-forge-harness-swg, pr129 M-2). Apart from Load earlier and
+          the composer's over-length crossing (both below), nothing else ever
+          changes it — not a history recall, not a conversation switch. Shape
+          copied from `gm/ToolComposer.tsx`'s own persistent `role="status"`
+          node.
 
           1kg.3.6 (STATE-7) reuses this SAME node, the same way, for Load
           earlier: exactly twice per press, to a starting phrase in
           `handleLoadEarlier` and to the outcome once `useGmTimeline`'s
           `loadingEarlier` settles — never a second `role="status"` inside
-          `GmThread` for it. */}
+          `GmThread` for it.
+
+          agent-forge-harness-8tt reuses it a third way, for the composer's
+          CHAT_TEXT_MAX_CHARS bound (agent-forge-harness-764): once when the
+          draft crosses over it and once when it comes back under (the
+          `wasOverLengthRef` effect above `overLength`, below) — never a
+          second live region for it, and never re-announced while the draft
+          stays over. ADR gm-workbench-interactions.md, A-30. */}
       <p role="status" className="chat-pane__sr-only chat-pane__arrival">
         {arrival}
       </p>
@@ -652,7 +699,12 @@ function ChatPaneBody({
           (`aria-describedby`, beside `aria-invalid`), NOT a `role="status"`
           node. The single `.chat-pane__arrival` node above is this pane's one
           live region; a second one mounted together with its text is the shape
-          4oz removed (and would not be reliably announced anyway). */}
+          4oz removed (and would not be reliably announced anyway).
+
+          agent-forge-harness-8tt: crossing the bound IS announced, but through
+          that same node (see the `wasOverLengthRef` effect above), never
+          through this counter — this paragraph stays conditionally rendered,
+          exactly as before, and is never itself a live region. */}
       {overLength && (
         <p id={counterId} className="chat-pane__composer-message">
           {chatPromptCounterMessage(draftLength)}
