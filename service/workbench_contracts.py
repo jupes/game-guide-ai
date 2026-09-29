@@ -1059,6 +1059,15 @@ def _is_empty(kind: FieldKind, value: Any) -> bool:
     return value is None
 
 
+def is_empty_value(kind: FieldKind, value: Any) -> bool:
+    # justification: the same bare JSON value :func:`_is_empty` takes.
+    """The contract's one definition of *empty*, for a caller outside this
+    module (``1kg.5.4``'s generated fields strip an empty optional value rather
+    than store it). It delegates, so there is never a second definition. The
+    caller hands it a value of the kind's own JSON type."""
+    return _is_empty(kind, value)
+
+
 def check_fields(
     doc_type: DocumentTypeId,
     type_version: int,
