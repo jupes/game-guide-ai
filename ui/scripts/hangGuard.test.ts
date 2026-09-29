@@ -20,7 +20,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { spawnSync, type SpawnOptions } from 'node:child_process'
+import { spawn, spawnSync, type SpawnOptions } from 'node:child_process'
 import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -29,6 +29,7 @@ import {
   HANG_GUARD_EVENTS_ENV,
   STORYBOOK_COMMAND,
   findStoryFiles,
+  killProcessTree,
   main,
   runWithHangGuard,
   storybookVitestArgs,
@@ -437,4 +438,31 @@ describe('findStoryFiles', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+})
+
+describe('killProcessTree (the real OS-level kill; every runWithHangGuard test above injects a fake killFn, so ' +
+  'this function itself -- including its own catch/fallback branches -- was never once invoked; agent-forge-harness-8ug)', () => {
+  it('actually terminates a real, running process', async () => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'])
+    const pid = child.pid
+    if (pid === undefined) throw new Error('failed to spawn a test child process')
+    const exited = new Promise<void>((resolve) => child.on('exit', () => resolve()))
+
+    killProcessTree(pid)
+
+    await exited // hangs out to the test's own timeout if the kill did nothing
+  }, 10_000)
+
+  it('does not throw when the process has already exited (the best-effort fallback swallows the error)', async () => {
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'])
+    const pid = child.pid
+    if (pid === undefined) throw new Error('failed to spawn a test child process')
+    await new Promise<void>((resolve) => child.on('exit', () => resolve()))
+
+    // On win32 this exercises the catch around `taskkill` failing to find a
+    // dead pid; on POSIX it exercises both `process.kill(-pid, ...)` and the
+    // `process.kill(pid, ...)` fallback beneath it, since a pid that no
+    // longer exists satisfies neither.
+    expect(() => killProcessTree(pid)).not.toThrow()
+  }, 10_000)
 })
