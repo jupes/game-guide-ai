@@ -9,6 +9,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, within } from 'storybook/test'
 
+import { tabTo } from '../../.storybook/keyboard'
 import { json, stubFetch, withShell } from '../../.storybook/shellHarness'
 import { expectTouchTarget, expectTouchTargets } from '../../.storybook/touchTarget'
 import {
@@ -260,6 +261,13 @@ export const DarkPhoneClosed390: Story = {
   },
 }
 
+/** agent-forge-harness-zh9 L-1: AC-1's widest phone width (599px, one pixel
+ * inside the 600px boundary) had no workspace story. */
+export const PhoneClosed599: Story = {
+  ...atViewport('edge599'),
+  play: async ({ canvasElement }) => expectClosedPhone(canvasElement, 'edge599'),
+}
+
 async function openDrawer(canvasElement: HTMLElement): Promise<HTMLElement> {
   const canvas = within(canvasElement)
   await canvas.findByText(/magic missile/)
@@ -342,6 +350,67 @@ export const DarkPhoneDrawerOpens390: Story = {
   play: async ({ canvasElement }) => {
     await expectTheme('dark')
     await expectOpenDrawer(canvasElement, 'phone390')
+  },
+}
+
+/** agent-forge-harness-zh9 L-2: the open drawer's own resolved surface, as
+ * UserMenu's PopoverCarriesTheRaisedElevation pins the popover's shadow. Every
+ * assertion above passes with `background: transparent` on
+ * `.workspace-shell__nav[data-open]`; only this one catches it. */
+export const DrawerSurfaceIsThemedContainer: Story = {
+  ...atViewport('phone390'),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone390')
+    const drawer = await openDrawer(canvasElement)
+    // --md-sys-color-surface-container (#f1e8d6), as the browser resolves it.
+    await expect(getComputedStyle(drawer).backgroundColor).toBe('rgb(241, 232, 214)')
+  },
+}
+
+export const DarkDrawerSurfaceIsThemedContainer: Story = {
+  ...atViewport('phone390', 'dark'),
+  play: async ({ canvasElement }) => {
+    await expectTheme('dark')
+    const drawer = await openDrawer(canvasElement)
+    // --md-sys-color-surface-container (#261d14) in the dark theme.
+    await expect(getComputedStyle(drawer).backgroundColor).toBe('rgb(38, 29, 20)')
+  },
+}
+
+/** The drawer's close button, reached by Tab, draws the 3px ring in the
+ * theme's `--md-sys-color-secondary`. The colour is pinned too: a
+ * `3px solid transparent` ring has a style and a width but paints nothing. */
+async function expectDrawerCloseRing(canvasElement: HTMLElement, secondary: string): Promise<void> {
+  const drawer = await openDrawer(canvasElement)
+  const close = within(drawer).getByRole('button', { name: 'Close navigation' })
+  await tabTo(close)
+  const style = getComputedStyle(close)
+  await expect(style.outlineStyle).not.toBe('none')
+  await expect(style.outlineWidth).toBe('3px')
+  await expect(style.outlineColor).toBe(secondary)
+}
+
+/** agent-forge-harness-zh9 L-3: the drawer's OWN close button ring, not just
+ * the menu button that opens it (TopBar's MenuButtonFocusVisible) — both are
+ * raw buttons, so neither inherits IconButton's ring. */
+export const DrawerCloseFocusVisible: Story = {
+  ...atViewport('phone390'),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone390')
+    // --md-sys-color-secondary (#7a5a23), as the browser resolves it.
+    await expectDrawerCloseRing(canvasElement, 'rgb(122, 90, 35)')
+  },
+}
+
+/** The same ring in the dark theme, which redefines the token: a dark-only
+ * `outline: none` passes every light story. */
+export const DarkDrawerCloseFocusVisible: Story = {
+  ...atViewport('phone390', 'dark'),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone390')
+    await expectTheme('dark')
+    // --md-sys-color-secondary (#ecc287) in the dark theme.
+    await expectDrawerCloseRing(canvasElement, 'rgb(236, 194, 135)')
   },
 }
 
