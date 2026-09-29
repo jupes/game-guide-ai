@@ -1,0 +1,37 @@
+{
+  "schema": "TableLeaveRequest",
+  "direction": "request",
+  "channel": "table",
+  "note": "POST /table/leave (SEC-49): this browser stops being a screen. It names nothing: the grant it ends is the cookie the request carries, and it never signs an account out.",
+  "valid": [
+    {
+      "name": "leave",
+      "value": {
+        "schema_version": 1
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a grant in the body",
+      "why": "the grant is the cookie; a body never carries it",
+      "value": {
+        "schema_version": 1,
+        "grant": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8"
+      }
+    },
+    {
+      "name": "a screen id",
+      "why": "Leave ends the grant this browser holds, never one it names",
+      "value": {
+        "schema_version": 1,
+        "screen_id": "tcr_7Hq2mW9xLp4sT8uY1zA3bC"
+      }
+    },
+    {
+      "name": "no version",
+      "why": "every payload carries schema_version",
+      "value": {}
+    }
+  ]
+}
