@@ -20,14 +20,18 @@
  * follows the convention in `service/tests/test_ci_workflow.py`, ported to
  * TS because the fix lives in `package.json`, not `ci.yml`.
  *
- * The storybook half now runs through `scripts/hangGuard.ts`, not a bare
- * `vitest run --project=storybook` (agent-forge-harness-w1e): CI run
- * 36377294380 hung on `GameDocument.stories.tsx` for 23 minutes with no
- * per-test timeout ever firing, because the timer that would enforce
- * `testTimeout` runs inside the same browser tab that had gone
- * unresponsive. `hangGuard.ts` is an external, Node-side watchdog that kills
- * the process tree and names the story that never reported once its own
- * timer — which does not depend on the tab — elapses.
+ * The storybook half now runs through `scripts/runStorybookTests.ts` (the
+ * guard in `scripts/hangGuard.ts`), not a bare `vitest run
+ * --project=storybook` (agent-forge-harness-w1e): CI run 36377294380 went
+ * silent after 44 of 45 story files for 23 minutes with no per-test timeout
+ * firing. The working hypothesis, not reproduced, is that the tab running
+ * the story wedged, and with it the in-tab timer that enforces `testTimeout`.
+ * The guard is an external, Node-side watchdog that kills the process tree
+ * on its own deadline and names the story files that started and never
+ * finished. Because this pin now only reaches the wrapper, the exact
+ * storybook command and arguments are pinned in `scripts/hangGuard.test.ts`
+ * ("the storybook invocation"), and the guard fails a zero exit unless every
+ * story file under `src/` started and finished.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -55,7 +59,7 @@ describe('package.json scripts.test (agent-forge-harness-b4v, agent-forge-harnes
     expect(
       readTestScript(),
       'jsdom needs its own vitest run (fails fast, and stays off the Chromium CPU); the storybook run goes ' +
-        'through scripts/hangGuard.ts so a hung story fails the step instead of the 25-minute job timeout',
-    ).toBe('vitest run --project=jsdom && bun run scripts/hangGuard.ts')
+        'through scripts/runStorybookTests.ts so a hung story fails the step instead of the 25-minute job timeout',
+    ).toBe('vitest run --project=jsdom && bun run scripts/runStorybookTests.ts')
   })
 })
