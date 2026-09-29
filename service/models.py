@@ -163,7 +163,10 @@ class RoutingInfo(BaseModel):
     "auto", never a catalog alias, and `provider` is never set. It stays
     declared, optional, only so a row stored before au3 still parses. Never an
     endpoint, key state, or internal error. `task_class`/`reason` stay None
-    until Checkpoint 4's classifier exists."""
+    until Checkpoint 4's classifier exists. `fallback_from` is set only on a
+    turn healed off a retired manual pick (agent-forge-harness-j9w): that
+    pick's public id or, for one the catalog has dropped entirely, the
+    preference the request itself sent; a client then adopts `requested`."""
     requested: str
     effective: str
     provider: str | None = None
