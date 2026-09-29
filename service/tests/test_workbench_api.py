@@ -932,7 +932,9 @@ def test_the_spa_parity_walk_still_reserves_every_prefix_it_reserved_before() ->
     documentation routes stay reserved though they are not API routes."""
     assert _live_api_prefixes() == {"/openapi.json", "/docs", "/redoc", "/healthz", "/models", "/chat",
                                     "/metrics", "/conversations", "/auth", "/internal",
-                                    "/campaigns", "/seats"}
+                                    "/campaigns", "/seats",
+                                    # 1kg.2.3 PR-B: /table/screen and /table/leave.
+                                    "/table"}
 
 
 # ── A10: the route census ────────────────────────────────────────────────────
@@ -956,7 +958,10 @@ EXPECTED_LEGACY_ROUTES = {
 #: PR #98), 1kg.4.2 B's timeline route, moved from the set above by oqx, and
 #: 1kg.2.2's campaign and seat routes: nine on `workbench_router`, four on
 #: `account_router`; then bead cfx's Conclude and Reopen, two more on
-#: `workbench_router`. No exemption list and nothing pending.
+#: `workbench_router`; then 1kg.2.3 PR-B (agent-forge-harness-1kg.2.10): the
+#: GM's table session, three more on `workbench_router`, and the first two
+#: table routes, on the table router, whose route class is a `WorkbenchRoute`.
+#: No exemption list and nothing pending.
 EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/conversations"), ("POST", "/conversations"),
     ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
@@ -980,6 +985,9 @@ EXPECTED_WORKBENCH_ROUTES = {
     # 1kg.8.1.2's media upload: two on `workbench_router`, which match nothing
     # while the media capability is off (`service/assets_api.py`).
     ("POST", "/campaigns/{campaign_id}/assets"), ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes"),
+    ("GET", "/campaigns/{campaign_id}/table-session"), ("POST", "/campaigns/{campaign_id}/table-session"),
+    ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}"),
+    ("POST", "/table/screen"), ("POST", "/table/leave"),
 }
 
 
@@ -1282,6 +1290,8 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "seats_api.py").resolve(),
         (REPO_ROOT / "service" / "documents_api.py").resolve(),
         (REPO_ROOT / "service" / "assets_api.py").resolve(),
+        (REPO_ROOT / "service" / "table_session_api.py").resolve(),
+        (REPO_ROOT / "service" / "table_api.py").resolve(),
     }
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []
 
@@ -1331,3 +1341,77 @@ def test_an_account_router_has_no_role_gate_and_keeps_the_workbench_posture() ->
     assert client.post("/mine", headers={"origin": "https://evil.example"}).status_code == 403
     caller[0] = None
     assert client.post("/mine").json() == {"detail": "not signed in"}
+
+
+# ── L-22: the one 401 may carry a cookie deletion, on table routes only ─────
+# Bead 1kg.2.3's PR-B (agent-forge-harness-1kg.2.10). A table route deletes a
+# screen-grant cookie that is no longer live on every answer from its principal
+# step on, the 401 included (SEC-44); every other Workbench route's 401 stays
+# one body and no header.
+
+#: A deletion as Starlette writes one, of a cookie named for this probe only.
+_DELETION = 'probe_grant=""; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; Path=/table; SameSite=strict'
+
+
+def _l22_probe(headers: dict[str, str]) -> TestClient:
+    """A GM-posture route and a table route, each refused with a 401 that
+    carries `headers`."""
+    from service.table_api import TableRoute
+
+    probe = FastAPI()
+    install_workbench(probe)
+
+    def refuse() -> None:
+        raise HTTPException(status_code=401, detail="authentication required", headers=headers)
+
+    gm = APIRouter(route_class=WorkbenchRoute, dependencies=[Depends(refuse)])
+    table = APIRouter(route_class=TableRoute, dependencies=[Depends(refuse)])
+
+    @gm.get("/gm")
+    def gm_route() -> dict[str, str]:
+        return {}
+
+    @table.get("/table/probe")
+    def table_route() -> dict[str, str]:
+        return {}
+
+    probe.include_router(gm)
+    probe.include_router(table)
+    return TestClient(probe)
+
+
+def test_only_the_table_route_class_forwards_a_cookie_deletion() -> None:
+    from service.table_api import TableRoute
+
+    assert WorkbenchRoute.forwards_cookie_deletion is False
+    assert TableRoute.forwards_cookie_deletion is True and issubclass(TableRoute, WorkbenchRoute)
+
+
+def test_a_gm_route_401_carries_no_header_not_even_a_cookie_deletion() -> None:
+    answer = _l22_probe({"set-cookie": _DELETION}).get("/gm")
+    assert (answer.status_code, answer.json()) == (401, dict(UNAUTHENTICATED_BODY))
+    assert answer.headers.get_list("set-cookie") == []
+
+
+def test_a_table_route_401_carries_exactly_the_deleting_set_cookie() -> None:
+    answer = _l22_probe({"set-cookie": _DELETION, "x-leak": "yes"}).get("/table/probe")
+    assert (answer.status_code, answer.json()) == (401, dict(UNAUTHENTICATED_BODY))
+    assert answer.headers.get_list("set-cookie") == [_DELETION]
+    assert "x-leak" not in answer.headers
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"set-cookie": "probe_grant=abc; Path=/table; SameSite=strict"},
+        {"set-cookie": "probe_grant=abc; Path=/table; Max-Age=3600"},
+        {"www-authenticate": "Bearer"},
+        {"x-leak": "yes"},
+    ],
+    ids=["a cookie that is set", "a cookie with a lifetime", "WWW-Authenticate", "an invented header"],
+)
+def test_a_table_route_401_copies_nothing_but_a_deletion(headers: dict[str, str]) -> None:
+    answer = _l22_probe(headers).get("/table/probe")
+    assert (answer.status_code, answer.json()) == (401, dict(UNAUTHENTICATED_BODY))
+    assert answer.headers.get_list("set-cookie") == []
+    assert {"www-authenticate", "x-leak"} & set(answer.headers) == set()

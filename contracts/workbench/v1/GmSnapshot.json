@@ -23,7 +23,7 @@
               "ends_at": "2026-09-17T07:31:02Z",
               "ended_at": null,
               "audio": true,
-              "devices": 5
+              "screens": []
             }
           },
           {
@@ -148,7 +148,7 @@
               "ends_at": "2026-09-17T07:31:02Z",
               "ended_at": null,
               "audio": true,
-              "devices": 5
+              "screens": []
             }
           },
           {
@@ -280,7 +280,7 @@
               "ends_at": "2026-09-17T07:31:02Z",
               "ended_at": null,
               "audio": true,
-              "devices": 5
+              "screens": []
             }
           },
           {
@@ -362,7 +362,7 @@
               "ends_at": "2026-09-17T07:31:02Z",
               "ended_at": null,
               "audio": true,
-              "devices": 5
+              "screens": []
             }
           },
           {
@@ -544,7 +544,7 @@
               "ends_at": "2026-09-17T07:31:02Z",
               "ended_at": null,
               "audio": true,
-              "devices": 5
+              "screens": []
             }
           },
           {
@@ -655,7 +655,7 @@
               "ends_at": "2026-09-17T07:31:02Z",
               "ended_at": null,
               "audio": true,
-              "devices": 5
+              "screens": []
             }
           },
           {
@@ -766,7 +766,7 @@
               "ends_at": "2026-09-17T07:31:02Z",
               "ended_at": null,
               "audio": true,
-              "devices": 5
+              "screens": []
             }
           },
           {
@@ -784,7 +784,7 @@
               "ends_at": "2026-09-17T07:31:02Z",
               "ended_at": null,
               "audio": true,
-              "devices": 5
+              "screens": []
             }
           },
           {
