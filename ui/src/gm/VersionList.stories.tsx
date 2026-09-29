@@ -208,11 +208,19 @@ export const RestoresFocusAfterARealBrowserDropsIt: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
+    const scroller = canvasElement.ownerDocument.scrollingElement
+    await expect(scroller).not.toBeNull()
     await userEvent.click(canvas.getByRole('button', { name: 'Load more' }))
+    // Where the click left the page. The second page pushes Load more below
+    // the fold, and a bare focus() would scroll it back into view, jumping
+    // the list the reader holds (PR #142 review H1) — jsdom never scrolls, so
+    // only this story can see that.
+    const heldAt = scroller?.scrollTop
     // The click disables the button; a real frame runs while the page is in
     // flight, and Chromium drops focus to <body>. Once it settles, focus must
     // be back on Load more — the second page still leaves one more behind it.
     await waitFor(() => expect(canvas.getByRole('button', { name: 'Load more' })).toHaveFocus())
+    await expect(scroller?.scrollTop).toBe(heldAt)
   },
 }
 
