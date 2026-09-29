@@ -19,18 +19,19 @@ sessions that are already past `expires_at` as expiries. The second takes the
 campaign lock first, then answers a replayed command with the session it opened
 (whatever its state), answers a live session of this campaign as it is, counts
 the fan-out bound, inserts, advances `authz_revision`, records `session.started`
-and enqueues `table_session.expire` at `expires_at` **last**. Start never ends a
-table in another campaign: that is `LiveSessionExists`, and the client sends an
-End and then a Start, two intents.
+and enqueues `table_session.expire` at `expires_at` and then its start divider
+job (`1kg.3.5`), **last**. Start never ends a table in another campaign: that is
+`LiveSessionExists`, and the client sends an End and then a Start, two intents.
 
 **End, expiry and Rotate are revocations** (L-5, RQ-5's first step) under the
 session row alone: never the campaign lock, never a `lock_timeout` of their own.
 The row is held with the owner in the locking statement (the system's `expire`
 names no owner and acts only on a session already due). Under it: the slots and
 both epochs, every screen grant, the state or the generation, the audit row, and
-`campaign.reconcile` `{campaign_id}` enqueued **last**, with no dedupe key (RQ-12);
-the route runs it after its response (`job_driver.run_after_response`), so the
-acknowledgement never waits for it. A deadlock victim is retried by the server,
+`campaign.reconcile` `{campaign_id}` enqueued **last** (only an ending's divider
+job follows it), with no dedupe key (RQ-12); the route runs it after its
+response (`job_driver.run_after_response`), so the acknowledgement never waits
+for it. A deadlock victim is retried by the server,
 in a fresh transaction, up to three attempts; then `BackendUnavailable`, which
 is the database being unavailable and never a refusal. **End is never refused**
 — not by the bound, not for state — because refusing it would hold a revealed
@@ -94,6 +95,7 @@ from .table_session_store import (
     TableSessionStore,
     check_command_id,
 )
+from .workbench_contracts import SessionBoundary
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +121,15 @@ EXPIRE_KIND = "table_session.expire"
 #: `service/reconciliation.py` (`1kg.2.2`) owns that kind; `service/app.py`
 #: passes its `enqueue_reconciliation` in, and this module never names it.
 EnqueueReconcile = Callable[[UnitOfWork, str], int]
+
+#: Enqueue one session divider job inside the unit — the session's id and the
+#: boundary, no dedupe key — and return the job's id (`1kg.3.5`).
+#: `service/session_dividers.py` owns that kind; `service/app.py` passes its
+#: `enqueuer` in, and this module never names it. Start enqueues a `start` after
+#: the expiry job; a closing whose outcome is `ended` or `expired` enqueues an
+#: `end` after its reconciliation, so a divider job is always last (RQ-3). A
+#: Rotate that rotated moves neither boundary (REVEAL-17).
+EnqueueDivider = Callable[[UnitOfWork, str, SessionBoundary], int]
 
 _T = TypeVar("_T")
 
@@ -207,7 +218,12 @@ def may_write(binding: Binding, read: Mapping[str, Liveness], now: datetime) -> 
 
 
 class TableSessions:
-    """The lifecycle, over one database and the stores that share it."""
+    """The lifecycle, over one database and the stores that share it.
+
+    `dividers` is the session-divider enqueuer (`1kg.3.5`). `None` enqueues no
+    divider and is for tests only: every construction outside the tests passes
+    it by name, and `service/tests/test_session_dividers.py` reads the source to
+    prove it, as the extension points `slot_clear` and `slots` are passed."""
 
     def __init__(
         self,
@@ -219,6 +235,7 @@ class TableSessions:
         jobs: JobQueue,
         reconcile: EnqueueReconcile,
         clock: Callable[[], datetime] | None = None,
+        dividers: EnqueueDivider | None = None,
     ) -> None:
         self._db = db
         self._campaigns = campaigns
@@ -227,6 +244,7 @@ class TableSessions:
         self._jobs = jobs
         self._reconcile = reconcile
         self._clock = clock if clock is not None else (lambda: datetime.now(UTC))
+        self._dividers = dividers
 
     def _now(self, now: datetime | None) -> datetime:
         """The request's one clock: the caller's, or this service's, captured once."""
@@ -269,7 +287,10 @@ class TableSessions:
         ]
         for closing in closed:
             self._record(unit, closing, None, moment)
-        return [self._reconcile(unit, closing.session.campaign_id) for closing in closed]
+        jobs = [self._reconcile(unit, closing.session.campaign_id) for closing in closed]
+        for closing in closed:
+            self._divide(unit, closing)
+        return jobs
 
     def _start_locked(
         self, unit: UnitOfWork, owner_id: int, campaign_id: str, command_id: str, moment: datetime
@@ -311,6 +332,8 @@ class TableSessions:
             run_after=session.expires_at,
             now=moment,
         )
+        if self._dividers is not None:
+            self._dividers(unit, session.id, SessionBoundary.START)
         return session
 
     # ── End, Rotate and expiry: the revocations ─────────────────────────────
@@ -379,11 +402,21 @@ class TableSessions:
         self, unit: UnitOfWork, closing: Closing, owner_id: int | None, moment: datetime
     ) -> Outcome:
         """What follows a revocation under its row: the audit row, then the
-        reconciliation, last. Nothing when nothing was written."""
+        reconciliation, then an ending's divider job, last. Nothing when nothing
+        was written."""
         if closing.outcome is None:
             return Outcome(closing.session)
         self._record(unit, closing, owner_id, moment)
-        return Outcome(closing.session, (self._reconcile(unit, closing.session.campaign_id),))
+        reconciled = self._reconcile(unit, closing.session.campaign_id)
+        self._divide(unit, closing)
+        return Outcome(closing.session, (reconciled,))
+
+    def _divide(self, unit: UnitOfWork, closing: Closing) -> None:
+        """An ending's divider job, keyed on the outcome, never the operation:
+        an End or a Rotate of an overdue session expires it, and that is an end.
+        A rotation is the same session and moves no boundary (REVEAL-17)."""
+        if self._dividers is not None and closing.outcome in (ENDED, EXPIRED):
+            self._dividers(unit, closing.session.id, SessionBoundary.END)
 
     def _record(
         self, unit: UnitOfWork, closing: Closing, owner_id: int | None, moment: datetime

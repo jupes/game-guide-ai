@@ -4,7 +4,7 @@ A **disclosure** is one Confirm's worth of display — a document, the version i
 pins, the mask of field keys and the kind of audience — and a **slot row** is
 one audience slot of one table session: the table slot, or one participant's
 slot, holding a pointer to the disclosure it shows or to nothing
-(`0017_reveal_disclosures.sql`; owner decision O-3; ED-15 as rewritten; A-16,
+(`0018_reveal_disclosures.sql`; owner decision O-3; ED-15 as rewritten; A-16,
 A-19, A-20). The two together are the explicit server state the table is built
 from. Nothing about visibility is stored on a document or a version (ED-6): the
 pin is reached slot -> disclosure -> (document, version).
@@ -119,7 +119,7 @@ from .workbench_contracts import (
     REVEAL_MAX_SLOTS,
 )
 
-#: ED-2's flat field key, as `0017`'s mask CHECK spells it.
+#: ED-2's flat field key, as `0018`'s mask CHECK spells it.
 FIELD_KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 
 #: The reasons `EverySlot` may carry: the narrowings that clear everything.
@@ -722,7 +722,7 @@ def _content(row: Sequence[Any]) -> SlotContent:
 
 
 class PostgresRevealStore(_Writes):
-    """`campaign.reveal_disclosures` and `campaign.reveal_slots` (0017)."""
+    """`campaign.reveal_disclosures` and `campaign.reveal_slots` (0018)."""
 
     def _hold(self, unit: UnitOfWork, session_id: str) -> _Session | None:
         transaction = pg(unit)

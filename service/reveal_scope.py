@@ -6,7 +6,7 @@ learns a scope in the next change of this bead) and `reveal_store` can both
 import it without a cycle.
 
 **`EndReason`** is the closed set a disclosure's `ended_reason` holds, the SQL
-CHECK of `0017_reveal_disclosures.sql` spelt again and pinned equal by
+CHECK of `0018_reveal_disclosures.sql` spelt again and pinned equal by
 `tests/test_reveal_db.py`. It follows ED-17's spelling: a Rotate ends a display
 as `link_rotated`. A member is only ever written as `ended_reason`; it is a code,
 never text.
@@ -41,7 +41,7 @@ from typing import Final
 
 
 class EndReason(StrEnum):
-    """Why a disclosure ended — `0017_reveal_disclosures.sql`'s CHECK, in the
+    """Why a disclosure ended — `0018_reveal_disclosures.sql`'s CHECK, in the
     same order. Content-free by construction: every member is a code."""
 
     GM_STOP = "gm_stop"

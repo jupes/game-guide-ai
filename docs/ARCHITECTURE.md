@@ -241,8 +241,8 @@ retired, and `0009` drops their tables.
 | `campaign.participants` | a seat: alias, `alias_key`, created, `removed_at`, and (`0009`) the account it is offered to (`user_id`) and when that account accepted it (`accepted_at`) | marked removed, never deleted; the alias is unique within the campaign among seats that are not removed, compared over an `alias_key` the **application** computes (NFKC then `casefold`) so that PostgreSQL's `lower()` and Python's cannot disagree; an account holds at most one live seat per campaign (a partial unique index); `user_id` is `ON DELETE NO ACTION`, so deleting an account that holds a seat, removed or not, is refused until account deletion handles seats (`agent-forge-harness-zkc`); a CHECK keeps an accepted seat from having no account |
 | `campaign.table_sessions` | a GM running a table now | at most one `live` session **per GM across campaigns** (a partial unique index), both epochs, and `link_generation`, which **is the admission generation** (SEC-42; renamed in prose only); `start_command_id` (one session per start command per campaign, a partial unique index, so a retried Start answers its session) and `rotate_command_id` (no index: it is read from the row its Rotate already holds, and an index would make Rotate block every screen-grant insert, RQ-3), both from `0016`; `(campaign_id, gm_user_id)` references `campaigns (id, owner_id)`, so the GM **is** the owner (AUD-1); `state` and `ended_at` are kept in step by a CHECK, and a row still `live` past `expires_at` is dead to every reader |
 | `campaign.table_credentials` | a **screen grant**: a browser the owner made a table screen (SEC-48, D-13) | bound to the admission generation it was minted in; live only while unrevoked, its session live and unexpired, and its generation the session's current one — the reader's test, never `revoked_at` alone (`1kg.2.3`). The table link and the join are gone (threat model section 15), and `0012` dropped the join counter |
-| `campaign.reveal_disclosures` | one Confirm's worth of display: a document, the version it pins, a sorted mask of field keys and the audience kind (`0017`, `1kg.7.1`) | at most one **live** disclosure per document (a partial unique index); `(session_id, command_id)` unique, the Confirm's replay key; its session and its document are both of its campaign and its version is one of its document's (composite keys); `ended_at`/`ended_reason` set together, from a closed set; ended rows are kept for replay only |
-| `campaign.reveal_slots` | one audience slot of one session: the table slot or one participant's, and the disclosure it shows (`0017`) | one row per slot per session; one pointer, so a slot shows at most one live projection; it points only at a disclosure of its own session and audience kind; `seq` rises by one each time its content changes; no delete action toward the disclosure, so a shown document cannot be deleted until it is narrowed |
+| `campaign.reveal_disclosures` | one Confirm's worth of display: a document, the version it pins, a sorted mask of field keys and the audience kind (`0018`, `1kg.7.1`) | at most one **live** disclosure per document (a partial unique index); `(session_id, command_id)` unique, the Confirm's replay key; its session and its document are both of its campaign and its version is one of its document's (composite keys); `ended_at`/`ended_reason` set together, from a closed set; ended rows are kept for replay only |
+| `campaign.reveal_slots` | one audience slot of one session: the table slot or one participant's, and the disclosure it shows (`0018`) | one row per slot per session; one pointer, so a slot shows at most one live projection; it points only at a disclosure of its own session and audience kind; `seq` rises by one each time its content changes; no delete action toward the disclosure, so a shown document cannot be deleted until it is narrowed |
 | `audit.events` | one recorded decision | append-only; `campaign_id_tombstone` has **no** foreign key, so rows outlive their campaign |
 
 ### The uncampaigned state
@@ -519,7 +519,7 @@ routes that call them, `1kg.5.2` for documents and `1kg.2.2` for participants.
 ### What the table may see: disclosures and slots
 
 `1kg.7.1` makes what the table may see **explicit server state**
-(`service/reveal_store.py`, `service/reveal_scope.py`, migration `0017`). A
+(`service/reveal_store.py`, `service/reveal_scope.py`, migration `0018`). A
 Confirm persists a **disclosure** — one Confirm's worth of display: a document,
 the version it pins, the sorted mask of field keys and the kind of audience —
 and points **slot rows** at it: the table slot, or one slot per participant
@@ -836,6 +836,30 @@ row is taken from either source, because an older exchange may still wait
 below it. A page may therefore hold fewer entries than asked for — even none —
 with a non-null `next_cursor`; the walk still ends, and it never loses, repeats
 or reorders an entry.
+
+**Session dividers** (`agent-forge-harness-1kg.3.5`). A `session_divider` entry
+marks where a live table session started or ended in a thread, and `/recap`
+reads a thread from its latest start. The server writes every divider; no client
+and no route can. A Start that opened a session, and a closing whose outcome is
+`ended` or `expired` (an End, an expiry, or a Rotate or End of an overdue
+session), each enqueue one `timeline.session_divider` job `{session_id,
+boundary}`, last in the transaction that made the transition, so End, Rotate
+and expiry gain no lock, wait or refusal. A Rotate that rotated moves neither
+boundary (REVEAL-17), and a replayed Start or a repeated End enqueues nothing.
+The job (`service/session_dividers.py`, statements in
+`service/session_divider_store.py`) writes one divider into each conversation of
+the session's owner that is linked to the session's campaign, not archived and
+created by the boundary's time: the newest 100. A divider's `created_at` is the
+boundary's own time (`started_at`, or `ended_at`, which an expiry sets to
+`expires_at`), however late the job runs. `0017`'s partial unique index and the
+insert's matching conflict target keep one divider per thread, session and
+boundary under every job repeat. Dividers are ordinary stored entries: they
+page, reload and cascade like every other. Two consequences follow. A thread is
+only a divider target once it is linked to a campaign, and nothing in the client
+links one yet (`1kg.2.5`), so production writes no divider until it does; there
+is no backfill. And a thread created or linked mid-session gets the `end`
+without the `start`, so its recap reads from its beginning, which is not all
+play when the thread was created before the Start and linked after it.
 
 ## Workbench routes: the posture every new route inherits
 

@@ -1,4 +1,4 @@
--- Migration 0017 — what the table may see, as explicit server state
+-- Migration 0018 — what the table may see, as explicit server state
 -- (agent-forge-harness-1kg.7.1).
 --
 -- Owner decision O-3 (shared eligibility ADR, ED-15 as rewritten; interactions
