@@ -98,6 +98,21 @@ def get_profile(alias: str) -> ModelProfile | None:
     return profile if profile is not None and profile.enabled else None
 
 
+# The providers a GM tool invocation may call (agent-forge-harness-1kg.4.1):
+# SEC-39 and WT-20 put the allowlist in routing, and S-5's default is the
+# primary provider only. Adding a provider here is a threat-model amendment
+# (the provider-terms register, 1kg.9.6), never a routine catalogue change.
+WORKBENCH_PROVIDERS: frozenset[Provider] = frozenset({"openai"})
+
+
+def workbench_profile(alias: str) -> ModelProfile | None:
+    """An enabled profile on the Workbench provider allowlist, or None: the
+    same one answer for an unknown, a disabled and an off-list alias, as
+    `get_profile` gives for the first two."""
+    profile = get_profile(alias)
+    return profile if profile is not None and profile.provider in WORKBENCH_PROVIDERS else None
+
+
 PublicTier = Literal["traveller", "adventurer", "loremaster"]
 
 

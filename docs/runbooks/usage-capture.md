@@ -20,7 +20,8 @@ or failure, including every retried attempt and the final failure. It is written
 `service/usage_capture.py` as one JSON line on stdout, which Cloud Run parses into
 `jsonPayload`.
 
-Five capture points produce them, all inside a live `POST /chat` turn:
+Five capture points produce them inside a live `POST /chat` turn, and a sixth
+(`document_generation`) inside a GM tool's invocation once `1kg.4.4` runs it:
 
 | `purpose` | What it paid for |
 | --- | --- |
@@ -29,6 +30,7 @@ Five capture points produce them, all inside a live `POST /chat` turn:
 | `suggestions` | The three spell-usage ideas (spell mode) |
 | `spell_structuring` | The structured spell card (spell mode) |
 | `statblock_structuring` | The structured NPC/stat block (sage/GM, behind the cost heuristic) |
+| `document_generation` | A GM tool's generated document (`service/document_generation.py`, bead `1kg.5.4`): one record per attempt, retries included |
 
 There is **no one-per-turn record**. The shared `operation_id` is what groups a turn's
 attempts — count distinct `operation_id` values if you want turns.
@@ -41,7 +43,7 @@ attempts — count distinct `operation_id` values if you want turns.
 | `record_version` | int | `1`. Bumped if the shape changes. |
 | `operation_id` | str | uuid4 hex, one per `/chat` turn, shared by every attempt of that turn. |
 | `operation` | str | `chat_turn` (slice b adds more). |
-| `purpose` | str | One of the five above. |
+| `purpose` | str | One of the six above. |
 | `mode` | str | `sage` \| `spell` \| `rules` \| `gm`. |
 | `alias` | str | The alias **actually handed to the provider client** — not the disclosure label the model picker shows the user. |
 | `provider` | str \| null | From the model catalog, or `openai` for embeddings. **Null when unknown — never guessed.** |
@@ -112,6 +114,8 @@ turn**, classifying what happened to it.
 | `parse_failure` | The provider responded, but the reply was not valid JSON or not the right shape (a `ValueError`, including pydantic's `ValidationError`, which is a `ValueError` subclass). Ours, not the provider's — and it was still billed. |
 | `skipped_by_gate` | The cost heuristic (`_looks_like_statblock`) ruled the turn out before any call was made. `suggestions` and `spell_structuring` have no gate and never produce this outcome. |
 
+`document_generation` (bead `1kg.5.4`) records exactly one outcome per generation that reached a provider: `produced`, `parse_failure` (the output failed a check; the record carries no reason, and the closed code exists only on the `InvalidGeneration` raised to the caller), or `none` (the provider call failed, or a cancellation stopped a retry). A request refused before any call records nothing, and it never produces `skipped_by_gate`.
+
 It shares `operation_id` with that turn's `provider_attempt` records (both
 come from the same `Operation`) — join on it to see "one call, no record" for
 a skip — but it is a **separate `event`, and therefore a separate filter**:
@@ -126,7 +130,7 @@ querying `jsonPayload.event="provider_attempt"` will never return a
 | `record_version` | int | `1`. |
 | `operation_id` | str | Shared with this turn's `provider_attempt` records. |
 | `operation` | str | `chat_turn`. |
-| `purpose` | str | One of `suggestions`, `spell_structuring`, `statblock_structuring`. |
+| `purpose` | str | One of `suggestions`, `spell_structuring`, `statblock_structuring`, `document_generation`. |
 | `mode` | str | `sage` \| `spell` \| `rules` \| `gm`. |
 | `outcome` | str | One of `produced`, `none`, `parse_failure`, `skipped_by_gate` — see the table above. |
 | `billed_account_id` | int | The account that pays. |

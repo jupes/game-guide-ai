@@ -49,6 +49,7 @@ from .usage_capture import (
     ACTOR_ACCOUNT,
     MAX_TOKEN_COUNT,
     OPERATION_CHAT_TURN,
+    OPERATION_TOOL_INVOCATION,
     PURPOSE_EMBEDDING,
     PURPOSES,
     STATUS_ERROR,
@@ -62,7 +63,7 @@ from .usage_capture import (
 # SHAPE of the open ones (operation, purpose, mode, provider, alias), so a later
 # bead can add a purpose without a migration while no sentence fits (X-7).
 
-OPERATIONS: Final = frozenset({OPERATION_CHAT_TURN})
+OPERATIONS: Final = frozenset({OPERATION_CHAT_TURN, OPERATION_TOOL_INVOCATION})
 MODES: Final = frozenset(mode.value for mode in ChatMode)
 STATUSES: Final = frozenset({STATUS_OK, STATUS_ERROR})
 #: No `guest`: there are no guests, and nothing is metered for an anonymous

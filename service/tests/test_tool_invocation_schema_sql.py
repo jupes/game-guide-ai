@@ -1,4 +1,4 @@
-"""`0014_tool_invocations.sql`, pinned against the Python that writes it
+"""The tool invocations migration, pinned against the Python that writes it
 (agent-forge-harness-1kg.4.1, slice A). No database is needed: every assertion
 reads the migration's own text, so the two cannot drift apart silently.
 

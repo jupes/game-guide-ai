@@ -960,8 +960,9 @@ EXPECTED_LEGACY_ROUTES = {
 #: `account_router`; then bead cfx's Conclude and Reopen, two more on
 #: `workbench_router`; then 1kg.2.3 PR-B (agent-forge-harness-1kg.2.10): the
 #: GM's table session, three more on `workbench_router`, and the first two
-#: table routes, on the table router, whose route class is a `WorkbenchRoute`.
-#: No exemption list and nothing pending.
+#: table routes, on the table router, whose route class is a `WorkbenchRoute`;
+#: then 1kg.4.1 slice B: the GM's tool invocations, three more on
+#: `workbench_router`. No exemption list and nothing pending.
 EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/conversations"), ("POST", "/conversations"),
     ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
@@ -991,6 +992,9 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/campaigns/{campaign_id}/table-session"), ("POST", "/campaigns/{campaign_id}/table-session"),
     ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}"),
     ("POST", "/table/screen"), ("POST", "/table/leave"),
+    ("POST", "/campaigns/{campaign_id}/tool-invocations"),
+    ("GET", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}"),
+    ("POST", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel"),
 }
 
 
@@ -1296,6 +1300,7 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "asset_serving_api.py").resolve(),
         (REPO_ROOT / "service" / "table_session_api.py").resolve(),
         (REPO_ROOT / "service" / "table_api.py").resolve(),
+        (REPO_ROOT / "service" / "tool_invocations_api.py").resolve(),
     }
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []
 
