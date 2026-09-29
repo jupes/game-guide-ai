@@ -21,7 +21,9 @@ read, and nothing here is an authorisation fact.
 
 - *Last played*: `campaign.table_sessions` — an ended session's `ended_at`, an
   expired one's `LEAST(ended_at, expires_at)` (the sweep that marks it runs
-  later than the table stopped), a live one's `started_at`.
+  later than the table stopped), a live one's `started_at` while it is live,
+  and a `live` row already past its expiry the expiry it passed: the sweep is
+  lazy, so the same history reads the same before it runs as after.
 - *LIVE*: a `live` session whose `expires_at` is still ahead.
 - *Last edited* and *last prepared*: `max(campaign.documents.updated_at)`, over
   every document and over the unarchived ones. Archiving a document does not
@@ -188,9 +190,12 @@ class CampaignSummaryStore(Protocol):
 
 
 #: One ended, expired or live session's moment, as the module docstring says.
+#: A `live` row is the only state left for the ELSE (0004's CHECK); one whose
+#: expiry has passed is what an unswept expired one is.
 _SESSION_MOMENT = (
     "CASE s.state WHEN 'ended' THEN s.ended_at "
-    "WHEN 'expired' THEN LEAST(s.ended_at, s.expires_at) ELSE s.started_at END"
+    "WHEN 'expired' THEN LEAST(s.ended_at, s.expires_at) "
+    "ELSE CASE WHEN s.expires_at <= %(now)s THEN s.expires_at ELSE s.started_at END END"
 )
 _LAST_PLAYED = f"(SELECT max({_SESSION_MOMENT}) FROM campaign.table_sessions s WHERE s.campaign_id = c.id)"
 _LIVE = (
@@ -240,12 +245,12 @@ class PostgresCampaignSummaryStore:
         return {row[0]: SeatedFacts(row[0], row[1], row[2], bool(row[3]), row[4], bool(row[5])) for row in rows}
 
 
-def _session_moment(session: TableSession) -> datetime:
+def _session_moment(session: TableSession, now: datetime) -> datetime:
     if session.state == "ended" and session.ended_at is not None:
         return session.ended_at
     if session.state == "expired" and session.ended_at is not None:
         return min(session.ended_at, session.expires_at)
-    return session.started_at
+    return session.expires_at if session.expires_at <= now else session.started_at
 
 
 #: How many of a conversation's messages the twin reads — the fake's stand-in
@@ -281,8 +286,9 @@ class InMemoryCampaignSummaryStore:
     def _sessions_of(self, twin: InMemoryTransaction, campaign_id: str) -> list[TableSession]:
         return [s for s in self._sessions.visible(twin).values() if s.campaign_id == campaign_id]
 
-    def _last_played(self, sessions: list[TableSession]) -> datetime | None:
-        return _latest([_session_moment(s) for s in sessions])
+    @staticmethod
+    def _last_played(sessions: list[TableSession], now: datetime) -> datetime | None:
+        return _latest([_session_moment(s, now) for s in sessions])
 
     @staticmethod
     def _live(sessions: list[TableSession], now: datetime) -> bool:
@@ -313,7 +319,7 @@ class InMemoryCampaignSummaryStore:
             ]
             facts[campaign_id] = OwnerFacts(
                 campaign_id,
-                self._last_played(sessions),
+                self._last_played(sessions, moment),
                 _latest([d.updated_at for d in mine]),
                 _latest([d.updated_at for d in mine if d.archived_at is None]),
                 _latest(turns),
@@ -343,7 +349,7 @@ class InMemoryCampaignSummaryStore:
                 campaign.tone,
                 campaign.game_system,
                 campaign.is_concluded,
-                self._last_played(sessions),
+                self._last_played(sessions, moment),
                 self._live(sessions, moment),
             )
         return facts

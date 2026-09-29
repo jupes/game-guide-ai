@@ -197,6 +197,50 @@ def test_a_seat_is_a_tavern_card_of_the_tables_facts_and_nothing_about_other_pla
     assert client.get("/seats").json()["items"] == [], "a GM who holds no seat there sees no card"
 
 
+def test_the_accept_answer_is_the_tables_card_not_the_least_said_fallback(
+    client: TestClient, world: _World
+) -> None:
+    """Review M2: the accept answer reads the seat's card facts after the
+    accept commits, so it carries the tone, LIVE and Concluded the table has —
+    not `player_seat`'s fallback of no tone, not live, not concluded — and it
+    is the same card `/seats` then lists."""
+    campaign, seat = _offered(client, world)
+    offer = _offer_id(world, seat)
+    assert client.patch(f"/campaigns/{campaign}", json={"schema_version": 1, "tone": "Grim"}).status_code == 200
+    with world.db.transaction() as unit:
+        world.stores.sessions.start(unit, campaign, owner_id=GM_A, expires_at=T0 + timedelta(hours=12), now=T0)
+    assert client.post(f"/campaigns/{campaign}/conclude").status_code == 200
+    _as(PLAYER, "player")
+    _verified("wren@example.com")
+    accepted = _accept(client, offer)
+    assert accepted.status_code == 200, accepted.text
+    card = PlayerSeat.model_validate(accepted.json())
+    assert (card.tone, card.live, card.concluded, card.last_played_at) == ("Grim", True, True, T0)
+    assert client.get("/seats").json()["items"] == [accepted.json()], "the answer is the card the list shows"
+
+
+def test_a_seated_card_after_the_table_ends_is_not_live_and_was_played_when_it_ended(
+    client: TestClient, world: _World
+) -> None:
+    """Review M2: LIVE is a table meeting now, not a table that has ever met —
+    after End the card says not live, and last met when it ended."""
+    campaign = world.campaign()
+    world.accepted(campaign, "Rook", PLAYER, "wren@example.com")
+    with world.db.transaction() as unit:
+        session, _link = world.stores.sessions.start(
+            unit, campaign, owner_id=GM_A, expires_at=T0 + timedelta(hours=12), now=T0
+        )
+    _as(PLAYER, "player")
+    running = PlayerSeat.model_validate(client.get("/seats").json()["items"][0])
+    assert (running.live, running.last_played_at) == (True, T0), "the positive control"
+    ended = T0 + timedelta(hours=3)
+    with world.db.transaction() as unit:
+        assert world.stores.sessions.end(unit, campaign, session.id, now=ended) is not None
+    world.now[0] = T0 + timedelta(hours=4)
+    card = PlayerSeat.model_validate(client.get("/seats").json()["items"][0])
+    assert (card.live, card.last_played_at) == (False, ended)
+
+
 # ── Decline and block ────────────────────────────────────────────────────────
 
 

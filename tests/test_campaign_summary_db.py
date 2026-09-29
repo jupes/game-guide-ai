@@ -92,21 +92,28 @@ def world(request: pytest.FixtureRequest) -> Iterator[World]:
         return
     target = request.getfixturevalue("dsn")
     with connect(target) as conn:
-        ids = [
-            int(conn.execute(
-                "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id", (email,)
-            ).fetchone()[0])
-            for email in ("gm@example.com", "other@example.com", "p1@example.com", "p2@example.com")
-        ]
-    database = Database(
-        target, PoolSettings(sync_max=4, async_max=0, acquire_timeout_s=5),
-        CampaignLockSettings(lock_timeout_s=1, transaction_timeout_s=5),
-    )
+        ids = _users(conn, "gm@example.com", "other@example.com", "p1@example.com", "p2@example.com")
     yield World(
-        "postgres", database, PostgresCampaignStore(), PostgresParticipantStore(),
+        "postgres", _database(target), PostgresCampaignStore(), PostgresParticipantStore(),
         PostgresTableSessionStore(slot_clear=no_slots), PostgresDocumentStore(), PostgresConversationStore(),
         PostgresCampaignSummaryStore(), None,
         owner=ids[0], other_owner=ids[1], players=(ids[2], ids[3]),
+    )
+
+
+def _users(conn: psycopg.Connection[Any], *emails: str) -> list[int]:
+    return [
+        int(conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id", (email,)
+        ).fetchone()[0])
+        for email in emails
+    ]
+
+
+def _database(target: str) -> Database:
+    return Database(
+        target, PoolSettings(sync_max=4, async_max=0, acquire_timeout_s=5),
+        CampaignLockSettings(lock_timeout_s=1, transaction_timeout_s=5),
     )
 
 
@@ -150,6 +157,15 @@ def _document(world: World, campaign: str, *, at: datetime) -> str:
         return world.documents.create(
             unit, campaign, doc_type=DocumentTypeId.NPC, type_version=1, data=dict(AN_NPC), author=Author.GM, now=at
         ).id
+
+
+def _edit(world: World, campaign: str, document: str, *, at: datetime) -> None:
+    """A GM edit to a document that already exists — `updated_at` moves and
+    `created_at` does not."""
+    with world.db.transaction() as unit:
+        world.documents.write_fields(
+            unit, campaign, document, fields={"voice": "gravel"}, author=Author.GM, base_write_revision=None, now=at
+        )
 
 
 def _thread(world: World, campaign: str | None, *, owner: int | None = None) -> str:
@@ -242,6 +258,35 @@ def test_last_activity_is_the_latest_of_a_session_a_document_and_a_gm_turn(world
     assert last_activity(_row(world, campaign), facts) == T0 + timedelta(days=4)
 
 
+def test_last_activity_is_whichever_source_is_newest_and_no_source_outranks_another(world: World) -> None:
+    """Review H1: a turn is not activity by rank. A session that ends after the
+    last turn is the latest, and so is an edit to an old document after both —
+    `max`, not a precedence, and an edit, not a creation. A campaign whose
+    newest fact is not a turn must not read dormant because its turn is old."""
+    campaign = _campaign(world)
+    old = _document(world, campaign, at=T0 + timedelta(hours=1))
+    _turn(world, _thread(world, campaign), at=T0 + timedelta(days=1))
+    session = _session(world, campaign, at=T0 + timedelta(days=40))
+    played = T0 + timedelta(days=40, hours=4)
+    _end(world, campaign, session, at=played)
+
+    after_the_table = _facts(world, campaign, at=T0 + timedelta(days=45))
+    assert after_the_table is not None
+    assert after_the_table.last_turn_at == T0 + timedelta(days=1), "the turn is there, and older"
+    row = _row(world, campaign)
+    assert last_activity(row, after_the_table) == played, "the session ended after the last turn"
+    assert not dormant(row, after_the_table, T0 + timedelta(days=45)), "five days since the table met"
+
+    edited = T0 + timedelta(days=80)
+    _edit(world, campaign, old, at=edited)
+    after_the_edit = _facts(world, campaign, at=T0 + timedelta(days=85))
+    assert after_the_edit is not None
+    assert after_the_edit.last_edited_at == after_the_edit.last_prepared_at == edited, "an edit, not a creation"
+    assert last_activity(row, after_the_edit) == edited, "the edit came after the session and the turn"
+    assert not dormant(row, after_the_edit, T0 + timedelta(days=85)), "five days since the GM edited"
+    assert badge(row, after_the_edit) == READY, "an old document edited since the table met is prep waiting"
+
+
 def test_a_turn_counts_only_in_a_conversation_linked_to_that_campaign(world: World) -> None:
     campaign = _campaign(world)
     elsewhere = _campaign(world)
@@ -263,12 +308,41 @@ def test_a_live_session_is_live_until_it_expires_and_an_expired_one_was_played_b
     assert badge(_row(world, campaign), live) == LIVE
     overdue = _facts(world, campaign, at=started + timedelta(hours=13))
     assert overdue is not None and not overdue.live, "a live row past its expiry is not a table meeting now"
+    assert overdue.last_played_at == started + timedelta(hours=12), "unswept, it was still played by its expiry"
 
     # The sweep runs a day late; the table stopped by its expiry.
     _end(world, campaign, session, at=started + timedelta(days=2), expired=True)
     swept = _facts(world, campaign, at=started + timedelta(days=3))
     assert swept is not None and not swept.live
     assert swept.last_played_at == started + timedelta(hours=12)
+
+
+def test_an_unswept_overdue_session_reads_as_the_sweep_will_mark_it(world: World) -> None:
+    """Review M1 and L1: the sweep is lazy, so a `live` row past its expiry may
+    sit unswept for days. It reads as the expired row the sweep will make of it
+    — played by its expiry — so READY and dormant do not depend on whether an
+    invisible sweep ran. At the expiry itself the table is no longer live."""
+    campaign = _campaign(world)
+    started = T0 + timedelta(days=1)
+    expiry = started + timedelta(hours=4)
+    session = _session(world, campaign, at=started, hours=4)
+    _document(world, campaign, at=started + timedelta(hours=2))
+
+    running = _facts(world, campaign, at=expiry - timedelta(seconds=1))
+    assert running is not None and running.live and running.last_played_at == started, "the positive control"
+    at_expiry = _facts(world, campaign, at=expiry)
+    assert at_expiry is not None and not at_expiry.live, "LIVE is an expiry still ahead, and now is not ahead"
+    assert at_expiry.last_played_at == expiry
+
+    unswept = _facts(world, campaign, at=started + timedelta(days=2))
+    assert unswept is not None and not unswept.live and unswept.last_played_at == expiry
+    assert badge(_row(world, campaign), unswept) is None, "the prep written mid-session was played"
+
+    _end(world, campaign, session, at=started + timedelta(days=2, hours=1), expired=True)
+    swept = _facts(world, campaign, at=started + timedelta(days=3))
+    assert swept is not None
+    assert (swept.live, swept.last_played_at) == (unswept.live, unswept.last_played_at), "the sweep changes nothing"
+    assert badge(_row(world, campaign), swept) is None
 
 
 # ── READY ────────────────────────────────────────────────────────────────────
@@ -294,6 +368,22 @@ def test_ready_means_an_unarchived_document_was_edited_after_the_table_last_met(
     shelved = _facts(world, campaign, at=T0 + timedelta(days=6))
     assert shelved is not None and badge(_row(world, campaign), shelved) is None, "archived prep is not waiting"
     assert shelved.last_edited_at == T0 + timedelta(days=3), "archiving is not an edit, and the edit still counts"
+
+
+def test_prep_written_the_moment_the_table_stopped_is_not_waiting(world: World) -> None:
+    """Review L1: READY is prep edited *after* the table last met, and the same
+    moment is not after."""
+    campaign = _campaign(world)
+    session = _session(world, campaign, at=T0 + timedelta(days=1))
+    stopped = T0 + timedelta(days=1, hours=4)
+    _end(world, campaign, session, at=stopped)
+    _document(world, campaign, at=stopped)
+    same = _facts(world, campaign, at=stopped + timedelta(hours=1))
+    assert same is not None and same.last_prepared_at == same.last_played_at == stopped
+    assert badge(_row(world, campaign), same) is None
+    _document(world, campaign, at=stopped + timedelta(seconds=1))
+    later = _facts(world, campaign, at=stopped + timedelta(hours=1))
+    assert later is not None and badge(_row(world, campaign), later) == READY, "the positive control"
 
 
 def test_a_concluded_or_archived_campaign_is_neither_ready_nor_dormant(world: World) -> None:
@@ -429,6 +519,35 @@ def test_an_avatar_is_stable_per_campaign_and_drawn_from_the_palette() -> None:
 
 
 # ── What only the database can refuse ────────────────────────────────────────
+
+
+@needs_db
+def test_a_turn_in_another_accounts_conversation_on_the_campaign_is_not_the_gms(dsn: str) -> None:
+    """Review L2, defence in depth: the conversation store refuses to link a
+    conversation to a campaign its caller does not own, so only raw SQL can
+    make one here — and the card still counts the owner's own turns alone."""
+    with connect(dsn) as conn:
+        gm, other = _users(conn, "gm@example.com", "other@example.com")
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name, created_at) VALUES (%s, %s, 'N', %s)",
+            (MISSING, gm, T0),
+        )
+        for conversation, user, at in (
+            ("cnv-theirs", other, T0 + timedelta(days=9)),
+            ("cnv-mine", gm, T0 + timedelta(days=2)),
+        ):
+            conn.execute(
+                "INSERT INTO chat.conversations (conversation_id, user_id, campaign_id) VALUES (%s, %s, %s)",
+                (conversation, user, MISSING),
+            )
+            conn.execute(
+                "INSERT INTO chat.messages (conversation_id, mode, role, content, created_at) "
+                "VALUES (%s, 'gm', 'user', 'What does the heir know?', %s)",
+                (conversation, at),
+            )
+    with _database(dsn).transaction() as unit:
+        facts = PostgresCampaignSummaryStore().for_owner(unit, gm, [MISSING], now=T0 + timedelta(days=10))
+    assert facts[MISSING].last_turn_at == T0 + timedelta(days=2)
 
 
 @needs_db
