@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+import httpx
 import openai
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -121,6 +122,21 @@ _MAX_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 0.5
 
 
+def _as_sdk_timeout(exc: BaseException) -> BaseException:
+    """The SDK turns an httpx timeout into APITimeoutError only while it sends
+    the request. A streamed body is read after that, so a provider that stalls
+    mid-stream escapes as httpx's own timeout (agent-forge-harness-ihz); one
+    type keeps the retry, the attempt record and /chat's mapping (timeout, 502,
+    retryable) identical for both. Anything else passes through unchanged."""
+    if not isinstance(exc, httpx.TimeoutException):
+        return exc
+    try:
+        request = exc.request
+    except RuntimeError:  # httpx raises it when no request was attached
+        request = httpx.Request("POST", "https://provider.invalid")
+    return openai.APITimeoutError(request=request)
+
+
 def generate_result(
     messages: list[Any], *, alias: str, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
@@ -131,9 +147,10 @@ def generate_result(
     text. Records one attempt with `observer` per actual call — success or
     failure — including every retried attempt, so every attempt, latency, and
     charge stays attributable. The final failure re-raises unchanged after
-    being recorded. `alias` identifies which catalog entry made the call;
-    Checkpoint 1 has no per-request routing yet, so callers pass the
-    service's current model alias."""
+    being recorded, except that httpx's own timeout becomes the SDK's
+    APITimeoutError (`_as_sdk_timeout`). `alias` identifies which catalog
+    entry made the call; Checkpoint 1 has no per-request routing yet, so
+    callers pass the service's current model alias."""
     obs = observer or NullAttemptObserver()
     for attempt in range(1, max_attempts + 1):
         # Immediately before the call, and therefore AFTER the previous
@@ -144,11 +161,14 @@ def generate_result(
         try:
             resp = client.invoke(messages, config=config)
         except BaseException as exc:
-            obs.record(alias=alias, result=None, error=exc)
-            if isinstance(exc, _RETRYABLE_EXCEPTIONS) and attempt < max_attempts:
+            error = _as_sdk_timeout(exc)
+            obs.record(alias=alias, result=None, error=error)
+            if isinstance(error, _RETRYABLE_EXCEPTIONS) and attempt < max_attempts:
                 sleep(_RETRY_BACKOFF_SECONDS * attempt)
                 continue
-            raise
+            if error is exc:
+                raise
+            raise error from exc
         content = resp.content
         text = content.strip() if isinstance(content, str) else str(content).strip()
         result = GenerationResult(

@@ -14,6 +14,7 @@ packages import it, and ``ingestion`` is the lower layer: a config module in
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import Literal
@@ -47,6 +48,16 @@ def _float(name: str, default: float) -> float:
 
 def _str(name: str, default: str) -> str:
     return os.environ.get(name, default)
+
+
+def _seconds(name: str, default: float) -> float:
+    """A timeout in seconds, rejected at import unless finite and positive:
+    `float()` accepts "inf" and "nan", and either would quietly remove the
+    bound the value exists to set."""
+    value = _float(name, default)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite number of seconds above 0, got {value!r}")
+    return value
 
 
 SameSite = Literal["lax", "strict", "none"]
@@ -122,6 +133,17 @@ DEFAULT_MODEL: str = _str("RAG_DEFAULT_MODEL", "gpt-4o-mini")
 # cited sources and largely deterministic while allowing minor phrasing
 # variation; higher values drift away from the source text.
 TEMPERATURE: float = _float("RAG_TEMPERATURE", 0.2)
+
+# Per-attempt timeout on every generation provider client (agent-forge-harness-ihz):
+# how long one read, write or pool wait may block, streamed or not, before the
+# call fails as a timeout. /chat is synchronous, so a provider that stalls holds
+# a worker thread for at most this long per attempt. 60 s lets a long answer
+# finish, and service/generate.py's three attempts still end within
+# 3 x (5 + 60) + 1.5 s of backoff = 196.5 s, under Cloud Run's 300 s request
+# timeout (scripts/deploy.sh; pinned in service/tests/test_providers.py).
+LLM_REQUEST_TIMEOUT_S: float = _seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0)
+# Connect bound for the same clients; 5 s is the OpenAI SDK's own default.
+LLM_CONNECT_TIMEOUT_S: float = _seconds("RAG_LLM_CONNECT_TIMEOUT_S", 5.0)
 
 # --- Chat history (service) -------------------------------------------------
 
