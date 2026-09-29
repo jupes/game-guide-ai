@@ -1309,6 +1309,34 @@ def test_delete_asks_for_the_password_first_and_takes_only_an_archived_document(
     assert world.record(theirs, foreign).is_archived
 
 
+def test_step_two_decides_again_under_the_lock(client: TestClient, world: _World, life: _Life) -> None:
+    """A document unarchived by another tab after delete's step one is refused
+    under the lock (I-14), and one deleted after archive's step one is the one
+    404: step two never acts on what step one read."""
+    campaign = world.campaign()
+    kept, gone = world.document(campaign), world.document(campaign)
+    life.archive(campaign, kept)
+    document_lifecycle_api.delete_step_one(world.db, life.stores, campaign_id=campaign, document_id=kept,
+                                           owner_id=GM_A)
+    assert _unarchive(client, campaign, kept).status_code == 204
+    with pytest.raises(HTTPException) as refused:
+        document_lifecycle_api.delete_step_two(world.db, life.stores, campaign_id=campaign, document_id=kept,
+                                               owner_id=GM_A, now=T0)
+    assert (refused.value.status_code, cast(Any, refused.value.detail)["code"]) == (409, "document_not_archived")
+    assert not life.archived(campaign, kept)
+    assert ([r.action for r in life.ledger(campaign)], world.revision(campaign)) == (["document.unarchived"], 1)
+
+    document_lifecycle_api.archive_step_one(world.db, life.stores, campaign_id=campaign, document_id=gone,
+                                            owner_id=GM_A)
+    with world.db.transaction() as unit:
+        assert world.stores.documents.delete(unit, campaign, gone)
+    with pytest.raises(HTTPException) as missing:
+        document_lifecycle_api.archive_step_two(world.db, life.stores, campaign_id=campaign, document_id=gone,
+                                                owner_id=GM_A, now=T0)
+    assert missing.value.status_code == 404
+    assert world.revision(campaign) == 1
+
+
 def test_the_password_check_answers_the_throttle_and_a_hashing_outage_in_the_envelope(
     client: TestClient, world: _World, life: _Life, monkeypatch: pytest.MonkeyPatch
 ) -> None:
