@@ -2301,17 +2301,40 @@ class _Paused:
             assert self.release.wait(PATIENCE), "the paused transaction was never released"
 
 
+def _waits_on(dsn: str, relation: str) -> bool:
+    """Whether a backend of this database is waiting on a lock in a statement
+    that names `relation` — the server's own account of **which** lock."""
+    deadline = time.monotonic() + PATIENCE
+    with connect(dsn) as conn:
+        while time.monotonic() < deadline:
+            waiting = conn.execute(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                "AND wait_event_type = 'Lock' AND query LIKE %s",
+                (f"%{relation}%",),
+            ).fetchone()[0]
+            if waiting:
+                return True
+            time.sleep(0.05)
+    return False
+
+
 def _race(
-    dsn: str | None, paused: _Paused, first: Callable[[], object], second: Callable[[], object]
+    dsn: str | None,
+    paused: _Paused,
+    first: Callable[[], object],
+    second: Callable[[], object],
+    *,
+    on: str = "campaign.table_sessions",
 ) -> tuple[object, object]:
     """`first` over the paused database, then `second` while it holds: the
-    server must show `second` waiting; then `first` commits and both finish."""
+    server must show `second` waiting, in a statement naming `on` (the session
+    row unless said otherwise); then `first` commits and both finish."""
     assert dsn is not None
     one, first_out = _in_background(first)
     assert paused.holding.wait(PATIENCE), first_out
     two, second_out = _in_background(second)
     try:
-        assert _someone_waits_on_a_lock(dsn), "the second racer never waited"
+        assert _waits_on(dsn, on), f"the second racer never waited on {on}"
     finally:
         paused.release.set()
         one.join(PATIENCE)
@@ -2545,6 +2568,7 @@ def test_a_confirm_waits_for_the_reconciliation_and_is_busy_when_it_waits_too_lo
         paused,
         lambda: reconcile(paused, campaign, slots=fill),
         lambda: _confirm(s, campaign, session.id, x, reveals=s.over(_patient(w.dsn))),
+        on="campaign.authz_state",
     )
     assert isinstance(two, Displayed)
 
@@ -2720,6 +2744,7 @@ def test_an_archive_waits_for_a_confirm_and_then_clears_it(pgs: Served) -> None:
         lambda: archive_step_two(
             _patient(w.dsn), patient_stores, campaign_id=campaign, owner_id=w.owner, now=_now()
         ),
+        on="campaign.authz_state",
     )
     assert isinstance(one, Displayed) and not isinstance(two, BaseException)
     assert _by_command(w, session.id, command).ended_reason == EndReason.CAMPAIGN_ARCHIVED
