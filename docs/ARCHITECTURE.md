@@ -861,6 +861,49 @@ is no backfill. And a thread created or linked mid-session gets the `end`
 without the `start`, so its recap reads from its beginning, which is not all
 play when the thread was created before the Start and linked after it.
 
+## Document generation (1kg.5.4)
+
+`service/document_generation.py` turns a GM tool's request into a validated first
+document. It is a **library with no route and no executor**: its one production caller
+is `1kg.4.4`'s executor under `1kg.4.1`'s invocation API, which owns admission, the cost
+guards, fencing and the `401`/`404`. It ships dark: nothing calls it until a tool is enabled.
+
+- **Two halves.** `generate_document(request, client=, alias=, config=, max_attempts=,
+  between_attempts=)` opens no unit of work. `persist_generated(unit, store, campaign_id,
+  generated, now=)` runs inside the caller's unit — the one that settles the invocation —
+  and makes no network call. No connection is held across a provider call (RQ-8), and a
+  failed settle rolls the document back: there are no partial documents (X-6).
+- **Generatable types** are the registry's tool targets: `npc`, `encounter` and
+  `session-notes` (`GENERATION_SPECS`). Each spec names its tool, its basis (creative or
+  summary), the keys it must fill, and the keys only the server sets (`session`, `date`,
+  `present` for notes; `tags` and every asset key always). `field_catalog` and
+  `validate_generated_fields` work for all eight types.
+- **The data block.** Every untrusted text travels in one JSON payload between
+  `<data id="NONCE">` tags, with a per-call nonce redrawn if the payload contains it.
+  Controls and bidirectional overrides in context are replaced with U+FFFD. The payload is
+  bounded at 24,000 code points and refused, never truncated, above it (`context_size`
+  lets the caller fit first). Preset values never enter the prompt.
+- **The envelope.** The model returns exactly `{"fields": {...}, "cited": [...]}`. The
+  parser refuses duplicate keys, `NaN`, depth past six, undeclared keys, asset keys and any
+  remote reference (`://`, `![`, `](`, `<img`, …); drops server-owned keys; trims and
+  strips empty optional values; then runs the contract's own `check_fields(whole=True)`
+  and stores `stored_json` of the result. Every failure is a closed `InvalidOutput` code.
+- **Provenance** is computed by the server: a creative document is `invented` or `mixed`
+  (it cited supplied passages), never "from the books"; a summary is `thread`. The lane
+  prose (`disclosure_prose`) and version 1's summary (`version_summary`) are composed from
+  closed sentences and escaped corpus labels, never from model text.
+- **Observation.** Every attempt is a `provider_attempt` record and ledger row with purpose
+  `document_generation`, and each generation that reached a provider gets one
+  `structuring_outcome`. The config handed to the client is the usage operation plus an
+  explicitly empty callback list, so an enclosing traced run cannot record the prompt
+  (SEC-24). The output bound (`max_tokens`, 3,000) rides on every call; on a reasoning model
+  it counts reasoning tokens too, so the constant is provisional.
+- **The caller's obligations.** Authorize the campaign and its owner first; pass the
+  allowlisted client and its alias (this module never builds a client, resolves a model or
+  reads a tier: D-8, D-9); pass `between_attempts=ctx.check_cancelled`; take
+  `campaign_id` from the fenced admission. Synthetic eval cases live in
+  `ingestion/eval_data/document_generation/`; the runner is `1kg.4.6`'s.
+
 ## Workbench routes: the posture every new route inherits
 
 `service/workbench_api.py` (agent-forge-harness-oe6) is the seam every Workbench
