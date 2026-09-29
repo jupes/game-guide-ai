@@ -1030,7 +1030,8 @@ def test_a_second_reader_sees_neither_revision_nor_queue_item_before_commit():
         assert writer.projected_items(campaign)[0].authz_revision == 5
         assert _state(db, campaign) == (4, 4, [])
     assert _state(db, campaign) == (5, 4, [(_DOC, "portrait", 5)])
-    moving = _at(db, 2, 2)
+    moving = _campaign(db, "cmp_two", revision=2)
+    db.projection_state[moving] = 2
     with db.transaction() as writer:
         writer.lock_campaign(moving, shared=False)
         writer.advance_authz_revision(moving)
