@@ -544,15 +544,22 @@ def test_b6_a_legacy_conversation_with_no_ownership_row_is_404_and_nothing_is_cl
         assert "legacy-thread-01" not in shared_rows(world.db, "conversations").visible(unit)
 
 
-def test_b7_a_source_entry_must_be_a_stored_entry_of_this_conversation(world: World, client: TestClient) -> None:
+def test_b7_a_source_entry_must_be_a_stored_entry_of_this_conversation(world: World, client: TestClient,
+                                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """M-B7: a bad source is refused by the ownership decision itself — before
+    any guard runs, so no precheck is asked and no token is spent — and not
+    only by the creating statement's own guard."""
     table, second = world.table(), world.table()
     assert post(client, table).status_code == 200
     source = world.entries(table)[0]["entry_id"]
     assert post(client, table, invocation_id=INV2, source=source).status_code == 200
     assert post(client, second).status_code == 200
     elsewhere = world.entries(second)[0]["entry_id"]
+    prechecks = len(world.executors[ToolId.NPC].prechecks)
+    spent = _spent_throttle(monkeypatch)
     for bad in (elsewhere, "12345", "ent_" + "q" * 22):
         assert post(client, table, invocation_id=INV3, source=bad).json() == NOT_FOUND
+    assert len(world.executors[ToolId.NPC].prechecks) == prechecks and spent == []
 
 
 def test_b8_an_archived_campaign_refuses_a_new_invocation_and_still_replays_a_done_one(
@@ -905,21 +912,31 @@ def test_e3_a_completion_after_its_deadline_is_discarded_and_the_post_answers_th
     assert world.executors[ToolId.NPC].finishes == 0
 
 
+def _result(title: str) -> tool_invocations.Outcome:
+    return tool_invocations.Outcome(result=tool_invocations.judge_result(npc_result(title), ToolId.NPC,
+                                                                         lambda tool: True))
+
+
 def test_e4_a_late_completion_of_a_superseded_attempt_is_fenced_out(world: World, client: TestClient) -> None:
-    """AE-84, M-E3: exactly one finish."""
+    """AE-84, M-E3: attempt 1 expires, attempt 2 is admitted and still
+    working when attempt 1's result arrives — it is discarded, and exactly one
+    finish runs, attempt 2's."""
     table = world.table()
     first = _admit(world, table)
     world.now[0] = T0 + TTL + timedelta(seconds=1)
-    second = post(client, table).json()
-    assert (second["status"], second["attempt"]) == ("done", 2)
+    second = _admit(world, table)
+    assert second.attempt == 2
     rows = world.rows()
-    late = tool_invocations.complete(
-        world.db, world.stores, world.executors[ToolId.NPC], first,
-        tool_invocations.Outcome(result=tool_invocations.judge_result(npc_result("Late"), ToolId.NPC, lambda t: True)),
-        _ctx(world, first), now=world.clock(),
-    )
-    assert late.model_dump(mode="json") == second
-    assert world.executors[ToolId.NPC].finishes == 1 and world.rows() == rows
+    executor = world.executors[ToolId.NPC]
+    late = tool_invocations.complete(world.db, world.stores, executor, first, _result("Late"), _ctx(world, first),
+                                     now=world.clock())
+    assert (late.status.value, late.attempt, late.result) == ("working", 2, None)
+    assert executor.finishes == 0 and world.rows() == rows
+    done = tool_invocations.complete(world.db, world.stores, executor, second, _result("Mira"),
+                                     _ctx(world, second), now=world.clock())
+    assert (done.status.value, done.attempt, done.result.document.title) == ("done", 2, "Mira")
+    assert executor.finishes == 1
+    assert status_of(client, table).json() == done.model_dump(mode="json")
 
 
 def test_e4b_a_late_failure_of_a_superseded_attempt_touches_nothing(world: World, client: TestClient) -> None:

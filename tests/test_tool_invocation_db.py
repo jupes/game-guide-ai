@@ -316,7 +316,7 @@ def test_the_creating_statement_refuses_every_parent_that_is_not_the_callers(wor
             _create(world, unit, mine, carrier, **kwargs)
         assert world.store.get_for_update(unit, mine.owner, mine.campaign, INV) is None, "still usable"
     for owner, campaign in ((mine.owner, mine.campaign), (world.other, mine.campaign), (mine.owner, MISSING_CAMPAIGN),
-                            (mine.owner, theirs.campaign)):
+                            (mine.owner, theirs.campaign), (world.other, theirs.campaign)):
         with world.db.transaction() as unit:
             assert world.store.get_for_update(unit, owner, campaign, INV) is None
             assert world.store.attempts(unit, owner, campaign, INV) == []
