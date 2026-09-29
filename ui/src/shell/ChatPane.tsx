@@ -15,6 +15,7 @@ import { DiceRoll } from '../ds/DiceRoll'
 import { SpellCard } from '../ds/SpellCard'
 import { StatBlockCard } from '../ds/StatBlockCard'
 import { SourceList } from '../components/SourceList'
+import { SuggestionCards } from '../components/SuggestionCards'
 import { Markdown } from '../components/Markdown'
 import { CHAT_TEXT_MAX_CHARS, codePointLength } from '../gm/contracts'
 import { useChat } from '../useChat'
@@ -42,7 +43,6 @@ import {
 import type {
   Attachment,
   AttachmentsResult,
-  Suggestion,
   UploadAttachmentResult,
 } from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
@@ -67,35 +67,6 @@ function distanceFromBottom(el: HTMLElement): number {
 
 export type UploadAttachmentFn = (conversationId: string, file: File) => Promise<UploadAttachmentResult>
 export type GetAttachmentsFn = (conversationId: string) => Promise<AttachmentsResult>
-
-// Spell-usage suggestion cards (channel-chats CP-C) — LLM inventions rendered
-// apart from the literal spell text so quoted rules stay visibly verbatim.
-const SUGGESTION_LABELS: Record<Suggestion['style'], string> = {
-  practical: 'Practical',
-  roleplay: 'Roleplay',
-  wacky: 'Wacky',
-}
-
-const SUGGESTION_ICONS: Record<Suggestion['style'], string> = {
-  practical: 'target',
-  roleplay: 'theater_comedy',
-  wacky: 'celebration',
-}
-
-function SuggestionCards({ suggestions }: { suggestions: Suggestion[] }): React.JSX.Element {
-  return (
-    <Card variant="outlined" className="chat-pane__suggestions">
-      <ul className="chat-pane__suggestion-list">
-        {suggestions.map((s) => (
-          <li key={s.style} className="chat-pane__suggestion">
-            <Chip type="suggestion" label={SUGGESTION_LABELS[s.style]} icon={SUGGESTION_ICONS[s.style]} />
-            <span>{s.text}</span>
-          </li>
-        ))}
-      </ul>
-    </Card>
-  )
-}
 
 // ── Single-live-region announcer (agent-forge-harness-4oz) ──────────────────
 // The exact phrase announced the moment a turn is SENT — asserted verbatim in
@@ -616,9 +587,7 @@ function ChatPaneBody({
                   })()}
 
                   {/* Spell-usage suggestions — rendered apart from the answer */}
-                  {exchange.response.suggestions && exchange.response.suggestions.length > 0 && (
-                    <SuggestionCards suggestions={exchange.response.suggestions} />
-                  )}
+                  <SuggestionCards suggestions={exchange.response.suggestions} className="chat-pane__suggestions" />
 
                   {/* Sources */}
                   {exchange.response.answerable && exchange.response.sources.length > 0 && (

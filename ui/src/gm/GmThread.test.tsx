@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { GmThread } from './GmThread'
-import { DIVIDER_COPY, collapseSessionSpans, formatDividerTime, turnsFromTimeline } from './gmTimeline'
+import { DIVIDER_COPY, collapseSessionSpans, formatDividerTime, turnFromExchange, turnsFromTimeline } from './gmTimeline'
 import type { GmTurn } from './gmTimeline'
 import { LANE_COPY } from './laneState'
 import { emptyPendingWork, reducePendingWork, requestFromEntry, turnsWithPendingWork } from './pendingWork'
@@ -26,6 +26,8 @@ import {
   OPAQUE_ENTRY,
   QUIET_SESSION,
   SOURCED_ANSWER,
+  SPELL_ANSWER,
+  SPELL_SUGGESTIONS,
   chatEntry,
   toolEntry,
   toolRequest,
@@ -171,6 +173,69 @@ describe('GmThread — three lanes', () => {
     const { container } = renderThread(turnsFromTimeline([chatEntry({ answer: null })]))
     expect(screen.getByText('Give me a drowned guardian for the marsh.')).toBeInTheDocument()
     expect(container.querySelector('.assistant-lane')).toBeNull()
+  })
+})
+
+describe('GmThread — a spell’s usage suggestions (agent-forge-harness-0ru)', () => {
+  // A mode chip keeps the same conversation, so a spell entry can be hydrated
+  // here; its suggestions render as ChatPane renders them, never dropped.
+  const SUGGESTION_LABELS = ['Practical', 'Roleplay', 'Wacky']
+
+  function laneOf(container: HTMLElement): HTMLElement {
+    return container.querySelector('.assistant-lane') as HTMLElement
+  }
+
+  it('renders a hydrated spell entry’s suggestions in the lane, after its spell card and before its citations', () => {
+    const answer = { ...SPELL_ANSWER, sources: SOURCED_ANSWER.sources }
+    const { container } = renderThread(turnsFromTimeline([chatEntry({ mode: 'spell', answer })]))
+    const lane = laneOf(container)
+    for (const label of SUGGESTION_LABELS) expect(within(lane).getByText(label)).toBeInTheDocument()
+    for (const { text } of SPELL_SUGGESTIONS) expect(within(lane).getByText(text)).toBeInTheDocument()
+
+    const card = lane.querySelector('.game-content-card') as HTMLElement
+    const suggestions = within(lane).getByText('Practical')
+    const sources = lane.querySelector('.gm-thread__sources') as HTMLElement
+    expect(within(card).getByText('Fireball')).toBeInTheDocument()
+    expect(precedes(card, suggestions)).toBe(true)
+    expect(precedes(suggestions, sources)).toBe(true)
+  })
+
+  it('renders a live /chat answer’s suggestions, as its reload will', () => {
+    const turn = turnFromExchange({
+      id: 1,
+      prompt: 'What does Fireball do?',
+      status: 'done',
+      response: {
+        answer: SPELL_ANSWER.text,
+        sources: [],
+        answerable: true,
+        spell_content: SPELL_ANSWER.spell_content,
+        suggestions: SPELL_SUGGESTIONS,
+      },
+    })
+    const { container } = renderThread([turn])
+    const lane = laneOf(container)
+    for (const label of SUGGESTION_LABELS) expect(within(lane).getByText(label)).toBeInTheDocument()
+    for (const { text } of SPELL_SUGGESTIONS) expect(within(lane).getByText(text)).toBeInTheDocument()
+  })
+
+  const SPELL_WITHOUT_SUGGESTIONS = {
+    text: SPELL_ANSWER.text,
+    answerable: SPELL_ANSWER.answerable,
+    sources: SPELL_ANSWER.sources,
+    spell_content: SPELL_ANSWER.spell_content,
+  }
+
+  it.each([
+    ['absent', SPELL_WITHOUT_SUGGESTIONS],
+    ['null', { ...SPELL_WITHOUT_SUGGESTIONS, suggestions: null }],
+    ['empty', { ...SPELL_WITHOUT_SUGGESTIONS, suggestions: [] }],
+  ])('draws no suggestion card when suggestions are %s', (_, answer) => {
+    const { container } = renderThread(turnsFromTimeline([chatEntry({ mode: 'spell', answer })]))
+    const lane = laneOf(container)
+    expect(within(lane).getByText('Fireball')).toBeInTheDocument()
+    expect(lane.querySelector('.suggestion-cards')).toBeNull()
+    for (const label of SUGGESTION_LABELS) expect(within(lane).queryByText(label)).toBeNull()
   })
 })
 
