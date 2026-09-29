@@ -728,3 +728,6 @@ def test_the_chokepoint_hands_the_call_to_the_store_it_was_given() -> None:
     memory = mo.InMemoryObjectStore(clock=_Clock())
     assert mo.via_store(memory, lambda s: s.stat_object("tmp/" + HEX)) is None
     assert mo.via_store(memory, lambda s: s.reachable()) is True
+    memory.put_stream("tmp/" + OTHER_HEX, iter([b"abc"]), max_bytes=10)
+    found = mo.via_store(memory, lambda s: s.stat_object("tmp/" + OTHER_HEX))
+    assert found is not None and found.size == 3, "the call reached the store it was given, not another one"
