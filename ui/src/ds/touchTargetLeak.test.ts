@@ -32,6 +32,16 @@
  * `min-inline-size` instead of `min-height`/`min-width`; so would a shrink
  * written into any other src/ds/*.css file, since the whole directory was
  * exempt rather than just the two files the floor belongs in.
+ *
+ * agent-forge-harness-8ug (#147 M-2): every file this guard actually scans is
+ * real production CSS with zero violations, so a mutant that guts the
+ * detection itself -- `isGuardedSelector` always `false`, `SIZE_PROPERTIES`
+ * emptied, the `blocks()` regex broken -- passes exactly as green as the
+ * unmutated code; there was no committed fixture with a real violation to
+ * prove the scan can ever find one. `__fixtures__/` below is excluded from
+ * the production sweep (like the two floor owners) and holds one, so the
+ * positive-control test at the bottom exercises every guarded-selector kind
+ * and every size property against real detection logic, not mocks.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -44,10 +54,18 @@ const SRC_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
 /** The only two files the 44px floor is allowed to live in. */
 const FLOOR_OWNERS = [join(SRC_DIR, 'ds', 'Button.css'), join(SRC_DIR, 'ds', 'IconButton.css')]
 
-/** Every *.css file under src/, outside the floor's two legitimate owners. */
+/** Directory name for committed violation fixtures (see the bottom of this
+ * file) — deliberately outside the production sweep, the same way the two
+ * floor owners are, so a fixture proving the scan CAN fire never trips the
+ * scan it exists to prove. */
+const FIXTURE_DIR_NAME = '__fixtures__'
+
+/** Every *.css file under src/, outside the floor's two legitimate owners and
+ * the fixtures directory. */
 function cssFilesOutsideFloorOwners(dir: string): string[] {
   const found: string[] = []
   for (const name of readdirSync(dir)) {
+    if (name === FIXTURE_DIR_NAME) continue
     const full = join(dir, name)
     if (statSync(full).isDirectory()) {
       found.push(...cssFilesOutsideFloorOwners(full))
@@ -59,6 +77,10 @@ function cssFilesOutsideFloorOwners(dir: string): string[] {
 }
 
 const GUARDED_FILES = cssFilesOutsideFloorOwners(SRC_DIR)
+
+/** A committed fixture with one deliberate violation per guarded-selector
+ * kind and per size property -- see the positive-control test below. */
+const VIOLATION_FIXTURE = join(SRC_DIR, 'ds', FIXTURE_DIR_NAME, 'touchTargetLeak.violation.css')
 
 /** CSS comments hold prose, not declarations. */
 const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, ' ')
@@ -120,6 +142,10 @@ it('found the files it is meant to guard', () => {
   // #138 M-1: the exclusion is narrowed to the floor's two owners, not the
   // whole ds/ directory — every other src/ds/*.css file is guarded too.
   expect(GUARDED_FILES.some((f) => f.endsWith(join('ds', 'Chip.css')))).toBe(true)
+  // #147 M-2: the violation fixture must never reach the production sweep,
+  // or the guard test below would fail on a file that exists to prove the
+  // guard's detection logic, not to describe the real app.
+  expect(GUARDED_FILES).not.toContain(VIOLATION_FIXTURE)
 })
 
 describe('touch-target floor cannot be beaten outside ds/Button.css or ds/IconButton.css (agent-forge-harness-hxq / pr128 F1, broadened by agent-forge-harness-opn / #138 M-1)', () => {
@@ -138,5 +164,44 @@ describe('touch-target floor cannot be beaten outside ds/Button.css or ds/IconBu
         }
       }
     }
+  })
+})
+
+describe('positive control: the detection logic can actually find a violation (agent-forge-harness-8ug / #147 M-2)', () => {
+  it('flags every guarded-selector kind and every size property on the committed fixture', () => {
+    const css = stripComments(readFileSync(VIOLATION_FIXTURE, 'utf8'))
+    const fixtureBlocks = blocks(css)
+    expect(fixtureBlocks.length).toBeGreaterThan(0)
+
+    const flaggedProperties = new Set<string>()
+    for (const { selector, body } of fixtureBlocks) {
+      expect(isGuardedSelector(selector), `fixture selector "${selector.trim()}" must be one this guard watches`).toBe(
+        true,
+      )
+      for (const property of SIZE_PROPERTIES) {
+        if (new RegExp(`(^|;)\\s*${property}\\s*:`).test(body)) flaggedProperties.add(property)
+      }
+    }
+    // Hard-coded, not derived from SIZE_PROPERTIES: comparing against the
+    // production list itself would go blind exactly when that list is the
+    // thing mutated (dropping an entry from SIZE_PROPERTIES would drop it
+    // from both sides of the comparison and never fail). Every property
+    // below has its own isolated rule in the fixture, so a mutant that
+    // empties, shrinks, or otherwise breaks the list -- or the per-property
+    // regex built from it -- leaves at least one entry unflagged here, even
+    // though it would never fail the real-file guard above (nothing to flag
+    // either way).
+    expect([...flaggedProperties].sort()).toEqual(
+      [
+        'min-height',
+        'min-width',
+        'height',
+        'width',
+        'min-block-size',
+        'min-inline-size',
+        'block-size',
+        'inline-size',
+      ].sort(),
+    )
   })
 })
