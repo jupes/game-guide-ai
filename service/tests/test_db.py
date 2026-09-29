@@ -24,6 +24,7 @@ from service import db as dbmod
 from service.audit_log import ActorKind, AuditAction, AuditEvent, Decision, InMemoryAuditLog, ObjectKind
 from service.campaign_store import CampaignStoreError, SeatUnavailable, Staging, shared_rows
 from service.db import (
+    PROJECTION_ITEMS_MAX,
     AdvisoryLock,
     CampaignAuthzMissing,
     CampaignLockNotHeld,
@@ -35,6 +36,7 @@ from service.db import (
     InMemoryTransaction,
     PgTransaction,
     PoolSettings,
+    ProjectionItem,
     TwinWouldBlock,
     advisory_key,
 )
@@ -932,9 +934,13 @@ def test_the_revision_advance_is_one_guarded_statement_under_the_exclusive_lock(
 
         unit.lock_campaign("cmp_one", shared=False)
         assert unit.advance_authz_revision("cmp_one") == 7
+    # 1ir.2.1 extended the one statement with rule 3 (T-C1): the first
+    # parameter is "no items were queued", and every SET reads the old row.
     assert log[-3] == (
-        "UPDATE campaign.authz_state SET authz_revision = authz_revision + 1 "
-        "WHERE campaign_id = %s RETURNING authz_revision ('cmp_one',)"
+        "UPDATE campaign.authz_state SET authz_revision = authz_revision + 1, "
+        "projection_revision = CASE WHEN %s AND projection_revision = authz_revision "
+        "THEN authz_revision + 1 ELSE projection_revision END "
+        "WHERE campaign_id = %s RETURNING authz_revision (True, 'cmp_one')"
     )
 
 
@@ -947,6 +953,237 @@ def test_a_revision_advance_that_changes_no_row_fails_closed(scripted):
         with _scripted_database().transaction() as unit:
             unit.lock_campaign("cmp_one", shared=False)
             unit.advance_authz_revision("cmp_one")
+
+
+# ── Rule 3 and the projection queue (1ir.2.1) ────────────────────────────────
+#
+# The twin's half and the statements. The same rules against PostgreSQL, and
+# what a second connection sees, are `tests/test_eligibility_db.py`'s.
+
+_DOC = "doc_" + "d" * 22
+_ITEM = ProjectionItem(_DOC, "portrait")
+
+
+def _state(db: InMemoryDatabase, campaign: str) -> tuple:
+    """(authz, projection, queue) as a fresh reader sees them."""
+    with db.transaction() as reader:
+        queued = [(q.document_id, q.field_key, q.authz_revision) for q in reader.projected_items(campaign)]
+        return reader.authz_revision(campaign), reader.projection_revision(campaign), queued
+
+
+def _at(db: InMemoryDatabase, authz: int, projection: int) -> str:
+    campaign = _campaign(db, revision=authz)
+    db.projection_state[campaign] = projection
+    return campaign
+
+
+@pytest.mark.parametrize(
+    ("start", "project", "expected"),
+    [
+        pytest.param((4, 4), (), (5, 5, []), id="nothing-pending-moves-with-it"),
+        pytest.param((4, 4), (_ITEM,), (5, 4, [(_DOC, "portrait", 5)]), id="items-leave-it-behind"),
+        pytest.param((5, 3), (), (6, 3, []), id="a-lagging-one-never-catches-up"),
+    ],
+)
+def test_rule_three_moves_the_projection_only_when_nothing_was_pending(start, project, expected):
+    """T-C2 in the twin: kills an unconditional catch-up (M-C2), a projection
+    advanced alongside items (M-C3) and a comparison made after the increment
+    (M-C4)."""
+    db = InMemoryDatabase()
+    campaign = _at(db, *start)
+    with db.transaction() as unit:
+        unit.lock_campaign(campaign, shared=False)
+        assert unit.advance_authz_revision(campaign, project=project) == expected[0]
+    assert _state(db, campaign) == expected
+
+
+def test_a_campaign_with_no_projection_entry_reads_zero_and_a_missing_one_reads_none():
+    db = InMemoryDatabase()
+    campaign = _campaign(db, revision=2)
+    with db.transaction() as unit:
+        assert unit.projection_revision(campaign) == 0
+        assert unit.projection_revision("cmp_missing") is None
+        assert unit.projected_items(campaign) == []
+
+
+def test_a_rolled_back_advance_leaves_both_revisions_and_no_queue_item():
+    """T-C4 in the twin: kills a queue written outside staging (M-C5)."""
+    db = InMemoryDatabase()
+    campaign = _at(db, 4, 4)
+    with pytest.raises(RuntimeError):
+        with db.transaction() as unit:
+            unit.lock_campaign(campaign, shared=False)
+            unit.advance_authz_revision(campaign, project=[_ITEM])
+            unit.advance_authz_revision(campaign)
+            raise RuntimeError("the caller's next statement failed")
+    assert _state(db, campaign) == (4, 4, [])
+    assert db.projection_queue == []
+
+
+def test_a_second_reader_sees_neither_revision_nor_queue_item_before_commit():
+    """T-C5 in the twin: kills a twin that publishes early (M-C6)."""
+    db = InMemoryDatabase()
+    campaign = _at(db, 4, 4)
+    with db.transaction() as writer:
+        writer.lock_campaign(campaign, shared=False)
+        writer.advance_authz_revision(campaign, project=[_ITEM])
+        assert writer.projected_items(campaign)[0].authz_revision == 5
+        assert _state(db, campaign) == (4, 4, [])
+    assert _state(db, campaign) == (5, 4, [(_DOC, "portrait", 5)])
+    moving = _campaign(db, "cmp_two", revision=2)
+    db.projection_state[moving] = 2
+    with db.transaction() as writer:
+        writer.lock_campaign(moving, shared=False)
+        writer.advance_authz_revision(moving)
+        assert writer.projection_revision(moving) == 3
+        assert _state(db, moving) == (2, 2, [])
+    assert _state(db, moving) == (3, 3, [])
+
+
+class _NotAnItem:
+    document_id = _DOC
+    field_key = "portrait"
+
+
+@pytest.mark.parametrize(
+    ("project", "refusal"),
+    [
+        pytest.param(lambda: [ProjectionItem("prt_" + "p" * 22, "portrait")], ValueError, id="participant-as-document"),
+        pytest.param(lambda: [ProjectionItem(_DOC, "all")], ValueError, id="wildcard-key"),
+        pytest.param(lambda: [ProjectionItem(_DOC, "Name")], ValueError, id="not-a-field-key"),
+        pytest.param(lambda: [ProjectionItem(_DOC, "motives.hidden")], ValueError, id="nested-path"),
+        pytest.param(lambda: [ProjectionItem(_DOC, 7)], TypeError, id="not-a-str"),  # type: ignore[arg-type]
+        pytest.param(lambda: [_ITEM] * (PROJECTION_ITEMS_MAX + 1), ValueError, id="too-many"),
+        pytest.param(lambda: [_ITEM, _NotAnItem()], TypeError, id="not-a-projection-item"),
+        pytest.param(lambda: "portrait", TypeError, id="a-string"),
+        pytest.param(lambda: {_ITEM}, TypeError, id="not-a-sequence"),
+    ],
+)
+def test_projection_items_are_refused_before_anything_is_written(project, refusal):
+    """T-C6: kills validation after the UPDATE (M-C7). The twin's revisions and
+    queue are unchanged, and the scripted connection saw no UPDATE."""
+    db = InMemoryDatabase()
+    campaign = _at(db, 4, 4)
+    with db.transaction() as unit:
+        unit.lock_campaign(campaign, shared=False)
+        with pytest.raises(refusal):
+            unit.advance_authz_revision(campaign, project=project())
+        assert unit.authz_revision(campaign) == 4
+        assert unit.projected_items(campaign) == []
+    assert _state(db, campaign) == (4, 4, [])
+
+
+def test_scripted_projection_items_are_refused_before_any_update(scripted):
+    log, seen = scripted
+    seen["rows"].append(_AUTHZ_ROW)
+    with _scripted_database().transaction() as unit:
+        unit.lock_campaign("cmp_one", shared=False)
+        with pytest.raises(ValueError):
+            unit.advance_authz_revision("cmp_one", project=[_ITEM] * (PROJECTION_ITEMS_MAX + 1))
+    assert not any("UPDATE campaign.authz_state" in line or "projection_queue" in line for line in log)
+
+
+def test_a_queued_advance_is_the_guarded_update_then_one_insert_stamped_with_the_new_revision(scripted):
+    log, seen = scripted
+    seen["rows"].extend([_AUTHZ_ROW, ("UPDATE campaign.authz_state", (8,))])
+    with _scripted_database().transaction() as unit:
+        unit.lock_campaign("cmp_one", shared=False)
+        assert unit.advance_authz_revision("cmp_one", project=[_ITEM, ProjectionItem(_DOC, "name")]) == 8
+    assert log[-4].endswith("RETURNING authz_revision (False, 'cmp_one')")
+    assert log[-3] == (
+        "INSERT INTO campaign.projection_queue (campaign_id, document_id, field_key, authz_revision) "
+        "SELECT %s, d, k, %s FROM unnest(%s::text[], %s::text[]) AS t(d, k) "
+        f"('cmp_one', 8, ['{_DOC}', '{_DOC}'], ['portrait', 'name'])"
+    )
+
+
+@pytest.mark.parametrize("shared", [None, True], ids=["no-lock", "shared-lock"])
+def test_an_advance_with_items_needs_the_exclusive_lock(shared):
+    """T-C7: kills a queue insert made before the guard (M-C8)."""
+    db = InMemoryDatabase()
+    campaign = _at(db, 4, 4)
+    with db.transaction() as unit:
+        if shared is not None:
+            unit.lock_campaign(campaign, shared=shared)
+        with pytest.raises(CampaignLockNotHeld):
+            unit.advance_authz_revision(campaign, project=[_ITEM])
+        assert unit.projected_items(campaign) == []
+    assert _state(db, campaign) == (4, 4, [])
+
+
+def test_require_exclusive_campaign_lock_answers_as_the_advance_does(scripted):
+    """T-C8, both units of work: kills a guard that checks only "any lock"
+    (M-C9)."""
+    _, seen = scripted
+    seen["rows"].append(_AUTHZ_ROW)
+    db = InMemoryDatabase()
+    _campaign(db)
+    with db.transaction() as twin, _scripted_database().transaction() as pg_unit:
+        for unit in (twin, pg_unit):
+            with pytest.raises(CampaignLockNotHeld, match="exclusively"):
+                unit.require_exclusive_campaign_lock("cmp_one")
+            unit.lock_campaign("cmp_one", shared=True)
+            with pytest.raises(CampaignLockNotHeld, match="exclusively"):
+                unit.require_exclusive_campaign_lock("cmp_one")
+    with db.transaction() as twin, _scripted_database().transaction() as pg_unit:
+        for unit in (twin, pg_unit):
+            unit.lock_campaign("cmp_one", shared=False)
+            unit.require_exclusive_campaign_lock("cmp_one")
+            with pytest.raises(CampaignLockNotHeld):
+                unit.require_exclusive_campaign_lock("cmp_other")
+
+
+def test_a_nested_writer_that_would_queue_is_refused_and_leaves_nothing_behind():
+    """Critic item 9(a): every staging path claims the writer first."""
+    db = InMemoryDatabase()
+    first, second = _at(db, 1, 1), _campaign(db, "cmp_two", revision=1)
+    db.projection_state[second] = 1
+    with db.transaction() as writer:
+        writer.lock_campaign(first, shared=False)
+        writer.advance_authz_revision(first)
+        with db.transaction() as nested:
+            nested.lock_campaign(second, shared=False)
+            with pytest.raises(TwinWouldBlock):
+                nested.advance_authz_revision(second, project=[_ITEM])
+            # Each staging path claims on its own, not only through the first.
+            with pytest.raises(TwinWouldBlock):
+                nested._stage_projection(second, 1)
+            with pytest.raises(TwinWouldBlock):
+                nested._stage_queued(second, (_ITEM,), 1)
+            assert nested.projected_items(second) == []
+            assert nested.projection_revision(second) == 1
+    assert _state(db, second) == (1, 1, [])
+    assert _state(db, first) == (2, 2, [])
+
+
+def test_the_twin_refuses_a_projection_revision_ahead_of_the_authorisation_revision():
+    """0019's CHECK, kept by the twin: only the projector (1ir.2.3) will stage
+    one directly, and it must not be able to run ahead."""
+    db = InMemoryDatabase()
+    campaign = _at(db, 3, 3)
+    with db.transaction() as unit:
+        with pytest.raises(ValueError, match="never runs ahead"):
+            unit._stage_projection(campaign, 4)
+        with pytest.raises(ValueError, match="never runs ahead"):
+            unit._stage_projection("cmp_missing", 0)
+        assert unit.projection_revision(campaign) == 3
+
+
+def test_a_unit_built_with_no_database_keeps_its_own_projection_state():
+    bare = InMemoryTransaction({"cmp_one": 0})
+    bare.lock_campaign("cmp_one", shared=False)
+    assert bare.advance_authz_revision("cmp_one", project=[_ITEM]) == 1
+    assert [q.id for q in bare.projected_items("cmp_one")] == [1]
+    assert bare.projection_revision("cmp_one") == 0
+    assert InMemoryDatabase().projection_queue == []
+
+
+def test_a_new_campaign_starts_with_both_revisions_at_zero():
+    db = InMemoryDatabase()
+    with db.transaction() as unit:
+        unit.create_authz_state("cmp_new")
+        assert (unit.authz_revision("cmp_new"), unit.projection_revision("cmp_new")) == (0, 0)
+    assert (db.authz_state["cmp_new"], db.projection_state["cmp_new"]) == (0, 0)
 
 
 # ── The participant store, as PostgreSQL is asked for it ─────────────────────
