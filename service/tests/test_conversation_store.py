@@ -83,14 +83,55 @@ def test_every_minted_id_carries_at_least_sixteen_bytes(minted: list[str]) -> No
         assert len(decoded) >= store.CONVERSATION_ID_BYTES == 16
 
 
+#: The body alphabet `secrets.token_urlsafe` draws from (`ID_SHAPE` above pins
+#: the same 64 symbols). Two independent CSPRNG ids matching in their first
+#: `m` body characters happens with probability `1 / _BODY_ALPHABET_SIZE ** m`.
+_BODY_ALPHABET_SIZE = 64
+
+#: How many *body* characters (beyond the fixed `cnv_` prefix) two consecutive
+#: ids may share before the test calls it a monotone source. A union bound
+#: over the `SAMPLE - 1` consecutive pairs bounds the false-failure rate:
+#: `P(any pair shares more than _MAX_SHARED_BODY_CHARS)
+#:      <= (SAMPLE - 1) * _BODY_ALPHABET_SIZE ** -(_MAX_SHARED_BODY_CHARS + 1)`.
+#: At 4 that is `999 * 64 ** -5 ≈ 9.3e-7`, under 1e-6; a monotone source (a
+#: counter, a timestamp) shares far more than 4 of the body's 22 characters
+#: between consecutive ids, and stays caught. See
+#: `test_the_false_failure_rate_is_derived_correctly` below, which recomputes
+#: the same bound so the two can't silently drift apart.
+_MAX_SHARED_BODY_CHARS = 4
+
+#: The false-failure rate the bound above is chosen to hold under.
+_MAX_FALSE_FAILURE_RATE = 1e-6
+
+
 def test_minted_ids_are_not_sequential(minted: list[str]) -> None:
     """A counter, a timestamp or any monotone source shows up two ways:
     consecutive ids share a long common prefix, and the ids come out already
-    sorted. Neither is true of a CSPRNG."""
-    for earlier, later in zip(minted, minted[1:], strict=False):
-        shared = len(_common_prefix(earlier, later))
-        assert shared <= len(store.CONVERSATION_PREFIX) + 2, f"{earlier} then {later}"
+    sorted. Neither is true of a CSPRNG.
+
+    Bounding the shared prefix at `len(CONVERSATION_PREFIX) + 2` (i.e. two
+    body characters) made this test fail by chance about 0.4% of runs: with
+    999 consecutive pairs and a 64-symbol alphabet,
+    `999 * 64 ** -3 ≈ 3.8e-3`. `_MAX_SHARED_BODY_CHARS` raises that margin
+    until the false-failure rate is negligible, derived in the comment above
+    it.
+    """
+    pairs = list(zip(minted, minted[1:], strict=False))
+    shared = [len(_common_prefix(earlier, later)) for earlier, later in pairs]
+    longest = max(shared)
+    worst_earlier, worst_later = pairs[shared.index(longest)]
+    bound = len(store.CONVERSATION_PREFIX) + _MAX_SHARED_BODY_CHARS
+    assert longest <= bound, f"{worst_earlier} then {worst_later} shared {longest} characters"
     assert minted != sorted(minted), "minted ids came out in order"
+
+
+def test_the_false_failure_rate_is_derived_correctly() -> None:
+    """Guards the arithmetic in `_MAX_SHARED_BODY_CHARS`'s docstring: recomputed
+    independently, so a change to the bound or the sample size that pushes the
+    false-failure rate back over the line is caught here rather than only in
+    a comment."""
+    false_failure_rate = (SAMPLE - 1) * _BODY_ALPHABET_SIZE ** -(_MAX_SHARED_BODY_CHARS + 1)
+    assert false_failure_rate < _MAX_FALSE_FAILURE_RATE
 
 
 def _common_prefix(left: str, right: str) -> str:
