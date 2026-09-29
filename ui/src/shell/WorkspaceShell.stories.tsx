@@ -377,6 +377,19 @@ export const DarkDrawerSurfaceIsThemedContainer: Story = {
   },
 }
 
+/** The drawer's close button, reached by Tab, draws the 3px ring in the
+ * theme's `--md-sys-color-secondary`. The colour is pinned too: a
+ * `3px solid transparent` ring has a style and a width but paints nothing. */
+async function expectDrawerCloseRing(canvasElement: HTMLElement, secondary: string): Promise<void> {
+  const drawer = await openDrawer(canvasElement)
+  const close = within(drawer).getByRole('button', { name: 'Close navigation' })
+  await tabTo(close)
+  const style = getComputedStyle(close)
+  await expect(style.outlineStyle).not.toBe('none')
+  await expect(style.outlineWidth).toBe('3px')
+  await expect(style.outlineColor).toBe(secondary)
+}
+
 /** agent-forge-harness-zh9 L-3: the drawer's OWN close button ring, not just
  * the menu button that opens it (TopBar's MenuButtonFocusVisible) — both are
  * raw buttons, so neither inherits IconButton's ring. */
@@ -384,12 +397,20 @@ export const DrawerCloseFocusVisible: Story = {
   ...atViewport('phone390'),
   play: async ({ canvasElement }) => {
     await expectViewport('phone390')
-    const drawer = await openDrawer(canvasElement)
-    const close = within(drawer).getByRole('button', { name: 'Close navigation' })
-    await tabTo(close)
-    const style = getComputedStyle(close)
-    await expect(style.outlineStyle).not.toBe('none')
-    await expect(style.outlineWidth).toBe('3px')
+    // --md-sys-color-secondary (#7a5a23), as the browser resolves it.
+    await expectDrawerCloseRing(canvasElement, 'rgb(122, 90, 35)')
+  },
+}
+
+/** The same ring in the dark theme, which redefines the token: a dark-only
+ * `outline: none` passes every light story. */
+export const DarkDrawerCloseFocusVisible: Story = {
+  ...atViewport('phone390', 'dark'),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone390')
+    await expectTheme('dark')
+    // --md-sys-color-secondary (#ecc287) in the dark theme.
+    await expectDrawerCloseRing(canvasElement, 'rgb(236, 194, 135)')
   },
 }
 
