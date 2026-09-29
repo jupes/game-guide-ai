@@ -148,6 +148,21 @@ PROTECTED_ROUTES: list[Route] = [
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations/inv_guard_0000000001", None),
     ("POST", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations/inv_guard_0000000001/cancel", None),
+    # btb PR-2: the GM's named groups.
+    ("GET", "/campaigns/{campaign_id}/groups", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups", None),
+    ("POST", "/campaigns/{campaign_id}/groups", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups",
+     {"schema_version": 1, "command_id": "guard_command_0001", "name": "Scouts"}),
+    ("PATCH", "/campaigns/{campaign_id}/groups/{group_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups/grp_aaaaaaaaaaaaaaaaaaaaaa",
+     {"schema_version": 1, "name": "Wardens"}),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/remove",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups/grp_aaaaaaaaaaaaaaaaaaaaaa/remove", None),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/members/{participant_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups/grp_aaaaaaaaaaaaaaaaaaaaaa/members/prt_aaaaaaaaaaaaaaaaaaaaaa",
+     None),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/members/{participant_id}/remove",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups/grp_aaaaaaaaaaaaaaaaaaaaaa/members/prt_aaaaaaaaaaaaaaaaaaaaaa/remove",
+     None),
 ]
 
 #: Deliberately unguarded, and asserted so that a blanket "guard everything"
