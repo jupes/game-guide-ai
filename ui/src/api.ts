@@ -244,7 +244,7 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
   unauthorizedHandler = handler
 }
 
-function notifyUnauthorized(): void {
+export function notifyUnauthorized(): void {
   unauthorizedHandler?.()
 }
 
