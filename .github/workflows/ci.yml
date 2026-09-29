@@ -117,7 +117,8 @@ jobs:
             tests/test_corpus_schema.py ingestion/tests/test_scrape_wikidot.py \
             tests/test_asset_db.py tests/test_session_dividers_db.py \
             tests/test_reveal_db.py tests/test_eligibility_db.py tests/test_assets_api_db.py \
-            tests/test_asset_serving_db.py tests/test_document_generation_db.py
+            tests/test_asset_serving_db.py tests/test_document_generation_db.py \
+            tests/test_groups_api_db.py
 
   ui-tests:
     runs-on: ubuntu-24.04
@@ -128,6 +129,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
+      # The Live Session Assistant threat model's cross-references: every cited
+      # id defined, threats and obligations naming each other, every rule a
+      # control, every Medium residual a risk the owner answers. It reads that
+      # one record; the full checkdocs.ts also wants the Beads tracker.
+      - name: Threat model cross-references
+        working-directory: docs/forge/tools/live-session-assistant
+        run: bun threatmodel.ts
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Install Chromium (storybook browser test project)

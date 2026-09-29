@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import zlib
 from collections.abc import Callable, Iterable, Iterator, MutableMapping
 from dataclasses import asdict, dataclass, field
@@ -963,7 +964,25 @@ def test_a_bad_media_setting_stops_the_apps_startup(monkeypatch: pytest.MonkeyPa
         appmod._state.update(saved)
 
 
-MEDIA_KINDS = {"asset.delete", "asset.sweep_stuck", "asset.reconcile_orphans"}
+def test_gcs_on_a_build_without_the_client_stops_startup_with_no_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no database at startup no store is built, so the factory's own
+    refusal (`1kg.8.1.4`) would wait for recovery. Startup refuses first."""
+    from service.media_objects import MediaStoreNotBuilt
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("WORKBENCH_MEDIA_STORE", "gcs")
+    monkeypatch.setenv("WORKBENCH_MEDIA_BUCKET", "my-project-workbench-media")
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
+    saved = dict(appmod._state)
+    try:
+        with pytest.raises(MediaStoreNotBuilt), TestClient(app):
+            pass
+    finally:
+        appmod._state.clear()
+        appmod._state.update(saved)
+
+
+MEDIA_KINDS ={"asset.delete", "asset.sweep_stuck", "asset.reconcile_orphans"}
 
 
 def test_the_stores_build_media_only_when_a_store_is_named_whatever_the_switch(tmp_path: Path) -> None:

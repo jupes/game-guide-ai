@@ -13,6 +13,12 @@ more read timeout, which the retry budget in test_providers.py cannot absorb.
 A cut-short wait is httpcore's own timeout: httpx's ReadTimeout and kin, which
 the SDK (non-streamed) and generate._as_sdk_timeout (streamed) already turn
 into APITimeoutError, recorded, retried and answered like a silent provider.
+
+A /chat turn makes up to four provider calls, each retried, which added up to
+458.5 s in spell mode against Cloud Run's 300 s. So the turn has one wall-clock
+budget of its own (agent-forge-harness-0u02) that every call draws down: an
+attempt's deadline is never later than the turn's, and generate_result starts
+no call and no retry the turn can no longer afford (`turn_affords`).
 """
 
 from __future__ import annotations
@@ -20,8 +26,8 @@ from __future__ import annotations
 import ssl
 import time
 from collections.abc import Iterable, Iterator
-from contextvars import ContextVar
-from typing import Any
+from contextvars import ContextVar, Token
+from typing import Any, Final
 
 import httpcore
 import httpx
@@ -30,6 +36,39 @@ import httpx
 # state on a connection, which outlives its attempt in the pool: httpx's sync
 # client reads and closes a body in the context that sent its request.
 _attempt_deadline: ContextVar[float | None] = ContextVar("provider_attempt_deadline", default=None)
+
+#: One /chat turn's provider budget, 60 s under deploy.sh's --timeout 300 for
+#: what runs outside it: the gates before the turn, and the persistence and
+#: the ledger write after it. A constant, not a setting, so it cannot be raised
+#: past the platform unseen; service/tests/test_providers.py pins it there.
+TURN_BUDGET_S: Final = 240.0
+#: A call, or a retry after its backoff, that would start with less than this
+#: left is refused: it could not finish, and it would still be billed.
+TURN_CALL_MIN_S: Final = 5.0
+
+# The running turn's deadline, None outside a turn: /chat sets it before the
+# graph runs, whose nodes run in this context or a copy of it.
+_turn_deadline: ContextVar[float | None] = ContextVar("provider_turn_deadline", default=None)
+
+
+def begin_turn() -> Token[float | None]:
+    """Start a turn's budget of TURN_BUDGET_S (read now, so a test can shrink it)."""
+    return _turn_deadline.set(time.monotonic() + TURN_BUDGET_S)
+
+
+def end_turn(token: Token[float | None]) -> None:
+    _turn_deadline.reset(token)
+
+
+def _turn_left() -> float | None:
+    deadline = _turn_deadline.get()
+    return None if deadline is None else deadline - time.monotonic()
+
+
+def turn_affords(wait_s: float = 0.0) -> bool:
+    """Whether a call may start after waiting `wait_s`: always outside a turn."""
+    left = _turn_left()
+    return left is None or left - wait_s >= TURN_CALL_MIN_S
 
 
 def _capped(timeout: float | None, expired: type[httpcore.TimeoutException]) -> float | None:
@@ -94,12 +133,15 @@ class AttemptDeadlineTransport(httpx.HTTPTransport):
         self._pool._network_backend = _DeadlineBackend(self._pool._network_backend)
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
+        # Never past the turn's deadline, whatever is left of the attempt's own.
+        turn_left = _turn_left()
+        deadline_s = self._deadline_s if turn_left is None else max(0.0, min(self._deadline_s, turn_left))
         # The one wait no network call makes: queueing for a pooled connection.
         timeouts = dict(request.extensions.get("timeout") or {})
         pool = timeouts.get("pool")
-        timeouts["pool"] = self._deadline_s if pool is None else min(pool, self._deadline_s)
+        timeouts["pool"] = deadline_s if pool is None else min(pool, deadline_s)
         request.extensions["timeout"] = timeouts
-        _attempt_deadline.set(time.monotonic() + self._deadline_s)
+        _attempt_deadline.set(time.monotonic() + deadline_s)
         try:
             response = super().handle_request(request)
         except BaseException:

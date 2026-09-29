@@ -32,6 +32,7 @@ import service.app as appmod
 from service.job_driver import (
     BATCH_BUDGET_S,
     BATCH_LIMIT,
+    BUSY,
     OUTAGE_BACKOFF_S,
     SCHEDULER_PATH,
     SCHEDULER_SECRET_ENV,
@@ -39,7 +40,15 @@ from service.job_driver import (
     SCHEDULER_SECRET_MIN_LENGTH,
     JobDriver,
 )
-from service.jobs import LEASE_SECONDS, RETRY_CAP_SECONDS, InMemoryJobQueue, JobHandler, JobRunner, retry_delay
+from service.jobs import (
+    LEASE_SECONDS,
+    RETRY_CAP_SECONDS,
+    InMemoryJobQueue,
+    JobHandler,
+    JobRunner,
+    JobRunResult,
+    retry_delay,
+)
 from service.spa_fallback import SPA_MOUNT_NAME, SPA_ROUTE_PREFIX, install_spa
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -137,6 +146,19 @@ def test_the_bootstrap_runs_in_the_order_its_steps_depend_on() -> None:
     assert "**The header is interim.**" in _prose()
 
 
+def test_the_credential_table_says_who_checks_each_one() -> None:
+    """agent-forge-harness-ttda M2 (doc mutant D2): a false statement about the security
+    model — the shared secret is checked by the application, in constant time, never by
+    Cloud Run IAM (that is the *other* row's credential). Nothing else in this file reads
+    either "Checked by" cell, so a swap between them would otherwise survive silently."""
+    rows = _table_rows("Credential")
+    secret_row = rows["the shared secret `JOB_SCHEDULER_SECRET` (step 1)"]
+    identity_row = rows["the scheduler's identity, the `job-scheduler` service account (step 3)"]
+    assert "**the application**, in constant time" in secret_row
+    assert "Cloud Run IAM" not in secret_row
+    assert "**Cloud Run IAM**" in identity_row
+
+
 def test_the_runbook_quotes_the_routes_own_bounds() -> None:
     section = _prose()
     assert f"up to {BATCH_LIMIT} due jobs per call, starting none after {BATCH_BUDGET_S:g} s" in section
@@ -178,6 +200,37 @@ def _install_driver(*, healthy: bool) -> None:
 def _post(headers: dict[str, str]) -> tuple[int, bytes]:
     answer = TestClient(appmod.app).post(SCHEDULER_PATH, headers=headers)
     return answer.status_code, answer.content
+
+
+def _install_busy_driver() -> threading.Lock:
+    """Like `_install_driver(healthy=True)`, but hands back the instance lock so a test
+    can hold it itself and force `job_driver.BUSY` — job work already in flight — rather
+    than a fresh run."""
+    queue = InMemoryJobQueue()
+    with queue.db.transaction() as unit:
+        queue.enqueue(unit, KIND, {"probe_id": "p-1"})
+    lock = threading.Lock()
+    runner = JobRunner(queue, {KIND: JobHandler(lambda job, context: None)}, single_flight=lock)
+    appmod._state["jobs"] = JobDriver(runner, lock=lock, healthy=lambda: True)
+    return lock
+
+
+@pytest.mark.usefixtures("real_app")
+def test_the_busy_200_row_matches_busy_and_nothing_else() -> None:
+    """agent-forge-harness-ttda M2 (doc mutant D3): the 200 row also covers an instance
+    that is already running job work, not only a fresh one — that is `job_driver.BUSY`,
+    pinned here by value, not merely by the row's prose. A real call forced into BUSY
+    (the instance lock held throughout) must answer exactly what the row says it does."""
+    rows = _table_rows("Status")
+    assert BUSY == JobRunResult(ran=0, failed=0, remaining=True)
+    lock = _install_busy_driver()
+    lock.acquire()
+    try:
+        status, body = _post({SCHEDULER_SECRET_HEADER: SECRET})
+    finally:
+        lock.release()
+    assert status == 200 and json.loads(body) == {"ran": 0, "failed": 0, "remaining": True}
+    assert "ran: 0, remaining: true" in rows["200"]
 
 
 @pytest.mark.usefixtures("real_app")

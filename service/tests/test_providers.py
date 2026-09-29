@@ -21,7 +21,8 @@ import httpx
 import pytest
 
 import config
-from service import generate
+from ingestion import retrieval
+from service import generate, provider_deadline
 from service.model_catalog import CATALOG
 from service.provider_deadline import AttemptDeadlineTransport
 from service.providers import ProviderClientFactory, UnknownOrDisabledModelError
@@ -182,6 +183,29 @@ def test_the_timeouts_fit_the_retry_budget_inside_the_platform_request_timeout()
     backoff = sum(generate._RETRY_BACKOFF_SECONDS * n for n in range(1, generate._MAX_ATTEMPTS))
     per_attempt = config.LLM_CONNECT_TIMEOUT_S + config.LLM_REQUEST_TIMEOUT_S
     assert generate._MAX_ATTEMPTS * per_attempt + backoff < int(platform.group(1))
+
+
+# The turn's budget (agent-forge-harness-0u02). The calls above add up per
+# turn: 458.5 s in spell mode. Every one of them now ends by the turn's budget
+# (service/tests/test_generation_timeout.py), so the budget is what must fit.
+TURN_HEADROOM_S = 60  # the gates before the turn; persistence and the ledger after it
+
+
+def test_the_turn_budget_ends_every_provider_call_with_headroom_under_the_platform_timeout():
+    deploy = (Path(__file__).resolve().parents[2] / "scripts" / "deploy.sh").read_text()
+    platform = re.search(r"--timeout (\d+)", deploy)
+    assert platform is not None
+    assert provider_deadline.TURN_BUDGET_S + TURN_HEADROOM_S <= int(platform.group(1))
+
+
+def test_the_turn_budget_affords_a_worst_case_embed_and_then_a_whole_answer_attempt():
+    # The embed runs first, and nothing cuts it short at the turn's deadline
+    # (its wall-clock deadline is agent-forge-harness-0oh): its own bound must
+    # fit inside the budget with an answer attempt after it, or it starves it.
+    backoff = sum(retrieval._EMBED_RETRY_BACKOFF_S * n for n in range(1, retrieval.EMBED_MAX_ATTEMPTS))
+    embed = retrieval.EMBED_MAX_ATTEMPTS * (config.EMBED_CONNECT_TIMEOUT_S + config.EMBED_REQUEST_TIMEOUT_S)
+    answer_attempt = config.LLM_CONNECT_TIMEOUT_S + config.LLM_REQUEST_TIMEOUT_S
+    assert embed + backoff + answer_attempt <= provider_deadline.TURN_BUDGET_S
 
 
 def test_a_timeout_setting_reads_its_environment_override(monkeypatch):

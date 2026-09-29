@@ -1245,6 +1245,25 @@ def test_m2_the_store_is_called_as_the_assistant_without_a_command_id() -> None:
     }]
 
 
+def test_m3_persist_refuses_a_document_whose_data_now_fails_i16_or_must_fill() -> None:
+    """agent-forge-harness-eqgd (PR #195 review L-1): `parse_generated` enforces I-16 and
+    `must_fill` once, at generation time; `GeneratedDocument.data` is a plain dict on a
+    frozen dataclass, and the store re-checks only `check_fields` (shape and kind, never
+    I-16's remote-reference markers or a type's must-fill set). An edited or hand-built
+    `GeneratedDocument` could therefore smuggle a link past `persist_generated`, or drop
+    what NPC's spec says must be said. Kills `persist_generated` trusting `data` as-is."""
+    made = _parse(fx.request(NPC), _good(NPC))
+    store = RecordingStore()
+
+    smuggled = dataclasses.replace(made, data={**made.data, "wants": "gold, see https://evil.example/x"})
+    _invalid(Invalid.REMOTE_REFERENCE, lambda: dg.persist_generated(None, store, "cmp", smuggled, now=NOW))  # type: ignore[arg-type]
+
+    blanked = dataclasses.replace(made, data={key: value for key, value in made.data.items() if key != "voice"})
+    _invalid(Invalid.MISSING_SUBSTANCE, lambda: dg.persist_generated(None, store, "cmp", blanked, now=NOW))  # type: ignore[arg-type]
+
+    assert store.calls == []
+
+
 # ── N. The corpus adapter ────────────────────────────────────────────────────
 
 

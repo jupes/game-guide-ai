@@ -23,7 +23,10 @@ displays it makes invalid and nothing else (RQ-7, read as a scoped clear):
 * `NoSlot` — a narrowing that clears no reveal slot (table audio switched off).
 
 `NARROWED`, every slot, is the fail-closed default: a caller that forgets to
-name a scope over-clears, and never leaves content up.
+name a scope over-clears, and never leaves content up. `1ir.2.1`'s group
+narrowings (a member's or a group's removal) name it on purpose: a disclosure
+does not record the group it went to yet, so which copies a group change
+invalidates is not known until `1ir.2.x`.
 
 **An audience is what a Confirm names; a target is what a write fills.**
 `EveryoneSeated` is expanded by the server, under the campaign's share lock and
