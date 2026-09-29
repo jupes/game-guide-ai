@@ -17,8 +17,15 @@ foreign-key violation, which would leave the transaction unusable (G-9).
 `chat.timeline_entries` and nothing else. `chat.conversations`
 is `1kg.2.4`'s table and `chat.messages` is nobody's to change: the statements
 naming them are read-only `SELECT`s over the 0001 columns (and the `SELECT`
-inside `append`'s `INSERT`). It takes no lock of any kind: an entry is an
-append-only child of a conversation, and nothing reads it under one.
+inside `append`'s `INSERT`). It takes no explicit lock of any kind: an entry is
+an append-only child of a conversation, and nothing reads it under one.
+
+**The one update** (`1kg.4.1`, I-17 and the lead's C-19). A `tool` entry carries
+its invocation, and an invocation moves on after the turn is stored — done,
+failed, retried, cancelled — so `replace_tool_invocation` rewrites that one
+entry's payload in the transaction that moves the invocation. It is refused for
+any other kind, and for a payload naming another invocation or another tool, so
+a replace can never turn one turn into a different one.
 
 **Why a raw row type rather than `service.models.StoredMessage`.** A legacy row
 must be able to reach the adapter *unreadable*. `chat.messages.mode` carries no
@@ -37,7 +44,7 @@ import json
 import re
 import secrets
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Final, Protocol
 
@@ -47,7 +54,7 @@ from .campaign_identity import ID_BODY_MAX, ID_BODY_MIN, ID_BYTES
 from .campaign_store import Staging, shared_rows
 from .db import InMemoryDatabase, InMemoryTransaction, PgTransaction, UnitOfWork
 from .history import MessageStore
-from .workbench_contracts import AnyEntry, TimelineEntry, redacted_errors
+from .workbench_contracts import AnyEntry, TimelineEntry, ToolEntry, redacted_errors
 
 #: How many of a conversation's rows the in-memory twin looks at before it
 #: applies the cursor predicate — the fake's stand-in for a table PostgreSQL
@@ -159,6 +166,14 @@ def _checked(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tuple
     return validated, json.dumps(validated.model_dump(mode="json"))
 
 
+def _checked_tool(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tuple[ToolEntry, str]:
+    """`_checked`, and a `tool` entry: the only kind that is ever replaced."""
+    validated, payload = _checked(entry, created_at)
+    if not isinstance(validated, ToolEntry):
+        raise EntryMismatch("only a tool entry is ever replaced")
+    return validated, payload
+
+
 @dataclass(frozen=True)
 class LegacyMessageRow:
     """One `chat.messages` row, exactly as the database holds it.
@@ -204,7 +219,8 @@ def fake(unit: UnitOfWork) -> InMemoryTransaction:
 
 class TimelineStore(Protocol):
     """What the timeline needs from a backend — the whole surface. There is no
-    update, no delete, no count and no search."""
+    update, no delete, no count and no search. The module's one update belongs
+    to a tool invocation and is on `ToolTurnStore`, beside this."""
 
     def owner_of(self, unit: UnitOfWork, conversation_id: str) -> int | None:
         """The user this conversation belongs to, or `None`.
@@ -263,6 +279,34 @@ class TimelineStore(Protocol):
         ...  # pragma: no cover - structural type
 
 
+class ToolTurnStore(Protocol):
+    """What a tool invocation (`1kg.4.1`) needs of the timeline, beside
+    `TimelineStore`: both backends below implement the two protocols. A
+    protocol of its own so that the read model's surface — and every stand-in
+    written for it — is exactly what it was."""
+
+    def has_entry(self, unit: UnitOfWork, conversation_id: str, entry_id: str) -> bool:
+        """Whether `entry_id` is a stored entry of this conversation — the check
+        a tool invocation's `source_entry_id` must pass (`1kg.4.1`, SEC-2). A
+        legacy decimal id is never one: only a minted entry is stored."""
+        ...  # pragma: no cover - structural type
+
+    def replace_tool_invocation(
+        self, unit: UnitOfWork, conversation_id: str, entry: AnyEntry | Mapping[str, Any],
+        created_at: datetime, *, owner_id: int,
+    ) -> str:
+        """Rewrite a stored `tool` entry's payload with `entry`; answer its id.
+
+        `entry` is validated as `append` validates it and must be a `tool`
+        entry — else `EntryInvalid` / `EntryMismatch`, before any statement. The
+        statement then requires the stored row to be a `tool` entry of this
+        conversation with the same id and `created_at`, whose stored invocation
+        has the same `invocation_id` and `tool_id`, in a conversation that is
+        `owner_id`'s; any miss is `EntryNotStored`, from the guard.
+        """
+        ...  # pragma: no cover - structural type
+
+
 _LEGACY_COLUMNS = "id, mode, role, content, suggestions, created_at"
 #: Newest first, and total: `created_at` alone is not unique.
 _LEGACY_ORDER = "ORDER BY created_at DESC, id DESC LIMIT %s"
@@ -287,6 +331,20 @@ _INSERT_ENTRY = (
     "WHERE m.id = %s AND m.conversation_id = c.conversation_id)) "
     "ON CONFLICT DO NOTHING RETURNING entry_id"
 )
+#: The one update. No table alias, and none of `1kg.2.4`'s column names: the
+#: static tests in `tests/test_timeline_db.py` read the statement's first three
+#: words and scan it for those names. The payload's own invocation id and tool
+#: must stay what they were (C-19).
+_REPLACE_TOOL = (
+    "UPDATE chat.timeline_entries SET payload = %s::jsonb, schema_version = %s::integer "
+    "WHERE entry_id = %s AND conversation_id = %s AND entry_kind = 'tool' AND created_at = %s "
+    "AND payload -> 'invocation' ->> 'invocation_id' = %s "
+    "AND payload -> 'invocation' ->> 'tool_id' = %s "
+    "AND EXISTS (SELECT 1 FROM chat.conversations c "
+    "WHERE c.conversation_id = chat.timeline_entries.conversation_id AND c.user_id = %s) "
+    "RETURNING entry_id"
+)
+_HAS_ENTRY = "SELECT 1 FROM chat.timeline_entries WHERE entry_id = %s AND conversation_id = %s"
 _COVERED = (
     "SELECT user_message_id, assistant_message_id FROM chat.timeline_entries "
     "WHERE conversation_id = %s "
@@ -371,6 +429,25 @@ class PostgresTimelineStore:
         ids = sorted(wanted)
         rows = pg(unit).conn.execute(_COVERED, (conversation_id, ids, ids)).fetchall()
         return {int(i) for r in rows for i in r if i is not None and int(i) in wanted}
+
+    def has_entry(self, unit: UnitOfWork, conversation_id: str, entry_id: str) -> bool:
+        return pg(unit).conn.execute(_HAS_ENTRY, (entry_id, conversation_id)).fetchone() is not None
+
+    def replace_tool_invocation(
+        self, unit: UnitOfWork, conversation_id: str, entry: AnyEntry | Mapping[str, Any],
+        created_at: datetime, *, owner_id: int,
+    ) -> str:
+        conn = pg(unit).conn
+        validated, payload = _checked_tool(entry, created_at)
+        row = conn.execute(_REPLACE_TOOL, (
+            payload, validated.schema_version,
+            validated.entry_id, conversation_id, created_at,
+            validated.invocation.invocation_id, validated.invocation.tool_id.value,
+            owner_id,
+        )).fetchone()
+        if row is None:
+            raise EntryNotStored("the entry was not stored")
+        return str(row[0])
 
 
 #: The twin's `BIGSERIAL`: unique and increasing across every twin, and — like a
@@ -487,6 +564,31 @@ class InMemoryTimelineStore:
             for r in self._rows.visible(tx).values() if r.conversation_id == conversation_id
             for i in (r.user_message_id, r.assistant_message_id) if i is not None and i in wanted
         }
+
+    def has_entry(self, unit: UnitOfWork, conversation_id: str, entry_id: str) -> bool:
+        found = self._rows.visible(fake(unit)).get(entry_id)
+        return found is not None and found.conversation_id == conversation_id
+
+    def replace_tool_invocation(
+        self, unit: UnitOfWork, conversation_id: str, entry: AnyEntry | Mapping[str, Any],
+        created_at: datetime, *, owner_id: int,
+    ) -> str:
+        tx = fake(unit)
+        validated, payload = _checked_tool(entry, created_at)
+        found = self._rows.visible(tx).get(validated.entry_id)
+        stored = None if found is None else json.loads(found.payload_json).get("invocation")
+        if (
+            found is None or found.conversation_id != conversation_id or found.entry_kind != "tool"
+            or found.created_at != created_at or not isinstance(stored, dict)
+            or stored.get("invocation_id") != validated.invocation.invocation_id
+            or stored.get("tool_id") != validated.invocation.tool_id.value
+            or self._messages.owner_of(conversation_id) != owner_id
+        ):
+            raise EntryNotStored("the entry was not stored")
+        self._rows.replace(tx, validated.entry_id, replace(
+            found, schema_version=validated.schema_version, payload_json=payload,
+        ))
+        return validated.entry_id
 
 
 def _window(
