@@ -1,0 +1,47 @@
+{
+  "schema": "SeatRemoveRequest",
+  "direction": "request",
+  "note": "POST /campaigns/{id}/participants/{id}/remove: removing a seat asks for the password again (SEC-40). The password is write-only: never logged, echoed or shown by repr.",
+  "valid": [
+    {
+      "name": "a password",
+      "value": {
+        "schema_version": 1,
+        "password": "correct horse battery staple"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no password",
+      "why": "SEC-40: every Remove asks",
+      "value": {
+        "schema_version": 1
+      }
+    },
+    {
+      "name": "an empty password",
+      "why": "at least one character",
+      "value": {
+        "schema_version": 1,
+        "password": ""
+      }
+    },
+    {
+      "name": "a password past 1024",
+      "why": "service/models.py's MAX_PASSWORD_LENGTH",
+      "value": {
+        "schema_version": 1,
+        "password": "@repeat:p:1025"
+      }
+    },
+    {
+      "name": "a password as a number",
+      "why": "no coercion between JSON types",
+      "value": {
+        "schema_version": 1,
+        "password": 1234
+      }
+    }
+  ]
+}

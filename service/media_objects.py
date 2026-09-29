@@ -56,7 +56,7 @@ CHUNK_BYTES = 256 * 1024
 
 TMP_PREFIX = "tmp/"
 ASSETS_PREFIX = "assets/"
-#: The two key shapes a row holds, as `0012`'s CHECKs spell them. One rule spelled
+#: The two key shapes a row holds, as the media migration's CHECKs spell them. One rule spelled
 #: twice drifts, so `service/tests/test_media_objects.py` holds the migration's
 #: text to these.
 OBJECT_KEY_PATTERN = r"^assets/[0-9a-f]{32}$"

@@ -1,0 +1,63 @@
+{
+  "schema": "SeatOffer",
+  "direction": "response",
+  "note": "An offer as its invitee sees it: what the GM wrote and chose to send, and the dates. No campaign id, participant id, owner id or GM email (SEC-50(4)).",
+  "valid": [
+    {
+      "name": "an offer",
+      "value": {
+        "schema_version": 1,
+        "offer_id": "sof_5Ty6Ui7Op8As9Df0Gh1Jk2",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "offered_at": "2026-09-16T19:31:24Z",
+        "expires_at": "2026-09-30T19:31:24Z"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "the campaign's id",
+      "why": "SEC-50(4): the invitee learns no identifier; a client strips what a newer server adds",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "offer_id": "sof_5Ty6Ui7Op8As9Df0Gh1Jk2",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "offered_at": "2026-09-16T19:31:24Z",
+        "expires_at": "2026-09-30T19:31:24Z",
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc"
+      }
+    },
+    {
+      "name": "the GM's address",
+      "why": "SEC-50(4); a client strips what a newer server adds",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "offer_id": "sof_5Ty6Ui7Op8As9Df0Gh1Jk2",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "offered_at": "2026-09-16T19:31:24Z",
+        "expires_at": "2026-09-30T19:31:24Z",
+        "gm_email": "gm@example.com"
+      }
+    },
+    {
+      "name": "no expiry",
+      "why": "every key is present",
+      "value": {
+        "schema_version": 1,
+        "offer_id": "sof_5Ty6Ui7Op8As9Df0Gh1Jk2",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "offered_at": "2026-09-16T19:31:24Z"
+      }
+    }
+  ]
+}

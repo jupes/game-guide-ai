@@ -7,15 +7,23 @@ enrolment code and the device credential that used to bind a seat to a browser
 are retired, and migration 0009 dropped their tables. Four rules shape
 everything here.
 
-**A seat is open, offered, accepted or removed.** Open: the GM seated an alias
-while preparing, and no account holds it (`user_id` is None). Offered: the GM
-offered it to one account (`user_id` set, `accepted_at` None). Accepted: that
-account accepted it. Removed: `removed_at` is set. Only an offer followed by
-the same account's acceptance moves a seat between the first three; there is
+**A seat is open, accepted, confirmed or removed.** Open: the GM seated an
+alias while preparing, and no account holds it (`user_id` is None). Accepted:
+an account accepted it. Confirmed: the GM then confirmed who accepted
+(`confirmed_at`, SEC-50(5), D-12). Removed: `removed_at` is set. Only an offer
+followed by the same account's acceptance binds a seat to an account; there is
 deliberately no way to claim an open seat by any other proof — a link, a code,
 an email — because a claim-by-possession primitive would be the retired
 enrolment code under a new name. A GM is never offered a seat in a campaign of
 their own: the owner is the GM, never a participant.
+
+**An offer binds to an account only at acceptance** (bead 1kg.2.2, L-6). What
+the GM offers is an ADDRESS, recorded in `campaign.seat_offers`
+(`service/seat_offer_store.py`); making that offer reads and writes no account
+row. The accept route composes `offer(user_id)` and then `accept(user_id)` in
+ONE transaction, so the row state `offer` leaves behind — `user_id` set,
+`accepted_at` None — is transient: no route ever commits it. What a GM sees as
+*offered* is an open seat with a live `seat_offers` row.
 
 **A participant is marked removed, never deleted** (RQ-3, W-3). A row another
 transaction may be referencing — a disclosure, the character-sheet link, an
@@ -69,13 +77,19 @@ import psycopg
 
 from . import campaign_identity as ident
 from .campaign_store import (
+    PAGE_MAX,
     AliasTaken,
     Campaign,
     MissingParent,
+    Page,
+    SeatNotAccepted,
     SeatUnavailable,
     Staging,
+    check_limit,
+    decode_cursor,
     fake,
     now_or,
+    page_of,
     pg,
     shared_rows,
 )
@@ -236,8 +250,9 @@ class Participant:
     traceback is a log line.
 
     A seat accepted by no account cannot be built — the CHECK migration 0009
-    puts on the table, kept by the record so that the twin cannot hold a row
-    PostgreSQL would refuse."""
+    puts on the table — and nor can a seat confirmed before it was accepted, the
+    CHECK 0012 adds; both are kept by the record so that the twin cannot hold a
+    row PostgreSQL would refuse."""
 
     id: str
     campaign_id: str
@@ -246,10 +261,15 @@ class Participant:
     removed_at: datetime | None = None
     user_id: int | None = field(default=None, repr=False)
     accepted_at: datetime | None = None
+    #: The GM confirmed who accepted (SEC-50(5)). None reads as NOT confirmed,
+    #: so a seat accepted by a build that did not know the column fails closed.
+    confirmed_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.accepted_at is not None and self.user_id is None:
             raise ValueError("a seat is accepted by an account, so an accepted seat has one")
+        if self.confirmed_at is not None and self.accepted_at is None:
+            raise ValueError("a seat is confirmed after it is accepted, so a confirmed seat is accepted")
 
     @property
     def is_active(self) -> bool:
@@ -260,6 +280,38 @@ class Participant:
         """Accepted by its account and not removed: a seat in the full sense,
         the only kind `seat_for` and `seats_for_user` answer with."""
         return self.accepted_at is not None and self.is_active
+
+    @property
+    def is_confirmed(self) -> bool:
+        """Accepted, confirmed by the GM and not removed. A caller that
+        authorises a participant slot needs this, not `is_accepted` (SEC-41):
+        until the GM confirms, the seat gets the table slot only."""
+        return self.confirmed_at is not None and self.is_accepted
+
+
+@dataclass(frozen=True)
+class HeldSeat:
+    """One of an account's own seats, with its campaign's name — what the
+    player's seat list is built from (L-9). The name is the GM's text, so it is
+    hidden from `repr()` like the alias."""
+
+    seat: Participant
+    campaign_name: str = field(repr=False)
+
+
+def _created_key(seat: Participant) -> tuple[datetime, str]:
+    return seat.created_at, seat.id
+
+
+def _accepted_key(held: HeldSeat) -> tuple[datetime, str]:
+    """The player's list is keyed on the acceptance and the campaign, never the
+    seat: its cursor must not decode to a participant id (L-9, SEC-43). A live
+    seat is unique per account and campaign (0009's
+    `participants_one_live_seat_per_account_uidx`), so the pair is a total
+    order over one account's list, and the campaign id is on the page anyway."""
+    accepted = held.seat.accepted_at
+    assert accepted is not None, "a held seat is an accepted one"
+    return accepted, held.seat.campaign_id
 
 
 class ParticipantStore(Protocol):
@@ -366,21 +418,66 @@ class ParticipantStore(Protocol):
 
     def seat_for(self, unit: UnitOfWork, campaign_id: str, user_id: int) -> Participant | None:
         """The account's accepted, live seat at that campaign, or None. An
-        offered seat is not a seat yet."""
+        offered seat is not a seat yet. **Confirmed or not**: a caller that
+        authorises a participant slot needs `Participant.is_confirmed` too
+        (SEC-41) — until the GM confirms, the seat gets the table slot only."""
         ...  # pragma: no cover - structural type
 
     def seats_for_user(self, unit: UnitOfWork, user_id: int) -> list[Participant]:
         """The account's accepted, live seats in every campaign, most recently
-        accepted first."""
+        accepted first — **confirmed or not**; see `seat_for`."""
+        ...  # pragma: no cover - structural type
+
+    def confirm(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> bool:
+        """The GM's confirmation of who accepted the seat (D-12, SEC-50(5)).
+        Holds the seat first, like every mutator here. True when it confirmed
+        the seat; False, changing nothing, when it was already confirmed. A
+        missing, foreign or removed seat raises `SeatUnavailable`; a live seat
+        no account has accepted raises `SeatNotAccepted`."""
+        ...  # pragma: no cover - structural type
+
+    def count_live(self, unit: UnitOfWork, campaign_id: str) -> int:
+        """How many seats of that campaign are not removed — open and accepted
+        alike, because each is a seat row. The route reads it under the
+        exclusive campaign lock, which is what makes the cap hold (SEC-50(3))."""
+        ...  # pragma: no cover - structural type
+
+    def page_for_campaign(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        include_removed: bool = False,
+        cursor: str | None = None,
+        limit: int = PAGE_MAX,
+    ) -> Page[Participant]:
+        """`list_for_campaign`, one page at a time: oldest first, the id
+        compared by code point. Raises `InvalidCursor` for a cursor this server
+        did not make."""
+        ...  # pragma: no cover - structural type
+
+    def seat_page_for_user(
+        self, unit: UnitOfWork, user_id: int, *, cursor: str | None = None, limit: int = PAGE_MAX
+    ) -> Page[HeldSeat]:
+        """The account's accepted, live seats in campaigns that are not
+        archived, newest acceptance first (`accepted_at DESC, campaign_id`),
+        one page at a time — the player's own list (L-9). The cursor carries
+        the acceptance time and the campaign id, never a participant id
+        (SEC-43). Beside `seats_for_user`, which stays as it is."""
         ...  # pragma: no cover - structural type
 
 
-_P_COLUMNS = "id, campaign_id, alias, created_at, removed_at, user_id, accepted_at"
+_P_COLUMNS = "id, campaign_id, alias, created_at, removed_at, user_id, accepted_at, confirmed_at"
 
 
 def _participant(row: tuple) -> Participant:
+    # A row read with 0009's column list — seven columns, no `confirmed_at` —
+    # reads as not confirmed, which is how 0012's NULL reads too (fail closed).
+    confirmed_at = row[7] if len(row) > 7 else None
     return Participant(
-        row[0], row[1], row[2], row[3], row[4], None if row[5] is None else int(row[5]), row[6]
+        row[0], row[1], row[2], row[3], row[4], None if row[5] is None else int(row[5]), row[6], confirmed_at
     )
 
 
@@ -500,9 +597,11 @@ class PostgresParticipantStore:
             # account exists is asked rather than left to the foreign key for the
             # same reason; the ForeignKeyViolation is still caught, for an account
             # deleted between that EXISTS and the foreign key's own check.
+            # `confirmed_at = NULL` in the same statement (L-11): any write
+            # that changes `user_id` clears the GM's confirmation with it.
             with conn.transaction():
                 row = conn.execute(
-                    f"UPDATE campaign.participants p SET user_id = %s "
+                    f"UPDATE campaign.participants p SET user_id = %s, confirmed_at = NULL "
                     f"WHERE p.id = %s AND p.campaign_id = %s "
                     f"AND p.removed_at IS NULL AND p.user_id IS NULL "
                     f"AND EXISTS (SELECT 1 FROM auth.users u WHERE u.id = %s) "
@@ -563,6 +662,86 @@ class PostgresParticipantStore:
             (user_id,),
         ).fetchall()
         return [_participant(row) for row in rows]
+
+    def confirm(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> bool:
+        check_argument_types(campaign_id=campaign_id, participant_id=participant_id)
+        seat = self.hold(unit, participant_id, campaign_id=campaign_id)
+        if seat is None or not seat.is_active:
+            raise SeatUnavailable()
+        if seat.accepted_at is None:
+            raise SeatNotAccepted()
+        if seat.confirmed_at is not None:
+            return False
+        changed = pg(unit).conn.execute(
+            "UPDATE campaign.participants SET confirmed_at = %s "
+            "WHERE id = %s AND campaign_id = %s AND removed_at IS NULL "
+            "AND accepted_at IS NOT NULL AND confirmed_at IS NULL RETURNING id",
+            (now_or(now), participant_id, campaign_id),
+        ).fetchone()
+        return changed is not None
+
+    def count_live(self, unit: UnitOfWork, campaign_id: str) -> int:
+        check_argument_types(campaign_id=campaign_id)
+        row = pg(unit).conn.execute(
+            "SELECT count(*) FROM campaign.participants WHERE campaign_id = %s AND removed_at IS NULL",
+            (campaign_id,),
+        ).fetchone()
+        return int(row[0])
+
+    def page_for_campaign(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        include_removed: bool = False,
+        cursor: str | None = None,
+        limit: int = PAGE_MAX,
+    ) -> Page[Participant]:
+        check_argument_types(campaign_id=campaign_id)
+        size = check_limit(limit)
+        after = None if cursor is None else decode_cursor(cursor, ident.PARTICIPANT)
+        rows = pg(unit).conn.execute(
+            f"SELECT {_P_COLUMNS} FROM campaign.participants "
+            f"WHERE campaign_id = %(campaign)s AND (%(removed)s OR removed_at IS NULL) "
+            f"AND (%(at)s::timestamptz IS NULL OR created_at > %(at)s::timestamptz "
+            f'OR (created_at = %(at)s::timestamptz AND id COLLATE "C" > %(id)s)) '
+            f'ORDER BY created_at, id COLLATE "C" LIMIT %(limit)s',
+            {
+                "campaign": campaign_id,
+                "removed": include_removed,
+                "at": None if after is None else after[0],
+                "id": None if after is None else after[1],
+                "limit": size + 1,
+            },
+        ).fetchall()
+        return page_of([_participant(row) for row in rows], size, _created_key)
+
+    def seat_page_for_user(
+        self, unit: UnitOfWork, user_id: int, *, cursor: str | None = None, limit: int = PAGE_MAX
+    ) -> Page[HeldSeat]:
+        check_argument_types(user_id=user_id)
+        size = check_limit(limit)
+        after = None if cursor is None else decode_cursor(cursor, ident.CAMPAIGN)
+        columns = ", ".join(f"p.{column.strip()}" for column in _P_COLUMNS.split(","))
+        rows = pg(unit).conn.execute(
+            f"SELECT {columns}, c.name FROM campaign.participants p "
+            f"JOIN campaign.campaigns c ON c.id = p.campaign_id "
+            f"WHERE p.user_id = %(user)s AND p.removed_at IS NULL AND p.accepted_at IS NOT NULL "
+            f"AND c.archived_at IS NULL "
+            f"AND (%(at)s::timestamptz IS NULL OR p.accepted_at < %(at)s::timestamptz "
+            f'OR (p.accepted_at = %(at)s::timestamptz AND p.campaign_id COLLATE "C" > %(campaign)s)) '
+            f'ORDER BY p.accepted_at DESC, p.campaign_id COLLATE "C" LIMIT %(limit)s',
+            {
+                "user": user_id,
+                "at": None if after is None else after[0],
+                "campaign": None if after is None else after[1],
+                "limit": size + 1,
+            },
+        ).fetchall()
+        held = [HeldSeat(_participant(row[:8]), row[8]) for row in rows]
+        return page_of(held, size, _accepted_key)
 
 
 class InMemoryParticipantStore:
@@ -667,7 +846,9 @@ class InMemoryParticipantStore:
             for p in self._participants.visible(twin).values()
         ):
             raise SeatUnavailable()
-        offered = replace(seat, user_id=user_id)
+        # The confirmation goes with any change of account, as it does in the
+        # PostgreSQL statement (L-11).
+        offered = replace(seat, user_id=user_id, confirmed_at=None)
         self._participants.replace(twin, participant_id, offered)
         return offered
 
@@ -709,3 +890,78 @@ class InMemoryParticipantStore:
         # id sort first, then a stable sort on the time, reversed.
         by_id = sorted(mine, key=lambda p: p.id)
         return sorted(by_id, key=lambda p: p.accepted_at or p.created_at, reverse=True)
+
+    def confirm(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, now: datetime | None = None
+    ) -> bool:
+        check_argument_types(campaign_id=campaign_id, participant_id=participant_id)
+        seat = self.hold(unit, participant_id, campaign_id=campaign_id)
+        if seat is None or not seat.is_active:
+            raise SeatUnavailable()
+        if seat.accepted_at is None:
+            raise SeatNotAccepted()
+        if seat.confirmed_at is not None:
+            return False
+        self._participants.replace(fake(unit), participant_id, replace(seat, confirmed_at=now_or(now)))
+        return True
+
+    def count_live(self, unit: UnitOfWork, campaign_id: str) -> int:
+        check_argument_types(campaign_id=campaign_id)
+        return sum(
+            1
+            for p in self._participants.visible(fake(unit)).values()
+            if p.campaign_id == campaign_id and p.is_active
+        )
+
+    def page_for_campaign(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        include_removed: bool = False,
+        cursor: str | None = None,
+        limit: int = PAGE_MAX,
+    ) -> Page[Participant]:
+        check_argument_types(campaign_id=campaign_id)
+        size = check_limit(limit)
+        after = None if cursor is None else decode_cursor(cursor, ident.PARTICIPANT)
+        seats = sorted(
+            (
+                p
+                for p in self._participants.visible(fake(unit)).values()
+                if p.campaign_id == campaign_id
+                and (include_removed or p.is_active)
+                and (after is None or _created_key(p) > after)
+            ),
+            key=_created_key,
+        )
+        return page_of(seats[: size + 1], size, _created_key)
+
+    def seat_page_for_user(
+        self, unit: UnitOfWork, user_id: int, *, cursor: str | None = None, limit: int = PAGE_MAX
+    ) -> Page[HeldSeat]:
+        check_argument_types(user_id=user_id)
+        size = check_limit(limit)
+        after = None if cursor is None else decode_cursor(cursor, ident.CAMPAIGN)
+        twin = fake(unit)
+        campaigns = self._campaigns.visible(twin)
+        held: list[HeldSeat] = []
+        for p in self._participants.visible(twin).values():
+            campaign = campaigns.get(p.campaign_id)
+            if p.user_id != user_id or not p.is_accepted or campaign is None or campaign.is_archived:
+                continue
+            accepted = p.accepted_at
+            assert accepted is not None
+            # Newest acceptance first, ties by campaign id ascending: strictly
+            # after the cursor's row in that order.
+            if after is not None and not (
+                accepted < after[0] or (accepted == after[0] and p.campaign_id > after[1])
+            ):
+                continue
+            held.append(HeldSeat(p, campaign.name))
+        # The campaign id sort first, then a stable sort on the time, reversed:
+        # `accepted_at DESC, campaign_id COLLATE "C"`.
+        ordered = sorted(
+            sorted(held, key=lambda h: h.seat.campaign_id), key=lambda h: _accepted_key(h)[0], reverse=True
+        )
+        return page_of(ordered[: size + 1], size, _accepted_key)

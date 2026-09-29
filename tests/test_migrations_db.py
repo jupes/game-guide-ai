@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 
+import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
 
@@ -156,6 +157,8 @@ def test_a_fresh_database_gets_every_migration_once(dsn):
         "campaign.table_sessions",
         "campaign.table_credentials",
         "campaign.session_join_counters",
+        "campaign.seat_offers",
+        "campaign.seat_blocks",
     ):
         assert _exists(dsn, relation), f"{relation} was not created"
     for retired in ("campaign.enrolment_codes", "campaign.device_credentials"):
@@ -275,6 +278,7 @@ CAMPAIGN_TABLES = (
     "campaign.session_join_counters",
     "campaign.documents",
     "campaign.document_versions",
+    "campaign.seat_offers",
 )
 
 #: A character sheet linked to the whole campaign's one participant.
@@ -283,8 +287,8 @@ PARTICIPANT_ID = "prt_" + "a" * 22
 
 
 def _a_whole_campaign(conn, owner: int) -> None:
-    """One row in every table of 0004 that 0009 kept, so the cascade has
-    something to lose."""
+    """One row in every table of 0004 that 0009 kept, and of 0012's offers, so
+    the cascade has something to lose."""
     conn.execute(
         "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
         (CAMPAIGN_ID, owner),
@@ -320,6 +324,11 @@ def _a_whole_campaign(conn, owner: int) -> None:
         "changed_fields, data, created_at, updated_at) "
         "VALUES (%s, 1, 'gm', '', %s::jsonb, %s::jsonb, now(), now())",
         (DOCUMENT_ID, '["name"]', '{"name": "Rook"}'),
+    )
+    conn.execute(
+        "INSERT INTO campaign.seat_offers (id, campaign_id, participant_id, offered_by, address, address_key, "
+        "expires_at) VALUES (%s, %s, %s, %s, 'wren@example.com', 'wren@example.com', now() + interval '14 days')",
+        ("sof_" + "a" * 22, CAMPAIGN_ID, PARTICIPANT_ID, owner),
     )
 
 
@@ -830,6 +839,88 @@ def test_the_owner_index_exists_by_name_and_is_partial_on_the_default_filter(dsn
     keys = created.split("USING btree (", 1)[1]
     assert keys.index("user_id") < keys.index("updated_at") < keys.index("conversation_id"), keys
     assert "COALESCE" in keys and keys.count("DESC") == 2, keys
+
+
+# ── The seat confirmation and offers (bead 1kg.2.2) ──────────────────────────
+
+#: Found by name, so the lead's renumbering at merge is an edit elsewhere.
+SEAT_OFFERS = next(m for m in PACKAGED if m.name == "seat_confirmation_and_offers")
+
+
+def test_the_seat_migration_adopts_an_accepted_seat_as_not_confirmed(dsn):
+    """0012's CHECK is safe because `confirmed_at` is new: a seat the previous
+    build accepted survives the expansion, and reads as not confirmed."""
+    before = tuple(m for m in PACKAGED if m.version < SEAT_OFFERS.version)
+    mig.migrate(dsn, packaged=before)
+    with connect(dsn) as conn:
+        owner, player = _one_user(conn), _one_user(conn, "wren@example.com")
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')", (CAMPAIGN_ID, owner)
+        )
+        conn.execute(
+            "INSERT INTO campaign.participants (id, campaign_id, alias, alias_key, user_id, accepted_at) "
+            "VALUES (%s, %s, 'Rook', 'rook', %s, now())",
+            (PARTICIPANT_ID, CAMPAIGN_ID, player),
+        )
+    assert mig.migrate(dsn).applied[0] == SEAT_OFFERS.filename
+    with connect(dsn) as conn:
+        row = conn.execute(
+            "SELECT accepted_at IS NOT NULL, confirmed_at FROM campaign.participants WHERE id = %s",
+            (PARTICIPANT_ID,),
+        ).fetchone()
+        assert row == (True, None)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO campaign.participants (id, campaign_id, alias, alias_key, confirmed_at) "
+                "VALUES (%s, %s, 'Wren', 'wren', now())",
+                ("prt_" + "b" * 22, CAMPAIGN_ID),
+            )
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("address_key", "Wren@example.com"),
+        ("address", "a@"),
+        ("outcome", "ignored"),
+        ("id", "sof_short"),
+    ],
+)
+def test_the_database_refuses_an_offer_row_the_application_would_never_write(dsn, column, value):
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        _a_whole_campaign(conn, owner)
+        conn.execute("UPDATE campaign.seat_offers SET outcome = 'withdrawn', answered_at = now()")
+        row = {
+            "id": "sof_" + "b" * 22,
+            "address": "wren@example.com",
+            "address_key": "wren@example.com",
+            "outcome": None,
+        }
+        row[column] = value
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO campaign.seat_offers (id, campaign_id, participant_id, offered_by, address, "
+                "address_key, outcome, answered_at, expires_at) VALUES "
+                "(%(id)s, %(campaign)s, %(seat)s, %(owner)s, %(address)s, %(address_key)s, %(outcome)s, "
+                "CASE WHEN %(outcome)s::text IS NULL THEN NULL ELSE now() END, now() + interval '1 day')",
+                {**row, "campaign": CAMPAIGN_ID, "seat": PARTICIPANT_ID, "owner": owner},
+            )
+
+
+def test_a_seat_holds_one_open_offer_by_the_partial_unique_index(dsn):
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        owner = _one_user(conn)
+        _a_whole_campaign(conn, owner)
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(
+                "INSERT INTO campaign.seat_offers (id, campaign_id, participant_id, offered_by, address, "
+                "address_key, expires_at) VALUES (%s, %s, %s, %s, 'finch@example.com', 'finch@example.com', "
+                "now() + interval '1 day')",
+                ("sof_" + "b" * 22, CAMPAIGN_ID, PARTICIPANT_ID, owner),
+            )
 
 
 # ── Media assets and their quota (agent-forge-harness-1kg.8.1.1, AC-3) ──────
