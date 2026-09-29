@@ -17,12 +17,19 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+import httpx
+import openai
 import psycopg
+
+# The embed timeouts are read from the module at client build (never bound at
+# import), so a test can monkeypatch them and a config reload is seen.
+import config
 
 # Tuning knobs (env-overridable) live in the single top-level config module.
 # Re-exported here so existing `from ingestion.retrieval import TOP_K, ...`
@@ -64,14 +71,38 @@ class EmbeddingUnavailableError(RuntimeError):
     """
 
 
-def _openai_client():
+def _openai_client(*, bounded: bool = True):
+    """The embeddings client. Bounded (the service's `RagRetriever.embed`,
+    agent-forge-harness-xiu.2.3): no SDK retries, because `embed` owns the
+    attempts, and every wait bounded by config's embed timeouts, read here at
+    build. Unbounded (`embed_query`'s no-client fallback, i.e. the eval_golden
+    CLI): exactly the SDK's defaults, as before."""
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key or api_key == "sk-replace-me":
         raise EmbeddingUnavailableError(
             "OPENAI_API_KEY is not set (add it to .env); query embedding unavailable."
         )
-    from openai import OpenAI
-    return OpenAI(api_key=api_key)
+    if not bounded:
+        return openai.OpenAI(api_key=api_key)
+    return openai.OpenAI(
+        api_key=api_key, max_retries=0,
+        timeout=httpx.Timeout(config.EMBED_REQUEST_TIMEOUT_S, connect=config.EMBED_CONNECT_TIMEOUT_S),
+    )
+
+
+# Service-owned embed retry (agent-forge-harness-xiu.2.3), the embed stage's
+# counterpart of service/generate.py's: the same transient classes, a fixed
+# backoff that never honours Retry-After (the SDK would wait up to 60 s for one,
+# past the stage's bound), and one sink record per attempt. Two attempts keep a
+# silent provider's worst case at 2 x (connect + request) + 0.5 s = 30.5 s.
+EMBED_MAX_ATTEMPTS = 2
+_EMBED_RETRY_BACKOFF_S = 0.5
+_EMBED_RETRYABLE: tuple[type[BaseException], ...] = (
+    openai.APIConnectionError,  # covers APITimeoutError (its subclass)
+    openai.RateLimitError,
+    openai.InternalServerError,
+)
+_sleep = time.sleep  # looked up at call time, so a test can record the backoff
 
 
 # --- Embedding attempt capture (agent-forge-harness-yje.5.1.1) --------------
@@ -117,9 +148,11 @@ def embed_query(text: str, client=None, sink: EmbedAttemptSink | None = None) ->
     """Embed one query. `client` lets callers (RagRetriever) reuse a single
     OpenAI client instead of constructing one per call. `sink` (or the scoped
     one) receives one attempt record; a missing API key raises before any
-    request is sent and is therefore deliberately NOT an attempt."""
+    request is sent and is therefore deliberately NOT an attempt. Without a
+    client (the CLI path) it builds the unbounded client: one call here, with
+    the SDK's own retries and timeouts, exactly as before."""
     if client is None:
-        client = _openai_client()
+        client = _openai_client(bounded=False)
     if sink is None:
         sink = _EMBED_SINK.get()
     if sink is not None:
@@ -548,10 +581,22 @@ class RagRetriever:
              self.entity_to_ctype, self.class_to_ctype) = load_vocabulary(conn)
 
     def embed(self, prompt: str) -> list[float]:
-        """Stage 1 — embed the query (one OpenAI client reused across calls)."""
+        """Stage 1 — embed the query (one bounded OpenAI client reused across
+        calls), up to EMBED_MAX_ATTEMPTS attempts on a transient fault, each one
+        recorded by the scoped sink. The client is built before the loop, so a
+        missing key is neither retried nor an attempt. Every other fault, and the
+        last transient one, re-raises unchanged: typing it is the graph's job."""
         if self._openai is None:
             self._openai = _openai_client()
-        return embed_query(prompt, client=self._openai)
+        attempt = 1
+        while True:
+            try:
+                return embed_query(prompt, client=self._openai)
+            except _EMBED_RETRYABLE:
+                if attempt >= EMBED_MAX_ATTEMPTS:
+                    raise
+            _sleep(_EMBED_RETRY_BACKOFF_S * attempt)
+            attempt += 1
 
     def analyze(self, prompt: str) -> tuple[set[str], set[str], set[str]]:
         """Stage 2 — vocabulary hints: (classes, entities, content_types)."""

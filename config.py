@@ -114,6 +114,19 @@ IPL_FALLBACK_DISTANCE: float = _float("RAG_FALLBACK_DISTANCE", 0.42)
 # out-of-corpus questions. (Name kept stable for existing importers.)
 KOZ_ANSWERABLE_DISTANCE: float = _float("RAG_ANSWERABLE_DISTANCE", 0.50)
 
+# Per-attempt timeout on the service's query-embeddings client
+# (agent-forge-harness-xiu.2.3): how long one read, write or pool wait may block
+# before the embed fails as a timeout. It used to be the SDK's 600 s with two
+# SDK retries, so a silent provider held a /chat worker for about 30 minutes.
+# One short query embeds in well under a second; 10 s leaves headroom for a slow
+# provider, and ingestion/retrieval.py's two attempts end within
+# 2 x (5 + 10) + 0.5 s of backoff = 30.5 s against a silent provider. The bound
+# is per wait, not wall-clock: a provider that trickles bytes can outlast it.
+# Read when the client is built, so a test can monkeypatch it.
+EMBED_REQUEST_TIMEOUT_S: float = _seconds("RAG_EMBED_REQUEST_TIMEOUT_S", 10.0)
+# Connect bound for the same client; 5 s is the OpenAI SDK's own default.
+EMBED_CONNECT_TIMEOUT_S: float = _seconds("RAG_EMBED_CONNECT_TIMEOUT_S", 5.0)
+
 
 # --- Generation / answer assembly (service) --------------------------------
 
