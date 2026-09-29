@@ -196,8 +196,11 @@ uv run --frozen --no-sync python -m pytest -q service/tests/canary_demo_flow.py
 
 `test_demonstration[none]` passes; `[player_capture]` and `[log]` fail with `CanaryLeak`, naming the
 sink, the field (`true_identity`) and the excerpt; `test_forgot_to_assert` errors at teardown with
-`CaptureNotAsserted`. The module is not collected by a normal run; `test_canary_demo.py` runs it in a
-subprocess and asserts each outcome from its JUnit report.
+`CaptureNotAsserted`; `test_late_stdio_leak_is_caught_at_teardown` errors at teardown with `CanaryLeak`
+(a canary printed after the last `assert_clean`, caught by the late-stdio scan through the real
+`leak_capture` fixture — fixture-mode stdout and C-7 both exercised the way a real consumer hits them).
+The module is not collected by a normal run; `test_canary_demo.py` runs it in a subprocess and asserts
+each outcome from its JUnit report.
 
 ## 11. Suite-wide use (`1ir.6.3`)
 
