@@ -142,9 +142,10 @@ function paintedExtent(node: Node): { left: number; right: number } | null {
  * clipping box, on both sides; a `position: fixed` element (the drawer) is
  * measured against the viewport, since no ancestor's overflow clips it.
  * What only reaches into a box's padding is still painted, so it passes.
- * Ellipsised lines, visually hidden labels and INTENDED_SCROLLERS are skipped
- * with everything inside them. A failure names the outermost node that
- * crosses and the box it crosses, not just a number.
+ * Ellipsised lines, visually hidden labels and INTENDED_SCROLLERS are exempt
+ * only inside: the node's own painted box is still measured against its
+ * clip context, and only its descendants are skipped. A failure names the
+ * outermost node that crosses and the box it crosses, not just a number.
  */
 export async function expectNothingClipped(root: Element): Promise<void> {
   await document.fonts.ready
@@ -177,30 +178,40 @@ export async function expectNothingClipped(root: Element): Promise<void> {
     const element = node instanceof Element ? node : node.parentElement
     if (element === null) continue
     const style = getComputedStyle(element)
+    // The exemption applies to this node's CHILDREN, not its own box: an
+    // ellipsised title (or other clipsOnPurpose node) that is itself pushed
+    // out of its clip context still crosses, so its own box is measured
+    // below, against `context`, before `ownContext` exempts its descendants.
+    let ownContext: ClipContext | undefined
     if (node === element) {
-      if (clipsOnPurpose(element, style)) {
-        childContext.set(node, 'exempt')
-        continue
-      }
       if (style.position === 'fixed') context = 'viewport'
-      childContext.set(node, style.overflowX === 'visible' ? context : element)
+      ownContext = clipsOnPurpose(element, style)
+        ? 'exempt'
+        : style.overflowX === 'visible'
+          ? context
+          : element
     }
-    if (style.visibility === 'hidden') continue
-    const painted = paintedExtent(node)
-    if (painted === null) continue
-    const [left, right] = clipEdges(context)
-    const pastLeft = left - painted.left
-    const pastRight = painted.right - right
-    if (pastLeft <= EDGE_SLACK && pastRight <= EDGE_SLACK) continue
-    crossing.set(node, context)
-    // The outermost node only: what is inside it crosses with it.
-    if (parent !== null && crossing.get(parent) === context) continue
-    const sides = [
-      pastLeft > EDGE_SLACK ? `${Math.round(pastLeft)}px left` : '',
-      pastRight > EDGE_SLACK ? `${Math.round(pastRight)}px right` : '',
-    ].filter((side) => side !== '')
-    const box = context === 'viewport' ? 'the viewport' : describeNode(context)
-    problems.push(`${describeNode(node)} crosses ${box} by ${sides.join(' and ')}`)
+    if (style.visibility !== 'hidden') {
+      const painted = paintedExtent(node)
+      if (painted !== null) {
+        const [left, right] = clipEdges(context)
+        const pastLeft = left - painted.left
+        const pastRight = painted.right - right
+        if (pastLeft > EDGE_SLACK || pastRight > EDGE_SLACK) {
+          crossing.set(node, context)
+          // The outermost node only: what is inside it crosses with it.
+          if (!(parent !== null && crossing.get(parent) === context)) {
+            const sides = [
+              pastLeft > EDGE_SLACK ? `${Math.round(pastLeft)}px left` : '',
+              pastRight > EDGE_SLACK ? `${Math.round(pastRight)}px right` : '',
+            ].filter((side) => side !== '')
+            const box = context === 'viewport' ? 'the viewport' : describeNode(context)
+            problems.push(`${describeNode(node)} crosses ${box} by ${sides.join(' and ')}`)
+          }
+        }
+      }
+    }
+    if (ownContext !== undefined) childContext.set(node, ownContext)
   }
   await expect(problems).toEqual([])
 }
