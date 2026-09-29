@@ -231,10 +231,10 @@ describe('a live turn and its reload are the same turn', () => {
 
   it('maps the pending and failed stages of a live turn', () => {
     expect(turnFromExchange({ id: 1, prompt: 'q', status: 'pending' })).toEqual({
-      kind: 'chat', key: 'live:1', prompt: 'q', answer: { state: 'pending' },
+      kind: 'chat', key: 'live:1', prompt: 'q', answer: { state: 'pending' }, mode: 'gm',
     })
     expect(turnFromExchange({ id: 2, prompt: 'q', status: 'error', error: 'Answer failed.' })).toEqual({
-      kind: 'chat', key: 'live:2', prompt: 'q', answer: { state: 'failed', message: 'Answer failed.' },
+      kind: 'chat', key: 'live:2', prompt: 'q', answer: { state: 'failed', message: 'Answer failed.' }, mode: 'gm',
     })
   })
 })
@@ -324,6 +324,56 @@ describe('useGmTimeline', () => {
       loadEarlier: expect.any(Function),
     })
     await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_cnv_b']))
+  })
+
+  // agent-forge-harness-ffz (pr120 review L-1): the scopeId check alone is not
+  // the guard here — a stale read for a conversation the pane has already
+  // left behind still carries THAT conversation's own scopeId, so a `setState`
+  // it makes would win the `state.scopeId === scope` comparison inside its own
+  // stale generation... except the pane's CURRENT scope has since moved on, so
+  // the stale write leaves `state.scopeId` behind the live `scope` again, and
+  // the hook's last line falls through to `LOADING` — the thread the user is
+  // already looking at reverts to a loading spinner (never even the wrong
+  // conversation's own text, in this hook's shape, but a currently-open thread
+  // stuck showing "loading" again is exactly the "stuck on Recalling…" bug the
+  // finding names). `cancelled` is what stops the stale write from running at
+  // all; without it, a slow read for an OLD conversation that resolves AFTER a
+  // newer one is already on screen must not touch that screen.
+  it('a slow read for an abandoned conversation landing after a newer one is already showing does not disturb it (review L-1)', async () => {
+    const resolvers = new Map<string, (result: TimelinePageResult) => void>()
+    const load: LoadTimelinePageFn = (conversationId) =>
+      new Promise((resolve) => {
+        resolvers.set(conversationId, resolve)
+      })
+    const { result, rerender } = renderHook(({ id }) => useGmTimeline(id, true, load), {
+      initialProps: { id: 'cnv_a' },
+    })
+    rerender({ id: 'cnv_b' })
+
+    // B's read lands first, and its thread is what is now on screen.
+    act(() => {
+      resolvers.get('cnv_b')!({
+        kind: 'ok',
+        page: { conversation_id: 'cnv_b', items: [chatEntry({ entry_id: 'ent_b' })], next_cursor: null },
+      })
+    })
+    await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_b']))
+    expect(result.current.loading).toBe(false)
+
+    // A's read — abandoned when the pane moved to B — resolves late. The
+    // resolution has to cross readTimeline's and walkTimeline's own await
+    // hops before useGmTimeline's `.then` runs, so this drains several
+    // microtask turns rather than asserting the instant after `resolve()`.
+    await act(async () => {
+      resolvers.get('cnv_a')!({
+        kind: 'ok',
+        page: { conversation_id: 'cnv_a', items: [chatEntry({ entry_id: 'ent_a' })], next_cursor: null },
+      })
+      for (let i = 0; i < 5; i += 1) await Promise.resolve()
+    })
+    // B's thread must still be showing, not reset to loading and not carrying A's entry.
+    expect(result.current.loading).toBe(false)
+    expect(ids(result.current.items)).toEqual(['ent_b'])
   })
 })
 

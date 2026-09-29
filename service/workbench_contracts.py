@@ -3188,25 +3188,23 @@ CONVERSATION_PAGE_MAX_ITEMS = 100
 #: 0006's CHECK, in code points on both sides (``service.conversation_store.TITLE_MAX_CHARS``).
 CONVERSATION_TITLE_MAX_CHARS = 200
 
-#: The code points a title may not hold, spelled out by code point (ruling A2-9):
-#: the C0 and C1 controls, and the bidirectional embeddings, overrides and
-#: isolates, which can make a title read as something else. The client refuses
-#: exactly this set (``contracts.ts``).
-REFUSED_IN_A_TITLE: frozenset[int] = frozenset(
-    (*range(0x00, 0x20), *range(0x7F, 0xA0), *range(0x202A, 0x202F), *range(0x2066, 0x206A))
-)
-
-
 def _a_conversation_title(value: str) -> str:
     """A title as a request sends it: trimmed as the client trims, then 1 to 200
-    code points, with none of ``REFUSED_IN_A_TITLE`` left inside. The trimmed
-    value is what is stored. The refusal names the field, never the title."""
+    code points, held to one line (:func:`_one_line` — a title is not the place
+    for a multi-line prose field's line breaks), with none of
+    :data:`REFUSED_TEXT_CODE_POINTS` left inside either — the one shared
+    stored-text rule (lead ruling of 2026-09-21), not a title-only list. Ruling
+    A2-9 originally gave titles their own, narrower ``REFUSED_IN_A_TITLE``;
+    agent-forge-harness-644 retired it, since a conversation title is stored
+    text (0006 ``conversations.title``) like any other :func:`check_plain_text`
+    refuses, and a second opinion here could only drift from the first. The
+    one-line-plus-plain-text composition below mirrors ``ui/src/gm/contracts.ts``'s
+    ``plainOneLine`` (a cue's title and the like). The trimmed value is what is
+    stored. The refusal names the field, never the title."""
     trimmed = trim(value)
     if not 1 <= len(trimmed) <= CONVERSATION_TITLE_MAX_CHARS:
         raise ValueError(f"a title is 1 to {CONVERSATION_TITLE_MAX_CHARS} characters after trimming")
-    if any(ord(character) in REFUSED_IN_A_TITLE for character in trimmed):
-        raise ValueError("a title holds no control or bidirectional-formatting characters")
-    return trimmed
+    return check_plain_text(_one_line(trimmed))
 
 
 #: What a client may send as a title.

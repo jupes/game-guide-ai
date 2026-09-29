@@ -456,7 +456,9 @@ def test_a_malformed_body_is_the_same_422_for_an_owned_and_a_foreign_conversatio
     """Body validation depends on nothing but the body, so it may run first —
     and a 422 is therefore never evidence that a conversation exists."""
     mine, theirs = world.conversation(OWNER).id, world.conversation(STRANGER).id
-    for body in ({}, {"title": None}, {"archived": "yes"}, {"title": "a\tb"}):
+    # "a\nb": still refused post-644 (a title stays one line); a tab no longer
+    # is (the shared check_plain_text/REFUSED_TEXT_CODE_POINTS rule allows it).
+    for body in ({}, {"title": None}, {"archived": "yes"}, {"title": "a\nb"}):
         answers = [_patch(client, target, **body) for target in (mine, theirs, "cnv_" + "q" * 22)]
         assert {a.status_code for a in answers} == {422}
         assert len({_shape(a) for a in answers}) == 1
@@ -1218,7 +1220,7 @@ def test_no_title_campaign_id_or_conversation_id_reaches_a_log_line(
     refused = "workbench request refused by validation: "
     assert [(r.name, r.getMessage()) for r in ours] == [
         ("service.workbench_api", refused + "POST /conversations [{'type': 'value_error', 'loc': ['body', 'title'], "
-         "'msg': 'Value error, a title holds no control or bidirectional-formatting characters'}]"),
+         "'msg': 'Value error, must be a single line'}]"),
         ("service.workbench_api", refused + "POST /conversations [{'type': 'enum', 'loc': ['body', 'started_mode'], "
          "'msg': \"Input should be 'sage', 'spell', 'rules' or 'gm'\"}]"),
         ("service.workbench_api", refused + "GET /conversations [{'type': 'value_error', "

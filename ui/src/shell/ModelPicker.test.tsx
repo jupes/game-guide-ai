@@ -175,6 +175,25 @@ describe('ModelPicker with a stored preference the catalog does not list (a6o)',
     expect(setConversationId).not.toHaveBeenCalled()
   })
 
+  // agent-forge-harness-bta: a started conversation SHOWS what it was bound
+  // with on its first turn (`boundPreference`), which is what ChatPane keeps
+  // sending — never what it merely stores. A row with no `boundPreference`
+  // sent its first prompt before bta, when the pane always posted 'auto', so
+  // it is bound 'auto' even if it stores an id the catalog lists.
+  it.each([
+    ['a preference recorded at its first prompt', 'traveller', 'traveller'],
+    ['no recorded preference (first sent before bta)', undefined, 'auto'],
+  ])('shows, for a started conversation with %s, what the server bound', async (_what, bound, shown) => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', bound)
+    renderPicker(makeNavState({ conversationId: conv.id }), store, { getModels: async () => CATALOG_AFTER_D9 })
+
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Traveller' })).toBeInTheDocument())
+    await act(async () => {})
+    expect((screen.getByRole('combobox', { name: /model/i }) as HTMLSelectElement).value).toBe(shown)
+  })
+
   it('shows the default for it, and keeps it stored, while only the offline fallback is known', async () => {
     const store = new MemoryConversationStore()
     const conv = store.create('sage', undefined, 'traveller')
