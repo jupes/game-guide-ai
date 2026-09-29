@@ -14,16 +14,20 @@ import { GmThread } from './GmThread'
 import { DIVIDER_COPY, collapseSessionSpans, formatDividerTime, turnsFromTimeline } from './gmTimeline'
 import type { GmTurn } from './gmTimeline'
 import { LANE_COPY } from './laneState'
+import { emptyPendingWork, reducePendingWork, turnsWithPendingWork } from './pendingWork'
+import type { PendingEvent } from './pendingWork'
 import { toolById } from './registry'
 import {
   DIVIDER_ENTRY,
   EDIT_ENTRY,
   END_DIVIDER_ENTRY,
+  LIVE_CONVERSATION,
   OPAQUE_ENTRY,
   QUIET_SESSION,
   SOURCED_ANSWER,
   chatEntry,
   toolEntry,
+  toolRequest,
 } from './threadFixtures'
 
 function renderThread(turns: readonly GmTurn[]) {
@@ -575,5 +579,114 @@ describe('GmThread — the divider’s styles (1kg.3.5)', () => {
   it('show where Load earlier’s hand-off landed, and draw the rules as borders', () => {
     expect(body('.gm-thread__divider:focus-visible')).toMatch(/outline:\s*3px solid var\(--md-sys-color-secondary\)/)
     expect(body('.gm-thread__divider-rule')).toMatch(/border-top:\s*1px solid var\(--md-sys-color-outline-variant\)/)
+  })
+})
+
+// ── Runs this client is watching (1kg.3.5, pendingWork.ts) ───────────────────
+
+describe('GmThread — a run this client is watching (1kg.3.5)', () => {
+  const HELD = 'inv_11ve000000000001'
+  const STORED = 'inv_0a1b2c3d4e5f6a7b'
+  const SENT: PendingEvent = { type: 'submitted', request: toolRequest(), at: 0 }
+
+  /** A stored working `/monster` run, then whatever the model draws. */
+  function watched(...events: PendingEvent[]): GmTurn[] {
+    const state = events.reduce(reducePendingWork, emptyPendingWork())
+    const { turns, liveTools } = turnsWithPendingWork(turnsFromTimeline([toolEntry()]), state, LIVE_CONVERSATION)
+    return [...turns, ...liveTools.map((live) => live.turn)]
+  }
+
+  function lanes(container: HTMLElement): HTMLElement[] {
+    return [...container.querySelectorAll<HTMLElement>('.assistant-lane')]
+  }
+
+  it('a live tool turn is working, and a lost one is checking', () => {
+    const { container, unmount } = renderThread(watched(SENT))
+    const [stored, live] = lanes(container)
+    // MC-20: the run this client started is RAIL-15's working lane.
+    expect(live).toHaveAttribute('data-state', 'working')
+    expect(within(live).getByText('Writing the dossier…')).toBeInTheDocument()
+    // Its turn is the brief with the tool's badge, as a stored one is.
+    const [, exchange] = exchanges(container)
+    expect(exchange.querySelector('.gm-thread__tool')).toHaveTextContent('NPC')
+    expect(within(exchange).getByText('the hooded stranger at the bar')).toBeInTheDocument()
+    // A stored run nobody is watching is hydrated, as ever.
+    expect(stored).toHaveAttribute('data-state', 'checking')
+    expect(within(stored).getByText('Checking on Monster…')).toBeInTheDocument()
+    unmount()
+
+    const lost = renderThread(watched(SENT, { type: 'lost', invocationId: HELD }))
+    const [, lostLane] = lanes(lost.container)
+    expect(lostLane).toHaveAttribute('data-state', 'checking')
+    expect(within(lostLane).getByText('Checking on NPC…')).toBeInTheDocument()
+  })
+
+  it('a stored run the client is watching is drawn live, where it is stored', () => {
+    const request = toolRequest({ invocation_id: STORED, tool_id: 'monster', brief: 'CR 5, drowned' })
+    const { container } = renderThread(watched({ type: 'submitted', request, at: 0 }))
+    const [only, ...rest] = lanes(container)
+    expect(rest).toEqual([])
+    expect(only).toHaveAttribute('data-state', 'working')
+    expect(within(only).getByText('Building the stat block…')).toBeInTheDocument()
+  })
+
+  it('reads Cancelling… once a cancel is asked for, until the server says how it ended', () => {
+    const { container } = renderThread(watched(SENT, { type: 'cancel-requested', invocationId: HELD }))
+    const [, live] = lanes(container)
+    expect(within(live).getByText(LANE_COPY.cancelling)).toBeInTheDocument()
+  })
+
+  it('adds no live region: a watched lane carries only the status its hydrated twin carries (A-29)', () => {
+    const { container } = renderThread(watched(SENT))
+    const regions = [...container.querySelectorAll('[role="status"], [role="alert"], [role="log"], [aria-live]')]
+    expect(lanes(container)).toHaveLength(2)
+    // One per lane — RAIL-15's and RAIL-17's own status, which A-29 keeps — and none elsewhere.
+    expect(regions).toHaveLength(2)
+    for (const region of regions) expect(region.closest('.assistant-lane')).not.toBeNull()
+  })
+
+  it('offers no lane action yet: wiring them is 1kg.4.5’s', () => {
+    const { container } = renderThread(watched(SENT, { type: 'lost', invocationId: HELD }))
+    const [, live] = lanes(container)
+    expect(within(live).queryAllByRole('button')).toEqual([])
+  })
+
+  describe('under prefers-reduced-motion', () => {
+    let original: typeof window.matchMedia
+    beforeEach(() => {
+      original = window.matchMedia
+    })
+    afterEach(() => {
+      Object.defineProperty(window, 'matchMedia', { writable: true, value: original })
+    })
+
+    function prefer(reduce: boolean): void {
+      Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        value: (query: string) => ({
+          matches: query === '(prefers-reduced-motion: reduce)' ? reduce : !reduce,
+          media: query,
+          onchange: null,
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        }),
+      })
+    }
+
+    it('a working lane’s dots hold still when motion is reduced, and move only when it is not', () => {
+      prefer(true)
+      const still = renderThread(watched(SENT))
+      const [, stillLane] = lanes(still.container)
+      expect(stillLane.querySelector('.assistant-lane__dots')).not.toHaveClass('assistant-lane__dots--animated')
+      still.unmount()
+
+      prefer(false)
+      const moving = renderThread(watched(SENT))
+      const [, movingLane] = lanes(moving.container)
+      expect(movingLane.querySelector('.assistant-lane__dots')).toHaveClass('assistant-lane__dots--animated')
+    })
   })
 })
