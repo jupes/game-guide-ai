@@ -123,7 +123,9 @@ from .model import (
     RevealAudience,
     ScreenGrant,
     SeatStatus,
+    Session,
     SessionEndReason,
+    SessionId,
     Slot,
     State,
     StopReason,
@@ -1362,11 +1364,18 @@ def _tt54(col: Col) -> None:
         (["notes"], [cls_entry("notes", U, CAMP)], "notes"),
         (["notes"], [cls_entry("notes", U, PUB)], "notes"),
         (["motives", "notes"], [cls_entry("notes", U, ana_only), cls_entry("motives", GMO, ana_only)], "motives"),
+        (["name"], [cls_entry("notes", U, ana_only)], "notes"),
+        (["rumours"], [cls_entry("rumours", ana_only, ana_only)], "rumours"),
     ]
     for names, entries, bad in variants:
         v = Sc(K(col))
         r = v.confirm("ondrey", names, to("ana"), entries)
         check(r, answer=refused(RefusalKind.CLASSIFY_INVALID, bad), slots={}, events=[], epoch=False, authz=False)
+        same(cls_of(v.state, "ondrey", bad), cls_of(K(col), "ondrey", bad), "TT-54 a refused entry keeps its class")
+    v = Sc(K(col))
+    r = v.confirm("ondrey", ["name"], Table(), [cls_entry("notes", U, PUB)])
+    check(r, answer=refused(RefusalKind.CLASSIFY_INVALID, "notes"), slots={}, events=[], epoch=False, authz=False)
+    same(cls_of(v.state, "ondrey", "notes"), U, "TT-54 a key outside the mask is never classified")
 
 
 def _tt55(col: Col) -> None:
@@ -1761,6 +1770,12 @@ def _rc5(col: Col) -> None:
     sc = Sc(K(col))
     sc.run(Expire())
     r = sc.confirm("ondrey", ["name"], Table())
+    check(r, answer=refused(RefusalKind.SESSION_NOT_LIVE), slots={}, events=[], epoch=False, authz=False)
+    sc = Sc(K(col))
+    oid, r = sc.begin(sc.compose("ondrey", ["name"], Table()))
+    same(r.answer, Ok(), "RC-5 the courtesy passes before the expiry")
+    sc.run(Expire())
+    r = sc.cont(oid, Phase.COMMIT)
     check(r, answer=refused(RefusalKind.SESSION_NOT_LIVE), slots={}, events=[], epoch=False, authz=False)
 
 
@@ -2198,6 +2213,10 @@ def _classify_cas(col: Col) -> None:
     r = sc.cont(oid, Phase.STEP2)
     check(r, answer=refused(RefusalKind.CLASS_MOVED), slots={}, events=[], epoch=False, authz=False)
     same(cls_of(sc.state, "ondrey", "history"), PUB, "CLASSIFY-CAS the fact is unchanged")
+    removed = Sc(set_seat(K(col), Participant(BEN_ID, SeatStatus.REMOVED, AccountId("acct_ben"))))
+    r = removed.last(Classify(ONDREY, fkey("notes"), U, FieldClass.participants("ben")))
+    check(r, answer=refused(RefusalKind.CLASSIFY_INVALID, "notes"), slots={}, events=[], epoch=False, authz=False)
+    same(cls_of(removed.state, "ondrey", "notes"), U, "CLASSIFY-CAS a removed participant is never a class")
 
 
 def _export_version(col: Col) -> None:
@@ -2255,6 +2274,32 @@ def _everyone_seated(col: Col) -> None:
     check(r, answer=refused(RefusalKind.AUDIENCE_INVALID), slots={}, events=[], epoch=False, authz=False)
 
 
+def _group_active_members(col: Col) -> None:
+    removed = Participant(BEN_ID, SeatStatus.REMOVED, AccountId("acct_ben"))
+    for enforced in (False, True):
+        state = set_seat(K(col, enforced=enforced), removed)
+        same(expand_audience(state.world, Group(SCOUTS)), frozenset({P("ana")}), "GROUP-ACTIVE a removed member")
+        r = Sc(state).confirm("ondrey", ["name"], Group(SCOUTS))
+        check(
+            r,
+            answer=Ok(),
+            slots={P("ana"): sv("ondrey", "name")},
+            events=disp("ondrey", "name", P("ana")),
+            epoch=True,
+            authz=False,
+        )
+    sc = Sc(K(col))
+    sc.confirm("ondrey", ["name"], Group(SCOUTS))
+    r = sc.confirm("ondrey", ["name"], to("ana", "ben"))
+    both = {P("ana"): sv("ondrey", "name"), P("ben"): sv("ondrey", "name")}
+    check(r, answer=Ok(), slots=both, events=[], epoch=True, authz=False)
+    same([d.group for d in r.after.disclosures.values()], [SCOUTS], "GROUP-ACTIVE an Update keeps the group")
+
+
+def _v1_group_probe() -> None:
+    Sc(K(Col.V1)).confirm("ondrey", ["name"], Group(SCOUTS))
+
+
 def _asset_follows_its_field(col: Col) -> None:
     sc = Sc(K(col))
     portrait = fkey("portrait")
@@ -2298,8 +2343,8 @@ EXTRA_CASES: Final[tuple[Case, ...]] = (
     ),
     Case(
         "CLASSIFY-CAS",
-        "Classify is compare-and-set at both steps",
-        ("ED-13(3)", "1ir.2.1 I-15"),
+        "Classify is compare-and-set at both steps, and names active participants only",
+        ("ED-13(3)", "1ir.2.1 I-15", "critic item 6"),
         _M,
         *_enforced_only(_classify_cas, Classify),
     ),
@@ -2320,6 +2365,13 @@ EXTRA_CASES: Final[tuple[Case, ...]] = (
     ),
     Case("EVERYONE-SEATED", "everyone seated means confirmed seats", ("TP-1", "I-7"), _M, *_both(_everyone_seated)),
     Case("ASSET", "an asset follows its field", ("ED-19",), _M, *_both(_asset_follows_its_field)),
+    Case(
+        "GROUP-ACTIVE",
+        "a named group reaches its active members; an Update keeps the group",
+        ("ED-15", "I-11", "I-15", "I-23"),
+        _M,
+        *_enforced_only(_group_active_members, AddToGroup, RemoveFromGroup, probe=_v1_group_probe),
+    ),
     Case(
         "ENT-OWNER", "the owner holds no participant slot", ("15.6",), _M, *_both(_owner_never_holds_a_participant_slot)
     ),
@@ -2372,7 +2424,7 @@ def lattice_pairs() -> None:
 
 ENT_PRINCIPALS: Final = (
     "owner", "seated_confirmed", "seated_awaiting", "other_account", "offered", "removed", "nobody", "screen",
-    "dead_grant_account", "dead_grant_nobody",
+    "dead_grant_account", "dead_grant_nobody", "stale_grant_nobody", "foreign_grant_nobody",
 )  # fmt: skip
 ENT_SESSIONS: Final = ("live", "ended", "clock_expired", "finalised")
 _OWN: Final[Mapping[str, str]] = frozen_map(
@@ -2401,25 +2453,38 @@ _OPEN_CELLS: Final[Mapping[tuple[str, str], Entitlement]] = frozen_map(
         ("screen", "table"): _E, ("screen", "another"): _X,
         ("dead_grant_account", "table"): _E, ("dead_grant_account", "own"): _E, ("dead_grant_account", "another"): _X,
         ("dead_grant_nobody", "table"): _UN, ("dead_grant_nobody", "another"): _UN,
+        ("stale_grant_nobody", "table"): _UN, ("stale_grant_nobody", "another"): _UN,
+        ("foreign_grant_nobody", "table"): _UN, ("foreign_grant_nobody", "another"): _UN,
     }
 )  # fmt: skip
-_NO_ACCOUNT: Final = frozenset({"nobody", "screen", "dead_grant_nobody"})
+_NO_ACCOUNT: Final = frozenset({"nobody", "screen", "dead_grant_nobody", "stale_grant_nobody", "foreign_grant_nobody"})
 ENTITLEMENT_MATRIX: Final[tuple[tuple[str, str, str, Entitlement], ...]] = tuple(
     (principal, session, slot, cell if session == "live" else (_UN if principal in _NO_ACCOUNT else _IN))
     for (principal, slot), cell in sorted(_OPEN_CELLS.items())
     for session in ENT_SESSIONS
 )
 DEAD_GRANT: Final = GrantId("dead1")
+#: An unrevoked grant of the live session's previous generation (the link rotated since): not live (SEC-48).
+STALE_GRANT: Final = GrantId("stale1")
+#: An unrevoked grant of the ended session `s0`, at the live session's generation: not live (SEC-48).
+FOREIGN_GRANT: Final = GrantId("foreign1")
 
 
 def entitlement_state(session: str) -> State:
-    """ENT-15.6's world: Ana confirmed, Ben awaiting, Cy offered, Dan removed; `screen1` live and
-    `dead1` revoked; then the session live, ended, past `expires_at`, or finalised (critic item 2)."""
+    """ENT-15.6's world: Ana confirmed, Ben awaiting, Cy offered, Dan removed; `screen1` live, `dead1`
+    revoked, `stale1` of the previous generation and `foreign1` of the ended session `s0` (both
+    unrevoked, neither live); then the session live, ended, past `expires_at`, or finalised (critic item 2)."""
     state = set_seat(canonical_state(V1), Participant(BEN_ID, SeatStatus.AWAITING_CONFIRMATION, AccountId("acct_ben")))
     state = set_seat(state, Participant(ParticipantId("dan"), SeatStatus.REMOVED, AccountId("acct_dan")))
+    earlier = SessionId("s0")
+    generation = state.sessions[S1].generation
+    sessions = dict(state.sessions)
+    sessions[earlier] = Session(earlier, live=False, expired=False, epoch=0, generation=generation)
     grants = dict(state.grants)
     grants[DEAD_GRANT] = ScreenGrant(DEAD_GRANT, S1, 1, revoked=True)
-    sc = Sc(replace(state, grants=frozen_map(grants)))
+    grants[STALE_GRANT] = ScreenGrant(STALE_GRANT, S1, generation - 1, revoked=False)
+    grants[FOREIGN_GRANT] = ScreenGrant(FOREIGN_GRANT, earlier, generation, revoked=False)
+    sc = Sc(replace(state, sessions=frozen_map(sessions), grants=frozen_map(grants)))
     if session == "ended":
         sc.begin(End())
     elif session in ("clock_expired", "finalised"):
@@ -2441,6 +2506,8 @@ def entitlement_requester(principal: str) -> Requester:
         "screen": SCREEN,
         "dead_grant_account": Requester(AccountId("acct_ana"), DEAD_GRANT),
         "dead_grant_nobody": Requester(None, DEAD_GRANT),
+        "stale_grant_nobody": Requester(None, STALE_GRANT),
+        "foreign_grant_nobody": Requester(None, FOREIGN_GRANT),
     }[principal]
 
 
@@ -2479,6 +2546,8 @@ __all__ = [
     "ent",
     "raises_usage",
     "DEAD_GRANT",
+    "FOREIGN_GRANT",
+    "STALE_GRANT",
     "ENTITLEMENT_MATRIX",
     "ENT_PRINCIPALS",
     "ENT_SESSIONS",

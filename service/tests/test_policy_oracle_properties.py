@@ -1,4 +1,4 @@
-"""Property tests of the policy oracle (bead `1ir.1.12`): P-1 to P-24 over seeded generated campaigns.
+"""Property tests of the policy oracle (bead `1ir.1.12`): P-1 to P-28 over seeded generated campaigns.
 
 Every property runs over fixed integer seeds (I-3), names its seed on failure with a content-free
 `describe`, and asserts a non-vacuity minimum: it counts the cases where its premise held, so no
@@ -53,6 +53,7 @@ from service.tests.policy_oracle import (
     ParticipantAudienceId,
     ParticipantId,
     Phase,
+    PrincipalKind,
     RefusalKind,
     Refused,
     Release,
@@ -82,6 +83,7 @@ from service.tests.policy_oracle import (
     describe,
     eligible_for_audience,
     entitled,
+    expand_audience,
     frozen_map,
     gen_eligibility_case,
     gen_entitlement_case,
@@ -889,7 +891,10 @@ def test_p24_generator_coverage() -> None:
     ops: dict[Release, set[type]] = {V1: set(), AS: set()}
     refusals: set[RefusalKind] = set()
     reasons: set[StopReason | SessionEndReason] = set()
-    flags = dict.fromkeys(("held", "group_memory", "orphan", "unsealed", "expired_with_copies"), False)
+    flags = dict.fromkeys(
+        ("held", "group_memory", "orphan", "unsealed", "expired_with_copies", "mask_all", "classify_outside_mask"),
+        False,
+    )
     shapes: set[str] = set()
     for seed, state in _worlds():
         world = state.world
@@ -914,6 +919,9 @@ def test_p24_generator_coverage() -> None:
         )
         flags["group_memory"] |= any(d.group is not None for d in st.disclosures.values())
         flags["expired_with_copies"] |= bool(st.slots) and st.live_session is not None and st.live_session.expired
+        if isinstance(r.step.op, Confirm):
+            flags["mask_all"] |= FieldKey("all") in r.step.op.mask
+            flags["classify_outside_mask"] |= any(e.key not in r.step.op.mask for e in r.step.op.classify)
         for gid in st.grants:
             shapes.add(_grant_shape(st, gid))
     assert kinds == set(ClassKind)
@@ -933,6 +941,102 @@ def _audiences() -> list[object]:
         for seed, r in _results()
         if isinstance(r.step.op, Confirm) and r.step.phase is Phase.COMMIT and isinstance(r.answer, Ok)
     ]
+
+
+def test_p25_a_screen_grant_decides_only_while_live() -> None:
+    """SEC-48, threat model 15.2 step 1: a grant is honoured on the table iff it is known, unrevoked, of the
+    open session and of that session's generation. A grant of an old generation or of another session is
+    ignored, so a request that carries only it is unauthenticated."""
+    honoured = ignored = stale = foreign = 0
+    for seed, r in _results():
+        st = r.after
+        session = st.open_session
+        for gid in [*sorted(st.grants), GrantId("sg99")]:
+            req = Requester(None, gid)
+            live = _live_grant(st, gid)
+            assert (table_principal(st, req) is PrincipalKind.SCREEN) is live, _why(seed, r.step)
+            want = Entitlement.ENTITLED if live else Entitlement.UNAUTHENTICATED
+            assert entitled(st, req, TABLE) is want, _why(seed, r.step)
+            if live:
+                honoured += 1
+                continue
+            ignored += 1
+            grant = st.grants.get(gid)
+            if grant is None or grant.revoked or session is None:
+                continue
+            stale += grant.session == session.id and grant.generation != session.generation
+            foreign += grant.session != session.id and grant.generation == session.generation
+    assert honoured >= 1000 and ignored >= 1000
+    assert stale >= 100 and foreign >= 100, (stale, foreign)
+
+
+def _ok_commit(r: StepResult) -> bool:
+    return isinstance(r.step.op, Confirm) and r.step.phase is Phase.COMMIT and isinstance(r.answer, Ok)
+
+
+def test_p26_a_confirm_classifies_only_masked_keys_it_needs() -> None:
+    """ED-13(4), critic item 7(e): every entry of an Ok Confirm's classify list names a key of its mask that
+    some target could not see before; the stored class becomes the entry's `new`. An entry for a key the
+    mask leaves out is refused, never a silent widening of a field nobody is shown."""
+    premise = outside = 0
+    for seed, r in _results():
+        op = r.step.op
+        if not isinstance(op, Confirm) or r.step.phase is not Phase.COMMIT or not op.classify:
+            continue
+        outside += any(e.key not in op.mask for e in op.classify)
+        if not isinstance(r.answer, Ok):
+            continue
+        premise += 1
+        world = r.before.world
+        slots = expand_audience(world, op.audience)
+        assert slots, _why(seed, r.step)
+        for e in op.classify:
+            assert e.key in op.mask, _why(seed, r.step)
+            seen = [eligible_for_audience(world, op.document_id, e.key, _audience(s)).allowed for s in slots]
+            assert not all(seen), _why(seed, r.step)
+            assert r.after.world.classes.get((op.document_id, e.key)) == e.new, _why(seed, r.step)
+    assert premise >= 30 and outside >= 40, (premise, outside)
+
+
+def test_p27_an_ok_confirm_commits_into_the_open_session() -> None:
+    """ED-9, SEC-42, RC-5: the COMMIT re-reads the session row under its lock, so an Ok Confirm's session is
+    the live one, unexpired, at the Confirm's epoch, whatever happened after its courtesy check."""
+    premise = closed = 0
+    for seed, r in _results():
+        op = r.step.op
+        if not isinstance(op, Confirm) or r.step.phase is not Phase.COMMIT:
+            continue
+        session = r.before.sessions.get(op.session_id)
+        is_open = r.before.live == op.session_id and session is not None and session.open
+        if not is_open:
+            closed += 1
+            assert not isinstance(r.answer, Ok), _why(seed, r.step)
+            continue
+        if isinstance(r.answer, Ok):
+            premise += 1
+            assert session is not None and session.epoch == op.epoch, _why(seed, r.step)
+    assert premise >= 300 and closed >= 20, (premise, closed)
+
+
+def test_p28_an_ok_confirm_writes_only_active_seats() -> None:
+    """ED-15, I-15, I-23: after an Ok Confirm, every copy of its document sits in the table slot or in an
+    active seat's slot; a named group reaches only its active members."""
+    premise = grouped = 0
+    for seed, r in _results():
+        if not _ok_commit(r):
+            continue
+        op = r.step.op
+        assert isinstance(op, Confirm)
+        premise += 1
+        world = r.before.world
+        for slot, copy in r.after.slots.items():
+            if copy.document != op.document_id or slot.participant is None:
+                continue
+            seat = world.participants.get(slot.participant)
+            assert seat is not None and seat.active, _why(seed, r.step)
+        if isinstance(op.audience, Group):
+            grouped += any(not world.participants[p].active for p in world.groups[op.audience.id])
+    assert premise >= 300 and grouped >= 10, (premise, grouped)
 
 
 def test_corpus_meets_the_schedule_minimum() -> None:

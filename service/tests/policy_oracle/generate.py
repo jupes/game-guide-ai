@@ -332,8 +332,16 @@ def _all_eligible(world: World, doc: DocumentId, key: FieldKey, slots: frozenset
 
 
 def _gen_confirm(
-    rng: random.Random, state: State, command_id: str, *, sloppy: float, audience: RevealAudience | None = None
+    rng: random.Random,
+    state: State,
+    command_id: str,
+    *,
+    sloppy: float,
+    audience: RevealAudience | None = None,
+    stray: float = 0.0,
 ) -> Confirm:
+    """A Confirm; `sloppy` is the chance of each defect, `stray` the chance that a classify list also
+    names a revealable key the mask leaves out (ED-13(4)). A zero chance draws nothing."""
     world = state.world
     docs = sorted(world.documents)
     if rng.random() >= sloppy:
@@ -380,6 +388,13 @@ def _gen_confirm(
             if rng.random() < sloppy:
                 displayed = FieldClass.gm_only() if stored.kind is not ClassKind.GM_ONLY else FieldClass.unclassified()
             classify.append(ClassifyEntry(k, displayed, new))
+        outside = [
+            k for k in sorted(world.revealable(doc_id) - mask) if slots and not _all_eligible(world, doc_id, k, slots)
+        ]
+        if outside and stray and rng.random() < stray:
+            k = rng.choice(outside)
+            stored = stored_class(world, doc_id, k)
+            classify.append(ClassifyEntry(k, stored, narrowest_widening(world, stored, slots) or FieldClass.public()))
     sid = state.live
     epoch = 0
     if sid is not None:
@@ -577,7 +592,7 @@ def _gen_op(rng: random.Random, state: State, counter: list[int]) -> Op | None:
         if replays and rng.random() < 0.25:
             base = _gen_confirm(rng, state, rng.choice(replays), sloppy=0.3)
             return base
-        return _gen_confirm(rng, state, _fresh(counter, "c"), sloppy=0.1 if world.enforced else 0.2)
+        return _gen_confirm(rng, state, _fresh(counter, "c"), sloppy=0.1 if world.enforced else 0.2, stray=0.5)
     if kind == "stop":
         cid = CommandId(_fresh(counter, "c"))
         stops = _stop_commands(state)

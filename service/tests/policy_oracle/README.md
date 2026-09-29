@@ -209,7 +209,8 @@ assert `superseded_vocabulary_absent`.
 The catalogue: `TRUTH_TABLE`, `RACE_CASES`, `ORDER_CASES`, `IDEMPOTENCY_CASES`, `EXTRA_CASES`,
 `lattice_pairs`, and `ENTITLEMENT_MATRIX` over `ENT_PRINCIPALS` and `ENT_SESSIONS`, built by
 `entitlement_state`, `entitlement_requester` and `entitlement_slot` (with the revoked grant
-`DEAD_GRANT`).
+`DEAD_GRANT`, the previous-generation grant `STALE_GRANT` and the ended session's grant
+`FOREIGN_GRANT`: none of them is live, so a request carrying only one is unauthenticated).
 
 ## 7. How a consumer uses it
 
@@ -261,13 +262,22 @@ for seed in range(300):
 
 ## 8. How to reproduce a failure
 
-Every property names its seed and a content-free `describe` of the state, step or trace. Rebuild it:
+Every property names its seed and a content-free `describe` of the state, step or trace. The release
+comes from the seed as the property file's `_release` does: `WORKBENCH_V1` when `seed % 3 == 0`, else
+`ASSISTANT`. A schedule property (seeds `0` to `2399` at scale 1) rebuilds its trace with:
 
 ```python
+release = Release.WORKBENCH_V1 if seed % 3 == 0 else Release.ASSISTANT
 rng = random.Random(seed)
-state = gen_world(rng, Release.ASSISTANT if seed % 2 else Release.WORKBENCH_V1)
+state = gen_world(rng, release)
 trace = run(state, gen_schedule(rng, state, rng.randint(*Bounds().schedule_length)))
 ```
+
+The world corpus of the eligibility and entitlement properties uses seeds `10**6` to `10**6 + 499` (scale 1):
+`state = gen_world(random.Random(seed), release)`, then the cases come from `random.Random(seed + 7)`
+(`gen_eligibility_case`, 25 per world) and `random.Random(seed + 11)` (`gen_entitlement_case`, 25 per
+world); P-24's requesters from `random.Random(seed + 13)`. B-5 alone picks its release by `seed % 2`
+(`ASSISTANT` when odd).
 
 The same seed gives a byte-identical `describe(trace)` in any process, whatever its string-hash seed
 (P-23). `SCALE_ENV` names `POLICY_ORACLE_SCALE`: an integer of at least 1 that multiplies the corpus

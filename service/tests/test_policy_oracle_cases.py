@@ -100,7 +100,7 @@ def test_entitlement_matrix_15_6() -> None:
         got = entitled(states[session], entitlement_requester(principal), entitlement_slot(principal, slot))
         assert got is expected, (principal, session, slot, got.name, expected.name)
         checked += 1
-    assert checked == len(ENTITLEMENT_MATRIX) == 25 * len(ENT_SESSIONS)
+    assert checked == len(ENTITLEMENT_MATRIX) == 29 * len(ENT_SESSIONS)
 
 
 def test_owner_never_holds_a_participant_slot() -> None:

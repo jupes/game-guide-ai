@@ -41,15 +41,25 @@ STDLIB_ALLOWED = frozenset(
 )
 
 
-def _imports(path: Path) -> Iterator[tuple[str, int]]:
-    """Every imported module name in `path`, with its relative level (0 for absolute)."""
+def _import_nodes(path: Path) -> Iterator[tuple[str, int, tuple[str, ...]]]:
+    """Every import statement in `path`: the module (empty for `from . import x`), its relative level
+    (0 for absolute) and, for a `from` import, the names it binds."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                yield alias.name, 0
+                yield alias.name, 0, ()
         elif isinstance(node, ast.ImportFrom):
-            yield node.module or "", node.level
+            yield node.module or "", node.level, tuple(alias.name for alias in node.names)
+
+
+def _imports(path: Path) -> Iterator[tuple[str, int]]:
+    """Every module `path` may import, with its relative level: the module itself and, for a `from`
+    import, each `module.name`, since the name may be a submodule (`from service.tests import x`)."""
+    for module, level, names in _import_nodes(path):
+        yield module, level
+        for name in names:
+            yield (f"{module}.{name}" if module else name), level
 
 
 def test_b1_the_oracle_imports_only_the_standard_library_and_itself() -> None:
@@ -57,8 +67,13 @@ def test_b1_the_oracle_imports_only_the_standard_library_and_itself() -> None:
     assert len(modules) == 7
     for path in modules:
         allowed = STDLIB_ALLOWED | ({"os"} if path.name == "generate.py" else set())
-        for name, level in _imports(path):
-            assert level > 0 or name in allowed, f"{path.name} imports {name}"
+        for module, level, names in _import_nodes(path):
+            if level == 0:
+                assert module in allowed, f"{path.name} imports {module}"
+                continue
+            assert level == 1, f"{path.name} imports from outside the package (level {level})"
+            targets = (module,) if module else names
+            assert all(t in SUBMODULES for t in targets), f"{path.name} imports .{module or names}"
 
 
 def _production_files() -> Iterator[Path]:
