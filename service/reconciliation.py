@@ -12,10 +12,11 @@ The job carries the campaign's id and nothing else, and its handler reads
 current state, never a payload beyond that id. It runs in its own transaction:
 
 1. `lock_campaign(campaign_id, shared=False)` — the first lock, exclusive;
-2. `reconcile_slots(unit, campaign_id)` — a **required** extension point, empty
-   on this base, which `1kg.7.1` fills (a slot whose session is not live or
-   whose participant is not active is cleared); `1kg.2.3` adds its own step
-   beside it;
+2. the slot step — a **required** extension point, filled in production by
+   `reveals.make_reconcile_slots` (1kg.7.1): a slot holding live content whose
+   session is not live, or whose participant is removed, is cleared as
+   `reconciled`; a valid copy is left alone. `reconcile_slots` below is the
+   empty one tests pass;
 3. advance `authz_revision`;
 4. commit.
 
@@ -56,15 +57,15 @@ def enqueue_reconciliation(unit: UnitOfWork, jobs: JobQueue, campaign_id: str) -
 
 
 def reconcile_slots(unit: UnitOfWork, campaign_id: str) -> None:
-    """The slot-reconciling extension point, empty on this base.
+    """The empty slot-reconciling extension point, **for tests only**.
 
-    `reconcile` calls it holding the campaign lock exclusively, before the
-    revision advances, so that when `1kg.7.1` gives it a body the slots it
-    clears and the revision that tells readers to look again cannot come apart.
-    Until then there are no slots to clear, and this says so in one place
-    rather than by omission. It is REQUIRED wherever a handler is built —
-    passed by name, never defaulted — as the table-session store's `slot_clear`
-    is."""
+    `reconcile` calls its slot step holding the campaign lock exclusively,
+    before the revision advances, so that the slots it clears and the revision
+    that tells readers to look again cannot come apart. Production registers
+    `reveals.make_reconcile_slots(...)` (1kg.7.1), which clears the stale ones;
+    this clears nothing, for a test whose subject is not the reveal rows. The
+    step is REQUIRED wherever a handler is built — passed by name, never
+    defaulted — as the table-session store's `slot_clear` is."""
     return None
 
 
