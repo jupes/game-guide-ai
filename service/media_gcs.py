@@ -40,10 +40,13 @@ runtime service account through Application Default Credentials.
   and location for trace attributes): the store sends no request it did not ask
   for.
 
-**Every call is bounded** by a per-request timeout and a retry deadline well
-inside a job's budget (`service/job_driver.py`), so one store call overruns a
-handler's advisory `JobContext` deadline by at most `RETRY_DEADLINE_S`: the
-handlers already check that deadline before each call. **A failure carries no
+**Every call is bounded** by a per-request timeout and a retry deadline inside
+a job's budget (`service/job_driver.py`). The retry deadline is checked between
+attempts, so an attempt that starts just before it still runs to its own
+connect and read timeouts: one store call overruns a handler's advisory
+`JobContext` deadline by about `RETRY_DEADLINE_S` plus `REQUEST_TIMEOUT`
+(about 33 s) at most, far inside the job lease (300 s). The handlers already
+check that deadline before each call. **A failure carries no
 driver text.** Cloud Storage's own messages name the bucket and the object, so
 every client error is replaced, outside the handler, by the store's named error
 with its fixed message; "not found" is the only status read from it.

@@ -712,8 +712,10 @@ to the cursor and never examining a name outside the key grammar. `reachable()`
 lists one object under `tmp/`, because the runtime account holds object
 administration on the bucket and nothing more; for the same reason the builder
 turns off the client's own background read of bucket metadata. Every call is
-bounded (3 s to connect, 10 s to read, 20 s of retrying), inside a job's 30 s
-budget; a failure is `ObjectStoreUnavailable` with its fixed message and no
+bounded (3 s to connect, 10 s to read, 20 s of retrying). The retry deadline is
+checked between attempts, so an attempt that starts just before it still runs to
+its own timeouts: one call lasts about 33 s at most, far inside a job's 300 s
+lease; a failure is `ObjectStoreUnavailable` with its fixed message and no
 driver text, since Cloud Storage's own messages name the bucket and the object.
 Creating the bucket, its IAM binding and its `tmp/` rule, and building the image
 with the extra, are `1kg.9.5`'s (`docs/deploy-gcp.md` section 13).
