@@ -148,6 +148,15 @@ function paintedExtent(node: Node): { left: number; right: number } | null {
  * outermost node that crosses and the box it crosses, not just a number.
  */
 export async function expectNothingClipped(root: Element): Promise<void> {
+  await expect(await clippedNodes(root)).toEqual([])
+}
+
+/** expectNothingClipped's walk, as a list: one line per outermost node that
+ * crosses its clipping box, empty when nothing does. Exported for the
+ * canaries in `src/testing/NothingClipped.stories.tsx`, which pin the exact
+ * lines rather than a failure message (a failed `toEqual([])` abbreviates the
+ * list as "[ Array(1) ]"). */
+export async function clippedNodes(root: Element): Promise<string[]> {
   await document.fonts.ready
   const childContext = new Map<Node, ClipContext>()
   const crossing = new Map<Node, ClipContext>()
@@ -213,7 +222,7 @@ export async function expectNothingClipped(root: Element): Promise<void> {
     }
     if (ownContext !== undefined) childContext.set(node, ownContext)
   }
-  await expect(problems).toEqual([])
+  return problems
 }
 
 /** The workspace's clipping boxes, outermost first. */
