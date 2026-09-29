@@ -227,7 +227,11 @@ def _decode_cursor(cursor: str) -> tuple[datetime, str]:
     try:
         raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
         moment, conversation_id = json.loads(raw.decode("utf-8"))
-        return aware(datetime.fromisoformat(moment), "a cursor"), str(conversation_id)
+        # Only an id of `_CURSOR_ID`'s characters, checked here, before any
+        # statement sees it: JSON carries any character as an escape, and a
+        # NUL or a lone surrogate would fail inside psycopg, not here.
+        if isinstance(conversation_id, str) and _CURSOR_ID.fullmatch(conversation_id):
+            return aware(datetime.fromisoformat(moment), "a cursor"), conversation_id
     except Exception:
         # Any failure to read it is the one refusal. Nothing is kept: the
         # errors above quote the caller's own decoded payload.
@@ -259,6 +263,13 @@ def _decode_cursor(cursor: str) -> tuple[datetime, str]:
 #: read it alike — a code-point range, no character class, no collation.
 _LISTABLE_ID_PATTERN: Final = r"^[ -~]{1,64}$"
 _LISTABLE_ID: Final = re.compile(_LISTABLE_ID_PATTERN)
+#: The id a cursor may carry: the same characters, at any length (the route,
+#: not the store, holds a cursor to the wire's 512). Only a listed row anchors
+#: a cursor, so one carrying any other character did not come from this
+#: server, and that character must never reach the statement: a NUL is
+#: psycopg's `DataError`, which the route answers as a retryable 503, and a
+#: lone surrogate is its `UnicodeEncodeError`, a 500 (agent-forge-harness-kky).
+_CURSOR_ID: Final = re.compile(r"[ -~]+")
 
 
 def _listable(conversation_id: str) -> bool:

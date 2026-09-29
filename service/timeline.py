@@ -77,7 +77,9 @@ CURSOR_VERSION = 1
 PAGE_SCHEMA_VERSION = cast("SchemaVersion", CONTRACT_VERSION)
 
 #: Fixed sentences. A refusal never interpolates anything it was sent (X-7).
-NOT_FOUND_MESSAGE = "That conversation isn't available."
+#: The route's own 404 is `workbench_api.NOT_FOUND_DETAIL`'s since
+#: agent-forge-harness-oqx (#125); no route answers a NOT_FOUND-coded body
+#: with a sentence of this module's own any more (agent-forge-harness-53m).
 FORBIDDEN_MESSAGE = "This is a Game Master feature."
 UNAVAILABLE_MESSAGE = "The conversation timeline is briefly unavailable. Try again."
 
