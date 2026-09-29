@@ -51,6 +51,9 @@ TABLE_SESSION: Final = "ses_"
 TABLE_CREDENTIAL: Final = "tcr_"
 #: SEC-4 names this one: a GM Workbench document (1kg.5.1).
 DOCUMENT: Final = "doc_"
+#: An offer of a seat to an address (1kg.2.2, D-12). It names a seat and an
+#: address, never an account: an offer binds to an account only at acceptance.
+SEAT_OFFER: Final = "sof_"
 
 PREFIXES: Final[tuple[str, ...]] = (
     CAMPAIGN,
@@ -60,6 +63,7 @@ PREFIXES: Final[tuple[str, ...]] = (
     TABLE_SESSION,
     TABLE_CREDENTIAL,
     DOCUMENT,
+    SEAT_OFFER,
 )
 
 #: What each prefix is called in a refusal. Never the value, only the kind (SEC-20).
@@ -71,6 +75,7 @@ _KINDS: Final[dict[str, str]] = {
     TABLE_SESSION: "table-session identifier",
     TABLE_CREDENTIAL: "table-credential identifier",
     DOCUMENT: "document identifier",
+    SEAT_OFFER: "seat-offer identifier",
 }
 
 #: 16 bytes = 128 bits, SEC-4's floor, which `token_urlsafe` renders as 22 characters.

@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from service.db import Database, InMemoryDatabase, PgTransaction, PoolSettings
+from service.db import Database, InMemoryDatabase, InMemoryTransaction, PgTransaction, PoolSettings, TwinWouldBlock
 from service.jobs import (
     LEASE_SECONDS,
     LOCK_TIMEOUT,
@@ -608,3 +608,131 @@ def test_after_the_commit_the_single_flight_lock_is_taken_without_waiting():
 def test_the_in_memory_database_is_shared_with_the_other_fakes():
     db = InMemoryDatabase()
     assert InMemoryJobQueue(db).db is db
+
+
+# ── One open writer (ixa.2) ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("dedupe_key", [pytest.param("session:S", id="dedupe"), pytest.param(None, id="no-key")])
+def test_a_unit_that_never_finished_leaks_no_job_to_the_next_unit_allocated(dedupe_key: str | None) -> None:
+    """ixa.2 (2), the queue's twin of the test of the same shape in
+    `service/tests/test_db.py`. Keyed by `id(unit)`, a unit that enqueued and
+    never committed or rolled back handed its entry to the next unit CPython
+    allocated at the same address. With a key, that unit was given the dead
+    unit's uncommitted job id; with or without one, its job landed in the dead
+    unit's dictionary with no callback of its own, so its commit published
+    nothing. Only units built directly reuse an address, so both are.
+
+    Two counts, because a lost job keeps a fresh id of its own: `collisions`
+    alone cannot see it. The message carries the counts and nothing else."""
+    iterations, collisions, lost = 200, 0, 0
+    for _ in range(iterations):
+        queue = InMemoryJobQueue()
+        leaker = InMemoryTransaction()
+        leaked = queue.enqueue(leaker, "upload.sweep", {"asset_id": "a-1"}, dedupe_key=dedupe_key, now=T0)
+        del leaker
+        fresh = InMemoryTransaction()
+        mine = queue.enqueue(fresh, "upload.sweep", {"asset_id": "a-1"}, dedupe_key=dedupe_key, now=T0)
+        collisions += mine == leaked
+        for publish in fresh._publish:  # what `transaction()` does at commit
+            publish()
+        lost += mine not in [row[0] for row in queue.snapshot()]
+    assert (collisions, lost) == (0, 0), f"iterations={iterations} collisions={collisions} lost={lost}"
+
+
+@pytest.mark.parametrize(
+    ("case", "outer_key", "refused_key"),
+    [
+        # PostgreSQL really waits here: `jobs_dedupe_uidx` makes the second insert
+        # wait for the first transaction's outcome. Proved against the server by
+        # `tests/test_db_postgres.py`'s
+        # `test_an_enqueue_waits_for_another_transactions_uncommitted_enqueue_of_the_same_key`.
+        pytest.param("same-key", "session:S", "session:S", id="same-key"),
+        # PostgreSQL would not wait in the other three. The twin cannot tell them
+        # from the case above, so it refuses them too: conservative, as ixa.1 is.
+        pytest.param("other-key", "session:T", "session:S", id="other-key"),
+        pytest.param("no-key", None, None, id="no-key"),
+        # The outer unit became the writer through another twin on the same database.
+        pytest.param("authz", None, None, id="authz"),
+    ],
+)
+def test_a_second_open_stager_is_refused_and_leaves_nothing(
+    case: str, outer_key: str | None, refused_key: str | None
+) -> None:
+    """ixa.2 (1). The claim is taken after the checks and the dedupe read and
+    before anything is staged, so the refused unit registered no callback,
+    has no entry of its own, and used up no job id; and no row of it is visible.
+
+    (d) is read before (c) enqueues on purpose: the other way round it would see
+    (c)'s own job. Each assertion's message is its letter and nothing more."""
+    queue = _queue()
+    outer_id: int | None = None
+    with queue.db.transaction() as outer:
+        if case == "authz":
+            outer.create_authz_state("cmp_one")
+        else:
+            outer_id = queue.enqueue(outer, "upload.sweep", {"asset_id": "a-1"}, dedupe_key=outer_key, now=T0)
+        with queue.db.transaction() as refused:
+            with pytest.raises(TwinWouldBlock):
+                queue.enqueue(refused, "upload.sweep", {"asset_id": "a-1"}, dedupe_key=refused_key, now=T0)
+            assert (refused._publish, refused._undo) == ([], []), "(a)"
+            assert refused not in queue._staged and refused not in queue._held, "(b)"
+    assert [row[0] for row in queue.snapshot()] == ([] if outer_id is None else [outer_id]), "(d)"
+    assert _enqueue(queue) == (1 if outer_id is None else outer_id + 1), "(c)"
+
+
+def test_an_enqueue_makes_its_unit_the_writer_for_every_twin_on_its_database() -> None:
+    """One writer per database, not per twin: a unit that has staged a job is
+    the writer, so a nested unit's campaign write on the same database is
+    refused like a second enqueue."""
+    queue = _queue()
+    with queue.db.transaction() as writer:
+        queue.enqueue(writer, "upload.sweep", {"asset_id": "a-1"}, now=T0)
+        with queue.db.transaction() as nested:
+            with pytest.raises(TwinWouldBlock):
+                nested.create_authz_state("cmp_one")
+
+
+def test_two_absorbing_enqueuers_never_wait_for_each_other() -> None:
+    """The twin of `tests/test_db_postgres.py`'s test of the same name. An absorb
+    is a share lock, not a write (J-3), so it never claims the writer: both
+    absorbers go through. The job stays held while either is open, and is
+    claimable once both have committed."""
+    queue = _queue()
+    first = _enqueue(queue, kind="upload.sweep", dedupe_key="session:S")
+    with queue.db.transaction() as one:
+        assert queue.enqueue(one, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0) == first
+        with queue.db.transaction() as two:
+            assert queue.enqueue(two, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0) == first
+            assert queue.claim(["upload.sweep"], now=T0) == [], "held while both absorbers are open"
+        assert queue.claim(["upload.sweep"], now=T0) == [], "held while one absorber is still open"
+    assert [job.id for job in queue.claim(["upload.sweep"], now=T0)] == [first], "claimable once both committed"
+
+
+def test_an_absorb_is_not_a_write() -> None:
+    """A unit that has only absorbed is not the writer, so a unit opened inside
+    it may stage a job of its own; and a writer does not stop a nested unit
+    from absorbing, since that takes no claim."""
+    queue = _queue()
+    first = _enqueue(queue, kind="upload.sweep", dedupe_key="session:S")
+    with queue.db.transaction() as absorber:
+        assert queue.enqueue(absorber, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0) == first
+        with queue.db.transaction() as stager:
+            staged = queue.enqueue(stager, "asset.delete", {"asset_id": "a-1"}, now=T0)
+    with queue.db.transaction() as writer:
+        written = queue.enqueue(writer, "asset.delete", {"asset_id": "a-2"}, now=T0)
+        with queue.db.transaction() as absorber:
+            assert queue.enqueue(absorber, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0) == first
+    assert [row[0] for row in queue.snapshot()] == [first, staged, written]
+
+
+def test_a_unit_built_without_a_database_never_claims_while_the_queues_database_has_a_writer() -> None:
+    """`InMemoryTransaction()` built directly belongs to no database, so it has
+    no writer to claim or to be refused by, even while the queue's own database
+    has one open. The writer is opened on `queue.db` itself: a writer on some
+    other database would say nothing about which database the enqueue claims."""
+    queue = _queue()
+    with queue.db.transaction() as writer:
+        queue.enqueue(writer, "upload.sweep", {"asset_id": "a-1"}, now=T0)
+        bare = InMemoryTransaction()
+        queue.enqueue(bare, "upload.sweep", {"asset_id": "a-2"}, now=T0)
