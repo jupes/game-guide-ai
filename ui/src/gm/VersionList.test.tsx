@@ -177,6 +177,66 @@ describe('CANVAS-27 — paging, 20 at a time', () => {
     rerender(<VersionList versions={[...first, ...page(3, 80)]} currentVersionNumber={100} />)
     expect(document.body).toHaveFocus()
   })
+
+  // agent-forge-harness-alf, same class of bug as GmThread's Load earlier
+  // (1kg.3.7, PR #136): a focused button that becomes disabled drops
+  // document.activeElement to <body> in real Chromium, and nothing restored
+  // it because the effect returned early whenever the button survived
+  // another page ("leave focus where the reader put it"). jsdom never drops
+  // focus off a disabled button, so these tests drop it there themselves: a
+  // stand-in is focused, then removed.
+  function dropFocusToBody(): void {
+    const standIn = document.createElement('input')
+    document.body.append(standIn)
+    standIn.focus()
+    standIn.remove()
+    expect(document.activeElement).toBe(document.body)
+  }
+
+  it('restores focus to Load more if the browser already dropped it to body while disabled', async () => {
+    const first = page(HISTORY_PAGE_SIZE)
+    const { rerender } = render(
+      <VersionList versions={first} currentVersionNumber={100} hasMore onLoadMore={vi.fn()} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Load more' }))
+    rerender(
+      <VersionList versions={first} currentVersionNumber={100} hasMore loadingMore onLoadMore={vi.fn()} />,
+    )
+    dropFocusToBody()
+    rerender(
+      <VersionList
+        versions={[...first, ...page(5, 80)]}
+        currentVersionNumber={100}
+        hasMore
+        onLoadMore={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Load more' })).toHaveFocus()
+  })
+
+  it('never takes focus from wherever the reader moved it while the page loaded', async () => {
+    const first = page(HISTORY_PAGE_SIZE)
+    const { rerender } = render(
+      <VersionList versions={first} currentVersionNumber={100} hasMore onLoadMore={vi.fn()} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Load more' }))
+    rerender(
+      <VersionList versions={first} currentVersionNumber={100} hasMore loadingMore onLoadMore={vi.fn()} />,
+    )
+    const elsewhere = document.createElement('input')
+    document.body.append(elsewhere)
+    elsewhere.focus()
+    rerender(
+      <VersionList
+        versions={[...first, ...page(5, 80)]}
+        currentVersionNumber={100}
+        hasMore
+        onLoadMore={vi.fn()}
+      />,
+    )
+    expect(document.activeElement).toBe(elsewhere)
+    elsewhere.remove()
+  })
 })
 
 describe('§12.2 — the history list’s empty, loading and error rows', () => {
