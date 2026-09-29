@@ -3,8 +3,8 @@ Context assembly + grounded answer generation (gpt-4o-mini).
 
 `build_context` and `build_sources` are pure (no network) and operate on a
 `RetrievalResult` using **full** chunk text (the 120-char preview is too short to
-ground an answer — see the plan review). `generate_answer` calls the LLM and
-accepts an injected client for tests.
+ground an answer — see the plan review). `generate_answer` calls the LLM
+through the client it is handed (the ProviderClientFactory's, or a test fake).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 # Env-overridable tuning knobs live in the single top-level config module.
 # DEFAULT_MODEL is re-exported here for `from .generate import DEFAULT_MODEL`.
-from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX, TEMPERATURE
+from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX
 from ingestion.retrieval import RetrievalResult
 
 from .attachments import cap_text
@@ -376,15 +376,11 @@ def parse_suggestions(text: str) -> list[Suggestion]:
 
 def generate_suggestions(
     question: str, context: str, *,
-    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    model: str = DEFAULT_MODEL, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> list[Suggestion]:
     """One structured LLM call for the three spell-usage ideas. Raises on any
     LLM or parse failure — the caller (graph suggest node) degrades to None."""
-    if client is None:  # pragma: no cover - live path mirrors generate_answer
-        from langchain_openai import ChatOpenAI
-
-        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
     result = generate_result(
         [
             SystemMessage(content=SUGGESTIONS_SYSTEM),
@@ -436,7 +432,7 @@ def parse_spell_content(text: str) -> SpellContent:
 
 def generate_spell_content(
     answer: str, *,
-    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    model: str = DEFAULT_MODEL, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> SpellContent:
     """One structured LLM call that extracts spell content from the already-
@@ -449,10 +445,6 @@ def generate_spell_content(
     call, no retry" behaviour — adding retries here would change cost and
     latency. `parse_spell_content` strips its input anyway, so handing it
     `GenerationResult.text` is behaviour-preserving."""
-    if client is None:  # pragma: no cover - live path mirrors generate_answer
-        from langchain_openai import ChatOpenAI
-
-        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
     result = generate_result(
         [
             SystemMessage(content=SPELL_CONTENT_SYSTEM),
@@ -532,7 +524,7 @@ def parse_stat_block(text: str) -> StatBlockContent:
 
 def generate_stat_block(
     answer: str, *,
-    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    model: str = DEFAULT_MODEL, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> StatBlockContent:
     """One structured LLM call that extracts a stat block from the already-
@@ -542,10 +534,6 @@ def generate_stat_block(
 
     Routed through `generate_result` with `max_attempts=1` for the same reasons
     as `generate_spell_content` above."""
-    if client is None:  # pragma: no cover - live path mirrors generate_answer
-        from langchain_openai import ChatOpenAI
-
-        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
     result = generate_result(
         [
             SystemMessage(content=STATBLOCK_SYSTEM),
@@ -558,25 +546,23 @@ def generate_stat_block(
 
 def generate_answer(
     question: str, context: str, *, mode: str = "sage",
-    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    model: str = DEFAULT_MODEL, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> str:
     """Call gpt-4o-mini with a per-mode system prompt + grounded user message.
 
     `mode` selects the persona from PERSONA_PROMPTS (defaults to 'sage').
-    `client` is injectable for tests. `config` is the LangChain RunnableConfig
-    (Langfuse callbacks); forwarded to the model so the LLM call is traced (CP3).
+    `client` is required, here and in the three structured calls above: the
+    ProviderClientFactory's client (a fake in tests), never one built here,
+    which would skip the factory's timeouts, attempt deadline and retry
+    settings (agent-forge-harness-7gf). `config` is the LangChain
+    RunnableConfig (Langfuse callbacks); forwarded to the model so the LLM
+    call is traced (CP3).
     """
     # Defensive: callers reach here only past the grounding gate (non-empty
     # context). An empty context or question is a programming error, not input.
     if not context.strip() or not question.strip():
         raise ValueError("generate_answer requires non-empty question and context")
-    if client is None:
-        # langchain-openai ChatOpenAI — the wrapper that lets Langfuse (CP3)
-        # capture tokens/cost natively. Imported lazily so tests stay offline.
-        from langchain_openai import ChatOpenAI
-
-        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
     system = PERSONA_PROMPTS.get(mode, PERSONA_PROMPTS["sage"])
     user_content = GROUNDED_TEMPLATE.format(context=context, question=question)
     result = generate_result(
