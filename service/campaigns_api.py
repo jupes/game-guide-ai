@@ -126,9 +126,10 @@ THROTTLED_MESSAGE = "You've made a lot of offers today. Try again later."
 #: `lock_not_available` and `deadlock_detected`.
 _BUSY = (psycopg.errors.LockNotAvailable, psycopg.errors.DeadlockDetected)
 
-#: What the re-authentication callable is: it checks the password of the
-#: account on `request.state` and raises the answer, or returns (L-12).
-type Reauthenticate = Callable[[Request, str], None]
+#: What the re-authentication dependency hands a route: a check of one
+#: password against the account this request signed in as, which raises the
+#: answer or returns (L-12).
+type PasswordCheck = Callable[[str], None]
 
 
 # ── What the routes compose ─────────────────────────────────────────────────
@@ -659,7 +660,7 @@ def _owner_email(request: Request) -> str | None:
 def build_router(
     gm: SessionDependency,
     database: Callable[[], TransactionalDatabase | None],
-    reauthenticate: Reauthenticate,
+    reauthenticate: Callable[..., PasswordCheck],
     jobs: Callable[[], JobQueue | None],
     driver: Callable[[], JobDriver | None],
 ) -> APIRouter:
@@ -896,7 +897,6 @@ def build_router(
     def remove(
         campaign_id: str,
         participant_id: str,
-        request: Request,
         tasks: BackgroundTasks,
         user: SessionData = Depends(gm),
         raw: bytes = Depends(read_body),
@@ -904,6 +904,7 @@ def build_router(
         db: TransactionalDatabase | None = Depends(database),
         queue: JobQueue | None = Depends(jobs),
         runner: JobDriver | None = Depends(driver),
+        check_password: PasswordCheck = Depends(reauthenticate),
         now: datetime = Depends(get_clock),
     ) -> Response:
         """SEC-40: every Remove asks for the password, BEFORE any transaction
@@ -913,7 +914,7 @@ def build_router(
         live_db = _database(db)
         if queue is None:
             raise unavailable()
-        reauthenticate(request, body.password.get_secret_value())
+        check_password(body.password.get_secret_value())
         if not (readable(ident.CAMPAIGN, campaign_id) and readable(ident.PARTICIPANT, participant_id)):
             not_found()
         job_id = guarded(

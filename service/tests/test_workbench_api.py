@@ -1270,3 +1270,50 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "seats_api.py").resolve(),
     }
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []
+
+
+# ── account_router and reauth_failed (bead 1kg.2.2, L-3) ─────────────────────
+
+
+def test_the_reauth_refusal_is_read_only_and_a_workbench_error_body() -> None:
+    from service.workbench_api import REAUTH_FAILED_DETAIL, reauth_failed
+    from service.workbench_contracts import ErrorBody
+
+    body = ErrorBody.model_validate({"detail": dict(REAUTH_FAILED_DETAIL)})
+    assert (body.detail.code.value, body.detail.retryable) == ("reauth_failed", False)
+    with pytest.raises(TypeError):
+        REAUTH_FAILED_DETAIL["code"] = "not_found"  # type: ignore[index]
+    with pytest.raises(HTTPException) as refused:
+        reauth_failed()
+    assert refused.value.status_code == 403 and refused.value.detail == dict(REAUTH_FAILED_DETAIL)
+
+
+def test_an_account_router_has_no_role_gate_and_keeps_the_workbench_posture() -> None:
+    """A player reaches a route on `account_router`; every authentication
+    failure there is the one 401 body; the origin check still runs first."""
+    from service.session import SessionData
+    from service.workbench_api import account_router
+
+    caller: list[SessionData | None] = [SessionData(user_id=5, role="player")]
+
+    def session() -> SessionData:
+        current = caller[0]
+        if current is None:
+            raise HTTPException(status_code=401, detail="invalid or expired session")
+        return current
+
+    target = FastAPI()
+    install_workbench(target)
+    router = account_router(session)
+
+    @router.post("/mine")
+    def mine(who: SessionData = Depends(session)) -> dict[str, int]:
+        return {"user_id": who.user_id}
+
+    target.include_router(router)
+    client = TestClient(target)
+    assert client.post("/mine").json() == {"user_id": 5}
+    assert isinstance(next(r for p, r in api_routes(target) if p == "/mine"), WorkbenchRoute)
+    assert client.post("/mine", headers={"origin": "https://evil.example"}).status_code == 403
+    caller[0] = None
+    assert client.post("/mine").json() == {"detail": "not signed in"}

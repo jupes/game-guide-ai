@@ -1477,7 +1477,19 @@ REAUTH_THROTTLED_MESSAGE = "Too many attempts. Wait, then try again."
 REAUTH_BUSY_MESSAGE = "That can't be checked right now. Try again."
 
 
-def reauthenticate(request: Request, password: str) -> None:
+def reauthenticator(request: Request, store: AuthStore = Depends(get_auth_store)) -> Callable[[str], None]:
+    """Remove's re-authentication (SEC-40), as a dependency: it hands the route
+    a `check(password)` bound to this request's account and auth store. The
+    store is the one `require_session` already resolved for this request, so
+    declaring it here adds no lookup and no outage path of its own."""
+
+    def check(password: str) -> None:
+        reauthenticate(request, store, password)
+
+    return check
+
+
+def reauthenticate(request: Request, store: AuthStore, password: str) -> None:
     """SEC-40: the password of the account this request signed in as, checked
     again before a Remove — BEFORE any transaction opens, because argon2 never
     runs while a lock is held (bead 1kg.2.2, L-12).
@@ -1510,7 +1522,6 @@ def reauthenticate(request: Request, password: str) -> None:
         )
     outage = False
     try:
-        store = get_auth_store()
         creds = _auth_lookup("credentials lookup", lambda: store.get_credentials(user.email))
     except HTTPException:
         outage, creds = True, None
@@ -1533,7 +1544,7 @@ WORKBENCH_GM = gm_session(require_session)
 app.include_router(conversations_api.build_router(WORKBENCH_GM, get_timeline_database))
 app.include_router(timeline_api.build_router(WORKBENCH_GM, get_timeline_store, get_timeline_database))
 app.include_router(
-    campaigns_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticate, _job_queue, _job_driver)
+    campaigns_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator, _job_queue, _job_driver)
 )
 app.include_router(seats_api.build_router(require_session, get_timeline_database))
 

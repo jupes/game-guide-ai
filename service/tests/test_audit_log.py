@@ -564,3 +564,19 @@ def test_no_alias_title_or_secret_reaches_a_log_line_or_an_exception(caplog):
         ("join", joined.credential_digest),
     ):
         assert digest not in spoken, f"a {kind} digest reached a message"
+
+
+def test_a_decline_and_a_confirmation_carry_the_seat_and_nothing_else():
+    """1kg.2.2 (L-17): the invitee's decline names its seat and whether it
+    blocked, the GM's confirmation names the seat, and neither has a reason."""
+    assert ACTION_DETAIL[AuditAction.SEAT_DECLINED] == {
+        "participant_id": MintedId(ident.PARTICIPANT),
+        "blocked": Shape.FLAG,
+    }
+    assert ACTION_DETAIL[AuditAction.SEAT_CONFIRMED] == {"participant_id": MintedId(ident.PARTICIPANT)}
+    for action in (AuditAction.SEAT_DECLINED, AuditAction.SEAT_CONFIRMED):
+        assert ACTION_REASONS[action] == frozenset(), action
+        with pytest.raises(ValueError, match="no such detail key"):
+            check_detail(action, {"address": "wren@example.com"})
+    check_detail(AuditAction.SEAT_DECLINED, {"participant_id": "prt_" + "a" * 22, "blocked": True})
+    assert "seat.withdrawn" not in {a.value for a in AuditAction}, "participant.removed is the withdrawal record"

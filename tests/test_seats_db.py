@@ -14,6 +14,7 @@ pinned by `service/tests/test_ci_workflow.py`). Without it every test skips.
 
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -177,9 +178,13 @@ def _finished(*threads: threading.Thread) -> None:
         assert not thread.is_alive(), "a transaction never finished"
 
 
+_ALIASES = itertools.count()
+
+
 def _seats(db: Database, stores: CampaignStores, count: int, campaign: str = CAMPAIGN) -> list[str]:
+    """`count` open seats, each under an alias no other seat of this test has."""
     with db.transaction() as unit:
-        return [stores.participants.add(unit, campaign, alias=f"Seat {n}").id for n in range(count)]
+        return [stores.participants.add(unit, campaign, alias=f"Seat {next(_ALIASES)}").id for _ in range(count)]
 
 
 def _count(dsn: str, sql: str, params: tuple = ()) -> int:
@@ -401,7 +406,9 @@ def test_remove_commits_under_a_held_campaign_lock_and_its_job_retries_until_it_
     seat, offer = _an_offered_seat(dsn, db, stores, owner, "wren@example.com")
     assert _accept(db, stores, offer, player, "wren@example.com") is not None
     queue = PostgresJobQueue(db)
-    clock = [datetime.now(UTC)]
+    # The runner's clock runs ahead of the job's `run_after`, so each attempt
+    # below can claim it without waiting out the retry backoff.
+    clock = [datetime.now(UTC) + timedelta(minutes=1)]
     runner = JobRunner(queue, {RECONCILE_KIND: handler(db, slots=reconcile_slots)}, clock=lambda: clock[0])
     revision = _count(dsn, "SELECT authz_revision FROM campaign.authz_state WHERE campaign_id = %s", (CAMPAIGN,))
     with _holding_the_campaign(dsn):
