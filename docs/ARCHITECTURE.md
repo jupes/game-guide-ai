@@ -206,7 +206,12 @@ guests); stores in `service/campaign_store.py`, `service/participant_store.py`,
 `service/seat_offer_store.py` store and two routers: `service/campaigns_api.py`,
 the GM's campaigns and seats on the `dm`-gated Workbench router, and
 `service/seats_api.py`, an account's own offers and seats on `account_router`
-(`/seats`, which a player reaches). Table routes are `1kg.2.3`'s.
+(`/seats`, which a player reaches). `1kg.2.3` added the live table session's
+lifecycle (`service/table_sessions.py`) and, in its second pull request, two
+more route modules: `service/table_session_api.py`, the GM's Start, End, Rotate,
+status read and per-screen revoke on the `dm`-gated router, and
+`service/table_api.py`, the first `/table/` routes — screen mode's mint and
+Leave — on a table router of their own (see *Workbench routes* below).
 
 A seat is **open** (an alias the GM seated while preparing, no account),
 **accepted** (by an account), **confirmed** (the GM confirmed who accepted,
@@ -984,10 +989,26 @@ is also the one place the `dm` rule lives: when `yje.4.1` replaces roles with
 tiers, it is what changes.
 
 **GM routes only.** `workbench_router` applies the `dm` gate, so it is for GM
-routes and nothing else. Table routes wait on `hgm` (TA-2) and must reuse
-`origin_check` in a factory of their own. A legacy route moved onto a router
-(`iu6`) goes on a plain `APIRouter`, never this one, or its 401 and 422 bodies
-change.
+routes and nothing else. A legacy route moved onto a router (`iu6`) goes on a
+plain `APIRouter`, never this one, or its 401 and 422 bodies change.
+
+**Table routes** (`service/table_api.py`, `1kg.2.3`; threat model SEC-44 to
+SEC-49) are on a router of their own whose route class, `TableRoute`, is a
+`WorkbenchRoute`: the one 401 body, the validation handler, the census and the
+structural check all cover it. It asks for no role and no tier (SEC-41). Its
+router-level dependencies are Fetch Metadata — a `Sec-Fetch-Site` present and
+not `same-origin`, or `Sec-Fetch-Mode: navigate`, is `403 cross_site` before any
+cookie is read (SEC-45) — and then `origin_check`. The principal is not a router
+dependency: a live screen-grant cookie decides alone, and only without one is
+the application's `require_session` called, directly (SEC-44), so a live screen
+is never a 401 and Leave never is. `TableRoute` sets `forwards_cookie_deletion`,
+the one attribute `handle_http_exception` reads to let a 401 carry a deleting
+`Set-Cookie` and nothing else; it deletes a screen-grant cookie that is no longer
+live on every answer from the principal step on, and adds `Cache-Control:
+no-store` and `Cross-Origin-Resource-Policy: same-origin` to every answer. A
+table route refuses with `inactive()` (SEC-46's one answer) and `cross_site()`,
+built in `workbench_api` beside `not_found()`, and imports no GM route module
+and no store of GM-private content (T-23, pinned by a test).
 
 **The order of checks, as a client observes it.**
 
@@ -1017,6 +1038,8 @@ change.
 | missing, someone else's, deleted | 404 | `not_found` / "That isn't available." |
 | not a GM | 403 | `forbidden` / "This is a Game Master feature." |
 | origin, fetch-site or content type | 403 | `forbidden` / "That request didn't come from this application." |
+| a table route's caller who is not entitled | 404 | `inactive` / "There's no live table here." |
+| a table route's Fetch Metadata | 403 | `cross_site` / "That request didn't come from this application." |
 | validation | 422 | `validation_error_body(...)`, which echoes nothing; the log line carries `redacted_errors(...)`, the method and the route template |
 
 `install_workbench(app)` registers the two application-wide handlers that make
