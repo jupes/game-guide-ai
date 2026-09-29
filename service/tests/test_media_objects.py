@@ -449,6 +449,24 @@ def test_a_symlink_that_leads_out_of_the_root_is_refused(tmp_path: Path) -> None
         disk.stat_object("assets/" + HEX)
     assert list(outside.iterdir()) == [], "nothing was written outside the root"
     assert issubclass(mo.PathEscapesStore, mo.ObjectStoreUnavailable)
+    # Every other operation is contained too. A file that happens to sit where
+    # the escaped path leads is never read, listed or unlinked through the link.
+    planted = outside / f"{HEX}.o"
+    planted.write_bytes(b"not the store's")
+    (outside / f"{HEX}.d").mkdir()
+    (outside / f"{HEX}.d" / "thumb").write_bytes(b"nor this")
+    for key in ("assets/" + HEX, f"assets/{HEX}/thumb"):
+        with pytest.raises(mo.PathEscapesStore):
+            disk.delete_object(key)
+        with pytest.raises(mo.PathEscapesStore):
+            b"".join(disk.get_stream(key))
+    # The last prefix names nothing that exists out there, so only the
+    # listing's own check on the directory it reads can refuse it.
+    for prefix in ("assets/", f"assets/{HEX}/", f"assets/{OTHER_HEX}/"):
+        with pytest.raises(mo.PathEscapesStore):
+            disk.list_objects(prefix, older_than=FAR_FUTURE, limit=10)
+    assert planted.read_bytes() == b"not the store's"
+    assert (outside / f"{HEX}.d" / "thumb").read_bytes() == b"nor this"
 
 
 def test_an_operating_system_error_is_the_named_store_unavailable_error(

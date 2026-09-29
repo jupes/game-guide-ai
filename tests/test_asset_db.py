@@ -370,6 +370,39 @@ def test_a_replay_whose_first_asset_is_a_tombstone_is_missing(world: World) -> N
     assert str(refused.value) == MISSING
 
 
+@pytest.mark.parametrize("elsewhere", ["archived", "never minted"])
+def test_a_replay_is_answered_only_from_its_own_campaign(world: World, elsewhere: str) -> None:
+    """L-7 step 4 reads the replay "by campaign and command id". The same GM,
+    the same command id, a create that makes nothing in campaign B: B's answer
+    is MissingParent (SEC-3's "another campaign's"), never campaign A's asset."""
+    first_campaign = _campaign(world)
+    first = _create(world, first_campaign, command_id="cmd-0123456789abcdef")
+    target = "cmp_" + "q" * 22
+    if elsewhere == "archived":
+        target = _campaign(world, name="Aubade")
+        with world.db.transaction() as unit:
+            assert world.campaigns.set_archived(unit, target, owner_id=world.owner, archived=True)
+    with pytest.raises(MissingParent) as refused:
+        _create(world, target, command_id="cmd-0123456789abcdef")
+    assert str(refused.value) == MISSING
+    assert set(world.rows()) == {first.id}
+    assert world.usage(first_campaign) == (1000, 1)
+
+
+def test_one_command_id_in_two_live_campaigns_makes_two_assets_each_replayed_in_its_own(world: World) -> None:
+    """The command index is per campaign: the second campaign's create is a new
+    asset, not a replay, and each campaign's replay returns its own asset."""
+    first_campaign, second_campaign = _campaign(world), _campaign(world, name="Aubade")
+    in_first = _create(world, first_campaign, command_id="cmd-0123456789abcdef")
+    in_second = _create(world, second_campaign, command_id="cmd-0123456789abcdef", size=700)
+    assert in_second.id != in_first.id
+    assert (in_first.campaign_id, in_second.campaign_id) == (first_campaign, second_campaign)
+    assert world.usage(first_campaign) == (1000, 1) and world.usage(second_campaign) == (700, 1)
+    assert _create(world, second_campaign, command_id="cmd-0123456789abcdef", size=5) == in_second
+    assert _create(world, first_campaign, command_id="cmd-0123456789abcdef", size=5) == in_first
+    assert set(world.rows()) == {in_first.id, in_second.id}
+
+
 def test_a_quota_refusal_leaves_nothing_and_the_transaction_goes_on(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -483,6 +516,26 @@ def test_anything_not_the_callers_is_one_identical_answer_to_every_read_and_muta
                 _act(world, campaign_id, asset_id, change, owner=owner)
             assert str(refused.value) == MISSING, (label, change)
             assert not isinstance(refused.value, IllegalTransition)
+
+
+def test_anything_not_the_callers_campaign_has_no_usage(world: World) -> None:
+    """`usage` is a read like any other: a campaign that is not the caller's
+    answers None, whoever owns it and whatever it holds."""
+    campaign = _campaign(world)
+    foreign_campaign = _campaign(world, owner=world.other_owner)
+    _create(world, campaign, size=600)
+    _create(world, foreign_campaign, owner=world.other_owner)
+    cases = [
+        ("another owner's", foreign_campaign, world.owner),
+        ("mine, asked as another owner", campaign, world.other_owner),
+        ("never minted", "cmp_" + "q" * 22, world.owner),
+    ]
+    with world.db.transaction() as unit:
+        for label, campaign_id, owner in cases:
+            assert world.assets.usage(unit, campaign_id, owner_id=owner) is None, label
+    # The controls: each owner still reads their own campaign's usage.
+    assert world.usage(campaign) == (600, 1)
+    assert world.usage(foreign_campaign, owner=world.other_owner) == (1000, 1)
 
 
 # ── AC-7: the full transition matrix ─────────────────────────────────────────
@@ -789,6 +842,68 @@ def test_every_method_that_locks_bounds_its_transaction_first(world: World) -> N
             assert unit.transaction_bounds, f"{name} took a lock with no transaction bound"
             with pytest.raises(CampaignLockOrder):
                 unit.lock_campaign(campaign, shared=True)
+
+
+class _Recording:
+    """A connection that keeps the text of every statement sent through it, in
+    order, and passes everything else (the savepoint too) to the real one."""
+
+    # justification: psycopg's Connection is generic over its row factory and
+    # ships partial stubs; the repository's existing pattern for it is `Any`.
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+        self.statements: list[str] = []
+
+    def execute(self, query: Any, params: Any = None, **options: Any) -> Any:
+        self.statements.append(str(query))
+        return self._conn.execute(query, params, **options)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+#: A statement that takes a row lock: an explicit locking clause, or a write.
+_TAKES_A_LOCK = re.compile(r"\bFOR (NO KEY UPDATE|KEY SHARE|SHARE|UPDATE)\b|^\s*(INSERT|UPDATE|DELETE)\b")
+_BOUND = "set_config('transaction_timeout'"
+
+
+@needs_db
+def test_every_method_that_locks_sends_its_bound_before_its_first_locking_statement(dsn: str) -> None:
+    """AC-13's "a transaction bound before its first lock", read from the
+    statements PostgreSQL is actually sent: the bound goes out before the first
+    statement that takes a row lock, in every method that takes one."""
+    world = _pg_world(dsn)
+    campaign = _campaign(world)
+    record, other = _create(world, campaign), _create(world, campaign)
+    calls: list[tuple[str, Callable[[Any], object]]] = [
+        ("create", lambda u: world.assets.create(
+            u, campaign, owner_id=world.owner, kind=AssetKind.AUDIO, media_type="audio/wav",
+            size_bytes=5, now=T0)),
+        ("hold", lambda u: world.assets.hold(u, campaign, record.id, owner_id=world.owner)),
+        ("start_processing", lambda u: world.assets.start_processing(u, campaign, record.id, owner_id=world.owner)),
+        ("mark_ready", lambda u: world.assets.mark_ready(
+            u, campaign, record.id, owner_id=world.owner, measured=_measured(AssetKind.IMAGE))),
+        ("start_processing (other)", lambda u: world.assets.start_processing(
+            u, campaign, other.id, owner_id=world.owner)),
+        ("return_to_uploading", lambda u: world.assets.return_to_uploading(
+            u, campaign, other.id, owner_id=world.owner)),
+        ("mark_failed", lambda u: world.assets.mark_failed(
+            u, campaign, other.id, owner_id=world.owner, failure=AssetFailure.UNREADABLE)),
+        ("delete", lambda u: world.assets.delete(u, campaign, record.id, owner_id=world.owner, now=T0)),
+        ("delete_campaign_assets", lambda u: world.assets.delete_campaign_assets(
+            u, campaign, owner_id=world.owner, now=T0)),
+    ]
+    for name, call in calls:
+        with world.db.transaction() as unit:
+            recording = _Recording(unit.conn)
+            unit.conn = recording
+            call(unit)
+        sent = recording.statements
+        locks = [i for i, text in enumerate(sent) if _TAKES_A_LOCK.search(text)]
+        bounds = [i for i, text in enumerate(sent) if _BOUND in text]
+        assert locks, f"{name} sent no statement that takes a lock: {sent}"
+        assert bounds, f"{name} never sent its transaction bound"
+        assert bounds[0] < locks[0], f"{name} took a lock before its bound: {sent[: locks[0] + 1]}"
 
 
 # ── AC-9 / AC-13: the source, read mechanically ──────────────────────────────
