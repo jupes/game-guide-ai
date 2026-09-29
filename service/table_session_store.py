@@ -57,12 +57,23 @@ alone — never with the campaign lock or a row hold in the same transaction —
 only after an owner-scoped read has shown the session is the caller's, so a
 stranger never takes another GM's advisory lock.
 
-**`narrow` is the primitive** (RQ-7), unchanged: hold the session row
-`FOR NO KEY UPDATE`, bound the transaction, advance the reveal epoch (and the
-audio epoch when asked), and call the slot-clearing extension point, which is
-**empty until `1kg.7.1`** fills it and is a **required** argument so that nothing
-built later can silently go on clearing nothing. Every explicit row lock is
-`FOR NO KEY UPDATE` (RQ-3), and none of this ever asks for the campaign lock.
+**`narrow` is the primitive** (RQ-7): hold the session row `FOR NO KEY UPDATE`,
+bound the transaction, advance the reveal epoch (and the audio epoch when
+asked), and call the slot-clearing extension point with **a scope** — what this
+narrowing invalidates (`service/reveal_scope.py`) — and the request's clock.
+End and expiry clear every slot (`gm_end`, `expired`) and Rotate every slot
+(`link_rotated`), chosen inside `_close` and `rotate`; a caller of `narrow` names
+its own (`clears=`): a Remove clears that member's copy only (A-20), a
+campaign's archive every slot. The default is **every slot** (`NARROWED`), so a
+caller that forgets over-clears and never leaves content up, and **every
+production call passes `clears=`** (`service/tests/test_reveals.py` reads the
+source to prove it). The extension point is a **required** argument, so nothing
+built later can silently go on clearing nothing; production passes
+`reveals.slot_clear_for(...)`, and `no_slots` is the empty one tests use. `hold`
+and `advance_reveal_epoch` are the same two steps, public, for a reveal service
+that must hold the row and clear under it itself (a Stop audits what it
+cleared). Every explicit row lock is `FOR NO KEY UPDATE` (RQ-3), and none of
+this ever asks for the campaign lock.
 
 What later beads add here is one more conjunct each (L-18): `yje.2.1`'s Verified
 owner joins `live_owned`'s and `resolve_screen`'s queries, and `1kg.7.5`'s
@@ -94,6 +105,7 @@ from .campaign_store import (
     shared_rows,
 )
 from .db import AdvisoryLock, InMemoryDatabase, InMemoryTransaction, UnitOfWork
+from .reveal_scope import NARROWED, EndReason, EverySlot, SlotScope
 
 #: The three states of `campaign.table_sessions.state`, as 0004's CHECK has them.
 LIVE = "live"
@@ -109,17 +121,20 @@ SCREENS_PER_SESSION = 4
 #: The wire contract's `CommandId`, which 0016's two CHECKs spell too.
 COMMAND_ID = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 
-SlotClear = Callable[[UnitOfWork, str], None]
+#: The slot-clearing extension point: the unit, the session, what to clear and
+#: the clock the clear stamps its rows with.
+SlotClear = Callable[[UnitOfWork, str, SlotScope, datetime], None]
 
 
-def no_slots(unit: UnitOfWork, session_id: str) -> None:
-    """The slot-clearing extension point, empty in this bead.
+def no_slots(unit: UnitOfWork, session_id: str, scope: SlotScope, now: datetime) -> None:
+    """The empty slot-clearing extension point, **for tests only**.
 
-    `narrow` calls it inside the transaction that advances the epochs, holding
-    the session row, so that when `1kg.7.1` gives it a body the slots it clears
-    and the epoch that retires them cannot come apart. Until then a narrowing has
-    nothing to clear, and this says so in one place rather than by omission.
-    Every construction site passes it by name — see the module docstring.
+    `narrow` calls its extension point inside the transaction that advances the
+    epochs, holding the session row, so that the slots it clears and the epoch
+    that retires them cannot come apart. Production passes
+    `reveals.slot_clear_for(...)`, which clears what the scope names; this one
+    clears nothing, for a test whose subject is not the reveal rows. Every
+    construction site passes one by name — see the module docstring.
     """
     return None
 
@@ -285,13 +300,37 @@ class TableSessionStore(Protocol):
         campaign_id: str,
         session_id: str,
         *,
+        clears: SlotScope = NARROWED,
         audio: bool = False,
+        now: datetime | None = None,
         transaction_timeout_s: float | None = None,
     ) -> TableSession | None:
         """Make what the table can see smaller: hold the session row, advance the
-        reveal epoch — and the audio epoch when `audio` — and clear the slots.
+        reveal epoch — and the audio epoch when `audio` — and clear the slots
+        `clears` names (every slot by default: fail closed), stamped with `now`.
         Returns the narrowed session, or None if there is no such session in
         that campaign."""
+        ...  # pragma: no cover - structural type
+
+    def hold(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        session_id: str,
+        *,
+        owner_id: int | None = None,
+        transaction_timeout_s: float | None = None,
+    ) -> TableSession | None:
+        """The session row, held `FOR NO KEY UPDATE` for the rest of the
+        transaction, the transaction bounded first; with `owner_id`, the owner
+        is in the locking statement, so another GM's session is not locked at
+        all. None: no such session (of that owner) in that campaign."""
+        ...  # pragma: no cover - structural type
+
+    def advance_reveal_epoch(self, unit: UnitOfWork, held: TableSession) -> TableSession:
+        """Add one to the reveal epoch and nothing else — no slot is cleared, no
+        audio epoch moves. **The caller must hold the row** (`hold`): a widening
+        advances the epoch and must not clear, and a Stop clears first itself."""
         ...  # pragma: no cover - structural type
 
     def end(
@@ -431,6 +470,12 @@ _LIVE_GRANT = (
     "g.revoked_at IS NULL AND s.state = 'live' AND s.expires_at > %s "
     "AND g.link_generation = s.link_generation"
 )
+
+
+def _closing_scope(state: str) -> EverySlot:
+    """What an ending clears: every slot, as `gm_end` for an End and `expired`
+    for an expiry, whichever path found it."""
+    return EverySlot(EndReason.GM_END if state == ENDED else EndReason.EXPIRED)
 
 
 def _session(row: tuple) -> TableSession:
@@ -584,14 +629,16 @@ class PostgresTableSessionStore:
             ).fetchone()
         return None if row is None else _session(row)
 
-    def _advance(self, unit: UnitOfWork, session: TableSession, *, audio: bool) -> TableSession:
+    def _advance(
+        self, unit: UnitOfWork, session: TableSession, *, audio: bool, clears: SlotScope, now: datetime | None
+    ) -> TableSession:
         row = pg(unit).conn.execute(
             f"UPDATE campaign.table_sessions "
             f"SET reveal_epoch = reveal_epoch + 1, audio_epoch = audio_epoch + %s "
             f"WHERE id = %s RETURNING {_S_COLUMNS}",
             (1 if audio else 0, session.id),
         ).fetchone()
-        self._slot_clear(unit, session.id)
+        self._slot_clear(unit, session.id, clears, now_or(now))
         return _session(row)
 
     def narrow(
@@ -600,11 +647,32 @@ class PostgresTableSessionStore:
         campaign_id: str,
         session_id: str,
         *,
+        clears: SlotScope = NARROWED,
         audio: bool = False,
+        now: datetime | None = None,
         transaction_timeout_s: float | None = None,
     ) -> TableSession | None:
         held = self._hold(unit, campaign_id, session_id, transaction_timeout_s)
-        return None if held is None else self._advance(unit, held, audio=audio)
+        return None if held is None else self._advance(unit, held, audio=audio, clears=clears, now=now)
+
+    def hold(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        session_id: str,
+        *,
+        owner_id: int | None = None,
+        transaction_timeout_s: float | None = None,
+    ) -> TableSession | None:
+        return self._hold(unit, campaign_id, session_id, transaction_timeout_s, owner_id)
+
+    def advance_reveal_epoch(self, unit: UnitOfWork, held: TableSession) -> TableSession:
+        row = pg(unit).conn.execute(
+            f"UPDATE campaign.table_sessions SET reveal_epoch = reveal_epoch + 1 "
+            f"WHERE id = %s RETURNING {_S_COLUMNS}",
+            (held.id,),
+        ).fetchone()
+        return _session(row)
 
     def _revoke_every_grant(self, unit: UnitOfWork, session_id: str, moment: datetime) -> int:
         """Every unrevoked grant of the session, whatever its generation — a mint
@@ -636,7 +704,7 @@ class PostgresTableSessionStore:
     ) -> Closing:
         """An ending, in RQ-5's order under the held row: the epochs and the
         slots, then every grant, then the state."""
-        self._advance(unit, held, audio=True)
+        self._advance(unit, held, audio=True, clears=_closing_scope(state), now=moment)
         revoked = self._revoke_every_grant(unit, held.id, moment)
         row = pg(unit).conn.execute(
             f"UPDATE campaign.table_sessions SET state = %s, ended_at = %s "
@@ -687,7 +755,7 @@ class PostgresTableSessionStore:
             return self._close(unit, held, EXPIRED, held.expires_at, moment)
         if held.rotate_command_id == command_id:
             return Closing(held, None)
-        self._advance(unit, held, audio=True)
+        self._advance(unit, held, audio=True, clears=EverySlot(EndReason.LINK_ROTATED), now=moment)
         revoked = self._revoke_every_grant(unit, session_id, moment)
         row = pg(unit).conn.execute(
             f"UPDATE campaign.table_sessions "
@@ -981,7 +1049,9 @@ class InMemoryTableSessionStore:
         self._sessions.replace(fake(unit), updated.id, updated)
         return updated
 
-    def _advance(self, unit: UnitOfWork, session: TableSession, *, audio: bool) -> TableSession:
+    def _advance(
+        self, unit: UnitOfWork, session: TableSession, *, audio: bool, clears: SlotScope, now: datetime | None
+    ) -> TableSession:
         advanced = self._write(
             unit,
             replace(
@@ -990,7 +1060,7 @@ class InMemoryTableSessionStore:
                 audio_epoch=session.audio_epoch + (1 if audio else 0),
             ),
         )
-        self._slot_clear(unit, session.id)
+        self._slot_clear(unit, session.id, clears, now_or(now))
         return advanced
 
     def narrow(
@@ -999,11 +1069,28 @@ class InMemoryTableSessionStore:
         campaign_id: str,
         session_id: str,
         *,
+        clears: SlotScope = NARROWED,
         audio: bool = False,
+        now: datetime | None = None,
         transaction_timeout_s: float | None = None,
     ) -> TableSession | None:
         held = self._hold(unit, campaign_id, session_id, transaction_timeout_s)
-        return None if held is None else self._advance(unit, held, audio=audio)
+        return None if held is None else self._advance(unit, held, audio=audio, clears=clears, now=now)
+
+    def hold(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        session_id: str,
+        *,
+        owner_id: int | None = None,
+        transaction_timeout_s: float | None = None,
+    ) -> TableSession | None:
+        return self._hold(unit, campaign_id, session_id, transaction_timeout_s, owner_id)
+
+    def advance_reveal_epoch(self, unit: UnitOfWork, held: TableSession) -> TableSession:
+        current = self._sessions.visible(fake(unit))[held.id]
+        return self._write(unit, replace(current, reveal_epoch=current.reveal_epoch + 1))
 
     def _revoke_every_grant(self, unit: UnitOfWork, session_id: str, moment: datetime) -> int:
         twin = fake(unit)
@@ -1022,7 +1109,7 @@ class InMemoryTableSessionStore:
     def _close(
         self, unit: UnitOfWork, held: TableSession, state: str, ended_at: datetime, moment: datetime
     ) -> Closing:
-        narrowed = self._advance(unit, held, audio=True)
+        narrowed = self._advance(unit, held, audio=True, clears=_closing_scope(state), now=moment)
         revoked = self._revoke_every_grant(unit, held.id, moment)
         closed = self._write(unit, replace(narrowed, state=state, ended_at=ended_at))
         return Closing(closed, state, revoked)
@@ -1069,7 +1156,7 @@ class InMemoryTableSessionStore:
             return self._close(unit, held, EXPIRED, held.expires_at, moment)
         if held.rotate_command_id == command_id:
             return Closing(held, None)
-        narrowed = self._advance(unit, held, audio=True)
+        narrowed = self._advance(unit, held, audio=True, clears=EverySlot(EndReason.LINK_ROTATED), now=moment)
         revoked = self._revoke_every_grant(unit, session_id, moment)
         rotated = self._write(
             unit,
