@@ -70,10 +70,11 @@ class ProviderClientFactory:
         return client
 
     def _build(self, profile: ModelProfile) -> LLMClient:
+        import httpx
         from langchain_openai import ChatOpenAI
         from pydantic import SecretStr
 
-        from config import TEMPERATURE
+        from config import LLM_CONNECT_TIMEOUT_S, LLM_REQUEST_TIMEOUT_S, TEMPERATURE
 
         raw_key = os.environ.get(profile.secret_env) if profile.secret_env else None
         if profile.secret_env and not raw_key:
@@ -86,7 +87,12 @@ class ProviderClientFactory:
         # the SDK (agent-forge-harness-b8o.1, Checkpoint 1 step 5). base_url
         # unset (None) uses OpenAI's own default endpoint; every non-OpenAI
         # profile sets one to reach its own OpenAI-compatible endpoint.
+        # timeout: without one the client waits on a stalled provider forever
+        # (agent-forge-harness-ihz). ChatOpenAI hands it to both the sync and
+        # the async client, so invoke, stream and their async twins all carry
+        # it; the SDK raises APITimeoutError, which /chat already maps to 502.
         return ChatOpenAI(
             model=profile.api_model, temperature=TEMPERATURE, max_retries=0,
             base_url=profile.base_url, api_key=api_key,
+            timeout=httpx.Timeout(LLM_REQUEST_TIMEOUT_S, connect=LLM_CONNECT_TIMEOUT_S),
         )
