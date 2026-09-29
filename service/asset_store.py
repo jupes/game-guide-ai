@@ -8,8 +8,7 @@ for a GM: a `Protocol`, a PostgreSQL store and an in-memory twin, the shape
 `service/campaign_store.py` established, and one behavioural suite runs over both
 (`tests/test_asset_db.py`). **It imports no object store and no job handler**,
 so no transaction here can hold a connection while bytes move (requirement
-3.8): the job handlers (`service/asset_jobs.py`, the next pull request of this
-slice) move bytes with no connection open.
+3.8): the handlers in `service/asset_jobs.py` move bytes with no connection open.
 
 **The five states** (media ADR MS-3). `uploading` -> `processing` -> `ready` or
 `failed`; `processing` may go back to `uploading` (MS-6's return after a queue
@@ -59,9 +58,9 @@ fragment where `yje.2.1` adds the identity ADR's section 8.1 conjunct (the owner
 is Verified). The campaign primitive alone uses `OWNER_CAMPAIGNS`, which never
 gains that conjunct: once `yje.2.1` lands a Deleted GM's campaigns are
 unavailable, and deletion scoped by the GM fragment would match nothing while
-the foreign key refused `zkc`'s erasure for ever. The job handlers' module
-(`service/asset_jobs.py`) holds the system statements, which name an asset by its
-globally unique id; no GM method can reach them. **The table side never uses this store** (SEC-44(2)): a
+the foreign key refused `zkc`'s erasure for ever. `service/asset_jobs.py` holds
+the system statements, which name an asset by its globally unique id; no GM
+method can reach them. **The table side never uses this store** (SEC-44(2)): a
 table read finds its asset in its own `table_principal` query (SEC-16, SEC-41).
 
 **Deletion.** A GM's delete writes the tombstone — clearing the alt text and

@@ -1,24 +1,24 @@
 """Media assets against the twin and against PostgreSQL
 (agent-forge-harness-1kg.8.1.1, slice a of the media bead).
 
-**The shared suite.** Every behaviour of `service/asset_store.py` runs twice,
-over the `world` fixture: once on the in-memory twin and once on PostgreSQL
-(`needs_db`). A rule only one of them keeps is a rule the two will drift apart
-on. The three job kinds' handlers (`service/asset_jobs.py`) are the next pull
-request of this slice; here the store's side of them is proved — what it
-enqueues, with which payload, dedupe key and deadline.
+**The shared suite.** Every behaviour of `service/asset_store.py` and of the
+three job kinds in `service/asset_jobs.py` runs twice, over the `world` fixture:
+once on the in-memory twin and once on PostgreSQL (`needs_db`). A rule only one
+of them keeps is a rule the two will drift apart on.
 
 **The usage invariant is recomputed from the rows after every step**: the
-world's database is watched, and every transaction any test opens
+world's database is watched, and every transaction any test or handler opens
 ends by comparing `campaign.media_usage` with the sum it must hold (L-4) — in
 one statement, so in one snapshot.
 
 **The races** (AC-8) are PostgreSQL's alone: two connections, an explicit
 interleaving, the server's own word (`pg_stat_activity`) that the waiter really
-waits, and no deadlock victim (`40P01`) on either side.
+waits, and no deadlock victim (`40P01`) on either side. The one gap that is not
+a lock wait — the sweep reading a row before `ready` commits and writing after —
+runs in both worlds through the handler's seam.
 
-**The mechanical checks** (AC-9, AC-13) read the store's source with `ast`:
-every statement's ownership fragment by NAME, the enqueue last, no
+**The mechanical checks** (AC-9, AC-13) read the two modules' source with
+`ast`: every statement's ownership fragment by NAME, the enqueue last, no
 `FOR UPDATE`, no key ever updated.
 
     DATABASE_URL=postgresql://... uv run python -m pytest tests/test_asset_db.py -q
@@ -42,8 +42,16 @@ import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
 
-from service import asset_store
+from service import asset_jobs, asset_store
 from service import migrations as mig
+from service.asset_jobs import (
+    RECONCILE_JOB,
+    InMemoryAssetSystem,
+    JobOutOfTime,
+    PostgresAssetSystem,
+    enqueue_reconcile,
+    register_jobs,
+)
 from service.asset_store import (
     DELETE_JOB,
     MISSING,
@@ -63,7 +71,8 @@ from service.asset_store import (
 )
 from service.campaign_store import InMemoryCampaignStore, MissingParent, PostgresCampaignStore
 from service.db import CampaignLockOrder, CampaignLockSettings, Database, InMemoryDatabase, PoolSettings
-from service.jobs import InMemoryJobQueue, PostgresJobQueue, check_payload
+from service.jobs import InMemoryJobQueue, JobRunner, PostgresJobQueue, check_payload
+from service.media_objects import InMemoryObjectStore, ObjectStoreUnavailable
 from service.workbench_contracts import Asset, AssetFailure, AssetKind, AssetState
 
 SERVICE = Path(__file__).resolve().parents[1] / "service"
@@ -158,6 +167,7 @@ class World:
     campaigns: Any
     assets: Any
     queue: Any
+    system: Any
     owner: int
     other_owner: int
     dsn: str | None
@@ -214,7 +224,7 @@ def _pg_world(dsn: str, settings: CampaignLockSettings = QUICK) -> World:
     queue = PostgresJobQueue(real)
     return World(
         "postgres", Watched(real, _pg_invariant(dsn)), PostgresCampaignStore(), PostgresAssetStore(queue),
-        queue, owners[0], owners[1], dsn,
+        queue, PostgresAssetSystem(), owners[0], owners[1], dsn,
     )
 
 
@@ -233,7 +243,7 @@ def world(request: pytest.FixtureRequest) -> Iterator[World]:
         store = InMemoryAssetStore(real, queue)
         yield World(
             "fake", Watched(real, _fake_invariant(real, store)), InMemoryCampaignStore(real), store,
-            queue, 1, 2, None,
+            queue, InMemoryAssetSystem(real), 1, 2, None,
         )
         return
     yield _pg_world(request.getfixturevalue("dsn"))
@@ -836,6 +846,7 @@ def _statements(path: Path) -> list[Statement]:
 
 
 STORE_SQL = _statements(SERVICE / "asset_store.py")
+JOBS_SQL = _statements(SERVICE / "asset_jobs.py")
 TABLES = ("campaign.assets", "campaign.media_usage", "campaign.campaigns")
 FRAGMENTS = {"GM_CAMPAIGNS", "OWNER_CAMPAIGNS"}
 PRIMITIVE = "PostgresAssetStore.delete_campaign_assets"
@@ -884,7 +895,7 @@ def test_the_asset_store_imports_no_object_store_and_no_job_handler() -> None:
 
 
 def test_no_statement_takes_for_update_or_assigns_a_key() -> None:
-    statements = STORE_SQL
+    statements = STORE_SQL + JOBS_SQL
     assert statements
     for statement in statements:
         assert not re.search(r"\bFOR\s+UPDATE\b", statement.text), f"{statement.function}:{statement.line}"
@@ -928,6 +939,339 @@ def test_the_enqueue_is_last_in_every_method_that_enqueues() -> None:
     assert checked >= 5, "the methods that enqueue were not found"
 
 
+# ── AC-10: the jobs, through the merged runner ───────────────────────────────
+
+
+class Recording:
+    """An object store that says what it was asked, may fail on cue, and
+    refuses to be called while a database transaction is open."""
+
+    def __init__(self, inner: InMemoryObjectStore, watched: Watched) -> None:
+        self.inner = inner
+        self.watched = watched
+        self.calls: list[tuple[str, str]] = []
+        self.fail_deletes = 0
+
+    def _check(self, name: str, key: str) -> None:
+        assert self.watched.open == 0, f"{name} was called with a database transaction open"
+        self.calls.append((name, key))
+
+    def put_stream(self, key: str, chunks: Any, *, max_bytes: int) -> int:
+        self._check("put_stream", key)
+        return self.inner.put_stream(key, chunks, max_bytes=max_bytes)
+
+    def get_stream(self, key: str, *, offset: int = 0, length: int | None = None) -> Any:
+        self._check("get_stream", key)
+        return self.inner.get_stream(key, offset=offset, length=length)
+
+    def stat_object(self, key: str) -> Any:
+        self._check("stat_object", key)
+        return self.inner.stat_object(key)
+
+    def delete_object(self, key: str) -> None:
+        self._check("delete_object", key)
+        if self.fail_deletes:
+            self.fail_deletes -= 1
+            raise ObjectStoreUnavailable()
+        self.inner.delete_object(key)
+
+    def list_objects(self, prefix: str, **listing: Any) -> Any:
+        self._check("list_objects", prefix)
+        return self.inner.list_objects(prefix, **listing)
+
+    def reachable(self) -> bool:
+        return self.inner.reachable()
+
+    def deleted(self) -> list[str]:
+        return [key for name, key in self.calls if name == "delete_object"]
+
+
+@dataclass
+class Jobs:
+    runner: JobRunner
+    clock: Clock
+    objects: Recording
+    memory: InMemoryObjectStore
+
+    def put(self, key: str, data: bytes = b"bytes", *, at: datetime | None = None) -> None:
+        self.memory._clock = lambda: at or self.clock()
+        self.memory.put_stream(key, iter([data]), max_bytes=10_000_000)
+
+    def keys(self) -> set[str]:
+        return set(self.memory._objects)
+
+    def run(self, until: datetime | None = None) -> Any:
+        if until is not None:
+            self.clock.now = until
+        return self.runner.run_due(limit=100)
+
+
+def _jobs(world: World, *, between_read_and_fence: Callable[[], None] | None = None,
+          monotonic: Callable[[], float] = time.monotonic) -> Jobs:
+    clock = Clock(T0)
+    memory = InMemoryObjectStore(clock=clock)
+    objects = Recording(memory, world.db)
+    runner = JobRunner(world.queue, clock=clock, monotonic=monotonic)
+    register_jobs(
+        runner, db=world.db, queue=world.queue, objects=objects, system=world.system, clock=clock,
+        between_read_and_fence=between_read_and_fence,
+    )
+    return Jobs(runner, clock, objects, memory)
+
+
+def _ready_with_objects(world: World, jobs: Jobs, campaign: str, **create: Any) -> asset_store.AssetRecord:
+    record = _in_state(world, campaign, "ready", **create)
+    jobs.put(record.tmp_key)
+    jobs.put(record.object_key)
+    return record
+
+
+def _states(world: World, kind: str) -> list[tuple[str, int, str | None, bool]]:
+    return [state for state in world.job_states() if state[0] == kind]
+
+
+def test_every_kind_is_registered_and_none_is_ever_marked_dead(world: World) -> None:
+    jobs = _jobs(world)
+    handlers = jobs.runner._handlers
+    assert {DELETE_JOB, SWEEP_JOB, RECONCILE_JOB} <= set(handlers)
+    assert all(handlers[kind].max_attempts is None for kind in (DELETE_JOB, SWEEP_JOB, RECONCILE_JOB))
+
+
+def test_the_delete_job_deletes_tmp_then_every_derivative_then_the_original_then_purges(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(asset_jobs, "DERIVATIVE_PAGE", 2)
+    jobs = _jobs(world)
+    campaign = _campaign(world)
+    record = _ready_with_objects(world, jobs, campaign)
+    derivatives = [f"{record.object_key}/thumb-{n}" for n in range(5)]
+    for key in derivatives:
+        jobs.put(key)
+    neighbour = _ready_with_objects(world, jobs, campaign)
+    _act(world, campaign, record.id, "delete")
+    jobs.run(T0 + timedelta(seconds=1))
+    assert jobs.objects.deleted() == [record.tmp_key, *sorted(derivatives), record.object_key]
+    assert jobs.keys() == {neighbour.tmp_key, neighbour.object_key}
+    assert record.id not in world.rows(), "purged once the bytes are gone"
+    assert [kind for kind, *_ in world.job_states()].count(DELETE_JOB) == 0
+
+
+def test_the_delete_job_is_idempotent(world: World) -> None:
+    jobs = _jobs(world)
+    campaign = _campaign(world)
+    record = _ready_with_objects(world, jobs, campaign)
+    _act(world, campaign, record.id, "delete")
+    jobs.run(T0 + timedelta(seconds=1))
+    payload = {"asset_id": record.id, "object_key": record.object_key, "tmp_key": record.tmp_key}
+    with world.db.transaction() as unit:
+        world.queue.enqueue(unit, DELETE_JOB, payload, dedupe_key=record.id, now=T0 + timedelta(seconds=1))
+    result = jobs.run(T0 + timedelta(seconds=2))
+    assert (result.ran, result.failed) == (1, 0)
+    assert jobs.keys() == set() and world.rows() == {}
+
+
+def test_a_store_failure_fails_the_attempt_by_class_and_a_later_attempt_succeeds(world: World) -> None:
+    jobs = _jobs(world)
+    campaign = _campaign(world)
+    record = _ready_with_objects(world, jobs, campaign)
+    _act(world, campaign, record.id, "delete")
+    jobs.objects.fail_deletes = 1
+    result = jobs.run(T0 + timedelta(seconds=1))
+    assert (result.ran, result.failed) == (1, 1)
+    assert _states(world, DELETE_JOB) == [(DELETE_JOB, 1, "ObjectStoreUnavailable", False)]
+    assert world.rows()[record.id].state == "deleted", "the row is the retry record"
+    jobs.run(T0 + timedelta(minutes=5))
+    assert _states(world, DELETE_JOB) == [] and world.rows() == {} and jobs.keys() == set()
+
+
+def test_a_deadline_that_runs_out_part_way_raises_and_the_job_remains(world: World) -> None:
+    ticks = iter([0.0, 0.0] + [100.0] * 50)
+    jobs = _jobs(world, monotonic=lambda: next(ticks))
+    campaign = _campaign(world)
+    record = _ready_with_objects(world, jobs, campaign)
+    _act(world, campaign, record.id, "delete")
+    jobs.clock.now = T0 + timedelta(seconds=1)
+    result = jobs.runner.run_due(limit=1, deadline_monotonic=50.0)
+    assert (result.ran, result.failed) == (1, 1)
+    assert _states(world, DELETE_JOB) == [(DELETE_JOB, 1, JobOutOfTime.__name__, False)]
+    assert world.rows()[record.id].state == "deleted"
+    assert record.object_key in jobs.keys(), "it stopped part-way and said so"
+
+
+def test_a_delete_after_the_primitive_still_deletes_every_object(world: World) -> None:
+    jobs = _jobs(world)
+    campaign = _campaign(world)
+    records = [_ready_with_objects(world, jobs, campaign) for _ in range(3)]
+    with world.db.transaction() as unit:
+        world.assets.delete_campaign_assets(unit, campaign, owner_id=world.owner, now=T0)
+    assert world.rows() == {}
+    jobs.run(T0 + timedelta(seconds=1))
+    assert jobs.keys() == set()
+    assert sorted(jobs.objects.deleted()) == sorted(k for r in records for k in (r.tmp_key, r.object_key))
+    assert _states(world, DELETE_JOB) == []
+
+
+@pytest.mark.parametrize(("state", "bound"), [("uploading", timedelta(hours=1)), ("processing", timedelta(minutes=10))])
+def test_the_sweep_fails_a_stuck_row_timed_out_releases_and_deletes(
+    world: World, state: str, bound: timedelta
+) -> None:
+    jobs = _jobs(world)
+    campaign = _campaign(world)
+    record = _in_state(world, campaign, state)
+    jobs.put(record.tmp_key)
+    jobs.put(record.object_key)
+    assert world.usage(campaign) == (1000, 1)
+    jobs.run(T0 + bound - timedelta(seconds=1))
+    assert world.rows()[record.id].state == state, "not due yet"
+    jobs.run(T0 + bound + timedelta(seconds=1))
+    swept = world.rows()[record.id]
+    assert (swept.state, swept.failure) == ("failed", AssetFailure.TIMED_OUT)
+    assert world.usage(campaign) == (0, 0)
+    assert jobs.keys() == set()
+    assert sorted(jobs.objects.deleted()) == sorted([record.tmp_key, record.object_key])
+
+
+def test_the_sweep_leaves_a_ready_a_deleted_a_missing_and_a_fresh_row_alone(world: World) -> None:
+    jobs = _jobs(world)
+    campaign = _campaign(world)
+    ready = _ready_with_objects(world, jobs, campaign)
+    gone = _in_state(world, campaign, "deleted")
+    fresh = _create(world, campaign, now=T0 + timedelta(hours=5))
+    with world.db.transaction() as unit:
+        sweeps = [
+            world.queue.enqueue(unit, SWEEP_JOB, {"asset_id": asset_id}, now=T0 + timedelta(hours=5))
+            for asset_id in (ready.id, gone.id, fresh.id, NEVER_MINTED)
+        ]
+    jobs.clock.now = T0 + timedelta(hours=5, seconds=1)
+    for sweep in sweeps:  # these four only: the tombstone's own delete job would purge it
+        assert jobs.runner.run_job(sweep).failed == 0
+    rows = world.rows()
+    assert (rows[ready.id].state, rows[gone.id].state, rows[fresh.id].state) == ("ready", "deleted", "uploading")
+    assert not {ready.tmp_key, ready.object_key} & set(jobs.objects.deleted())
+    assert {ready.tmp_key, ready.object_key} <= jobs.keys()
+
+
+def test_a_return_to_uploading_gets_a_fresh_deadline_and_the_old_sweeps_do_nothing(world: World) -> None:
+    jobs = _jobs(world)
+    campaign = _campaign(world)
+    record = _create(world, campaign)
+    _act(world, campaign, record.id, "start_processing", now=T0 + timedelta(minutes=30))
+    _act(world, campaign, record.id, "return_to_uploading", now=T0 + timedelta(minutes=35))
+    jobs.run(T0 + timedelta(minutes=61))
+    assert world.rows()[record.id].state == "uploading", "both older sweeps read a row that re-entered later"
+    jobs.run(T0 + timedelta(minutes=96))
+    assert world.rows()[record.id].state == "failed"
+
+
+def test_a_lost_fence_deletes_nothing(world: World) -> None:
+    """AC-8's second form, in both worlds: the sweep read the row before `ready`
+    committed and writes after. The fence changes nothing, so the handler owns
+    nothing — least of all the processed original."""
+    campaign = _campaign(world)
+    record = _in_state(world, campaign, "processing")
+
+    def ready_meanwhile() -> None:
+        _act(world, campaign, record.id, "mark_ready", size=700, now=T0 + timedelta(minutes=11))
+
+    jobs = _jobs(world, between_read_and_fence=ready_meanwhile)
+    jobs.put(record.object_key, b"processed original")
+    jobs.run(T0 + timedelta(minutes=11))
+    row = world.rows()[record.id]
+    assert (row.state, row.size_bytes) == ("ready", 700)
+    assert world.usage(campaign) == (700, 1), "the real-size reservation survives"
+    assert jobs.objects.deleted() == [] and record.object_key in jobs.keys()
+
+
+def test_a_row_that_failed_quota_on_its_way_to_ready_loses_its_processed_object_to_its_sweep(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(asset_store, "QUOTA_BYTES", 1500)
+    jobs = _jobs(world)
+    campaign = _campaign(world)
+    record = _in_state(world, campaign, "processing", size=1000)
+    _create(world, campaign, size=400)
+    jobs.put(record.object_key, b"processed, then refused")
+    assert _act(world, campaign, record.id, "mark_ready", size=1200).failure is AssetFailure.QUOTA_EXCEEDED
+    jobs.run(T0 + timedelta(minutes=11))
+    assert record.object_key not in jobs.keys()
+
+
+def _ready_rows(world: World, count: int) -> list[asset_store.AssetRecord]:
+    campaign = _campaign(world)
+    return [_in_state(world, campaign, "ready") for _ in range(count)]
+
+
+def test_the_reconcile_deletes_old_orphans_and_keeps_what_a_live_row_names(world: World) -> None:
+    jobs = _jobs(world)
+    campaign = _campaign(world)
+    old = T0 - timedelta(days=2)
+    live = _in_state(world, campaign, "ready")
+    uploading = _create(world, campaign)
+    failed = _in_state(world, campaign, "failed")
+    kept = {live.object_key, f"{live.object_key}/thumb", uploading.tmp_key}
+    orphans = {"assets/" + "e" * 32, "tmp/" + "e" * 32, f"assets/{'e' * 32}/thumb", failed.tmp_key, failed.object_key}
+    for key in kept | orphans:
+        jobs.put(key, at=old)
+    young = {"tmp/" + "d" * 32}
+    jobs.put(next(iter(young)), at=T0)
+    with world.db.transaction() as unit:
+        enqueue_reconcile(unit, world.queue, now=T0)
+    jobs.run(T0 + timedelta(seconds=1))
+    assert jobs.keys() == kept | young
+    assert _states(world, RECONCILE_JOB) == [], "one run was enough, so no successor"
+
+
+def test_the_reconcile_chain_ends_even_when_every_object_is_referenced(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(asset_jobs, "RECONCILE_BATCH", 4)
+    jobs = _jobs(world)
+    records = _ready_rows(world, asset_jobs.RECONCILE_BATCH + 1)
+    for record in records:
+        jobs.put(record.object_key, at=T0 - timedelta(days=2))
+    with world.db.transaction() as unit:
+        enqueue_reconcile(unit, world.queue, now=T0)
+    first = jobs.runner.run_due(limit=1)
+    assert (first.ran, first.failed) == (1, 0)
+    successors = [p for _, kind, p, _, _ in world.jobs() if kind == RECONCILE_JOB]
+    assert successors == [{"after": sorted(r.object_key for r in records)[asset_jobs.RECONCILE_BATCH - 1]}]
+    second = jobs.runner.run_due(limit=1)
+    assert (second.ran, second.failed) == (1, 0)
+    assert [kind for _, kind, *_ in world.jobs()].count(RECONCILE_JOB) == 0, "the chain ended"
+    assert jobs.objects.deleted() == []
+
+
+def test_a_successor_resumes_strictly_after_its_cursor(world: World) -> None:
+    jobs = _jobs(world)
+    old = T0 - timedelta(days=2)
+    before, cursor, after = "assets/" + "1" * 32, "assets/" + "5" * 32, "tmp/" + "9" * 32
+    for key in (before, cursor, after):
+        jobs.put(key, at=old)
+    with world.db.transaction() as unit:
+        world.queue.enqueue(unit, RECONCILE_JOB, {"after": cursor}, now=T0)
+    jobs.run(T0 + timedelta(seconds=1))
+    assert jobs.keys() == {before, cursor}, "left for the next pass"
+
+
+def test_dedupe_keys_and_payloads_are_exactly_what_the_rulings_say(world: World) -> None:
+    campaign = _campaign(world, name="Canary campaign name")
+    record = _in_state(world, campaign, "processing")
+    _act(world, campaign, record.id, "delete")
+    with world.db.transaction() as unit:
+        enqueue_reconcile(unit, world.queue, now=T0)
+    seen = world.jobs()
+    shapes = {(kind, frozenset(payload), dedupe is not None) for _, kind, payload, dedupe, _ in seen}
+    assert shapes == {
+        (SWEEP_JOB, frozenset({"asset_id"}), False),
+        (DELETE_JOB, frozenset({"asset_id", "object_key", "tmp_key"}), True),
+        (RECONCILE_JOB, frozenset(), False),
+    }
+    for _, _kind, payload, dedupe, _ in seen:
+        assert check_payload(payload) == payload
+        assert campaign not in payload.values() and ALT not in payload.values()
+        assert dedupe in (None, record.id)
+
+
 # ── AC-11: the privacy canary (the threat model's T-12, slice a's leg) ───────
 
 CANARY_ALT = "Canary-alt-7f3e The villain wears the red door"
@@ -937,9 +1281,10 @@ CANARY_NAME = "Canary-campaign-9b2e"
 def test_no_canary_reaches_a_log_an_exception_a_payload_or_a_key(
     world: World, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The store's leg: create, processing, tombstone. The delete job and the
-    purge join this run with their handler, in the next pull request."""
+    """The whole segment: create, processing, tombstone, the delete job and the
+    purge."""
     caplog.set_level(logging.DEBUG)
+    jobs = _jobs(world)
     campaign = _campaign(world, name=CANARY_NAME)
     foreign = _campaign(world, owner=world.other_owner, name=CANARY_NAME)
     texts: list[str] = []
@@ -957,6 +1302,8 @@ def test_no_canary_reaches_a_log_an_exception_a_payload_or_a_key(
         texts.append(str(refused.value))
         texts.append(repr(refused.value))
     _act(world, campaign, record.id, "start_processing")
+    jobs.put(record.tmp_key)
+    jobs.put(record.object_key)
     _act(world, campaign, record.id, "delete")
     if world.dsn is None:
         claimed = world.queue.claim([DELETE_JOB, SWEEP_JOB], limit=10, lease_seconds=0, now=T0)
@@ -967,8 +1314,11 @@ def test_no_canary_reaches_a_log_an_exception_a_payload_or_a_key(
     assert payloads, "no payload was read, so this proves nothing"
     for payload in payloads:
         assert check_payload(payload) == payload
+    jobs.run(T0 + timedelta(minutes=20))
+    assert record.id not in world.rows(), "the whole segment ran: create, processing, tombstone, delete, purge"
     sinks = [r.getMessage() for r in caplog.records] + [r.exc_text or "" for r in caplog.records] + texts
-    sinks += [str(p) for p in payloads] + [record.object_key, record.tmp_key]
+    sinks += [str(p) for p in payloads] + [key for _, key in jobs.objects.calls] + list(jobs.keys())
+    sinks += [record.object_key, record.tmp_key]
     for canary in (CANARY_ALT, CANARY_NAME, "Canary"):
         assert not [s for s in sinks if canary in s], canary
 
@@ -1226,3 +1576,25 @@ def test_race_a_create_against_the_campaigns_deletion_answers_missing(patient: W
     assert isinstance(outcome, MissingParent), outcome
     assert not isinstance(outcome, psycopg.errors.ForeignKeyViolation)
     assert patient.rows() == {}
+
+
+@needs_db
+def test_race_the_sweeps_fence_waits_on_ready_and_then_changes_nothing(patient: World) -> None:
+    campaign = _campaign(patient)
+    record = _in_state(patient, campaign, "processing")
+    jobs = _jobs(patient)
+    jobs.put(record.object_key, b"processed original")
+    ready = _Open(patient.db, lambda unit: patient.assets.mark_ready(
+        unit, campaign, record.id, owner_id=patient.owner, measured=_measured(AssetKind.IMAGE, 700), now=T0))
+    jobs.clock.now = T0 + timedelta(minutes=11)
+    sweeping = threading.Thread(target=lambda: jobs.runner.run_due(limit=10), daemon=True)
+    sweeping.start()
+    assert patient.dsn and _someone_waits_on_a_lock(patient.dsn), "the fenced write never waited"
+    ready.release()
+    sweeping.join(PATIENCE)
+    assert not sweeping.is_alive()
+    row = patient.rows()[record.id]
+    assert (row.state, row.size_bytes) == ("ready", 700)
+    assert patient.usage(campaign) == (700, 1)
+    assert jobs.objects.deleted() == [] and record.object_key in jobs.keys()
+    assert all(error is None for _, _, error, _ in patient.job_states())

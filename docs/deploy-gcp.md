@@ -779,6 +779,52 @@ answers. Rotating the secret is step 1's `versions add`, a redeploy, then step
 4's `update` with the new header — in that order, or the job fails until the
 redeploy lands.
 
+## 13. The media bucket (DEFERRED — `1kg.9.5`)
+
+**Documentation only. UNVERIFIED: none of these commands has been run.**
+Nothing reads a bucket yet: the Cloud Storage object store is slice d's
+(`1kg.8.1.4`), `WORKBENCH_MEDIA_STORE=gcs` is refused by name until then, and
+the media capability ships off (Q-5). `1kg.9.5` runs these steps, and checks
+each flag against the current `gcloud storage` reference, when slice d lands.
+
+What the bucket must be (media ADR MS-1): **private**, **regional** (the
+service's region), **uniform bucket-level access**, **public access
+prevention enforced**, **no object versioning**, **soft delete off** (a deleted
+asset is gone at once, MS-12; there is no backup, Q-3), and object
+administration granted **on this bucket only** to the runtime service account,
+never project-wide. Its one lifecycle rule deletes `tmp/` objects older than a
+day, the backstop for uploads that never finished and for anything the orphan
+reconcile has not reached yet (MS-3).
+
+```bash
+# UNVERIFIED — not run. The runtime SA is still the default compute SA (§4).
+export MEDIA_BUCKET="${PROJECT}-workbench-media"
+
+# 1. The bucket: regional, private, uniform access, no soft delete.
+gcloud storage buckets create "gs://${MEDIA_BUCKET}" --location="$REGION" \
+  --default-storage-class=STANDARD --uniform-bucket-level-access \
+  --public-access-prevention --soft-delete-duration=0
+
+# 2. No versioning (off by default; stated so a later change is deliberate).
+gcloud storage buckets update "gs://${MEDIA_BUCKET}" --no-versioning
+
+# 3. The tmp/ rule: delete after one day.
+cat > media-lifecycle.json <<'JSON'
+{"rule": [{"action": {"type": "Delete"}, "condition": {"age": 1, "matchesPrefix": ["tmp/"]}}]}
+JSON
+gcloud storage buckets update "gs://${MEDIA_BUCKET}" --lifecycle-file=media-lifecycle.json
+
+# 4. Object administration on THIS bucket only, for the runtime SA.
+gcloud storage buckets add-iam-policy-binding "gs://${MEDIA_BUCKET}" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role=roles/storage.objectAdmin
+```
+
+Verify with `gcloud storage buckets describe "gs://${MEDIA_BUCKET}"`: the
+location, `uniform_bucket_level_access: true`, `public_access_prevention:
+enforced`, no versioning, a soft-delete retention of zero, and the one
+lifecycle rule. An unauthenticated `curl` of any object URL must be refused.
+
 ## Cost
 
 ~$9.4/mo steady state (Cloud SQL `db-f1-micro`), within the $10 cap. Corpus

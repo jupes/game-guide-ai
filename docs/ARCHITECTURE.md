@@ -567,7 +567,7 @@ the two are the same text until then.
 last, enqueues `asset.delete` with `{asset_id, object_key, tmp_key}` and the
 asset id as its dedupe key; it returns the job id, and the route (slice c)
 hands it to `job_driver.run_after_response`. The handler deletes the objects
-and then purges the row. **A campaign's deletion** (`1kg.2.6`) must stop
+and then purges the row (below). **A campaign's deletion** (`1kg.2.6`) must stop
 creates first (the store's docstring names one way: lock the campaign row after
 `lock_campaign(exclusive)`), then call `delete_campaign_assets`, the primitive:
 one owner-scoped `DELETE ... RETURNING` removes every row, the usage is reduced
@@ -575,6 +575,35 @@ by exactly what it returned (never zeroed), and one `asset.delete` is enqueued
 per removed row that was not already a tombstone. Only then can the campaign row
 go; PostgreSQL refuses it, directly or through the account cascade, while any
 asset row remains.
+
+### The three jobs (`service/asset_jobs.py`)
+
+`register_jobs(runner, ...)` registers all three kinds, and nothing calls it in
+the running service until slice b wires it into `_build_stores` when a store is
+configured; with no store configured nothing is registered. Every handler
+re-reads current state and uses nothing from its payload beyond the ids and keys
+it names. **No handler holds a database connection while it calls the object
+store**, and every call goes through `via_store`. A handler whose advisory
+`JobContext` runs out part-way raises `JobOutOfTime` and is retried; it never
+returns early as success, because the runner would then complete, and so
+delete, a job that still had work to do. The system statements (the sweep's
+read and fenced write, the purge, and the reconcile's key lookup) live in this
+module only; they name an asset by its globally unique id.
+
+| Kind | Seeded by | Payload, dedupe key | What it does |
+|---|---|---|---|
+| `asset.delete` | a GM's delete, and the campaign primitive | `{asset_id, object_key, tmp_key}`, the asset id | deletes the `tmp/` object, every derivative under `object_key/` page by page, then the original; then purges the row, but only while it is still the tombstone. The keys come from the payload, so the bytes go even after the primitive removed the row. Never marked dead (`max_attempts=None`) |
+| `asset.sweep_stuck` | every entry into `uploading` (due 1 h later) or `processing` (10 min later), by that asset's own transition | `{asset_id}`, none | fails a row still in the state it read and past that state's bound `timed_out`, with an `UPDATE` fenced on the state and the `state_changed_at` it read; releases the reservation and deletes the objects **only if the fence changed the row**. A lost fence means another transition won, and the bytes are that path's. A row that read `failed` has its objects deleted, idempotently |
+| `asset.reconcile_orphans` | `enqueue_reconcile(unit, ...)`; its periodic caller is `1kg.9.5`'s | `{}` or `{"after": <key>}`, none | walks `assets/` then `tmp/` in byte order strictly after its cursor, examining at most `RECONCILE_BATCH` objects, and deletes each examined object older than a day that no live row names (a derivative counts through its parent key). While more remain it enqueues one successor carrying the last key it examined; once the listing is exhausted it enqueues nothing |
+
+**Why the reconcile chain ends.** The listing's bound counts objects examined,
+not matches, so its cursor moves on even when every examined object is still
+referenced; a pass over N objects is at most ceil(N / `RECONCILE_BATCH`) runs, and
+a new pass starts only when someone calls `enqueue_reconcile`. No key is ever
+reused, so an object no live row names now will never be named again, and the
+lookup and the delete need no lock between them. Until `1kg.9.5` schedules it,
+the bucket's own lifecycle rule for `tmp/` is production's backstop
+(`docs/deploy-gcp.md` section 13).
 
 ### Settings, health, and what the table side does not do
 

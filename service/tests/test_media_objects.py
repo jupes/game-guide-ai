@@ -703,13 +703,16 @@ def _service_store_calls() -> list[tuple[str, bool]]:
 def test_every_object_store_call_outside_its_module_goes_through_the_chokepoint() -> None:
     """Requirement 2.5: slice c puts the thread limiter inside `via_store`, so a
     call that goes round it would be a call the limiter never sees."""
-    assert [where for where, through in _service_store_calls() if not through] == []
+    calls = _service_store_calls()
+    assert [where for where, through in calls if not through] == []
+    assert any(where.startswith("asset_jobs.py") for where, _ in calls), (
+        "no call was found at all, so this check proved nothing"
+    )
 
 
 def test_the_chokepoint_check_sees_a_direct_call_and_only_a_call_inside_via_store_passes() -> None:
-    """So the check above cannot pass by finding nothing. Until the job handlers
-    land (the next pull request of this slice) no service module calls the store
-    at all, and the check above holds vacuously; this shows what it would see."""
+    """So the check above cannot pass by finding nothing: this shows what it
+    sees, beside the job handlers' own calls that the check above requires."""
     source = (
         "def direct(store):\n    store.delete_object('tmp/x')\n"
         "def through(store):\n    via_store(store, lambda s: s.delete_object('tmp/x'))\n"
