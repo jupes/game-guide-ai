@@ -136,15 +136,15 @@ a generic failure.
 | `cap_reached` | 409 | yes | X-5: two tool invocations or AI edits are already in flight |
 | `throttled_user` | 429 | yes | the per-user window; carries `retry_after_s` |
 | `throttled_daily` | 429 | no | the pilot's daily cap |
-| `provider_failed`, `provider_timeout` | 502, 504 | yes | the model provider |
-| `attempt_expired` | — | yes | the server expired a stuck attempt (RAIL-27); seen on an invocation, never as a response status |
+| `provider_failed`, `provider_timeout` | 502, 504 | per case | the model provider. On the tool-invocation routes both are carried on the invocation, answered 200 (`1kg.4.1`). `provider_timeout` is retryable; `provider_failed` is final only when the request itself cannot succeed — `/chat`'s 422 categories, a content refusal or an invalid request — and retryable otherwise |
+| `attempt_expired` | — | yes (no on the 100th attempt) | the server expired a stuck attempt (RAIL-27); seen on an invocation, never as a response status |
 | `backend_unavailable` | 503 | yes | the service fails closed |
 | `already_linked` | 409 | no | a link to a campaign for a conversation that is already in one (`1kg.2.4`). A new code rather than `conflict` with a wider meaning |
 | `alias_taken` | 409 | no | a seat whose alias another live seat of the campaign already answers to (`1kg.2.2`) |
 | `seat_not_open` | 409 | no | an offer of a seat that is accepted or holds a live offer for another address (`1kg.2.2`) |
 | `seat_not_accepted` | 409 | no | a confirmation of a seat nobody has accepted (`1kg.2.2`) |
 | `seat_cap_reached` | 409 | no | the 41st live seat of a campaign (`1kg.2.2`, SEC-50(3)) |
-| `campaign_archived` | 409 | no | a seat added to, or an offer made in, an archived campaign (`1kg.2.2`) |
+| `campaign_archived` | 409 | no | a seat added to, or an offer made in, an archived campaign (`1kg.2.2`), or a tool invocation started in one (`1kg.4.1`) |
 | `reauth_failed` | 403 | no | a Remove whose password did not check out (`1kg.2.2`, SEC-40). A 403, never a 401, because the client signs out on any 401; it names no resource |
 | `document_unsupported` | 409 | no | a stored document this build cannot read, or cannot write over: an unknown stored type, a stored type version this build does not write, stored data that is not an object or fails the tolerant read, or — for a patch or a restore — a stored key or sub-key this build does not declare (`1kg.5.2`). Fail closed; only the document's owner can reach it |
 
@@ -308,6 +308,28 @@ the composer and never runs (RAIL-8).
 
 The handoff's `tool_label` is not on the wire: a label is a registry fact, and
 sending it would give the two a chance to disagree.
+
+### Routes (`1kg.4.1`)
+
+| Route | Answers |
+| --- | --- |
+| `POST /campaigns/{campaign_id}/tool-invocations` | `200 ToolInvocation`: new, replayed or retried |
+| `GET /campaigns/{campaign_id}/tool-invocations/{invocation_id}` | `200 ToolInvocation` |
+| `POST /campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel` | `200 ToolInvocation`; no body |
+
+The body's `campaign_id` must equal the path's (`422`, `field: "campaign_id"`),
+and a body is read up to 32 KiB. A repeat of an `invocation_id` is answered by
+the stored invocation's state, never by comparing bodies: `working`, `done`,
+a final `failure` and `cancelled` are answered as stored and start nothing; a
+retryable failure starts the next attempt of the stored request, through every
+guard again. Cancel is a flag, never refused for state.
+
+On these routes a provider failure or an expiry is carried on the invocation,
+answered 200; 502, 504 and `attempt_expired` never appear as response statuses.
+An HTTP error is a refusal before any attempt starts — `422`, the one `404`,
+`409` (`campaign_archived`, `tool_disabled`, `nothing_to_recap`, `cap_reached`),
+`429` (`throttled_daily`; `throttled_user` with `retry_after_s` and a matching
+`Retry-After` header) — which creates nothing, or a `503`.
 
 ## The documents family
 
