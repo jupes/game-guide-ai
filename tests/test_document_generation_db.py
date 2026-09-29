@@ -126,12 +126,11 @@ def test_h1_a_generated_document_is_a_sealed_assistant_version_one(
     assert record.version.summary == summary and _stored(world, record.id) == (None, summary)
     assert _counts(world) == (1, 1)
     if world.kind == "postgres":
+        tables = ("campaign.reveal_disclosures", "campaign.reveal_slots", "campaign.field_eligibility",
+                  "campaign.projection_queue", "audit.events", "app.jobs")
         with world.db.transaction() as unit:
-            touched = [
-                unit.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-                for table in ("campaign.reveal_disclosures", "campaign.reveal_slots", "audit.events", "app.jobs")
-            ]
-        assert touched == [0, 0, 0, 0], "X-2: nothing is revealed, audited or queued"
+            touched = [unit.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in tables]
+        assert touched == [0] * len(tables), "X-2, ED-6, ED-7: nothing revealed, classified, audited or queued"
 
 
 def test_h2_a_rollback_after_the_persist_leaves_nothing(world: World) -> None:
