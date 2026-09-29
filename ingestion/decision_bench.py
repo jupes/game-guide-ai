@@ -15,8 +15,11 @@ Four arms decide {stat_block, spell_card, none} for every item of the block-choi
    (the report's ``adversarial``/``hard_positive`` sections), and once more grouped by
    ``category`` — the template family — so no fold trains on a template sibling of what it
    scores (the report's ``*_template_grouped`` sections; ``eval_data/block_choice/README.md``
-   Limitations, ``agent-forge-harness-69h``; a committed group spanning two categories can
-   still be split there, ``agent-forge-harness-uhc``).
+   Limitations, ``agent-forge-harness-69h``). That second pass folds on connected components of
+   (``group`` OR ``category``), not ``category`` alone, so a committed group spanning two
+   categories is never split between train and test (``agent-forge-harness-uhc``). When every
+   item lands in one such component, that pass reports itself skipped instead of raising
+   (``agent-forge-harness-xrx``).
 3. ``llm`` — ``gpt-4o-mini`` answering one token (A/B/C) with ``logprobs``; the probabilities
    are the renormalised top-logprob mass of the three letters.
 4. ``jev`` — a stub. It refuses to run without ``TYPESAFE_API_KEY``, and even with one it has
@@ -263,6 +266,31 @@ def grouped_folds(groups: Sequence[str], labels: Sequence[str], k: int, seed: in
     return [fold_of[g] for g in groups]
 
 
+def connected_groups(items: Sequence[Item]) -> dict[str, str]:
+    """Union-find over each item's ``group`` and ``category``: two items land in the same key
+    when they share EITHER field, transitively. A committed group can span two categories (8
+    ``rules:*`` groups sit in both ``rules_prose`` and ``prompt_injection`` — one holds the
+    other's text plus an injection); folding the template-grouped pass on ``category`` alone can
+    then split that group between train and test. Folding on these components instead never
+    splits a committed group there — and, since every pair of items sharing one ``category`` is
+    already directly connected here (they name the same ``category:`` node), never splits a
+    category either (``agent-forge-harness-uhc``)."""
+    parent: dict[str, str] = {}
+
+    def find(node: str) -> str:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for it in items:
+        group_root, category_root = find(f"group:{it.group}"), find(f"category:{it.category}")
+        if group_root != category_root:
+            parent[group_root] = category_root
+    return {it.id: find(f"group:{it.group}") for it in items}
+
+
 @dataclass(frozen=True)
 class Embedding:
     vector: list[float]
@@ -323,12 +351,14 @@ def run_embedding(items: Sequence[Item], embeddings: Mapping[str, Embedding], k:
     rules topic). ``"category"`` is the template family: every item of one adversarial or
     hard-positive template (for example all 12 ``prose_ac_hp`` items) then lands in the same
     fold, so no fold trains on a template sibling of what it scores (README Limitations,
-    ``agent-forge-harness-69h``). Grouping by ``category`` can still split a committed group
-    that spans two categories (8 ``rules:*`` topics sit in both ``rules_prose`` and
-    ``prompt_injection``), depending on k and seed: ``agent-forge-harness-uhc``."""
+    ``agent-forge-harness-69h``). That pass folds on ``connected_groups(items)`` -- connected
+    components of (``group`` OR ``category``) -- instead of ``category`` alone, so a committed
+    group that spans two categories (8 ``rules:*`` topics sit in both ``rules_prose`` and
+    ``prompt_injection``) is never split between train and test: ``agent-forge-harness-uhc``."""
     if group_field not in ("group", "category"):
         raise ValueError(f"group_field must be 'group' or 'category', got {group_field!r}")
-    groups = [getattr(it, group_field) for it in items]
+    group_of = connected_groups(items) if group_field == "category" else {it.id: it.group for it in items}
+    groups = [group_of[it.id] for it in items]
     folds = grouped_folds(groups, [it.label for it in items], k, seed)
     decisions: dict[str, Decision] = {}
     fold_log = []
@@ -340,7 +370,7 @@ def run_embedding(items: Sequence[Item], embeddings: Mapping[str, Embedding], k:
         # Temperature: fit centroids on an inner grouped split of the training fold, tune T on
         # its held-out part, then refit the centroids on the whole training fold. The inner
         # split is grouped the same way, so tuning never sees a group's own fold-mates either.
-        inner = grouped_folds([getattr(it, group_field) for it in train], [it.label for it in train], 5,
+        inner = grouped_folds([group_of[it.id] for it in train], [it.label for it in train], 5,
                               seed + f + 1)
         fit_part = [it for it, fo in zip(train, inner, strict=True) if fo != 0]
         tune_part = [it for it, fo in zip(train, inner, strict=True) if fo == 0]
