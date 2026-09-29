@@ -663,7 +663,7 @@ def test_rotating_does_not_block_a_screen_grant_that_references_the_session(
     dsn: str, owner: int
 ) -> None:
     """Why `rotate_command_id` has no index at all, and the start index is
-    PARTIAL (0012, RQ-3).
+    PARTIAL (0013, RQ-3).
 
     PostgreSQL treats the columns of a non-partial unique index as key columns,
     so an index over `rotate_command_id` would turn Rotate's `UPDATE ... SET
@@ -1657,7 +1657,7 @@ def test_a_session_that_expires_before_it_starts_is_refused(world: World) -> Non
 
 
 def test_a_start_command_opens_one_session_per_campaign_in_both_worlds(world: World) -> None:
-    """0012's partial unique index over `(campaign_id, start_command_id)`, kept
+    """0013's partial unique index over `(campaign_id, start_command_id)`, kept
     by the twin too. A caller that holds the campaign lock reads the replay
     first; one that did not gets this named refusal, not a unique violation.
     The same command in another campaign is another command, and a command id
@@ -3805,12 +3805,7 @@ def _reconciles(world: World) -> list[tuple[dict, str | None]]:
     return [(payload, key) for kind, payload, key, _ in _queued(world) if kind == RECONCILE]
 
 
-def _revision(world: World, campaign: str) -> int:
-    with world.db.transaction() as unit:
-        return world.campaigns.authz_revision(unit, campaign)
-
-
-def _ledger(world: World, campaign: str) -> list[Any]:
+def _ledger_rows(world: World, campaign: str) -> list[Any]:
     with world.db.transaction() as unit:
         return world.audit.for_campaign(unit, campaign)
 
@@ -3818,7 +3813,7 @@ def _ledger(world: World, campaign: str) -> list[Any]:
 def _written(world: World, campaign: str) -> tuple[Any, ...]:
     """Everything a no-op must leave as it was: the outbox, the revision and the
     campaign's ledger."""
-    return (_queued(world), _revision(world, campaign), [e.id for e in _ledger(world, campaign)])
+    return (_queued(world), _revision(world, campaign), [e.id for e in _ledger_rows(world, campaign)])
 
 
 def test_start_opens_one_session_advances_the_revision_and_schedules_its_expiry(
@@ -3836,7 +3831,7 @@ def test_start_opens_one_session_advances_the_revision_and_schedules_its_expiry(
     assert session.live_at(moment) and started.reconcile_jobs == ()
     assert session.expires_at == moment + SESSION_LIFETIME
     assert _revision(world, campaign) == before + 1
-    [row] = _ledger(world, campaign)
+    [row] = _ledger_rows(world, campaign)
     assert (row.action, row.actor_kind, row.actor_ref) == (
         "session.started", "gm", str(world.owner)
     )
@@ -3922,7 +3917,7 @@ def test_start_first_finalises_the_gms_expired_session_as_an_expiry(world: World
         assert finalised.state == "expired" and finalised.ended_at == stale.expires_at
         assert all(g.revoked_at is not None for g in world.sessions.screens(unit, stale.id))
         assert [g.id for g in world.sessions.screens(unit, stale.id)] == [stray]
-    [expiry] = _ledger(world, stale_home)
+    [expiry] = _ledger_rows(world, stale_home)
     assert (expiry.action, expiry.actor_kind, expiry.actor_ref) == ("session.expired", "system", None)
     assert expiry.detail["screens_revoked"] == 1
     assert _reconciles(world) == [({"campaign_id": stale_home}, None)]
@@ -3978,7 +3973,7 @@ def test_end_revokes_everything_and_enqueues_its_reconciliation_last_without_the
     )
     assert _reconciles(world) == [({"campaign_id": campaign}, None)]
     assert recorded.units and all(unit.campaign_locks == [] for unit in recorded.units)
-    [row] = _ledger(world, campaign)
+    [row] = _ledger_rows(world, campaign)
     assert row.detail == {
         "session_id": session.id, "generation": 2, "screens_revoked": 2
     }
@@ -4010,7 +4005,7 @@ def test_rotate_retires_the_generation_and_every_screen_and_leaves_the_session_l
     with world.db.transaction() as unit:
         assert [g.revoked_at is not None for g in world.sessions.screens(unit, session.id)] == [True]
     assert service.resolve_screen(minted.secret) is None
-    assert _ledger(world, campaign)[-1].action == "session.rotated"
+    assert _ledger_rows(world, campaign)[-1].action == "session.rotated"
 
 
 def test_a_repeated_rotate_writes_nothing_and_a_new_command_rotates_again(world: World) -> None:
@@ -4111,7 +4106,7 @@ def test_the_expiry_job_finalises_a_due_session_once_and_an_early_run_waits_for_
     due.expire_handler().run(job, JobContext())
     assert _written(world, campaign) == written, "a second run changes nothing"
     assert _reconciles(world) == [({"campaign_id": campaign}, None)]
-    assert [e.action for e in _ledger(world, campaign)] == ["session.started", "session.expired"]
+    assert [e.action for e in _ledger_rows(world, campaign)] == ["session.started", "session.expired"]
 
 
 def test_every_revocation_enqueues_its_own_reconciliation_with_no_dedupe_key(world: World) -> None:
@@ -4221,7 +4216,7 @@ def test_only_the_owner_of_a_live_session_mints_and_the_bound_is_reached_through
         service.mint_screen(world.owner, campaign, now=t0)
     with pytest.raises(ScreenLimit):
         service.mint_screen(world.owner, campaign, now=t0)
-    minted = [e for e in _ledger(world, campaign) if e.action == "screen.minted"]
+    minted = [e for e in _ledger_rows(world, campaign) if e.action == "screen.minted"]
     assert len(minted) == SCREENS_PER_SESSION
     assert {(e.actor_kind, e.actor_ref, e.object_kind) for e in minted} == {
         ("gm", str(world.owner), "table_screen")
@@ -4245,7 +4240,7 @@ def test_a_screen_revoke_and_a_leave_are_recorded_once_and_touch_nothing_else(wo
     assert service.leave(leaving.secret, now=t2) is True
     assert service.leave(leaving.secret, now=t2) is False
     assert service.leave(secrets.token_urlsafe(32), now=t2) is False
-    revoked = [e for e in _ledger(world, campaign) if e.action == "screen.revoked"]
+    revoked = [e for e in _ledger_rows(world, campaign) if e.action == "screen.revoked"]
     assert [(e.reason_code, e.actor_kind, e.actor_ref, e.object_ref) for e in revoked] == [
         ("gm_revoked", "gm", str(world.owner), by_gm.grant.id),
         ("left", "screen", leaving.grant.id, leaving.grant.id),
