@@ -679,27 +679,46 @@ def _through_the_chokepoint(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> b
     return False
 
 
+def _store_calls(source: str, name: str) -> list[tuple[str, bool]]:
+    """Every object-store method call in `source`, in line order: where it is,
+    and whether it goes through the chokepoint."""
+    tree = ast.parse(source)
+    parents = _parents(tree)
+    return sorted(
+        (f"{name}:{node.lineno}", _through_the_chokepoint(node, parents))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in mo.STORE_METHODS
+    )
+
+
+def _service_store_calls() -> list[tuple[str, bool]]:
+    return [
+        call
+        for path in sorted(SERVICE.glob("*.py"))
+        if path.name != "media_objects.py"
+        for call in _store_calls(path.read_text(encoding="utf-8"), path.name)
+    ]
+
+
 def test_every_object_store_call_outside_its_module_goes_through_the_chokepoint() -> None:
     """Requirement 2.5: slice c puts the thread limiter inside `via_store`, so a
     call that goes round it would be a call the limiter never sees."""
-    through: list[str] = []
-    for path in sorted(SERVICE.glob("*.py")):
-        if path.name == "media_objects.py":
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        parents = _parents(tree)
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in mo.STORE_METHODS
-            ):
-                where = f"{path.name}:{node.lineno}"
-                assert _through_the_chokepoint(node, parents), f"{where} calls the store directly"
-                through.append(where)
-    assert any(where.startswith("asset_jobs.py") for where in through), (
-        "no call was found at all, so this check proved nothing"
+    assert [where for where, through in _service_store_calls() if not through] == []
+
+
+def test_the_chokepoint_check_sees_a_direct_call_and_only_a_call_inside_via_store_passes() -> None:
+    """So the check above cannot pass by finding nothing. Until the job handlers
+    land (the next pull request of this slice) no service module calls the store
+    at all, and the check above holds vacuously; this shows what it would see."""
+    source = (
+        "def direct(store):\n    store.delete_object('tmp/x')\n"
+        "def through(store):\n    via_store(store, lambda s: s.delete_object('tmp/x'))\n"
+        "def the_lambda_first(store):\n    via_store(lambda s: s.delete_object('tmp/x'), store)\n"
+        "def a_lambda_elsewhere(store):\n    run(store, lambda s: s.list_objects('tmp/'))\n"
     )
+    assert _store_calls(source, "sample") == [
+        ("sample:2", False), ("sample:4", True), ("sample:6", False), ("sample:8", False)
+    ]
 
 
 def test_the_chokepoint_hands_the_call_to_the_store_it_was_given() -> None:
