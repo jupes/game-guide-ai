@@ -8,7 +8,8 @@ in a subprocess, asserting each outcome from the JUnit report. To watch it fail 
     uv run --frozen --no-sync python -m pytest -q service/tests/canary_demo_flow.py
 
 Expected: ``test_demonstration[none]`` passes; ``[player_capture]`` and ``[log]`` fail with
-``CanaryLeak``; ``test_forgot_to_assert`` errors at teardown with ``CaptureNotAsserted``.
+``CanaryLeak``; ``test_forgot_to_assert`` errors at teardown with ``CaptureNotAsserted``;
+``test_late_stdio_leak_is_caught_at_teardown`` errors at teardown with ``CanaryLeak``.
 """
 
 from __future__ import annotations
@@ -65,3 +66,13 @@ def test_demonstration(route: str, leak_capture: LeakCapture, canary_world: Cana
 
 def test_forgot_to_assert(leak_capture: LeakCapture) -> None:
     leak_capture.llm("unasserted", audience=Audience.PLAYER)  # errors at teardown: CaptureNotAsserted
+
+
+def test_late_stdio_leak_is_caught_at_teardown(leak_capture: LeakCapture, canary_world: CanaryWorld) -> None:
+    """H-D5 (C-7, PR #162 verifier residual): a canary written to stdout after the last
+    ``assert_clean`` is still caught when the real ``leak_capture`` fixture tears down. Both the
+    fixture-mode stdout path (``capteesys``, wired exactly as the fixture wires it) and the late-stdio
+    scan run the way a real consumer hits them here: through pytest's own teardown, not a manually
+    driven ``LeakCapture.__enter__``/``_exit``. The call phase passes; teardown raises ``CanaryLeak``."""
+    leak_capture.assert_clean()
+    print(canary_world.mint("late-stdout-demo").value)  # the deliberate leak: caught only at teardown

@@ -75,7 +75,11 @@ _DROPPED_PREFIXES = ("COV_CORE_", "LANGFUSE_")
 
 
 def test_the_demonstration_fails_under_pytest_exactly_when_routed(tmp_path: Path) -> None:
-    """H-D4: a fresh pytest runs the demonstration module; its JUnit report says what happened."""
+    """H-D4/H-D5: a fresh pytest runs the demonstration module; its JUnit report says what happened.
+
+    H-D5 (PR #162 verifier residual) rides along in the same subprocess run: the late-stdio (C-7) case
+    goes through the real ``leak_capture`` fixture, so fixture-mode stdout and the late scan are both
+    exercised through pytest's own teardown phase, the way a real consumer hits them."""
     junit = tmp_path / "demo.xml"
     env = {k: v for k, v in os.environ.items() if k not in _DROPPED and not k.startswith(_DROPPED_PREFIXES)}
     env["PYTHONUTF8"] = "1"
@@ -86,7 +90,7 @@ def test_the_demonstration_fails_under_pytest_exactly_when_routed(tmp_path: Path
     )
     assert child.returncode == 1, child.stdout[-3000:]
     cases = list(ElementTree.parse(junit).getroot().iter("testcase"))
-    assert len(cases) == 4, [case.get("name") for case in cases]
+    assert len(cases) == 5, [case.get("name") for case in cases]
     outcome = {case.get("name"): case for case in cases}
 
     def text_of(name: str, tag: str) -> str:
@@ -101,6 +105,9 @@ def test_the_demonstration_fails_under_pytest_exactly_when_routed(tmp_path: Path
     logged = text_of("test_demonstration[log]", "failure")
     assert "CanaryLeak" in logged and "sink=logs" in logged and "true_identity" in logged
     assert "CaptureNotAsserted" in text_of("test_forgot_to_assert", "error")
+    late_stdio = text_of("test_late_stdio_leak_is_caught_at_teardown", "error")
+    assert "CanaryLeak" in late_stdio and "after the last assert_clean" in late_stdio
+    assert "sink=stdio" in late_stdio and "facet=stdout" in late_stdio and "late-stdout-demo" in late_stdio
 
 
 # ── The real /chat path ──────────────────────────────────────────────────────
