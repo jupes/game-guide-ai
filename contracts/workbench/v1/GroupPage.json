@@ -1,0 +1,118 @@
+{
+  "schema": "GroupPage",
+  "direction": "response",
+  "note": "GET /campaigns/{id}/groups: the campaign's live groups, by the name's fold, then id. One page: a campaign holds at most 50 live groups, so next_cursor is always null today, and stays a key so that paging can arrive without a version bump.",
+  "valid": [
+    {
+      "name": "two groups",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "schema_version": 1,
+            "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+            "name": "Scouts",
+            "member_ids": [
+              "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+              "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+            ],
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": "2026-09-16T19:31:24Z"
+          },
+          {
+            "schema_version": 1,
+            "group_id": "grp_9Xc4Vb7Nm2Qw5Er8Ty1Ui",
+            "name": "Watch",
+            "member_ids": [
+              "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+            ],
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": "2026-09-16T19:20:11Z"
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "no groups yet",
+      "value": {
+        "schema_version": 1,
+        "items": [],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "every live group a campaign can hold",
+      "value": {
+        "schema_version": 1,
+        "items": {
+          "@repeat_value": {
+            "schema_version": 1,
+            "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+            "name": "Scouts",
+            "member_ids": [
+              "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+              "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+            ],
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": "2026-09-16T19:31:24Z"
+          },
+          "@count": 50
+        },
+        "next_cursor": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no cursor key",
+      "why": "next_cursor is required: the end of a list is null, never a missing key",
+      "value": {
+        "schema_version": 1,
+        "items": []
+      }
+    },
+    {
+      "name": "more groups than a campaign holds",
+      "why": "GROUPS_PER_CAMPAIGN_MAX (SEC-35): one page holds every live group, so 51 cannot be one",
+      "value": {
+        "schema_version": 1,
+        "items": {
+          "@repeat_value": {
+            "schema_version": 1,
+            "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+            "name": "Scouts",
+            "member_ids": [
+              "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+              "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+            ],
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": "2026-09-16T19:31:24Z"
+          },
+          "@count": 51
+        },
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "a group of the wrong shape",
+      "why": "each item is a Group",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "schema_version": 1,
+            "group_id": "grp_3Fq8Wd1Kz6Ns4Ty9Lm2Pv",
+            "member_ids": [
+              "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+              "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5"
+            ],
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": "2026-09-16T19:31:24Z"
+          }
+        ],
+        "next_cursor": null
+      }
+    }
+  ]
+}
