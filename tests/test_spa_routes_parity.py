@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ROUTES_TS = REPO_ROOT / "ui" / "src" / "shell" / "routes.ts"
 
 # Named reserved families that are NOT (yet) API prefixes, so they cannot be
-# read off the live route table the way the six proxied prefixes below are:
+# read off the live route table the way the eight proxied prefixes below are:
 #   - "/assets" -- MS-7 (media-and-realtime.md:89): the built bundle's own path.
 #   - "/table", "/table-sessions" -- SEC-18 / threat-model.md:328: the table
 #     client is a separate entry point and bundle with its own principal.
@@ -34,7 +34,9 @@ ROUTES_TS = REPO_ROOT / "ui" / "src" / "shell" / "routes.ts"
 #     entry point. Reserved WITH the trailing slash, so it blocks `/t/x` and
 #     not `/tavern` (lead ruling Q4).
 #   - "/campaigns", "/documents", "/tool-invocations", "/cues" -- the
-#     "Proposed route families" (expansion plan :258-271), not yet built.
+#     "Proposed route families" (expansion plan :258-271). "/campaigns" is a
+#     live API prefix since 1kg.2.2 (so is "/seats") and is read off the route
+#     table too; the rest are not yet built.
 # Deliberately NOT here: "/internal" -- no source names it (verified: the
 # string does not occur in the expansion plan).
 _NAMED_RESERVED_PREFIXES = (

@@ -40,6 +40,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    SecretStr,
     SerializerFunctionWrapHandler,
     StrictBool,
     StrictStr,
@@ -429,6 +430,16 @@ class ErrorCode(str, Enum):
     #: A new code rather than ``conflict`` with a widened meaning: a new code is
     #: no version bump, a changed meaning is one.
     ALREADY_LINKED = "already_linked"
+    #: Campaigns and seats (1kg.2.2). Each 409 is reachable only by the
+    #: campaign's owner, after ownership was shown (SEC-3); none names a value.
+    ALIAS_TAKEN = "alias_taken"
+    SEAT_NOT_OPEN = "seat_not_open"
+    SEAT_NOT_ACCEPTED = "seat_not_accepted"
+    SEAT_CAP_REACHED = "seat_cap_reached"
+    CAMPAIGN_ARCHIVED = "campaign_archived"
+    #: A Remove whose password did not check out (SEC-40). A 403, never a 401:
+    #: the client signs out on any 401.
+    REAUTH_FAILED = "reauth_failed"
 
 
 # ── Registry facts the validators need (pinned by registry.json) ─────────────
@@ -3290,6 +3301,257 @@ class ConversationPatchRequest(_Contract):
         return {key: value for key, value in emitted.items() if key in self.model_fields_set}
 
 
+# ── Campaigns and seats (1kg.2.2) ────────────────────────────────────────────
+#
+# A GM's campaigns and the seats at their table (`/campaigns`), and an account's
+# own side of it (`/seats`): the offers made to its verified address and the
+# seats it holds. No numeric account id is on the wire anywhere in this family
+# (SEC-50(1)), and nothing on the account side carries an address, a campaign
+# owner or a participant id (SEC-43, SEC-50(4)).
+
+#: A page of any list in this family.
+CAMPAIGN_PAGE_MAX_ITEMS = 50
+#: 0004's CHECK on `campaigns.name`, in code points on both sides.
+CAMPAIGN_NAME_MAX_CHARS = 120
+#: 0004's CHECK on `participants.alias` (`participant_store.ALIAS_MAX_CHARS`).
+SEAT_ALIAS_MAX_CHARS = 40
+#: 0012's CHECK on `seat_offers.address`, and `service/models.py`'s
+#: `MAX_EMAIL_LENGTH` (RFC 5321's practical maximum).
+EMAIL_MIN_CHARS = 3
+EMAIL_MAX_CHARS = 254
+#: `service/models.py`'s `MAX_PASSWORD_LENGTH`.
+PASSWORD_MAX_CHARS = 1024
+
+
+def is_email_shaped(value: str) -> bool:
+    """The one-line structural rule of ``service/models.py::_validate_email``,
+    restated (bead 1kg.2.2, L-7): an ``@`` that is neither first nor last, and
+    no U+0020 space. Restated rather than called, because that function is
+    private to its module and strips with Python's ``str.strip``, whose set is
+    not the wire's ``trim``; ``isEmailShaped`` in ``contracts.ts`` is its twin.
+    Deliverability is never judged — the verified address is the trust anchor."""
+    return "@" in value and not value.startswith("@") and not value.endswith("@") and " " not in value
+
+
+def _stored_request_text(value: str, *, low: int, high: int, what: str) -> str:
+    """Trimmed as the client trims, bounded in code points, and plain text
+    (``check_plain_text``). The trimmed value is what is stored. A refusal names
+    the rule, never the value."""
+    trimmed = trim(value)
+    if not low <= len(trimmed) <= high:
+        raise ValueError(f"{what} is {low} to {high} characters after trimming")
+    check_plain_text(trimmed)
+    return trimmed
+
+
+def _a_campaign_name(value: str) -> str:
+    return _stored_request_text(value, low=1, high=CAMPAIGN_NAME_MAX_CHARS, what="a campaign name")
+
+
+def _a_seat_alias(value: str) -> str:
+    """The contract's half of an alias. The server's ``check_alias`` is
+    stricter still (NFC, collapsed whitespace, no invisible characters) and
+    refuses the rest with the same 422 before any statement."""
+    return _stored_request_text(value, low=1, high=SEAT_ALIAS_MAX_CHARS, what="an alias")
+
+
+def _an_email_address(value: str) -> str:
+    trimmed = _stored_request_text(value, low=EMAIL_MIN_CHARS, high=EMAIL_MAX_CHARS, what="an address")
+    if not is_email_shaped(trimmed):
+        raise ValueError("an address has an @ that is neither first nor last, and no space")
+    return trimmed
+
+
+def _a_password(value: SecretStr) -> SecretStr:
+    """Well-formed text, as every string the server hashes must be: argon2
+    encodes it as UTF-8, which cannot carry a lone surrogate. The refusal names
+    the rule and never the value."""
+    _well_formed(value.get_secret_value())
+    return value
+
+
+#: What a client may send as a campaign's name; what the server answers with is
+#: read as stored — bounded, with no trim rule.
+CampaignNameRequest = Annotated[WireText, AfterValidator(_a_campaign_name)]
+CampaignName = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=CAMPAIGN_NAME_MAX_CHARS)]
+SeatAliasRequest = Annotated[WireText, AfterValidator(_a_seat_alias)]
+SeatAlias = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=SEAT_ALIAS_MAX_CHARS)]
+EmailAddress = Annotated[WireText, AfterValidator(_an_email_address)]
+StoredEmailAddress = Annotated[
+    str, StringConstraints(strict=True, min_length=EMAIL_MIN_CHARS, max_length=EMAIL_MAX_CHARS)
+]
+
+
+class SeatStatus(str, Enum):
+    """A seat as its GM sees it, derived by one function in both worlds
+    (``service.seat_offer_store.seat_status``). The wording a GM reads is the
+    design lane's; these are the states."""
+
+    OPEN = "open"
+    OFFERED = "offered"
+    NOT_ACCEPTED = "not_accepted"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    CONFIRMED = "confirmed"
+    REMOVED = "removed"
+
+
+class Campaign(_Contract):
+    """One of the GM's campaigns. Every key is present; ``archived_at`` is
+    ``null`` for a campaign in use. The owner is the session and is never on the
+    wire."""
+
+    schema_version: SchemaVersion
+    campaign_id: OpaqueId
+    name: CampaignName
+    created_at: Timestamp
+    updated_at: Timestamp
+    archived_at: Timestamp | None
+
+
+class CampaignPage(_Contract):
+    """The GM's campaigns, newest first. A short page is not the end of the
+    list; only a ``null`` cursor is."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[Campaign], Field(max_length=CAMPAIGN_PAGE_MAX_ITEMS)]
+    next_cursor: Cursor | None
+
+
+class CampaignCreateRequest(_Contract):
+    """``POST /campaigns``: the caller becomes its GM (D-5). No ``command_id``:
+    a retried create makes a second campaign, which archive recovers."""
+
+    schema_version: SchemaVersion
+    name: CampaignNameRequest
+
+
+class CampaignPatchRequest(_Contract):
+    """``PATCH /campaigns/{id}``: rename, archive, restore. At least one key, and
+    none is nullable."""
+
+    schema_version: SchemaVersion
+    name: CampaignNameRequest | None = None
+    archived: StrictBool | None = None
+
+    @field_validator("name", "archived", mode="before")
+    @classmethod
+    def _sent_means_a_value(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("send a value, or leave the key out")
+        return value
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> Self:
+        if not self.model_fields_set - {"schema_version"}:
+            raise ValueError("a patch names at least one of name and archived")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _only_what_was_sent(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        emitted: dict[str, Any] = handler(self)
+        return {key: value for key, value in emitted.items() if key in self.model_fields_set}
+
+
+class Seat(_Contract):
+    """A seat as its GM sees it. ``address`` is the latest offer's address as
+    the GM typed it — for an accepted seat, the verified address the account
+    accepted under, up to ASCII case (SEC-50(4), (5)) — and ``null`` for a seat
+    never offered. There is no account id (SEC-50(1))."""
+
+    schema_version: SchemaVersion
+    participant_id: OpaqueId
+    alias: SeatAlias
+    status: SeatStatus
+    address: StoredEmailAddress | None
+    created_at: Timestamp
+    offered_at: Timestamp | None
+    offer_expires_at: Timestamp | None
+    accepted_at: Timestamp | None
+    confirmed_at: Timestamp | None
+    removed_at: Timestamp | None
+
+
+class SeatPage(_Contract):
+    """A campaign's seats, oldest first."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[Seat], Field(max_length=CAMPAIGN_PAGE_MAX_ITEMS)]
+    next_cursor: Cursor | None
+
+
+class SeatCreateRequest(_Contract):
+    """``POST /campaigns/{id}/participants``: an open seat. A retried add of
+    the same alias is ``409 alias_taken``, its defined behaviour."""
+
+    schema_version: SchemaVersion
+    alias: SeatAliasRequest
+
+
+class SeatOfferRequest(_Contract):
+    """``POST …/participants/{id}/offer``: an ADDRESS, never an account
+    (SEC-50(1)). The answer is ``204`` whatever the address holds."""
+
+    schema_version: SchemaVersion
+    email: EmailAddress
+
+
+class SeatRemoveRequest(_Contract):
+    """``POST …/participants/{id}/remove``: removing a seat asks for the
+    password again (SEC-40). Write-only, hidden from ``repr``, never echoed."""
+
+    schema_version: SchemaVersion
+    password: Annotated[SecretStr, Field(min_length=1, max_length=PASSWORD_MAX_CHARS), AfterValidator(_a_password)]
+
+
+class SeatOffer(_Contract):
+    """An offer as its invitee sees it: what the GM wrote and chose to send, and
+    nothing that names the GM's account, the campaign's id or the seat's
+    (SEC-50(4))."""
+
+    schema_version: SchemaVersion
+    offer_id: OpaqueId
+    campaign_name: CampaignName
+    alias: SeatAlias
+    offered_at: Timestamp
+    expires_at: Timestamp
+
+
+class SeatOfferPage(_Contract):
+    """The offers made to the caller's verified address, newest first."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[SeatOffer], Field(max_length=CAMPAIGN_PAGE_MAX_ITEMS)]
+    next_cursor: Cursor | None
+
+
+class SeatDeclineRequest(_Contract):
+    """``POST /seats/offers/{id}/decline``; ``block`` also refuses every later
+    offer from that GM, silently."""
+
+    schema_version: SchemaVersion
+    block: StrictBool
+
+
+class PlayerSeat(_Contract):
+    """One of the caller's own seats. ``campaign_id`` is what the table address
+    will name (SEC-43); a participant id never reaches a table client."""
+
+    schema_version: SchemaVersion
+    campaign_id: OpaqueId
+    campaign_name: CampaignName
+    alias: SeatAlias
+    accepted_at: Timestamp
+    confirmed: StrictBool
+
+
+class PlayerSeatPage(_Contract):
+    """The caller's seats, newest acceptance first."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[PlayerSeat], Field(max_length=CAMPAIGN_PAGE_MAX_ITEMS)]
+    next_cursor: Cursor | None
+
+
 #: Name → validator, in the order ``contracts/workbench/v1/schemas.json`` lists them.
 CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "Timestamp": TypeAdapter(Timestamp, config=_HIDE_INPUT),
@@ -3346,4 +3608,18 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "ConversationPage": TypeAdapter(ConversationPage),
     "ConversationCreateRequest": TypeAdapter(ConversationCreateRequest),
     "ConversationPatchRequest": TypeAdapter(ConversationPatchRequest),
+    "Campaign": TypeAdapter(Campaign),
+    "CampaignPage": TypeAdapter(CampaignPage),
+    "CampaignCreateRequest": TypeAdapter(CampaignCreateRequest),
+    "CampaignPatchRequest": TypeAdapter(CampaignPatchRequest),
+    "Seat": TypeAdapter(Seat),
+    "SeatPage": TypeAdapter(SeatPage),
+    "SeatCreateRequest": TypeAdapter(SeatCreateRequest),
+    "SeatOfferRequest": TypeAdapter(SeatOfferRequest),
+    "SeatRemoveRequest": TypeAdapter(SeatRemoveRequest),
+    "SeatOffer": TypeAdapter(SeatOffer),
+    "SeatOfferPage": TypeAdapter(SeatOfferPage),
+    "SeatDeclineRequest": TypeAdapter(SeatDeclineRequest),
+    "PlayerSeat": TypeAdapter(PlayerSeat),
+    "PlayerSeatPage": TypeAdapter(PlayerSeatPage),
 }

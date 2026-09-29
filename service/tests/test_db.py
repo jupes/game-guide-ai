@@ -959,7 +959,7 @@ def test_a_revision_advance_that_changes_no_row_fails_closed(scripted):
 
 _HOLD_BOUND = "SELECT set_config('transaction_timeout', %s, true) ('5s',)"
 _HOLD_ROW = (
-    "SELECT id, campaign_id, alias, created_at, removed_at, user_id, accepted_at "
+    "SELECT id, campaign_id, alias, created_at, removed_at, user_id, accepted_at, confirmed_at "
     "FROM campaign.participants WHERE id = %s AND campaign_id = %s FOR NO KEY UPDATE "
     "('prt_seat', 'cmp_one')"
 )
@@ -983,14 +983,14 @@ def test_the_scripted_hold_names_the_campaign_inside_the_statement_that_takes_th
             unit.lock_campaign("cmp_one", shared=True)
 
 
-@pytest.mark.parametrize("mutator", ["accept", "offer", "remove"])
+@pytest.mark.parametrize("mutator", ["accept", "confirm", "offer", "remove"])
 def test_every_scripted_participant_mutator_bounds_and_holds_the_seat_before_anything_else(
     scripted: tuple[list[str], dict[str, object]], mutator: str
 ) -> None:
     """G-6 at the statement level. A mutator's first two statements are its OWN
     hold — the bound, then the scoped row lock — with no delegate to supply
     them. Nothing is primed, so the seat is not found and each mutator refuses,
-    which is beside the point here. Kills G6a (the three holds deleted) and
+    which is beside the point here. Kills G6a (the four holds deleted) and
     M-B7 (remove's alone) on this machine; the behavioural proof is the
     `[postgres-*]` cells of `test_every_participant_mutator_takes_the_seats_row_…`."""
     log, _ = scripted
@@ -998,6 +998,9 @@ def test_every_scripted_participant_mutator_bounds_and_holds_the_seat_before_any
     with _scripted_database().transaction() as unit:
         if mutator == "remove":
             assert store.remove(unit, "cmp_one", "prt_seat") is False
+        elif mutator == "confirm":
+            with pytest.raises(SeatUnavailable):
+                store.confirm(unit, "cmp_one", "prt_seat")
         else:
             with pytest.raises(SeatUnavailable):
                 getattr(store, mutator)(unit, "cmp_one", "prt_seat", user_id=7)
@@ -1014,6 +1017,10 @@ _WRONG_TYPES: list[tuple[str, tuple[object, ...], dict[str, object], str]] = [
     ("accept", ("cmp_one", 5), {"user_id": 7}, "participant_id"),
     ("seat_for", ("cmp_one", True), {}, "user_id"),
     ("seats_for_user", (None,), {}, "user_id"),
+    ("confirm", ("cmp_one", 5), {}, "participant_id"),
+    ("count_live", (5,), {}, "campaign_id"),
+    ("page_for_campaign", (5,), {}, "campaign_id"),
+    ("seat_page_for_user", ("7",), {}, "user_id"),
 ]
 
 
