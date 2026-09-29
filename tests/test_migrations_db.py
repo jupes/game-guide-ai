@@ -944,7 +944,7 @@ def test_the_database_refuses_each_asset_row_the_schema_forbids(dsn, label, kind
     with connect(dsn) as conn:
         _a_campaign_with_its_owner(conn)
         with pytest.raises(psycopg.errors.CheckViolation):
-            _insert_asset(conn, _asset_row(kind, state, **overrides))
+            _insert_asset(conn, _asset_row(kind, state) | overrides)
 
 
 def test_the_database_accepts_one_valid_asset_row_of_each_kind_in_each_state(dsn):

@@ -1366,6 +1366,7 @@ class _Open:
         self.thread = threading.Thread(target=run, daemon=True)
         self.thread.start()
         assert self.took.wait(PATIENCE), "the first transaction never ran"
+        assert self.error is None, f"the first transaction failed before the race began: {self.error!r}"
 
     def release(self) -> object:
         self.go.set()
@@ -1514,7 +1515,7 @@ def test_race_the_primitive_after_a_committed_create_removes_it_with_its_job(pat
 def test_race_the_primitive_waits_on_an_uncommitted_create_and_subtracts_around_it(patient: World) -> None:
     campaign = _campaign(patient)
     doomed = _create(patient, campaign, size=300)
-    creating = _Open(patient.db, _create_in(patient, campaign, size=1000))
+    creating = _Open(patient.db, _create_in(patient, campaign, size_bytes=1000))
     primitive = _Waiter(
         patient.db, lambda unit: patient.assets.delete_campaign_assets(unit, campaign, owner_id=patient.owner, now=T0)
     )
@@ -1534,7 +1535,7 @@ def test_race_a_create_after_the_primitives_usage_update_waits_then_fits(patient
     primitive = _Open(
         patient.db, lambda unit: patient.assets.delete_campaign_assets(unit, campaign, owner_id=patient.owner, now=T0)
     )
-    creating = _Waiter(patient.db, _create_in(patient, campaign, size=1000))
+    creating = _Waiter(patient.db, _create_in(patient, campaign, size_bytes=1000))
     assert patient.dsn and _someone_waits_on_a_lock(patient.dsn), "the create's reservation never waited"
     primitive.release()
     created = creating.outcome()
