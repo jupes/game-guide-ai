@@ -128,8 +128,14 @@ Totals:
   pipeline is bead `agent-forge-harness-9zz`.
 - **Templated text is more regular than real answers.** A throwaway bag-of-words classifier
   reaches about 0.95 macro-F1 on this set. Absolute scores therefore flatter every learned arm.
-  The set is fit for comparing arms against each other and against the heuristic, and for
-  exercising the benchmark end to end. It cannot predict production accuracy.
+  The set is fit for comparing arms against the heuristic and for exercising the benchmark end
+  to end. It cannot predict production accuracy.
+- **Groups are per instance, not per template.** Near-duplicates from one template family (for
+  example the 8 `prose_ac_hp` items about objects, which share one sentence apart from the
+  object's name and numbers) land in different folds. The embedding arm therefore trains on siblings of each adversarial template, and the
+  zero-shot arms (`llm`, `jev`) do not. On the adversarial and hard-positive subsets, the
+  embedding arm's score favours it over the zero-shot arms. A template-grouped score is bead
+  `agent-forge-harness-69h`, which blocks Pilot 1 (`agent-forge-harness-dvy`).
 - The adversarial subset is 60 items, so one item moves a share by about 1.7 points.
 
 ## Running the benchmark (`ingestion/decision_bench.py`)
