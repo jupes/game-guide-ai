@@ -25,17 +25,25 @@ amends it; the shared ADR's RC-15), in two transactions:
 1. *Step one* NEVER calls `lock_campaign`: the campaign with its owner in the
    statement (SEC-2), the document, and — for an archive of a document that is
    not archived yet, and for every delete — the campaign's live session
-   narrowed (its row held, the reveal epoch advanced, its slots cleared). It
-   commits before step two asks for the lock, so the display is already
-   stopped whatever happens next.
+   narrowed (its row held, the reveal epoch advanced, and **that document's
+   copies** cleared, as `document_archived` or `document_deleted`, stamped with
+   the request's clock). It commits before step two asks for the lock, so the
+   display is already stopped whatever happens next.
 2. *Step two*, still in the request: the exclusive campaign lock FIRST, the
    ownership read again under it (L-18), the document's row held, the fact
    changed, the live session scanned for again — one started between the steps
    is narrowed too — the authorisation revision advanced and the audit row
-   written, in RQ-3's order (`authz_state` → document row → session row). If
-   the lock cannot be had in time the answer is a retryable `503` whose message
-   says the change is **not applied yet**; the GM's intent is never handed to a
-   job.
+   written, in RQ-3's order (`authz_state` → document row → session row). A
+   delete narrows **before** it deletes: the document's disclosures go with it
+   by the foreign key's cascade, and a slot still showing one would refuse the
+   delete. If the lock cannot be had in time the answer is a retryable `503`
+   whose message says the change is **not applied yet**; the GM's intent is
+   never handed to a job.
+
+**The scope is the document's copies** (`reveal_scope.DocumentCopies`; the
+`1kg.7.1` brief's ID-5 and T-B12): archiving or deleting one document stops
+every copy of it, the table's and each member's, and leaves every other
+display up.
 
 **Unarchive is a locked widening** (RQ-4, RQ-10), one transaction: the
 ownership read and the document, and for a document that is not archived
@@ -87,8 +95,11 @@ from .conversations_api import read_body
 from .db import CampaignAuthzMissing, TransactionalDatabase, UnitOfWork
 from .document_store import DocumentStore, PostgresDocumentStore
 from .documents_api import UNAVAILABLE_MESSAGE, get_clock
+from .reveal_scope import DocumentCopies, EndReason
+from .reveal_store import PostgresRevealStore
+from .reveals import slot_clear_for
 from .session import SessionData
-from .table_session_store import PostgresTableSessionStore, TableSessionStore, no_slots
+from .table_session_store import PostgresTableSessionStore, TableSessionStore
 from .workbench_api import SessionDependency, not_found, workbench_router
 from .workbench_contracts import DocumentDeleteRequest, ErrorBody, ErrorCode, ErrorInfo
 
@@ -123,12 +134,13 @@ class LifecycleStores:
 
 def get_lifecycle_stores() -> LifecycleStores:
     """The stores every route here uses. Tests override this dependency. The
-    slot clear is `no_slots`, as every narrowing's is until `narrow` learns a
-    scope (`reveal_scope`)."""
+    session store's slot clear is the reveal fill (`reveals.slot_clear_for`),
+    as every production session store's is, so a narrowing here clears the
+    copies its scope names."""
     return LifecycleStores(
         PostgresCampaignStore(),
         PostgresDocumentStore(),
-        PostgresTableSessionStore(slot_clear=no_slots),
+        PostgresTableSessionStore(slot_clear=slot_clear_for(PostgresRevealStore())),
         PostgresAuditLog(),
     )
 
@@ -205,12 +217,15 @@ def _owned(stores: LifecycleStores, unit: UnitOfWork, campaign_id: str, owner_id
         not_found()
 
 
-def _narrow_live(stores: LifecycleStores, unit: UnitOfWork, campaign_id: str) -> None:
+def _narrow_live(
+    stores: LifecycleStores, unit: UnitOfWork, campaign_id: str, *, clears: DocumentCopies, now: datetime | None
+) -> None:
     """Narrow the campaign's live session, if it has one: its row held, its
-    reveal epoch advanced, its slots cleared."""
+    reveal epoch advanced, and the copies `clears` names cleared, stamped with
+    `now`."""
     live = stores.sessions.live_session_for_campaign(unit, campaign_id)
     if live is not None:
-        stores.sessions.narrow(unit, campaign_id, live.id)
+        stores.sessions.narrow(unit, campaign_id, live.id, clears=clears, now=now)
 
 
 def _audit(
@@ -245,18 +260,27 @@ def _audit(
 
 
 def archive_step_one(
-    db: TransactionalDatabase, stores: LifecycleStores, *, campaign_id: str, document_id: str, owner_id: int
+    db: TransactionalDatabase,
+    stores: LifecycleStores,
+    *,
+    campaign_id: str,
+    document_id: str,
+    owner_id: int,
+    now: datetime | None = None,
 ) -> None:
     """Never calls `lock_campaign`, and is never refused on state: ownership,
     the document, and — unless it is archived already — the live session
-    narrowed. Committed before step two asks for the lock."""
+    narrowed (that document's copies, as `document_archived`, stamped with the
+    request's clock). Committed before step two asks for the lock."""
     with db.transaction() as unit:
         _owned(stores, unit, campaign_id, owner_id)
         found = stores.documents.get(unit, campaign_id, document_id)
         if found is None:
             not_found()
         if not found.is_archived:
-            _narrow_live(stores, unit, campaign_id)
+            _narrow_live(
+                stores, unit, campaign_id, clears=DocumentCopies(document_id, EndReason.DOCUMENT_ARCHIVED), now=now
+            )
 
 
 def archive_step_two(
@@ -270,8 +294,8 @@ def archive_step_two(
 ) -> None:
     """The exclusive lock first, ownership again under it, the document's row
     held; an archived document changes nothing. Otherwise archive it, narrow a
-    live session again (one started since step one), advance the revision and
-    record `document.archived`."""
+    live session again (one started since step one; that document's copies, as
+    `document_archived`), advance the revision and record `document.archived`."""
     with db.transaction() as unit:
         unit.lock_campaign(campaign_id, shared=False)
         _owned(stores, unit, campaign_id, owner_id)
@@ -281,7 +305,9 @@ def archive_step_two(
         if held.is_archived:
             return
         stores.documents.set_archived(unit, campaign_id, document_id, archived=True, now=now)
-        _narrow_live(stores, unit, campaign_id)
+        _narrow_live(
+            stores, unit, campaign_id, clears=DocumentCopies(document_id, EndReason.DOCUMENT_ARCHIVED), now=now
+        )
         revision = unit.advance_authz_revision(campaign_id)
         _audit(stores, unit, campaign_id=campaign_id, document_id=document_id, owner_id=owner_id,
                action=AuditAction.DOCUMENT_ARCHIVED, revision=revision, now=now)
@@ -320,13 +346,20 @@ def unarchive_document(
 
 
 def delete_step_one(
-    db: TransactionalDatabase, stores: LifecycleStores, *, campaign_id: str, document_id: str, owner_id: int
+    db: TransactionalDatabase,
+    stores: LifecycleStores,
+    *,
+    campaign_id: str,
+    document_id: str,
+    owner_id: int,
+    now: datetime | None = None,
 ) -> None:
     """Never calls `lock_campaign`: ownership, the document, `409
     document_not_archived` for one that is not archived — before anything
-    narrows — and then the live session narrowed (the shared ADR lists delete
-    among the fact-changing narrowings, although an archived document is shown
-    nowhere; the brief's I-16)."""
+    narrows — and then the live session narrowed: that document's copies, as
+    `document_deleted`, stamped with the request's clock (the shared ADR lists
+    delete among the fact-changing narrowings, although an archived document is
+    shown nowhere; the brief's I-16)."""
     with db.transaction() as unit:
         _owned(stores, unit, campaign_id, owner_id)
         found = stores.documents.get(unit, campaign_id, document_id)
@@ -334,7 +367,7 @@ def delete_step_one(
             not_found()
         if not found.is_archived:
             raise _not_archived()
-        _narrow_live(stores, unit, campaign_id)
+        _narrow_live(stores, unit, campaign_id, clears=DocumentCopies(document_id, EndReason.DOCUMENT_DELETED), now=now)
 
 
 def delete_step_two(
@@ -347,9 +380,12 @@ def delete_step_two(
     now: datetime,
 ) -> None:
     """The exclusive lock first, ownership again under it, the document's row
-    held and found archived still; then the document and its whole history
-    deleted, a live session narrowed again, the revision advanced and
-    `document.deleted` recorded — the row that outlives the document."""
+    held and found archived still; then a live session narrowed again (that
+    document's copies, as `document_deleted`) **before** the document and its
+    whole history are deleted — its disclosures go with it by the cascade, and
+    a slot still showing one would refuse the delete (the slot -> disclosure
+    key has no delete action) — the revision advanced and `document.deleted`
+    recorded, the row that outlives the document."""
     with db.transaction() as unit:
         unit.lock_campaign(campaign_id, shared=False)
         _owned(stores, unit, campaign_id, owner_id)
@@ -358,8 +394,8 @@ def delete_step_two(
             not_found()
         if not held.is_archived:
             raise _not_archived()
+        _narrow_live(stores, unit, campaign_id, clears=DocumentCopies(document_id, EndReason.DOCUMENT_DELETED), now=now)
         stores.documents.delete(unit, campaign_id, document_id)
-        _narrow_live(stores, unit, campaign_id)
         revision = unit.advance_authz_revision(campaign_id)
         _audit(stores, unit, campaign_id=campaign_id, document_id=document_id, owner_id=owner_id,
                action=AuditAction.DOCUMENT_DELETED, revision=revision, now=now)
@@ -374,10 +410,11 @@ def archive_document(
     owner_id: int,
     now: datetime,
 ) -> None:
-    """RQ-5's two steps as the route runs them: step one, committed, then step
-    two, whose busy answer is *not applied yet* (RC-15)."""
+    """RQ-5's two steps as the route runs them, both at the request's one clock:
+    step one, committed, then step two, whose busy answer is *not applied yet*
+    (RC-15)."""
     guarded(lambda: archive_step_one(db, stores, campaign_id=campaign_id, document_id=document_id,
-                                     owner_id=owner_id))
+                                     owner_id=owner_id, now=now))
     guarded(
         lambda: archive_step_two(db, stores, campaign_id=campaign_id, document_id=document_id, owner_id=owner_id,
                                  now=now),
@@ -396,7 +433,7 @@ def delete_document(
 ) -> None:
     """The same two steps for a delete, once the password has checked out."""
     guarded(lambda: delete_step_one(db, stores, campaign_id=campaign_id, document_id=document_id,
-                                    owner_id=owner_id))
+                                    owner_id=owner_id, now=now))
     guarded(
         lambda: delete_step_two(db, stores, campaign_id=campaign_id, document_id=document_id, owner_id=owner_id,
                                 now=now),

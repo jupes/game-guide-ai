@@ -38,7 +38,7 @@ import traceback
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -101,6 +101,7 @@ from service.reconciliation import (
     reconcile,
     reconcile_slots,
 )
+from service.reveal_scope import NARROWED, SlotScope
 from service.seat_offer_store import (
     ACCEPTED,
     DECLINED,
@@ -762,14 +763,18 @@ class World:
     #: The job outbox over the same database (1kg.2.3): the expiry job and the
     #: reconciliations the lifecycle enqueues.
     jobs: Any = None
+    #: The `(scope, now)` of each of those calls, in the same order (1kg.7.1).
+    slot_scopes: list[tuple[SlotScope, datetime]] = field(default_factory=list)
 
 
 @pytest.fixture(params=["fake", pytest.param("postgres", marks=needs_db)])
 def world(request: pytest.FixtureRequest) -> Iterator[World]:
     clears: list[tuple[Any, str]] = []
+    scopes: list[tuple[SlotScope, datetime]] = []
 
-    def record(unit: Any, session_id: str) -> None:
+    def record(unit: Any, session_id: str, scope: SlotScope, now: datetime) -> None:
         clears.append((unit, session_id))
+        scopes.append((scope, now))
 
     if request.param == "fake":
         db: Any = InMemoryDatabase()
@@ -785,6 +790,7 @@ def world(request: pytest.FixtureRequest) -> Iterator[World]:
             players=(3, 4, 5),
             slot_clears=clears,
             jobs=InMemoryJobQueue(db=db),
+            slot_scopes=scopes,
         )
         return
 
@@ -816,6 +822,7 @@ def world(request: pytest.FixtureRequest) -> Iterator[World]:
         players=(int(gms[2]), int(gms[3]), int(gms[4])),
         slot_clears=clears,
         jobs=PostgresJobQueue(database),
+        slot_scopes=scopes,
     )
 
 
@@ -1715,11 +1722,15 @@ def test_narrow_advances_the_reveal_epoch_and_calls_its_extension_point_once(wor
         assert quiet is not None
         assert (quiet.reveal_epoch, quiet.audio_epoch) == (1, 0)
         assert world.slot_clears == [(unit, session.id)], "exactly once, with (unit, session_id)"
+        [(scope, stamped)] = world.slot_scopes
+        assert scope == NARROWED, "a narrowing that names no scope clears every slot (fail closed)"
+        assert stamped.tzinfo is not None
 
         loud = world.sessions.narrow(unit, campaign, session.id, audio=True)
         assert loud is not None
         assert (loud.reveal_epoch, loud.audio_epoch) == (2, 1)
         assert world.slot_clears == [(unit, session.id), (unit, session.id)]
+        assert [scope for scope, _ in world.slot_scopes] == [NARROWED, NARROWED]
 
     with world.db.transaction() as unit:
         assert world.sessions.narrow(unit, campaign, "ses_" + "z" * 22) is None
@@ -3106,10 +3117,10 @@ def test_the_alias_key_is_the_comparison_both_worlds_make() -> None:
 
 
 def test_the_slot_clearing_extension_point_is_empty_in_this_bead() -> None:
-    """`1kg.7.1` fills it. Until then a narrowing has nothing to clear, and this
-    says so in one place rather than by omission."""
+    """Production passes `1kg.7.1`'s fill (`reveals.slot_clear_for`); `no_slots`
+    stays the empty one, for tests whose subject is not the reveal rows."""
     with InMemoryDatabase().transaction() as unit:
-        assert no_slots(unit, "ses_x") is None
+        assert no_slots(unit, "ses_x", NARROWED, datetime.now(UTC)) is None
 
 
 # ══ 1kg.2.2: campaigns, seats, offers and the GM's confirmation ═════════════

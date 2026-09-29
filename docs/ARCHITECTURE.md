@@ -543,7 +543,9 @@ delete narrow the campaign's live table in a first transaction that never
 takes it, then take it exclusively first in a second, re-read ownership under
 it, change the document, narrow again, advance the authorisation revision and
 write a content-free audit row (RQ-5; a lock timeout is "not applied yet",
-never a job). Delete takes only an archived document and asks for the
+never a job). Each narrowing clears that document's copies
+(`reveal_scope.DocumentCopies`) at the request's one clock, and a delete
+narrows before it deletes. Delete takes only an archived document and asks for the
 password first, through the same re-authentication as a seat's Remove.
 
 `campaign.documents` holds one document's **live** content as flat JSON, one
@@ -631,10 +633,58 @@ ends `replaced` only with its last copy). A target slot is re-pointed, never
 cleared and then pointed, so its `seq` rises by exactly one. A narrowing clears
 by **scope** (`reveal_scope`): every slot (End, expiry, Rotate, archive,
 Stop-all), one member's slots (Remove, A-20), one document's copies (a Stop,
-and later a document's archive, deletion or unlink), or none (audio off); the
-default is every slot, so a caller that forgets over-clears. Wiring the clear
-into `narrow`, the service that orders a Confirm and a Stop, and the
-reconciliation's fill are the bead's second change.
+a document's archive or deletion, and later its unlink), or none (audio off); the
+default is every slot, so a caller that forgets over-clears.
+
+**The fills and the service** (`service/reveals.py`). `narrow` and its
+extension point carry a scope and the request's clock (`SlotClear = (unit,
+session_id, scope, now)`), and **every production session store is built with
+the fill** `reveals.slot_clear_for(PostgresRevealStore())` — `app.py`'s,
+`campaigns_api.get_campaign_stores`'s and
+`document_lifecycle_api.get_lifecycle_stores`'s — so every narrowing already shipped
+clears exactly the displays it invalidates (RQ-7). `no_slots` stays, as the
+empty one tests pass. `campaign.reconcile` is registered with
+`reveals.make_reconcile_slots(...)`, which, under the exclusive campaign lock,
+narrows each dead session's every slot and each live session's removed seats
+as `reconciled`; `reconciliation.reconcile_slots` is the empty one tests pass.
+Every production `narrow(` names `clears=` and `now=`, and
+`service/tests/test_reveals.py` reads the source to prove it.
+
+| Narrowing | Scope | `ended_reason` | Campaign lock |
+|---|---|---|---|
+| End (`_close`) | every slot | `gm_end` | never |
+| Expiry — the job, found by End, or finalised by Start (`_close`) | every slot | `expired` | never |
+| Rotate | every slot | `link_rotated` | never |
+| Remove (`remove_seat`) | that member's slots (A-20) | `participant_removed` | never |
+| Campaign archive, step 1 and step 2 | every slot | `campaign_archived` | step 2 only, exclusive |
+| Group member remove, group remove (`1ir.2.1`), step 1 and step 2 | every slot (`NARROWED`, fail closed: a disclosure does not record its group until `1ir.2.x`) | `narrowed` | step 2 only, exclusive |
+| A Stop of one document | that document's copies | `gm_stop` | never |
+| Stop-all | every slot | `stop_all` | never |
+| The reconciliation | a dead session's every slot; a live session's removed seats | `reconciled` | exclusive |
+| `narrow` naming no scope | every slot (fail closed) | `narrowed` | — |
+| Document archive (`1kg.5.2`), step 1 and step 2 | that document's copies | `document_archived` | step 2 only, exclusive |
+| Document delete (`1kg.5.2`), step 1 and step 2 — narrowed **before** the row is deleted, as a slot still showing one of its disclosures would refuse the cascade | that document's copies | `document_deleted` | step 2 only, exclusive |
+| Later: character unlink (`1kg.5.2`) | that document's copies | `character_unlinked` | — |
+| Later: table audio off (`1kg.8.6`, `1kg.8.7`) | no reveal slot | — | — |
+
+A **Confirm** (`Reveals.display`) is a locked widening in a fixed order:
+ownership read unlocked (one not-found answer for a stranger, and no lock
+before it); replay unlocked; the courtesy check (not live, or a stale epoch, is
+a conflict before any lock); the campaign lock **shared**; validation with
+reads only — the document not archived, the version sealed, each masked key
+revealable, present and non-empty by the contract's per-kind rule, and the
+audience (active seats, or *Everyone seated* expanded here to the confirmed
+ones); the session row, owner-scoped; replay and state again under it,
+including a campaign archived meanwhile; the write and **one** epoch advance;
+the audit rows (`reveal.displayed` or `reveal.updated`, and a `reveal.stopped`
+per disclosure a move or a replacement took copies from). A **Stop** never
+takes the campaign lock, is never refused for state, always advances the epoch,
+writes one `reveal.stopped` per disclosure it took copies from (or one naming
+its document), and commits before it reads the picture. Neither advances
+`authz_revision`, enqueues a job or notifies. Deadlock victims are retried
+three times, then busy; the races are proved against PostgreSQL in
+`tests/test_reveal_db.py`. No HTTP route exists yet: `1kg.7.2` builds the
+routes, the projection and the headers on this service.
 
 | Invariant | Held by |
 |---|---|
@@ -667,9 +717,10 @@ projection from them with its one builder.
 
 Storage for a GM's images and audio, added by `1kg.8.1.1` (slice a of `1kg.8.1`):
 the media migration (`*_media_assets.sql`), the asset store in `service/asset_store.py`
-and the object store in `service/media_objects.py`; then the upload routes of
-`1kg.8.1.2` (slice b, below). **It ships dark.** The routes match nothing while
-`WORKBENCH_MEDIA_ENABLED` is off (the default), and no store is built or job
+and the object store in `service/media_objects.py`, with its Cloud Storage
+implementation in `service/media_gcs.py` (`1kg.8.1.4`, slice d); then the upload
+routes of `1kg.8.1.2` (slice b, below). **It ships dark.** The routes match nothing
+while `WORKBENCH_MEDIA_ENABLED` is off (the default), and no store is built or job
 kind registered unless `WORKBENCH_MEDIA_STORE` names one. Switching the
 capability on is the owner's decision (Q-5), and the $10 cap must rise first.
 
@@ -784,15 +835,41 @@ the bucket's own lifecycle rule for `tmp/` is production's backstop
 `MediaSettings.from_env` reads `WORKBENCH_MEDIA_ENABLED` (strictly `true`,
 `false`, `1`, `0` or unset; off by default) and `WORKBENCH_MEDIA_STORE` (unset
 by default, meaning no store is built; `filesystem` with an absolute
-`WORKBENCH_MEDIA_DIR`; `gcs` is refused by name until slice d; `memory` is built
+`WORKBENCH_MEDIA_DIR`; `gcs` with a `WORKBENCH_MEDIA_BUCKET`; `memory` is built
 in code only). "Off" means no route, no store, no bucket and no cost; the store
 setting is separate from `enabled` because a deployment switched off must still
 finish the deletions it owes. Every refusal names the variable, never its value.
 The running service reads them once, at startup, through `startup_settings`,
-which adds one rule: the capability cannot be on with no store (refused by
-name, so startup fails loudly). Every object-store call outside `service/media_objects.py` goes through
+which adds two rules: the capability cannot be on with no store, and `gcs`
+needs a build that carries the client (asked without importing it). Both are
+refused by name, so startup fails loudly, database or no database. Every object-store call outside `service/media_objects.py` goes through
 `via_store`, where slice c puts the thread limiter. The store's health signal
 for `1kg.9.2` is the read-only `reachable()`.
+
+**The Cloud Storage store** (`service/media_gcs.py`) keeps the same contract,
+and the same suite runs over it, through the real `google-cloud-storage` client
+against an in-process emulator (`service/tests/_gcs_emulator.py`): no bucket and
+no credentials in any test. The client is the optional `gcs` extra, so the
+default image carries none, and it is imported only inside `build_gcs_store`,
+which the factory calls only for `gcs`; a build without it answers
+`MediaStoreNotBuilt`. Credentials come from the runtime service account through
+Application Default Credentials, never from code or configuration. An upload is
+one resumable upload fed in 1 MiB pieces, finalized only by the short read that
+ends a stream within its ceiling, so a body over its ceiling never becomes an
+object (Cloud Storage discards the unfinished session after a week). A read is
+a metadata read, then ranges of at most 256 KiB pinned to that generation. A
+listing maps onto Cloud Storage's lexicographic listing, skipping the key equal
+to the cursor and never examining a name outside the key grammar. `reachable()`
+lists one object under `tmp/`, because the runtime account holds object
+administration on the bucket and nothing more; for the same reason the builder
+turns off the client's own background read of bucket metadata. Every call is
+bounded (3 s to connect, 10 s to read, 20 s of retrying). The retry deadline is
+checked between attempts, so an attempt that starts just before it still runs to
+its own timeouts: one call lasts about 33 s at most, far inside a job's 300 s
+lease; a failure is `ObjectStoreUnavailable` with its fixed message and no
+driver text, since Cloud Storage's own messages name the bucket and the object.
+Creating the bucket, its IAM binding and its `tmp/` rule, and building the image
+with the extra, are `1kg.9.5`'s (`docs/deploy-gcp.md` section 13).
 
 **Table reads never use this store** (SEC-44(2)). A table's slot resolver finds
 its asset in its own `table_principal` query (SEC-16, SEC-41, `1kg.7.x`); the
