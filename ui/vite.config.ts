@@ -57,7 +57,10 @@ export default defineConfig({
         name: 'jsdom',
         environment: 'jsdom',
         globals: true,
-        include: ['src/**/*.{test,spec}.{ts,tsx}'],
+        // `scripts/**` covers hangGuard.test.ts (agent-forge-harness-w1e): a
+        // plain Node module, not app source, but it still wants jsdom's
+        // environment/globals and no real browser.
+        include: ['src/**/*.{test,spec}.{ts,tsx}', 'scripts/**/*.{test,spec}.ts'],
         setupFiles: './src/test-setup.ts'
       }
     }, {
@@ -70,6 +73,17 @@ export default defineConfig({
       })],
       test: {
         name: 'storybook',
+        // Explicit, and lower than vitest's 5000ms default: agent-forge-
+        // harness-w1e. This only catches a story that's genuinely waiting on
+        // an unresolved promise while the tab stays responsive — the timer
+        // that enforces it runs *inside the browser tab* (see
+        // `@vitest/runner`'s `withTimeout`), so it cannot fire for a tab
+        // whose JS thread is wedged or whose CDP connection is lost. That
+        // class of hang is caught instead by `scripts/hangGuard.ts`, an
+        // external, Node-side watchdog `ui/package.json`'s `test` script
+        // wraps this project's run in.
+        testTimeout: 15_000,
+        hookTimeout: 15_000,
         browser: {
           enabled: true,
           headless: true,
