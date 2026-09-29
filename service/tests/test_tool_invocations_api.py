@@ -861,6 +861,22 @@ def test_d5_d6_a_cancel_requested_attempt_keeps_its_slot_and_a_failure_after_it_
                              "retryable": True, "in_flight": [INV, INV2]}
 
 
+def test_d7_a_cancel_past_the_deadline_ends_the_attempt_expired_and_flags_nothing(world: World,
+                                                                                  client: TestClient) -> None:
+    """I-13 names cancel: a working row past its deadline is expired first, so
+    the cancel answers `failed attempt_expired`, still retryable, and never
+    flags a dead attempt into a final `cancelled`."""
+    table = world.table()
+    _admit(world, table)
+    world.now[0] = T0 + TTL
+    answer = cancel_of(client, table).json()
+    assert (answer["status"], answer["cancel_requested"], _set(answer["error"])) == ("failed", False, {
+        "code": "attempt_expired", "message": "That took too long and was stopped. Try again.", "retryable": True})
+    assert status_of(client, table).json() == answer
+    assert world.entries(table)[0]["invocation"] == answer
+    assert [a.outcome for a in world.attempts(table)] == ["expired"]
+
+
 # ── E. Expiry and fencing ────────────────────────────────────────────────────
 
 
@@ -895,6 +911,29 @@ def test_e1_e2_past_its_deadline_a_read_ends_the_attempt(world: World, client: T
     assert [a.outcome for a in world.attempts(plain)] == ["expired"]
     assert status_of(client, asked).json()["status"] == "cancelled"
     assert [a.outcome for a in world.attempts(asked)] == ["expired"]
+
+
+def test_e1b_the_hundredth_attempts_expiry_is_final(world: World, client: TestClient) -> None:
+    """I-6: an expiry is retryable below the last attempt only, so the 100th
+    attempt's expiry is stored `retryable: false` and a repeat replays it."""
+    table = world.table()
+    _admit(world, table)
+    failed = {"code": "provider_timeout", "message": "The model took too long to answer.", "retryable": True}
+    with world.db.transaction() as unit:
+        for attempt in range(1, 100):
+            moment = T0 + timedelta(seconds=attempt)
+            world.stores.invocations.settle(unit, GM_A, table.campaign, INV, attempt=attempt, status="failed",
+                                            outcome="failed", result=None, error=failed, now=moment)
+            world.stores.invocations.start_retry(unit, owner_id=GM_A, campaign_id=table.campaign,
+                                                 invocation_id=INV, attempt=attempt, operation_id=f"{attempt:032x}",
+                                                 attempt_deadline=moment + TTL, now=moment)
+    world.now[0] = T0 + timedelta(seconds=99) + TTL
+    expired = status_of(client, table).json()
+    assert (expired["status"], expired["attempt"], _set(expired["error"])) == ("failed", 100, {
+        "code": "attempt_expired", "message": "That took too long and was stopped. Try again.", "retryable": False})
+    assert world.entries(table)[0]["invocation"] == expired
+    assert post(client, table).json() == expired
+    assert world.executors[ToolId.NPC].runs == [] and len(world.attempts(table)) == 100
 
 
 def test_e3_a_completion_after_its_deadline_is_discarded_and_the_post_answers_the_expiry(
@@ -952,6 +991,30 @@ def test_e4b_a_late_failure_of_a_superseded_attempt_touches_nothing(world: World
         now=world.clock(),
     )
     assert world.rows() == rows and status_of(client, table).json() == second
+
+
+def test_e4c_check_cancelled_stops_an_expired_or_a_superseded_attempt(world: World) -> None:
+    """C-7: `check_cancelled` raises once the row is no longer this attempt's
+    `working` before its deadline, with no cancel asked for — an expired or a
+    superseded attempt stops spending."""
+    table = world.table()
+    first = _admit(world, table)
+    _ctx(world, first).check_cancelled()
+    world.now[0] = T0 + TTL
+    with pytest.raises(InvocationCancelled):
+        _ctx(world, first).check_cancelled()
+    world.now[0] = T0 + TTL + timedelta(seconds=1)
+    second = _admit(world, table)
+    assert (second.attempt, world.attempts(table)[0].outcome) == (2, "expired")
+    _ctx(world, second).check_cancelled()
+    within_its_own_deadline = ExecutionContext(
+        first, clock=lambda: T0, factory=ProviderClientFactory(client_builders={DEFAULT_ALIAS: world.llm}),
+        probe=tool_invocations.cancellation_probe(world.db, world.stores, first, lambda: T0),
+    )
+    with pytest.raises(InvocationCancelled):
+        within_its_own_deadline.check_cancelled()
+    current = tool_invocations.read(world.db, world.stores, GM_A, table.campaign, INV, now=world.clock())
+    assert (current.status.value, current.attempt, current.cancel_requested) == ("working", 2, False)
 
 
 def test_e5_a_past_deadline_row_nobody_read_does_not_hold_the_cap(world: World, client: TestClient) -> None:
@@ -1145,8 +1208,11 @@ def test_g1_the_model_is_the_servers_and_never_leaves(world: World, client: Test
 
 
 def test_g2_an_alias_off_the_allowlist_is_refused_at_admission(world: World, client: TestClient,
-                                                               monkeypatch: pytest.MonkeyPatch) -> None:
-    """M-G3."""
+                                                               monkeypatch: pytest.MonkeyPatch,
+                                                               caplog: pytest.LogCaptureFixture) -> None:
+    """M-G3; I-19 and C-10(d): the refusal's log line names the tool, never
+    the model or its provider."""
+    caplog.set_level(logging.DEBUG)
     monkeypatch.setitem(CATALOG, "deepseek-v4-flash",
                         CATALOG["deepseek-v4-flash"].__class__(**{**CATALOG["deepseek-v4-flash"].__dict__,
                                                                   "enabled": True}))
@@ -1155,6 +1221,11 @@ def test_g2_an_alias_off_the_allowlist_is_refused_at_admission(world: World, cli
     assert response.status_code == 409 and _error(response)["code"] == "tool_disabled"
     assert "deepseek" not in response.text.lower()
     _nothing_created(world)
+    logged = [record.getMessage() for record in caplog.records]
+    assert [m for m in logged if m.startswith("tool refused: its model is off the Workbench allowlist")]
+    words = {*MODEL_WORDS, *CATALOG, *(p.display_name for p in CATALOG.values()), *(p.label for p in
+             PUBLIC_MODELS.values()), "traveller"}
+    assert not [w for message in logged for w in words if w in message]
 
 
 def test_g3_no_trace_callback_or_metadata_rides_on_a_tool_call(world: World, client: TestClient,
