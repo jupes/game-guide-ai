@@ -119,7 +119,7 @@ export const KNOWN_ERROR_CODES = [
   'tool_disabled', 'campaign_required', 'nothing_to_recap', 'not_found', 'forbidden', 'conflict',
   'cap_reached', 'throttled_user', 'throttled_daily', 'provider_failed', 'provider_timeout',
   'attempt_expired', 'backend_unavailable', 'already_linked', 'alias_taken', 'seat_not_open',
-  'seat_not_accepted', 'seat_cap_reached', 'campaign_archived', 'reauth_failed',
+  'seat_not_accepted', 'seat_cap_reached', 'campaign_archived', 'reauth_failed', 'document_unsupported',
 ] as const
 export type KnownErrorCode = (typeof KNOWN_ERROR_CODES)[number]
 

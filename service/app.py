@@ -36,6 +36,7 @@ from ingestion.retrieval import EmbeddingUnavailableError
 from . import (
     campaigns_api,
     conversations_api,
+    documents_api,
     gcp_logging,
     job_driver,
     reconciliation,
@@ -1624,6 +1625,7 @@ app.include_router(
     campaigns_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator, _job_queue, _job_driver)
 )
 app.include_router(seats_api.build_router(require_session, get_timeline_database))
+app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
 
 
 app.include_router(job_driver.build_router(_job_driver))
