@@ -119,3 +119,32 @@ describe('AppHeader (swe1.4)', () => {
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
   })
 })
+
+describe('AppHeader showSettings (agent-forge-harness-0rn, T-AH-1)', () => {
+  function renderWithoutSettings(user = makeUserState('dm')) {
+    return render(
+      <ThemeProvider initialTheme="light">
+        <AppNavContext.Provider value={makeNavState()}>
+          <CurrentUserContext.Provider value={user}>
+            <AppHeader showSettings={false} />
+          </CurrentUserContext.Provider>
+        </AppNavContext.Provider>
+      </ThemeProvider>,
+    )
+  }
+
+  it('drops the model picker and the theme control, and keeps every channel', () => {
+    renderWithoutSettings()
+    expect(screen.queryByRole('combobox', { name: 'Model' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Dark theme' })).not.toBeInTheDocument()
+    for (const name of ['Sage', 'Spell', 'Rules', 'GM']) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument()
+    }
+  })
+
+  it('keeps them by default', () => {
+    renderHeader(makeNavState())
+    expect(screen.getByRole('combobox', { name: 'Model' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Dark theme' })).toBeInTheDocument()
+  })
+})

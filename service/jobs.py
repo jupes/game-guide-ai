@@ -49,7 +49,9 @@ another instance could claim that job, run it and delete it — and the change t
 enqueuer made in the same transaction was then never processed by anything
 (W-1). An absorbing enqueue therefore holds the row it absorbed into
 `FOR SHARE`, and `claim`'s `FOR UPDATE SKIP LOCKED` skips it until every
-absorber has committed. `InMemoryJobQueue` holds the same rule directly.
+absorber has committed. `InMemoryJobQueue` holds the same rule directly, and
+refuses a second open unit that would stage a job while another unit is its
+database's writer (ixa.2).
 
 **Rows are content-free** (SEC-20): a payload is a flat object of identifiers,
 which `check_payload` enforces by shape, and a failure records the exception's
@@ -155,7 +157,9 @@ class JobQueue(Protocol):
         """Add a job inside `unit`'s transaction; returns its id. With a
         `dedupe_key`, a job of the same kind and key that nobody has claimed yet
         absorbs this one: its id is returned, and it keeps its own payload and
-        `run_after`."""
+        `run_after`. In PostgreSQL, an enqueue of a kind and key that another
+        open transaction has enqueued and not yet committed waits for that
+        transaction; the in-memory twin refuses it with `TwinWouldBlock`."""
         ...  # pragma: no cover - structural type
 
     def claim(
@@ -338,16 +342,50 @@ class _Row:
 @dataclass
 class InMemoryJobQueue:
     """The fake, with the same visibility, ordering, lease, fencing and dedupe
-    semantics: a job exists for `claim` only once its transaction has committed."""
+    semantics: a job exists for `claim` only once its transaction has committed.
+
+    **One open writer per database** (ixa.2, as ixa.1 is for the campaign
+    twins). An enqueue that stages a job first claims the writer of its
+    **unit's** database (`InMemoryTransaction.claim_writer`). The claim comes
+    after the checks and the dedupe read, and before a callback is registered,
+    an id is taken or a row is stored, so an enqueue refused with
+    `TwinWouldBlock` leaves nothing behind.
+
+    The refusal is conservative. The twin refuses any second open unit that
+    would stage a job while another unit is the writer, including a unit that
+    became the writer through another twin on the same database. PostgreSQL
+    really waits in one of those cases only: the same kind and dedupe key,
+    where `jobs_dedupe_uidx` makes the second insert wait for the first
+    transaction's outcome (proved in `tests/test_db_postgres.py`). For another
+    key, or no key, it would not wait; the twin cannot tell the cases apart,
+    which is what `TwinWouldBlock` says. An absorb is a share lock, not a
+    write, so it never claims: two absorbers go through together, as
+    `FOR SHARE` lets them. A unit built without a database never claims.
+
+    `claim`, `complete`, `fail` and `snapshot` never claim and take no unit. In
+    PostgreSQL each is its own short transaction, and none can wait on an open
+    enqueuer: `claim` skips locked rows (here, held ones), and `complete` and
+    `fail` touch only claimed rows (`attempts >= 1`). No enqueuer can hold such
+    a row, since an absorb needs `attempts = 0`, or have inserted it, since a
+    row it staged is invisible to `claim`."""
 
     db: InMemoryDatabase = field(default_factory=InMemoryDatabase)
     _rows: dict[int, _Row] = field(default_factory=dict)
-    #: Enqueued but not committed, per open unit of work.
-    _staged: dict[int, dict[int, _Row]] = field(default_factory=dict)
+    #: Enqueued but not committed, per open unit of work. Keyed by the unit
+    #: itself, never by its address (ixa.2): CPython hands a freed address to
+    #: the next object it allocates, so a unit that never finished handed its
+    #: entry, and its uncommitted jobs with it, to whichever unit came next.
+    #: The dictionary holds a strong reference to its key, so while an entry
+    #: survives, that address cannot be reused. The trade: a unit that never
+    #: commits or rolls back leaks its entry here, and its holds below keep the
+    #: jobs it absorbed into unclaimable in this queue. Only a unit built
+    #: directly can do that; `transaction()` always publishes or discards.
+    _staged: dict[InMemoryTransaction, dict[int, _Row]] = field(default_factory=dict)
     #: Committed rows an open unit absorbed into, and so holds until it commits.
     #: The twin of `SELECT ... FOR SHARE`: `claim` skips these, as its
-    #: `FOR UPDATE SKIP LOCKED` skips a share-locked row.
-    _held: dict[int, set[int]] = field(default_factory=dict)
+    #: `FOR UPDATE SKIP LOCKED` skips a share-locked row. Keyed by the unit, for
+    #: the reason above.
+    _held: dict[InMemoryTransaction, set[int]] = field(default_factory=dict)
     _next_id: int = 1
 
     def enqueue(
@@ -364,18 +402,25 @@ class InMemoryJobQueue:
             raise TypeError("an in-memory job is enqueued inside an in-memory transaction")
         check_kind(kind)
         checked = check_payload(payload)
-        mine = self._staged_by(unit)
         if check_dedupe_key(dedupe_key) is not None:
-            # What this transaction can see: committed rows, and its own.
-            for row in (*self._rows.values(), *mine.values()):
+            # What this transaction can see: committed rows, and its own. A read:
+            # `get`, never `_staged_by`, so it claims nothing and creates nothing.
+            for row in (*self._rows.values(), *self._staged.get(unit, {}).values()):
                 unstarted = row.dead_at is None and row.job.attempts == 0
                 if row.job.kind == kind and row.dedupe_key == dedupe_key and unstarted:
                     if row.job.id in self._rows:
                         # A committed row: hold it, so no claim can take the job —
                         # and delete this transaction's work with it — before we
-                        # commit. Our own staged rows are invisible anyway.
-                        self._held.setdefault(id(unit), set()).add(row.job.id)
+                        # commit. A share lock, not a write, so it claims no writer;
+                        # the callbacks release the hold however the unit ends. Our
+                        # own staged rows are invisible anyway.
+                        self._staged_by(unit)
+                        self._held.setdefault(unit, set()).add(row.job.id)
                     return row.job.id
+        # The first thing that stages: claimed before a callback is registered,
+        # an id is taken or a row is stored, so a refusal leaves nothing behind.
+        unit.claim_writer()
+        mine = self._staged_by(unit)
         moment = _now(now)
         job_id = self._next_id
         self._next_id += 1
@@ -384,22 +429,22 @@ class InMemoryJobQueue:
 
     def _staged_by(self, unit: InMemoryTransaction) -> dict[int, _Row]:
         """This unit's uncommitted jobs: published when it commits, dropped when it
-        rolls back, and until then invisible to `claim`."""
-        key = id(unit)
-        if key not in self._staged:
-            self._staged[key] = {}
+        rolls back, and until then invisible to `claim`. Its holds are released
+        either way."""
+        if unit not in self._staged:
+            self._staged[unit] = {}
 
             def publish() -> None:
-                self._rows.update(self._staged.pop(key, {}))
-                self._held.pop(key, None)
+                self._rows.update(self._staged.pop(unit, {}))
+                self._held.pop(unit, None)
 
             def discard() -> None:
-                self._staged.pop(key, None)
-                self._held.pop(key, None)
+                self._staged.pop(unit, None)
+                self._held.pop(unit, None)
 
             unit.on_publish(publish)
             unit.on_rollback(discard)
-        return self._staged[key]
+        return self._staged[unit]
 
     def claim(
         self,

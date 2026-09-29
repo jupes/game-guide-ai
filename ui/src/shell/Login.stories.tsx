@@ -9,6 +9,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, within } from 'storybook/test'
 
 import { json, pending, stubFetch, withShell } from '../../.storybook/shellHarness'
+import { expectTouchTarget } from '../../.storybook/touchTarget'
+import { atViewport, expectLeftEdge, expectNoPageOverflow, expectSpans, expectTheme, expectViewport, type ViewportName } from '../../.storybook/viewports'
 import { Login } from './Login'
 
 const meta = {
@@ -144,5 +146,82 @@ export const DarkWithError: Story = {
     canvas.getByRole('button', { name: 'Sign in' }).focus()
     await userEvent.keyboard('{Enter}')
     await expect(await canvas.findByRole('alert')).toBeVisible()
+  },
+}
+
+// ── Phone (agent-forge-harness-0rn) ──────────────────────────────────────────
+// A regression pin for the sign-in card on a phone. Login was already one
+// column (a row flexbox with one centred child lays out as one), so nothing
+// here is the phone block's mutation killer; Signup and the session-check
+// screen are. What this pins is the reflow and the 44px floors at the widths
+// every player signs in at (owner decision D-1).
+
+async function expectPhoneSignInCore(canvasElement: HTMLElement, viewport: ViewportName): Promise<HTMLElement> {
+  await expectViewport(viewport)
+  const canvas = within(canvasElement)
+  await expectNoPageOverflow()
+  const card = canvasElement.querySelector('.auth-screen__card')
+  if (!(card instanceof HTMLElement)) throw new Error('no sign-in card')
+  await expectTouchTarget(canvas, 'Sign in')
+  await expectSpans(canvas.getByRole('button', { name: 'Sign in' }), card)
+  const rows = Array.from(canvasElement.querySelectorAll('.aether-field__row'))
+  await expect(rows).toHaveLength(2)
+  for (const row of rows) {
+    await expect(row.getBoundingClientRect().height).toBeGreaterThanOrEqual(44)
+  }
+  return card
+}
+
+/** Below the card's 360px max-width (<= 392px total: 360 + the 16px gutter on
+ * each side), the card fills the row and sits flush at the gutter. */
+async function expectPhoneSignIn(canvasElement: HTMLElement, viewport: ViewportName): Promise<void> {
+  const card = await expectPhoneSignInCore(canvasElement, viewport)
+  await expectLeftEdge(card, 16)
+}
+
+export const Phone390: Story = {
+  ...atViewport('phone390'),
+  play: async ({ canvasElement }) => expectPhoneSignIn(canvasElement, 'phone390'),
+}
+
+export const Phone320: Story = {
+  ...atViewport('phone320'),
+  play: async ({ canvasElement }) => expectPhoneSignIn(canvasElement, 'phone320'),
+}
+
+/** agent-forge-harness-zh9 L-1: AC-1's own width list (320/375/390/599) had
+ * no Login story at 375 or 599. */
+export const Phone375: Story = {
+  ...atViewport('phone375'),
+  play: async ({ canvasElement }) => expectPhoneSignIn(canvasElement, 'phone375'),
+}
+
+/** Above 392px the 360px max-width binds: the card is centred, not flush to
+ * the gutter, so this pins equal margins instead of `expectLeftEdge`. */
+export const Edge599: Story = {
+  ...atViewport('edge599'),
+  play: async ({ canvasElement }) => {
+    const card = await expectPhoneSignInCore(canvasElement, 'edge599')
+    const box = card.getBoundingClientRect()
+    await expect(Math.abs(box.left - (window.innerWidth - box.right))).toBeLessThanOrEqual(1)
+  },
+}
+
+/** The error message is the longest line on the card; it wraps, not scrolls. */
+export const DarkPhone320WithError: Story = {
+  ...atViewport('phone320', 'dark'),
+  beforeEach: stubFetch(() => json({ detail: 'Email or password is incorrect.' }, 401)),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone320')
+    await expectTheme('dark')
+    const canvas = within(canvasElement)
+    canvas.getByRole('textbox', { name: 'Email' }).focus()
+    await userEvent.keyboard('alanna@aetheril.test')
+    canvas.getByLabelText('Password').focus()
+    await userEvent.keyboard('wrong-password')
+    canvas.getByRole('button', { name: 'Sign in' }).focus()
+    await userEvent.keyboard('{Enter}')
+    await expect(await canvas.findByRole('alert')).toBeVisible()
+    await expectPhoneSignIn(canvasElement, 'phone320')
   },
 }

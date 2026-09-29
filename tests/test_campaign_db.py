@@ -28,14 +28,17 @@ Without it they skip, and a skip is reported as a skip. From the repo root:
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
+import secrets
 import threading
 import time
 import traceback
 import unicodedata
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -43,6 +46,7 @@ from typing import Any
 import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
+from fastapi import HTTPException
 
 from service import migrations as mig
 from service.audit_log import (
@@ -56,13 +60,21 @@ from service.campaign_store import (
     AliasTaken,
     Campaign,
     InMemoryCampaignStore,
+    InvalidCursor,
     LiveSessionExists,
     MissingParent,
+    NotDue,
     NotLive,
     PostgresCampaignStore,
+    ScreenLimit,
+    SeatNotAccepted,
     SeatUnavailable,
+    StartReplayed,
     check_name,
+    encode_cursor,
 )
+from service.campaign_summary_store import InMemoryCampaignSummaryStore, PostgresCampaignSummaryStore
+from service.campaigns_api import CampaignStores, archive, archive_step_one, archive_step_two, restore
 from service.db import (
     CampaignAuthzMissing,
     CampaignLockOrder,
@@ -73,6 +85,8 @@ from service.db import (
     PoolSettings,
     TwinWouldBlock,
 )
+from service.history import InMemoryMessageStore
+from service.jobs import InMemoryJobQueue, Job, JobContext, JobRunner, PostgresJobQueue
 from service.participant_store import (
     InMemoryParticipantStore,
     Participant,
@@ -80,19 +94,59 @@ from service.participant_store import (
     alias_key,
     check_alias,
 )
+from service.reconciliation import (
+    RECONCILE_KIND,
+    enqueue_reconciliation,
+    handler,
+    reconcile,
+    reconcile_slots,
+)
+from service.reveal_scope import NARROWED, SlotScope
+from service.seat_offer_store import (
+    ACCEPTED,
+    DECLINED,
+    EXPIRED,
+    OFFER_LIFETIME,
+    THROTTLE_WINDOW,
+    WITHDRAWN,
+    InMemorySeatOfferStore,
+    PostgresSeatOfferStore,
+    SeatOffer,
+    ThrottleCount,
+    address_key,
+    check_address,
+    seat_status,
+    throttle_wait_s,
+)
 from service.table_session_store import (
+    SCREENS_PER_SESSION,
     InMemoryTableSessionStore,
     PostgresTableSessionStore,
-    TableCredential,
+    ScreenGrant,
     TableSession,
     no_slots,
 )
-from service.workbench_contracts import REFUSED_TEXT_CODE_POINTS
+from service.table_sessions import (
+    EXPIRE_KIND,
+    FANOUT_BOUND,
+    SESSION_LIFETIME,
+    BackendUnavailable,
+    Binding,
+    FanOutBound,
+    Inactive,
+    MintedScreen,
+    TableSessions,
+    may_write,
+)
+from service.workbench_contracts import REFUSED_TEXT_CODE_POINTS, SeatStatus
 
 CAMPAIGN = "cmp_" + "a" * 22
 OTHER_CAMPAIGN = "cmp_" + "b" * 22
 PARTICIPANT = "prt_" + "a" * 22
 SESSION = "ses_" + "a" * 22
+#: `1kg.2.2`'s reconciliation kind, imported from its module (never a second
+#: literal): what End, Rotate and expiry enqueue.
+RECONCILE = RECONCILE_KIND
 
 #: A second is long enough that a lock taken first is always taken first, and
 #: short enough that a test which should time out does not hold the job up.
@@ -102,6 +156,11 @@ QUICK = CampaignLockSettings(lock_timeout_s=1, transaction_timeout_s=5)
 PATIENT = CampaignLockSettings(lock_timeout_s=1, transaction_timeout_s=30)
 #: How long a test waits for another thread before calling it a hang.
 PATIENCE = 15
+
+
+def _command() -> str:
+    """A fresh client command id, in the wire contract's `CommandId` shape."""
+    return secrets.token_urlsafe(16)
 
 
 @pytest.fixture
@@ -383,8 +442,12 @@ def test_the_first_transaction_bound_a_transaction_sets_is_the_one_that_fires(
     participants, sessions = PostgresParticipantStore(), PostgresTableSessionStore(slot_clear=no_slots)
     with db.transaction() as unit:
         seat = participants.add(unit, CAMPAIGN, alias="Rook")
-        session, _ = sessions.start(
-            unit, CAMPAIGN, owner_id=owner, expires_at=datetime.now(UTC) + timedelta(hours=12)
+        session = sessions.start(
+            unit,
+            CAMPAIGN,
+            owner_id=owner,
+            expires_at=datetime.now(UTC) + timedelta(hours=12),
+            command_id=_command(),
         )
 
     with pytest.raises(psycopg.Error):
@@ -581,13 +644,13 @@ def _a_session_row(dsn: str, owner: int) -> None:
     with connect(dsn) as conn:
         conn.execute(
             "INSERT INTO campaign.table_sessions "
-            "(id, campaign_id, gm_user_id, state, expires_at, link_digest) "
-            "VALUES (%s, %s, %s, 'live', now() + interval '12 hours', %s)",
-            (SESSION, CAMPAIGN, owner, "a" * 64),
+            "(id, campaign_id, gm_user_id, state, expires_at) "
+            "VALUES (%s, %s, %s, 'live', now() + interval '12 hours')",
+            (SESSION, CAMPAIGN, owner),
         )
 
 
-def _insert_a_credential_referencing_the_session(dsn: str) -> None:
+def _insert_a_screen_grant_referencing_the_session(dsn: str) -> None:
     with connect(dsn, autocommit=False) as conn:
         conn.execute("SET LOCAL lock_timeout = '2s'")
         conn.execute(
@@ -599,23 +662,27 @@ def _insert_a_credential_referencing_the_session(dsn: str) -> None:
 
 
 @needs_db
-def test_rotating_the_link_does_not_block_a_join_that_references_the_session(
+def test_rotating_does_not_block_a_screen_grant_that_references_the_session(
     dsn: str, owner: int
 ) -> None:
-    """Why `table_sessions_link_digest_uidx` must stay PARTIAL.
+    """Why `rotate_command_id` has no index at all, and the start index is
+    PARTIAL (0016, RQ-3).
 
-    PostgreSQL treats the columns of a non-partial, non-expression unique index
-    as key columns, so a full unique index on `link_digest` would turn Rotate's
-    `UPDATE ... SET link_digest` into a `FOR UPDATE` on the session row — which
-    conflicts with the `FOR KEY SHARE` every join's foreign-key check takes, and
-    a join would start waiting behind a Rotate. That is exactly what RQ-3
-    forbids, so it is asserted here rather than reasoned about: the UPDATE lets
-    the referencing insert through, and a real `FOR UPDATE` does not.
+    PostgreSQL treats the columns of a non-partial unique index as key columns,
+    so an index over `rotate_command_id` would turn Rotate's `UPDATE ... SET
+    link_generation = ..., rotate_command_id = ...` into a `FOR UPDATE` on the
+    session row — which conflicts with the `FOR KEY SHARE` every screen-grant
+    insert's foreign-key check takes, and a mint would start waiting behind a
+    Rotate. So it is asserted here rather than reasoned about: Rotate's own
+    UPDATE lets the referencing insert through, and a real `FOR UPDATE` does not.
     """
     _a_session_row(dsn, owner)
-    rotate = "UPDATE campaign.table_sessions SET link_digest = %s WHERE id = %s"
-    with _holding_a_row(dsn, rotate, ("b" * 64, SESSION)):
-        _insert_a_credential_referencing_the_session(dsn)
+    rotate = (
+        "UPDATE campaign.table_sessions "
+        "SET link_generation = link_generation + 1, rotate_command_id = %s WHERE id = %s"
+    )
+    with _holding_a_row(dsn, rotate, (_command(), SESSION)):
+        _insert_a_screen_grant_referencing_the_session(dsn)
 
     with connect(dsn) as conn:
         conn.execute("DELETE FROM campaign.table_credentials")
@@ -623,7 +690,7 @@ def test_rotating_the_link_does_not_block_a_join_that_references_the_session(
     stronger = "SELECT id FROM campaign.table_sessions WHERE id = %s FOR UPDATE"
     with _holding_a_row(dsn, stronger, (SESSION,)):
         with pytest.raises(psycopg.errors.LockNotAvailable):
-            _insert_a_credential_referencing_the_session(dsn)
+            _insert_a_screen_grant_referencing_the_session(dsn)
 
 
 @needs_db
@@ -693,14 +760,21 @@ class World:
     players: tuple[int, int, int]
     #: Every `(unit, session_id)` the slot-clearing extension point was called with.
     slot_clears: list[tuple[Any, str]]
+    #: The job outbox over the same database (1kg.2.3): the expiry job and the
+    #: reconciliations the lifecycle enqueues.
+    jobs: Any = None
+    #: The `(scope, now)` of each of those calls, in the same order (1kg.7.1).
+    slot_scopes: list[tuple[SlotScope, datetime]] = field(default_factory=list)
 
 
 @pytest.fixture(params=["fake", pytest.param("postgres", marks=needs_db)])
 def world(request: pytest.FixtureRequest) -> Iterator[World]:
     clears: list[tuple[Any, str]] = []
+    scopes: list[tuple[SlotScope, datetime]] = []
 
-    def record(unit: Any, session_id: str) -> None:
+    def record(unit: Any, session_id: str, scope: SlotScope, now: datetime) -> None:
         clears.append((unit, session_id))
+        scopes.append((scope, now))
 
     if request.param == "fake":
         db: Any = InMemoryDatabase()
@@ -715,6 +789,8 @@ def world(request: pytest.FixtureRequest) -> Iterator[World]:
             other_owner=2,
             players=(3, 4, 5),
             slot_clears=clears,
+            jobs=InMemoryJobQueue(db=db),
+            slot_scopes=scopes,
         )
         return
 
@@ -733,9 +809,10 @@ def world(request: pytest.FixtureRequest) -> Iterator[World]:
                 "p3@example.com",
             )
         ]
+    database = _database(target)
     yield World(
         "postgres",
-        _database(target),
+        database,
         PostgresCampaignStore(),
         PostgresParticipantStore(),
         PostgresTableSessionStore(slot_clear=record),
@@ -744,6 +821,8 @@ def world(request: pytest.FixtureRequest) -> Iterator[World]:
         other_owner=int(gms[1]),
         players=(int(gms[2]), int(gms[3]), int(gms[4])),
         slot_clears=clears,
+        jobs=PostgresJobQueue(database),
+        slot_scopes=scopes,
     )
 
 
@@ -769,7 +848,8 @@ def _a_session(
 ):
     """A session that started `started_ago_h` ago and lives `hours` from then —
     two numbers rather than one because `expires_at > started_at` is a CHECK,
-    so an overdue session is one that STARTED long enough ago."""
+    so an overdue session is one that STARTED long enough ago. Each is started
+    by a command of its own, and no secret comes back (1kg.2.3)."""
     started = datetime.now(UTC) - timedelta(hours=started_ago_h)
     with world.db.transaction() as unit:
         return world.sessions.start(
@@ -777,6 +857,7 @@ def _a_session(
             campaign_id,
             owner_id=world.owner if owner is None else owner,
             expires_at=started + timedelta(hours=hours),
+            command_id=_command(),
             now=started,
         )
 
@@ -1292,12 +1373,13 @@ def test_no_seat_refusal_names_the_alias_the_account_or_the_seat(
         assert value not in text, f"a {kind} reached a message"
 
 
-#: The three methods that change a participant's own row, each called the way a
+#: The four methods that change a participant's own row, each called the way a
 #: caller who has composed nothing else would call it. Every one of them takes
 #: the seat's row lock itself (G-6), naming the campaign there, so the
 #: participant-first order RQ-3 asks for is a property of the store and not of
-#: every caller. `accept` needs a seat offered to `player` first; the tests that
-#: use this dict arrange that before they call it.
+#: every caller. `accept` needs a seat offered to `player` first, and `confirm`
+#: one offered to `player` and accepted; the tests that use this dict arrange
+#: that before they call it.
 PARTICIPANT_MUTATORS: dict[str, Callable[[Any, Any, str, str, int], object]] = {
     "remove": lambda store, unit, campaign, seat, player: store.remove(unit, campaign, seat),
     "offer": lambda store, unit, campaign, seat, player: store.offer(
@@ -1306,6 +1388,7 @@ PARTICIPANT_MUTATORS: dict[str, Callable[[Any, Any, str, str, int], object]] = {
     "accept": lambda store, unit, campaign, seat, player: store.accept(
         unit, campaign, seat, user_id=player
     ),
+    "confirm": lambda store, unit, campaign, seat, player: store.confirm(unit, campaign, seat),
 }
 
 
@@ -1334,8 +1417,8 @@ def test_every_participant_mutator_takes_the_seats_row_and_bounds_its_transactio
 
     **The seat-state axis (thl AC2).** On a seat that is removed, or that
     belongs to another GM's campaign and is named with this campaign's id,
-    every mutator refuses — `remove` answers False, `offer` and `accept` raise
-    `SeatUnavailable` — so nothing after the refusal can have bounded the
+    every mutator refuses — `remove` answers False, `offer`, `accept` and
+    `confirm` raise `SeatUnavailable` — so nothing after the refusal can have bounded the
     transaction or declared a row lock: only the mutator's own leading `hold`
     can. A mutator that answers from an unlocked read before it holds (mutant
     M-R) leaves `transaction_bounds` empty on those cells and goes red here,
@@ -1353,8 +1436,11 @@ def test_every_participant_mutator_takes_the_seats_row_and_bounds_its_transactio
     home = _a_campaign(world, owner=world.other_owner, name="Theirs") if state == "foreign" else campaign
     seat = _a_participant(world, home, "Rook")
     player = world.players[0]
-    if mutator == "accept":
+    if mutator in ("accept", "confirm"):
         _offer(world, home, seat, player)
+    if mutator == "confirm":
+        with world.db.transaction() as unit:
+            assert world.participants.accept(unit, home, seat, user_id=player) is True
     if state == "removed":
         with world.db.transaction() as unit:
             assert world.participants.remove(unit, home, seat) is True
@@ -1458,6 +1544,13 @@ WRONG_TYPES: list[tuple[str, str, object]] = [
     ("seat_for", "user_id", "987654321"),
     ("seats_for_user", "user_id", "987654321"),
     ("seats_for_user", "user_id", True),
+    ("confirm", "campaign_id", 987654321),
+    ("confirm", "participant_id", 987654321),
+    ("confirm", "participant_id", None),
+    ("count_live", "campaign_id", 987654321),
+    ("page_for_campaign", "campaign_id", 987654321),
+    ("seat_page_for_user", "user_id", "987654321"),
+    ("seat_page_for_user", "user_id", True),
 ]
 
 _STORE_CALLS: dict[str, Callable[[Any, Any, dict[str, Any]], object]] = {
@@ -1474,6 +1567,10 @@ _STORE_CALLS: dict[str, Callable[[Any, Any, dict[str, Any]], object]] = {
     ),
     "seat_for": lambda store, unit, a: store.seat_for(unit, a["campaign_id"], a["user_id"]),
     "seats_for_user": lambda store, unit, a: store.seats_for_user(unit, a["user_id"]),
+    "confirm": lambda store, unit, a: store.confirm(unit, a["campaign_id"], a["participant_id"]),
+    "count_live": lambda store, unit, a: store.count_live(unit, a["campaign_id"]),
+    "page_for_campaign": lambda store, unit, a: store.page_for_campaign(unit, a["campaign_id"]),
+    "seat_page_for_user": lambda store, unit, a: store.seat_page_for_user(unit, a["user_id"]),
 }
 
 
@@ -1525,13 +1622,13 @@ def test_a_second_live_session_for_the_same_gm_is_refused_across_campaigns(world
             world.sessions.start(
                 unit,
                 elsewhere,
-                owner_id=world.owner,
+                command_id=_command(), owner_id=world.owner,
                 expires_at=datetime.now(UTC) + timedelta(hours=12),
             )
     # Another GM is unaffected — in their own campaign, which is the only place
     # they can start one at all.
     theirs = _a_campaign(world, owner=world.other_owner, name="Theirs")
-    assert _a_session(world, theirs, owner=world.other_owner)[0].gm_user_id == world.other_owner
+    assert _a_session(world, theirs, owner=world.other_owner).gm_user_id == world.other_owner
 
 
 def test_a_session_cannot_be_started_in_a_campaign_that_is_not_the_gms(world: World) -> None:
@@ -1543,15 +1640,15 @@ def test_a_session_cannot_be_started_in_a_campaign_that_is_not_the_gms(world: Wo
     later = datetime.now(UTC) + timedelta(hours=12)
     with world.db.transaction() as unit:
         with pytest.raises(MissingParent):
-            world.sessions.start(unit, here, owner_id=world.other_owner, expires_at=later)
+            world.sessions.start(unit, here, command_id=_command(), owner_id=world.other_owner, expires_at=later)
         with pytest.raises(MissingParent):
-            world.sessions.start(unit, "cmp_" + "z" * 22, owner_id=world.owner, expires_at=later)
+            world.sessions.start(unit, "cmp_" + "z" * 22, command_id=_command(), owner_id=world.owner, expires_at=later)
 
     with world.db.transaction() as unit:
         world.campaigns.set_archived(unit, here, owner_id=world.owner, archived=True)
     with world.db.transaction() as unit:
         with pytest.raises(MissingParent):
-            world.sessions.start(unit, here, owner_id=world.owner, expires_at=later)
+            world.sessions.start(unit, here, command_id=_command(), owner_id=world.owner, expires_at=later)
 
 
 def test_a_session_that_expires_before_it_starts_is_refused(world: World) -> None:
@@ -1563,17 +1660,51 @@ def test_a_session_that_expires_before_it_starts_is_refused(world: World) -> Non
             world.sessions.start(
                 unit,
                 campaign,
-                owner_id=world.owner,
+                command_id=_command(), owner_id=world.owner,
                 expires_at=datetime.now(UTC) - timedelta(hours=1),
             )
 
 
+def test_a_start_command_opens_one_session_per_campaign_in_both_worlds(world: World) -> None:
+    """0016's partial unique index over `(campaign_id, start_command_id)`, kept
+    by the twin too. A caller that holds the campaign lock reads the replay
+    first; one that did not gets this named refusal, not a unique violation.
+    The same command in another campaign is another command, and a command id
+    not of the contract's shape is refused before any statement."""
+    campaign, elsewhere = _a_campaign(world), _a_campaign(world, name="Elsewhere")
+    command = _command()
+    later = datetime.now(UTC) + timedelta(hours=12)
+    with world.db.transaction() as unit:
+        first = world.sessions.start(
+            unit, campaign, owner_id=world.owner, expires_at=later, command_id=command
+        )
+        assert first.start_command_id == command
+        assert world.sessions.by_start_command(unit, campaign, command) == first
+        assert world.sessions.by_start_command(unit, elsewhere, command) is None
+        world.sessions.end(unit, campaign, first.id, owner_id=world.owner)
+    with world.db.transaction() as unit:
+        with pytest.raises(StartReplayed):
+            world.sessions.start(
+                unit, campaign, owner_id=world.owner, expires_at=later, command_id=command
+            )
+    with world.db.transaction() as unit:
+        assert world.sessions.start(
+            unit, elsewhere, owner_id=world.owner, expires_at=later, command_id=command
+        ).campaign_id == elsewhere
+    with world.db.transaction() as unit:
+        for malformed in ("short", "x" * 65, "has space in it!!", 7):
+            with pytest.raises(ValueError, match="16 to 64"):
+                world.sessions.start(
+                    unit, campaign, owner_id=world.owner, expires_at=later, command_id=malformed
+                )
+
+
 def test_a_gm_may_start_again_once_their_session_has_ended(world: World) -> None:
     campaign = _a_campaign(world)
-    session, _ = _a_session(world, campaign)
+    session = _a_session(world, campaign)
     with world.db.transaction() as unit:
-        world.sessions.end(unit, campaign, session.id)
-    assert _a_session(world, campaign)[0].id != session.id
+        world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
+    assert _a_session(world, campaign).id != session.id
 
 
 # Behaviour 15 — the narrow primitive.
@@ -1583,7 +1714,7 @@ def test_narrow_advances_the_reveal_epoch_and_calls_its_extension_point_once(wor
     """RQ-7. The audio epoch moves only when the caller asks, because muting the
     table and narrowing what it can see are different decisions."""
     campaign = _a_campaign(world)
-    session, _ = _a_session(world, campaign)
+    session = _a_session(world, campaign)
     assert (session.reveal_epoch, session.audio_epoch) == (0, 0)
 
     with world.db.transaction() as unit:
@@ -1591,79 +1722,78 @@ def test_narrow_advances_the_reveal_epoch_and_calls_its_extension_point_once(wor
         assert quiet is not None
         assert (quiet.reveal_epoch, quiet.audio_epoch) == (1, 0)
         assert world.slot_clears == [(unit, session.id)], "exactly once, with (unit, session_id)"
+        [(scope, stamped)] = world.slot_scopes
+        assert scope == NARROWED, "a narrowing that names no scope clears every slot (fail closed)"
+        assert stamped.tzinfo is not None
 
         loud = world.sessions.narrow(unit, campaign, session.id, audio=True)
         assert loud is not None
         assert (loud.reveal_epoch, loud.audio_epoch) == (2, 1)
         assert world.slot_clears == [(unit, session.id), (unit, session.id)]
+        assert [scope for scope, _ in world.slot_scopes] == [NARROWED, NARROWED]
 
     with world.db.transaction() as unit:
         assert world.sessions.narrow(unit, campaign, "ses_" + "z" * 22) is None
         assert world.sessions.narrow(unit, "cmp_" + "z" * 22, session.id) is None, "not that campaign's"
 
 
-# Behaviours 16 and 17 — End and Rotate, each closing a generation.
+# Behaviours 16 and 17 — End and Rotate, each closing an admission generation.
 
 
-def test_ending_a_session_revokes_its_generation_and_advances_both_epochs(world: World) -> None:
-    """SEC-9: 'Either one revokes every table credential of the old generation in
-    the same transaction that advances the reveal and audio epochs.' End is the
-    'either' that is easy to forget, because the session is going away anyway —
-    but a credential that outlives the epoch retiring it is a live door."""
+def _a_screen(
+    world: World, campaign_id: str, session_id: str, *, now: datetime | None = None
+) -> tuple[ScreenGrant, str]:
+    with world.db.transaction() as unit:
+        return world.sessions.mint_screen(
+            unit, campaign_id, session_id, owner_id=world.owner, now=now
+        )
+
+
+def _digest(secret: str) -> str:
+    return sha256(secret.encode("utf-8")).hexdigest()
+
+
+def test_ending_a_session_revokes_its_screens_and_advances_both_epochs(world: World) -> None:
+    """SEC-42: End revokes the session, its admission generation and every
+    screen grant of it, in the transaction that advances both epochs — the
+    grant would otherwise be a live door into a table that is over."""
     campaign = _a_campaign(world)
-    session, _ = _a_session(world, campaign)
-    with world.db.transaction() as unit:
-        joined, _ = world.sessions.issue_credential(unit, campaign, session.id)
+    session = _a_session(world, campaign)
+    screen, _ = _a_screen(world, campaign, session.id)
 
     with world.db.transaction() as unit:
-        ended = world.sessions.end(unit, campaign, session.id)
-        assert ended is not None
+        closing = world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
+        assert closing is not None and closing.outcome == "ended"
+        assert closing.screens_revoked == 1
+        ended = closing.session
         assert ended.state == "ended" and ended.ended_at is not None
         assert (ended.reveal_epoch, ended.audio_epoch) == (1, 1)
-        assert ended.link_digest is None, "the retired link opens nothing"
-        held = {c.id: c for c in world.sessions.credentials(unit, session.id)}
-        assert held[joined.id].revoked_at is not None
+        held = {g.id: g for g in world.sessions.screens(unit, session.id)}
+        assert held[screen.id].revoked_at is not None
 
     with world.db.transaction() as unit:
-        again = world.sessions.end(unit, campaign, session.id)
-        assert again is not None
-        assert (again.reveal_epoch, again.audio_epoch) == (1, 1), "ending twice changes nothing"
-        assert again.ended_at == ended.ended_at
+        again = world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
+        assert again is not None and again.outcome is None, "ending twice writes nothing"
+        assert (again.session.reveal_epoch, again.session.audio_epoch) == (1, 1)
+        assert again.session.ended_at == ended.ended_at
 
 
-def test_an_ending_can_be_recorded_as_an_expiry_rather_than_the_gms_decision(world: World) -> None:
-    """F-7. 0004's CHECK has `expired`, the audit vocabulary has
-    `session.expired`, and ED-17 distinguishes `session_ended(gm_end |
-    expired)` — but nothing could write it, so `expired_live_sessions_for_gm`
-    found the rows and ending them mislabelled every one."""
-    campaign = _a_campaign(world)
-    session, _ = _a_session(world, campaign, hours=11, started_ago_h=12)
-    with world.db.transaction() as unit:
-        [overdue] = world.sessions.expired_live_sessions_for_gm(unit, world.owner)
-        ended = world.sessions.end(unit, campaign, overdue.id, expired=True)
-        assert ended is not None
-        assert ended.state == "expired" and ended.ended_at is not None
-        assert ended.link_digest is None
-    with world.db.transaction() as unit:
-        assert world.sessions.get(unit, session.id).state == "expired"
+#: The secret whose digest `_a_stray_grant_of_the_retired_generation` stores.
+STRAY_SECRET = "a grant of the retired generation"
 
 
-def _a_stray_credential_of_the_retired_generation(world: World, unit: Any, session_id: str) -> str:
-    """The row a join racing a Rotate leaves behind: unrevoked, and belonging to
-    the generation the Rotate has just retired.
+def _a_stray_grant_of_the_retired_generation(world: World, unit: Any, session_id: str) -> str:
+    """The row a mint racing a Rotate leaves behind: unrevoked, and of the
+    generation the Rotate has just retired.
 
-    It has to be written by hand, in each world's own way, because no store
-    method will make one — `issue_credential` reads the session's *current*
-    generation, so a credential issued after the Rotate belongs to the new one
-    and an ending that revoked only the current generation would revoke it
-    anyway. That is precisely why the earlier version of this test could not
-    fail (G-5).
-    """
+    Written by hand, in each world's own way, because no store method makes one
+    — `mint_screen` reads the session's *current* generation — which is exactly
+    why an ending that revoked only the current generation would look right."""
     stray = "tcr_" + "s" * 22
-    digest = sha256(b"a credential of the retired generation").hexdigest()
+    digest = _digest(STRAY_SECRET)
     if world.kind == "fake":
         world.db.tables["table_credentials"].add(
-            unit, stray, TableCredential(stray, session_id, 1, digest, datetime.now(UTC))
+            unit, stray, ScreenGrant(stray, session_id, 1, digest, datetime.now(UTC))
         )
     else:
         unit.conn.execute(
@@ -1675,125 +1805,255 @@ def _a_stray_credential_of_the_retired_generation(world: World, unit: Any, sessi
 
 
 def test_ending_a_session_revokes_every_generation_it_ever_had(world: World) -> None:
-    """A join that commits just after a Rotate holds an unrevoked credential of
-    the generation the Rotate retired — `issue_credential` reads the generation
-    without a lock, deliberately, so that a join never makes a Stop wait. The
-    table is over, so the ending's own statement leaves nothing of the session
-    unrevoked behind it, whatever generation it belongs to. It cannot promise
-    more: a join that took its snapshot before the End committed is not blocked
-    by it and may commit one afterwards, which is why a reader checks the state,
-    the generation and the revocation together (ED-25, SEC-9)."""
+    """A mint that commits just after a Rotate holds an unrevoked grant of the
+    generation the Rotate retired — it reads the generation without waiting for
+    the Rotate, deliberately (RQ-3). The table is over, so the ending's own
+    statement leaves nothing of the session unrevoked behind it, whatever its
+    generation. It cannot promise more, which is why a reader checks the state,
+    the expiry, the generation and the revocation together (L-10)."""
     campaign = _a_campaign(world)
-    session, _ = _a_session(world, campaign)
+    session = _a_session(world, campaign)
+    first, _ = _a_screen(world, campaign, session.id)
     with world.db.transaction() as unit:
-        first, _ = world.sessions.issue_credential(unit, campaign, session.id)
-        world.sessions.rotate_link(unit, campaign, session.id)
-        second, _ = world.sessions.issue_credential(unit, campaign, session.id)
-        assert (first.link_generation, second.link_generation) == (1, 2)
+        world.sessions.rotate(
+            unit, campaign, session.id, owner_id=world.owner, command_id=_command()
+        )
+    second, _ = _a_screen(world, campaign, session.id)
+    assert (first.link_generation, second.link_generation) == (1, 2)
 
     with world.db.transaction() as unit:
-        stray = _a_stray_credential_of_the_retired_generation(world, unit, session.id)
+        stray = _a_stray_grant_of_the_retired_generation(world, unit, session.id)
 
     with world.db.transaction() as unit:
-        world.sessions.end(unit, campaign, session.id)
-        held = {c.id: c for c in world.sessions.credentials(unit, session.id)}
+        closing = world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
+        assert closing is not None and closing.screens_revoked == 2
+        held = {g.id: g for g in world.sessions.screens(unit, session.id)}
         assert held[stray].link_generation == 1 and held[second.id].link_generation == 2, (
             "one retired generation and one current, or this test proves nothing"
         )
-        assert [c.id for c in held.values() if c.is_active] == []
-        assert held[stray].revoked_at is not None and held[second.id].revoked_at is not None
+        assert [g.id for g in held.values() if g.revoked_at is None] == []
 
 
-def test_rotating_the_link_retires_the_old_generation_and_leaves_the_session_live(
+def test_rotating_retires_the_generation_and_every_screen_and_leaves_the_session_live(
     world: World,
 ) -> None:
-    """SEC-9 again, and REVEAL-17: rotating is not restarting, so the session
-    keeps its id, its start and its expiry."""
+    """SEC-42 and REVEAL-17: rotating is not restarting, so the session keeps its
+    id, its start and its expiry; the generation moves on, every screen of it is
+    revoked, and the command that did it is recorded for its retry."""
     campaign = _a_campaign(world)
-    session, first_link = _a_session(world, campaign)
-    with world.db.transaction() as unit:
-        old_credential, _ = world.sessions.issue_credential(unit, campaign, session.id)
+    session = _a_session(world, campaign)
+    old, _ = _a_screen(world, campaign, session.id)
+    command = _command()
 
     with world.db.transaction() as unit:
-        rotated = world.sessions.rotate_link(unit, campaign, session.id)
-        assert rotated is not None
-        session_after, new_link = rotated
-        assert session_after.id == session.id and session_after.is_live
-        assert session_after.started_at == session.started_at
-        assert session_after.expires_at == session.expires_at
-        assert session_after.link_generation == 2
-        assert new_link != first_link
-        assert session_after.link_digest == sha256(new_link.encode("utf-8")).hexdigest()
-        assert (session_after.reveal_epoch, session_after.audio_epoch) == (1, 1)
+        closing = world.sessions.rotate(
+            unit, campaign, session.id, owner_id=world.owner, command_id=command
+        )
+        assert closing is not None and closing.outcome == "rotated"
+        assert closing.screens_revoked == 1
+        after = closing.session
+        assert after.id == session.id and after.is_live
+        assert after.started_at == session.started_at
+        assert after.expires_at == session.expires_at
+        assert after.link_generation == 2 and after.rotate_command_id == command
+        assert (after.reveal_epoch, after.audio_epoch) == (1, 1)
 
-        # A device joining now belongs to the new generation and survives, while
-        # every credential of the superseded one is revoked. Keyed by id, never
-        # by position: two rows written in one call can share a timestamp.
-        fresh, _ = world.sessions.issue_credential(unit, campaign, session.id)
-        assert fresh.link_generation == 2
-        held = {c.id: c for c in world.sessions.credentials(unit, session.id)}
-        assert held[old_credential.id].revoked_at is not None
+    fresh, _ = _a_screen(world, campaign, session.id)
+    assert fresh.link_generation == 2
+    with world.db.transaction() as unit:
+        held = {g.id: g for g in world.sessions.screens(unit, session.id)}
+        assert held[old.id].revoked_at is not None
         assert held[fresh.id].revoked_at is None
 
 
-def test_a_session_that_is_no_longer_live_cannot_have_its_link_rotated(world: World) -> None:
+def test_a_rotate_repeated_with_its_command_writes_nothing_and_a_new_one_rotates_again(
+    world: World,
+) -> None:
+    """The contract's Idempotency row: a retried Rotate never closes the table's
+    streams twice. A new command always rotates a live session — narrowing always
+    wins (X-3) — and so does an older command retried after a newer one, which is
+    a harmless narrowing."""
     campaign = _a_campaign(world)
-    session, _ = _a_session(world, campaign)
+    session = _a_session(world, campaign)
+    first, second = _command(), _command()
+
+    def rotate(command: str) -> Any:
+        with world.db.transaction() as unit:
+            return world.sessions.rotate(
+                unit, campaign, session.id, owner_id=world.owner, command_id=command
+            )
+
+    assert rotate(first).session.link_generation == 2
+    again = rotate(first)
+    assert again.outcome is None, "the same command answers the session as it stands"
+    assert again.session.link_generation == 2
+    assert (again.session.reveal_epoch, again.session.audio_epoch) == (1, 1)
+    assert rotate(second).session.link_generation == 3
+    older = rotate(first)
+    assert older.outcome == "rotated" and older.session.link_generation == 4
+
+
+def test_rotating_a_session_that_is_no_longer_live_answers_it_as_it_stands(world: World) -> None:
+    """X-3: a narrowing is never refused for state. The old store refused this
+    with `NotLive`; a Rotate of an ended table has nothing left to retire."""
+    campaign = _a_campaign(world)
+    session = _a_session(world, campaign)
     with world.db.transaction() as unit:
-        world.sessions.end(unit, campaign, session.id)
+        world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
+    with world.db.transaction() as unit:
+        closing = world.sessions.rotate(
+            unit, campaign, session.id, owner_id=world.owner, command_id=_command()
+        )
+        assert closing is not None and closing.outcome is None
+        assert closing.session.state == "ended" and closing.session.link_generation == 1
+
+
+def test_end_and_rotate_find_nothing_of_another_gm_or_another_campaign(world: World) -> None:
+    """The owner and the campaign are in the statement that locks the row (L-5),
+    so a stranger's End and a session named through the wrong campaign are one
+    answer — None — and neither changes the session."""
+    campaign = _a_campaign(world)
+    elsewhere = _a_campaign(world, name="Elsewhere")
+    session = _a_session(world, campaign)
+    with world.db.transaction() as unit:
+        for owner, through in ((world.other_owner, campaign), (world.owner, elsewhere)):
+            assert world.sessions.end(unit, through, session.id, owner_id=owner) is None
+            assert world.sessions.rotate(
+                unit, through, session.id, owner_id=owner, command_id=_command()
+            ) is None
+    with world.db.transaction() as unit:
+        untouched = world.sessions.get(unit, session.id)
+        assert untouched is not None and untouched.is_live
+        assert (untouched.reveal_epoch, untouched.link_generation) == (0, 1)
+
+
+def test_expiry_finalises_a_due_session_at_its_expiry_and_refuses_one_not_yet_due(
+    world: World,
+) -> None:
+    """A session found past `expires_at` is finalised as `expired` with
+    `ended_at = expires_at`, the moment it stopped serving. The system's path
+    names no owner, so it refuses a session that is not due: it can never be an
+    End that skipped the owner check. An End that finds its session due records
+    the same thing."""
+    campaign = _a_campaign(world)
+    due = _a_session(world, campaign, hours=11, started_ago_h=12)
+    with world.db.transaction() as unit:
+        stray = _a_stray_grant_of_the_retired_generation(world, unit, due.id)
+    with world.db.transaction() as unit:
+        closing = world.sessions.expire(unit, due.id, campaign)
+        assert closing is not None and closing.outcome == "expired"
+        assert closing.session.state == "expired"
+        assert closing.session.ended_at == due.expires_at
+        assert closing.screens_revoked == 1
+        held = {g.id: g for g in world.sessions.screens(unit, due.id)}
+        assert held[stray].revoked_at is not None
+    with world.db.transaction() as unit:
+        again = world.sessions.expire(unit, due.id, campaign)
+        assert again is not None and again.outcome is None
+
+    by_end = _a_session(world, campaign, hours=11, started_ago_h=12)
+    with world.db.transaction() as unit:
+        closing = world.sessions.end(unit, campaign, by_end.id, owner_id=world.owner)
+        assert closing is not None and closing.outcome == "expired"
+        assert closing.session.ended_at == by_end.expires_at
+
+    live = _a_session(world, campaign)
+    with world.db.transaction() as unit:
+        with pytest.raises(NotDue):
+            world.sessions.expire(unit, live.id, campaign)
+    with world.db.transaction() as unit:
+        assert world.sessions.get(unit, live.id).is_live
+
+
+def test_a_session_that_is_not_live_admits_no_screen(world: World) -> None:
+    """A mint re-checks the owner, the state and the expiry in its own
+    statement: an ended session and a row still `live` past its expiry both
+    refuse it, and neither leaves a grant behind."""
+    campaign = _a_campaign(world)
+    session = _a_session(world, campaign)
+    with world.db.transaction() as unit:
+        world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
     with world.db.transaction() as unit:
         with pytest.raises(NotLive):
-            world.sessions.rotate_link(unit, campaign, session.id)
+            world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
+        assert world.sessions.screens(unit, session.id) == []
 
-
-def test_a_session_that_is_no_longer_live_admits_no_device(world: World) -> None:
-    """F-7. Without `AND state = 'live'` in the statement, a credential issued
-    for an ended session came back active — and a reader that checked only
-    `revoked_at` would have honoured it."""
-    campaign = _a_campaign(world)
-    session, _ = _a_session(world, campaign)
-    with world.db.transaction() as unit:
-        world.sessions.end(unit, campaign, session.id)
+    due = _a_session(world, campaign, hours=11, started_ago_h=12)
     with world.db.transaction() as unit:
         with pytest.raises(NotLive):
-            world.sessions.issue_credential(unit, campaign, session.id)
-        assert world.sessions.credentials(unit, session.id) == []
+            world.sessions.mint_screen(unit, campaign, due.id, owner_id=world.owner)
+        with pytest.raises(MissingParent):
+            world.sessions.mint_screen(unit, campaign, due.id, owner_id=world.other_owner)
+        assert world.sessions.screens(unit, due.id) == []
 
 
-# Behaviour 14b — the digest lookups every unauthenticated join needs.
-
-
-def test_a_table_link_and_a_join_credential_are_found_by_their_digest(world: World) -> None:
-    """The alignment's "digest lookups are exact matches on a unique index".
-    `link_digest` had neither a unique index nor a reader; `table_credentials`
-    had the index and no reader."""
+def test_a_grant_is_found_by_its_digest_and_a_revoked_one_like_an_unknown_one(world: World) -> None:
+    """SEC-46: one digest lookup, and one answer for every grant that is not
+    live — an unknown digest and a revoked grant are the same None."""
     campaign = _a_campaign(world)
-    session, link = _a_session(world, campaign)
-    link_digest = sha256(link.encode("utf-8")).hexdigest()
+    session = _a_session(world, campaign)
+    screen, secret = _a_screen(world, campaign, session.id)
+    moment = datetime.now(UTC)
     with world.db.transaction() as unit:
-        found = world.sessions.find_by_link_digest(unit, link_digest)
-        assert found is not None and found.id == session.id
-        assert world.sessions.find_by_link_digest(unit, "f" * 64) is None
-
-        joined, secret = world.sessions.issue_credential(unit, campaign, session.id)
-        credential = world.sessions.find_credential(
-            unit, sha256(secret.encode("utf-8")).hexdigest()
+        found = world.sessions.resolve_screen(unit, _digest(secret), now=moment)
+        assert found is not None
+        assert (found.grant_id, found.session_id, found.campaign_id, found.generation) == (
+            screen.id, session.id, campaign, 1
         )
-        assert credential is not None and credential.id == joined.id
+        assert world.sessions.resolve_screen(unit, "f" * 64, now=moment) is None
+        assert screen.credential_digest == _digest(secret), "only the digest is at rest"
 
     with world.db.transaction() as unit:
-        rotated = world.sessions.rotate_link(unit, campaign, session.id)
-        assert rotated is not None
-        assert world.sessions.find_by_link_digest(unit, link_digest) is None, "a retired link"
-        assert world.sessions.find_by_link_digest(
-            unit, sha256(rotated[1].encode("utf-8")).hexdigest()
-        ) is not None
-        revoked = world.sessions.find_credential(
-            unit, sha256(secret.encode("utf-8")).hexdigest()
-        )
-        assert revoked is not None and not revoked.is_active, (
-            "a revoked credential is refused for being revoked, not mistaken for an unknown device"
-        )
+        assert world.sessions.revoke_screen(
+            unit, campaign, screen.id, owner_id=world.owner
+        ) == (session.id, True)
+    with world.db.transaction() as unit:
+        assert world.sessions.resolve_screen(unit, _digest(secret), now=moment) is None
+
+
+def test_the_screen_bound_is_the_twins_and_the_databases_alike(world: World) -> None:
+    """SEC-48's bound, enforced by the store in both worlds under the session's
+    advisory lock. Revoking one frees a place."""
+    campaign = _a_campaign(world)
+    session = _a_session(world, campaign)
+    screens = [_a_screen(world, campaign, session.id)[0] for _ in range(SCREENS_PER_SESSION)]
+    with world.db.transaction() as unit:
+        with pytest.raises(ScreenLimit):
+            world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
+        if world.kind == "fake":
+            assert unit.locks[-1][1] == session.id, "the session's advisory lock"
+    with world.db.transaction() as unit:
+        world.sessions.revoke_screen(unit, campaign, screens[0].id, owner_id=world.owner)
+    assert _a_screen(world, campaign, session.id)[0].link_generation == 1
+
+
+def test_a_screen_revoke_is_the_owners_and_a_repeat_changes_nothing(world: World) -> None:
+    """L-11: one owner-scoped statement. Another GM's grant, a grant named
+    through another campaign and a grant that does not exist are None; the
+    owner's repeat is not an error and reports that it revoked nothing."""
+    campaign = _a_campaign(world)
+    elsewhere = _a_campaign(world, name="Elsewhere")
+    session = _a_session(world, campaign)
+    screen, _ = _a_screen(world, campaign, session.id)
+    later = datetime.now(UTC) + timedelta(seconds=1)
+    with world.db.transaction() as unit:
+        assert world.sessions.revoke_screen(
+            unit, campaign, screen.id, owner_id=world.other_owner
+        ) is None
+        assert world.sessions.revoke_screen(
+            unit, elsewhere, screen.id, owner_id=world.owner
+        ) is None
+        assert world.sessions.revoke_screen(
+            unit, campaign, "tcr_" + "z" * 22, owner_id=world.owner
+        ) is None
+    with world.db.transaction() as unit:
+        assert world.sessions.revoke_screen(
+            unit, campaign, screen.id, owner_id=world.owner
+        ) == (session.id, True)
+    with world.db.transaction() as unit:
+        assert world.sessions.revoke_screen(
+            unit, campaign, screen.id, owner_id=world.owner, now=later
+        ) == (session.id, False)
 
 
 # Behaviour 18 — the stale sessions a start has to clear out of its own way.
@@ -1806,8 +2066,8 @@ def test_expired_live_sessions_for_gm_returns_that_gms_overdue_live_ones_only(
     again, so the start ends the stale one first rather than meeting the index."""
     campaign = _a_campaign(world)
     theirs = _a_campaign(world, owner=world.other_owner, name="Theirs")
-    stale, _ = _a_session(world, campaign, hours=11, started_ago_h=12)
-    other, _ = _a_session(world, theirs, hours=11, started_ago_h=12, owner=world.other_owner)
+    stale = _a_session(world, campaign, hours=11, started_ago_h=12)
+    other = _a_session(world, theirs, hours=11, started_ago_h=12, owner=world.other_owner)
 
     with world.db.transaction() as unit:
         assert [s.id for s in world.sessions.expired_live_sessions_for_gm(unit, world.owner)] == [
@@ -1817,12 +2077,12 @@ def test_expired_live_sessions_for_gm_returns_that_gms_overdue_live_ones_only(
             unit, world.other_owner
         )] == [other.id]
 
-        world.sessions.end(unit, campaign, stale.id, expired=True)
+        world.sessions.expire(unit, stale.id, campaign)
         assert world.sessions.expired_live_sessions_for_gm(unit, world.owner) == [], (
             "an ended session is not still overdue"
         )
 
-    fresh, _ = _a_session(world, campaign, hours=12)
+    fresh = _a_session(world, campaign, hours=12)
     with world.db.transaction() as unit:
         assert world.sessions.expired_live_sessions_for_gm(unit, world.owner) == [], (
             "a session that is live and in date is not overdue"
@@ -1846,13 +2106,13 @@ def test_a_rolled_back_unit_of_work_leaves_no_row_in_any_of_the_three_stores(
             seat = world.participants.add(unit, campaign, alias="Wren")
             world.participants.offer(unit, campaign, seat.id, user_id=world.players[0])
             assert world.participants.accept(unit, campaign, seat.id, user_id=world.players[0])
-            session, _ = world.sessions.start(
+            session = world.sessions.start(
                 unit,
                 campaign,
-                owner_id=world.owner,
+                command_id=_command(), owner_id=world.owner,
                 expires_at=datetime.now(UTC) + timedelta(hours=12),
             )
-            world.sessions.issue_credential(unit, campaign, session.id)
+            world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
             world.audit.append(
                 unit,
                 campaign_id=campaign,
@@ -1870,7 +2130,7 @@ def test_a_rolled_back_unit_of_work_leaves_no_row_in_any_of_the_three_stores(
         assert world.participants.get(unit, seat.id) is None
         assert world.participants.seats_for_user(unit, world.players[0]) == []
         assert world.sessions.get(unit, session.id) is None
-        assert world.sessions.credentials(unit, session.id) == []
+        assert world.sessions.screens(unit, session.id) == []
         assert world.audit.for_campaign(unit, campaign) == []
 
 
@@ -1899,11 +2159,11 @@ def test_a_change_to_a_committed_row_is_invisible_until_it_commits_too(world: Wo
     the committed row; so does the twin now."""
     campaign = _a_campaign(world)
     seat = _a_participant(world, campaign, "Rook")
-    session, _ = _a_session(world, campaign)
+    session = _a_session(world, campaign)
 
     with world.db.transaction() as writer:
         assert world.participants.remove(writer, campaign, seat)
-        assert world.sessions.end(writer, campaign, session.id) is not None
+        assert world.sessions.end(writer, campaign, session.id, owner_id=world.owner) is not None
         assert world.campaigns.set_archived(writer, campaign, owner_id=world.owner, archived=True)
 
         with world.db.transaction() as reader:
@@ -1926,16 +2186,16 @@ def test_a_rolled_back_change_leaves_no_state_a_unique_index_would_forbid(world:
     cannot hold — and the same shape left two active participants answering to
     one alias."""
     campaign = _a_campaign(world)
-    session, _ = _a_session(world, campaign)
+    session = _a_session(world, campaign)
     seat = _a_participant(world, campaign, "Rook")
 
     with pytest.raises(RuntimeError, match="boom"):
         with world.db.transaction() as unit:
-            world.sessions.end(unit, campaign, session.id)
+            world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
             world.sessions.start(
                 unit,
                 campaign,
-                owner_id=world.owner,
+                command_id=_command(), owner_id=world.owner,
                 expires_at=datetime.now(UTC) + timedelta(hours=12),
             )
             world.participants.remove(unit, campaign, seat)
@@ -1957,7 +2217,7 @@ def test_a_rolled_back_change_leaves_no_state_a_unique_index_would_forbid(world:
             world.sessions.start(
                 unit,
                 campaign,
-                owner_id=world.owner,
+                command_id=_command(), owner_id=world.owner,
                 expires_at=datetime.now(UTC) + timedelta(hours=12),
             )
         with pytest.raises(AliasTaken):
@@ -2066,11 +2326,11 @@ def test_a_row_whose_parent_does_not_exist_is_refused_in_both_worlds(world: Worl
             world.sessions.start(
                 unit,
                 nowhere,
-                owner_id=world.owner,
+                command_id=_command(), owner_id=world.owner,
                 expires_at=datetime.now(UTC) + timedelta(hours=12),
             )
         with pytest.raises(MissingParent):
-            world.sessions.issue_credential(unit, nowhere, "ses_" + "z" * 22)
+            world.sessions.mint_screen(unit, nowhere, "ses_" + "z" * 22, owner_id=world.owner)
 
 
 @pytest.mark.parametrize("field", ["now", "expires_at"])
@@ -2085,7 +2345,9 @@ def test_a_naive_timestamp_is_refused_in_both_worlds(world: World, field: str) -
     expires = naive if field == "expires_at" else datetime.now(UTC) + timedelta(hours=12)
     with world.db.transaction() as unit:
         with pytest.raises(ValueError, match="timezone-aware"):
-            world.sessions.start(unit, campaign, owner_id=world.owner, expires_at=expires, **when)
+            world.sessions.start(
+                unit, campaign, command_id=_command(), owner_id=world.owner, expires_at=expires, **when
+            )
 
 
 # Behaviour 22b — the ledger, in both worlds.
@@ -2152,8 +2414,8 @@ def test_no_store_record_shows_a_digest_or_an_alias_when_it_is_printed() -> None
     records = [
         Campaign("cmp_x", 1, "Nocturne", moment, moment),
         Participant("prt_x", "cmp_x", "Rook", moment, user_id=987654321, accepted_at=moment),
-        TableSession("ses_x", "cmp_x", 1, "live", moment, moment, 1, digest),
-        TableCredential("tcr_x", "ses_x", 1, digest, moment),
+        TableSession("ses_x", "cmp_x", 1, "live", moment, moment, 1),
+        ScreenGrant("tcr_x", "ses_x", 1, digest, moment),
     ]
     for record in records:
         printed = repr(record)
@@ -2188,6 +2450,7 @@ def _twin() -> World:
         other_owner=2,
         players=(3, 4, 5),
         slot_clears=[],
+        jobs=InMemoryJobQueue(db=db),
     )
 
 
@@ -2200,15 +2463,15 @@ def test_the_twin_refuses_a_second_session_start_while_the_first_is_uncommitted(
     campaign = _a_campaign(world)
     expires = datetime.now(UTC) + timedelta(hours=12)
     with world.db.transaction() as outer:
-        first, _ = world.sessions.start(outer, campaign, owner_id=world.owner, expires_at=expires)
+        first = world.sessions.start(outer, campaign, command_id=_command(), owner_id=world.owner, expires_at=expires)
         with world.db.transaction() as inner:
             with pytest.raises(TwinWouldBlock):
-                world.sessions.start(inner, campaign, owner_id=world.owner, expires_at=expires)
+                world.sessions.start(inner, campaign, command_id=_command(), owner_id=world.owner, expires_at=expires)
 
     with world.db.transaction() as unit:
         assert world.sessions.get(unit, first.id) is not None
         with pytest.raises(LiveSessionExists):
-            world.sessions.start(unit, campaign, owner_id=world.owner, expires_at=expires)
+            world.sessions.start(unit, campaign, command_id=_command(), owner_id=world.owner, expires_at=expires)
 
 
 def test_the_twin_refuses_a_second_seat_on_an_alias_while_the_first_is_uncommitted() -> None:
@@ -2280,7 +2543,7 @@ def test_the_twin_refuses_a_narrow_nested_inside_an_uncommitted_narrow() -> None
     request."""
     world = _twin()
     campaign = _a_campaign(world)
-    session, _ = _a_session(world, campaign)
+    session = _a_session(world, campaign)
     with world.db.transaction() as outer:
         world.sessions.narrow(outer, campaign, session.id)
         with world.db.transaction() as inner:
@@ -2371,7 +2634,7 @@ def test_two_racing_session_starts_for_one_gm_leave_exactly_one_winner(dsn: str)
 
     def start() -> object:
         with db.transaction() as unit:
-            return sessions.start(unit, CAMPAIGN, owner_id=owner, expires_at=expires)[0].id
+            return sessions.start(unit, CAMPAIGN, command_id=_command(), owner_id=owner, expires_at=expires).id
 
     outcomes = _race(start)
     started = [o for o in outcomes if isinstance(o, str)]
@@ -2468,12 +2731,19 @@ def _accounts(dsn: str, count: int = 2) -> list[int]:
 
 
 def _a_seat(
-    db: Database, participants: PostgresParticipantStore, *, offered_to: int | None = None
+    db: Database,
+    participants: PostgresParticipantStore,
+    *,
+    offered_to: int | None = None,
+    accepted_by: int | None = None,
 ) -> str:
     with db.transaction() as unit:
         seat = participants.add(unit, CAMPAIGN, alias="Rook")
         if offered_to is not None:
             participants.offer(unit, CAMPAIGN, seat.id, user_id=offered_to)
+        if accepted_by is not None:
+            participants.offer(unit, CAMPAIGN, seat.id, user_id=accepted_by)
+            participants.accept(unit, CAMPAIGN, seat.id, user_id=accepted_by)
     return seat.id
 
 
@@ -2565,7 +2835,12 @@ def test_a_bare_participant_mutator_waits_for_the_seat_another_transaction_holds
     timing."""
     db, participants = _database(dsn, PATIENT), PostgresParticipantStore()
     (player,) = _accounts(dsn, 1)
-    seat = _a_seat(db, participants, offered_to=player if mutator == "accept" else None)
+    seat = _a_seat(
+        db,
+        participants,
+        offered_to=player if mutator == "accept" else None,
+        accepted_by=player if mutator == "confirm" else None,
+    )
 
     def nothing_else(unit: Any) -> None:
         """The harness's own `hold` is the whole of the holder's work."""
@@ -2842,7 +3117,1691 @@ def test_the_alias_key_is_the_comparison_both_worlds_make() -> None:
 
 
 def test_the_slot_clearing_extension_point_is_empty_in_this_bead() -> None:
-    """`1kg.7.1` fills it. Until then a narrowing has nothing to clear, and this
-    says so in one place rather than by omission."""
+    """Production passes `1kg.7.1`'s fill (`reveals.slot_clear_for`); `no_slots`
+    stays the empty one, for tests whose subject is not the reveal rows."""
     with InMemoryDatabase().transaction() as unit:
-        assert no_slots(unit, "ses_x") is None
+        assert no_slots(unit, "ses_x", NARROWED, datetime.now(UTC)) is None
+
+
+# ══ 1kg.2.2: campaigns, seats, offers and the GM's confirmation ═════════════
+#
+# The shared suite for bead 1kg.2.2, in both worlds. The races — two
+# connections, explicit interleaving, `pg_stat_activity` — are
+# `tests/test_seats_db.py`'s.
+
+T0 = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+
+
+def _offer_store(world: World) -> Any:
+    return InMemorySeatOfferStore(world.db) if world.kind == "fake" else PostgresSeatOfferStore()
+
+
+def _job_queue(world: World) -> Any:
+    return InMemoryJobQueue(world.db) if world.kind == "fake" else PostgresJobQueue(world.db)
+
+
+def _summary_store(world: World) -> Any:
+    if world.kind == "fake":
+        return InMemoryCampaignSummaryStore(world.db, messages=InMemoryMessageStore())
+    return PostgresCampaignSummaryStore()
+
+
+def _stores(world: World) -> CampaignStores:
+    return CampaignStores(
+        world.campaigns, world.participants, world.sessions, _offer_store(world), world.audit, _summary_store(world)
+    )
+
+
+class _Recording:
+    """The world's database, recording every unit of work it opens, so a test
+    can read what each one locked — in either world."""
+
+    def __init__(self, db: Any) -> None:
+        self.db = db
+        self.units: list[Any] = []
+
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        with self.db.transaction() as unit:
+            self.units.append(unit)
+            yield unit
+
+
+def _revision(world: World, campaign_id: str) -> int | None:
+    with world.db.transaction() as unit:
+        return world.campaigns.authz_revision(unit, campaign_id)
+
+
+def _ledger(world: World, campaign_id: str) -> list[str]:
+    with world.db.transaction() as unit:
+        return [event.action for event in world.audit.for_campaign(unit, campaign_id)]
+
+
+def _jobs_enqueued(world: World, queue: Any) -> list[tuple[str, dict[str, Any], str | None]]:
+    """(kind, payload, dedupe_key) of every committed job, oldest first."""
+    if world.kind == "fake":
+        return [
+            (row.job.kind, dict(row.job.payload), row.dedupe_key)
+            for row in sorted(queue._rows.values(), key=lambda row: row.job.id)
+        ]
+    with world.db.transaction() as unit:
+        rows = unit.conn.execute("SELECT kind, payload, dedupe_key FROM app.jobs ORDER BY id").fetchall()
+    return [(kind, dict(payload), key) for kind, payload, key in rows]
+
+
+def _held_offer(world: World, campaign_id: str, alias: str, address: str, *, now: datetime = T0) -> tuple[str, str]:
+    """An open seat and an offer of it to `address`, made by the owner."""
+    seat = _a_participant(world, campaign_id, alias)
+    offers = _offer_store(world)
+    with world.db.transaction() as unit:
+        made = offers.create(unit, campaign_id, seat, offered_by=world.owner, address=address, now=now)
+    return seat, made.id
+
+
+# ── Campaigns: rename, the page, the name rule ──────────────────────────────
+
+
+def test_a_rename_changes_the_name_and_a_rename_to_the_same_name_changes_nothing(world: World) -> None:
+    campaign = _a_campaign(world, name="Nocturne")
+    later = datetime.now(UTC) + timedelta(minutes=5)
+    with world.db.transaction() as unit:
+        renamed = world.campaigns.rename(unit, campaign, owner_id=world.owner, name="Aubade", now=later)
+    assert renamed is not None and renamed.name == "Aubade" and renamed.updated_at == later
+    with world.db.transaction() as unit:
+        again = world.campaigns.rename(
+            unit, campaign, owner_id=world.owner, name="Aubade", now=later + timedelta(hours=1)
+        )
+    assert again is not None and again.updated_at == later, "a rename to the same name changes nothing"
+    with world.db.transaction() as unit:
+        assert world.campaigns.rename(unit, campaign, owner_id=world.other_owner, name="Mine") is None
+        stored = world.campaigns.get(unit, campaign, owner_id=world.owner)
+    assert stored is not None and stored.name == "Aubade"
+
+
+def test_a_campaign_name_with_a_control_character_is_refused_before_the_statement(world: World) -> None:
+    campaign = _a_campaign(world)
+    for code in (0x00, 0x1B, 0x202E, 0xFEFF):
+        with world.db.transaction() as unit:
+            with pytest.raises(ValueError, match="no control or formatting") as refused:
+                world.campaigns.rename(unit, campaign, owner_id=world.owner, name=f"Noc{chr(code)}turne")
+            assert "Noc" not in str(refused.value)
+            with pytest.raises(ValueError, match="no control or formatting"):
+                world.campaigns.create(unit, owner_id=world.owner, name=f"Noc{chr(code)}turne")
+    with pytest.raises(ValueError, match="no control or formatting"):
+        check_name("Noc" + chr(0xD800))
+
+
+def _made_at(world: World, name: str, moment: datetime, *, owner: int | None = None) -> str:
+    with world.db.transaction() as unit:
+        return world.campaigns.create(
+            unit, owner_id=world.owner if owner is None else owner, name=name, now=moment
+        ).id
+
+
+def _walk_campaigns(world: World, *, limit: int, include_archived: bool = False) -> list[list[str]]:
+    pages: list[list[str]] = []
+    cursor: str | None = None
+    for _ in range(20):
+        with world.db.transaction() as unit:
+            page = world.campaigns.page_for_owner(
+                unit, world.owner, include_archived=include_archived, cursor=cursor, limit=limit
+            )
+        pages.append([c.id for c in page.items])
+        cursor = page.next_cursor
+        if cursor is None:
+            return pages
+    raise AssertionError("the walk did not end")
+
+
+def test_the_campaign_page_is_newest_first_ties_by_id_and_walks_every_row_once(world: World) -> None:
+    oldest = _made_at(world, "One", T0)
+    tied = sorted([_made_at(world, "Two", T0 + timedelta(hours=1)), _made_at(world, "Three", T0 + timedelta(hours=1))])
+    newest = _made_at(world, "Four", T0 + timedelta(hours=2))
+    _made_at(world, "Theirs", T0 + timedelta(hours=3), owner=world.other_owner)
+    expected = [newest, tied[1], tied[0], oldest]
+    assert sum(_walk_campaigns(world, limit=50), []) == expected
+    pages = _walk_campaigns(world, limit=3)
+    assert pages == [expected[:3], expected[3:]], "a full page carries a cursor; the last does not"
+    assert sum(_walk_campaigns(world, limit=1), []) == expected
+    assert _walk_campaigns(world, limit=4) == [expected], "exactly a page is the last page"
+
+
+def test_the_campaign_page_leaves_archived_ones_out_unless_asked(world: World) -> None:
+    kept = _made_at(world, "Kept", T0)
+    shelved = _made_at(world, "Shelved", T0 + timedelta(hours=1))
+    with world.db.transaction() as unit:
+        assert world.campaigns.set_archived(unit, shelved, owner_id=world.owner, archived=True)
+    assert _walk_campaigns(world, limit=50) == [[kept]]
+    assert _walk_campaigns(world, limit=50, include_archived=True) == [[shelved, kept]]
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        "not-base64-json",
+        encode_cursor(T0, "prt_" + "a" * 22),
+        encode_cursor(T0, "cmp_" + "a" * 21 + chr(0x07)),
+        encode_cursor(T0.replace(tzinfo=None), "cmp_" + "a" * 22),
+    ],
+    ids=["garbage", "another-kinds-id", "a-control-character", "a-naive-moment"],
+)
+def test_a_cursor_this_server_did_not_make_is_the_one_refusal(world: World, cursor: str) -> None:
+    """L-19 and `kky`: an id outside its prefix's shape — a control character
+    in it included — is `InvalidCursor` before any statement, never a 500."""
+    with world.db.transaction() as unit:
+        with pytest.raises(InvalidCursor) as refused:
+            world.campaigns.page_for_owner(unit, world.owner, cursor=cursor)
+        assert refused.value.__context__ is None and refused.value.__cause__ is None
+        assert str(refused.value) == InvalidCursor.MESSAGE
+
+
+# ── Archive: RQ-5's two steps; restore: a locked widening ───────────────────
+
+
+def test_archive_step_one_narrows_a_live_session_without_the_campaign_lock(world: World) -> None:
+    campaign = _a_campaign(world)
+    session = _a_session(world, campaign)
+    recording = _Recording(world.db)
+    archive_step_one(recording, _stores(world), campaign_id=campaign, owner_id=world.owner)
+    assert [unit.campaign_locks for unit in recording.units] == [[]], "step 1 never asks for the lock"
+    with world.db.transaction() as unit:
+        narrowed = world.sessions.get(unit, session.id)
+        still = world.campaigns.get(unit, campaign, owner_id=world.owner)
+    assert narrowed is not None and narrowed.reveal_epoch == session.reveal_epoch + 1
+    assert still is not None and not still.is_archived, "step 1 changes no fact"
+    assert _revision(world, campaign) == 0 and _ledger(world, campaign) == []
+
+
+def test_archive_step_two_narrows_a_session_step_one_did_not_see_then_archives_once(world: World) -> None:
+    campaign = _a_campaign(world)
+    stores = _stores(world)
+    archive_step_one(world.db, stores, campaign_id=campaign, owner_id=world.owner)
+    session = _a_session(world, campaign)  # started between the steps
+    recording = _Recording(world.db)
+    archived = archive_step_two(recording, stores, campaign_id=campaign, owner_id=world.owner, now=T0)
+    assert recording.units[0].campaign_locks == [(campaign, "exclusive")]
+    assert archived.is_archived and archived.archived_at == T0
+    with world.db.transaction() as unit:
+        narrowed = world.sessions.get(unit, session.id)
+    assert narrowed is not None and narrowed.reveal_epoch == session.reveal_epoch + 1
+    assert narrowed.is_live, "archive narrows; ending the session is 1kg.2.6's"
+    assert _revision(world, campaign) == 1
+    assert _ledger(world, campaign) == ["campaign.archived"]
+
+
+def test_archiving_an_archived_campaign_and_restoring_a_live_one_change_nothing(world: World) -> None:
+    campaign = _a_campaign(world)
+    stores = _stores(world)
+    archive(world.db, stores, campaign_id=campaign, owner_id=world.owner, now=T0)
+    session = _a_session(world, _a_campaign(world, name="Other"))  # a live session elsewhere
+    archive(world.db, stores, campaign_id=campaign, owner_id=world.owner, now=T0 + timedelta(hours=1))
+    assert _revision(world, campaign) == 1 and _ledger(world, campaign) == ["campaign.archived"]
+    recording = _Recording(world.db)
+    restored = restore(recording, stores, campaign_id=campaign, owner_id=world.owner, now=T0)
+    assert not restored.is_archived and _revision(world, campaign) == 2
+    recording = _Recording(world.db)
+    again = restore(recording, stores, campaign_id=campaign, owner_id=world.owner, now=T0)
+    assert not again.is_archived
+    assert [unit.campaign_locks for unit in recording.units] == [[]], "restoring a live campaign takes no lock"
+    assert _ledger(world, campaign) == ["campaign.archived", "campaign.restored"]
+    with world.db.transaction() as unit:
+        untouched = world.sessions.get(unit, session.id)
+    assert untouched is not None and untouched.reveal_epoch == session.reveal_epoch
+
+
+def test_another_gms_campaign_is_not_found_by_archive_or_restore(world: World) -> None:
+    theirs = _a_campaign(world, owner=world.other_owner, name="Theirs")
+    stores = _stores(world)
+    for call in (
+        lambda: archive(world.db, stores, campaign_id=theirs, owner_id=world.owner, now=T0),
+        lambda: restore(world.db, stores, campaign_id=theirs, owner_id=world.owner, now=T0),
+    ):
+        with pytest.raises(HTTPException) as refused:
+            call()
+        assert refused.value.status_code == 404
+    assert _revision(world, theirs) == 0 and _ledger(world, theirs) == []
+
+
+# ── The GM's confirmation ────────────────────────────────────────────────────
+
+
+def test_confirm_is_true_once_then_false_and_sets_confirmed_at(world: World) -> None:
+    campaign = _a_campaign(world)
+    seat = _seat(world, campaign, "Rook", world.players[0])
+    with world.db.transaction() as unit:
+        assert world.participants.confirm(unit, campaign, seat, now=T0) is True
+    for _ in range(2):
+        with world.db.transaction() as unit:
+            assert world.participants.confirm(unit, campaign, seat, now=T0 + timedelta(days=1)) is False
+    with world.db.transaction() as unit:
+        held = world.participants.get(unit, seat)
+        assert world.participants.seat_for(unit, campaign, world.players[0]) is not None
+    assert held is not None and held.confirmed_at == T0 and held.is_confirmed
+
+
+def test_confirm_refuses_every_seat_it_cannot_confirm_identically_in_both_worlds(world: World) -> None:
+    campaign = _a_campaign(world)
+    theirs = _a_campaign(world, owner=world.other_owner, name="Theirs")
+    foreign = _seat(world, theirs, "Rook", world.players[0])
+    removed = _seat(world, campaign, "Wren", world.players[1])
+    with world.db.transaction() as unit:
+        assert world.participants.remove(unit, campaign, removed)
+    open_seat = _a_participant(world, campaign, "Kestrel")
+    offered = _a_participant(world, campaign, "Finch")
+    unavailable = [("prt_" + "z" * 22, campaign), (foreign, campaign), (removed, campaign)]
+    for seat, where in unavailable:
+        with world.db.transaction() as unit:
+            with pytest.raises(SeatUnavailable) as refused:
+                world.participants.confirm(unit, where, seat)
+            assert str(refused.value) == SeatUnavailable.MESSAGE
+    with world.db.transaction() as unit:
+        with pytest.raises(SeatNotAccepted) as refused:
+            world.participants.confirm(unit, campaign, open_seat)
+        assert str(refused.value) == SeatNotAccepted.MESSAGE
+    with world.db.transaction() as unit:
+        world.participants.offer(unit, campaign, offered, user_id=world.players[2])
+        with pytest.raises(SeatNotAccepted):
+            world.participants.confirm(unit, campaign, offered)
+
+
+def test_a_seat_confirmed_before_it_was_accepted_cannot_exist_in_the_twin() -> None:
+    with pytest.raises(ValueError, match="confirmed after it is accepted"):
+        Participant("prt_x", "cmp_x", "Rook", T0, user_id=3, confirmed_at=T0)
+
+
+def test_a_removed_confirmed_seat_is_no_longer_confirmed(world: World) -> None:
+    campaign = _a_campaign(world)
+    seat = _seat(world, campaign, "Rook", world.players[0])
+    with world.db.transaction() as unit:
+        world.participants.confirm(unit, campaign, seat)
+        world.participants.remove(unit, campaign, seat)
+        held = world.participants.get(unit, seat)
+    assert held is not None and held.confirmed_at is not None and not held.is_confirmed
+
+
+# ── Offers ──────────────────────────────────────────────────────────────────
+
+
+def test_an_offer_is_created_open_for_fourteen_days_and_names_no_account(world: World) -> None:
+    campaign = _a_campaign(world)
+    seat, offer_id = _held_offer(world, campaign, "Rook", "Wren@Example.com")
+    with world.db.transaction() as unit:
+        made = _offer_store(world).get(unit, offer_id)
+    assert made is not None
+    assert (made.campaign_id, made.participant_id, made.offered_by) == (campaign, seat, world.owner)
+    assert (made.address, made.address_key) == ("Wren@Example.com", "wren@example.com")
+    assert made.expires_at - made.created_at == OFFER_LIFETIME and made.outcome is None
+    assert "Wren" not in repr(made) and "example" not in repr(made)
+
+
+def test_a_seat_holds_one_open_offer_and_the_refusal_names_nothing(world: World) -> None:
+    campaign = _a_campaign(world)
+    seat, _ = _held_offer(world, campaign, "Rook", "wren@example.com")
+    with world.db.transaction() as unit:
+        with pytest.raises(SeatUnavailable) as refused:
+            _offer_store(world).create(unit, campaign, seat, offered_by=world.owner, address="finch@example.com")
+        assert refused.value.__context__ is None and "finch" not in str(refused.value)
+
+
+def test_an_offer_names_a_seat_of_its_own_campaign_made_by_its_owner(world: World) -> None:
+    campaign = _a_campaign(world)
+    theirs = _a_campaign(world, owner=world.other_owner, name="Theirs")
+    their_seat = _a_participant(world, theirs, "Rook")
+    mine = _a_participant(world, campaign, "Wren")
+    offers = _offer_store(world)
+    for where, seat, by in ((campaign, their_seat, world.owner), (campaign, mine, world.other_owner)):
+        with world.db.transaction() as unit:
+            with pytest.raises(SeatUnavailable):
+                offers.create(unit, where, seat, offered_by=by, address="finch@example.com")
+
+
+def test_a_stale_offer_is_marked_expired_lazily_under_its_own_seat(world: World) -> None:
+    campaign = _a_campaign(world)
+    seat, offer_id = _held_offer(world, campaign, "Rook", "wren@example.com")
+    other, other_id = _held_offer(world, campaign, "Finch", "finch@example.com")
+    offers = _offer_store(world)
+    later = T0 + OFFER_LIFETIME + timedelta(seconds=1)
+    with world.db.transaction() as unit:
+        assert offers.expire_stale(unit, campaign, seat, now=T0 + timedelta(days=1)) is False
+        assert offers.expire_stale(unit, campaign, seat, now=later) is True
+        assert offers.expire_stale(unit, campaign, seat, now=later) is False
+        marked, untouched = offers.get(unit, offer_id), offers.get(unit, other_id)
+    assert marked is not None and (marked.outcome, marked.answered_at) == (EXPIRED, marked.expires_at)
+    assert untouched is not None and untouched.outcome is None, "only this seat's offer is marked"
+    with world.db.transaction() as unit:
+        offers.create(unit, campaign, seat, offered_by=world.owner, address="wren@example.com", now=later)
+    del other
+
+
+def test_a_repeat_is_a_live_offer_on_any_seat_or_an_accepted_seat_of_that_key(world: World) -> None:
+    campaign = _a_campaign(world)
+    offers = _offer_store(world)
+    _held_offer(world, campaign, "Rook", "Wren@Example.com")
+    with world.db.transaction() as unit:
+        assert offers.is_repeat(unit, campaign, "wren@example.com", now=T0)
+        assert offers.is_repeat(unit, campaign, address_key("WREN@EXAMPLE.COM"), now=T0), "ASCII case folds"
+        assert not offers.is_repeat(unit, campaign, "finch@example.com", now=T0)
+        assert not offers.is_repeat(unit, campaign, "wren@example.com", now=T0 + OFFER_LIFETIME), "expired"
+    other = _a_campaign(world, name="Other")
+    with world.db.transaction() as unit:
+        assert not offers.is_repeat(unit, other, "wren@example.com", now=T0), "per campaign"
+    seat, offer_id = _held_offer(world, campaign, "Finch", "finch@example.com")
+    with world.db.transaction() as unit:
+        world.participants.offer(unit, campaign, seat, user_id=world.players[0])
+        world.participants.accept(unit, campaign, seat, user_id=world.players[0])
+        offers.close(unit, offer_id, outcome=ACCEPTED, now=T0)
+    with world.db.transaction() as unit:
+        assert offers.is_repeat(unit, campaign, "finch@example.com", now=T0 + OFFER_LIFETIME * 2)
+        world.participants.remove(unit, campaign, seat)
+    with world.db.transaction() as unit:
+        assert not offers.is_repeat(unit, campaign, "finch@example.com", now=T0), "a removed seat repeats nothing"
+
+
+def test_the_throttle_counts_every_offer_in_the_window_whatever_became_of_it(world: World) -> None:
+    campaign = _a_campaign(world)
+    offers = _offer_store(world)
+    _, first = _held_offer(world, campaign, "Rook", "one@example.com", now=T0)
+    _, _second = _held_offer(world, campaign, "Wren", "two@example.com", now=T0 + timedelta(hours=1))
+    with world.db.transaction() as unit:
+        offers.close(unit, first, outcome=DECLINED, now=T0 + timedelta(minutes=5))
+    with world.db.transaction() as unit:
+        counted = offers.count_recent(unit, world.owner, now=T0 + timedelta(hours=2))
+        assert (counted.count, counted.oldest) == (2, T0)
+        assert offers.count_recent(unit, world.owner, now=T0 + THROTTLE_WINDOW + timedelta(minutes=1)).count == 1
+        assert offers.count_recent(unit, world.other_owner, now=T0).count == 0
+    left = THROTTLE_WINDOW - timedelta(hours=2)
+    assert throttle_wait_s(counted, T0 + timedelta(hours=2)) == int(left.total_seconds())
+    assert throttle_wait_s(ThrottleCount(30, T0), T0 + THROTTLE_WINDOW - timedelta(milliseconds=1)) == 1
+
+
+def _invitee(world: World, key: str, user: int, *, now: datetime = T0) -> list[str]:
+    with world.db.transaction() as unit:
+        page = _offer_store(world).invitee_page(unit, key, user, now=now)
+    return [found.offer.id for found in page.items]
+
+
+def test_the_invitee_sees_an_offer_only_through_all_seven_predicates(world: World) -> None:
+    """L-9, each predicate shown excluding a row it alone excludes."""
+    player = world.players[0]
+    key = "wren@example.com"
+    offers = _offer_store(world)
+    campaign = _a_campaign(world)
+    _, shown = _held_offer(world, campaign, "Rook", "Wren@Example.com")
+    assert _invitee(world, key, player) == [shown]
+    assert _invitee(world, "finch@example.com", player) == [], "1. another key"
+    assert _invitee(world, key, player, now=T0 + OFFER_LIFETIME) == [], "2. expired"
+    removed_campaign = _a_campaign(world, name="Removed")
+    removed_seat, _ = _held_offer(world, removed_campaign, "Rook", key)
+    with world.db.transaction() as unit:
+        world.participants.remove(unit, removed_campaign, removed_seat)
+    archived = _a_campaign(world, name="Archived")
+    _held_offer(world, archived, "Rook", key)
+    with world.db.transaction() as unit:
+        world.campaigns.set_archived(unit, archived, owner_id=world.owner, archived=True)
+    assert _invitee(world, key, player) == [shown], "3. a removed seat; 4. an archived campaign"
+    assert _invitee(world, key, world.owner) == [], "5. the caller's own campaign"
+    with world.db.transaction() as unit:
+        offers.block(unit, blocker_user_id=world.players[1], blocked_owner_id=world.owner)
+    assert _invitee(world, key, world.players[1]) == [], "6. an owner the caller blocked"
+    seated = _seat(world, campaign, "Finch", player)
+    assert _invitee(world, key, player) == [], "7. a campaign where the caller already has a seat"
+    del seated
+    with world.db.transaction() as unit:
+        assert offers.close(unit, shown, outcome=DECLINED, now=T0)
+    assert _invitee(world, key, world.players[2]) == [], "an answered offer is not open"
+
+
+def test_the_invitee_page_is_newest_first_and_walks_once(world: World) -> None:
+    key = "wren@example.com"
+    made = []
+    for n in range(3):
+        campaign = _a_campaign(world, name=f"C{n}")
+        made.append(_held_offer(world, campaign, f"Rook{n}", key, now=T0 + timedelta(hours=n))[1])
+    offers = _offer_store(world)
+    seen: list[str] = []
+    seen_names: list[str] = []
+    seen_aliases: list[str] = []
+    cursor: str | None = None
+    for _ in range(5):
+        with world.db.transaction() as unit:
+            page = offers.invitee_page(unit, key, world.players[0], now=T0 + timedelta(days=1), cursor=cursor, limit=2)
+        seen += [found.offer.id for found in page.items]
+        seen_names += [found.campaign_name for found in page.items]
+        seen_aliases += [found.alias for found in page.items]
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    assert seen == list(reversed(made))
+    # C1, C2: each item's campaign name and seat alias travel with ITS row, not
+    # the page's last row (mutant M10: pg's invitee_page giving every item
+    # rows[-1]'s campaign name) or a shared alias (a wrong-seat-alias mutant:
+    # swapping in another item's alias would pass if every seat answered to
+    # the same name).
+    assert seen_names == ["C2", "C1", "C0"]
+    assert seen_aliases == ["Rook2", "Rook1", "Rook0"]
+    with world.db.transaction() as unit:
+        found = offers.find_for_invitee(unit, made[0], key, world.players[0], now=T0)
+    assert found is not None and (found.campaign_name, found.alias) == ("C0", "Rook0")
+    # `repr(found)` also holds SeatOffer's random ids (secrets.token_urlsafe), so
+    # a short name like "C0" can appear there by chance. Check two things that
+    # do not depend on those ids: the dataclass marks both fields hidden, and
+    # what `repr(found)` prints outside the nested offer names neither of them
+    # (a hand-written `__repr__` would pass the first check but not this one).
+    assert {f.name for f in fields(found) if not f.repr} >= {"campaign_name", "alias"}
+    rendered = repr(found).replace(repr(found.offer), "")
+    assert "C0" not in rendered and "Rook" not in rendered
+
+
+def test_decline_block_and_the_repeat_readers(world: World) -> None:
+    campaign = _a_campaign(world)
+    offers = _offer_store(world)
+    seat, offer_id = _held_offer(world, campaign, "Rook", "wren@example.com")
+    with world.db.transaction() as unit:
+        assert offers.close(unit, offer_id, outcome=DECLINED, now=T0) is True
+        assert offers.close(unit, offer_id, outcome=DECLINED, now=T0) is False
+        assert offers.block(unit, blocker_user_id=world.players[0], blocked_owner_id=world.owner) is True
+        assert offers.block(unit, blocker_user_id=world.players[0], blocked_owner_id=world.owner) is False
+        assert offers.is_blocked(unit, world.players[0], world.owner)
+        assert not offers.is_blocked(unit, world.owner, world.players[0])
+        assert offers.repeat_decline(unit, offer_id, "wren@example.com") is not None
+        assert offers.repeat_decline(unit, offer_id, "finch@example.com") is None
+        assert offers.repeat_accept(unit, offer_id, "wren@example.com", world.players[0]) is None
+    del seat
+
+
+def test_remove_withdraws_the_open_offer_and_an_expired_one_reads_expired(world: World) -> None:
+    campaign = _a_campaign(world)
+    offers = _offer_store(world)
+    seat, live = _held_offer(world, campaign, "Rook", "wren@example.com")
+    stale_seat, stale = _held_offer(world, campaign, "Finch", "finch@example.com")
+    moment = T0 + timedelta(days=1)
+    with world.db.transaction() as unit:
+        assert offers.withdraw_open(unit, campaign, seat, now=moment) is True
+        assert offers.withdraw_open(unit, campaign, seat, now=moment) is False
+        assert offers.withdraw_open(unit, campaign, stale_seat, now=T0 + OFFER_LIFETIME * 2) is True
+        withdrawn, expired = offers.get(unit, live), offers.get(unit, stale)
+    assert withdrawn is not None and (withdrawn.outcome, withdrawn.answered_at) == (WITHDRAWN, moment)
+    assert expired is not None and (expired.outcome, expired.answered_at) == (EXPIRED, expired.expires_at)
+
+
+# ── The status function ──────────────────────────────────────────────────────
+
+
+def _an_offer(outcome: str | None = None, *, at: datetime = T0) -> SeatOffer:
+    return SeatOffer(
+        "sof_x", "cmp_x", "prt_x", 1, "a@b.c", "a@b.c", at, at + OFFER_LIFETIME,
+        outcome, None if outcome is None else at,
+    )
+
+
+@pytest.mark.parametrize(
+    ("seat", "latest", "status"),
+    [
+        (Participant("prt_x", "cmp_x", "Rook", T0), None, SeatStatus.OPEN),
+        (Participant("prt_x", "cmp_x", "Rook", T0), _an_offer(), SeatStatus.OFFERED),
+        (Participant("prt_x", "cmp_x", "Rook", T0), _an_offer(DECLINED), SeatStatus.NOT_ACCEPTED),
+        (Participant("prt_x", "cmp_x", "Rook", T0), _an_offer(EXPIRED), SeatStatus.NOT_ACCEPTED),
+        (Participant("prt_x", "cmp_x", "Rook", T0), _an_offer(at=T0 - OFFER_LIFETIME * 2), SeatStatus.NOT_ACCEPTED),
+        (Participant("prt_x", "cmp_x", "Rook", T0, user_id=3, accepted_at=T0), _an_offer(ACCEPTED),
+         SeatStatus.AWAITING_CONFIRMATION),
+        (Participant("prt_x", "cmp_x", "Rook", T0, user_id=3, accepted_at=T0, confirmed_at=T0), _an_offer(ACCEPTED),
+         SeatStatus.CONFIRMED),
+        (Participant("prt_x", "cmp_x", "Rook", T0, removed_at=T0), _an_offer(WITHDRAWN), SeatStatus.REMOVED),
+    ],
+    ids=["open", "offered", "declined", "expired-marked", "expired-unmarked", "awaiting", "confirmed", "removed"],
+)
+def test_the_status_function_derives_each_of_the_six_statuses(
+    seat: Participant, latest: SeatOffer | None, status: SeatStatus
+) -> None:
+    assert seat_status(seat, latest, T0 + timedelta(minutes=1)) is status
+
+
+# ── The player's seats ───────────────────────────────────────────────────────
+
+
+def test_the_players_seat_page_is_newest_acceptance_first_and_leaves_archived_out(world: World) -> None:
+    player = world.players[0]
+    campaigns = [_a_campaign(world, name=f"C{n}") for n in range(3)]
+    seats = [_seat(world, c, "Rook", player, now=T0 + timedelta(hours=n)) for n, c in enumerate(campaigns)]
+    with world.db.transaction() as unit:
+        world.campaigns.set_archived(unit, campaigns[1], owner_id=world.owner, archived=True)
+        world.participants.confirm(unit, campaigns[0], seats[0])
+    walked: list[tuple[str, str, bool]] = []
+    cursor: str | None = None
+    for _ in range(5):
+        with world.db.transaction() as unit:
+            page = world.participants.seat_page_for_user(unit, player, cursor=cursor, limit=1)
+        walked += [(h.seat.campaign_id, h.campaign_name, h.seat.is_confirmed) for h in page.items]
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    assert walked == [(campaigns[2], "C2", False), (campaigns[0], "C0", True)]
+    with world.db.transaction() as unit:
+        assert world.participants.seat_page_for_user(unit, world.players[1]).items == []
+
+
+def _cursor_payload(cursor: str) -> list[Any]:
+    """What a page cursor carries, decoded here by hand rather than by the
+    store's own reader, which would accept only what it expects."""
+    return list(json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))))
+
+
+def test_the_players_seat_cursor_is_the_acceptance_and_the_campaign_never_a_seat_id(world: World) -> None:
+    """L-9 and SEC-43 (R145-M2): no participant id, ever, not even the caller's
+    own. The cursor is keyed on the acceptance time and the campaign id, which
+    the page already shows; a live seat is unique per account and campaign, so
+    the pair orders the list totally. Four acceptances at one instant are
+    walked one row at a time: ties by campaign id compared by code point, none
+    skipped and none repeated."""
+    player = world.players[0]
+    campaigns = [_a_campaign(world, name=f"Tie{n}") for n in range(4)]
+    seats = [_seat(world, c, "Rook", player, now=T0) for c in campaigns]
+    walked: list[str] = []
+    cursors: list[str] = []
+    cursor: str | None = None
+    for _ in range(6):
+        with world.db.transaction() as unit:
+            page = world.participants.seat_page_for_user(unit, player, cursor=cursor, limit=1)
+        walked += [h.seat.campaign_id for h in page.items]
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+        cursors.append(cursor)
+    payloads = [_cursor_payload(c) for c in cursors]
+    assert [v for p in payloads for v in p if str(v).startswith("prt_")] == [], "a cursor decodes to a participant id"
+    assert [s for s in seats for p in payloads if s in json.dumps(p)] == []
+    assert [(datetime.fromisoformat(at), campaign) for at, campaign in payloads] == [(T0, c) for c in walked[:3]]
+    assert walked == sorted(campaigns), "ties by campaign id, by code point, each exactly once"
+
+
+def test_the_seat_page_is_oldest_first_and_counts_the_live_seats(world: World) -> None:
+    campaign = _a_campaign(world)
+    with world.db.transaction() as unit:
+        made = [
+            world.participants.add(unit, campaign, alias=f"Seat{n}", now=T0 + timedelta(seconds=n)).id
+            for n in range(3)
+        ]
+    with world.db.transaction() as unit:
+        world.participants.remove(unit, campaign, made[1])
+    with world.db.transaction() as unit:
+        assert world.participants.count_live(unit, campaign) == 2
+        first = world.participants.page_for_campaign(unit, campaign, limit=1)
+        second = world.participants.page_for_campaign(unit, campaign, cursor=first.next_cursor, limit=1)
+        everyone = world.participants.page_for_campaign(unit, campaign, include_removed=True)
+    assert [p.id for p in first.items + second.items] == [made[0], made[2]] and second.next_cursor is None
+    assert [p.id for p in everyone.items] == made
+
+
+# ── campaign.reconcile ───────────────────────────────────────────────────────
+
+
+def test_reconcile_advances_the_revision_under_the_exclusive_lock_and_calls_the_slot_step(world: World) -> None:
+    campaign = _a_campaign(world)
+    seen: list[tuple[list[tuple[str, str]], str]] = []
+
+    def slots(unit: Any, campaign_id: str) -> None:
+        seen.append((list(unit.campaign_locks), campaign_id))
+
+    assert reconcile(world.db, campaign, slots=slots) is True
+    assert seen == [([(campaign, "exclusive")], campaign)]
+    assert _revision(world, campaign) == 1
+    assert reconcile_slots(None, campaign) is None  # type: ignore[arg-type]
+
+
+def test_reconcile_completes_as_a_no_op_on_a_campaign_that_is_gone(world: World) -> None:
+    calls: list[str] = []
+    gone = "cmp_" + "g" * 22
+    assert reconcile(world.db, gone, slots=lambda unit, cid: calls.append(cid)) is False
+    assert calls == []
+    job = Job(1, RECONCILE_KIND, {"campaign_id": gone}, 1, T0)
+    handler(world.db, slots=lambda unit, cid: calls.append(cid)).run(job, JobContext())
+    handler(world.db, slots=lambda unit, cid: calls.append(cid)).run(
+        Job(2, RECONCILE_KIND, {"campaign_id": "not an id"}, 1, T0), JobContext()
+    )
+    assert calls == []
+    assert handler(world.db, slots=reconcile_slots).max_attempts is None
+
+
+def test_every_enqueue_of_a_reconciliation_is_its_own_job_with_no_dedupe_key(world: World) -> None:
+    campaign = _a_campaign(world)
+    queue = _job_queue(world)
+    with world.db.transaction() as unit:
+        first = enqueue_reconciliation(unit, queue, campaign)
+        second = enqueue_reconciliation(unit, queue, campaign)
+    assert first != second
+    assert _jobs_enqueued(world, queue) == [
+        (RECONCILE_KIND, {"campaign_id": campaign}, None),
+        (RECONCILE_KIND, {"campaign_id": campaign}, None),
+    ]
+
+
+# ── Every refusal is fixed and names nothing ─────────────────────────────────
+
+
+def test_every_new_refusal_message_is_fixed_and_carries_no_identifier() -> None:
+    for refusal in (SeatNotAccepted(), InvalidCursor(), SeatUnavailable()):
+        assert str(refusal) == type(refusal).MESSAGE
+        assert not any(prefix in str(refusal) for prefix in ("cmp_", "prt_", "sof_", "@"))
+    with pytest.raises(TypeError):
+        SeatNotAccepted("prt_leak")  # type: ignore[call-arg]
+    with pytest.raises(ValueError) as refused:
+        check_address("Wren Hidden@example.com")
+    assert "Wren" not in str(refused.value)
+
+
+# ── 1kg.2.3 — the live table session's lifecycle, in both worlds ─────────────
+#
+# `service/table_sessions.py` composes the stores, the ledger and the outbox.
+# What it writes, and in which order, is asserted of the twin and of PostgreSQL
+# alike; who waits for whom is the two-connection tests' further down.
+
+
+def _reconciliation(jobs: Any) -> Callable[[Any, str], int]:
+    """How the lifecycle enqueues `campaign.reconcile` — `1kg.2.2`'s helper, the
+    one `service/app.py` wires in, and never a second kind."""
+    return lambda unit, campaign_id: enqueue_reconciliation(unit, jobs, campaign_id)
+
+
+def _lifecycle(
+    world: World, *, db: Any = None, clock: Callable[[], datetime] | None = None
+) -> TableSessions:
+    return TableSessions(
+        world.db if db is None else db,
+        campaigns=world.campaigns,
+        sessions=world.sessions,
+        audit=world.audit,
+        jobs=world.jobs,
+        reconcile=_reconciliation(world.jobs),
+        clock=clock,
+    )
+
+
+class _Recorded:
+    """A database that remembers every unit of work it hands out, so a test can
+    ask what each of them locked."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+        self.units: list[Any] = []
+
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        with self._db.transaction() as unit:
+            self.units.append(unit)
+            yield unit
+
+
+def _queued(world: World) -> list[tuple[str, dict, str | None, datetime]]:
+    """Every job in the outbox, oldest first: kind, payload, dedupe key and
+    when it may run."""
+    if world.kind == "fake":
+        rows = sorted(world.jobs._rows.values(), key=lambda row: row.job.id)
+        return [(r.job.kind, dict(r.job.payload), r.dedupe_key, r.run_after) for r in rows]
+    with world.db.transaction() as unit:
+        found = unit.conn.execute(
+            "SELECT kind, payload, dedupe_key, run_after FROM app.jobs ORDER BY id"
+        ).fetchall()
+    return [(kind, dict(payload), key, after) for kind, payload, key, after in found]
+
+
+def _reconciles(world: World) -> list[tuple[dict, str | None]]:
+    return [(payload, key) for kind, payload, key, _ in _queued(world) if kind == RECONCILE]
+
+
+def _ledger_rows(world: World, campaign: str) -> list[Any]:
+    with world.db.transaction() as unit:
+        return world.audit.for_campaign(unit, campaign)
+
+
+def _written(world: World, campaign: str) -> tuple[Any, ...]:
+    """Everything a no-op must leave as it was: the outbox, the revision and the
+    campaign's ledger."""
+    return (_queued(world), _revision(world, campaign), [e.id for e in _ledger_rows(world, campaign)])
+
+
+def test_start_opens_one_session_advances_the_revision_and_schedules_its_expiry(
+    world: World,
+) -> None:
+    """L-4: a locked widening. One session, `authz_revision` advanced once,
+    `session.started` recorded with the revision it advanced to, and the
+    expiry job enqueued at `expires_at`, last. No reconciliation: nothing was
+    narrowed."""
+    campaign = _a_campaign(world)
+    moment = datetime.now(UTC)
+    before = _revision(world, campaign)
+    started = _lifecycle(world).start(world.owner, campaign, command_id=_command(), now=moment)
+    session = started.session
+    assert session.live_at(moment) and started.reconcile_jobs == ()
+    assert session.expires_at == moment + SESSION_LIFETIME
+    assert _revision(world, campaign) == before + 1
+    [row] = _ledger_rows(world, campaign)
+    assert (row.action, row.actor_kind, row.actor_ref) == (
+        "session.started", "gm", str(world.owner)
+    )
+    assert row.authz_revision == before + 1 and row.object_ref == session.id
+    assert _queued(world) == [
+        (EXPIRE_KIND, {"session_id": session.id, "campaign_id": campaign}, None, session.expires_at)
+    ]
+
+
+def test_a_replayed_start_answers_its_session_even_after_it_ended_and_writes_nothing(
+    world: World,
+) -> None:
+    """The contract's Idempotency row: a retried Start opens the session already
+    started rather than a second one — whatever has happened to it since."""
+    campaign = _a_campaign(world)
+    service, command = _lifecycle(world), _command()
+    first = service.start(world.owner, campaign, command_id=command).session
+    written = _written(world, campaign)
+    assert service.start(world.owner, campaign, command_id=command).session.id == first.id
+    assert _written(world, campaign) == written
+
+    service.end(world.owner, campaign, first.id)
+    written = _written(world, campaign)
+    again = service.start(world.owner, campaign, command_id=command)
+    assert again.session.id == first.id and again.session.state == "ended"
+    assert _written(world, campaign) == written, "a replay after the end opens nothing"
+
+
+def test_a_new_start_while_live_answers_the_live_session(world: World) -> None:
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    live = service.start(world.owner, campaign, command_id=_command()).session
+    written = _written(world, campaign)
+    assert service.start(world.owner, campaign, command_id=_command()).session.id == live.id
+    assert _written(world, campaign) == written
+
+
+def test_start_while_live_in_another_campaign_is_refused_and_ends_nothing(world: World) -> None:
+    """DV-6: Start never ends another table on its own; the client sends an End
+    and then a Start."""
+    here, elsewhere = _a_campaign(world), _a_campaign(world, name="Elsewhere")
+    service = _lifecycle(world)
+    live = service.start(world.owner, here, command_id=_command()).session
+    with pytest.raises(LiveSessionExists):
+        service.start(world.owner, elsewhere, command_id=_command())
+    with world.db.transaction() as unit:
+        assert world.sessions.get(unit, live.id).is_live
+
+
+def test_start_is_refused_for_a_campaign_that_is_not_the_callers(world: World) -> None:
+    """One not-found answer for a foreign campaign, a missing one and an
+    archived one — decided before any lock."""
+    campaign = _a_campaign(world)
+    recorded = _Recorded(world.db)
+    service = _lifecycle(world, db=recorded)
+    for owner, target in ((world.other_owner, campaign), (world.owner, "cmp_" + "z" * 22)):
+        with pytest.raises(MissingParent):
+            service.start(owner, target, command_id=_command())
+    with world.db.transaction() as unit:
+        world.campaigns.set_archived(unit, campaign, owner_id=world.owner, archived=True)
+    with pytest.raises(MissingParent):
+        service.start(world.owner, campaign, command_id=_command())
+    assert _queued(world) == []
+    assert recorded.units and all(unit.campaign_locks == [] for unit in recorded.units), (
+        "the campaign lock is never asked for before ownership is shown"
+    )
+
+
+def test_start_first_finalises_the_gms_expired_session_as_an_expiry(world: World) -> None:
+    """RQ-7 and L-5: a GM whose last session timed out unnoticed can start
+    again. The stale one is finalised first — `expired`, `ended_at =
+    expires_at`, its grants revoked, one reconciliation — in a transaction of
+    its own, by the system."""
+    stale_home, campaign = _a_campaign(world, name="Stale"), _a_campaign(world)
+    stale = _a_session(world, stale_home, hours=11, started_ago_h=12)
+    with world.db.transaction() as unit:
+        stray = _a_stray_grant_of_the_retired_generation(world, unit, stale.id)
+
+    started = _lifecycle(world).start(world.owner, campaign, command_id=_command())
+    assert started.session.is_live and len(started.reconcile_jobs) == 1
+    with world.db.transaction() as unit:
+        finalised = world.sessions.get(unit, stale.id)
+        assert finalised.state == "expired" and finalised.ended_at == stale.expires_at
+        assert all(g.revoked_at is not None for g in world.sessions.screens(unit, stale.id))
+        assert [g.id for g in world.sessions.screens(unit, stale.id)] == [stray]
+    [expiry] = _ledger_rows(world, stale_home)
+    assert (expiry.action, expiry.actor_kind, expiry.actor_ref) == ("session.expired", "system", None)
+    assert expiry.detail["screens_revoked"] == 1
+    assert _reconciles(world) == [({"campaign_id": stale_home}, None)]
+
+
+def test_end_revokes_everything_and_enqueues_its_reconciliation_last_without_the_campaign_lock(
+    world: World,
+) -> None:
+    """L-5 and RQ-5's first step. Every grant of every generation revoked, both
+    epochs advanced, the slots cleared once, `session.ended` recorded — and only
+    then, last, one `campaign.reconcile` `{campaign_id}` with no dedupe key. None
+    of it asks for the campaign lock, in any unit of work End opens."""
+    campaign = _a_campaign(world)
+    session = _a_session(world, campaign)
+    _a_screen(world, campaign, session.id)
+    with world.db.transaction() as unit:
+        world.sessions.rotate(unit, campaign, session.id, owner_id=world.owner, command_id=_command())
+    _a_screen(world, campaign, session.id)
+    with world.db.transaction() as unit:
+        _a_stray_grant_of_the_retired_generation(world, unit, session.id)
+    world.slot_clears.clear()
+
+    seen_when_enqueued: list[tuple[int, list[str], str, bool]] = []
+    enqueue = _reconciliation(world.jobs)
+
+    def reconcile(unit: Any, campaign_id: str) -> int:
+        seen_when_enqueued.append(
+            (
+                len(world.slot_clears),
+                [e.action for e in world.audit.for_campaign(unit, campaign_id)],
+                world.sessions.get(unit, session.id).state,
+                all(g.revoked_at is not None for g in world.sessions.screens(unit, session.id)),
+            )
+        )
+        return enqueue(unit, campaign_id)
+
+    recorded = _Recorded(world.db)
+    service = TableSessions(
+        recorded,
+        campaigns=world.campaigns,
+        sessions=world.sessions,
+        audit=world.audit,
+        jobs=world.jobs,
+        reconcile=reconcile,
+    )
+    ended = service.end(world.owner, campaign, session.id)
+
+    assert ended.session.state == "ended" and len(ended.reconcile_jobs) == 1
+    assert (ended.session.reveal_epoch, ended.session.audio_epoch) == (2, 2)
+    assert [session_id for _, session_id in world.slot_clears] == [session.id], "once"
+    assert seen_when_enqueued == [(1, ["session.ended"], "ended", True)], (
+        "the slots, the grants, the state and the audit row all precede the enqueue"
+    )
+    assert _reconciles(world) == [({"campaign_id": campaign}, None)]
+    assert recorded.units and all(unit.campaign_locks == [] for unit in recorded.units)
+    [row] = _ledger_rows(world, campaign)
+    assert row.detail == {
+        "session_id": session.id, "generation": 2, "screens_revoked": 2
+    }
+
+
+def test_ending_an_ended_session_writes_nothing(world: World) -> None:
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    session = service.start(world.owner, campaign, command_id=_command()).session
+    service.end(world.owner, campaign, session.id)
+    written = _written(world, campaign)
+    again = service.end(world.owner, campaign, session.id)
+    assert again.session.state == "ended" and again.reconcile_jobs == ()
+    assert _written(world, campaign) == written
+
+
+def test_rotate_retires_the_generation_and_every_screen_and_leaves_the_session_live(
+    world: World,
+) -> None:
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    session = service.start(world.owner, campaign, command_id=_command()).session
+    minted = service.mint_screen(world.owner, campaign)
+    rotated = service.rotate(world.owner, campaign, session.id, command_id=_command())
+    after = rotated.session
+    assert after.live_at(datetime.now(UTC)) and after.link_generation == 2
+    assert (after.reveal_epoch, after.audio_epoch) == (1, 1)
+    assert len(rotated.reconcile_jobs) == 1
+    with world.db.transaction() as unit:
+        assert [g.revoked_at is not None for g in world.sessions.screens(unit, session.id)] == [True]
+    assert service.resolve_screen(minted.secret) is None
+    assert _ledger_rows(world, campaign)[-1].action == "session.rotated"
+
+
+def test_a_repeated_rotate_writes_nothing_and_a_new_command_rotates_again(world: World) -> None:
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    session = service.start(world.owner, campaign, command_id=_command()).session
+    command = _command()
+    assert service.rotate(world.owner, campaign, session.id, command_id=command).session.link_generation == 2
+    written = _written(world, campaign)
+    again = service.rotate(world.owner, campaign, session.id, command_id=command)
+    assert again.session.link_generation == 2 and again.reconcile_jobs == ()
+    assert _written(world, campaign) == written
+    assert service.rotate(world.owner, campaign, session.id, command_id=_command()).session.link_generation == 3
+
+
+def test_a_rotate_of_an_ended_session_answers_it_as_it_stands(world: World) -> None:
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    session = service.start(world.owner, campaign, command_id=_command()).session
+    service.end(world.owner, campaign, session.id)
+    written = _written(world, campaign)
+    rotated = service.rotate(world.owner, campaign, session.id, command_id=_command())
+    assert rotated.session.state == "ended" and rotated.session.link_generation == 1
+    assert _written(world, campaign) == written
+
+
+def test_end_and_rotate_of_another_gms_session_or_through_another_campaign_are_not_found(
+    world: World,
+) -> None:
+    campaign, elsewhere = _a_campaign(world), _a_campaign(world, name="Elsewhere")
+    service = _lifecycle(world)
+    session = service.start(world.owner, campaign, command_id=_command()).session
+    written = _written(world, campaign)
+    for owner, through in ((world.other_owner, campaign), (world.owner, elsewhere)):
+        with pytest.raises(MissingParent):
+            service.end(owner, through, session.id)
+        with pytest.raises(MissingParent):
+            service.rotate(owner, through, session.id, command_id=_command())
+    assert _written(world, campaign) == written
+
+
+def test_the_fan_out_bound_refuses_start_and_rotate_never_end_and_never_a_stranger(
+    world: World,
+) -> None:
+    """L-8 and DV-1. Ten Starts, Ends and Rotates of one campaign in a trailing
+    minute refuse the next Start or Rotate; End is counted and never refused; a
+    stranger's Rotate is the not-found answer whether or not the campaign is at
+    the bound — ownership is decided before anything is counted."""
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    t0 = datetime.now(UTC)
+    at = [t0 + timedelta(seconds=n) for n in range(80)]
+    session = service.start(world.owner, campaign, command_id=_command(), now=at[0]).session
+    for n in range(1, FANOUT_BOUND):
+        service.rotate(world.owner, campaign, session.id, command_id=_command(), now=at[n])
+    with pytest.raises(FanOutBound) as bound:
+        service.rotate(world.owner, campaign, session.id, command_id=_command(), now=at[10])
+    assert bound.value.retry_after_s == 60
+    with pytest.raises(MissingParent):
+        service.rotate(world.other_owner, campaign, session.id, command_id=_command(), now=at[10])
+    with pytest.raises(MissingParent):
+        service.start(world.other_owner, campaign, command_id=_command(), now=at[10])
+
+    ended = service.end(world.owner, campaign, session.id, now=at[11])
+    assert ended.session.state == "ended", "End is never refused by the bound"
+    with pytest.raises(FanOutBound):
+        service.start(world.owner, campaign, command_id=_command(), now=at[12])
+    assert service.start(world.owner, campaign, command_id=_command(), now=at[75]).session.is_live
+
+
+def test_the_expiry_job_finalises_a_due_session_once_and_an_early_run_waits_for_it(
+    world: World,
+) -> None:
+    """L-6. The job is RQ-5's trigger for expiry's reconciliation, not the
+    revocation: it finalises a due session once, does nothing the second time,
+    and, run early, enqueues a fresh job at `expires_at` and completes."""
+    campaign = _a_campaign(world)
+    t0 = datetime.now(UTC)
+    session = _lifecycle(world).start(world.owner, campaign, command_id=_command(), now=t0).session
+    job = Job(1, EXPIRE_KIND, {"session_id": session.id, "campaign_id": campaign}, 1, t0)
+
+    early = _lifecycle(world, clock=lambda: t0 + timedelta(hours=1)).expire_handler()
+    assert early.max_attempts is None
+    early.run(job, JobContext())
+    with world.db.transaction() as unit:
+        assert world.sessions.get(unit, session.id).is_live
+    expiries = [row for row in _queued(world) if row[0] == EXPIRE_KIND]
+    assert [row[3] for row in expiries] == [session.expires_at, session.expires_at], (
+        "the early run enqueued a fresh job at the expiry"
+    )
+
+    due = _lifecycle(world, clock=lambda: session.expires_at + timedelta(seconds=1))
+    due.expire_handler().run(job, JobContext())
+    with world.db.transaction() as unit:
+        finalised = world.sessions.get(unit, session.id)
+        assert finalised.state == "expired" and finalised.ended_at == session.expires_at
+    written = _written(world, campaign)
+    due.expire_handler().run(job, JobContext())
+    assert _written(world, campaign) == written, "a second run changes nothing"
+    assert _reconciles(world) == [({"campaign_id": campaign}, None)]
+    assert [e.action for e in _ledger_rows(world, campaign)] == ["session.started", "session.expired"]
+
+
+def test_every_revocation_enqueues_its_own_reconciliation_with_no_dedupe_key(world: World) -> None:
+    """RQ-12: two Ends of two sessions make two rows — a dedupe key would let a
+    job that had already read the state absorb the second."""
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    for _ in range(2):
+        session = service.start(world.owner, campaign, command_id=_command()).session
+        service.end(world.owner, campaign, session.id)
+    assert _reconciles(world) == [({"campaign_id": campaign}, None)] * 2
+
+
+# L-10 and L-12 — what "live" means, for a grant and for a stream's binding.
+
+_WAYS_A_SCREEN_ENDS = ("end", "rotate", "expiry", "revoke", "leave")
+
+
+@pytest.mark.parametrize("way", _WAYS_A_SCREEN_ENDS)
+def test_a_screen_and_its_binding_stop_being_live_each_way_a_screen_ends(
+    world: World, way: str
+) -> None:
+    """The resolver and the predicate agree after each of End, Rotate (the old
+    generation), expiry with no End (a row still `live` past `expires_at`), a
+    per-screen revoke and Leave. The last two touch one screen: the table stays
+    for everyone else."""
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    t0 = datetime.now(UTC)
+    session = service.start(world.owner, campaign, command_id=_command(), now=t0).session
+    minted = service.mint_screen(world.owner, campaign, now=t0)
+    screen = Binding(session.id, session.link_generation, minted.grant.id)
+    account = Binding(session.id, session.link_generation)
+    read = service.liveness([session.id])
+    assert may_write(screen, read, t0) and may_write(account, read, t0)
+    assert service.resolve_screen(minted.secret, now=t0) is not None
+
+    later = t0 + timedelta(seconds=1)
+    if way == "end":
+        service.end(world.owner, campaign, session.id, now=later)
+    elif way == "rotate":
+        service.rotate(world.owner, campaign, session.id, command_id=_command(), now=later)
+    elif way == "expiry":
+        later = session.expires_at + timedelta(seconds=1)
+    elif way == "revoke":
+        service.revoke_screen(world.owner, campaign, minted.grant.id, now=later)
+    else:
+        assert service.leave(minted.secret, now=later) is True
+        assert service.leave(minted.secret, now=later) is False, "a second Leave finds nothing live"
+
+    read = service.liveness([session.id])
+    assert service.resolve_screen(minted.secret, now=later) is None
+    assert not may_write(screen, read, later)
+    assert may_write(account, read, later) is (way in ("revoke", "leave"))
+
+
+def test_an_end_then_a_start_at_the_same_generation_fails_the_old_binding(world: World) -> None:
+    """Every session starts at generation 1, so the generation alone is not a
+    binding (SEC-42): the session id is part of it."""
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    first = service.start(world.owner, campaign, command_id=_command()).session
+    old = Binding(first.id, first.link_generation)
+    service.end(world.owner, campaign, first.id)
+    second = service.start(world.owner, campaign, command_id=_command()).session
+    assert second.link_generation == first.link_generation == 1
+    read = service.liveness([first.id, second.id])
+    now = datetime.now(UTC)
+    assert not may_write(old, read, now)
+    assert may_write(Binding(second.id, 1), read, now)
+    assert not may_write(Binding("ses_" + "z" * 22, 1), read, now), "an unknown session"
+
+
+def test_the_screen_resolver_answers_a_grant_and_never_a_person(world: World) -> None:
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    service.start(world.owner, campaign, command_id=_command())
+    minted = service.mint_screen(world.owner, campaign)
+    found = service.resolve_screen(minted.secret)
+    assert found is not None
+    assert set(vars(found)) == {"grant_id", "session_id", "campaign_id", "generation"}
+    assert service.resolve_screen(secrets.token_urlsafe(32)) is None
+
+
+def test_only_the_owner_of_a_live_session_mints_and_the_bound_is_reached_through_the_service(
+    world: World,
+) -> None:
+    """L-9: the owner's unlocked read decides first — another account, a
+    campaign with no live session and a session past its expiry are one
+    `Inactive`, and none of them takes the session's advisory lock."""
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    with pytest.raises(Inactive):
+        service.mint_screen(world.owner, campaign)
+    t0 = datetime.now(UTC)
+    session = service.start(world.owner, campaign, command_id=_command(), now=t0).session
+    recorded = _Recorded(world.db)
+    stranger = _lifecycle(world, db=recorded)
+    with pytest.raises(Inactive):
+        stranger.mint_screen(world.other_owner, campaign, now=t0)
+    with pytest.raises(Inactive):
+        stranger.mint_screen(world.owner, campaign, now=session.expires_at)
+    if world.kind == "fake":
+        assert all(unit.locks == [] for unit in recorded.units), "no advisory lock was taken"
+
+    for _ in range(SCREENS_PER_SESSION):
+        service.mint_screen(world.owner, campaign, now=t0)
+    with pytest.raises(ScreenLimit):
+        service.mint_screen(world.owner, campaign, now=t0)
+    minted = [e for e in _ledger_rows(world, campaign) if e.action == "screen.minted"]
+    assert len(minted) == SCREENS_PER_SESSION
+    assert {(e.actor_kind, e.actor_ref, e.object_kind) for e in minted} == {
+        ("gm", str(world.owner), "table_screen")
+    }
+
+
+def test_a_screen_revoke_and_a_leave_are_recorded_once_and_touch_nothing_else(world: World) -> None:
+    """L-11: neither advances an epoch, clears a slot or enqueues a
+    reconciliation; each is idempotent and recorded only when it revoked."""
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    session = service.start(world.owner, campaign, command_id=_command()).session
+    by_gm, leaving = service.mint_screen(world.owner, campaign), service.mint_screen(world.owner, campaign)
+    queued = _queued(world)
+    t1 = datetime.now(UTC) + timedelta(seconds=1)
+    service.revoke_screen(world.owner, campaign, by_gm.grant.id, now=t1)
+    service.revoke_screen(world.owner, campaign, by_gm.grant.id, now=t1 + timedelta(seconds=1))
+    with pytest.raises(MissingParent):
+        service.revoke_screen(world.other_owner, campaign, leaving.grant.id)
+    t2 = t1 + timedelta(seconds=2)
+    assert service.leave(leaving.secret, now=t2) is True
+    assert service.leave(leaving.secret, now=t2) is False
+    assert service.leave(secrets.token_urlsafe(32), now=t2) is False
+    revoked = [e for e in _ledger_rows(world, campaign) if e.action == "screen.revoked"]
+    assert [(e.reason_code, e.actor_kind, e.actor_ref, e.object_ref) for e in revoked] == [
+        ("gm_revoked", "gm", str(world.owner), by_gm.grant.id),
+        ("left", "screen", leaving.grant.id, leaving.grant.id),
+    ]
+    assert _queued(world) == queued
+    with world.db.transaction() as unit:
+        after = world.sessions.get(unit, session.id)
+        assert (after.reveal_epoch, after.audio_epoch, after.link_generation) == (0, 0, 1)
+
+
+def _screens_revoked(world: World, campaign: str) -> list[Any]:
+    return [e for e in _ledger_rows(world, campaign) if e.action == "screen.revoked"]
+
+
+def test_a_stray_grant_of_a_retired_generation_is_live_to_no_reader(world: World) -> None:
+    """L-9, L-10 (review M-2): the grant a mint loses to a Rotate is unrevoked
+    and of the generation the Rotate retired. Validity is the reader's test, so
+    every reader refuses it: the resolver, the GM's status read, the per-frame
+    read, the screen bound, and Leave, which revokes only a live grant. A screen
+    of the current generation is the positive control for each."""
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    t0 = datetime.now(UTC)
+    session = service.start(world.owner, campaign, command_id=_command(), now=t0).session
+    service.rotate(world.owner, campaign, session.id, command_id=_command(), now=t0)
+    with world.db.transaction() as unit:
+        stray = _a_stray_grant_of_the_retired_generation(world, unit, session.id)
+    later = t0 + timedelta(seconds=1)
+    current = service.mint_screen(world.owner, campaign, now=later)
+    with world.db.transaction() as unit:
+        held = {g.id: g for g in world.sessions.screens(unit, session.id)}
+    assert (held[stray].revoked_at, held[stray].link_generation) == (None, 1), "unrevoked and retired"
+    assert current.grant.link_generation == 2
+
+    assert service.resolve_screen(STRAY_SECRET, now=later) is None
+    assert service.resolve_screen(current.secret, now=later) is not None
+    status = service.status(world.owner, campaign, now=later)
+    assert status is not None and [g.id for g in status.screens] == [current.grant.id]
+    assert service.liveness([session.id])[session.id].live_screens == frozenset({current.grant.id})
+
+    for _ in range(SCREENS_PER_SESSION - 1):
+        service.mint_screen(world.owner, campaign, now=later)
+    with pytest.raises(ScreenLimit):
+        service.mint_screen(world.owner, campaign, now=later)
+
+    assert service.leave(STRAY_SECRET, now=later) is False
+    assert _screens_revoked(world, campaign) == [], "a Leave of a dead grant records nothing"
+    with world.db.transaction() as unit:
+        assert {g.id: g for g in world.sessions.screens(unit, session.id)}[stray].revoked_at is None
+
+
+def test_a_leave_after_the_session_expired_revokes_and_records_nothing(world: World) -> None:
+    """L-17, SEC-49 (review M-3): once its session is past `expires_at` — with
+    nothing having ended it — a grant is dead, so its Leave changes nothing and
+    the route answers by deleting the cookie alone. Just before the expiry the
+    same Leave revokes it, which is the positive control."""
+    campaign = _a_campaign(world)
+    service = _lifecycle(world)
+    t0 = datetime.now(UTC)
+    session = service.start(world.owner, campaign, command_id=_command(), now=t0).session
+    minted = service.mint_screen(world.owner, campaign, now=t0)
+
+    assert service.leave(minted.secret, now=session.expires_at + timedelta(seconds=1)) is False
+    assert _screens_revoked(world, campaign) == []
+    with world.db.transaction() as unit:
+        assert world.sessions.get(unit, session.id).state == "live", "expiry alone, no End"
+        assert {g.id: g for g in world.sessions.screens(unit, session.id)}[minted.grant.id].revoked_at is None
+
+    assert service.leave(minted.secret, now=session.expires_at - timedelta(seconds=1)) is True
+    assert [e.object_ref for e in _screens_revoked(world, campaign)] == [minted.grant.id]
+
+
+# ── 1kg.2.3 on a real server: who waits for whom ─────────────────────────────
+#
+# Each race below is explicit: one transaction is held open at a known point,
+# the other is started, and the server is asked whether it is really blocked —
+# or, where the claim is "does not wait", the other finished while the first
+# still held what it held.
+
+#: Long enough that a lock taken first is always waited for inside a race.
+RACY = CampaignLockSettings(lock_timeout_s=4, transaction_timeout_s=30)
+
+
+def _pg_lifecycle(db: Any) -> TableSessions:
+    jobs = PostgresJobQueue(db)
+    return TableSessions(
+        db,
+        campaigns=PostgresCampaignStore(),
+        sessions=PostgresTableSessionStore(slot_clear=no_slots),
+        audit=PostgresAuditLog(),
+        jobs=jobs,
+        reconcile=_reconciliation(jobs),
+    )
+
+
+class _HeldOpen:
+    """A database whose transactions, once their work is done, stay open until
+    released — the caller's locks held at a known point."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+        self.took, self.release = threading.Event(), threading.Event()
+
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        with self._db.transaction() as unit:
+            yield unit
+            self.took.set()
+            self.release.wait(PATIENCE)
+
+
+@contextmanager
+def _in_a_thread(work: Callable[[], object], ready: threading.Event | None = None) -> Iterator[list[object]]:
+    """Run `work` in a thread; the list it yields gets its outcome — an
+    exception counting as one. If `ready` is given, wait for it first."""
+    outcome: list[object] = []
+
+    def run() -> None:
+        try:
+            outcome.append(work())
+        except BaseException as exc:  # noqa: BLE001 - the outcome under test
+            outcome.append(exc)
+            if ready is not None:
+                ready.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    if ready is not None:
+        assert ready.wait(PATIENCE), "the held transaction never got there"
+        if outcome and isinstance(outcome[0], BaseException):
+            raise outcome[0]
+    try:
+        yield outcome
+    finally:
+        thread.join(PATIENCE)
+        assert not thread.is_alive(), "a racing transaction never finished"
+
+
+def _scalar(dsn: str, statement: str, params: tuple = ()) -> Any:
+    with connect(dsn) as conn:
+        return conn.execute(statement, params).fetchone()[0]
+
+
+def _a_stranger(dsn: str) -> int:
+    return int(
+        _scalar(
+            dsn,
+            "INSERT INTO auth.users (email, password_hash) VALUES ('stranger@example.com', 'x') "
+            "RETURNING id",
+        )
+    )
+
+
+@needs_db
+@pytest.mark.parametrize("holders", ["exclusive", "two-shared"])
+def test_end_and_rotate_complete_while_the_campaign_lock_is_held(
+    dsn: str, owner: int, holders: str
+) -> None:
+    """RC-8: a narrowing never waits for the campaign lock. End and Rotate each
+    complete while another transaction holds it exclusively, and while two
+    shared holders hold it — well inside the time the holders keep it."""
+    db = _database(dsn, PATIENT)
+    service = _pg_lifecycle(db)
+    session = service.start(owner, CAMPAIGN, command_id=_command()).session
+    with _a_transaction_holding(db, shared=holders != "exclusive"):
+        with (
+            _a_transaction_holding(db, shared=True)
+            if holders == "two-shared"
+            else nullcontext(threading.Event())
+        ):
+            began = time.monotonic()
+            rotated = service.rotate(owner, CAMPAIGN, session.id, command_id=_command())
+            ended = service.end(owner, CAMPAIGN, session.id)
+            assert time.monotonic() - began < PATIENCE / 3, "they waited for the holders"
+    assert rotated.session.link_generation == 2 and ended.session.state == "ended"
+    assert len(rotated.reconcile_jobs) == len(ended.reconcile_jobs) == 1
+
+
+def _authz_revision(dsn: str) -> int:
+    return int(
+        _scalar(dsn, "SELECT authz_revision FROM campaign.authz_state WHERE campaign_id = %s", (CAMPAIGN,))
+    )
+
+
+@needs_db
+@pytest.mark.parametrize("revocation", ["end", "rotate"])
+@pytest.mark.parametrize("holders", ["exclusive", "two-shared"])
+def test_a_revocations_reconciliation_waits_for_the_campaign_lock_and_runs_once_it_frees(
+    dsn: str, owner: int, holders: str, revocation: str
+) -> None:
+    """RC-8's other half, run by 1kg.2.2's own `campaign.reconcile` handler. End
+    or Rotate commits while the campaign lock is held (exclusively, or by two
+    share holders); the one job it left then waits for that lock — the server
+    shows it waiting — times out, and is kept for a retry with the revision
+    untouched. Once the holders commit, the retry advances the revision exactly
+    once and the job is gone. The holders commit as their blocks end."""
+    db = _database(dsn, PATIENT)
+    service = _pg_lifecycle(db)
+    session = service.start(owner, CAMPAIGN, command_id=_command()).session
+    # The runner's clock runs ahead of `run_after`, so each attempt below can
+    # claim the job without waiting out the retry backoff (1kg.2.2's pattern).
+    clock = [datetime.now(UTC) + timedelta(minutes=1)]
+    runner = JobRunner(
+        PostgresJobQueue(db), {RECONCILE_KIND: handler(db, slots=reconcile_slots)}, clock=lambda: clock[0]
+    )
+    with _a_transaction_holding(db, shared=holders != "exclusive"):
+        with (
+            _a_transaction_holding(db, shared=True)
+            if holders == "two-shared"
+            else nullcontext()
+        ):
+            if revocation == "end":
+                outcome = service.end(owner, CAMPAIGN, session.id)
+            else:
+                outcome = service.rotate(owner, CAMPAIGN, session.id, command_id=_command())
+            [job_id] = outcome.reconcile_jobs
+            revision = _authz_revision(dsn)
+            with _in_a_thread(lambda: runner.run_job(job_id)) as attempts:
+                assert _someone_waits_on_a_lock(dsn), "the reconciliation never waited for the holders"
+            [attempt] = attempts
+            assert not isinstance(attempt, BaseException), attempt
+            assert (attempt.ran, attempt.failed) == (1, 1), "it timed out waiting and is kept for a retry"
+            assert _authz_revision(dsn) == revision, "nothing advanced while the holders held the lock"
+            assert _scalar(dsn, "SELECT attempts FROM app.jobs WHERE id = %s", (job_id,)) == 1
+    clock[0] = clock[0] + timedelta(hours=1)
+    retried = runner.run_job(job_id)
+    assert (retried.ran, retried.failed) == (1, 0), "the retry ran once the holders had committed"
+    assert _authz_revision(dsn) == revision + 1, "the revision advanced exactly once"
+    assert _scalar(dsn, "SELECT count(*) FROM app.jobs WHERE id = %s", (job_id,)) == 0
+    assert _scalar(dsn, "SELECT count(*) FROM app.jobs WHERE kind = %s", (RECONCILE,)) == 0
+
+
+@needs_db
+def test_the_apps_own_expiry_handler_leaves_one_reconciliation(
+    dsn: str, owner: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RQ-5, review M-4: the suite above wires its own `reconcile` lambda, so
+    nothing there would notice `service/app.py`'s going missing. This drives
+    the composition production runs — `_build_stores` on a real database, and
+    the driver it leaves — through one due `table_session.expire`, and asks for
+    exactly one `campaign.reconcile` `{campaign_id}` behind it — and, since
+    1kg.3.5 wired session dividers into the same composition, exactly one `end`
+    divider job after it, carrying the session's id and nothing else."""
+    from service import app as appmod
+    from service.session_dividers import DIVIDER_KIND
+
+    monkeypatch.setattr(appmod, "_state", {"migrations": "current"})
+    db = _database(dsn, PATIENT)
+    appmod._build_stores(db)
+    started_at = datetime.now(UTC) - SESSION_LIFETIME - timedelta(minutes=1)
+    session = _pg_lifecycle(db).start(owner, CAMPAIGN, command_id=_command(), now=started_at).session
+    assert _scalar(dsn, "SELECT count(*) FROM app.jobs WHERE kind = %s", (RECONCILE,)) == 0
+
+    ran = appmod._state["jobs"].run_hook()
+    assert ran is not None and (ran.ran, ran.failed) == (1, 0), ran
+    assert _scalar(dsn, "SELECT state FROM campaign.table_sessions WHERE id = %s", (session.id,)) == "expired"
+    with connect(dsn) as conn:
+        queued = conn.execute(
+            "SELECT kind, payload, dedupe_key FROM app.jobs WHERE kind <> %s ORDER BY id", (EXPIRE_KIND,)
+        ).fetchall()
+    assert queued == [
+        (RECONCILE, {"campaign_id": CAMPAIGN}, None),
+        (DIVIDER_KIND, {"session_id": session.id, "boundary": "end"}, None),
+    ]
+
+
+@needs_db
+def test_two_racing_starts_in_one_campaign_answer_one_session(dsn: str, owner: int) -> None:
+    """The second waits for the campaign lock and then finds the first's live
+    session: one session, one `session.started`, the revision advanced once."""
+    service = _pg_lifecycle(_database(dsn, RACY))
+    outcomes = _race(lambda: service.start(owner, CAMPAIGN, command_id=_command()).session.id)
+    assert len(outcomes) == 2 and all(isinstance(o, str) for o in outcomes), outcomes
+    assert len(set(outcomes)) == 1
+    assert _scalar(dsn, "SELECT count(*) FROM campaign.table_sessions") == 1
+    assert _scalar(
+        dsn, "SELECT count(*) FROM audit.events WHERE action = 'session.started'"
+    ) == 1
+    assert _scalar(
+        dsn, "SELECT authz_revision FROM campaign.authz_state WHERE campaign_id = %s", (CAMPAIGN,)
+    ) == 1
+
+
+@needs_db
+def test_two_racing_starts_in_two_campaigns_of_one_gm_leave_one_live_session(
+    dsn: str, owner: int
+) -> None:
+    """Two campaign locks, no conflict between them: the one-live-per-GM index
+    decides, and the loser gets `LiveSessionExists`."""
+    with connect(dsn) as conn:
+        conn.execute(
+            "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Other')",
+            (OTHER_CAMPAIGN, owner),
+        )
+    service = _pg_lifecycle(_database(dsn, RACY))
+    targets = iter([CAMPAIGN, OTHER_CAMPAIGN])
+    guard = threading.Lock()
+
+    def start() -> object:
+        with guard:
+            target = next(targets)
+        return service.start(owner, target, command_id=_command()).session.id
+
+    outcomes = _race(start)
+    assert sorted(type(o).__name__ for o in outcomes) == ["LiveSessionExists", "str"], outcomes
+    assert _scalar(
+        dsn, "SELECT count(*) FROM campaign.table_sessions WHERE state = 'live'"
+    ) == 1
+
+
+@needs_db
+def test_two_racing_ends_make_one_ending(dsn: str, owner: int) -> None:
+    """They serialise on the session row: one state change, one audit row, one
+    reconciliation; the other answers the ended session."""
+    service = _pg_lifecycle(_database(dsn, RACY))
+    session = service.start(owner, CAMPAIGN, command_id=_command()).session
+    outcomes = _race(lambda: service.end(owner, CAMPAIGN, session.id))
+    assert all(o.session.state == "ended" for o in outcomes), outcomes
+    assert sorted(len(o.reconcile_jobs) for o in outcomes) == [0, 1]
+    assert _scalar(dsn, "SELECT count(*) FROM audit.events WHERE action = 'session.ended'") == 1
+    assert _scalar(dsn, "SELECT count(*) FROM app.jobs WHERE kind = %s", (RECONCILE,)) == 1
+
+
+@needs_db
+def test_two_racing_rotates_with_one_command_make_one_rotation(dsn: str, owner: int) -> None:
+    service = _pg_lifecycle(_database(dsn, RACY))
+    session = service.start(owner, CAMPAIGN, command_id=_command()).session
+    command = _command()
+    outcomes = _race(lambda: service.rotate(owner, CAMPAIGN, session.id, command_id=command))
+    assert [o.session.link_generation for o in outcomes] == [2, 2], outcomes
+    assert _scalar(dsn, "SELECT count(*) FROM audit.events WHERE action = 'session.rotated'") == 1
+    assert _scalar(
+        dsn, "SELECT link_generation FROM campaign.table_sessions WHERE id = %s", (session.id,)
+    ) == 2
+
+
+@needs_db
+def test_two_mints_racing_for_the_last_screen_leave_one_winner_and_the_other_waited(
+    dsn: str, owner: int
+) -> None:
+    """SEC-48's bound under the session's advisory lock: the first mint for
+    the last place holds the lock until it commits, the second really waits for
+    it (the server says so), then counts four and is refused."""
+    db = _database(dsn, RACY)
+    service = _pg_lifecycle(db)
+    service.start(owner, CAMPAIGN, command_id=_command())
+    for _ in range(SCREENS_PER_SESSION - 1):
+        service.mint_screen(owner, CAMPAIGN)
+    held = _HeldOpen(db)
+    with _in_a_thread(lambda: _pg_lifecycle(held).mint_screen(owner, CAMPAIGN), held.took) as first:
+        with _in_a_thread(lambda: service.mint_screen(owner, CAMPAIGN)) as second:
+            try:
+                assert _someone_waits_on_a_lock(dsn), "the second mint never waited"
+            finally:
+                held.release.set()
+    assert isinstance(first[0], MintedScreen), first
+    assert isinstance(second[0], ScreenLimit), second
+    assert _scalar(dsn, "SELECT count(*) FROM campaign.table_credentials") == SCREENS_PER_SESSION
+
+
+@needs_db
+def test_a_mint_racing_a_rotate_never_waits_and_its_grant_is_dead_on_arrival(
+    dsn: str, owner: int
+) -> None:
+    """L-9: the mint's insert takes `FOR KEY SHARE` on the session row, which a
+    Rotate's `FOR NO KEY UPDATE` does not block — so the mint completes while
+    the Rotate still holds the row. It read the old generation, so the grant it
+    commits after the Rotate's revoke resolves as not live: fail-closed."""
+    db = _database(dsn, RACY)
+    service = _pg_lifecycle(db)
+    session = service.start(owner, CAMPAIGN, command_id=_command()).session
+    service.mint_screen(owner, CAMPAIGN)
+    held = _HeldOpen(db)
+    rotate = _pg_lifecycle(held)
+    with _in_a_thread(
+        lambda: rotate.rotate(owner, CAMPAIGN, session.id, command_id=_command()), held.took
+    ) as rotated:
+        began = time.monotonic()
+        minted = service.mint_screen(owner, CAMPAIGN)
+        assert time.monotonic() - began < PATIENCE / 3, "the mint waited for the Rotate"
+        assert not rotated, "the Rotate was still holding the row"
+        held.release.set()
+    assert rotated[0].session.link_generation == 2
+    assert minted.grant.link_generation == 1
+    assert service.resolve_screen(minted.secret) is None, "a grant of a retired generation"
+
+
+@needs_db
+def test_a_multi_row_revoke_waits_for_single_row_revokes_and_never_deadlocks(
+    dsn: str, owner: int
+) -> None:
+    """L-5: End holds the session row and locks the grants in ascending id; a
+    per-screen revoke and a Leave each hold one grant and take nothing after it.
+    With the highest grant held by the revoke and another by the Leave, End
+    waits (the server says so), both commit, and End completes with no
+    deadlock: every grant revoked, one audit row per decision."""
+    db = _database(dsn, RACY)
+    service = _pg_lifecycle(db)
+    session = service.start(owner, CAMPAIGN, command_id=_command()).session
+    minted = sorted(
+        (service.mint_screen(owner, CAMPAIGN) for _ in range(3)), key=lambda m: m.grant.id
+    )
+    lowest, highest = minted[0], minted[-1]
+    by_gm, leaving = _HeldOpen(db), _HeldOpen(db)
+    with _in_a_thread(
+        lambda: _pg_lifecycle(by_gm).revoke_screen(owner, CAMPAIGN, highest.grant.id), by_gm.took
+    ) as revoked:
+        with _in_a_thread(lambda: _pg_lifecycle(leaving).leave(lowest.secret), leaving.took) as left:
+            with _in_a_thread(lambda: service.end(owner, CAMPAIGN, session.id)) as ended:
+                try:
+                    assert _someone_waits_on_a_lock(dsn), "End never waited for a held grant"
+                finally:
+                    leaving.release.set()
+                    by_gm.release.set()
+    assert revoked == [None] and left == [True], (revoked, left)
+    assert not isinstance(ended[0], BaseException), ended
+    assert ended[0].session.state == "ended"
+    assert _scalar(
+        dsn,
+        "SELECT count(*) FROM campaign.table_credentials WHERE session_id = %s "
+        "AND revoked_at IS NULL",
+        (session.id,),
+    ) == 0
+    with connect(dsn) as conn:
+        rows = conn.execute(
+            "SELECT action, reason_code FROM audit.events "
+            "WHERE action IN ('session.ended', 'screen.revoked') ORDER BY action, reason_code"
+        ).fetchall()
+    assert rows == [("screen.revoked", "gm_revoked"), ("screen.revoked", "left"), ("session.ended", None)]
+
+
+@contextmanager
+def _a_store_transaction_holding(db: Any, work: Callable[[Any], object]) -> Iterator[object]:
+    """`work` inside a transaction in another thread, kept open — and then
+    rolled back — so a test can ask what it locked."""
+    took, release = threading.Event(), threading.Event()
+    result: list[object] = []
+
+    class _Done(Exception):
+        pass
+
+    def hold() -> None:
+        try:
+            with db.transaction() as unit:
+                result.append(work(unit))
+                took.set()
+                release.wait(PATIENCE)
+                raise _Done
+        except _Done:
+            pass
+        except BaseException as exc:  # noqa: BLE001 - reported to the test thread
+            result.append(exc)
+            took.set()
+
+    thread = threading.Thread(target=hold, daemon=True)
+    thread.start()
+    assert took.wait(PATIENCE), "the transaction never got there"
+    if result and isinstance(result[0], BaseException):
+        raise result[0]
+    try:
+        yield result[0]
+    finally:
+        release.set()
+        thread.join(PATIENCE)
+
+
+def _lock_the_session_row(dsn: str, session_id: str) -> None:
+    with connect(dsn, autocommit=False) as conn:
+        conn.execute("SET LOCAL lock_timeout = '2s'")
+        conn.execute(
+            "SELECT id FROM campaign.table_sessions WHERE id = %s FOR NO KEY UPDATE", (session_id,)
+        )
+        conn.rollback()
+
+
+@needs_db
+def test_a_strangers_end_on_another_gms_session_locks_nothing(dsn: str, owner: int) -> None:
+    """L-5: the owner is in the locking statement, so a stranger naming another
+    GM's session holds nothing a second connection has to wait for. The owner's
+    own End is the positive control: it does hold the row."""
+    stranger = _a_stranger(dsn)
+    db = _database(dsn, RACY)
+    session = _pg_lifecycle(db).start(owner, CAMPAIGN, command_id=_command()).session
+    store = PostgresTableSessionStore(slot_clear=no_slots)
+
+    def theirs(unit: Any) -> object:
+        return store.end(unit, CAMPAIGN, session.id, owner_id=stranger)
+
+    with _a_store_transaction_holding(db, theirs) as found:
+        assert found is None
+        _lock_the_session_row(dsn, session.id)
+
+    def mine(unit: Any) -> object:
+        return store.end(unit, CAMPAIGN, session.id, owner_id=owner)
+
+    with _a_store_transaction_holding(db, mine) as found:
+        assert found is not None
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            _lock_the_session_row(dsn, session.id)
+
+
+@needs_db
+def test_a_strangers_start_never_asks_for_another_gms_campaign_lock(dsn: str, owner: int) -> None:
+    """L-4: ownership is read unlocked before the campaign lock is asked for,
+    so a stranger's Start is the not-found answer at once while another
+    transaction holds that campaign exclusively. The owner's Start is the
+    positive control: it waits (the server says so), times out, and is a
+    retryable `BackendUnavailable` that created nothing."""
+    stranger = _a_stranger(dsn)
+    db = _database(dsn, QUICK)
+    service = _pg_lifecycle(db)
+    with _a_transaction_holding(db, shared=False):
+        began = time.monotonic()
+        with pytest.raises(MissingParent):
+            service.start(stranger, CAMPAIGN, command_id=_command())
+        assert time.monotonic() - began < QUICK.lock_timeout_s, "the stranger waited"
+        with _in_a_thread(lambda: service.start(owner, CAMPAIGN, command_id=_command())) as owners:
+            assert _someone_waits_on_a_lock(dsn), "the owner's Start never waited"
+    assert isinstance(owners[0], BackendUnavailable), owners
+    assert _scalar(dsn, "SELECT count(*) FROM campaign.table_sessions") == 0
+    assert _scalar(dsn, "SELECT count(*) FROM app.jobs") == 0

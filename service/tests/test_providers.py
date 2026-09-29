@@ -13,8 +13,18 @@ Run from repo root:
 
 from __future__ import annotations
 
+import inspect
+import re
+from pathlib import Path
+
+import httpx
 import pytest
 
+import config
+from ingestion import retrieval
+from service import generate, provider_deadline
+from service.model_catalog import CATALOG
+from service.provider_deadline import AttemptDeadlineTransport
 from service.providers import ProviderClientFactory, UnknownOrDisabledModelError
 
 
@@ -51,6 +61,17 @@ def test_live_openai_client_construction_disables_sdk_retries(monkeypatch):
     factory = ProviderClientFactory()
     client = factory.client_for("gpt-4o-mini")
     assert client.max_retries == 0
+
+
+@pytest.mark.parametrize("generation", [
+    generate.generate_answer, generate.generate_suggestions,
+    generate.generate_spell_content, generate.generate_stat_block,
+])
+def test_no_generation_call_can_build_its_own_client(generation):
+    # Each used to build a bare ChatOpenAI when handed client=None: no timeout,
+    # no attempt deadline, the SDK's retries on top of generate_result's
+    # (agent-forge-harness-7gf). The factory is the only way in.
+    assert inspect.signature(generation).parameters["client"].default is inspect.Parameter.empty
 
 
 def test_client_for_disabled_alias_raises_identically_to_unknown():
@@ -115,3 +136,85 @@ def test_missing_provider_credential_raises_a_clear_error(monkeypatch):
     profile = CATALOG["deepseek-v4-flash"]
     with pytest.raises(MissingProviderCredentialError, match="DEEPSEEK_API_KEY"):
         ProviderClientFactory()._build(profile)
+
+
+# ---------------------------------------------------------------------------
+# Request and connect timeouts (agent-forge-harness-ihz). Without them a
+# stalled provider held a /chat worker thread with no upper bound. Every alias
+# the catalog knows, enabled or not, carries them from config on the sync
+# client (invoke, stream) AND the async one (ainvoke, astream). Behaviour
+# against a stalled provider: service/tests/test_generation_timeout.py.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("alias", sorted(CATALOG))
+def test_every_alias_client_carries_the_configured_timeouts(monkeypatch, alias):
+    profile = CATALOG[alias]
+    monkeypatch.setenv(profile.secret_env, "sk-test-not-a-real-key")
+    monkeypatch.setattr(config, "LLM_REQUEST_TIMEOUT_S", 42.0)
+    monkeypatch.setattr(config, "LLM_CONNECT_TIMEOUT_S", 3.0)
+    client = ProviderClientFactory()._build(profile)
+    expected = httpx.Timeout(42.0, connect=3.0)
+    assert client.request_timeout == expected
+    assert client.root_client.timeout == expected
+    assert client.root_async_client.timeout == expected
+
+
+@pytest.mark.parametrize("alias", sorted(CATALOG))
+def test_every_alias_client_ends_each_attempt_at_connect_plus_request(monkeypatch, alias):
+    # The per-attempt cost the budget test below charges is the deadline the
+    # sync client's transport enforces (agent-forge-harness-2bb): any other sum
+    # could let the attempts overrun the platform timeout unseen.
+    profile = CATALOG[alias]
+    monkeypatch.setenv(profile.secret_env, "sk-test-not-a-real-key")
+    monkeypatch.setattr(config, "LLM_REQUEST_TIMEOUT_S", 42.0)
+    monkeypatch.setattr(config, "LLM_CONNECT_TIMEOUT_S", 3.0)
+    transport = ProviderClientFactory()._build(profile).root_client._client._transport
+    assert isinstance(transport, AttemptDeadlineTransport)
+    assert transport._deadline_s == 45.0
+
+
+def test_the_timeouts_fit_the_retry_budget_inside_the_platform_request_timeout():
+    # A stalled provider costs connect + request per attempt; all of
+    # generate.py's attempts and backoffs must end before Cloud Run gives up
+    # on the request (which cancels the request, not the thread).
+    deploy = (Path(__file__).resolve().parents[2] / "scripts" / "deploy.sh").read_text()
+    platform = re.search(r"--timeout (\d+)", deploy)
+    assert platform is not None
+    backoff = sum(generate._RETRY_BACKOFF_SECONDS * n for n in range(1, generate._MAX_ATTEMPTS))
+    per_attempt = config.LLM_CONNECT_TIMEOUT_S + config.LLM_REQUEST_TIMEOUT_S
+    assert generate._MAX_ATTEMPTS * per_attempt + backoff < int(platform.group(1))
+
+
+# The turn's budget (agent-forge-harness-0u02). The calls above add up per
+# turn: 458.5 s in spell mode. Every one of them now ends by the turn's budget
+# (service/tests/test_generation_timeout.py), so the budget is what must fit.
+TURN_HEADROOM_S = 60  # the gates before the turn; persistence and the ledger after it
+
+
+def test_the_turn_budget_ends_every_provider_call_with_headroom_under_the_platform_timeout():
+    deploy = (Path(__file__).resolve().parents[2] / "scripts" / "deploy.sh").read_text()
+    platform = re.search(r"--timeout (\d+)", deploy)
+    assert platform is not None
+    assert provider_deadline.TURN_BUDGET_S + TURN_HEADROOM_S <= int(platform.group(1))
+
+
+def test_the_turn_budget_affords_a_worst_case_embed_and_then_a_whole_answer_attempt():
+    # The embed runs first, and nothing cuts it short at the turn's deadline
+    # (its wall-clock deadline is agent-forge-harness-0oh): its own bound must
+    # fit inside the budget with an answer attempt after it, or it starves it.
+    backoff = sum(retrieval._EMBED_RETRY_BACKOFF_S * n for n in range(1, retrieval.EMBED_MAX_ATTEMPTS))
+    embed = retrieval.EMBED_MAX_ATTEMPTS * (config.EMBED_CONNECT_TIMEOUT_S + config.EMBED_REQUEST_TIMEOUT_S)
+    answer_attempt = config.LLM_CONNECT_TIMEOUT_S + config.LLM_REQUEST_TIMEOUT_S
+    assert embed + backoff + answer_attempt <= provider_deadline.TURN_BUDGET_S
+
+
+def test_a_timeout_setting_reads_its_environment_override(monkeypatch):
+    monkeypatch.setenv("RAG_LLM_REQUEST_TIMEOUT_S", "12.5")
+    assert config._seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0) == 12.5
+
+
+@pytest.mark.parametrize("raw", ["inf", "nan", "0", "-1"])
+def test_a_timeout_setting_that_would_unbound_or_break_generation_is_refused(monkeypatch, raw):
+    monkeypatch.setenv("RAG_LLM_REQUEST_TIMEOUT_S", raw)
+    with pytest.raises(ValueError, match="RAG_LLM_REQUEST_TIMEOUT_S"):
+        config._seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0)

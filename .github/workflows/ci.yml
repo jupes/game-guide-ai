@@ -80,6 +80,12 @@ jobs:
       # dependency on each run, so a green build says nothing about what ships.
       - name: Install from the lockfile
         run: uv sync --frozen --extra dev
+      # ffmpeg and ffprobe for the media upload's audio half (1kg.8.1.2, MS-6):
+      # a system package, not a Python one. Without them the audio tests FAIL
+      # in CI rather than skip (service/tests/test_assets_api.py). The images
+      # are 1kg.9.5's to change (media ADR section 8.3), not this workflow's.
+      - name: Install ffmpeg (media processing)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Lint (ruff)
         run: uv run --frozen --no-sync ruff check .
       - name: Typecheck (mypy — service/ + config.py)
@@ -103,10 +109,15 @@ jobs:
             service/tests/test_invite_atomic.py tests/test_schema.py \
             tests/test_migrations_db.py tests/test_db_postgres.py \
             tests/test_campaign_db.py tests/test_conversation_db.py \
-            tests/test_timeline_db.py \
-            tests/test_document_db.py \
+            tests/test_campaign_summary_db.py \
+            tests/test_timeline_db.py tests/test_tool_invocation_db.py \
+            tests/test_document_db.py tests/test_documents_api_db.py tests/test_seats_db.py \
             tests/test_usage_ledger_db.py \
-            tests/test_corpus_schema.py ingestion/tests/test_scrape_wikidot.py
+            tests/test_retired_model_binding_db.py \
+            tests/test_corpus_schema.py ingestion/tests/test_scrape_wikidot.py \
+            tests/test_asset_db.py tests/test_session_dividers_db.py \
+            tests/test_reveal_db.py tests/test_eligibility_db.py tests/test_assets_api_db.py \
+            tests/test_document_generation_db.py tests/test_groups_api_db.py
 
   ui-tests:
     runs-on: ubuntu-24.04
@@ -117,6 +128,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
+      # The Live Session Assistant threat model's cross-references: every cited
+      # id defined, threats and obligations naming each other, every rule a
+      # control, every Medium residual a risk the owner answers. It reads that
+      # one record; the full checkdocs.ts also wants the Beads tracker.
+      - name: Threat model cross-references
+        working-directory: docs/forge/tools/live-session-assistant
+        run: bun threatmodel.ts
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Install Chromium (storybook browser test project)

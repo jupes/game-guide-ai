@@ -22,10 +22,18 @@ import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { toSpellCardProps, toStatBlockCardProps } from '../gm/adapters'
 import { GmThread } from '../gm/GmThread'
-import { exchangesForExport, turnFromExchange, turnsFromTimeline, useGmTimeline } from '../gm/gmTimeline'
+import {
+  collapseSessionSpans,
+  exchangesForExport,
+  turnFromExchange,
+  turnsFromTimeline,
+  useGmTimeline,
+} from '../gm/gmTimeline'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { useAppNav } from './AppNav'
 import { useConversationStore } from './ConversationStoreContext'
+import { useModelCatalogState } from './ModelCatalogContext'
+import { preferenceToSend } from './modelPreference'
 import { parseDiceNotation } from './diceNotation'
 import { EMPTY_LABELS } from './modes'
 import {
@@ -65,6 +73,17 @@ export type GetAttachmentsFn = (conversationId: string) => Promise<AttachmentsRe
 // ChatPane.test.tsx and ChatPane.stories.tsx > AwaitingAnswer, so it lives in
 // one named place rather than as a string literal repeated at each call site.
 const PENDING_ANNOUNCEMENT = 'Consulting the tomes…'
+
+// agent-forge-harness-8tt: crossing the composer's CHAT_TEXT_MAX_CHARS bound
+// (agent-forge-harness-764) — typically a paste, since typing one character
+// at a time past 764 is rare — is announced through the SAME single live
+// region, once each way. Deliberately generic (no character count): the
+// count is already visible text and the field's accessible description
+// (`chatPromptCounterMessage`, below the textarea) the instant it applies;
+// this only announces the crossing itself. See ADR gm-workbench-interactions
+// A-30 for the decision and docs/adr note below the announcer node.
+const OVER_LIMIT_ANNOUNCEMENT = 'Message is over the character limit.'
+const UNDER_LIMIT_ANNOUNCEMENT = 'Message is back under the character limit.'
 
 // agent-forge-harness-764: the composer's own bound, mirroring the server's
 // CHAT_TEXT_MAX_CHARS gate in service/app.py::chat() (same constant, same
@@ -130,6 +149,16 @@ function ChatPaneBody({
   const { mode, conversationId, setConversationId } = useAppNav()
   const gm = side === 'gm'
   const conversationStore = useConversationStore()
+  // agent-forge-harness-bta: the preference this conversation's next turn
+  // sends, by the one rule ModelPicker shows it by (`preferenceToSend`, read
+  // against the same shared catalog): a started conversation's bound
+  // preference ('auto' for one first sent before bta, whatever it stored),
+  // else a stored id only if the SERVED catalog lists it. Never a raw stored
+  // value — a pre-D-9 alias would be a 422 on every turn. Re-read on every
+  // render (useConversationStore subscribes), so a pick made after mount lands.
+  const [catalog] = useModelCatalogState()
+  const conversation = conversationId !== null ? conversationStore.get(conversationId) : undefined
+  const modelPreference = preferenceToSend(conversation, catalog)
   // agent-forge-harness-ekf / agent-forge-harness-4oz: the ONE announcer for
   // the whole pane — 4oz folded the pending announcement into this same node
   // (see its comment below) rather than leaving a second, per-exchange
@@ -160,12 +189,22 @@ function ChatPaneBody({
     },
     [],
   )
-  const { exchanges, send, pending, historyError, loadingHistory } = useChat({
+  const { exchanges, send, pending, inFlight, historyError, loadingHistory } = useChat({
     post,
     loadHistory: gm ? SKIP_RECALL : loadHistory,
     mode,
     conversationId,
+    modelPreference,
     onConversationAdopted: setConversationId,
+    // j9w: the server healed this conversation off a retired manual pick —
+    // move the store onto the healed preference so the NEXT turn stops
+    // sending the retired id and ModelPicker shows it. Wrapped (not passed
+    // bare) so `rebindPreference` keeps its `this` — it is an ordinary
+    // method, not a bound field like the store's own getSnapshot/subscribe.
+    onPreferenceRebound: React.useCallback(
+      (id: string, preference: string) => conversationStore.rebindPreference(id, preference),
+      [conversationStore],
+    ),
     onTurnSettled: handleTurnSettled,
   })
   // Keeps ChatPane on this side of the GM boundary while a turn is in flight.
@@ -175,20 +214,59 @@ function ChatPaneBody({
   // 1kg.3.4: in the GM channel a stored entry and a live turn become the same
   // GmTurn, so a reload draws an answer exactly as it arrived. The thread's
   // empty, loading and error states are §12.2's, which are today's.
+  // 1kg.3.5 (I-10): a quiet session's start and end collapse over the WHOLE
+  // drawn list, so the pair still collapses once Load earlier prepends one
+  // half above the other.
   const timeline = useGmTimeline(conversationId, gm, loadTimeline)
   const gmTurns = React.useMemo(
-    () => (gm ? [...turnsFromTimeline(timeline.items), ...exchanges.map(turnFromExchange)] : []),
+    () => (gm ? collapseSessionSpans([...turnsFromTimeline(timeline.items), ...exchanges.map(turnFromExchange)]) : []),
     [gm, timeline.items, exchanges],
   )
   const threadError = gm ? timeline.error : historyError
   const threadLoading = gm ? timeline.loading : loadingHistory
   const threadLength = gm ? gmTurns.length : exchanges.length
+  // 1kg.3.8 L3: a first window of nothing but empty pages can still leave a
+  // cursor behind it, and the thread (with its Load earlier control) is then
+  // what to draw, not the empty label.
+  const threadEmpty = threadLength === 0 && !(gm && timeline.hasEarlier)
   const [draft, setDraft] = React.useState('')
   // agent-forge-harness-764: block a submit before it ever reaches the wire,
   // mirroring the server-side gate in service/app.py::chat().
   const draftLength = codePointLength(draft)
   const overLength = draftLength > CHAT_TEXT_MAX_CHARS
   const counterId = React.useId()
+  // 1kg.3.5 (RAIL-16, I-14 as the critic amended it): in the GM channel — the
+  // pane on the GM side AND the mode `gm`, so neither held state of a turn
+  // crossing the boundary counts — the field is never disabled: the GM can
+  // keep typing while a turn is in flight. Send (and Enter) wait while this
+  // pane has a plain turn in flight in ANY conversation (`inFlight`), not only
+  // the visible one: `useChat` allows one request per mounted hook, and a Send
+  // it silently refuses would clear the GM's text. `|| pending` keeps it never
+  // looser than today. Sage, Spell and Rules keep today's lock (X-9).
+  const gmLive = gm && mode === 'gm'
+  const sendBlocked = gmLive ? inFlight || pending : pending
+  // agent-forge-harness-8tt: announce the crossing itself — once when the
+  // draft first goes over CHAT_TEXT_MAX_CHARS and once when it comes back
+  // under — through the SAME `.chat-pane__arrival` node, never a second live
+  // region. Keyed on the overLength→!overLength (and back) TRANSITION via
+  // this ref, not on overLength's value directly. Outside the GM channel the
+  // field is disabled while `pending`, so there it cannot change mid-turn. In
+  // the GM channel it stays live (1kg.3.5): a crossing made mid-turn replaces
+  // the pending phrase on this same node, and the turn's settle then
+  // announces its outcome as usual (a suppressed settle clears only the
+  // pending phrase, pr129 M-2, so it leaves this one alone). Further edits
+  // that leave the draft over the bound — a paste growing an already-over-
+  // length draft, or one more keystroke — must NOT re-announce (the visible counter already
+  // updates every keystroke; the live region does not need to). No effect on
+  // conversation switches or a `side` remount: `draft` resets to '' there, so
+  // overLength starts false and matches this ref's own initial value.
+  const wasOverLengthRef = React.useRef(overLength)
+  React.useEffect(() => {
+    if (overLength !== wasOverLengthRef.current) {
+      setArrival(overLength ? OVER_LIMIT_ANNOUNCEMENT : UNDER_LIMIT_ANNOUNCEMENT)
+      wasOverLengthRef.current = overLength
+    }
+  }, [overLength])
   // Scoped like useChat's history state: derive "this scope's attachments" from
   // scopeId===conversationId rather than resetting via setState-in-effect (a
   // synchronous setState in an effect body triggers cascading renders).
@@ -209,17 +287,22 @@ function ChatPaneBody({
   // either the loading state or the prepended turns. The layout effect below
   // turns that into a scrollTop adjustment once the older turns land, so the
   // content the reader was looking at holds still while the thread above it
-  // grows. `null` once consumed, and reset on a conversation switch so a
-  // press that never resolved before the switch cannot misapply itself to a
-  // different conversation's geometry.
-  const earlierScrollAdjustRef = React.useRef<number | null>(null)
+  // grows. `null` once consumed. It is kept with the conversation it was
+  // measured in, and the layout effect consumes it on a switch too, so a
+  // press that was still pending, or had failed, can never move a different
+  // conversation's feed (1kg.3.8 L2: a reset in a passive effect ran after the
+  // switch commit's layout effect had already applied it).
+  const earlierScrollAdjustRef = React.useRef<{ conversationId: string | null; height: number } | null>(null)
+  // How many stored entries were drawn when Load earlier was pressed, so the
+  // settle announcement can tell a walk that found turns from one that found
+  // none (1kg.3.8 L4).
+  const itemsAtPressRef = React.useRef(0)
   // The other half of STATE-7's pair (below): whether the settle-announcement
   // effect just saw a walk that was THIS conversation's, so switching away
   // mid-walk cannot fire a stale "loaded"/"failed" phrase once the NEW
   // conversation's own (unrelated) loadingEarlier happens to read false.
   const wasLoadingEarlierRef = React.useRef(false)
   React.useEffect(() => {
-    earlierScrollAdjustRef.current = null
     wasLoadingEarlierRef.current = false
   }, [conversationId])
 
@@ -227,29 +310,39 @@ function ChatPaneBody({
     const feed = feedRef.current
     const before = earlierScrollAdjustRef.current
     earlierScrollAdjustRef.current = null
-    if (feed && before !== null) feed.scrollTop += feed.scrollHeight - before
-  }, [timeline.items])
+    if (feed && before !== null && before.conversationId === conversationId) {
+      feed.scrollTop += feed.scrollHeight - before.height
+    }
+  }, [timeline.items, conversationId])
 
   const { loadEarlier } = timeline
+  const itemCount = timeline.items.length
   const handleLoadEarlier = React.useCallback(() => {
     const feed = feedRef.current
-    if (feed) earlierScrollAdjustRef.current = feed.scrollHeight
+    if (feed) earlierScrollAdjustRef.current = { conversationId, height: feed.scrollHeight }
+    itemsAtPressRef.current = itemCount
     // agent-forge-harness-ekf / agent-forge-harness-4oz: the same single
     // announcer, not a live region of GmThread's own (STATE-7 rations this
     // to one announcement now and one when the walk settles, below).
     setArrival('Loading earlier turns…')
     loadEarlier()
-  }, [loadEarlier])
+  }, [loadEarlier, conversationId, itemCount])
 
   // The other half of STATE-7's pair: once a Load earlier walk settles,
   // announce how it went. Keyed on the loadingEarlier→settled transition so
   // this never fires on mount or from an unrelated rerender.
   React.useEffect(() => {
     if (wasLoadingEarlierRef.current && !timeline.loadingEarlier) {
-      setArrival(timeline.earlierError !== null ? 'Couldn’t load earlier turns' : 'Earlier turns loaded')
+      setArrival(
+        timeline.earlierError !== null
+          ? 'Couldn’t load earlier turns'
+          : itemCount > itemsAtPressRef.current
+            ? 'Earlier turns loaded'
+            : 'No earlier turns found',
+      )
     }
     wasLoadingEarlierRef.current = timeline.loadingEarlier
-  }, [timeline.loadingEarlier, timeline.earlierError])
+  }, [timeline.loadingEarlier, timeline.earlierError, itemCount])
 
   const scrollToLatest = React.useCallback(() => {
     const feed = feedRef.current
@@ -280,9 +373,13 @@ function ChatPaneBody({
 
   const handleSend = React.useCallback(() => {
     const trimmed = draft.trim()
-    if (!trimmed || pending || overLength) return
+    // The same gate as Send's `disabled`, so Enter never clears a draft that
+    // `send` would refuse (1kg.3.5, I-14).
+    if (!trimmed || sendBlocked || overLength) return
     if (conversationId !== null) {
-      conversationStore.recordFirstPrompt(conversationId, trimmed)
+      // bta: record what this first turn binds the conversation to — the same
+      // value `send` posts below, both read from this render.
+      conversationStore.recordFirstPrompt(conversationId, trimmed, modelPreference)
     }
     // agent-forge-harness-ekf / agent-forge-harness-4oz: nothing else ever
     // changes the announcer — not a recall, not a conversation switch — only
@@ -292,7 +389,7 @@ function ChatPaneBody({
     setArrival(PENDING_ANNOUNCEMENT)
     send(trimmed)
     setDraft('')
-  }, [conversationId, conversationStore, draft, overLength, pending, send])
+  }, [conversationId, conversationStore, draft, modelPreference, overLength, sendBlocked, send])
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -400,7 +497,7 @@ function ChatPaneBody({
         {/* History recall failed — recoverable: the thread starts empty. */}
         {threadError && <ChatMessage role="system">{threadError}</ChatMessage>}
 
-        {threadLength === 0 && threadLoading ? (
+        {threadEmpty && threadLoading ? (
           // agent-forge-harness-swg (pr116 M-1): NOT a live region. This node
           // used to carry `role="status"` mounted together with its own
           // text — a SECOND live region alongside `.chat-pane__arrival`
@@ -414,7 +511,7 @@ function ChatPaneBody({
           <p className="chat-pane__empty">
             Recalling the conversation…
           </p>
-        ) : threadLength === 0 ? (
+        ) : threadEmpty ? (
           !threadError && <p className="chat-pane__empty">{EMPTY_LABELS[mode]}</p>
         ) : gm ? (
           <GmThread
@@ -532,16 +629,24 @@ function ChatPaneBody({
           above), and to the settle outcome the moment the turn SETTLES
           (`handleTurnSettled`, above) — or, for a settle that is never shown
           (the user left its conversation), silently back to empty instead
-          (agent-forge-harness-swg, pr129 M-2). Apart from Load earlier
-          (below), nothing else ever changes it — not a history recall, not a
-          conversation switch. Shape copied from `gm/ToolComposer.tsx`'s own
-          persistent `role="status"` node.
+          (agent-forge-harness-swg, pr129 M-2). Apart from Load earlier and
+          the composer's over-length crossing (both below), nothing else ever
+          changes it — not a history recall, not a conversation switch. Shape
+          copied from `gm/ToolComposer.tsx`'s own persistent `role="status"`
+          node.
 
           1kg.3.6 (STATE-7) reuses this SAME node, the same way, for Load
           earlier: exactly twice per press, to a starting phrase in
           `handleLoadEarlier` and to the outcome once `useGmTimeline`'s
           `loadingEarlier` settles — never a second `role="status"` inside
-          `GmThread` for it. */}
+          `GmThread` for it.
+
+          agent-forge-harness-8tt reuses it a third way, for the composer's
+          CHAT_TEXT_MAX_CHARS bound (agent-forge-harness-764): once when the
+          draft crosses over it and once when it comes back under (the
+          `wasOverLengthRef` effect above `overLength`, below) — never a
+          second live region for it, and never re-announced while the draft
+          stays over. ADR gm-workbench-interactions.md, A-30. */}
       <p role="status" className="chat-pane__sr-only chat-pane__arrival">
         {arrival}
       </p>
@@ -587,7 +692,12 @@ function ChatPaneBody({
           (`aria-describedby`, beside `aria-invalid`), NOT a `role="status"`
           node. The single `.chat-pane__arrival` node above is this pane's one
           live region; a second one mounted together with its text is the shape
-          4oz removed (and would not be reliably announced anyway). */}
+          4oz removed (and would not be reliably announced anyway).
+
+          agent-forge-harness-8tt: crossing the bound IS announced, but through
+          that same node (see the `wasOverLengthRef` effect above), never
+          through this counter — this paragraph stays conditionally rendered,
+          exactly as before, and is never itself a live region. */}
       {overLength && (
         <p id={counterId} className="chat-pane__composer-message">
           {chatPromptCounterMessage(draftLength)}
@@ -629,7 +739,7 @@ function ChatPaneBody({
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Ask…"
-          disabled={pending}
+          disabled={pending && !gmLive}
           aria-invalid={overLength || undefined}
           aria-describedby={overLength ? counterId : undefined}
           fullWidth
@@ -638,7 +748,7 @@ function ChatPaneBody({
           icon="send"
           ariaLabel="Send message"
           onClick={handleSend}
-          disabled={pending || draft.trim() === '' || overLength}
+          disabled={sendBlocked || draft.trim() === '' || overLength}
         />
       </div>
     </div>

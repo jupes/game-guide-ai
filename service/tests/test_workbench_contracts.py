@@ -23,6 +23,7 @@ import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic_core import PydanticCustomError
 
+from service import eligibility_store
 from service import workbench_contracts as wc
 from service.models import ChatResponse, MessagesResponse
 
@@ -1458,27 +1459,27 @@ def test_the_event_kind_vocabularies_are_the_unions() -> None:
         assert tags == kinds
 
 
-def test_a_table_secret_is_what_the_server_mints() -> None:
-    """SEC-5: 32 bytes from the CSPRNG, as ``secrets.token_urlsafe`` spells them."""
-    import secrets
-
-    adapter = TypeAdapter(wc.TableSecret)
-    for _ in range(20):
-        adapter.validate_python(secrets.token_urlsafe(32))
-    for wrong in (secrets.token_urlsafe(31), secrets.token_urlsafe(33), secrets.token_hex(32)):
-        with pytest.raises(ValidationError):
-            adapter.validate_python(wrong)
-
-
-def test_a_session_answer_carries_the_token_once_and_the_session_never_does() -> None:
+def test_no_session_answer_carries_a_token_and_no_screen_shape_carries_its_grant() -> None:
+    """Threat model 15.11: there is no table token, so no session answer and no
+    session carries one; SEC-48: the screen grant leaves in its cookie alone, so
+    neither ``ScreenMintAnswer`` nor a session's ``screens`` has a field for it
+    or for its digest. Read from the schemas, not from a list of names, so a
+    field added later under any of these words fails here."""
     fixture = json.loads((FIXTURES / "TableSessionAnswer.json").read_text(encoding="utf-8"))
-    started = next(e["value"] for e in fixture["valid"] if e["name"].startswith("started"))
-    answer = wc.TableSessionAnswer.model_validate(started)
-    dumped = answer.model_dump(mode="json")
-    assert dumped["token"] == started["token"]
-    assert "token" not in dumped["session"]
-    with pytest.raises(ValidationError):
-        wc.TableSession.model_validate({**started["session"], "token": started["token"]})
+    for example in fixture["valid"]:
+        dumped = wc.TableSessionAnswer.model_validate(example["value"]).model_dump(mode="json")
+        assert "token" not in dumped
+        assert dumped["session"] is None or "token" not in dumped["session"]
+    live = next(e["value"] for e in fixture["valid"] if e["value"]["session"] and e["value"]["session"]["screens"])
+    for smuggled in ({**live, "token": "t" * 43}, {**live, "session": {**live["session"], "token": "t" * 43}}):
+        with pytest.raises(ValidationError):
+            wc.TableSessionAnswer.model_validate(smuggled)
+    secret_words = re.compile(r"token|secret|grant|digest|credential", re.IGNORECASE)
+    for model in (wc.TableSessionAnswer, wc.TableSession, wc.TableScreen, wc.ScreenMintAnswer):
+        names = set(model.model_json_schema(ref_template="{model}")["properties"])
+        assert not {name for name in names if secret_words.search(name)}, model.__name__
+    assert set(wc.ScreenMintAnswer.model_fields) == {"schema_version", "ends_at"}
+    assert set(wc.TableScreen.model_fields) == {"screen_id", "created_at", "last_seen_at"}
 
 
 def test_an_asset_is_measured_only_once_it_is_ready() -> None:
@@ -1734,3 +1735,44 @@ def test_a_stored_value_of_an_unknown_version_is_refused_for_its_version_first()
     with pytest.raises(PydanticCustomError) as caught:
         wc.read_stored_fields(wc.DocumentTypeId.NPC, 2, "x")  # type: ignore[arg-type]
     assert caught.value.type == "unsupported_type_version"
+
+
+# ── Named groups (btb) ───────────────────────────────────────────────────────
+
+
+def test_the_group_bounds_are_the_stores() -> None:
+    """One number each, not two: a page holds every live group the store allows,
+    and the wire's name bound is the one ``check_group_name`` applies, so a name
+    the contract takes is never a store refusal for its length alone."""
+    assert wc.GROUP_PAGE_MAX_ITEMS == eligibility_store.GROUPS_PER_CAMPAIGN_MAX
+    eligibility_store.check_group_name("a" * wc.GROUP_NAME_MAX_CHARS)
+    with pytest.raises(ValueError):
+        eligibility_store.check_group_name("a" * (wc.GROUP_NAME_MAX_CHARS + 1))
+
+
+@pytest.mark.parametrize(
+    ("schema", "example"), [("GroupCreateRequest", "a name and a key"), ("GroupPatchRequest", "a rename")]
+)
+def test_a_group_name_takes_the_one_stored_text_rule_and_is_never_echoed(schema: str, example: str) -> None:
+    """SEC-20: a group name is private GM text. Every refused character, and a
+    lone surrogate, is a 422 that names ``name`` and never the value — in the
+    body, in the redacted errors a route logs, and in ``str(exc)``. The name is
+    stored trimmed."""
+    base = _fixture_value(schema, example)
+    for char in [*_REFUSED, chr(0xD800)]:
+        with pytest.raises(ValidationError) as caught:
+            wc.CONTRACT_SCHEMAS[schema].validate_python({**base, "name": f"Zx9{char}Canary"})
+        detail = wc.validation_error_body(caught.value.errors()).detail
+        assert (detail.code, detail.field) == (wc.ErrorCode.VALIDATION_FAILED, "name"), hex(ord(char))
+        said = json.dumps(detail.model_dump(mode="json")) + json.dumps(wc.redacted_errors(caught.value.errors()))
+        assert "Zx9" not in said + str(caught.value) and "Canary" not in said + str(caught.value)
+    for char in _ALLOWED.values():
+        wc.CONTRACT_SCHEMAS[schema].validate_python({**base, "name": f"Zx9{char}Canary"})
+    assert wc.CONTRACT_SCHEMAS[schema].validate_python({**base, "name": " Scouts "}).name == "Scouts"
+
+
+def test_the_group_codes_are_in_the_closed_set() -> None:
+    """Two new codes rather than ``conflict``, whose meaning is fixed (a field or
+    an epoch moved): a new code is no version bump, a changed meaning is one."""
+    assert wc.ErrorCode("group_name_taken") is wc.ErrorCode.GROUP_NAME_TAKEN
+    assert wc.ErrorCode("group_cap_reached") is wc.ErrorCode.GROUP_CAP_REACHED

@@ -123,7 +123,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 36px;
+  min-height: var(--aether-touch-min); /* was 36px: the 44px floor (0rn, INF-13) */
   padding: 0 14px;
   border-radius: var(--md-sys-shape-corner-full);
   border: 1px solid var(--md-sys-color-outline-variant);

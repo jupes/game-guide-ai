@@ -35,6 +35,7 @@ from service.job_driver import (
     SCHEDULER_PATH,
     SCHEDULER_SECRET_ENV,
     SCHEDULER_SECRET_HEADER,
+    SCHEDULER_SECRET_MIN_LENGTH,
     JobDriver,
     JobHookMiddleware,
     build_router,
@@ -392,7 +393,9 @@ def _scheduler_call(driver: JobDriver | None) -> Any:
     return TestClient(_scheduler_app(lambda: driver)).post(SCHEDULER_PATH, headers={SCHEDULER_SECRET_HEADER: SECRET})
 
 
-def _answer(client: TestClient, method: str, path: str, headers: dict[str, str]) -> tuple[int, dict[str, str], bytes]:
+def _answer(
+    client: TestClient, method: str, path: str, headers: dict[str, str] | list[tuple[str, str]],
+) -> tuple[int, dict[str, str], bytes]:
     r = client.request(method, path, headers=headers, follow_redirects=False)
     return r.status_code, {k: v for k, v in r.headers.items() if k.lower() != "date"}, r.content
 
@@ -402,6 +405,13 @@ _CREDENTIALS = {
     "wrong secret": (SECRET, {SCHEDULER_SECRET_HEADER: "x" * len(SECRET)}),
     "right secret, route unconfigured": (None, {SCHEDULER_SECRET_HEADER: SECRET}),
     "configured secret too short": ("short", {SCHEDULER_SECRET_HEADER: "short"}),
+    # agent-forge-harness-ttda M1: one character short of SCHEDULER_SECRET_MIN_LENGTH,
+    # presented correctly (not merely "wrong") — mutant A1 (`< SCHEDULER_SECRET_MIN_LENGTH`
+    # -> `< 6`) treats this as configured and lets it through; the 5-character case above
+    # is too short to tell the two bounds apart.
+    "configured secret 31 chars, one short of the minimum": (
+        "x" * (SCHEDULER_SECRET_MIN_LENGTH - 1), {SCHEDULER_SECRET_HEADER: "x" * (SCHEDULER_SECRET_MIN_LENGTH - 1)},
+    ),
 }
 
 
@@ -427,6 +437,32 @@ def test_without_the_credential_the_route_is_exactly_a_path_that_does_not_exist(
     assert queue.claims == 0
 
 
+#: pr158-i L1 / mutant U2: the header presented twice, either copy correct.
+#: Both must still leave the route unmatched — `_credentialed` requires
+#: exactly one presented value, so a second value is never authoritative,
+#: whether it repeats the secret or gets it wrong (never a bypass either way).
+_DUPLICATED_SECRET = {
+    "both copies correct": [(SCHEDULER_SECRET_HEADER, SECRET), (SCHEDULER_SECRET_HEADER, SECRET)],
+    "second copy wrong": [(SCHEDULER_SECRET_HEADER, SECRET), (SCHEDULER_SECRET_HEADER, "x" * len(SECRET))],
+}
+
+
+@pytest.mark.parametrize("topology", ["no static mount", "root static mount"])
+@pytest.mark.parametrize("pair", sorted(_DUPLICATED_SECRET))
+def test_a_duplicated_secret_header_is_refused_even_when_both_copies_match(monkeypatch, dist, topology, pair):
+    monkeypatch.setenv(SCHEDULER_SECRET_ENV, SECRET)
+    queue = _CountingQueue()
+    _enqueue(queue)
+    client = TestClient(_scheduler_app(lambda: _driver(queue), dist if topology == "root static mount" else None))
+    headers = _DUPLICATED_SECRET[pair]
+
+    for suffix in ("", "/"):
+        route = _answer(client, "POST", f"/internal/jobs{suffix}", headers)
+        assert route == _answer(client, "POST", f"/internal/nope{suffix}", headers)
+        assert route == _answer(client, "POST", f"/nope{suffix}", headers)
+    assert queue.claims == 0
+
+
 @pytest.mark.parametrize("method", ["GET", "PUT", "DELETE", "PATCH", "FROBNICATE"])
 def test_with_the_credential_any_other_method_is_still_a_missing_path(monkeypatch, dist, method):
     monkeypatch.setenv(SCHEDULER_SECRET_ENV, SECRET)
@@ -434,6 +470,20 @@ def test_with_the_credential_any_other_method_is_still_a_missing_path(monkeypatc
     for mount in (None, dist):
         client = TestClient(_scheduler_app(lambda: None, mount))
         assert _answer(client, method, "/internal/jobs", headers) == _answer(client, method, "/nope", headers)
+
+
+def test_a_32_character_secret_is_exactly_long_enough_to_be_accepted(monkeypatch):
+    """agent-forge-harness-ttda M1, the boundary's other side: paired with the 31-character
+    case in `_CREDENTIALS`, this pins `SCHEDULER_SECRET_MIN_LENGTH` exactly — a mutant that
+    moved the boundary either up or down fails one case or the other."""
+    secret = "x" * SCHEDULER_SECRET_MIN_LENGTH
+    assert len(secret) == 32
+    monkeypatch.setenv(SCHEDULER_SECRET_ENV, secret)
+    queue = _CountingQueue()
+    _enqueue(queue)
+    client = TestClient(_scheduler_app(lambda: _driver(queue)))
+    response = client.post("/internal/jobs", headers={SCHEDULER_SECRET_HEADER: secret})
+    assert (response.status_code, response.json()) == (200, {"ran": 1, "failed": 0, "remaining": False})
 
 
 @pytest.mark.parametrize("topology", ["no static mount", "root static mount"])
@@ -644,7 +694,15 @@ def test_the_stores_bring_a_driver_that_shares_the_one_job_lock():
         driver = appmod._state["jobs"]
         assert isinstance(driver, JobDriver)
         assert driver.lock is JOB_LOCK and driver.runner._single_flight is JOB_LOCK
-        assert not driver.runner.has_handlers(), "no job kind exists yet; the hook stays off"
+        handlers = driver.runner._handlers
+        assert set(handlers) == {"campaign.reconcile", "table_session.expire", "timeline.session_divider"}, (
+            "the kinds this build registers, by value"
+        )
+        assert handlers["table_session.expire"].max_attempts is None, "an expiry is retried until it runs"
+        assert handlers["timeline.session_divider"].max_attempts is None, "a divider is retried until it is written"
+        assert all(handler.max_attempts is None for handler in handlers.values()), (
+            "each kind is retried until it succeeds"
+        )
         appmod._state["migrations"] = "current"
         assert driver.healthy()
         appmod._state["migrations"] = "failed"

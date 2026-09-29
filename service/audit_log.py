@@ -9,11 +9,17 @@ than trusting it.
 
 **The action set is closed** (`AuditAction`). Adding a member is a code change a
 reviewer sees, not a string a caller invents, so the ledger cannot quietly grow
-a vocabulary nobody agreed to. Reveal's three actions and the export ones are
-not here: ED-18(a) makes the table shared, and those belong to `1kg.7.1` and
-`1kg.5.2`, which add their own members without a migration. Nor is there a
-writer in this bead for the fourteen that are here — their callers are
-`1kg.2.2`'s and `1kg.2.3`'s routes. The reason is ownership, not use.
+a vocabulary nobody agreed to. The export actions are not here: ED-18(a) makes
+the table shared, and they belong to `1kg.5.2`, which adds its own members
+without a migration. Nor is there one writer for the thirty-one that are here:
+the session and screen rows are written by `service/table_sessions.py`
+(`1kg.2.3`), the campaign's Conclude and Reopen by the tavern's route (bead cfx),
+`asset.deleted` by the media bead's delete route (`1kg.8.1.3`), reveal's three
+by `1kg.7.1`'s reveal service, a document's archive, unarchive and delete by
+`service/document_lifecycle_api.py` (`1kg.5.2`), the five `group.*` rows by
+`btb`'s group routes (`service/groups_api.py`), the rest by `1kg.2.2`'s
+campaign and seat routes.
+The reason is ownership, not use.
 
 **A row carries identifiers, never content** (SEC-20, ED-26) — and no hash of
 any content either: ED-26 is explicit that no value derived from field text may
@@ -43,10 +49,14 @@ construction, and a caller has to know which:
   declared keys before it gets here — the bound on the list is a bound, not a
   closure.
 
+* `Shape.COMMAND_ID` is the wire contract's `CommandId` — 16 to 64 characters
+  of `[A-Za-z0-9_-]` that the GM's own client mints, which ED-18(a) puts on a
+  reveal row (`1kg.7.1`). It is open in the way `MintedId` is: a client could
+  choose which characters go there, and nothing else. Every record that holds
+  one hides it from `repr()`.
+
 Everything else is a closed set: the action, the actor kind, the object kind,
-the decision, a `OneOf`'s codes, and the reason codes each action declares. No
-kind holds the client-minted command id ED-18(a) wants on a reveal row, and none
-is added here: how that row records it is `1kg.7.1`'s decision.
+the decision, a `OneOf`'s codes, and the reason codes each action declares.
 
 The same closure applies to the columns beside `detail`: `campaign_id_tombstone`
 is a minted `cmp_` identifier, `actor_ref` and `object_ref` are minted
@@ -68,7 +78,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -77,6 +87,7 @@ from typing import Protocol
 from . import campaign_identity as ident
 from .campaign_store import fake, now_or, pg
 from .db import InMemoryTransaction, UnitOfWork
+from .table_session_store import COMMAND_ID
 
 DetailValue = str | int | bool | list[str] | None
 
@@ -96,6 +107,8 @@ DETAIL_MAX_FIELD_KEYS = 40
 WHOLE_NUMBER_MAX = 2**63 - 1
 #: No action's registry entry may grow past this without a second look.
 DETAIL_MAX_KEYS = 20
+#: A reveal names at most this many participants (`PRESENCE_MAX_PARTICIPANTS`).
+DETAIL_MAX_PARTICIPANT_IDS = 100
 
 
 class AuditAction(str, Enum):
@@ -122,24 +135,86 @@ class AuditAction(str, Enum):
     #: The account accepted the seat offered to it (actor `participant`). There
     #: is no `seat.removed`: `participant.removed` records a seat's removal.
     SEAT_ACCEPTED = "seat.accepted"
+    #: The invitee declined the offer, and may have blocked the owner with it
+    #: (actor `participant`, recorded by the seat it was offered; 1kg.2.2, D-12).
+    SEAT_DECLINED = "seat.declined"
+    #: The GM confirmed who accepted the seat (actor `gm`; SEC-50(5), D-12).
+    #: There is no `seat.withdrawn`: withdrawing an offer is the GM's Remove, and
+    #: `participant.removed` is its record (g3x, IDA-2).
+    SEAT_CONFIRMED = "seat.confirmed"
     CAMPAIGN_ARCHIVED = "campaign.archived"
     CAMPAIGN_RESTORED = "campaign.restored"
+    #: The GM marked the campaign concluded, or reopened it (actor `gm`; bead
+    #: cfx). Not an authorisation fact, so neither row carries a revision.
+    CAMPAIGN_CONCLUDED = "campaign.concluded"
+    CAMPAIGN_REOPENED = "campaign.reopened"
     CAMPAIGN_DELETED = "campaign.deleted"
-    JOIN_BURST_REFUSED = "join.burst_refused"
+    #: The owner made this browser a table screen (SEC-48, D-13; actor `gm`).
+    #: There is no join any more (threat model section 15), so no row of a
+    #: refused join either: SEC-47's refusal bursts arrive with `1kg.7.5`.
+    SCREEN_MINTED = "screen.minted"
+    #: A screen grant was revoked on its own — by the GM (`gm_revoked`, actor
+    #: `gm`) or by the screen's own Leave (`left`, actor `screen`). An End or a
+    #: Rotate revokes every grant of the session and records it on its own row.
+    SCREEN_REVOKED = "screen.revoked"
+    #: The GM deleted an asset (actor `gm`; `1kg.8.1.1`). The row names the asset
+    #: and nothing else: its `campaign_id_tombstone` names the campaign, as the
+    #: seat rows do, and alt text is private. Uploads are not audited (ruling
+    #: 8.1#4): deletion is the irreversible act. A campaign's deletion records
+    #: one `campaign.deleted` row, not one row per asset.
+    ASSET_DELETED = "asset.deleted"
+    #: The GM's Confirm displayed a document for the first time, or to a new
+    #: audience (actor `gm`; `1kg.7.1`, ED-18(a), SEC-38). One row per Confirm.
+    REVEAL_DISPLAYED = "reveal.displayed"
+    #: The GM's Confirm re-displayed a document to exactly the same slots, with a
+    #: new version or mask (actor `gm`; E-3).
+    REVEAL_UPDATED = "reveal.updated"
+    #: A display, or some of its copies, stopped by a GM action: a Stop, a
+    #: Stop-all, or a Confirm that moved or replaced it. One row per disclosure
+    #: the action took copies from; a Stop that ended nothing writes one row.
+    #: Narrowings (End, expiry, Rotate, Remove, archive) write none: each has its
+    #: own row, and the disclosure keeps its `ended_reason`.
+    REVEAL_STOPPED = "reveal.stopped"
+    #: The GM archived a document, unarchived it, or deleted it with its whole
+    #: history (actor `gm`; `1kg.5.2`, SEC-38, LIB-16 to LIB-18). Each row names
+    #: the document by its id and nothing else — never its name, a field value
+    #: or its type — and carries the authorisation revision the change
+    #: advanced to. A version restore and a field patch are content edits and
+    #: write no row (the brief's I-15); "unarchive" keeps a second meaning of
+    #: "restore" out of the ledger.
+    DOCUMENT_ARCHIVED = "document.archived"
+    DOCUMENT_UNARCHIVED = "document.unarchived"
+    DOCUMENT_DELETED = "document.deleted"
+    #: The GM made a named group of seats (actor `gm`; `btb`, O-3). An empty
+    #: group widens nothing, so the row carries no revision.
+    GROUP_CREATED = "group.created"
+    #: The GM renamed a group (actor `gm`; `btb`). No revision (RQ-10), but
+    #: accountable: a rename can mislead the GM's own choice of audience.
+    GROUP_RENAMED = "group.renamed"
+    #: The GM removed a group, which is never restored (actor `gm`; `btb`).
+    GROUP_REMOVED = "group.removed"
+    #: The GM put a seat in a group (actor `gm`; `btb`): a locked widening.
+    GROUP_MEMBER_ADDED = "group.member_added"
+    #: The GM took a seat out of a group (actor `gm`; `btb`): a narrowing.
+    GROUP_MEMBER_REMOVED = "group.member_removed"
 
 
 class ActorKind(str, Enum):
-    """Who acted, as `0005_audit_events.sql`'s CHECK has it."""
+    """Who acted, as `0016_table_session_access.sql`'s CHECK has it. There are
+    no guests (D-1); a table screen acts only to leave, and its `actor_ref` is
+    its own grant's id (SEC-38)."""
 
     GM = "gm"
     PARTICIPANT = "participant"
-    GUEST = "guest"
+    SCREEN = "screen"
     SYSTEM = "system"
 
 
 class ObjectKind(str, Enum):
-    """What the decision was **about** — one of the three things the fourteen
-    actions act on, and nothing else.
+    """What the decision was **about** — one of the seven things the thirty-one
+    actions act on, and nothing else. A table screen's `object_ref` is its
+    grant's `tcr_` id, a document's its `doc_` id, and a group's its `grp_` id
+    (`btb`).
 
     Closed for the same reason `AuditAction` is, and for one more: a lower-case
     key is a *shape*, so `rook` and `the_hooded_stranger_is_ondrey` both passed
@@ -151,6 +226,10 @@ class ObjectKind(str, Enum):
     CAMPAIGN = "campaign"
     TABLE_SESSION = "table_session"
     PARTICIPANT = "participant"
+    TABLE_SCREEN = "table_screen"
+    ASSET = "asset"
+    DOCUMENT = "document"
+    GROUP = "group"
 
 
 class Decision(str, Enum):
@@ -185,19 +264,28 @@ class Shape(Enum):
     FIELD_KEYS = "a list of Workbench field keys"
     WHOLE_NUMBER = "a whole number"
     FLAG = "a boolean"
+    COMMAND_ID = "a client-minted command id"
 
 
-Kind = MintedId | OneOf | Shape
+@dataclass(frozen=True)
+class MintedIds:
+    """A list of distinct minted identifiers of one prefix, at most `max_items`
+    of them — how a reveal row lists the participants it reached (O-3). One
+    prefix, so a list of seats cannot carry the id of another kind of thing."""
+
+    prefix: str
+    max_items: int
+
+
+Kind = MintedId | MintedIds | OneOf | Shape
 
 
 def accepts(kind: Kind, value: DetailValue) -> bool:
     """Whether `value` is of `kind`. Pure, and public because a later bead adds
-    its own `ACTION_DETAIL` entry and has to be able to test it — `1kg.7.1`'s
-    reveal rows carry `Shape.FIELD_KEYS`, the mask ED-18(a) asks for, and this
-    function already answers for it. What that bead still has to decide is what
-    the rest of a reveal row holds: **no kind here fits the command id** ED-18(a)
-    puts on one, because the wire contract has the client mint it and no prefix
-    of this schema's registry is its. And `Shape.FIELD_KEYS` checks the shape of
+    its own `ACTION_DETAIL` entry and has to be able to test it. `1kg.7.1`'s
+    reveal rows carry `Shape.FIELD_KEYS` for the mask ED-18(a) asks for,
+    `Shape.COMMAND_ID` for the command id it puts on the row, and `MintedIds`
+    for the participants reached. `Shape.FIELD_KEYS` checks the shape of
     a mask's keys, never that they are keys of the document type in question —
     that comparison is the recording caller's, and there is nowhere in an audit
     row to do it.
@@ -209,6 +297,15 @@ def accepts(kind: Kind, value: DetailValue) -> bool:
         return True
     if isinstance(kind, MintedId):
         return isinstance(value, str) and ident.is_id(kind.prefix, value)
+    if isinstance(kind, MintedIds):
+        return (
+            isinstance(value, list)
+            and len(value) <= kind.max_items
+            and len(set(value)) == len(value)
+            and all(isinstance(item, str) and ident.is_id(kind.prefix, item) for item in value)
+        )
+    if kind is Shape.COMMAND_ID:
+        return isinstance(value, str) and COMMAND_ID.fullmatch(value) is not None
     if isinstance(kind, OneOf):
         return isinstance(value, str) and value in kind.codes
     if kind is Shape.FIELD_KEY:
@@ -234,6 +331,8 @@ def _describes(kind: Kind) -> str:
     so none of it can repeat what a caller supplied."""
     if isinstance(kind, MintedId):
         return f"a minted {kind.prefix} identifier"
+    if isinstance(kind, MintedIds):
+        return f"a list of at most {kind.max_items} distinct minted {kind.prefix} identifiers"
     if isinstance(kind, OneOf):
         return f"one of {', '.join(kind.codes)}"
     return kind.value
@@ -244,19 +343,39 @@ def _describes(kind: Kind) -> str:
 _CAMPAIGN = MintedId(ident.CAMPAIGN)
 _PARTICIPANT = MintedId(ident.PARTICIPANT)
 _SESSION = MintedId(ident.TABLE_SESSION)
-#: The character sheet a link or unlink row names (SEC-38). An id, never a
+#: The character sheet a link or unlink row names, and the document an archive,
+#: unarchive or delete row names (SEC-38). An id, never a
 #: title: a document's name is field text, and nothing derived from field text
 #: may outlive it in a ledger that survives the campaign (ED-26).
 _DOCUMENT = MintedId(ident.DOCUMENT)
+#: A deleted asset, by its id alone: never its alt text, a key or a filename.
+_ASSET = MintedId(ident.ASSET)
+#: A GM's named group (`btb`), by its id alone: its name is private (SEC-20).
+_GROUP = MintedId(ident.GROUP)
 
-#: SEC-10 bounds a generation two ways — 24 credentials, and 60 joins in ten
-#: minutes. Which one a refused join hit is a closed code, not a sentence.
-JOIN_BOUND = OneOf(("credentials_per_generation", "joins_per_window"))
-
+#: What an End, an expiry and a Rotate record: the session, the admission
+#: generation it closed, and how many screen grants that revoked.
 _SESSION_CLOSED: dict[str, Kind] = {
     "session_id": _SESSION,
     "generation": Shape.WHOLE_NUMBER,
-    "credentials_revoked": Shape.WHOLE_NUMBER,
+    "screens_revoked": Shape.WHOLE_NUMBER,
+}
+
+#: What every reveal row records, exactly ED-18(a)'s list and nothing more: the
+#: session, the command, the document and its pinned version, the mask's keys,
+#: the audience kind and the participants reached (None for the table), and the
+#: reveal epoch after the action. No disclosure id (the list is exact), no
+#: recipient's name, no hash (ED-26) and no text. A Stop that ended nothing
+#: names its document, or nothing for a Stop-all, and leaves the rest None.
+_REVEAL: dict[str, Kind] = {
+    "session_id": _SESSION,
+    "command_id": Shape.COMMAND_ID,
+    "document_id": _DOCUMENT,
+    "version": Shape.WHOLE_NUMBER,
+    "mask": Shape.FIELD_KEYS,
+    "audience": OneOf(("table", "participant")),
+    "participant_ids": MintedIds(ident.PARTICIPANT, DETAIL_MAX_PARTICIPANT_IDS),
+    "reveal_epoch": Shape.WHOLE_NUMBER,
 }
 
 #: The closed, per-action `detail` of ED-18(a). A bead that adds an action adds
@@ -266,7 +385,7 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     AuditAction.SESSION_STARTED: {"session_id": _SESSION, "generation": Shape.WHOLE_NUMBER},
     AuditAction.SESSION_ENDED: _SESSION_CLOSED,
     AuditAction.SESSION_EXPIRED: _SESSION_CLOSED,
-    AuditAction.SESSION_ROTATED: {**_SESSION_CLOSED, "personal_links_reset": Shape.FLAG},
+    AuditAction.SESSION_ROTATED: _SESSION_CLOSED,
     AuditAction.PARTICIPANT_ADDED: {"participant_id": _PARTICIPANT},
     AuditAction.PARTICIPANT_REMOVED: {"participant_id": _PARTICIPANT},
     AuditAction.PARTICIPANT_LINKED: {"participant_id": _PARTICIPANT, "document_id": _DOCUMENT},
@@ -275,18 +394,31 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     # participant row, and a user id is personal data the ledger does not need.
     AuditAction.SEAT_OFFERED: {"participant_id": _PARTICIPANT},
     AuditAction.SEAT_ACCEPTED: {"participant_id": _PARTICIPANT},
+    AuditAction.SEAT_DECLINED: {"participant_id": _PARTICIPANT, "blocked": Shape.FLAG},
+    AuditAction.SEAT_CONFIRMED: {"participant_id": _PARTICIPANT},
     AuditAction.CAMPAIGN_ARCHIVED: {"campaign_id": _CAMPAIGN},
     AuditAction.CAMPAIGN_RESTORED: {"campaign_id": _CAMPAIGN},
+    AuditAction.CAMPAIGN_CONCLUDED: {"campaign_id": _CAMPAIGN},
+    AuditAction.CAMPAIGN_REOPENED: {"campaign_id": _CAMPAIGN},
     AuditAction.CAMPAIGN_DELETED: {
         "campaign_id": _CAMPAIGN,
         "participants": Shape.WHOLE_NUMBER,
         "sessions": Shape.WHOLE_NUMBER,
     },
-    AuditAction.JOIN_BURST_REFUSED: {
-        "session_id": _SESSION,
-        "generation": Shape.WHOLE_NUMBER,
-        "bound": JOIN_BOUND,
-    },
+    AuditAction.SCREEN_MINTED: {"session_id": _SESSION, "generation": Shape.WHOLE_NUMBER},
+    AuditAction.SCREEN_REVOKED: {"session_id": _SESSION},
+    AuditAction.ASSET_DELETED: {"asset_id": _ASSET},
+    AuditAction.REVEAL_DISPLAYED: _REVEAL,
+    AuditAction.REVEAL_UPDATED: _REVEAL,
+    AuditAction.REVEAL_STOPPED: _REVEAL,
+    AuditAction.DOCUMENT_ARCHIVED: {"document_id": _DOCUMENT},
+    AuditAction.DOCUMENT_UNARCHIVED: {"document_id": _DOCUMENT},
+    AuditAction.DOCUMENT_DELETED: {"document_id": _DOCUMENT},
+    AuditAction.GROUP_CREATED: {"group_id": _GROUP},
+    AuditAction.GROUP_RENAMED: {"group_id": _GROUP},
+    AuditAction.GROUP_REMOVED: {"group_id": _GROUP},
+    AuditAction.GROUP_MEMBER_ADDED: {"group_id": _GROUP, "participant_id": _PARTICIPANT},
+    AuditAction.GROUP_MEMBER_REMOVED: {"group_id": _GROUP, "participant_id": _PARTICIPANT},
 }
 
 #: The closed set of reason codes **per action**, beside `ACTION_DETAIL` and
@@ -310,10 +442,27 @@ ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
     AuditAction.PARTICIPANT_UNLINKED: frozenset(),
     AuditAction.SEAT_OFFERED: frozenset(),
     AuditAction.SEAT_ACCEPTED: frozenset(),
+    AuditAction.SEAT_DECLINED: frozenset(),
+    AuditAction.SEAT_CONFIRMED: frozenset(),
     AuditAction.CAMPAIGN_ARCHIVED: frozenset(),
     AuditAction.CAMPAIGN_RESTORED: frozenset(),
+    AuditAction.CAMPAIGN_CONCLUDED: frozenset(),
+    AuditAction.CAMPAIGN_REOPENED: frozenset(),
     AuditAction.CAMPAIGN_DELETED: frozenset(),
-    AuditAction.JOIN_BURST_REFUSED: frozenset(JOIN_BOUND.codes),
+    AuditAction.SCREEN_MINTED: frozenset(),
+    AuditAction.SCREEN_REVOKED: frozenset({"gm_revoked", "left"}),
+    AuditAction.ASSET_DELETED: frozenset(),
+    AuditAction.REVEAL_DISPLAYED: frozenset(),
+    AuditAction.REVEAL_UPDATED: frozenset(),
+    AuditAction.REVEAL_STOPPED: frozenset({"gm_stop", "stop_all", "replaced", "moved"}),
+    AuditAction.DOCUMENT_ARCHIVED: frozenset(),
+    AuditAction.DOCUMENT_UNARCHIVED: frozenset(),
+    AuditAction.DOCUMENT_DELETED: frozenset(),
+    AuditAction.GROUP_CREATED: frozenset(),
+    AuditAction.GROUP_RENAMED: frozenset(),
+    AuditAction.GROUP_REMOVED: frozenset(),
+    AuditAction.GROUP_MEMBER_ADDED: frozenset(),
+    AuditAction.GROUP_MEMBER_REMOVED: frozenset(),
 }
 
 
@@ -501,6 +650,20 @@ class AuditLog(Protocol):
         has since been deleted, which is the point of the tombstone."""
         ...  # pragma: no cover - structural type
 
+    def count_since(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        actions: Collection[AuditAction],
+        *,
+        since: datetime,
+    ) -> int:
+        """How many rows of those actions that campaign's ledger holds from
+        after `since` — SEC-35's per-campaign fan-out bound is read from the
+        ledger (`1kg.2.3`), over `events_campaign_created_idx`. A count, never a
+        row: the caller needs a number and nothing a row carries."""
+        ...  # pragma: no cover - structural type
+
 
 @dataclass(frozen=True)
 class _Row:
@@ -625,6 +788,21 @@ class PostgresAuditLog:
         ).fetchall()
         return [_event(row) for row in rows]
 
+    def count_since(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        actions: Collection[AuditAction],
+        *,
+        since: datetime,
+    ) -> int:
+        row = pg(unit).conn.execute(
+            "SELECT count(*) FROM audit.events "
+            "WHERE campaign_id_tombstone = %s AND created_at > %s AND action = ANY(%s)",
+            (campaign_id, since, [check_action(a).value for a in actions]),
+        ).fetchone()
+        return int(row[0])
+
 
 class InMemoryAuditLog:
     """The twin, with the same validation and the same commit-time visibility:
@@ -711,4 +889,19 @@ class InMemoryAuditLog:
         return sorted(
             (e for e in visible if e.campaign_id_tombstone == campaign_id),
             key=lambda e: (e.created_at, e.id),
+        )
+
+    def count_since(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        actions: Collection[AuditAction],
+        *,
+        since: datetime,
+    ) -> int:
+        wanted = {check_action(a).value for a in actions}
+        return sum(
+            1
+            for event in self.for_campaign(unit, campaign_id)
+            if event.action in wanted and event.created_at > since
         )

@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 import psycopg
@@ -387,6 +388,178 @@ def test_two_absorbing_enqueuers_never_wait_for_each_other(db, dsn):
             two.conn.execute("SET LOCAL lock_timeout = '2s'")
             absorbed = queue.enqueue(two, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0)
     assert absorbed == first, "a second absorber went through while the first still held the row"
+
+
+def _someone_waits_on_a_lock(dsn: str, patience: float = 5.0) -> bool:
+    """Whether a backend on this database is blocked on a lock: the server's own
+    account, asked on a connection of its own and never from the pool. The shape
+    of `tests/test_campaign_db.py`'s helper of the same name."""
+    deadline = time.monotonic() + patience
+    with connect(dsn) as conn:
+        while time.monotonic() < deadline:
+            blocked = conn.execute(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            ).fetchone()[0]
+            if blocked:
+                return True
+            time.sleep(0.05)
+    return False
+
+
+class _RolledBack(Exception):
+    """Raised inside a transaction to roll it back."""
+
+
+@pytest.mark.parametrize("ending", ["commit", "rollback"])
+def test_an_enqueue_waits_for_another_transactions_uncommitted_enqueue_of_the_same_key(db, dsn, ending):
+    """e7a R1, the same-key half. `enqueue`'s INSERT ... ON CONFLICT meets
+    `jobs_dedupe_uidx`, and PostgreSQL makes an insert that would conflict with
+    another open transaction's uncommitted row wait for that transaction's
+    outcome. So an enqueue can wait for a caller's whole transaction, not only
+    for a claim's short one. Once the first transaction commits, the second
+    enqueue absorbs into its job; once it rolls back, the second inserts its own.
+
+    The in-memory twin cannot wait, so it refuses this case with `TwinWouldBlock`
+    (`service/tests/test_jobs.py`, `test_a_second_open_stager_is_refused_and_leaves_nothing[same-key]`).
+
+    The thread only records. The waiter is observed while the first transaction
+    is still open, on a connection of its own, since the pool's two belong to the
+    two transactions; every assertion runs here, after the join."""
+    queue = PostgresJobQueue(db)
+    seen: dict[str, object] = {}
+
+    def second() -> None:
+        try:
+            with db.transaction() as unit:
+                # `Database.transaction()` sets no timeout: a regression must fail, not hang CI.
+                unit.conn.execute("SET LOCAL lock_timeout = '10s'")
+                seen["id"] = queue.enqueue(unit, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0)
+        except Exception as exc:
+            seen["error"] = type(exc).__name__
+
+    thread = threading.Thread(target=second, daemon=True)
+    try:
+        with db.transaction() as unit:
+            first = queue.enqueue(unit, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0)
+            thread.start()
+            waited = _someone_waits_on_a_lock(dsn)
+            if ending == "rollback":
+                raise _RolledBack
+    except _RolledBack:
+        pass
+    thread.join(15)
+
+    assert not thread.is_alive(), "the second enqueue was still waiting, so nothing it recorded can be trusted"
+    assert "error" not in seen, f"the second enqueue raised {seen.get('error')}"
+    assert waited, "nobody waited"
+    if ending == "commit":
+        assert seen["id"] == first, "committed first: the second enqueue absorbs into its job"
+    else:
+        assert seen["id"] != first, "rolled back first: the second enqueue inserts a job of its own"
+    same_key = "SELECT count(*) FROM app.jobs WHERE kind = %s AND dedupe_key = %s"
+    assert _count(dsn, same_key, ("upload.sweep", "session:S")) == 1, "one job for the key"
+
+
+def test_an_enqueue_waits_for_a_claim_in_progress_and_inserts_once_it_wins(db, dsn):
+    """e7a R2, the general case. Connection B claims the absorbing job by hand —
+    `SELECT ... FOR UPDATE` plus `UPDATE ... SET attempts = 1`, the same shape as
+    `claim()`'s own statement — and holds that transaction open, so connection
+    A's enqueue must wait for the whole claim, not only for a lock that resolves
+    at once. Once B commits, `attempts = 0` no longer matches the claimed row,
+    so A's enqueue inserts a job of its own instead of absorbing into it.
+
+    The interleaving is driven by two connections; nothing here waits on a
+    clock beyond the poll for the wait itself."""
+    queue = PostgresJobQueue(db)
+    first = _enqueue(db, queue, kind="upload.sweep", dedupe_key="session:S")
+    seen: dict[str, object] = {}
+
+    def enqueue_a() -> None:
+        try:
+            seen["id"] = _enqueue(db, queue, kind="upload.sweep", dedupe_key="session:S")
+        except Exception as exc:
+            seen["error"] = type(exc).__name__
+
+    thread = threading.Thread(target=enqueue_a, daemon=True)
+    with connect(dsn, autocommit=False) as connection_b:
+        connection_b.execute("SELECT id FROM app.jobs WHERE id = %s FOR UPDATE", (first,))
+        connection_b.execute("UPDATE app.jobs SET attempts = 1 WHERE id = %s", (first,))
+        thread.start()
+        waited = _someone_waits_on_a_lock(dsn)
+        connection_b.commit()
+    thread.join(15)
+
+    assert not thread.is_alive(), "A's enqueue was still waiting, so nothing it recorded can be trusted"
+    assert "error" not in seen, f"A's enqueue raised {seen.get('error')}"
+    assert waited, "nobody waited"
+    assert seen["id"] != first, "the claimed row no longer matches attempts = 0: a new job is inserted"
+    same_key = "SELECT count(*) FROM app.jobs WHERE kind = %s AND dedupe_key = %s"
+    assert _count(dsn, same_key, ("upload.sweep", "session:S")) == 2, "the claim's job, and A's new one"
+
+
+class _HookedConn:
+    """Proxies a real connection so a test can act in the one gap `enqueue`'s
+    retry loop has no lock to hold open: between the absorbing INSERT deciding
+    there is a conflict and the `FOR SHARE` SELECT that reads what it
+    conflicted with. No real connection can be relied on to land exactly there,
+    so `hook` fires there once, in place of a race."""
+
+    def __init__(self, real: object, hook: Callable[[], None]) -> None:
+        self._real = real
+        self._hook = hook
+        self._fired = False
+
+    def execute(self, query: object, *args: object, **kwargs: object) -> object:
+        if not self._fired and isinstance(query, str) and query.startswith("SELECT id FROM app.jobs"):
+            self._fired = True
+            self._hook()
+        return self._real.execute(  # type: ignore[attr-defined]  # justification: proxies the untyped psycopg connection `enqueue` is handed
+            query, *args, **kwargs
+        )
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._real, name)
+
+
+def test_a_claim_between_the_insert_and_the_select_makes_the_next_turn_insert(db, dsn):
+    """e7a R2 (mutant M25). `enqueue`'s absorbing INSERT and the plain SELECT
+    that follows a conflict are two separate statements, and the gap between
+    them is exactly what the code's own comment names: 'the one thing this
+    statement can wait for is a claim's own short transaction, and if that
+    claim wins the row, `attempts = 0` no longer matches, so the next turn of
+    this loop inserts a row of its own' (`service/jobs.py`). The hook plays the
+    part of that claim, landing in the gap deterministically: the first
+    `SELECT id FROM app.jobs` this transaction issues runs a real `claim()` on
+    a connection of its own and commits it before letting the SELECT proceed.
+
+    Mutant M25 turns `for _ in range(3)` into `for _ in range(1)` and survived
+    every other test here, because none of them reaches a second turn. This one
+    does: with one turn the SELECT still finds nothing (attempts <> 0) and
+    `enqueue` raises `RuntimeError` instead of trying again.
+
+    `service/tests/test_jobs.py::test_a_job_somebody_has_started_absorbs_nothing`
+    is the in-memory twin's mirror: it has no retry loop and needs none, since
+    a job already claimed before `enqueue` is even called is enough to prove
+    the same rule — a same-key enqueue against a started job inserts, never
+    absorbs."""
+    queue = PostgresJobQueue(db)
+    first = _enqueue(db, queue, kind="upload.sweep", dedupe_key="session:S")
+    claimed: list[int] = []
+
+    def hook() -> None:
+        claimed.extend(job.id for job in queue.claim(["upload.sweep"], now=T0))
+        if claimed != [first]:
+            raise RuntimeError(f"precondition failed: the hook did not claim the absorbing job ({claimed})")
+
+    with db.transaction() as unit:
+        unit.conn = _HookedConn(unit.conn, hook)
+        second = queue.enqueue(unit, "upload.sweep", {"asset_id": "a-2"}, dedupe_key="session:S", now=T0)
+
+    assert claimed == [first], "the hook never ran: this test no longer reaches the absorb SELECT"
+    assert second != first, "attempts <> 0 once the claim committed: the next turn must insert, not absorb"
+    same_key = "SELECT count(*) FROM app.jobs WHERE kind = %s AND dedupe_key = %s"
+    assert _count(dsn, same_key, ("upload.sweep", "session:S")) == 2, "the claimed job, and the new one"
 
 
 def test_due_order_kinds_and_claim_by_id(db):

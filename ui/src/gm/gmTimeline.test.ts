@@ -10,7 +10,9 @@ import type { Exchange } from '../useChat'
 import {
   HYDRATE_TARGET,
   MAX_PAGES_PER_READ,
+  DIVIDER_COPY,
   answerFromResponse,
+  collapseSessionSpans,
   exchangesForExport,
   mergeEarlierItems,
   readEarlierTimeline,
@@ -19,16 +21,19 @@ import {
   turnsFromTimeline,
   useGmTimeline,
 } from './gmTimeline'
-import type { LoadTimelinePageFn } from './gmTimeline'
+import type { GmTurn, LoadTimelinePageFn } from './gmTimeline'
 import type { TimelineItem } from './contracts'
 import {
   CREATIVE_ANSWER,
   DIVIDER_ENTRY,
   EDIT_ENTRY,
+  END_DIVIDER_ENTRY,
   OPAQUE_ENTRY,
+  QUIET_SESSION,
   SPELL_ANSWER,
   SPELL_SUGGESTIONS,
   chatEntry,
+  dividerEntry,
   manyChatEntries,
   pagedTimeline,
   toolEntry,
@@ -173,7 +178,8 @@ describe('turnsFromTimeline — one turn per exchange, in order', () => {
       { kind: 'unknown', reason: 'invalid', entry_id: null },
     ])
     expect(turns.map((t) => [t.kind, t.key])).toEqual([
-      // The divider is 1kg.3.5's to label; it adds no exchange here.
+      // 1kg.3.5: a session divider is a divider turn, keyed by its entry id.
+      ['divider', 'entry:ent_5e55a001'],
       ['chat', 'entry:ent_chat'],
       ['tool', 'entry:ent_tool'],
       ['unsupported', 'entry:ent_ed170001'],
@@ -196,6 +202,115 @@ describe('turnsFromTimeline — one turn per exchange, in order', () => {
     const [turn] = turnsFromTimeline([toolEntry()])
     expect(turn).toMatchObject({ kind: 'tool', entryId: 'ent_77aa12bd', brief: 'CR 5, drowned' })
     if (turn.kind === 'tool') expect(turn.invocation.tool_id).toBe('monster')
+  })
+})
+
+/** Each turn as `kind:boundary:key`, the shape the collapse tests compare. */
+function shape(turns: readonly GmTurn[]): string[] {
+  return turns.map((t) => (t.kind === 'divider' ? `divider:${t.boundary}:${t.key}` : `${t.kind}:${t.key}`))
+}
+
+describe('session dividers (1kg.3.5)', () => {
+  it('a divider entry becomes a divider turn', () => {
+    expect(turnsFromTimeline([DIVIDER_ENTRY, END_DIVIDER_ENTRY])).toEqual([
+      { kind: 'divider', key: 'entry:ent_5e55a001', sessionId: 'ses_2c7d91aa', boundary: 'start', at: '2026-09-16T19:00:00Z' },
+      { kind: 'divider', key: 'entry:ent_5e55a002', sessionId: 'ses_2c7d91aa', boundary: 'end', at: '2026-09-16T23:00:00Z' },
+    ])
+  })
+
+  it('keeps each divider in its stored place among the turns', () => {
+    const turns = turnsFromTimeline([
+      DIVIDER_ENTRY,
+      chatEntry({ entry_id: 'ent_a' }),
+      END_DIVIDER_ENTRY,
+      chatEntry({ entry_id: 'ent_b' }),
+    ])
+    expect(shape(turns)).toEqual([
+      'divider:start:entry:ent_5e55a001',
+      'chat:entry:ent_a',
+      'divider:end:entry:ent_5e55a002',
+      'chat:entry:ent_b',
+    ])
+  })
+
+  it('has one line of copy per boundary, for the design lane', () => {
+    expect(DIVIDER_COPY).toEqual({ start: 'Session started', end: 'Session ended', span: 'Session played' })
+  })
+})
+
+describe('collapseSessionSpans (1kg.3.5, I-10)', () => {
+  it('collapses a start and its own end with nothing between', () => {
+    const turns = collapseSessionSpans(
+      turnsFromTimeline([chatEntry({ entry_id: 'ent_a' }), ...QUIET_SESSION, chatEntry({ entry_id: 'ent_b' })]),
+    )
+    expect(turns).toEqual([
+      expect.objectContaining({ kind: 'chat', key: 'entry:ent_a' }),
+      {
+        kind: 'divider',
+        key: 'entry:ent_5e55b001',
+        sessionId: 'ses_7f3e0b12',
+        boundary: 'span',
+        at: '2026-09-23T19:00:00Z',
+        endedAt: '2026-09-23T22:30:00Z',
+      },
+      expect.objectContaining({ kind: 'chat', key: 'entry:ent_b' }),
+    ])
+  })
+
+  it('never collapses across a turn: a session that was played keeps both its dividers', () => {
+    const turns = turnsFromTimeline([DIVIDER_ENTRY, chatEntry({ entry_id: 'ent_a' }), END_DIVIDER_ENTRY])
+    expect(shape(collapseSessionSpans(turns))).toEqual(shape(turns))
+    expect(shape(turns)).toEqual(['divider:start:entry:ent_5e55a001', 'chat:entry:ent_a', 'divider:end:entry:ent_5e55a002'])
+  })
+
+  it('never collapses across a live turn this pane sent either', () => {
+    const turns: GmTurn[] = [
+      ...turnsFromTimeline([QUIET_SESSION[0]]),
+      turnFromExchange({ id: 1, prompt: 'q', status: 'pending' }),
+      ...turnsFromTimeline([QUIET_SESSION[1]]),
+    ]
+    expect(shape(collapseSessionSpans(turns))).toEqual(shape(turns))
+  })
+
+  it('never collapses one session’s start with another session’s end', () => {
+    const turns = turnsFromTimeline([
+      DIVIDER_ENTRY,
+      dividerEntry({ entry_id: 'ent_5e55c002', session_id: 'ses_0d0d0d0d', boundary: 'end' }),
+    ])
+    expect(shape(collapseSessionSpans(turns))).toEqual([
+      'divider:start:entry:ent_5e55a001',
+      'divider:end:entry:ent_5e55c002',
+    ])
+  })
+
+  it('keeps a lone end (a thread created mid-session) and a lone start (a session still live)', () => {
+    const loneEnd = turnsFromTimeline([END_DIVIDER_ENTRY, chatEntry({ entry_id: 'ent_a' })])
+    expect(shape(collapseSessionSpans(loneEnd))).toEqual(['divider:end:entry:ent_5e55a002', 'chat:entry:ent_a'])
+    const loneStart = turnsFromTimeline([chatEntry({ entry_id: 'ent_a' }), DIVIDER_ENTRY])
+    expect(shape(collapseSessionSpans(loneStart))).toEqual(['chat:entry:ent_a', 'divider:start:entry:ent_5e55a001'])
+  })
+
+  it('never pairs an end with the start after it (an end, then a start, is two sessions)', () => {
+    const turns = turnsFromTimeline([END_DIVIDER_ENTRY, DIVIDER_ENTRY])
+    expect(shape(collapseSessionSpans(turns))).toEqual([
+      'divider:end:entry:ent_5e55a002',
+      'divider:start:entry:ent_5e55a001',
+    ])
+  })
+
+  it('collapses once both halves are drawn after Load earlier, and not before', () => {
+    // The newest page held the quiet session's end; Load earlier brings its start.
+    const drawn = [QUIET_SESSION[1], chatEntry({ entry_id: 'ent_b' })]
+    const older = [chatEntry({ entry_id: 'ent_a' }), QUIET_SESSION[0]]
+    expect(shape(collapseSessionSpans(turnsFromTimeline(drawn)))).toEqual([
+      'divider:end:entry:ent_5e55b002',
+      'chat:entry:ent_b',
+    ])
+    const merged = collapseSessionSpans(turnsFromTimeline(mergeEarlierItems(drawn, older)))
+    expect(shape(merged)).toEqual(['chat:entry:ent_a', 'divider:span:entry:ent_5e55b001', 'chat:entry:ent_b'])
+    // Per page, the pair would never meet.
+    const perPage = [...collapseSessionSpans(turnsFromTimeline(older)), ...collapseSessionSpans(turnsFromTimeline(drawn))]
+    expect(shape(perPage)).not.toEqual(shape(merged))
   })
 })
 
@@ -247,10 +362,10 @@ describe('a live turn and its reload are the same turn', () => {
 
   it('maps the pending and failed stages of a live turn', () => {
     expect(turnFromExchange({ id: 1, prompt: 'q', status: 'pending' })).toEqual({
-      kind: 'chat', key: 'live:1', prompt: 'q', answer: { state: 'pending' },
+      kind: 'chat', key: 'live:1', prompt: 'q', answer: { state: 'pending' }, mode: 'gm',
     })
     expect(turnFromExchange({ id: 2, prompt: 'q', status: 'error', error: 'Answer failed.' })).toEqual({
-      kind: 'chat', key: 'live:2', prompt: 'q', answer: { state: 'failed', message: 'Answer failed.' },
+      kind: 'chat', key: 'live:2', prompt: 'q', answer: { state: 'failed', message: 'Answer failed.' }, mode: 'gm',
     })
   })
 })
@@ -271,6 +386,16 @@ describe('exchangesForExport — a GM export keeps its history', () => {
       },
       { id: 1, prompt: 'Still running?', status: 'done' },
     ])
+  })
+
+  it('export still carries only exchanges: a session divider is not one (1kg.3.5)', () => {
+    const exported = exchangesForExport([
+      DIVIDER_ENTRY,
+      chatEntry({ entry_id: 'ent_a', answer: null, prompt: 'Who is at the gate?' }),
+      ...QUIET_SESSION,
+      END_DIVIDER_ENTRY,
+    ])
+    expect(exported).toEqual([{ id: 0, prompt: 'Who is at the gate?', status: 'done' }])
   })
 })
 
@@ -340,6 +465,56 @@ describe('useGmTimeline', () => {
       loadEarlier: expect.any(Function),
     })
     await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_cnv_b']))
+  })
+
+  // agent-forge-harness-ffz (pr120 review L-1): the scopeId check alone is not
+  // the guard here — a stale read for a conversation the pane has already
+  // left behind still carries THAT conversation's own scopeId, so a `setState`
+  // it makes would win the `state.scopeId === scope` comparison inside its own
+  // stale generation... except the pane's CURRENT scope has since moved on, so
+  // the stale write leaves `state.scopeId` behind the live `scope` again, and
+  // the hook's last line falls through to `LOADING` — the thread the user is
+  // already looking at reverts to a loading spinner (never even the wrong
+  // conversation's own text, in this hook's shape, but a currently-open thread
+  // stuck showing "loading" again is exactly the "stuck on Recalling…" bug the
+  // finding names). `cancelled` is what stops the stale write from running at
+  // all; without it, a slow read for an OLD conversation that resolves AFTER a
+  // newer one is already on screen must not touch that screen.
+  it('a slow read for an abandoned conversation landing after a newer one is already showing does not disturb it (review L-1)', async () => {
+    const resolvers = new Map<string, (result: TimelinePageResult) => void>()
+    const load: LoadTimelinePageFn = (conversationId) =>
+      new Promise((resolve) => {
+        resolvers.set(conversationId, resolve)
+      })
+    const { result, rerender } = renderHook(({ id }) => useGmTimeline(id, true, load), {
+      initialProps: { id: 'cnv_a' },
+    })
+    rerender({ id: 'cnv_b' })
+
+    // B's read lands first, and its thread is what is now on screen.
+    act(() => {
+      resolvers.get('cnv_b')!({
+        kind: 'ok',
+        page: { conversation_id: 'cnv_b', items: [chatEntry({ entry_id: 'ent_b' })], next_cursor: null },
+      })
+    })
+    await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_b']))
+    expect(result.current.loading).toBe(false)
+
+    // A's read — abandoned when the pane moved to B — resolves late. The
+    // resolution has to cross readTimeline's and walkTimeline's own await
+    // hops before useGmTimeline's `.then` runs, so this drains several
+    // microtask turns rather than asserting the instant after `resolve()`.
+    await act(async () => {
+      resolvers.get('cnv_a')!({
+        kind: 'ok',
+        page: { conversation_id: 'cnv_a', items: [chatEntry({ entry_id: 'ent_a' })], next_cursor: null },
+      })
+      for (let i = 0; i < 5; i += 1) await Promise.resolve()
+    })
+    // B's thread must still be showing, not reset to loading and not carrying A's entry.
+    expect(result.current.loading).toBe(false)
+    expect(ids(result.current.items)).toEqual(['ent_b'])
   })
 })
 
@@ -613,6 +788,62 @@ describe('useGmTimeline — Load earlier (1kg.3.6)', () => {
     })
     expect(result.current.items).toHaveLength(HYDRATE_TARGET + 4)
     expect(ids(result.current.items).slice(0, 4)).toEqual(['ent_200', 'ent_199', 'ent_198', 'ent_197'])
+    expect(result.current.hasEarlier).toBe(false)
+  })
+
+  it('drops a walk from an earlier visit that rejects once the same conversation is read again (PR #136 review L1)', async () => {
+    // The same A→B→A shape, but visit 1's walk rejects (an injected loader can
+    // throw; getTimelinePage never does). Its failure is not visit 2's: no
+    // error, and visit 2's walk keeps the guard it holds.
+    let visits = 0
+    let rejectStale: ((reason: Error) => void) | null = null
+    let resolveFresh: ((r: TimelinePageResult) => void) | null = null
+    const loadA = vi.fn<LoadTimelinePageFn>(async (conversationId, cursor) => {
+      if (cursor === null) {
+        visits += 1
+        return visits === 1
+          ? { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 100), next_cursor: 'p1' } }
+          : { kind: 'ok', page: { conversation_id: conversationId, items: manyChatEntries(HYDRATE_TARGET, 97), next_cursor: 'q1' } }
+      }
+      return new Promise<TimelinePageResult>((resolve, reject) => {
+        if (cursor === 'p1') rejectStale = reject
+        else resolveFresh = resolve
+      })
+    })
+    const loadB = pagedTimeline([[chatEntry({ entry_id: 'ent_b' })]])
+    const { result, rerender } = renderHook(
+      ({ id, load }: { id: string; load: LoadTimelinePageFn }) => useGmTimeline(id, true, load),
+      { initialProps: { id: 'cnv_a', load: loadA as LoadTimelinePageFn } },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => result.current.loadEarlier())
+
+    rerender({ id: 'cnv_b', load: loadB })
+    await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_b']))
+    rerender({ id: 'cnv_a', load: loadA })
+    await waitFor(() => expect(ids(result.current.items)).toContain('ent_97'))
+
+    act(() => result.current.loadEarlier())
+    expect(result.current.loadingEarlier).toBe(true)
+
+    // Visit 1's walk fails now — after visit 2's read, in the same scope.
+    await act(async () => {
+      rejectStale?.(new Error('Visit 1 lost its connection.'))
+    })
+    expect(result.current.earlierError).toBeNull()
+    expect(result.current.loadingEarlier).toBe(true)
+    act(() => result.current.loadEarlier())
+    expect(loadA.mock.calls.filter(([, cursor]) => cursor === 'q1')).toHaveLength(1)
+
+    await act(async () => {
+      resolveFresh?.({
+        kind: 'ok',
+        page: { conversation_id: 'cnv_a', items: [...manyChatEntries(3, 197), chatEntry({ entry_id: 'ent_200' })], next_cursor: null },
+      })
+    })
+    expect(result.current.items).toHaveLength(HYDRATE_TARGET + 4)
+    expect(ids(result.current.items).slice(0, 4)).toEqual(['ent_200', 'ent_199', 'ent_198', 'ent_197'])
+    expect(result.current.earlierError).toBeNull()
     expect(result.current.hasEarlier).toBe(false)
   })
 })

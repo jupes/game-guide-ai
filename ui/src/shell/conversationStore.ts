@@ -13,6 +13,19 @@ export interface Conversation {
    * a change after that starts a new conversation instead (D6, plan's
    * "Conversation affinity"), enforced by the UI, not this store. */
   modelPreference: string
+  /** The preference its FIRST prompt was sent with — what the server bound the
+   * conversation to (D6) — recorded by `recordFirstPrompt` and never changed
+   * by the UI itself after. Null before the first prompt, and for a row that
+   * sent its first prompt before agent-forge-harness-bta, when the pane
+   * always posted 'auto' (so the server bound 'auto', whatever
+   * `modelPreference` says).
+   *
+   * The ONE exception: `rebindPreference` (agent-forge-harness-j9w), called
+   * when the SERVER itself moved this conversation off a manual pick it has
+   * since retired — never from a client request, so it does not reopen D6's
+   * "a later change fails or silently diverges" concern; it is the server
+   * telling this store what it already decided. */
+  boundPreference: string | null
 }
 
 const NEW_CONVERSATION_TITLE = 'New conversation'
@@ -54,6 +67,10 @@ function normalizeConversation(value: unknown): Conversation | null {
   // default the backend uses for an omitted model_preference.
   const modelPreference =
     typeof row.modelPreference === 'string' && row.modelPreference ? row.modelPreference : 'auto'
+  const boundPreference =
+    hasFirstPrompt && typeof row.boundPreference === 'string' && row.boundPreference
+      ? row.boundPreference
+      : null
 
   return {
     id: row.id,
@@ -64,6 +81,7 @@ function normalizeConversation(value: unknown): Conversation | null {
     hasFirstPrompt,
     createdAt: row.createdAt,
     modelPreference,
+    boundPreference,
   }
 }
 
@@ -80,6 +98,9 @@ function createConversation(
     hasFirstPrompt: Boolean(firstPrompt?.trim()),
     createdAt: new Date().toISOString(),
     modelPreference,
+    // A row created already holding a first prompt was not sent through
+    // `recordFirstPrompt`, so what bound it is not known here.
+    boundPreference: null,
   }
 }
 
@@ -114,6 +135,7 @@ function recordFirstPrompt(
   rows: Conversation[],
   id: string,
   prompt: string,
+  sentPreference: string | undefined,
 ): Conversation[] | null {
   if (!prompt.trim()) return null
   return updateConversation(rows, id, (conversation) => {
@@ -124,8 +146,26 @@ function recordFirstPrompt(
       title: conversation.customTitle ?? derivedTitle,
       derivedTitle,
       hasFirstPrompt: true,
+      boundPreference: sentPreference ?? null,
     }
   })
+}
+
+/** The server's own heal of a retired manual pick (j9w) — moves
+ * `boundPreference` (what the NEXT turn sends) and `modelPreference` (what
+ * ModelPicker shows) together onto the healed preference, so this
+ * conversation stops naming the retired one on its own. A no-op before the
+ * first prompt (nothing bound yet to heal) or once already at `preference`. */
+function rebindPreference(
+  rows: Conversation[],
+  id: string,
+  preference: string,
+): Conversation[] | null {
+  return updateConversation(rows, id, (conversation) => (
+    !conversation.hasFirstPrompt || conversation.boundPreference === preference
+      ? conversation
+      : { ...conversation, boundPreference: preference, modelPreference: preference }
+  ))
 }
 
 function renameConversation(
@@ -145,9 +185,12 @@ export interface ConversationStore {
   list(mode: ChatMode): Conversation[]
   get(id: string): Conversation | undefined
   create(mode: ChatMode, firstPrompt?: string, modelPreference?: string): Conversation
-  recordFirstPrompt(id: string, prompt: string): void
+  recordFirstPrompt(id: string, prompt: string, sentPreference?: string): void
   rename(id: string, title: string): void
   setModelPreference(id: string, modelPreference: string): void
+  /** j9w: the server rebound this conversation off a retired manual pick —
+   * bring `boundPreference`/`modelPreference` onto what it rebound to. */
+  rebindPreference(id: string, preference: string): void
   remove(id: string): void
   subscribe(listener: () => void): () => void
   getSnapshot(): number
@@ -192,8 +235,8 @@ export class MemoryConversationStore
     return this.convs.find((c) => c.id === id)
   }
 
-  recordFirstPrompt(id: string, prompt: string): void {
-    const next = recordFirstPrompt(this.convs, id, prompt)
+  recordFirstPrompt(id: string, prompt: string, sentPreference?: string): void {
+    const next = recordFirstPrompt(this.convs, id, prompt, sentPreference)
     if (next === null) return
     this.convs = next
     this.notifyChanged()
@@ -208,6 +251,13 @@ export class MemoryConversationStore
 
   setModelPreference(id: string, modelPreference: string): void {
     const next = setModelPreference(this.convs, id, modelPreference)
+    if (next === null) return
+    this.convs = next
+    this.notifyChanged()
+  }
+
+  rebindPreference(id: string, preference: string): void {
+    const next = rebindPreference(this.convs, id, preference)
     if (next === null) return
     this.convs = next
     this.notifyChanged()
@@ -321,8 +371,8 @@ export class LocalStorageConversationStore
     return conversation
   }
 
-  recordFirstPrompt(id: string, prompt: string): void {
-    const next = recordFirstPrompt(this.load(), id, prompt)
+  recordFirstPrompt(id: string, prompt: string, sentPreference?: string): void {
+    const next = recordFirstPrompt(this.load(), id, prompt, sentPreference)
     if (next !== null && this.save(next)) this.notifyChanged()
   }
 
@@ -333,6 +383,11 @@ export class LocalStorageConversationStore
 
   setModelPreference(id: string, modelPreference: string): void {
     const next = setModelPreference(this.load(), id, modelPreference)
+    if (next !== null && this.save(next)) this.notifyChanged()
+  }
+
+  rebindPreference(id: string, preference: string): void {
+    const next = rebindPreference(this.load(), id, preference)
     if (next !== null && this.save(next)) this.notifyChanged()
   }
 

@@ -10,6 +10,15 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
 import { json, stubFetch, withShell } from '../.storybook/shellHarness'
+import { expectTouchTarget } from '../.storybook/touchTarget'
+import {
+  atViewport,
+  expectNoPageOverflow,
+  expectStacked,
+  expectViewport,
+  expectWorkspaceFits,
+  type ViewportName,
+} from '../.storybook/viewports'
 import App from './App'
 
 const CATALOG = { default: 'auto', models: [{ id: 'auto', display_name: 'Automatic' }] }
@@ -165,4 +174,98 @@ export const DarkSignedOut: Story = {
 export const DarkSessionCheckUnavailable: Story = {
   globals: { theme: 'dark' },
   decorators: [withShell({ authStatus: 'unavailable' })],
+}
+
+/**
+ * agent-forge-harness-0rn: the session-unavailable screen on a 320px phone.
+ * `.auth-screen` is a row flexbox, so its heading, paragraph and button sat
+ * side by side; under 600px they stack. "Try again" was an unstyled button
+ * below the 44px floor at every width.
+ */
+async function expectSessionCheckUnavailablePhone(
+  canvasElement: HTMLElement,
+  viewport: ViewportName,
+): Promise<void> {
+  await expectViewport(viewport)
+  const canvas = within(canvasElement)
+  await expectNoPageOverflow()
+  const heading = canvas.getByRole('heading', { name: 'Can’t reach the service' })
+  const paragraph = canvas.getByText(/We couldn’t check your session/)
+  const retry = canvas.getByRole('button', { name: 'Try again' })
+  await expectStacked([heading, paragraph, retry])
+  await expectTouchTarget(canvas, 'Try again')
+}
+
+export const SessionCheckUnavailablePhone320: Story = {
+  ...atViewport('phone320'),
+  decorators: [withShell({ authStatus: 'unavailable', retryAuthCheck: fn() })],
+  play: async ({ canvasElement }) => expectSessionCheckUnavailablePhone(canvasElement, 'phone320'),
+}
+
+/** agent-forge-harness-zh9 L-1: AC-1's own width list (320/375/390/599) had
+ * no session-unavailable story at 375, 390 or 599. */
+export const SessionCheckUnavailablePhone375: Story = {
+  ...atViewport('phone375'),
+  decorators: [withShell({ authStatus: 'unavailable', retryAuthCheck: fn() })],
+  play: async ({ canvasElement }) => expectSessionCheckUnavailablePhone(canvasElement, 'phone375'),
+}
+
+export const SessionCheckUnavailablePhone390: Story = {
+  ...atViewport('phone390'),
+  decorators: [withShell({ authStatus: 'unavailable', retryAuthCheck: fn() })],
+  play: async ({ canvasElement }) => expectSessionCheckUnavailablePhone(canvasElement, 'phone390'),
+}
+
+export const SessionCheckUnavailableEdge599: Story = {
+  ...atViewport('edge599'),
+  decorators: [withShell({ authStatus: 'unavailable', retryAuthCheck: fn() })],
+  play: async ({ canvasElement }) => expectSessionCheckUnavailablePhone(canvasElement, 'edge599'),
+}
+
+/** agent-forge-harness-0rn: the session-check hold on a 320px phone. A
+ * regression pin for AC-1's list of states: one short line, which fits with
+ * or without the phone rule. */
+export const CheckingTheSessionPhone320: Story = {
+  ...atViewport('phone320'),
+  decorators: [withShell({ authStatus: 'checking' })],
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone320')
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('status')).toHaveTextContent('Loading…')
+    await expectNoPageOverflow()
+    const box = canvas.getByRole('status').getBoundingClientRect()
+    await expect(box.left).toBeGreaterThanOrEqual(0)
+    await expect(box.right).toBeLessThanOrEqual(window.innerWidth)
+  },
+}
+
+/**
+ * agent-forge-harness-0rn: the phone sign-in path, composed. App imports every
+ * shell stylesheet, so this is the one local story where all of the shell's
+ * CSS runs together: Landing, then the workspace, then the drawer, with no
+ * page-level overflow at any step, and (where the page check is blind, inside
+ * the workspace's clipping boxes) nothing clipped and the composer and "Send
+ * message" on screen. (The e2e spec `phone.spec.ts` runs the same path
+ * against the real stack in CI.)
+ */
+export const SignedInPhone390: Story = {
+  ...atViewport('phone390'),
+  decorators: [withShell({ authStatus: 'authenticated', screen: 'landing' })],
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone390')
+    const canvas = within(canvasElement)
+    await expectNoPageOverflow()
+    await userEvent.click(canvas.getByRole('button', { name: /enter the tavern/i }))
+    const menu = await canvas.findByRole('button', { name: 'Open navigation' })
+    await expectNoPageOverflow()
+    await expectWorkspaceFits(canvasElement)
+    await userEvent.click(menu)
+    const drawer = canvas.getByRole('dialog', { name: 'Navigation' })
+    await expectNoPageOverflow()
+    await expectWorkspaceFits(canvasElement)
+    await userEvent.click(within(drawer).getByRole('button', { name: 'New conversation' }))
+    await expect(canvas.queryByRole('dialog', { name: 'Navigation' })).toBeNull()
+    await expectNoPageOverflow()
+    await expectWorkspaceFits(canvasElement)
+  },
 }

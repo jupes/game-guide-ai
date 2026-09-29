@@ -11,10 +11,15 @@ sequential id leaks volume and invites probing. Ids are **not** secrets — ever
 authorisation rule still applies to the row they name — but they are opaque, and
 they must fit the wire contract's ``OpaqueId`` (``^[A-Za-z0-9_-]{1,64}$``).
 
-**SEC-5 — secrets.** A table link token and a join credential are each 32
-random bytes, and the server stores **only a SHA-256 digest**, looked up by that
-digest. (The enrolment code and the device credential were the other two until
-the owner's decisions D-1 and D-4 retired them; bead `fma`, migration 0009.) A slow password hash is deliberately *not*
+**SEC-5 — secrets.** The one bearer secret the campaign domain still mints is
+the **screen grant** (SEC-48): 32 random bytes, of which the server stores
+**only a SHA-256 digest**, looked up by that digest. The table link token and
+the join credential are gone — threat model section 15 retired the join, and
+migration 0016 dropped the link's digest (`1kg.2.3`) — as the enrolment code
+and the device credential went before them (the owner's decisions D-1 and D-4;
+bead `fma`, migration 0009). A screen grant is a row of
+`campaign.table_credentials`, which is why its prefix is still `tcr_`. A slow
+password hash is deliberately *not*
 used here: these are 256-bit random values with nothing to brute-force, and a slow
 hash on a route anyone can call is a denial-of-service lever. ``service/hashing.py``
 is the other case — human-chosen passwords — and the two must not be confused.
@@ -51,6 +56,23 @@ TABLE_SESSION: Final = "ses_"
 TABLE_CREDENTIAL: Final = "tcr_"
 #: SEC-4 names this one: a GM Workbench document (1kg.5.1).
 DOCUMENT: Final = "doc_"
+#: An offer of a seat to an address (1kg.2.2, D-12). It names a seat and an
+#: address, never an account: an offer binds to an account only at acceptance.
+SEAT_OFFER: Final = "sof_"
+#: SEC-4 names this one too: a GM-side media asset (1kg.8.1.1). The row holds
+#: object keys, never bytes, and a table client never sees this id (SEC-15).
+ASSET: Final = "ast_"
+#: One Confirm's worth of display (1kg.7.1, O-3): a document, its pinned
+#: version, a mask and an audience kind. GM-side only; a table client never
+#: sees it (SEC-15).
+DISCLOSURE: Final = "dsc_"
+#: One audience slot of one table session (1kg.7.1): the table slot or one
+#: participant's. GM-side only, like the disclosure it points at.
+REVEAL_SLOT: Final = "rsl_"
+#: A GM's named group of seats (1ir.2.1, owner decision O-3). A disclosure will
+#: remember the group it came from, so a group is marked removed and never
+#: deleted, and its id is never reused.
+GROUP: Final = "grp_"
 
 PREFIXES: Final[tuple[str, ...]] = (
     CAMPAIGN,
@@ -60,6 +82,11 @@ PREFIXES: Final[tuple[str, ...]] = (
     TABLE_SESSION,
     TABLE_CREDENTIAL,
     DOCUMENT,
+    SEAT_OFFER,
+    ASSET,
+    DISCLOSURE,
+    REVEAL_SLOT,
+    GROUP,
 )
 
 #: What each prefix is called in a refusal. Never the value, only the kind (SEC-20).
@@ -71,6 +98,11 @@ _KINDS: Final[dict[str, str]] = {
     TABLE_SESSION: "table-session identifier",
     TABLE_CREDENTIAL: "table-credential identifier",
     DOCUMENT: "document identifier",
+    SEAT_OFFER: "seat-offer identifier",
+    ASSET: "asset identifier",
+    DISCLOSURE: "disclosure identifier",
+    REVEAL_SLOT: "reveal-slot identifier",
+    GROUP: "group identifier",
 }
 
 #: 16 bytes = 128 bits, SEC-4's floor, which `token_urlsafe` renders as 22 characters.

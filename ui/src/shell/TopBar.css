@@ -42,3 +42,35 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── Menu button (agent-forge-harness-0rn) ────────────────────────────────────
+   The narrow layout's "Open navigation": a 44px round target around a 24px
+   icon, first in the brand group. */
+.top-bar__menu {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--aether-touch-min);
+  min-height: var(--aether-touch-min);
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  cursor: pointer;
+}
+
+.top-bar__menu .material-symbols-rounded {
+  font-size: 24px;
+}
+
+@media (hover: hover) {
+  .top-bar__menu:hover {
+    background: var(--md-sys-color-surface-container-high);
+  }
+}
+
+.top-bar__menu:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}

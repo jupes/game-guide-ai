@@ -1,0 +1,47 @@
+{
+  "schema": "SeatDeclineRequest",
+  "direction": "request",
+  "note": "POST /seats/offers/{id}/decline; block also refuses every later offer from that GM, silently. A repeat decline answers the same 204.",
+  "valid": [
+    {
+      "name": "a decline",
+      "value": {
+        "schema_version": 1,
+        "block": false
+      }
+    },
+    {
+      "name": "a decline that blocks the GM",
+      "value": {
+        "schema_version": 1,
+        "block": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no block flag",
+      "why": "the invitee says whether it blocks",
+      "value": {
+        "schema_version": 1
+      }
+    },
+    {
+      "name": "a block flag as text",
+      "why": "no coercion between JSON types",
+      "value": {
+        "schema_version": 1,
+        "block": "true"
+      }
+    },
+    {
+      "name": "an account id",
+      "why": "undeclared keys fail closed",
+      "value": {
+        "schema_version": 1,
+        "block": false,
+        "user_id": 7
+      }
+    }
+  ]
+}

@@ -22,7 +22,13 @@ export default defineConfig({
       '/conversations': 'http://localhost:8000',
       '/metrics': 'http://localhost:8000',
       '/auth': 'http://localhost:8000',
-      '/models': 'http://localhost:8000'
+      '/models': 'http://localhost:8000',
+      '/campaigns': 'http://localhost:8000',
+      '/seats': 'http://localhost:8000',
+      // The table API routes, /table/screen and /table/leave (1kg.2.3). This key
+      // proxies every dev path under /table while no table page exists;
+      // 1kg.7.4 narrows it when it adds one. nginx names the two exactly.
+      '/table': 'http://localhost:8000'
     }
   },
   test: {
@@ -57,7 +63,10 @@ export default defineConfig({
         name: 'jsdom',
         environment: 'jsdom',
         globals: true,
-        include: ['src/**/*.{test,spec}.{ts,tsx}'],
+        // `scripts/**` covers hangGuard.test.ts (agent-forge-harness-w1e): a
+        // plain Node module, not app source, but it still wants jsdom's
+        // environment/globals and no real browser.
+        include: ['src/**/*.{test,spec}.{ts,tsx}', 'scripts/**/*.{test,spec}.ts'],
         setupFiles: './src/test-setup.ts'
       }
     }, {

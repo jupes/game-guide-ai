@@ -727,25 +727,45 @@ sure the account is uncompromised, treat it as §10 instead.
 
 ## 12. The job scheduler (DEFERRED — `1kg.9.5`)
 
-**Documentation only until `1kg.9.5`.** Nothing in this section has been run,
-and nothing needs to run yet: no job kind exists, and while
-`JOB_SCHEDULER_SECRET` is unset `POST /internal/jobs` answers exactly what a path
-that does not exist answers — to everyone. `1kg.9.5` runs these steps, in this
-order, when the first job kind ships (RT-15).
+**Documentation only until `1kg.9.5`. UNVERIFIED: none of these commands has
+been run.** `1kg.9.5` runs these steps, in this order (RT-15), and checks each
+flag and log field against the current `gcloud` and Cloud Logging references as
+it does. While `JOB_SCHEDULER_SECRET` is unset, `POST /internal/jobs` answers
+exactly what a path that does not exist answers — to everyone.
 
-The route runs the job outbox for a quiet service: up to 20 due jobs, starting
-none after 30 s, answering only `{"ran", "failed", "remaining"}` (a 503
-`jobs unavailable` while the instance has no database). It is never proxied by a
-public front end — Cloud Scheduler calls the service's own URL.
+**What waits for it.** The service registers its job kinds in `_build_stores`
+(`service/app.py`) — on this build a campaign's reconciliation, a table
+session's expiry and a session's dividers — and runs them only while it serves a
+request: when the transaction that enqueued a job commits, after a response
+(`run_after_response`), and from the request hook after a signed-in request
+(`docs/migrations.md` §4, "Who runs jobs"). Until this job exists, anything that
+falls due while no signed-in request reaches the service waits for the next one:
+the expiry job of a table session (readers already treat the session as over at
+`expires_at`, SEC-42; the job triggers what follows), and every retry of a job
+that failed.
 
-**The credential is a shared secret, and it is INTERIM.** Cloud Scheduler stores
-the header value in the job's configuration, readable by anyone who can read
-the job. The lasting credential is the OIDC token Scheduler already sends:
-verified by the application against the service's audience and the scheduler's
-service account, it replaces the header. That needs the service account below
-to exist first, which is why the header comes first.
+The route runs the job outbox for a quiet service: up to 20 due jobs per call,
+starting none after 30 s and interrupting none, answering only `{"ran",
+"failed", "remaining"}`. It is never proxied by a public front end — Cloud
+Scheduler calls the service's own `run.app` URL.
+
+### How the call is authenticated
+
+| Credential | Sent as | Checked by | Standing |
+|---|---|---|---|
+| the scheduler's identity, the `job-scheduler` service account (step 3) | an OIDC token Cloud Scheduler mints for every call, audience = the service URL | **Cloud Run IAM** (`roles/run.invoker`), while the service is IAM-locked. Once §9 grants invoke to `allUsers`, IAM no longer requires it | lasting: `1kg.9.5` verifies it in the application, and then it replaces the header |
+| the shared secret `JOB_SCHEDULER_SECRET` (step 1) | the header `X-Job-Scheduler-Secret`, exactly once | **the application**, in constant time. Unset, under 32 characters, wrong, sent twice, or on any method but `POST`, and the route does not match at all | **INTERIM** |
+
+**The header is interim.** Cloud Scheduler stores its value in the job's
+configuration, readable by anyone who can read the job. After §9 it is also the
+**only** thing that authenticates the call, until `1kg.9.5` verifies the OIDC
+token in the application. That verification needs the service account below to
+exist first, which is why the header comes first.
 
 ```bash
+# 0. The API. It is not in §1's list:
+gcloud services enable cloudscheduler.googleapis.com
+
 # 1. The secret, and the runtime SA's read access to it (like §4's):
 openssl rand -base64 48 | tr -d '\n' | gcloud secrets create job-scheduler-secret --data-file=-
 gcloud secrets add-iam-policy-binding job-scheduler-secret \
@@ -758,7 +778,8 @@ gcloud secrets add-iam-policy-binding job-scheduler-secret \
 
 # 3. A service account for the scheduler, allowed to invoke the service — the
 #    service is IAM-locked until §9, and its OIDC token is also what 1kg.9.5
-#    will verify in the application:
+#    will verify in the application. Step 4 needs iam.serviceAccounts.actAs on
+#    this one account (an owner has it; §8's CI deployer does not need it):
 gcloud iam service-accounts create job-scheduler --display-name="Cloud Scheduler: /internal/jobs"
 gcloud run services add-iam-policy-binding game-guide-ai --region="$REGION" \
   --member="serviceAccount:job-scheduler@${PROJECT}.iam.gserviceaccount.com" --role=roles/run.invoker
@@ -772,12 +793,168 @@ gcloud scheduler jobs create http game-guide-ai-jobs --location="$REGION" \
   --oidc-token-audience="$SERVICE_URL" --attempt-deadline=120s
 ```
 
-Verify with `gcloud scheduler jobs run game-guide-ai-jobs --location="$REGION"`
-and the job's last attempt status. An uncredentialed `curl -X POST
-"$SERVICE_URL/internal/jobs"` must answer what `curl -X POST "$SERVICE_URL/nope"`
-answers. Rotating the secret is step 1's `versions add`, a redeploy, then step
-4's `update` with the new header — in that order, or the job fails until the
-redeploy lands.
+The attempt deadline outlasts the route's 30 s budget and a cold start (§7), and
+stays inside Cloud Run's 300 s request timeout (`deploy.sh --timeout`). Cloud
+Scheduler does not retry a failed attempt by default; the next tick is the
+retry, and a missed tick loses nothing, because the rows are the record.
+
+### Verify it
+
+```bash
+gcloud scheduler jobs run game-guide-ai-jobs --location="$REGION"
+# then its attempt in the scheduler's log (below): HTTP status 200.
+
+# A caller without the secret must get exactly what a missing path gets.
+# IAM-locked (before §9), through the authenticated proxy of §7:
+gcloud run services proxy game-guide-ai --region="$REGION"      # terminal 1 → http://127.0.0.1:8080
+curl -s -i -X POST http://127.0.0.1:8080/internal/jobs           # terminal 2: the same status
+curl -s -i -X POST http://127.0.0.1:8080/nope                    # and body as this
+# After §9, the same pair against "$SERVICE_URL" directly.
+```
+
+**Rotating the secret.** Each instance reads `job-scheduler-secret:latest` when
+it starts, and the job sends the header it was last given, so no order of the
+steps avoids a gap: until both sides hold the new value, calls are refused (the
+`405` below) and run nothing. That is harmless — the rows wait for the next call
+and for the request hook — so keep the gap short and confirm its end. Add a
+version (step 1, with `versions add` in place of `create`); redeploy, so that
+every instance starts on it; set the job's header (`gcloud scheduler jobs update
+http game-guide-ai-jobs --location="$REGION"
+--update-headers="X-Job-Scheduler-Secret=…"`); then run the job once and see a
+200.
+
+### Observing it
+
+Cloud Scheduler logs each attempt's HTTP status, not its body. What each status
+means, from the route's side:
+
+| Status | What it means | What to do |
+|---|---|---|
+| `200` | The route ran. The body is `{"ran": n, "failed": m, "remaining": true/false}`, counts only. `ran: 0, remaining: true` is also what an instance answers at once when it is already running job work, or has no free database connection | Nothing. A batch that stopped with work `remaining` goes on at the next tick, and the request hook runs jobs between ticks |
+| `503` | `{"detail": "jobs unavailable"}`: this instance cannot run jobs now. It has no database yet (it started during an outage; the call itself looks again, rationed like every getter), its schema is one this build refuses, the database went away during the call (a WARNING line below), or something failed around a job (an ERROR line below) | `/healthz` (through the §7 proxy before §9) shows `migrations`; the service's log shows the line; then §3's instance |
+| `405` | The route refused the call and answered as a path that does not exist, which in this image — the built UI is served from `/` — is a `405` (a `404` in an image without the UI). The secret in the running revision is unset, shorter than 32 characters, or not the job's header | Compare the job's header with the secret version the revision reads; see "Rotating the secret" |
+| `403` | Google's front end refused the OIDC token before the service saw it: the `job-scheduler` account lacks `roles/run.invoker` on the service, or the audience is not the service URL | Step 3; step 4's `--oidc-token-audience` |
+| deadline exceeded | The call outlived `--attempt-deadline`, usually on a cold instance whose start waited for another instance's migrations (§7) | Nothing unless it repeats. Jobs are at-least-once with a lease, so whatever ran is recorded or runs again |
+
+```bash
+# The scheduler's attempts, newest first:
+gcloud logging read \
+  'resource.type="cloud_scheduler_job" AND resource.labels.job_id="game-guide-ai-jobs"' \
+  --project "$PROJECT" --freshness=1d --limit 20 \
+  --format='table(timestamp, httpRequest.status, jsonPayload.status)'
+
+# What the job path wrote in the service's own log:
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="game-guide-ai" AND textPayload:"jobs: "' \
+  --project "$PROJECT" --freshness=1d --limit 50 --format='value(timestamp, textPayload)'
+```
+
+The job path writes one line per event, and only a kind, a job id, an attempt
+count, an exception class and a SQLSTATE — never a payload, a message or a
+driver's text (SEC-20). They are plain lines, so they land in `textPayload`:
+
+| Line | Level | What it means |
+|---|---|---|
+| `jobs: <kind> #<id> failed on attempt <n> (<Class>)` | WARNING | A handler raised. The job is retried after 5 s, 10 s, 20 s … capped at an hour. Every kind this build registers retries until it succeeds, so a failing job shows as this line coming back with a rising `<n>` |
+| the same line ending `; giving up` | WARNING | A kind with a finite `max_attempts` ran out: its row stays, with `dead_at` set (no kind of this build has one) |
+| `jobs: database unavailable (<Class>, SQLSTATE <code>); backing off` | WARNING | A claim met an outage. The hook waits 30 s before it asks again; a scheduler call answers `503` |
+| `jobs: the attempt failed (<Class>)` | ERROR | Something else failed around a job, outside any handler. A defect: file it with the class |
+| `jobs: the request hook failed (<Class>)` | ERROR | The hook itself failed, after its response had been sent. A defect: file it with the class |
+| `jobs: no database connection came free; attempt skipped` | INFO — never in the log | Every gate connection was serving a request, so the attempt stepped aside. The image runs `uvicorn` with its default logging, which gives the application's loggers no handler: only WARNING and above reach the log |
+
+The outbox itself, through §3's Auth Proxy. Read-only, and no column here holds
+anything a user wrote (migration `0003`: payloads are identifiers, `last_error`
+is a class name):
+
+```bash
+psql "$PROXY" -c "
+  SELECT kind,
+         count(*) FILTER (WHERE dead_at IS NULL AND locked_until >= now())              AS running,
+         count(*) FILTER (WHERE dead_at IS NULL AND run_after <= now()
+                            AND (locked_until IS NULL OR locked_until < now()))         AS due,
+         count(*) FILTER (WHERE dead_at IS NULL AND run_after > now())                  AS later,
+         count(*) FILTER (WHERE dead_at IS NOT NULL)                                    AS dead,
+         max(attempts)                                                                  AS most_attempts,
+         min(run_after) FILTER (WHERE dead_at IS NULL)                                  AS oldest
+    FROM app.jobs GROUP BY kind ORDER BY kind;"
+psql "$PROXY" -c "SELECT kind, last_error, count(*), max(attempts) FROM app.jobs
+                   WHERE last_error IS NOT NULL GROUP BY 1, 2 ORDER BY 1, 2;"
+```
+
+`due` above zero across several ticks, with `oldest` falling further behind,
+means nothing is claiming those rows: the scheduler is not getting through (read
+its attempts), or they are of a kind the running build does not register (an
+older build leaves a newer build's jobs alone). `most_attempts` climbing on one
+kind, with its `last_error`, is a failing handler: the log line above has its
+class. A lease lasts 300 s: the job of an instance that stopped mid-run shows as
+`running` until then, and is `due` again after it.
+
+## 13. The media bucket (DEFERRED — `1kg.9.5`)
+
+**Documentation only. UNVERIFIED: none of these commands has been run.**
+Nothing reads a bucket yet: the Cloud Storage object store exists
+(`service/media_gcs.py`, `1kg.8.1.4`), but nothing in the running service builds
+it until slice b (`1kg.8.1.2`) wires the media settings into startup, and the
+media capability ships off (Q-5). `1kg.9.5` runs these steps, and checks each
+flag against the current `gcloud storage` reference.
+
+What the bucket must be (media ADR MS-1): **private**, **regional** (the
+service's region), **uniform bucket-level access**, **public access
+prevention enforced**, **no object versioning**, **soft delete off** (a deleted
+asset is gone at once, MS-12; there is no backup, Q-3), and object
+administration granted **on this bucket only** to the runtime service account,
+never project-wide. Its one lifecycle rule deletes `tmp/` objects older than a
+day, the backstop for uploads that never finished and for anything the orphan
+reconcile has not reached yet (MS-3).
+
+```bash
+# UNVERIFIED — not run. The runtime SA is still the default compute SA (§4).
+export MEDIA_BUCKET="${PROJECT}-workbench-media"
+
+# 1. The bucket: regional, private, uniform access, no soft delete.
+gcloud storage buckets create "gs://${MEDIA_BUCKET}" --location="$REGION" \
+  --default-storage-class=STANDARD --uniform-bucket-level-access \
+  --public-access-prevention --soft-delete-duration=0
+
+# 2. No versioning (off by default; stated so a later change is deliberate).
+gcloud storage buckets update "gs://${MEDIA_BUCKET}" --no-versioning
+
+# 3. The tmp/ rule: delete after one day.
+cat > media-lifecycle.json <<'JSON'
+{"rule": [{"action": {"type": "Delete"}, "condition": {"age": 1, "matchesPrefix": ["tmp/"]}}]}
+JSON
+gcloud storage buckets update "gs://${MEDIA_BUCKET}" --lifecycle-file=media-lifecycle.json
+
+# 4. Object administration on THIS bucket only, for the runtime SA.
+gcloud storage buckets add-iam-policy-binding "gs://${MEDIA_BUCKET}" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role=roles/storage.objectAdmin
+```
+
+Verify with `gcloud storage buckets describe "gs://${MEDIA_BUCKET}"`: the
+location, `uniform_bucket_level_access: true`, `public_access_prevention:
+enforced`, no versioning, a soft-delete retention of zero, and the one
+lifecycle rule. An unauthenticated `curl` of any object URL must be refused.
+
+**The service side.** The Cloud Storage client is the optional `gcs` extra, so
+the default image has none, and a service told `WORKBENCH_MEDIA_STORE=gcs`
+without it refuses to start (`MediaStoreNotBuilt`, at startup, whether or not
+the database is reachable). The object-store
+role is enough: the store creates, reads, lists and deletes objects and never
+reads the bucket itself (it switches off the client's own background read of
+bucket metadata, `DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA`). No key and
+no credentials file: the client uses the runtime service account.
+
+```bash
+# UNVERIFIED — not run, and only when the owner switches media on (Q-5).
+# 5. Build the image with the client: in Dockerfile.cloud's export step, add the
+#    extra, e.g. EXTRAS="--extra gcs" (beside the INSTALL_RERANK switch).
+# 6. Point the service at the bucket (slice b reads these at startup).
+gcloud run services update game-guide-ai --region="$REGION"   --update-env-vars="WORKBENCH_MEDIA_STORE=gcs,WORKBENCH_MEDIA_BUCKET=${MEDIA_BUCKET}"
+```
+
+For Compose or a local run against `fake-gcs-server`, the client honours
+`STORAGE_EMULATOR_HOST` by itself and then uses no credentials at all.
 
 ## Cost
 

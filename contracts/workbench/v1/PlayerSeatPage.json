@@ -1,0 +1,64 @@
+{
+  "schema": "PlayerSeatPage",
+  "direction": "response",
+  "note": "The caller's seats, newest acceptance first.",
+  "valid": [
+    {
+      "name": "two seats",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "schema_version": 1,
+            "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+            "campaign_name": "The Nocturne Heist",
+            "alias": "Rook",
+            "accepted_at": "2026-09-16T19:31:24Z",
+            "confirmed": false,
+            "tone": "Mystery \u00b7 Low magic",
+            "game_system": "dnd5e",
+            "avatar_icon": "sailing",
+            "avatar_tone": "ember",
+            "concluded": false,
+            "last_played_at": "2026-09-12T23:05:00Z",
+            "live": false
+          },
+          {
+            "schema_version": 1,
+            "campaign_id": "cmp_9Zq1Ws2Ex3Rd4Tf5Yg6Hu7",
+            "campaign_name": "The Nocturne Heist",
+            "alias": "Rook",
+            "accepted_at": "2026-09-16T19:31:24Z",
+            "confirmed": true,
+            "tone": "Mystery \u00b7 Low magic",
+            "game_system": "dnd5e",
+            "avatar_icon": "sailing",
+            "avatar_tone": "ember",
+            "concluded": false,
+            "last_played_at": "2026-09-12T23:05:00Z",
+            "live": false
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "none",
+      "value": {
+        "schema_version": 1,
+        "items": [],
+        "next_cursor": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no cursor key",
+      "why": "next_cursor is required",
+      "value": {
+        "schema_version": 1,
+        "items": []
+      }
+    }
+  ]
+}

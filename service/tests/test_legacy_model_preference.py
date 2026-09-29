@@ -113,6 +113,18 @@ def test_the_alias_is_refused_on_any_other_pre_d9_binding(store, bound):
     _refused_like_any_unknown_string(_turn(preference), preference)
 
 
+@pytest.mark.parametrize("preference", [
+    "not-a-real-model",  # unknown to the catalog entirely
+    "unassigned-1",  # a real public id, but that profile is disabled
+    "GPT-4o-mini",  # a case variant of the alias this conversation was bound by
+])
+def test_a_pre_d9_binding_refuses_anything_but_the_exact_alias_it_was_bound_by(store, preference):
+    _bound(store, "manual", DEFAULT_ALIAS, PRE_D9)
+    before = store.conversation_binding(CONV)
+    _refused_like_any_unknown_string(_turn(preference), preference)
+    assert store.conversation_binding(CONV) == before, "a refused turn must not rebind"
+
+
 def test_an_unbound_conversation_still_refuses_the_alias(store):
     store.claim_conversation(CONV, USER_ID)
     _refused_like_any_unknown_string(_turn(DEFAULT_ALIAS), DEFAULT_ALIAS)
@@ -133,3 +145,22 @@ def test_the_in_memory_store_reads_back_what_a_binding_recorded():
     messages.claim_conversation_strategy(CONV, strategy="manual", manual_alias="a", catalog_revision="r7")
     messages.claim_conversation_strategy(CONV, strategy="auto", manual_alias=None, catalog_revision="r8")
     assert messages.conversation_binding(CONV) == ("manual", "a", "r7"), "first writer wins, revision too"
+
+
+def test_rebind_conversation_strategy_overwrites_unlike_claim():
+    """Unlike `claim_conversation_strategy` (first-writer-wins),
+    `rebind_conversation_strategy` (agent-forge-harness-j9w) always writes —
+    it's the server's own healing of a retired manual pick, not a client
+    request racing another one for the first bind."""
+    messages = InMemoryMessageStore()
+    messages.claim_conversation_strategy(
+        CONV, strategy="manual", manual_alias="a", catalog_revision="r7",
+    )
+    messages.rebind_conversation_strategy(
+        CONV, strategy="manual", manual_alias="b", catalog_revision="r9",
+    )
+    assert messages.conversation_binding(CONV) == ("manual", "b", "r9")
+    messages.rebind_conversation_strategy(
+        CONV, strategy="auto", manual_alias=None, catalog_revision="r9",
+    )
+    assert messages.conversation_binding(CONV) == ("auto", None, "r9")

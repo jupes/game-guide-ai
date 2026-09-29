@@ -931,7 +931,10 @@ def test_the_spa_parity_walk_still_reserves_every_prefix_it_reserved_before() ->
     """Moving the walk onto `api_routes()` dropped nothing: FastAPI's own
     documentation routes stay reserved though they are not API routes."""
     assert _live_api_prefixes() == {"/openapi.json", "/docs", "/redoc", "/healthz", "/models", "/chat",
-                                    "/metrics", "/conversations", "/auth", "/internal"}
+                                    "/metrics", "/conversations", "/auth", "/internal",
+                                    "/campaigns", "/seats",
+                                    # 1kg.2.3 PR-B: /table/screen and /table/leave.
+                                    "/table"}
 
 
 # ── A10: the route census ────────────────────────────────────────────────────
@@ -952,12 +955,54 @@ EXPECTED_LEGACY_ROUTES = {
     ("POST", "/internal/jobs"),
 }
 #: 1kg.2.4 A2's routes, moved onto `workbench_router` by oe6 (lead ruling on
-#: PR #98), and 1kg.4.2 B's timeline route, moved from the set above by oqx.
-#: No exemption list and nothing pending.
+#: PR #98), 1kg.4.2 B's timeline route, moved from the set above by oqx, and
+#: 1kg.2.2's campaign and seat routes: nine on `workbench_router`, four on
+#: `account_router`; then bead cfx's Conclude and Reopen, two more on
+#: `workbench_router`; then 1kg.5.2's eleven document routes, eight in
+#: `documents_api` and three in `document_lifecycle_api`; then 1kg.2.3 PR-B
+#: (agent-forge-harness-1kg.2.10): the GM's table session, three more on
+#: `workbench_router`, and the first two table routes, on the table router,
+#: whose route class is a `WorkbenchRoute`; then 1kg.4.1 slice B: the GM's
+#: tool invocations, three more on `workbench_router`; then btb PR-2: the GM's
+#: named groups, six more on `workbench_router`. No exemption list and nothing
+#: pending.
 EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/conversations"), ("POST", "/conversations"),
     ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
     ("GET", "/conversations/{conversation_id}/timeline"),
+    ("GET", "/campaigns"), ("POST", "/campaigns"),
+    ("GET", "/campaigns/{campaign_id}"), ("PATCH", "/campaigns/{campaign_id}"),
+    ("POST", "/campaigns/{campaign_id}/conclude"), ("POST", "/campaigns/{campaign_id}/reopen"),
+    ("GET", "/campaigns/{campaign_id}/participants"), ("POST", "/campaigns/{campaign_id}/participants"),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/offer"),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/confirm"),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/remove"),
+    ("GET", "/seats"), ("GET", "/seats/offers"),
+    ("POST", "/seats/offers/{offer_id}/accept"), ("POST", "/seats/offers/{offer_id}/decline"),
+    ("POST", "/campaigns/{campaign_id}/library"), ("POST", "/campaigns/{campaign_id}/documents"),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}"),
+    ("PATCH", "/campaigns/{campaign_id}/documents/{document_id}"),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}/versions"),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}/versions/{number}"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/restore"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/seal"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/archive"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unarchive"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/delete"),
+    # 1kg.8.1.2's media upload: two on `workbench_router`, which match nothing
+    # while the media capability is off (`service/assets_api.py`).
+    ("POST", "/campaigns/{campaign_id}/assets"), ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes"),
+    ("GET", "/campaigns/{campaign_id}/table-session"), ("POST", "/campaigns/{campaign_id}/table-session"),
+    ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}"),
+    ("POST", "/table/screen"), ("POST", "/table/leave"),
+    ("POST", "/campaigns/{campaign_id}/tool-invocations"),
+    ("GET", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}"),
+    ("POST", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel"),
+    ("GET", "/campaigns/{campaign_id}/groups"), ("POST", "/campaigns/{campaign_id}/groups"),
+    ("PATCH", "/campaigns/{campaign_id}/groups/{group_id}"),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/remove"),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/members/{participant_id}"),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/members/{participant_id}/remove"),
 }
 
 
@@ -1256,5 +1301,135 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
     assert modules == {  # a route bead adds its module
         (REPO_ROOT / "service" / "conversations_api.py").resolve(),
         (REPO_ROOT / "service" / "timeline_api.py").resolve(),
+        (REPO_ROOT / "service" / "campaigns_api.py").resolve(),
+        (REPO_ROOT / "service" / "seats_api.py").resolve(),
+        (REPO_ROOT / "service" / "documents_api.py").resolve(),
+        (REPO_ROOT / "service" / "document_lifecycle_api.py").resolve(),
+        (REPO_ROOT / "service" / "assets_api.py").resolve(),
+        (REPO_ROOT / "service" / "table_session_api.py").resolve(),
+        (REPO_ROOT / "service" / "table_api.py").resolve(),
+        (REPO_ROOT / "service" / "tool_invocations_api.py").resolve(),
+        (REPO_ROOT / "service" / "groups_api.py").resolve(),
     }
     assert [(path.name, _own_refusals(path)) for path in modules if _own_refusals(path)] == []
+
+
+# ── account_router and reauth_failed (bead 1kg.2.2, L-3) ─────────────────────
+
+
+def test_the_reauth_refusal_is_read_only_and_a_workbench_error_body() -> None:
+    from service.workbench_api import REAUTH_FAILED_DETAIL, reauth_failed
+    from service.workbench_contracts import ErrorBody
+
+    body = ErrorBody.model_validate({"detail": dict(REAUTH_FAILED_DETAIL)})
+    assert (body.detail.code.value, body.detail.retryable) == ("reauth_failed", False)
+    with pytest.raises(TypeError):
+        REAUTH_FAILED_DETAIL["code"] = "not_found"  # type: ignore[index]
+    with pytest.raises(HTTPException) as refused:
+        reauth_failed()
+    assert refused.value.status_code == 403 and refused.value.detail == dict(REAUTH_FAILED_DETAIL)
+
+
+def test_an_account_router_has_no_role_gate_and_keeps_the_workbench_posture() -> None:
+    """A player reaches a route on `account_router`; every authentication
+    failure there is the one 401 body; the origin check still runs first."""
+    from service.session import SessionData
+    from service.workbench_api import account_router
+
+    caller: list[SessionData | None] = [SessionData(user_id=5, role="player")]
+
+    def session() -> SessionData:
+        current = caller[0]
+        if current is None:
+            raise HTTPException(status_code=401, detail="invalid or expired session")
+        return current
+
+    target = FastAPI()
+    install_workbench(target)
+    router = account_router(session)
+
+    @router.post("/mine")
+    def mine(who: SessionData = Depends(session)) -> dict[str, int]:
+        return {"user_id": who.user_id}
+
+    target.include_router(router)
+    client = TestClient(target)
+    assert client.post("/mine").json() == {"user_id": 5}
+    assert isinstance(next(r for p, r in api_routes(target) if p == "/mine"), WorkbenchRoute)
+    assert client.post("/mine", headers={"origin": "https://evil.example"}).status_code == 403
+    caller[0] = None
+    assert client.post("/mine").json() == {"detail": "not signed in"}
+
+
+# ── L-22: the one 401 may carry a cookie deletion, on table routes only ─────
+# Bead 1kg.2.3's PR-B (agent-forge-harness-1kg.2.10). A table route deletes a
+# screen-grant cookie that is no longer live on every answer from its principal
+# step on, the 401 included (SEC-44); every other Workbench route's 401 stays
+# one body and no header.
+
+#: A deletion as Starlette writes one, of a cookie named for this probe only.
+_DELETION = 'probe_grant=""; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; Path=/table; SameSite=strict'
+
+
+def _l22_probe(headers: dict[str, str]) -> TestClient:
+    """A GM-posture route and a table route, each refused with a 401 that
+    carries `headers`."""
+    from service.table_api import TableRoute
+
+    probe = FastAPI()
+    install_workbench(probe)
+
+    def refuse() -> None:
+        raise HTTPException(status_code=401, detail="authentication required", headers=headers)
+
+    gm = APIRouter(route_class=WorkbenchRoute, dependencies=[Depends(refuse)])
+    table = APIRouter(route_class=TableRoute, dependencies=[Depends(refuse)])
+
+    @gm.get("/gm")
+    def gm_route() -> dict[str, str]:
+        return {}
+
+    @table.get("/table/probe")
+    def table_route() -> dict[str, str]:
+        return {}
+
+    probe.include_router(gm)
+    probe.include_router(table)
+    return TestClient(probe)
+
+
+def test_only_the_table_route_class_forwards_a_cookie_deletion() -> None:
+    from service.table_api import TableRoute
+
+    assert WorkbenchRoute.forwards_cookie_deletion is False
+    assert TableRoute.forwards_cookie_deletion is True and issubclass(TableRoute, WorkbenchRoute)
+
+
+def test_a_gm_route_401_carries_no_header_not_even_a_cookie_deletion() -> None:
+    answer = _l22_probe({"set-cookie": _DELETION}).get("/gm")
+    assert (answer.status_code, answer.json()) == (401, dict(UNAUTHENTICATED_BODY))
+    assert answer.headers.get_list("set-cookie") == []
+
+
+def test_a_table_route_401_carries_exactly_the_deleting_set_cookie() -> None:
+    answer = _l22_probe({"set-cookie": _DELETION, "x-leak": "yes"}).get("/table/probe")
+    assert (answer.status_code, answer.json()) == (401, dict(UNAUTHENTICATED_BODY))
+    assert answer.headers.get_list("set-cookie") == [_DELETION]
+    assert "x-leak" not in answer.headers
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"set-cookie": "probe_grant=abc; Path=/table; SameSite=strict"},
+        {"set-cookie": "probe_grant=abc; Path=/table; Max-Age=3600"},
+        {"www-authenticate": "Bearer"},
+        {"x-leak": "yes"},
+    ],
+    ids=["a cookie that is set", "a cookie with a lifetime", "WWW-Authenticate", "an invented header"],
+)
+def test_a_table_route_401_copies_nothing_but_a_deletion(headers: dict[str, str]) -> None:
+    answer = _l22_probe(headers).get("/table/probe")
+    assert (answer.status_code, answer.json()) == (401, dict(UNAUTHENTICATED_BODY))
+    assert answer.headers.get_list("set-cookie") == []
+    assert {"www-authenticate", "x-leak"} & set(answer.headers) == set()

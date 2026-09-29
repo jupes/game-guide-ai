@@ -118,7 +118,10 @@ export const KNOWN_ERROR_CODES = [
   'validation_failed', 'unsupported_schema_version', 'brief_required', 'brief_too_long', 'unknown_tool',
   'tool_disabled', 'campaign_required', 'nothing_to_recap', 'not_found', 'forbidden', 'conflict',
   'cap_reached', 'throttled_user', 'throttled_daily', 'provider_failed', 'provider_timeout',
-  'attempt_expired', 'backend_unavailable', 'already_linked',
+  'attempt_expired', 'backend_unavailable', 'already_linked', 'alias_taken', 'seat_not_open',
+  'seat_not_accepted', 'seat_cap_reached', 'campaign_archived', 'reauth_failed', 'document_unsupported',
+  'document_not_archived', 'inactive', 'cross_site', 'screen_limit', 'live_elsewhere', 'group_name_taken',
+  'group_cap_reached',
 ] as const
 export type KnownErrorCode = (typeof KNOWN_ERROR_CODES)[number]
 
@@ -1246,8 +1249,9 @@ export const ALT_MAX_CHARS = 300
 export const CUE_TITLE_MAX_CHARS = 200
 export const CUE_PAGE_MAX_ITEMS = 50
 export const PRESENCE_MAX_PARTICIPANTS = 100
-/** `secrets.token_urlsafe(32)`: 32 CSPRNG bytes are 43 base64url characters (SEC-5). */
-export const TABLE_SECRET_CHARS = 43
+/** The most screens a `TableSession` lists: above SEC-48's per-session bound (four,
+ * suggested), so that tuning the bound is not a contract change. */
+export const TABLE_SCREENS_MAX = 16
 
 export const ASSET_KINDS = ['image', 'audio'] as const
 export type AssetKind = (typeof ASSET_KINDS)[number]
@@ -1269,8 +1273,6 @@ export type CueKind = (typeof CUE_KINDS)[number]
 export const AUDIO_SLOTS = ['ambience', 'one_shot'] as const
 const CUE_MAX_MS: Record<CueKind, number> = { ambience: AMBIENCE_MAX_MS, one_shot: ONE_SHOT_MAX_MS }
 export const TABLE_ROLES = ['participant', 'guest'] as const
-export const JOIN_STATUSES = ['joined', 'full', 'inactive'] as const
-export const ENROL_STATUSES = ['enrolled', 'inactive'] as const
 export const SESSION_STATES = ['live', 'ended'] as const
 export const SESSION_ACTIONS = ['start', 'end', 'rotate'] as const
 /** AUDIO-21, AUDIO-22: listening means playing and unmuted. */
@@ -1480,40 +1482,20 @@ export const CueStopRequestSchema = refusingProtoKeys(
 export type CueStopRequest = z.infer<typeof CueStopRequestSchema>
 
 // ── Table sessions ───────────────────────────────────────────────────────────
+// Reopened by threat model section 15.11 and rebuilt by 1kg.2.3 (L-14): no table
+// link, no join, no enrolment, so no token is on the wire for any account. The
+// one bearer secret left, the screen grant (SEC-48, D-13), leaves the server in
+// a `Set-Cookie` header and is in no body.
 
-/** A table token or an enrolment code as it travels — once, in a POST body (SEC-8, SEC-11). */
-const TableSecretSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
-
-export const TableJoinRequestSchema = refusingProtoKeys(
-  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), token: TableSecretSchema }),
-)
-export type TableJoinRequest = z.infer<typeof TableJoinRequestSchema>
-
-/** One shape for every outcome (SEC-8); the role comes only with a join. */
-export const TableJoinResponseSchema = z
-  .object({
-    schema_version: z.literal(CONTRACT_VERSION),
-    status: z.enum(JOIN_STATUSES),
-    role: z.enum(TABLE_ROLES).nullable(),
-  })
-  .refine((answer) => (answer.role !== null) === (answer.status === 'joined'), {
-    path: ['role'],
-    message: 'a role comes with a join, and only with a join',
-  })
-export type TableJoinResponse = z.infer<typeof TableJoinResponseSchema>
-
-export const EnrolRequestSchema = refusingProtoKeys(
-  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), code: TableSecretSchema }),
-)
-export type EnrolRequest = z.infer<typeof EnrolRequestSchema>
-
-export const EnrolResponseSchema = z.object({
-  schema_version: z.literal(CONTRACT_VERSION),
-  status: z.enum(ENROL_STATUSES),
+/** One live screen of a live session, as its GM sees it: never the grant (SEC-5, SEC-48). */
+const TableScreenSchema = z.object({
+  screen_id: OpaqueIdSchema,
+  created_at: TimestampSchema,
+  last_seen_at: TimestampSchema.nullable(),
 })
-export type EnrolResponse = z.infer<typeof EnrolResponseSchema>
+export type TableScreen = z.infer<typeof TableScreenSchema>
 
-/** The GM's view of a session (REVEAL-2, REVEAL-17). The token is not here: it travels once. */
+/** The GM's view of a session (REVEAL-2, REVEAL-17): its admission generation and its live screens. No secret. */
 export const TableSessionSchema = z
   .object({
     schema_version: z.literal(CONTRACT_VERSION),
@@ -1534,7 +1516,8 @@ export const TableSessionSchema = z
     ends_at: TimestampSchema,
     ended_at: TimestampSchema.nullable(),
     audio: z.boolean(),
-    devices: z.number().int().min(0).max(1000),
+    /** The live grants of a live session, oldest first; none once it has ended. */
+    screens: z.array(TableScreenSchema).max(TABLE_SCREENS_MAX),
   })
   .refine((session) => (session.ended_at !== null) === (session.state === 'ended'), {
     path: ['ended_at'],
@@ -1544,37 +1527,54 @@ export const TableSessionSchema = z
     path: ['ends_at'],
     message: 'a session ends after it starts',
   })
+  .refine((session) => session.screens.length === 0 || session.state === 'live', {
+    path: ['screens'],
+    message: 'an ended session has no live screen',
+  })
 export type TableSession = z.infer<typeof TableSessionSchema>
 
-/** Start, End and Rotate (REVEAL-17), idempotent by command id; only Rotate may reset personal links. */
+/** Start, End and Rotate (REVEAL-17), idempotent by command id. The path names the
+ * campaign; End and Rotate name their session, and Start names none. */
 export const TableSessionRequestSchema = refusingProtoKeys(
   z
     .strictObject({
       schema_version: z.literal(CONTRACT_VERSION),
       command_id: CommandIdSchema,
-      campaign_id: OpaqueIdSchema,
       action: z.enum(SESSION_ACTIONS),
-      reset_personal_links: z.boolean().optional(),
+      session_id: OpaqueIdSchema.optional(),
     })
-    .refine((request) => !request.reset_personal_links || request.action === 'rotate', {
-      path: ['reset_personal_links'],
-      message: 'personal links are reset with a rotation',
+    .refine((request) => (request.session_id !== undefined) === (request.action !== 'start'), {
+      path: ['session_id'],
+      message: 'End and Rotate name their session, and Start names none',
     }),
 )
 export type TableSessionRequest = z.infer<typeof TableSessionRequestSchema>
 
-/** A start or a rotation carries the new token, the one time it is in a body (SEC-8); an end carries none. */
-export const TableSessionAnswerSchema = z
-  .object({
-    schema_version: z.literal(CONTRACT_VERSION),
-    session: TableSessionSchema,
-    token: TableSecretSchema.nullable(),
-  })
-  .refine((answer) => (answer.token !== null) === (answer.session.state === 'live'), {
-    path: ['token'],
-    message: 'a live session answers with its token, and an ended one with none',
-  })
+/** The answer to a session request and to the status read; `null` for a campaign that never started one. No token. */
+export const TableSessionAnswerSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  session: TableSessionSchema.nullable(),
+})
 export type TableSessionAnswer = z.infer<typeof TableSessionAnswerSchema>
+
+/** POST /table/screen: the owner makes this browser a table screen (SEC-48, D-13). */
+export const ScreenMintRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), campaign_id: OpaqueIdSchema }),
+)
+export type ScreenMintRequest = z.infer<typeof ScreenMintRequestSchema>
+
+/** When the new screen's grant ends. No id, no generation (SEC-15); the grant is in the `Set-Cookie` alone. */
+export const ScreenMintAnswerSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  ends_at: TimestampSchema,
+})
+export type ScreenMintAnswer = z.infer<typeof ScreenMintAnswerSchema>
+
+/** POST /table/leave (SEC-49): names nothing; the grant it ends is the request's cookie. */
+export const TableLeaveRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION) }),
+)
+export type TableLeaveRequest = z.infer<typeof TableLeaveRequestSchema>
 
 /** What the deployment has switched on (RAIL-10, AE-58): the answer to the lookup
  * a GM client makes once per load. A newer server may add a switch; it is
@@ -2170,9 +2170,9 @@ const TableAudioEventSchema = z
   .refine((frame) => playingFitsSlot(frame.slot, frame.playing), SLOT_ISSUE)
 /** How a **table** client is told which region a projection belongs in.
  * Deliberately *not* a RevealAudience: an audience carries a participant id, and
- * every table-side shape here is id-free (TableRole, TableJoinResponse,
- * EnrolResponse). Which participant `mine` is, the server resolves from the
- * credential pair, never from a field (eligibility ADR section 4, SEC-15). */
+ * every table-side shape here is id-free (TableRole, ScreenMintAnswer). Which
+ * participant `mine` is, the server resolves from the table principal, never
+ * from a field (eligibility ADR section 4, SEC-15). */
 export const TABLE_SLOT_NAMES = ['table', 'mine'] as const
 export type TableSlotName = (typeof TABLE_SLOT_NAMES)[number]
 
@@ -2320,20 +2320,14 @@ export type TableSnapshot = z.infer<typeof TableSnapshotSchema>
 export const CONVERSATION_PAGE_MAX_ITEMS = 100
 export const CONVERSATION_TITLE_MAX_CHARS = 200
 
-/** The code points a title may not hold, by code point so that none sits in this
- * file (ruling A2-9): the C0 and C1 controls, and the bidirectional embeddings,
- * overrides and isolates. The server refuses exactly this set. */
-export function isRefusedInATitle(code: number): boolean {
-  return (
-    code <= 0x1f ||
-    (code >= 0x7f && code <= 0x9f) ||
-    (code >= 0x202a && code <= 0x202e) ||
-    (code >= 0x2066 && code <= 0x2069)
-  )
-}
-
 /** A title as a request sends it: 1 to 200 characters once trimmed as the server
- * trims, with no refused code point left inside. The server stores it trimmed. */
+ * trims, held to one line, with no code point in `REFUSED_TEXT_CODE_POINTS` left
+ * inside either — the one shared stored-text rule (lead ruling of 2026-09-21),
+ * not a title-only list. Ruling A2-9 originally gave titles their own, narrower
+ * `isRefusedInATitle`; agent-forge-harness-644 retired it, since a conversation
+ * title is stored text like any other `isPlainText` refuses, and a second
+ * opinion here could only drift from the first. The composition mirrors
+ * `plainOneLine` (a cue's title and the like). The server stores it trimmed. */
 const ConversationTitleRequestSchema = z
   .string()
   .refine(isWellFormedText, WELL_FORMED)
@@ -2344,9 +2338,10 @@ const ConversationTitleRequestSchema = z
     },
     { message: `a title is 1 to ${CONVERSATION_TITLE_MAX_CHARS} characters after trimming` },
   )
-  .refine((value) => ![...trimWire(value)].some((character) => isRefusedInATitle(character.codePointAt(0) ?? 0)), {
-    message: 'a title holds no control or bidirectional-formatting characters',
+  .refine((value) => !LINE_BREAKS.some((mark) => trimWire(value).includes(mark)), {
+    message: 'must be a single line',
   })
+  .superRefine(refuseTrimmedPlainText)
 
 /** One conversation's metadata. Every key is present; what a row never recorded
  * is `null`. Read it through `parseConversation`. */
@@ -2410,6 +2405,279 @@ export const ConversationPatchRequestSchema = refusingProtoKeys(
 )
 export type ConversationPatchRequest = z.infer<typeof ConversationPatchRequestSchema>
 
+// ── Campaigns and seats (1kg.2.2) ────────────────────────────────────────────
+// A GM's campaigns and the seats at their table (`/campaigns`), and an account's
+// own side of it (`/seats`). No numeric account id is on the wire anywhere in
+// this family (SEC-50(1)), and nothing on the account side carries an address, a
+// campaign owner or a participant id (SEC-43, SEC-50(4)).
+
+export const CAMPAIGN_PAGE_MAX_ITEMS = 50
+export const CAMPAIGN_NAME_MAX_CHARS = 120
+export const SEAT_ALIAS_MAX_CHARS = 40
+export const EMAIL_MIN_CHARS = 3
+export const EMAIL_MAX_CHARS = 254
+export const PASSWORD_MAX_CHARS = 1024
+/** 0013's CHECK on a campaign's tone line (bead cfx). */
+export const CAMPAIGN_TONE_MAX_CHARS = 80
+/** The most seats a campaign holds (SEC-50(3)): the bound on a card's seat count. */
+export const CAMPAIGN_SEATS_MAX = 40
+export const GAME_SYSTEMS = ['dnd5e'] as const
+export const AVATAR_TONES = ['ember', 'gold'] as const
+/** A card's one badge; no badge (`null`) means idle. */
+export const CAMPAIGN_BADGES = ['live', 'ready'] as const
+export const SEAT_STATUSES = [
+  'open', 'offered', 'not_accepted', 'awaiting_confirmation', 'confirmed', 'removed',
+] as const
+export type SeatStatus = (typeof SEAT_STATUSES)[number]
+
+/** `service/models.py`'s `_validate_email` rule, restated as the server restates
+ * it (`is_email_shaped`): an `@` that is neither first nor last, and no U+0020. */
+export function isEmailShaped(value: string): boolean {
+  return value.includes('@') && !value.startsWith('@') && !value.endsWith('@') && !value.includes(' ')
+}
+
+/** Trimmed as the server trims, bounded in code points, and plain text: what is
+ * stored is the trimmed value, so the rule reads that. */
+function storedRequestText(min: number, max: number, what: string) {
+  return z
+    .string()
+    .refine(isWellFormedText, WELL_FORMED)
+    .refine(
+      (value) => {
+        const length = codePointLength(trimWire(value))
+        return length >= min && length <= max
+      },
+      { message: `${what} is ${min} to ${max} characters after trimming` },
+    )
+    .superRefine(refuseTrimmedPlainText)
+}
+
+const CampaignNameRequestSchema = storedRequestText(1, CAMPAIGN_NAME_MAX_CHARS, 'a campaign name')
+const CampaignToneRequestSchema = storedRequestText(1, CAMPAIGN_TONE_MAX_CHARS, 'a tone line')
+/** A Material Symbols name: the server picks from a palette it may extend. */
+const AvatarIconSchema = z.string().regex(/^[a-z0-9_]{1,40}$/)
+const SeatAliasRequestSchema = storedRequestText(1, SEAT_ALIAS_MAX_CHARS, 'an alias')
+const EmailAddressSchema = storedRequestText(EMAIL_MIN_CHARS, EMAIL_MAX_CHARS, 'an address').refine(
+  (value) => isEmailShaped(trimWire(value)),
+  { message: 'an address has an @ that is neither first nor last, and no space' },
+)
+
+/** One of the GM's campaigns. The owner is the session and never on the wire.
+ * The tavern card's facts (bead cfx): `tone`, `game_system` and `concluded_at`
+ * are the GM's; the avatar, `badge`, `seat_count`, `last_activity_at`,
+ * `last_played_at` and `dormant` are derived by the server. */
+export const CampaignSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  campaign_id: OpaqueIdSchema,
+  name: text(1, CAMPAIGN_NAME_MAX_CHARS),
+  created_at: TimestampSchema,
+  updated_at: TimestampSchema,
+  archived_at: TimestampSchema.nullable(),
+  concluded_at: TimestampSchema.nullable(),
+  tone: text(1, CAMPAIGN_TONE_MAX_CHARS).nullable(),
+  game_system: z.enum(GAME_SYSTEMS),
+  avatar_icon: AvatarIconSchema,
+  avatar_tone: z.enum(AVATAR_TONES),
+  badge: z.enum(CAMPAIGN_BADGES).nullable(),
+  seat_count: z.number().int().min(0).max(CAMPAIGN_SEATS_MAX),
+  last_activity_at: TimestampSchema,
+  last_played_at: TimestampSchema.nullable(),
+  dormant: z.boolean(),
+})
+export type Campaign = z.infer<typeof CampaignSchema>
+
+export const CampaignPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(CampaignSchema).max(CAMPAIGN_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type CampaignPage = z.infer<typeof CampaignPageSchema>
+
+/** `POST /campaigns`. No `command_id`: a retried create makes a second campaign.
+ * Only a name is required; a tone line is optional (bead cfx). */
+export const CampaignCreateRequestSchema = refusingProtoKeys(
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    name: CampaignNameRequestSchema,
+    tone: CampaignToneRequestSchema.nullish(),
+  }),
+)
+export type CampaignCreateRequest = z.infer<typeof CampaignCreateRequestSchema>
+
+/** `PATCH /campaigns/{id}`: rename, archive, restore, set or clear the tone line.
+ * At least one key; `name` and `archived` are never null, and `tone: null` clears. */
+export const CampaignPatchRequestSchema = refusingProtoKeys(
+  z
+    .strictObject({
+      schema_version: z.literal(CONTRACT_VERSION),
+      name: CampaignNameRequestSchema.optional(),
+      archived: z.boolean().optional(),
+      tone: CampaignToneRequestSchema.nullable().optional(),
+    })
+    .refine((patch) => patch.name !== undefined || patch.archived !== undefined || patch.tone !== undefined, {
+      message: 'a patch names at least one of name, archived and tone',
+    }),
+)
+export type CampaignPatchRequest = z.infer<typeof CampaignPatchRequestSchema>
+
+/** A seat as its GM sees it: no account id (SEC-50(1)). */
+export const SeatSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  participant_id: OpaqueIdSchema,
+  alias: text(1, SEAT_ALIAS_MAX_CHARS),
+  status: z.enum(SEAT_STATUSES),
+  address: text(EMAIL_MIN_CHARS, EMAIL_MAX_CHARS).nullable(),
+  created_at: TimestampSchema,
+  offered_at: TimestampSchema.nullable(),
+  offer_expires_at: TimestampSchema.nullable(),
+  accepted_at: TimestampSchema.nullable(),
+  confirmed_at: TimestampSchema.nullable(),
+  removed_at: TimestampSchema.nullable(),
+})
+export type Seat = z.infer<typeof SeatSchema>
+
+export const SeatPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(SeatSchema).max(CAMPAIGN_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type SeatPage = z.infer<typeof SeatPageSchema>
+
+export const SeatCreateRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), alias: SeatAliasRequestSchema }),
+)
+export type SeatCreateRequest = z.infer<typeof SeatCreateRequestSchema>
+
+/** An ADDRESS, never an account (SEC-50(1)); the answer is `204` whatever it holds. */
+export const SeatOfferRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), email: EmailAddressSchema }),
+)
+export type SeatOfferRequest = z.infer<typeof SeatOfferRequestSchema>
+
+/** SEC-40: removing a seat asks for the password again. Never logged or echoed. */
+export const SeatRemoveRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), password: text(1, PASSWORD_MAX_CHARS) }),
+)
+export type SeatRemoveRequest = z.infer<typeof SeatRemoveRequestSchema>
+
+/**
+ * SEC-40: deleting a document, and its whole history, asks for the password
+ * again. Only an archived document can be deleted. Never logged or echoed.
+ */
+export const DocumentDeleteRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), password: text(1, PASSWORD_MAX_CHARS) }),
+)
+export type DocumentDeleteRequest = z.infer<typeof DocumentDeleteRequestSchema>
+
+/** An offer as its invitee sees it: the GM's own words and the dates (SEC-50(4)). */
+export const SeatOfferSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  offer_id: OpaqueIdSchema,
+  campaign_name: text(1, CAMPAIGN_NAME_MAX_CHARS),
+  alias: text(1, SEAT_ALIAS_MAX_CHARS),
+  offered_at: TimestampSchema,
+  expires_at: TimestampSchema,
+})
+export type SeatOffer = z.infer<typeof SeatOfferSchema>
+
+export const SeatOfferPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(SeatOfferSchema).max(CAMPAIGN_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type SeatOfferPage = z.infer<typeof SeatOfferPageSchema>
+
+export const SeatDeclineRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), block: z.boolean() }),
+)
+export type SeatDeclineRequest = z.infer<typeof SeatDeclineRequestSchema>
+
+/** One of the caller's own seats: the campaign's id, never the participant's (SEC-43).
+ * Its card's facts are the table's alone (bead cfx): no seat count, no other
+ * player and no signal of the GM's prep. */
+export const PlayerSeatSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  campaign_id: OpaqueIdSchema,
+  campaign_name: text(1, CAMPAIGN_NAME_MAX_CHARS),
+  alias: text(1, SEAT_ALIAS_MAX_CHARS),
+  accepted_at: TimestampSchema,
+  confirmed: z.boolean(),
+  tone: text(1, CAMPAIGN_TONE_MAX_CHARS).nullable(),
+  game_system: z.enum(GAME_SYSTEMS),
+  avatar_icon: AvatarIconSchema,
+  avatar_tone: z.enum(AVATAR_TONES),
+  concluded: z.boolean(),
+  last_played_at: TimestampSchema.nullable(),
+  live: z.boolean(),
+})
+export type PlayerSeat = z.infer<typeof PlayerSeatSchema>
+
+export const PlayerSeatPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(PlayerSeatSchema).max(CAMPAIGN_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type PlayerSeatPage = z.infer<typeof PlayerSeatPageSchema>
+
+// ── Named groups (btb) ───────────────────────────────────────────────────────
+// A GM's named groups of seats (owner decision O-3; shared eligibility ADR ED-4,
+// ED-12, ED-13, ED-15), under `/campaigns/{id}/groups`. A group's name and its
+// members are GM-only: no table-side shape carries either, and the audience a
+// table sees never names a group (ED-15, REVEAL-24). A group is a label, not an
+// audience: whatever delivers to its members applies SEC-50(5) seat by seat.
+
+/** 0019's CHECK on a group's name, and the server's `check_group_name` bound. */
+export const GROUP_NAME_MAX_CHARS = 40
+/** The server's `GROUPS_PER_CAMPAIGN_MAX`: one page holds every live group. */
+export const GROUP_PAGE_MAX_ITEMS = 50
+
+const GroupNameRequestSchema = storedRequestText(1, GROUP_NAME_MAX_CHARS, 'a group name')
+
+/** A GM's named group of seats. `member_ids` are the seats in it that are not
+ * removed, distinct, ascending by code point — including seats not yet
+ * confirmed, so they are **not recipients** (SEC-50(5), A-27). No campaign id
+ * and no removed state: a removed group is never listed, and never restored. */
+export const GroupSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  group_id: OpaqueIdSchema,
+  // A response is read as stored: bounded, with no trim rule.
+  name: text(1, GROUP_NAME_MAX_CHARS),
+  member_ids: z
+    .array(OpaqueIdSchema)
+    .max(CAMPAIGN_SEATS_MAX)
+    .refine((ids) => new Set(ids).size === ids.length, { message: 'a group names each seat once' }),
+  created_at: TimestampSchema,
+  updated_at: TimestampSchema,
+})
+export type Group = z.infer<typeof GroupSchema>
+
+/** The campaign's live groups, by the name's fold, then id. One page:
+ * `next_cursor` is always `null` today, and stays a key so paging needs no bump. */
+export const GroupPageSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  items: z.array(GroupSchema).max(GROUP_PAGE_MAX_ITEMS),
+  next_cursor: CursorSchema.nullable(),
+})
+export type GroupPage = z.infer<typeof GroupPageSchema>
+
+/** `POST /campaigns/{id}/groups`: an empty group. Keyed, because live names are
+ * unique: a repeat of the key answers the group it made, whatever name it sends. */
+export const GroupCreateRequestSchema = refusingProtoKeys(
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION),
+    command_id: CommandIdSchema,
+    name: GroupNameRequestSchema,
+  }),
+)
+export type GroupCreateRequest = z.infer<typeof GroupCreateRequestSchema>
+
+/** `PATCH /campaigns/{id}/groups/{group_id}`: a rename, and only that. Removal is
+ * its own route and cannot be undone, so there is no archive. */
+export const GroupPatchRequestSchema = refusingProtoKeys(
+  z.strictObject({ schema_version: z.literal(CONTRACT_VERSION), name: GroupNameRequestSchema }),
+)
+export type GroupPatchRequest = z.infer<typeof GroupPatchRequestSchema>
+
 /** Name → schema, in the order `contracts/workbench/v1/schemas.json` lists them. */
 export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   Timestamp: TimestampSchema,
@@ -2427,6 +2695,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   FieldPatchRequest: FieldPatchRequestSchema,
   DocumentCreateRequest: DocumentCreateRequestSchema,
   RestoreRequest: RestoreRequestSchema,
+  DocumentDeleteRequest: DocumentDeleteRequestSchema,
   EditRequest: EditRequestSchema,
   EditInvocation: EditInvocationSchema,
   LibraryQuery: LibraryQuerySchema,
@@ -2443,13 +2712,12 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   CuePage: CuePageSchema,
   CuePlayRequest: CuePlayRequestSchema,
   CueStopRequest: CueStopRequestSchema,
-  TableJoinRequest: TableJoinRequestSchema,
-  TableJoinResponse: TableJoinResponseSchema,
-  EnrolRequest: EnrolRequestSchema,
-  EnrolResponse: EnrolResponseSchema,
   TableSession: TableSessionSchema,
   TableSessionRequest: TableSessionRequestSchema,
   TableSessionAnswer: TableSessionAnswerSchema,
+  ScreenMintRequest: ScreenMintRequestSchema,
+  ScreenMintAnswer: ScreenMintAnswerSchema,
+  TableLeaveRequest: TableLeaveRequestSchema,
   Capabilities: CapabilitiesSchema,
   RevealAudience: RevealAudienceSchema,
   RevealSlotRef: RevealSlotRefSchema,
@@ -2466,6 +2734,24 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   ConversationPage: ConversationPageSchema,
   ConversationCreateRequest: ConversationCreateRequestSchema,
   ConversationPatchRequest: ConversationPatchRequestSchema,
+  Campaign: CampaignSchema,
+  CampaignPage: CampaignPageSchema,
+  CampaignCreateRequest: CampaignCreateRequestSchema,
+  CampaignPatchRequest: CampaignPatchRequestSchema,
+  Seat: SeatSchema,
+  SeatPage: SeatPageSchema,
+  SeatCreateRequest: SeatCreateRequestSchema,
+  SeatOfferRequest: SeatOfferRequestSchema,
+  SeatRemoveRequest: SeatRemoveRequestSchema,
+  SeatOffer: SeatOfferSchema,
+  SeatOfferPage: SeatOfferPageSchema,
+  SeatDeclineRequest: SeatDeclineRequestSchema,
+  PlayerSeat: PlayerSeatSchema,
+  PlayerSeatPage: PlayerSeatPageSchema,
+  Group: GroupSchema,
+  GroupPage: GroupPageSchema,
+  GroupCreateRequest: GroupCreateRequestSchema,
+  GroupPatchRequest: GroupPatchRequestSchema,
 }
 
 // ── Forward-version behaviour ────────────────────────────────────────────────

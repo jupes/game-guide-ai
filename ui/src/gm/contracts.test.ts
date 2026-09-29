@@ -26,6 +26,9 @@ import {
   COMMON_FIELDS,
   CONTRACT_SCHEMAS,
   CONTRACT_VERSION,
+  CAMPAIGN_NAME_MAX_CHARS,
+  CampaignCreateRequestSchema,
+  CampaignPatchRequestSchema,
   CONVERSATION_PAGE_MAX_ITEMS,
   CONVERSATION_TITLE_MAX_CHARS,
   ConversationCreateRequestSchema,
@@ -36,6 +39,7 @@ import {
   DOC_TYPE_LIBRARY_CATEGORY,
   DOC_TYPE_VERSION,
   DocumentCreateRequestSchema,
+  DocumentDeleteRequestSchema,
   DocumentSchema,
   DocumentVersionSnapshotSchema,
   EditRequestSchema,
@@ -74,10 +78,19 @@ import {
   TOOL_RESULT_KIND,
   TableEventSchema,
   TableProjectionSchema,
+  GROUP_NAME_MAX_CHARS,
+  GroupCreateRequestSchema,
+  GroupPatchRequestSchema,
+  SEAT_ALIAS_MAX_CHARS,
+  SEAT_STATUSES,
+  SeatCreateRequestSchema,
+  SeatDeclineRequestSchema,
+  SeatOfferRequestSchema,
+  SeatRemoveRequestSchema,
   ToolInvocationRequestSchema,
   codePointLength,
+  isEmailShaped,
   isKnownErrorCode,
-  isRefusedInATitle,
   isWellFormedText,
   parseConversation,
   parseConversationPage,
@@ -1731,12 +1744,69 @@ describe('the conversation family (1kg.2.4)', () => {
     for (const junk of [null, undefined, 42, 'x', []]) expect(parseConversationPage(junk).kind).toBe('unknown')
   })
 
-  it('refuses in a title exactly the code points the server refuses (ruling A2-9)', () => {
-    const spelled = new Set<number>()
-    for (const [low, high] of [[0x00, 0x1f], [0x7f, 0x9f], [0x202a, 0x202e], [0x2066, 0x2069]]) {
-      for (let code = low; code <= high; code += 1) spelled.add(code)
+  // agent-forge-harness-644: a title used to refuse its own hand-picked
+  // isRefusedInATitle set — narrower than the lead ruling of 2026-09-21's
+  // REFUSED_TEXT_CODE_POINTS, which every other piece of stored text refuses
+  // by. There must not be three opinions (service/workbench_contracts.py's
+  // Python twin retires REFUSED_IN_A_TITLE the same way): a title now refuses
+  // exactly that shared set, plus its own, already-shared one-line rule for
+  // the two code points REFUSED_TEXT_CODE_POINTS deliberately leaves to it.
+  it('titles refuse exactly the shared REFUSED_TEXT_CODE_POINTS set', () => {
+    const create = (mid: string) =>
+      ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title: `Harbour${mid}job` })
+    for (const code of REFUSED_TEXT_CODE_POINTS) {
+      const refused = create(String.fromCharCode(code))
+      expect(refused.success).toBe(false)
+      if (!refused.success) expect(refused.error.issues[0]?.path).toEqual(['title'])
     }
-    for (let code = 0; code <= 0x3000; code += 1) expect(isRefusedInATitle(code)).toBe(spelled.has(code))
+  })
+
+  it("titles stay one line — not REFUSED_TEXT_CODE_POINTS' job, so a title keeps its own rule for it", () => {
+    const create = (mid: string) =>
+      ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title: `Harbour${mid}job` })
+    for (const code of [0x0a, 0x0d, 0x2028, 0x2029]) expect(create(String.fromCharCode(code)).success).toBe(false)
+  })
+
+  it('keeps tab and the code points either side of each retired range — the retired isRefusedInATitle blanket-refused them', () => {
+    const create = (mid: string) =>
+      ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title: `Harbour${mid}job` })
+    for (const code of [0x09, 0x20, 0x7e, 0xa0, 0x202f, 0x2065, 0x206a, 0x200c, 0x200d, 0xfe0f]) {
+      expect(create(String.fromCharCode(code)).success).toBe(true)
+    }
+  })
+
+  // agent-forge-harness-644 review M1: pinning only that the shared set IS
+  // refused lets a title-only refusal grow back unseen -- the second opinion
+  // 644 retired. Both directions, over every code point to U+3000, each refused
+  // code point and its neighbours (U+FEFF sits above U+3000), and astral
+  // samples. Lone surrogates are left out: well-formedness is its own rule.
+  // test_conversation_contract.py sweeps the same set on the server.
+  it('a title refuses a code point if and only if the shared rule or the one-line rule does', () => {
+    const lineBreaks = new Set([0x0a, 0x0d, 0x2028, 0x2029])
+    const sweep = new Set<number>()
+    for (let code = 0; code <= 0x3000; code += 1) sweep.add(code)
+    for (const code of REFUSED_TEXT_CODE_POINTS) for (const step of [-1, 0, 1]) if (code + step >= 0) sweep.add(code + step)
+    for (const code of [0x1f3b2, 0xe0001, 0xe007f, 0xf0000, 0x10fffd, 0x10ffff]) sweep.add(code)
+    const wrong: string[] = []
+    for (const code of sweep) {
+      if (code >= 0xd800 && code <= 0xdfff) continue
+      const expected = REFUSED_TEXT_CODE_POINTS.has(code) || lineBreaks.has(code)
+      const refused = !ConversationCreateRequestSchema.safeParse({
+        schema_version: 1, started_mode: 'sage', title: `Harbour${String.fromCodePoint(code)}job`,
+      }).success
+      if (refused !== expected) wrong.push(`U+${code.toString(16).toUpperCase().padStart(4, '0')} ${refused ? 'refused' : 'kept'}`)
+    }
+    expect(wrong).toEqual([])
+  })
+
+  it("trims a title's edges before checking them, as the server does (review N1)", () => {
+    const create = (title: string) =>
+      ConversationCreateRequestSchema.safeParse({ schema_version: 1, started_mode: 'sage', title }).success
+    const bom = String.fromCharCode(0xfeff)
+    const lrm = String.fromCharCode(0x200e)
+    expect(create(`${bom}Harbour${bom}`)).toBe(true)
+    expect(create(`${lrm}Harbour`)).toBe(false)
+    expect(create(`Harbour${lrm}`)).toBe(false)
   })
 
   it('bounds a title after trimming, as the server stores it', () => {
@@ -1768,5 +1838,100 @@ describe('the conversation family (1kg.2.4)', () => {
     expect(isKnownErrorCode('already_linked')).toBe(true)
     expect(CONVERSATION_PAGE_MAX_ITEMS).toBe(100)
     expect(CONVERSATION_TITLE_MAX_CHARS).toBe(200)
+  })
+})
+
+describe('campaigns and seats (1kg.2.2)', () => {
+  it('restates the server\'s address rule exactly', () => {
+    for (const [value, shaped] of [
+      ['wren@example.com', true],
+      ['@example.com', false],
+      ['wren@', false],
+      ['wren hidden@example.com', false],
+      ['wren.example.com', false],
+      ['a@b', true],
+    ] as const) {
+      expect([value, isEmailShaped(value)]).toEqual([value, shaped])
+    }
+  })
+
+  it('bounds a name and an alias after trimming, as the server stores them', () => {
+    const create = (name: unknown) => CampaignCreateRequestSchema.safeParse({ schema_version: 1, name })
+    expect(create('  ' + 'n'.repeat(CAMPAIGN_NAME_MAX_CHARS) + '  ').success).toBe(true)
+    expect(create('n'.repeat(CAMPAIGN_NAME_MAX_CHARS + 1)).success).toBe(false)
+    expect(create('Noc' + String.fromCharCode(0x202e) + 'turne').success).toBe(false)
+    const seat = (alias: unknown) => SeatCreateRequestSchema.safeParse({ schema_version: 1, alias })
+    expect(seat('a'.repeat(SEAT_ALIAS_MAX_CHARS)).success).toBe(true)
+    expect(seat('a'.repeat(SEAT_ALIAS_MAX_CHARS + 1)).success).toBe(false)
+  })
+
+  it('refuses an account id in every request, and a null in a patch', () => {
+    for (const [schema, body] of [
+      [CampaignCreateRequestSchema, { schema_version: 1, name: 'Mine' }],
+      [SeatCreateRequestSchema, { schema_version: 1, alias: 'Rook' }],
+      [SeatOfferRequestSchema, { schema_version: 1, email: 'wren@example.com' }],
+      [SeatRemoveRequestSchema, { schema_version: 1, password: 'secret' }],
+      [SeatDeclineRequestSchema, { schema_version: 1, block: false }],
+    ] as const) {
+      expect(schema.safeParse(body).success).toBe(true)
+      expect(schema.safeParse({ ...body, user_id: 7 }).success).toBe(false)
+    }
+    expect(CampaignPatchRequestSchema.safeParse({ schema_version: 1 }).success).toBe(false)
+    expect(CampaignPatchRequestSchema.safeParse({ schema_version: 1, name: null }).success).toBe(false)
+  })
+
+  it('knows the six seat statuses and the new error codes', () => {
+    expect([...SEAT_STATUSES]).toEqual([
+      'open', 'offered', 'not_accepted', 'awaiting_confirmation', 'confirmed', 'removed',
+    ])
+    for (const code of ['alias_taken', 'seat_not_open', 'seat_not_accepted', 'seat_cap_reached',
+      'campaign_archived', 'reauth_failed']) {
+      expect(isKnownErrorCode(code)).toBe(true)
+    }
+  })
+
+  it('knows the unsupported-document code of the document family (1kg.5.2)', () => {
+    expect(isKnownErrorCode('document_unsupported')).toBe(true)
+  })
+
+  it('knows the not-archived code and asks a document delete for a password (1kg.5.2 PR-B)', () => {
+    expect(isKnownErrorCode('document_not_archived')).toBe(true)
+    const body = { schema_version: 1, password: 'secret' }
+    expect(DocumentDeleteRequestSchema.safeParse(body).success).toBe(true)
+    expect(DocumentDeleteRequestSchema.safeParse({ ...body, document_id: 'doc_aaaaaaaaaaaaaaaaaaaaaa' }).success)
+      .toBe(false)
+    expect(DocumentDeleteRequestSchema.safeParse({ schema_version: 1, password: '' }).success).toBe(false)
+    expect(DocumentDeleteRequestSchema.safeParse({ schema_version: 1 }).success).toBe(false)
+  })
+})
+
+describe('the groups family (btb)', () => {
+  it('knows both group codes, and still reads an unknown code as generic', () => {
+    for (const code of ['group_name_taken', 'group_cap_reached']) {
+      expect(isKnownErrorCode(code)).toBe(true)
+      expect(readErrorBody({ detail: { code, message: 'Fixed.', retryable: false } })).toEqual({
+        kind: 'workbench',
+        info: { code, message: 'Fixed.', retryable: false },
+      })
+    }
+    expect(isKnownErrorCode('group_taken')).toBe(false)
+  })
+
+  it('takes a key minted by crypto.randomUUID, and refuses a create without one', () => {
+    const create = (command_id?: string) =>
+      GroupCreateRequestSchema.safeParse({ schema_version: 1, ...(command_id ? { command_id } : {}), name: 'Scouts' })
+    for (let minted = 0; minted < 20; minted += 1) expect(create(crypto.randomUUID()).success).toBe(true)
+    expect(create().success).toBe(false)
+  })
+
+  it('bounds a name in code points after trimming, on a create and a rename alike', () => {
+    const dice = String.fromCodePoint(0x1f3b2)
+    for (const request of [
+      (name: string) => GroupCreateRequestSchema.safeParse({ schema_version: 1, command_id: 'cmd_4f1c9a2e7b3d6e8f', name }),
+      (name: string) => GroupPatchRequestSchema.safeParse({ schema_version: 1, name }),
+    ]) {
+      expect(request(` ${dice.repeat(GROUP_NAME_MAX_CHARS)} `).success).toBe(true)
+      expect(request(dice.repeat(GROUP_NAME_MAX_CHARS + 1)).success).toBe(false)
+    }
   })
 })

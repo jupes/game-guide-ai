@@ -1,11 +1,18 @@
 """
-The posture every Workbench GM route inherits (agent-forge-harness-oe6).
+The posture every Workbench route inherits (agent-forge-harness-oe6): GM routes,
+account routes that act for the signed-in account on its own offers and seats
+(agent-forge-harness-1kg.2.2), and the table routes (agent-forge-harness-1kg.2.3).
 
 One 401 body (SEC-2), one non-enumerating 404 from one code path (SEC-3), the
 origin check (SEC-7) and one application-wide validation handler (SEC-23),
 built once so that no route bead has to build its own. The routes on it are the
 four conversation routes (`service/conversations_api.py`) and the conversation
-timeline (`service/timeline_api.py`, moved here by `agent-forge-harness-oqx`).
+timeline (`service/timeline_api.py`, moved here by `agent-forge-harness-oqx`),
+the GM's campaigns and seats (`service/campaigns_api.py`), an account's own
+offers and seats (`service/seats_api.py`, on `account_router`), the GM's table
+session (`service/table_session_api.py`), the table routes
+(`service/table_api.py`, on their own router with their own route class), and
+the GM's tool invocations (`service/tool_invocations_api.py`, bead 1kg.4.1).
 
 What makes a route a Workbench route
 ------------------------------------
@@ -19,9 +26,14 @@ the prefix an `include_router(..., prefix=...)` added. The two handlers
 implemented). Every other route — every legacy route, an unknown path, a 405
 — is answered by FastAPI's own default handler, byte for byte.
 
-GM routes only. `workbench_router` applies the `dm` gate through `gm_session`,
-so it is for GM routes and nothing else. Table routes wait on `hgm` (TA-2) and
-must reuse `origin_check` in their own factory.
+Two factories here. `workbench_router` applies the `dm` gate through
+`gm_session`, so it is for GM routes and nothing else. `account_router` is the
+same posture without the role: a route that acts for the signed-in account on
+its own offers and seats, which a player must reach and so must a GM seated at
+another GM's table. Table routes have their own factory in `service/table_api.py`
+(`1kg.2.3`), whose route class is a `WorkbenchRoute` that sets
+`forwards_cookie_deletion`; it reuses `origin_check` and refuses with
+`inactive()` and `cross_site()`, built here beside `not_found()`.
 
 The order of checks, as a client observes it
 --------------------------------------------
@@ -63,8 +75,9 @@ application's GM dependency as a parameter::
 
         return router
 
-A route refuses with `not_found()` and never builds a 401, 403 or 404 of its
-own; `service/tests/test_workbench_api.py` fails a route module that does. The
+A route refuses with `not_found()` — or, on a table route, `inactive()` and
+`cross_site()` — and never builds a 401, 403 or 404 of its own;
+`service/tests/test_workbench_api.py` fails a route module that does. The
 one exemption is a line carrying the deliberate-status token documented in
 `docs/ARCHITECTURE.md`, with its reason on the same comment.
 """
@@ -73,9 +86,9 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from types import MappingProxyType
-from typing import NoReturn
+from typing import Any, ClassVar, NoReturn
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, params
@@ -114,16 +127,55 @@ NOT_FOUND_DETAIL = _refusal(ErrorCode.NOT_FOUND, "That isn't available.")
 FORBIDDEN_ROLE_DETAIL = _refusal(ErrorCode.FORBIDDEN, "This is a Game Master feature.")
 #: SEC-7. The same code as a role refusal; the message tells an operator apart.
 FORBIDDEN_ORIGIN_DETAIL = _refusal(ErrorCode.FORBIDDEN, "That request didn't come from this application.")
+#: SEC-40: a Remove whose password did not check out. It depends on nothing but
+#: the password and names no resource, and it is a 403, never a 401 — the
+#: client signs out on any 401 (bead 1kg.2.2, L-12).
+REAUTH_FAILED_DETAIL = _refusal(ErrorCode.REAUTH_FAILED, "That password isn't right.")
+#: SEC-46's one table answer (TABLE-9): every signed-in caller a table route
+#: does not entitle, whatever the reason, gets exactly this 404.
+INACTIVE_DETAIL = _refusal(ErrorCode.INACTIVE, "There's no live table here.")
+#: SEC-45's Fetch Metadata refusal on a table route. It depends on nothing but
+#: those headers; the sentence is SEC-7's, because the cause is the same.
+CROSS_SITE_DETAIL = _refusal(ErrorCode.CROSS_SITE, "That request didn't come from this application.")
 
 
 class WorkbenchRoute(APIRoute):
     """The membership marker: a route is a Workbench route iff its route
-    object is one of these. Only `workbench_router` should create them."""
+    object is one of these. Only `workbench_router`, `account_router` and the
+    table router (`service/table_api.py`) should create them.
+
+    `forwards_cookie_deletion` is the one thing a subclass may change (bead
+    1kg.2.3, L-22): when it is set, the one 401 carries a `Set-Cookie` of the
+    exception that deletes a cookie, and nothing else of it. Only the table
+    route class sets it — a table answer deletes a screen-grant cookie that is
+    no longer live (SEC-44) — so every GM and account route's 401 stays exactly
+    one body and no header."""
+
+    forwards_cookie_deletion: ClassVar[bool] = False
 
 
 def not_found() -> NoReturn:
     """The ONE way a Workbench route answers 404 (SEC-3)."""
     raise HTTPException(status_code=404, detail=dict(NOT_FOUND_DETAIL))
+
+
+def inactive() -> NoReturn:
+    """The ONE way a table route answers a caller it does not entitle (SEC-46):
+    `404 inactive`, identical for every reason. A cookie deletion the table
+    route class adds rides on it like on any other refusal."""
+    raise HTTPException(status_code=404, detail=dict(INACTIVE_DETAIL))
+
+
+def cross_site() -> NoReturn:
+    """The ONE way a table route refuses Fetch Metadata (SEC-45): `403
+    cross_site`, before any cookie is read or any row touched."""
+    raise HTTPException(status_code=403, detail=dict(CROSS_SITE_DETAIL))
+
+
+def reauth_failed() -> NoReturn:
+    """The ONE way a Workbench route refuses a password it asked for again
+    (SEC-40): `403 reauth_failed`, not retryable, naming no resource."""
+    raise HTTPException(status_code=403, detail=dict(REAUTH_FAILED_DETAIL))
 
 
 def gm_session(session: SessionDependency) -> SessionDependency:
@@ -243,6 +295,62 @@ def workbench_router(
     )
 
 
+def account_router(
+    session: SessionDependency,
+    *,
+    prefix: str = "",
+    content_types: Sequence[str] = ("application/json",),
+) -> APIRouter:
+    """The router a route that acts for the signed-in account is declared on
+    (bead 1kg.2.2, L-3): `workbench_router` without the `dm` gate.
+
+    The same route class, so the one 401 body and the Workbench validation
+    handler apply, and the same order: the origin check, then `session`. There
+    is no role check — a player must reach these routes, and so must a GM who
+    holds a seat at another GM's table. Everything a route here reads is the
+    caller's own, found by the account in the statement.
+    """
+    return APIRouter(
+        prefix=prefix,
+        route_class=WorkbenchRoute,
+        dependencies=[Depends(origin_check(content_types)), Depends(session)],
+    )
+
+
+# justification: `Coroutine`'s send and yield types; FastAPI awaits the dependency and
+# uses only its `bytes` result.
+def body_reader(max_bytes: int) -> Callable[[Request], Coroutine[Any, Any, bytes]]:
+    """A dependency that reads a route's raw body, at most `max_bytes` (1kg.4.1,
+    I-23). A longer one is refused as soon as it is known to be longer — by its
+    declared length, or by the first chunk that crosses the line — and the rest
+    is never read. The refusal is the Workbench `422 validation_failed` naming
+    no field, which the one validation handler answers (SEC-23).
+
+    `service/conversations_api.read_body` is the same algorithm at 8 KiB; a
+    route whose body can be longer — a 2,000-code-point brief sent as escaped
+    JSON is about 24 KiB — takes its own bound from here."""
+    if max_bytes < 1:
+        raise ValueError("a body bound is at least one byte")
+
+    async def read(request: Request) -> bytes:
+        declared = request.headers.get("content-length")
+        if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+            raise _too_long()
+        received = bytearray()
+        async for chunk in request.stream():
+            received += chunk
+            if len(received) > max_bytes:
+                raise _too_long()
+        return bytes(received)
+
+    return read
+
+
+def _too_long() -> RequestValidationError:
+    """A body past its bound: `validation_failed`, no field, nothing echoed."""
+    return RequestValidationError([{"type": "value_error", "loc": (), "msg": "the body is too long"}])
+
+
 def api_routes(app: FastAPI) -> list[tuple[str, APIRoute]]:
     """Effective path (prefix-joined) and route object for every API route.
 
@@ -305,16 +413,36 @@ def _route_template(request: Request) -> str:
     return next((path for path, candidate in api_routes(request.app) if candidate is route), "(unknown)")
 
 
+def _deleted_cookie(headers: Mapping[str, str] | None) -> str | None:
+    """The exception's `Set-Cookie`, if it deletes a cookie (`Max-Age=0`), else
+    None. Only the attribute is judged; the cookie's name is the route
+    module's, and never spelled here."""
+    for name, value in (headers or {}).items():
+        if name.lower() != "set-cookie":
+            continue
+        attributes = [part.strip().lower() for part in value.split(";")[1:]]
+        if "max-age=0" in attributes:
+            return value
+    return None
+
+
 async def handle_http_exception(request: Request, exc: Exception) -> Response:
     """Every authentication failure on a Workbench route is one body (SEC-2).
 
     Everything else is FastAPI's own default handler — the exact function it
     installs — so every legacy answer, 404 and 405 is unchanged. No header of
-    the exception is copied onto the one 401.
+    the exception is copied onto the one 401, with one exception (bead
+    1kg.2.3, L-22): on a route whose class sets `forwards_cookie_deletion` — a
+    table route — a `Set-Cookie` that deletes a cookie is copied, and nothing
+    else, so a screen grant that is no longer live is deleted by the 401 its
+    request earned (SEC-44). The body is the same one body either way.
     """
     assert isinstance(exc, StarletteHTTPException)
     if exc.status_code == 401 and is_workbench_route(request):
-        return JSONResponse(status_code=401, content=dict(UNAUTHENTICATED_BODY))
+        route = request.scope.get("route")
+        deletion = _deleted_cookie(exc.headers) if getattr(route, "forwards_cookie_deletion", False) else None
+        headers = {"set-cookie": deletion} if deletion is not None else None
+        return JSONResponse(status_code=401, content=dict(UNAUTHENTICATED_BODY), headers=headers)
     return await http_exception_handler(request, exc)
 
 

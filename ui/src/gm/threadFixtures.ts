@@ -8,8 +8,8 @@
  */
 
 import type { Suggestion } from '../api'
-import { parseTimelineEntry } from './contracts'
-import type { TimelineItem } from './contracts'
+import { ToolInvocationRequestSchema, parseTimelineEntry } from './contracts'
+import type { TimelineItem, ToolInvocationRequest } from './contracts'
 import type { LoadTimelinePageFn } from './gmTimeline'
 
 function entry(raw: Record<string, unknown>): TimelineItem {
@@ -130,6 +130,33 @@ export const DIVIDER_ENTRY: TimelineItem = entry({
   boundary: 'start',
 })
 
+/**
+ * A session boundary as the divider job stores it (1kg.3.5): two ids and the
+ * boundary's own time, nothing else. Defaults to the END of DIVIDER_ENTRY's
+ * session, four hours after its start.
+ */
+export function dividerEntry(overrides: Record<string, unknown> = {}): TimelineItem {
+  return entry({
+    schema_version: 1,
+    entry_kind: 'session_divider',
+    entry_id: 'ent_5e55a002',
+    created_at: '2026-09-16T23:00:00Z',
+    session_id: 'ses_2c7d91aa',
+    boundary: 'end',
+    ...overrides,
+  })
+}
+
+/** The end of DIVIDER_ENTRY's session. */
+export const END_DIVIDER_ENTRY: TimelineItem = dividerEntry()
+
+/** A second session, a week later, that left nothing in this thread: its
+ * start, then its own end, with nothing between them (I-10's quiet session). */
+export const QUIET_SESSION: readonly TimelineItem[] = [
+  dividerEntry({ entry_id: 'ent_5e55b001', session_id: 'ses_7f3e0b12', boundary: 'start', created_at: '2026-09-23T19:00:00Z' }),
+  dividerEntry({ entry_id: 'ent_5e55b002', session_id: 'ses_7f3e0b12', boundary: 'end', created_at: '2026-09-23T22:30:00Z' }),
+]
+
 export const OPAQUE_ENTRY: TimelineItem = entry({
   schema_version: 1,
   entry_kind: 'opaque',
@@ -171,4 +198,26 @@ export function pagedTimeline(pages: readonly (readonly TimelineItem[])[]): Load
     return { kind: 'ok' as const, page: { conversation_id: conversationId, items: [...(pages[index] ?? [])], next_cursor: next } }
   }
   return Object.assign(load, { cursors })
+}
+
+/** The conversation and campaign the pending-work fixtures belong to (1kg.3.5). */
+export const LIVE_CONVERSATION = '0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d'
+export const LIVE_CAMPAIGN = 'cmp_4b1d9e7a'
+
+/**
+ * A start as the client sends it (1kg.3.5's pending-work model), parsed by the
+ * contract's own strict schema so no test or story can hold a request the
+ * server would refuse as malformed. An `/npc` start in LIVE_CONVERSATION
+ * unless overridden.
+ */
+export function toolRequest(overrides: Record<string, unknown> = {}): ToolInvocationRequest {
+  return ToolInvocationRequestSchema.parse({
+    schema_version: 1,
+    invocation_id: 'inv_11ve000000000001',
+    tool_id: 'npc',
+    brief: 'the hooded stranger at the bar',
+    campaign_id: LIVE_CAMPAIGN,
+    conversation_id: LIVE_CONVERSATION,
+    ...overrides,
+  })
 }

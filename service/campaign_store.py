@@ -32,12 +32,16 @@ not exist is refused here as a foreign key refuses it there.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import base64
+import json
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
 from . import campaign_identity as ident
 from .db import InMemoryDatabase, InMemoryTransaction, PgTransaction, UnitOfWork
+from .workbench_contracts import check_stored_text
 
 
 class CampaignStoreError(Exception):
@@ -60,6 +64,27 @@ class LiveSessionExists(CampaignStoreError):
     """That GM already has a live table session, in this campaign or another
     (REVEAL-2). PostgreSQL refuses it with a partial unique index; the twin
     refuses it here, so the two cannot disagree."""
+
+
+class StartReplayed(CampaignStoreError):
+    """That campaign already has a session started by this command id
+    (`table_sessions_start_command_uidx`, migration 0016). A caller that holds
+    the campaign lock reads the replay first and answers the session it finds
+    (`service/table_sessions.py`), so this is what a caller that skipped that
+    read gets instead of a unique violation. The message names no id."""
+
+
+class NotDue(CampaignStoreError):
+    """The system's expiry was asked to finalise a session that has not reached
+    its `expires_at` yet. Refused, so that the one path that holds a session
+    without naming its owner can never be an End that skipped the owner check
+    (`1kg.2.3`, L-5)."""
+
+
+class ScreenLimit(CampaignStoreError):
+    """That session already has as many live screen grants as it may (SEC-48).
+    Raised identically by both worlds, under the session's advisory lock; the
+    message names no session, grant or account."""
 
 
 class MissingParent(CampaignStoreError, LookupError):
@@ -101,6 +126,31 @@ class SeatUnavailable(CampaignStoreError):
         super().__init__(self.MESSAGE)
 
 
+class SeatNotAccepted(CampaignStoreError):
+    """The GM asked to confirm a seat that is live but that no account has
+    accepted yet (bead 1kg.2.2, L-11). Distinct from `SeatUnavailable` because a
+    route answers it with a 409 — which only the campaign's owner can reach,
+    after ownership was shown (SEC-3) — where a missing, foreign or removed seat
+    is the one 404. The message is fixed and carries no identifier, and the
+    constructor takes nothing, so no caller can put one in."""
+
+    MESSAGE = "that seat has not been accepted yet"
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
+
+
+class InvalidCursor(CampaignStoreError, ValueError):
+    """A page cursor that did not come from this server (bead 1kg.2.2, L-19). A
+    route answers the 422 naming `cursor`; the message never repeats the
+    cursor, which is client-held data that decodes to an id (SEC-20)."""
+
+    MESSAGE = "that page cursor did not come from this server"
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
+
+
 # ── Plumbing the three stores share ──────────────────────────────────────────
 
 
@@ -121,6 +171,65 @@ def now_or(now: datetime | None) -> datetime:
     """A caller's clock, or this one. Every store method takes `now` so that a
     test can place a row in the past without sleeping."""
     return datetime.now(UTC) if now is None else aware(now, "a clock")
+
+
+#: The largest page any campaign-domain list answers (1kg.2.2: 1 to 50).
+PAGE_MAX = 50
+
+
+# ── Page cursors (1kg.2.2, L-19) ─────────────────────────────────────────────
+#
+# base64url of the sort key and the id, and nothing else: no owner (that is the
+# session's), no filter, and no text. Decoding checks the moment and the id's
+# SHAPE against its prefix before any statement sees them — an id carrying a
+# control character must be the 422, never a 500 (bead `kky`).
+
+
+def encode_cursor(moment: datetime, row_id: str) -> str:
+    raw = json.dumps([moment.isoformat(), row_id], separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def decode_cursor(cursor: str, prefix: str) -> tuple[datetime, str]:
+    """The sort key and the id a cursor carries, or `InvalidCursor`. Raised
+    outside the handler, so neither `__cause__` nor `__context__` carries the
+    caller's decoded payload into a traceback."""
+    decoded: tuple[datetime, str] | None = None
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        moment, row_id = json.loads(raw.decode("utf-8"))
+        if isinstance(moment, str) and isinstance(row_id, str) and ident.is_id(prefix, row_id):
+            decoded = aware(datetime.fromisoformat(moment), "a cursor"), row_id
+    except Exception:  # noqa: BLE001 - any failure to read it is the one refusal
+        decoded = None
+    if decoded is None:
+        raise InvalidCursor()
+    return decoded
+
+
+@dataclass(frozen=True)
+class Page[T]:
+    """`{items, next_cursor}`, the contract's page shape. `next_cursor` is None
+    on the last page; a page is fetched one row long, so "is there another?"
+    needs no count."""
+
+    items: list[T]
+    next_cursor: str | None
+
+
+def page_of[T](rows: list[T], limit: int, key: Callable[[T], tuple[datetime, str]]) -> Page[T]:
+    """The first `limit` of `rows` (which holds up to `limit + 1`), with the
+    cursor of the last one kept when there is more."""
+    if len(rows) <= limit:
+        return Page(rows, None)
+    kept = rows[:limit]
+    return Page(kept, encode_cursor(*key(kept[-1])))
+
+
+def check_limit(limit: int) -> int:
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= PAGE_MAX:
+        raise ValueError(f"a page holds 1 to {PAGE_MAX} rows")
+    return limit
 
 
 def pg(unit: UnitOfWork) -> PgTransaction:
@@ -246,32 +355,83 @@ class Campaign:
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None = None
+    #: The GM's "this story is finished" (bead cfx, migration 0013). Not
+    #: `archived_at`: archive is an authorisation fact, and this is a label that
+    #: narrows and widens nothing (interactions ADR §19 A-31).
+    concluded_at: datetime | None = None
+    #: The card's tone line — optional (§12.2: "only a name is required") and
+    #: private text, hidden from `repr()` for the reason `name` is.
+    tone: str | None = field(default=None, repr=False)
+    game_system: str = "dnd5e"
 
     @property
     def is_archived(self) -> bool:
         return self.archived_at is not None
 
+    @property
+    def is_concluded(self) -> bool:
+        return self.concluded_at is not None
+
 
 NAME_MAX_CHARS = 120
+#: `campaigns_tone_chk` in 0013.
+TONE_MAX_CHARS = 80
 
 
 def check_name(name: str) -> str:
     """The bound `0004_campaign_schema.sql` carries, applied before the statement
-    so that the refusal is this one rather than an integrity error."""
+    so that the refusal is this one rather than an integrity error — and the one
+    rule for stored text (`check_stored_text`, bead 1kg.2.2 L-4), so that no path
+    stores a control character, a bidirectional override or a lone surrogate in
+    a name. Each refusal names the rule, never the name."""
+    try:
+        check_stored_text(name)
+    except ValueError:
+        refused = True
+    else:
+        refused = False
+    if refused:  # outside the handler: the refusal chains nothing
+        raise ValueError("a campaign name carries no control or formatting characters")
     if not 1 <= len(name) <= NAME_MAX_CHARS:
         raise ValueError(f"a campaign name is 1 to {NAME_MAX_CHARS} characters")
     return name
+
+
+def check_tone(tone: str | None) -> str | None:
+    """`campaigns_tone_chk`, applied before the statement, and the one rule for
+    stored text — the `check_name` precedent. `None` is no tone line at all.
+    Each refusal names the rule, never the tone."""
+    if tone is None:
+        return None
+    try:
+        check_stored_text(tone)
+    except ValueError:
+        refused = True
+    else:
+        refused = False
+    if refused:  # outside the handler: the refusal chains nothing
+        raise ValueError("a tone line carries no control or formatting characters")
+    if not 1 <= len(tone) <= TONE_MAX_CHARS:
+        raise ValueError(f"a tone line is 1 to {TONE_MAX_CHARS} characters")
+    return tone
 
 
 class CampaignStore(Protocol):
     """Campaigns, and the authorisation revision every check reads."""
 
     def create(
-        self, unit: UnitOfWork, *, owner_id: int, name: str, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        *,
+        owner_id: int,
+        name: str,
+        tone: str | None = None,
+        now: datetime | None = None,
     ) -> Campaign:
         """Make a campaign owned by `owner_id`, together with its `authz_state`
         row at revision 0 — in PostgreSQL the AFTER INSERT trigger writes it, so
-        that no path can leave a campaign without one (RQ-1)."""
+        that no path can leave a campaign without one (RQ-1). A tone line is
+        optional (bead cfx)."""
         ...  # pragma: no cover - structural type
 
     def get(self, unit: UnitOfWork, campaign_id: str, *, owner_id: int) -> Campaign | None:
@@ -281,6 +441,29 @@ class CampaignStore(Protocol):
 
     def list_for_owner(self, unit: UnitOfWork, owner_id: int) -> list[Campaign]:
         """Oldest first."""
+        ...  # pragma: no cover - structural type
+
+    def page_for_owner(
+        self,
+        unit: UnitOfWork,
+        owner_id: int,
+        *,
+        include_archived: bool = False,
+        cursor: str | None = None,
+        limit: int = PAGE_MAX,
+    ) -> Page[Campaign]:
+        """That owner's campaigns, newest first (`created_at DESC, id DESC`, the
+        id compared by code point), one page at a time. Raises `InvalidCursor`
+        for a cursor this server did not make."""
+        ...  # pragma: no cover - structural type
+
+    def rename(
+        self, unit: UnitOfWork, campaign_id: str, *, owner_id: int, name: str, now: datetime | None = None
+    ) -> Campaign | None:
+        """Rename that owner's campaign in one statement, the owner in it; None
+        for a campaign that is not theirs. A rename to the name it already has
+        changes nothing, `updated_at` included. No lock, no revision, no audit
+        row: a name is not an authorisation fact (L-4)."""
         ...  # pragma: no cover - structural type
 
     def set_archived(
@@ -295,30 +478,77 @@ class CampaignStore(Protocol):
         """Archive or restore; reports whether a row of that owner's changed."""
         ...  # pragma: no cover - structural type
 
+    def set_tone(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        tone: str | None,
+        now: datetime | None = None,
+    ) -> Campaign | None:
+        """Set or clear (`None`) the tone line in one statement, the owner in
+        it; None for a campaign that is not theirs. Setting the tone it already
+        has changes nothing, `updated_at` included — `rename`'s rule, and like a
+        name it is not an authorisation fact: no lock, no revision, no audit."""
+        ...  # pragma: no cover - structural type
+
+    def set_concluded(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        concluded: bool,
+        now: datetime | None = None,
+    ) -> bool:
+        """Mark concluded or reopen, in one statement with the owner in it;
+        reports whether a row of that owner's changed, so a repeat is not an
+        error. An archived campaign may be either: concluded is a label, not a
+        state the archive rules read."""
+        ...  # pragma: no cover - structural type
+
     def authz_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
         """The campaign's authorisation revision, read under the shared campaign
         lock. It is written only by `UnitOfWork.advance_authz_revision`."""
         ...  # pragma: no cover - structural type
 
+    def projection_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
+        """The authorisation revision the table namespace was last projected
+        at (1ir.2.1), or None when the campaign has no authorisation row.
+        Written by `UnitOfWork.advance_authz_revision` (rule 3) and, from
+        `1ir.2.3`, by the projector — never by anything else."""
+        ...  # pragma: no cover - structural type
 
-_COLUMNS = "id, owner_id, name, created_at, updated_at, archived_at"
+
+_COLUMNS = "id, owner_id, name, created_at, updated_at, archived_at, concluded_at, tone, game_system"
 
 
 def _campaign(row: tuple) -> Campaign:
-    return Campaign(row[0], int(row[1]), row[2], row[3], row[4], row[5])
+    return Campaign(row[0], int(row[1]), row[2], row[3], row[4], row[5], row[6], row[7], row[8])
+
+
+def _newest_key(campaign: Campaign) -> tuple[datetime, str]:
+    return campaign.created_at, campaign.id
 
 
 class PostgresCampaignStore:
-    """`campaign.campaigns` and `campaign.authz_state` (migration 0004)."""
+    """`campaign.campaigns` and `campaign.authz_state` (migrations 0004, 0013)."""
 
     def create(
-        self, unit: UnitOfWork, *, owner_id: int, name: str, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        *,
+        owner_id: int,
+        name: str,
+        tone: str | None = None,
+        now: datetime | None = None,
     ) -> Campaign:
         moment = now_or(now)
         row = pg(unit).conn.execute(
-            f"INSERT INTO campaign.campaigns (id, owner_id, name, created_at, updated_at) "
-            f"VALUES (%s, %s, %s, %s, %s) RETURNING {_COLUMNS}",
-            (ident.new_id(ident.CAMPAIGN), owner_id, check_name(name), moment, moment),
+            f"INSERT INTO campaign.campaigns (id, owner_id, name, tone, created_at, updated_at) "
+            f"VALUES (%s, %s, %s, %s, %s, %s) RETURNING {_COLUMNS}",
+            (ident.new_id(ident.CAMPAIGN), owner_id, check_name(name), check_tone(tone), moment, moment),
         ).fetchone()
         return _campaign(row)
 
@@ -340,6 +570,47 @@ class PostgresCampaignStore:
         ).fetchall()
         return [_campaign(row) for row in rows]
 
+    def page_for_owner(
+        self,
+        unit: UnitOfWork,
+        owner_id: int,
+        *,
+        include_archived: bool = False,
+        cursor: str | None = None,
+        limit: int = PAGE_MAX,
+    ) -> Page[Campaign]:
+        size = check_limit(limit)
+        after = None if cursor is None else decode_cursor(cursor, ident.CAMPAIGN)
+        rows = pg(unit).conn.execute(
+            f"SELECT {_COLUMNS} FROM campaign.campaigns "
+            f"WHERE owner_id = %(owner)s AND (%(archived)s OR archived_at IS NULL) "
+            f"AND (%(at)s::timestamptz IS NULL OR created_at < %(at)s::timestamptz "
+            f'OR (created_at = %(at)s::timestamptz AND id COLLATE "C" < %(id)s)) '
+            f'ORDER BY created_at DESC, id COLLATE "C" DESC LIMIT %(limit)s',
+            {
+                "owner": owner_id,
+                "archived": include_archived,
+                "at": None if after is None else after[0],
+                "id": None if after is None else after[1],
+                "limit": size + 1,
+            },
+        ).fetchall()
+        return page_of([_campaign(row) for row in rows], size, _newest_key)
+
+    def rename(
+        self, unit: UnitOfWork, campaign_id: str, *, owner_id: int, name: str, now: datetime | None = None
+    ) -> Campaign | None:
+        named = check_name(name)
+        # One statement, the owner in it. `updated_at` moves only when the name
+        # does, so a rename to the same name changes nothing a reader can see.
+        row = pg(unit).conn.execute(
+            f"UPDATE campaign.campaigns SET name = %s, "
+            f"updated_at = CASE WHEN name = %s THEN updated_at ELSE %s END "
+            f"WHERE id = %s AND owner_id = %s RETURNING {_COLUMNS}",
+            (named, named, now_or(now), campaign_id, owner_id),
+        ).fetchone()
+        return None if row is None else _campaign(row)
+
     def set_archived(
         self,
         unit: UnitOfWork,
@@ -357,9 +628,53 @@ class PostgresCampaignStore:
         ).fetchone()
         return changed is not None
 
+    def set_tone(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        tone: str | None,
+        now: datetime | None = None,
+    ) -> Campaign | None:
+        checked = check_tone(tone)
+        # `IS NOT DISTINCT FROM`, because clearing a tone that is already NULL
+        # must change nothing either, and `=` answers NULL for that pair.
+        row = pg(unit).conn.execute(
+            f"UPDATE campaign.campaigns SET tone = %(tone)s, "
+            f"updated_at = CASE WHEN tone IS NOT DISTINCT FROM %(tone)s THEN updated_at ELSE %(now)s END "
+            f"WHERE id = %(id)s AND owner_id = %(owner)s RETURNING {_COLUMNS}",
+            {"tone": checked, "now": now_or(now), "id": campaign_id, "owner": owner_id},
+        ).fetchone()
+        return None if row is None else _campaign(row)
+
+    def set_concluded(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        concluded: bool,
+        now: datetime | None = None,
+    ) -> bool:
+        moment = now_or(now)
+        changed = pg(unit).conn.execute(
+            "UPDATE campaign.campaigns SET concluded_at = %s, updated_at = %s "
+            "WHERE id = %s AND owner_id = %s AND (concluded_at IS NULL) = %s RETURNING id",
+            (moment if concluded else None, moment, campaign_id, owner_id, concluded),
+        ).fetchone()
+        return changed is not None
+
     def authz_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
         row = pg(unit).conn.execute(
             "SELECT authz_revision FROM campaign.authz_state WHERE campaign_id = %s",
+            (campaign_id,),
+        ).fetchone()
+        return None if row is None else int(row[0])
+
+    def projection_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
+        row = pg(unit).conn.execute(
+            "SELECT projection_revision FROM campaign.authz_state WHERE campaign_id = %s",
             (campaign_id,),
         ).fetchone()
         return None if row is None else int(row[0])
@@ -377,7 +692,13 @@ class InMemoryCampaignStore:
         self._rows: Staging[Campaign] = shared_rows(db, "campaigns")
 
     def create(
-        self, unit: UnitOfWork, *, owner_id: int, name: str, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        *,
+        owner_id: int,
+        name: str,
+        tone: str | None = None,
+        now: datetime | None = None,
     ) -> Campaign:
         moment = now_or(now)
         campaign = Campaign(
@@ -386,6 +707,7 @@ class InMemoryCampaignStore:
             name=check_name(name),
             created_at=moment,
             updated_at=moment,
+            tone=check_tone(tone),
         )
         twin = fake(unit)
         self._rows.add(twin, campaign.id, campaign)
@@ -403,6 +725,43 @@ class InMemoryCampaignStore:
         mine = [c for c in self._rows.visible(fake(unit)).values() if c.owner_id == owner_id]
         return sorted(mine, key=lambda c: (c.created_at, c.id))
 
+    def page_for_owner(
+        self,
+        unit: UnitOfWork,
+        owner_id: int,
+        *,
+        include_archived: bool = False,
+        cursor: str | None = None,
+        limit: int = PAGE_MAX,
+    ) -> Page[Campaign]:
+        size = check_limit(limit)
+        after = None if cursor is None else decode_cursor(cursor, ident.CAMPAIGN)
+        mine = [
+            c
+            for c in self._rows.visible(fake(unit)).values()
+            if c.owner_id == owner_id
+            and (include_archived or not c.is_archived)
+            and (after is None or _newest_key(c) < after)
+        ]
+        ordered = sorted(mine, key=_newest_key, reverse=True)
+        return page_of(ordered[: size + 1], size, _newest_key)
+
+    def rename(
+        self, unit: UnitOfWork, campaign_id: str, *, owner_id: int, name: str, now: datetime | None = None
+    ) -> Campaign | None:
+        named = check_name(name)
+        twin = fake(unit)
+        found = self._rows.visible(twin).get(campaign_id)
+        if found is None or found.owner_id != owner_id:
+            return None
+        if found.name == named:
+            return found
+        # `replace`, never a constructor call naming the fields: a column added
+        # later (0013's among them) is then carried rather than dropped.
+        renamed = replace(found, name=named, updated_at=now_or(now))
+        self._rows.replace(twin, campaign_id, renamed)
+        return renamed
+
     def set_archived(
         self,
         unit: UnitOfWork,
@@ -418,18 +777,51 @@ class InMemoryCampaignStore:
             return False
         moment = now_or(now)
         self._rows.replace(
-            twin,
-            campaign_id,
-            Campaign(
-                id=found.id,
-                owner_id=found.owner_id,
-                name=found.name,
-                created_at=found.created_at,
-                updated_at=moment,
-                archived_at=moment if archived else None,
-            ),
+            twin, campaign_id, replace(found, updated_at=moment, archived_at=moment if archived else None)
+        )
+        return True
+
+    def set_tone(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        tone: str | None,
+        now: datetime | None = None,
+    ) -> Campaign | None:
+        checked = check_tone(tone)
+        twin = fake(unit)
+        found = self._rows.visible(twin).get(campaign_id)
+        if found is None or found.owner_id != owner_id:
+            return None
+        if found.tone == checked:
+            return found
+        changed = replace(found, tone=checked, updated_at=now_or(now))
+        self._rows.replace(twin, campaign_id, changed)
+        return changed
+
+    def set_concluded(
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        *,
+        owner_id: int,
+        concluded: bool,
+        now: datetime | None = None,
+    ) -> bool:
+        twin = fake(unit)
+        found = self._rows.visible(twin).get(campaign_id)
+        if found is None or found.owner_id != owner_id or found.is_concluded == concluded:
+            return False
+        moment = now_or(now)
+        self._rows.replace(
+            twin, campaign_id, replace(found, updated_at=moment, concluded_at=moment if concluded else None)
         )
         return True
 
     def authz_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
         return fake(unit).authz_revision(campaign_id)
+
+    def projection_revision(self, unit: UnitOfWork, campaign_id: str) -> int | None:
+        return fake(unit).projection_revision(campaign_id)

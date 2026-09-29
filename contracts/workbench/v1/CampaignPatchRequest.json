@@ -1,0 +1,123 @@
+{
+  "schema": "CampaignPatchRequest",
+  "direction": "request",
+  "note": "PATCH /campaigns/{id}: rename, archive, restore, and set or clear the tone line (bead cfx). At least one key. name and archived are never null; tone: null clears the tone line. Archiving an archived campaign and restoring a live one change nothing.",
+  "valid": [
+    {
+      "name": "a rename",
+      "value": {
+        "schema_version": 1,
+        "name": "Aubade"
+      }
+    },
+    {
+      "name": "an archive",
+      "value": {
+        "schema_version": 1,
+        "archived": true
+      }
+    },
+    {
+      "name": "a restore",
+      "value": {
+        "schema_version": 1,
+        "archived": false
+      }
+    },
+    {
+      "name": "an archive and a rename together",
+      "value": {
+        "schema_version": 1,
+        "name": "Aubade",
+        "archived": true
+      }
+    },
+    {
+      "name": "a tone line",
+      "value": {
+        "schema_version": 1,
+        "tone": "Mystery \u00b7 Low magic"
+      }
+    },
+    {
+      "name": "clearing the tone line",
+      "value": {
+        "schema_version": 1,
+        "tone": null
+      }
+    },
+    {
+      "name": "an archive with a tone line",
+      "value": {
+        "schema_version": 1,
+        "archived": true,
+        "tone": "Grim"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "nothing to change",
+      "why": "a patch names at least one of name, archived and tone",
+      "value": {
+        "schema_version": 1
+      }
+    },
+    {
+      "name": "a null name",
+      "why": "name and archived are never null; only tone is, and null clears it",
+      "value": {
+        "schema_version": 1,
+        "name": null
+      }
+    },
+    {
+      "name": "a null archive flag",
+      "why": "name and archived are never null; only tone is, and null clears it",
+      "value": {
+        "schema_version": 1,
+        "archived": null
+      }
+    },
+    {
+      "name": "an archive flag as text",
+      "why": "no coercion between JSON types",
+      "value": {
+        "schema_version": 1,
+        "archived": "true"
+      }
+    },
+    {
+      "name": "a moment instead of the flag",
+      "why": "the server sets archived_at",
+      "value": {
+        "schema_version": 1,
+        "archived_at": "2026-09-16T19:20:11Z"
+      }
+    },
+    {
+      "name": "a tone line past 80",
+      "why": "0013's CHECK",
+      "value": {
+        "schema_version": 1,
+        "tone": "@repeat:t:81"
+      }
+    },
+    {
+      "name": "a tone line that trims to nothing",
+      "why": "clearing is null, never blank",
+      "value": {
+        "schema_version": 1,
+        "tone": "  "
+      }
+    },
+    {
+      "name": "concluded through a patch",
+      "why": "Conclude and Reopen are their own routes (bead cfx)",
+      "value": {
+        "schema_version": 1,
+        "concluded": true
+      }
+    }
+  ]
+}

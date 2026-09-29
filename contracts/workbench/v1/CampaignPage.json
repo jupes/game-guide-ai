@@ -1,0 +1,116 @@
+{
+  "schema": "CampaignPage",
+  "direction": "response",
+  "note": "The GM's campaigns, newest first. next_cursor is always present; a short page is not the end of the list, only a null cursor is.",
+  "valid": [
+    {
+      "name": "two campaigns, more to come",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "schema_version": 1,
+            "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+            "name": "The Nocturne Heist",
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": "2026-09-16T19:31:24Z",
+            "archived_at": null,
+            "concluded_at": null,
+            "tone": "Mystery \u00b7 Low magic",
+            "game_system": "dnd5e",
+            "avatar_icon": "sailing",
+            "avatar_tone": "ember",
+            "badge": "ready",
+            "seat_count": 4,
+            "last_activity_at": "2026-09-16T19:31:24Z",
+            "last_played_at": "2026-09-12T23:05:00Z",
+            "dormant": false
+          },
+          {
+            "schema_version": 1,
+            "campaign_id": "cmp_9Zq1Ws2Ex3Rd4Tf5Yg6Hu7",
+            "name": "Aubade",
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": "2026-09-16T19:31:24Z",
+            "archived_at": null,
+            "concluded_at": null,
+            "tone": "Mystery \u00b7 Low magic",
+            "game_system": "dnd5e",
+            "avatar_icon": "sailing",
+            "avatar_tone": "ember",
+            "badge": "ready",
+            "seat_count": 4,
+            "last_activity_at": "2026-09-16T19:31:24Z",
+            "last_played_at": "2026-09-12T23:05:00Z",
+            "dormant": false
+          }
+        ],
+        "next_cursor": "WyIyMDI2LTA5LTE2VDE5OjIwOjExKzAwOjAwIiwiY21wXzRiMWQ5ZTdhUXgyTG04UnQ1VnczWmMiXQ"
+      }
+    },
+    {
+      "name": "a short page that is not the end",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "schema_version": 1,
+            "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+            "name": "The Nocturne Heist",
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": "2026-09-16T19:31:24Z",
+            "archived_at": null,
+            "concluded_at": null,
+            "tone": "Mystery \u00b7 Low magic",
+            "game_system": "dnd5e",
+            "avatar_icon": "sailing",
+            "avatar_tone": "ember",
+            "badge": "ready",
+            "seat_count": 4,
+            "last_activity_at": "2026-09-16T19:31:24Z",
+            "last_played_at": "2026-09-12T23:05:00Z",
+            "dormant": false
+          }
+        ],
+        "next_cursor": "WyIyMDI2LTA5LTE2VDE5OjIwOjExKzAwOjAwIiwiY21wXzRiMWQ5ZTdhUXgyTG04UnQ1VnczWmMiXQ"
+      }
+    },
+    {
+      "name": "an empty last page",
+      "value": {
+        "schema_version": 1,
+        "items": [],
+        "next_cursor": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no cursor key",
+      "why": "next_cursor is required; the end is null",
+      "value": {
+        "schema_version": 1,
+        "items": []
+      }
+    },
+    {
+      "name": "fifty-one campaigns",
+      "why": "a page holds at most 50",
+      "value": {
+        "schema_version": 1,
+        "items": {
+          "@repeat_value": {
+            "schema_version": 1,
+            "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+            "name": "The Nocturne Heist",
+            "created_at": "2026-09-16T19:20:11Z",
+            "updated_at": "2026-09-16T19:31:24Z",
+            "archived_at": null
+          },
+          "@count": 51
+        },
+        "next_cursor": null
+      }
+    }
+  ]
+}

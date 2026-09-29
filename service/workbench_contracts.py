@@ -40,6 +40,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    SecretStr,
     SerializerFunctionWrapHandler,
     StrictBool,
     StrictStr,
@@ -429,6 +430,43 @@ class ErrorCode(str, Enum):
     #: A new code rather than ``conflict`` with a widened meaning: a new code is
     #: no version bump, a changed meaning is one.
     ALREADY_LINKED = "already_linked"
+    #: Campaigns and seats (1kg.2.2). Each 409 is reachable only by the
+    #: campaign's owner, after ownership was shown (SEC-3); none names a value.
+    ALIAS_TAKEN = "alias_taken"
+    SEAT_NOT_OPEN = "seat_not_open"
+    SEAT_NOT_ACCEPTED = "seat_not_accepted"
+    SEAT_CAP_REACHED = "seat_cap_reached"
+    CAMPAIGN_ARCHIVED = "campaign_archived"
+    #: A Remove or a document delete whose password did not check out (SEC-40).
+    #: A 403, never a 401: the client signs out on any 401.
+    REAUTH_FAILED = "reauth_failed"
+    #: A stored document this build cannot read or write over (1kg.5.2): an
+    #: unknown stored type, a stored type version this build does not write,
+    #: stored data that is not an object or fails the tolerant read, or — for a
+    #: write that merges over it — a stored key or sub-key this build does not
+    #: declare. Reachable only by the document's owner; fail closed, not retryable.
+    DOCUMENT_UNSUPPORTED = "document_unsupported"
+    #: A delete of a document that is not archived (1kg.5.2, LIB-18: delete is
+    #: offered only from the Archived filter). Refused before anything narrows;
+    #: reachable only by the document's owner; not retryable.
+    DOCUMENT_NOT_ARCHIVED = "document_not_archived"
+    #: The table-session family (1kg.2.3). ``inactive`` is SEC-46's one table
+    #: answer — a 404 for every signed-in caller not entitled, whatever the
+    #: reason; ``cross_site`` is SEC-45's Fetch Metadata refusal, a 403 that
+    #: depends on nothing but those headers; ``screen_limit`` is SEC-48's
+    #: per-session bound on screens; ``live_elsewhere`` is a Start while the
+    #: GM's table is live in another campaign (REVEAL-2): the client ends that
+    #: one first, and Start never ends it on its own.
+    INACTIVE = "inactive"
+    CROSS_SITE = "cross_site"
+    SCREEN_LIMIT = "screen_limit"
+    LIVE_ELSEWHERE = "live_elsewhere"
+    #: Named groups (btb). Each 409 is reachable only by the campaign's owner,
+    #: after ownership was shown (SEC-3); neither names a value (SEC-20).
+    #: ``group_name_taken``: another live group of the campaign has that name,
+    #: up to case. ``group_cap_reached``: the campaign's 51st live group.
+    GROUP_NAME_TAKEN = "group_name_taken"
+    GROUP_CAP_REACHED = "group_cap_reached"
 
 
 # ── Registry facts the validators need (pinned by registry.json) ─────────────
@@ -1040,6 +1078,15 @@ def _is_empty(kind: FieldKind, value: Any) -> bool:
         return not value
     # ``asset``, ``integer`` and ``abilities`` all clear to ``null``.
     return value is None
+
+
+def is_empty_value(kind: FieldKind, value: Any) -> bool:
+    # justification: the same bare JSON value :func:`_is_empty` takes.
+    """The contract's one definition of *empty*, for a caller outside this
+    module (``1kg.5.4``'s generated fields strip an empty optional value rather
+    than store it). It delegates, so there is never a second definition. The
+    caller hands it a value of the kind's own JSON type."""
+    return _is_empty(kind, value)
 
 
 def check_fields(
@@ -1749,8 +1796,6 @@ ALT_MAX_CHARS = 300
 CUE_TITLE_MAX_CHARS = 200
 CUE_PAGE_MAX_ITEMS = 50
 PRESENCE_MAX_PARTICIPANTS = 100
-#: ``secrets.token_urlsafe(32)``: 32 CSPRNG bytes are 43 base64url characters (SEC-5).
-TABLE_SECRET_CHARS = 43
 
 
 class AssetKind(str, Enum):
@@ -2024,9 +2069,11 @@ class CueStopRequest(_Contract):
 
 
 # ── Table sessions ───────────────────────────────────────────────────────────
-
-#: A table token or an enrolment code as it travels — once, in a POST body (SEC-8, SEC-11).
-TableSecret = Annotated[str, StringConstraints(strict=True, pattern=rf"^[A-Za-z0-9_-]{{{TABLE_SECRET_CHARS}}}$")]
+#
+# Reopened by threat model §15.11 and rebuilt by 1kg.2.3 (L-14): there is no
+# table link, no join and no enrolment, so no token is on the wire for any
+# account (SEC-41, SEC-43). The one bearer secret left, the screen grant
+# (SEC-48, D-13), leaves the server in a `Set-Cookie` header and is in no body.
 
 
 class TableRole(str, Enum):
@@ -2034,61 +2081,34 @@ class TableRole(str, Enum):
     GUEST = "guest"
 
 
-class JoinStatus(str, Enum):
-    """``inactive`` is the one answer for a wrong, ended, expired or rotated token
-    (TABLE-9); ``full`` is the device bound (SEC-10)."""
-
-    JOINED = "joined"
-    FULL = "full"
-    INACTIVE = "inactive"
-
-
-class TableJoinRequest(_Contract):
-    schema_version: SchemaVersion
-    token: TableSecret
-
-
-class TableJoinResponse(_Contract):
-    """One shape for every outcome, and the role the device joined with — a
-    participant, or a guest with TABLE-13's line — only when it joined."""
-
-    schema_version: SchemaVersion
-    status: JoinStatus
-    role: TableRole | None
-
-    @model_validator(mode="after")
-    def _role_only_when_joined(self) -> Self:
-        if (self.role is not None) != (self.status is JoinStatus.JOINED):
-            raise ValueError("a role comes with a join, and only with a join")
-        return self
-
-
-class EnrolStatus(str, Enum):
-    """``inactive`` covers used, replaced, expired and invalid alike (TABLE-16)."""
-
-    ENROLLED = "enrolled"
-    INACTIVE = "inactive"
-
-
-class EnrolRequest(_Contract):
-    schema_version: SchemaVersion
-    code: TableSecret
-
-
-class EnrolResponse(_Contract):
-    schema_version: SchemaVersion
-    status: EnrolStatus
-
-
 class SessionState(str, Enum):
+    """``ended`` covers an End and an expiry alike: a session past ``ends_at``
+    reads ``ended``, with ``ended_at`` its ``ends_at`` (SEC-42)."""
+
     LIVE = "live"
     ENDED = "ended"
 
 
+#: How many screens a ``TableSession`` may list. Above SEC-48's per-session
+#: bound (four, *suggested*), so that tuning the bound is not a contract change.
+TABLE_SCREENS_MAX = 16
+
+
+class TableScreen(_Contract):
+    """One live screen of a live session as its GM sees it (SEC-48, D-13): an id
+    to revoke it by, when it was made and when it was last seen. Never the grant,
+    its digest or its generation (SEC-5, SEC-15)."""
+
+    screen_id: OpaqueId
+    created_at: Timestamp
+    last_seen_at: Timestamp | None
+
+
 class TableSession(_Contract):
-    """The GM's view of a session (REVEAL-2, REVEAL-17): its state, its link
-    generation, when it ends, whether table audio is on, and how many devices
-    hold a credential (SEC-10). The token itself is not here — it travels once."""
+    """The GM's view of a session (REVEAL-2, REVEAL-17): its state, its
+    admission generation (``gen``, §15.11), when it ends, whether table audio is
+    on, and the screens that hold a live grant. No secret is here, and none is
+    anywhere else on the wire: a screen's grant travels in its cookie alone."""
 
     schema_version: SchemaVersion
     session_id: OpaqueId
@@ -2110,7 +2130,8 @@ class TableSession(_Contract):
     ends_at: Timestamp
     ended_at: Timestamp | None
     audio: StrictBool
-    devices: Annotated[WireInt, Field(ge=0, le=1000)]
+    #: The live grants of a live session, oldest first; none once it has ended.
+    screens: Annotated[list[TableScreen], Field(max_length=TABLE_SCREENS_MAX)]
 
     @model_validator(mode="after")
     def _times_agree(self) -> Self:
@@ -2118,6 +2139,8 @@ class TableSession(_Contract):
             raise ValueError("an ended session says when, and a live one does not")
         if self.ends_at <= self.started_at:
             raise ValueError("a session ends after it starts")
+        if self.screens and self.state is SessionState.ENDED:
+            raise ValueError("an ended session has no live screen")
         return self
 
 
@@ -2128,35 +2151,71 @@ class SessionAction(str, Enum):
 
 
 class TableSessionRequest(_Contract):
-    """Start, End and Rotate (REVEAL-17), idempotent by ``command_id``. Rotate may
-    also reset every personal link; nothing else may."""
+    """Start, End and Rotate (REVEAL-17), idempotent by ``command_id``. The
+    path names the campaign. End and Rotate name the session they act on, so a
+    retried End of yesterday's session can never end today's; Start names none,
+    because it makes one."""
 
     schema_version: SchemaVersion
     command_id: CommandId
-    campaign_id: OpaqueId
     action: SessionAction
-    reset_personal_links: StrictBool = False
+    session_id: OpaqueId | None = None
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def _sent_means_a_value(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("send a session id, or leave the key out")
+        return value
 
     @model_validator(mode="after")
-    def _reset_only_with_rotate(self) -> Self:
-        if self.reset_personal_links and self.action is not SessionAction.ROTATE:
-            raise ValueError("personal links are reset with a rotation, not with a start or an end")
+    def _a_session_for_end_and_rotate(self) -> Self:
+        if (self.session_id is not None) != (self.action is not SessionAction.START):
+            raise ValueError("End and Rotate name their session, and Start names none")
         return self
+
+    @model_serializer(mode="wrap")
+    def _no_session_key_for_start(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """A Start is emitted without the key, as it was sent: ``null`` is not a
+        value the contract accepts for it."""
+        emitted: dict[str, Any] = handler(self)
+        if emitted.get("session_id") is None:
+            emitted.pop("session_id", None)
+        return emitted
 
 
 class TableSessionAnswer(_Contract):
-    """The answer to a session request. A start or a rotation carries the new
-    table token — the one time it is in a body (SEC-8) — and an end carries none."""
+    """The answer to a session request and to the GM's status read: the session,
+    or ``null`` for the status of a campaign that never started one. No answer
+    carries a token (§15.11): there is none."""
 
     schema_version: SchemaVersion
-    session: TableSession
-    token: TableSecret | None
+    session: TableSession | None
 
-    @model_validator(mode="after")
-    def _token_only_while_live(self) -> Self:
-        if (self.token is not None) != (self.session.state is SessionState.LIVE):
-            raise ValueError("a live session answers with its token, and an ended one with none")
-        return self
+
+class ScreenMintRequest(_Contract):
+    """Make this browser a table screen (SEC-48, D-13): the owner names the
+    campaign whose live session it will show. The same answer signs the account
+    out of this browser."""
+
+    schema_version: SchemaVersion
+    campaign_id: OpaqueId
+
+
+class ScreenMintAnswer(_Contract):
+    """What a new screen is told: when its grant ends, with its session. No id,
+    no generation and no session id (SEC-15); the grant is in the answer's
+    ``Set-Cookie`` and nowhere else."""
+
+    schema_version: SchemaVersion
+    ends_at: Timestamp
+
+
+class TableLeaveRequest(_Contract):
+    """Leave (SEC-49): this browser stops being a screen. It names nothing — the
+    grant it ends is the cookie the request carries."""
+
+    schema_version: SchemaVersion
 
 
 class Capabilities(_Contract):
@@ -2964,9 +3023,9 @@ class TableSlotName(str, Enum):
 
     Deliberately *not* a ``RevealSlotRef``: a slot reference carries a
     participant id, and every table-side shape in this contract is id-free —
-    ``TableRole`` is an enum, ``TableJoinResponse`` answers with a role and no
-    id, ``EnrolResponse`` with a status alone. Which participant ``mine`` is,
-    the server resolves from the credential pair, "never from request fields"
+    ``TableRole`` is an enum, and ``ScreenMintAnswer`` carries a time alone.
+    Which participant ``mine`` is, the server resolves from the table principal,
+    "never from request fields"
     (eligibility ADR §4), so the id never has to be on the wire at all (SEC-15).
 
     It also carries no ``disclosure_id`` and no count: under owner decision O-3
@@ -3177,25 +3236,23 @@ CONVERSATION_PAGE_MAX_ITEMS = 100
 #: 0006's CHECK, in code points on both sides (``service.conversation_store.TITLE_MAX_CHARS``).
 CONVERSATION_TITLE_MAX_CHARS = 200
 
-#: The code points a title may not hold, spelled out by code point (ruling A2-9):
-#: the C0 and C1 controls, and the bidirectional embeddings, overrides and
-#: isolates, which can make a title read as something else. The client refuses
-#: exactly this set (``contracts.ts``).
-REFUSED_IN_A_TITLE: frozenset[int] = frozenset(
-    (*range(0x00, 0x20), *range(0x7F, 0xA0), *range(0x202A, 0x202F), *range(0x2066, 0x206A))
-)
-
-
 def _a_conversation_title(value: str) -> str:
     """A title as a request sends it: trimmed as the client trims, then 1 to 200
-    code points, with none of ``REFUSED_IN_A_TITLE`` left inside. The trimmed
-    value is what is stored. The refusal names the field, never the title."""
+    code points, held to one line (:func:`_one_line` — a title is not the place
+    for a multi-line prose field's line breaks), with none of
+    :data:`REFUSED_TEXT_CODE_POINTS` left inside either — the one shared
+    stored-text rule (lead ruling of 2026-09-21), not a title-only list. Ruling
+    A2-9 originally gave titles their own, narrower ``REFUSED_IN_A_TITLE``;
+    agent-forge-harness-644 retired it, since a conversation title is stored
+    text (0006 ``conversations.title``) like any other :func:`check_plain_text`
+    refuses, and a second opinion here could only drift from the first. The
+    one-line-plus-plain-text composition below mirrors ``ui/src/gm/contracts.ts``'s
+    ``plainOneLine`` (a cue's title and the like). The trimmed value is what is
+    stored. The refusal names the field, never the title."""
     trimmed = trim(value)
     if not 1 <= len(trimmed) <= CONVERSATION_TITLE_MAX_CHARS:
         raise ValueError(f"a title is 1 to {CONVERSATION_TITLE_MAX_CHARS} characters after trimming")
-    if any(ord(character) in REFUSED_IN_A_TITLE for character in trimmed):
-        raise ValueError("a title holds no control or bidirectional-formatting characters")
-    return trimmed
+    return check_plain_text(_one_line(trimmed))
 
 
 #: What a client may send as a title.
@@ -3292,6 +3349,424 @@ class ConversationPatchRequest(_Contract):
         return {key: value for key, value in emitted.items() if key in self.model_fields_set}
 
 
+# ── Campaigns and seats (1kg.2.2) ────────────────────────────────────────────
+#
+# A GM's campaigns and the seats at their table (`/campaigns`), and an account's
+# own side of it (`/seats`): the offers made to its verified address and the
+# seats it holds. No numeric account id is on the wire anywhere in this family
+# (SEC-50(1)), and nothing on the account side carries an address, a campaign
+# owner or a participant id (SEC-43, SEC-50(4)).
+
+#: A page of any list in this family.
+CAMPAIGN_PAGE_MAX_ITEMS = 50
+#: 0004's CHECK on `campaigns.name`, in code points on both sides.
+CAMPAIGN_NAME_MAX_CHARS = 120
+#: 0004's CHECK on `participants.alias` (`participant_store.ALIAS_MAX_CHARS`).
+SEAT_ALIAS_MAX_CHARS = 40
+#: 0012's CHECK on `seat_offers.address`, and `service/models.py`'s
+#: `MAX_EMAIL_LENGTH` (RFC 5321's practical maximum).
+EMAIL_MIN_CHARS = 3
+EMAIL_MAX_CHARS = 254
+#: `service/models.py`'s `MAX_PASSWORD_LENGTH`.
+PASSWORD_MAX_CHARS = 1024
+#: 0013's CHECK on `campaigns.tone`, the card's tone line (bead cfx).
+CAMPAIGN_TONE_MAX_CHARS = 80
+#: The most seats a campaign holds, open, offered and accepted alike: the cap
+#: `service/campaigns_api.py` enforces under the campaign lock (SEC-50(3)).
+CAMPAIGN_SEATS_MAX = 40
+
+
+def is_email_shaped(value: str) -> bool:
+    """The one-line structural rule of ``service/models.py::_validate_email``,
+    restated (bead 1kg.2.2, L-7): an ``@`` that is neither first nor last, and
+    no U+0020 space. Restated rather than called, because that function is
+    private to its module and strips with Python's ``str.strip``, whose set is
+    not the wire's ``trim``; ``isEmailShaped`` in ``contracts.ts`` is its twin.
+    Deliverability is never judged — the verified address is the trust anchor."""
+    return "@" in value and not value.startswith("@") and not value.endswith("@") and " " not in value
+
+
+def _stored_request_text(value: str, *, low: int, high: int, what: str) -> str:
+    """Trimmed as the client trims, bounded in code points, and plain text
+    (``check_plain_text``). The trimmed value is what is stored. A refusal names
+    the rule, never the value."""
+    trimmed = trim(value)
+    if not low <= len(trimmed) <= high:
+        raise ValueError(f"{what} is {low} to {high} characters after trimming")
+    check_plain_text(trimmed)
+    return trimmed
+
+
+def _a_campaign_name(value: str) -> str:
+    return _stored_request_text(value, low=1, high=CAMPAIGN_NAME_MAX_CHARS, what="a campaign name")
+
+
+def _a_campaign_tone(value: str) -> str:
+    return _stored_request_text(value, low=1, high=CAMPAIGN_TONE_MAX_CHARS, what="a tone line")
+
+
+def _a_seat_alias(value: str) -> str:
+    """The contract's half of an alias. The server's ``check_alias`` is
+    stricter still (NFC, collapsed whitespace, no invisible characters) and
+    refuses the rest with the same 422 before any statement."""
+    return _stored_request_text(value, low=1, high=SEAT_ALIAS_MAX_CHARS, what="an alias")
+
+
+def _an_email_address(value: str) -> str:
+    trimmed = _stored_request_text(value, low=EMAIL_MIN_CHARS, high=EMAIL_MAX_CHARS, what="an address")
+    if not is_email_shaped(trimmed):
+        raise ValueError("an address has an @ that is neither first nor last, and no space")
+    return trimmed
+
+
+def _a_password(value: SecretStr) -> SecretStr:
+    """Well-formed text, as every string the server hashes must be: argon2
+    encodes it as UTF-8, which cannot carry a lone surrogate. The refusal names
+    the rule and never the value."""
+    _well_formed(value.get_secret_value())
+    return value
+
+
+#: What a client may send as a campaign's name; what the server answers with is
+#: read as stored — bounded, with no trim rule.
+CampaignNameRequest = Annotated[WireText, AfterValidator(_a_campaign_name)]
+CampaignName = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=CAMPAIGN_NAME_MAX_CHARS)]
+CampaignToneRequest = Annotated[WireText, AfterValidator(_a_campaign_tone)]
+CampaignTone = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=CAMPAIGN_TONE_MAX_CHARS)]
+#: A Material Symbols name, the tool registry's icon rule. The server picks one
+#: per campaign from a palette it may extend, so the wire bounds the shape and
+#: names no list (`service/campaign_summary_store.py`, AVATAR_ICONS).
+AvatarIcon = Annotated[str, StringConstraints(strict=True, pattern=r"^[a-z0-9_]{1,40}$")]
+SeatCount = Annotated[WireInt, Field(ge=0, le=CAMPAIGN_SEATS_MAX)]
+SeatAliasRequest = Annotated[WireText, AfterValidator(_a_seat_alias)]
+SeatAlias = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=SEAT_ALIAS_MAX_CHARS)]
+EmailAddress = Annotated[WireText, AfterValidator(_an_email_address)]
+StoredEmailAddress = Annotated[
+    str, StringConstraints(strict=True, min_length=EMAIL_MIN_CHARS, max_length=EMAIL_MAX_CHARS)
+]
+
+
+class SeatStatus(str, Enum):
+    """A seat as its GM sees it, derived by one function in both worlds
+    (``service.seat_offer_store.seat_status``). The wording a GM reads is the
+    design lane's; these are the states."""
+
+    OPEN = "open"
+    OFFERED = "offered"
+    NOT_ACCEPTED = "not_accepted"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    CONFIRMED = "confirmed"
+    REMOVED = "removed"
+
+
+class GameSystem(str, Enum):
+    """The rules a campaign is played under: the card's system chip. One value,
+    because the service answers from the D&D 5e books alone (0013's CHECK)."""
+
+    DND5E = "dnd5e"
+
+
+class AvatarTone(str, Enum):
+    """A campaign avatar's colour family: the spec's two card tones."""
+
+    EMBER = "ember"
+    GOLD = "gold"
+
+
+class CampaignBadge(str, Enum):
+    """The one badge a card carries, or none — which means idle (bead cfx).
+    ``live``: a table session is running now. ``ready``: the next session has
+    prepared material waiting (interactions ADR §19 A-31)."""
+
+    LIVE = "live"
+    READY = "ready"
+
+
+class Campaign(_Contract):
+    """One of the GM's campaigns. Every key is present; ``archived_at`` is
+    ``null`` for a campaign in use. The owner is the session and is never on the
+    wire.
+
+    The card's facts (bead cfx) ride on every answer that carries a campaign:
+    what the GM states — ``tone`` (optional), ``game_system``, ``concluded_at``
+    — and what the server derives at read time: the avatar, the badge, the seat
+    count, ``last_activity_at`` (the latest of a session played, a document
+    edited and a GM turn, never before ``created_at``), ``last_played_at``
+    (``null`` until the table first meets) and ``dormant``. Concluded is not
+    archived: a concluded campaign keeps its seats, documents and table."""
+
+    schema_version: SchemaVersion
+    campaign_id: OpaqueId
+    name: CampaignName
+    created_at: Timestamp
+    updated_at: Timestamp
+    archived_at: Timestamp | None
+    concluded_at: Timestamp | None
+    tone: CampaignTone | None
+    game_system: GameSystem
+    avatar_icon: AvatarIcon
+    avatar_tone: AvatarTone
+    badge: CampaignBadge | None
+    seat_count: SeatCount
+    last_activity_at: Timestamp
+    last_played_at: Timestamp | None
+    dormant: StrictBool
+
+
+class CampaignPage(_Contract):
+    """The GM's campaigns, newest first. A short page is not the end of the
+    list; only a ``null`` cursor is."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[Campaign], Field(max_length=CAMPAIGN_PAGE_MAX_ITEMS)]
+    next_cursor: Cursor | None
+
+
+class CampaignCreateRequest(_Contract):
+    """``POST /campaigns``: the caller becomes its GM (D-5). No ``command_id``:
+    a retried create makes a second campaign, which archive recovers. Only a
+    name is required (§12.2); a tone line is optional (§19 A-31)."""
+
+    schema_version: SchemaVersion
+    name: CampaignNameRequest
+    tone: CampaignToneRequest | None = None
+
+
+class CampaignPatchRequest(_Contract):
+    """``PATCH /campaigns/{id}``: rename, archive, restore, and set the tone
+    line. At least one key. ``name`` and ``archived`` are never ``null``;
+    ``tone: null`` clears the tone line, which is how a line is removed."""
+
+    schema_version: SchemaVersion
+    name: CampaignNameRequest | None = None
+    archived: StrictBool | None = None
+    tone: CampaignToneRequest | None = None
+
+    @field_validator("name", "archived", mode="before")
+    @classmethod
+    def _sent_means_a_value(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("send a value, or leave the key out")
+        return value
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> Self:
+        if not self.model_fields_set - {"schema_version"}:
+            raise ValueError("a patch names at least one of name, archived and tone")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _only_what_was_sent(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        emitted: dict[str, Any] = handler(self)
+        return {key: value for key, value in emitted.items() if key in self.model_fields_set}
+
+
+class Seat(_Contract):
+    """A seat as its GM sees it. ``address`` is the latest offer's address as
+    the GM typed it — for an accepted seat, the verified address the account
+    accepted under, up to ASCII case (SEC-50(4), (5)) — and ``null`` for a seat
+    never offered. There is no account id (SEC-50(1))."""
+
+    schema_version: SchemaVersion
+    participant_id: OpaqueId
+    alias: SeatAlias
+    status: SeatStatus
+    address: StoredEmailAddress | None
+    created_at: Timestamp
+    offered_at: Timestamp | None
+    offer_expires_at: Timestamp | None
+    accepted_at: Timestamp | None
+    confirmed_at: Timestamp | None
+    removed_at: Timestamp | None
+
+
+class SeatPage(_Contract):
+    """A campaign's seats, oldest first."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[Seat], Field(max_length=CAMPAIGN_PAGE_MAX_ITEMS)]
+    next_cursor: Cursor | None
+
+
+class SeatCreateRequest(_Contract):
+    """``POST /campaigns/{id}/participants``: an open seat. A retried add of
+    the same alias is ``409 alias_taken``, its defined behaviour."""
+
+    schema_version: SchemaVersion
+    alias: SeatAliasRequest
+
+
+class SeatOfferRequest(_Contract):
+    """``POST …/participants/{id}/offer``: an ADDRESS, never an account
+    (SEC-50(1)). The answer is ``204`` whatever the address holds."""
+
+    schema_version: SchemaVersion
+    email: EmailAddress
+
+
+class SeatRemoveRequest(_Contract):
+    """``POST …/participants/{id}/remove``: removing a seat asks for the
+    password again (SEC-40). Write-only, hidden from ``repr``, never echoed."""
+
+    schema_version: SchemaVersion
+    password: Annotated[SecretStr, Field(min_length=1, max_length=PASSWORD_MAX_CHARS), AfterValidator(_a_password)]
+
+
+class DocumentDeleteRequest(_Contract):
+    """``POST /campaigns/{id}/documents/{id}/delete``: deleting a document takes
+    its whole history with it and cannot be undone, so it asks for the password
+    again (SEC-40; the 1kg.5.2 brief's I-13). Write-only, hidden from ``repr``,
+    never echoed."""
+
+    schema_version: SchemaVersion
+    password: Annotated[SecretStr, Field(min_length=1, max_length=PASSWORD_MAX_CHARS), AfterValidator(_a_password)]
+
+
+class SeatOffer(_Contract):
+    """An offer as its invitee sees it: what the GM wrote and chose to send, and
+    nothing that names the GM's account, the campaign's id or the seat's
+    (SEC-50(4))."""
+
+    schema_version: SchemaVersion
+    offer_id: OpaqueId
+    campaign_name: CampaignName
+    alias: SeatAlias
+    offered_at: Timestamp
+    expires_at: Timestamp
+
+
+class SeatOfferPage(_Contract):
+    """The offers made to the caller's verified address, newest first."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[SeatOffer], Field(max_length=CAMPAIGN_PAGE_MAX_ITEMS)]
+    next_cursor: Cursor | None
+
+
+class SeatDeclineRequest(_Contract):
+    """``POST /seats/offers/{id}/decline``; ``block`` also refuses every later
+    offer from that GM, silently."""
+
+    schema_version: SchemaVersion
+    block: StrictBool
+
+
+class PlayerSeat(_Contract):
+    """One of the caller's own seats. ``campaign_id`` is what the table address
+    will name (SEC-43); a participant id never reaches a table client.
+
+    The seated card's facts (bead cfx) are the table's and nothing more: the
+    GM's tone line and system, the avatar, whether the campaign is concluded,
+    when the table last met and whether it is meeting now. Nothing about other
+    players — no seat count, no other seat — and no signal of the GM's private
+    prep: no READY, no last-edit time."""
+
+    schema_version: SchemaVersion
+    campaign_id: OpaqueId
+    campaign_name: CampaignName
+    alias: SeatAlias
+    accepted_at: Timestamp
+    confirmed: StrictBool
+    tone: CampaignTone | None
+    game_system: GameSystem
+    avatar_icon: AvatarIcon
+    avatar_tone: AvatarTone
+    concluded: StrictBool
+    last_played_at: Timestamp | None
+    live: StrictBool
+
+
+class PlayerSeatPage(_Contract):
+    """The caller's seats, newest acceptance first."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[PlayerSeat], Field(max_length=CAMPAIGN_PAGE_MAX_ITEMS)]
+    next_cursor: Cursor | None
+
+
+# ── Named groups (btb) ───────────────────────────────────────────────────────
+#
+# A GM's named groups of seats (owner decision O-3; shared eligibility ADR ED-4,
+# ED-12, ED-13, ED-15), served by `btb`'s GM routes under
+# `/campaigns/{id}/groups`. A group's name and its members are GM-only: no
+# table-side shape carries either, and the audience a table sees never names a
+# group (ED-15, REVEAL-24). A group is a label, **not an audience**: its members
+# include seats the GM has not confirmed, so whatever delivers to a group's
+# members applies SEC-50(5) seat by seat.
+
+#: 0019's CHECK on `groups.name`, and ``eligibility_store.check_group_name``'s bound.
+GROUP_NAME_MAX_CHARS = 40
+#: ``eligibility_store.GROUPS_PER_CAMPAIGN_MAX``: one page holds every live group.
+GROUP_PAGE_MAX_ITEMS = 50
+
+
+def _a_group_name(value: str) -> str:
+    """The contract's half of a group name. The server's ``check_group_name``
+    (the alias rules) is stricter still and refuses the rest with the same 422
+    before any statement."""
+    return _stored_request_text(value, low=1, high=GROUP_NAME_MAX_CHARS, what="a group name")
+
+
+def _distinct_members(ids: list[str]) -> list[str]:
+    """A group holds a seat once. Not ``_distinct_ids``: that one words a
+    recipient list, and a group's members are not recipients."""
+    if len(set(ids)) != len(ids):
+        raise ValueError("a group names each seat once")
+    return ids
+
+
+#: What a client may send as a group's name; what the server answers with is
+#: read as stored — bounded, with no trim rule.
+GroupNameRequest = Annotated[WireText, AfterValidator(_a_group_name)]
+GroupName = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=GROUP_NAME_MAX_CHARS)]
+
+
+class Group(_Contract):
+    """A GM's named group of seats. GM-only: never on a table channel (SEC-44).
+
+    ``member_ids`` are the seats in it that are not removed, distinct, ascending
+    by code point. They include seats that are open, offered, or accepted and
+    not yet confirmed, so they are **not recipients**: a consumer that delivers
+    to them applies SEC-50(5) and A-27 per seat. No campaign id and no removed
+    state: a removed group is never listed, and is never restored."""
+
+    schema_version: SchemaVersion
+    group_id: OpaqueId
+    name: GroupName
+    member_ids: Annotated[list[OpaqueId], Field(max_length=CAMPAIGN_SEATS_MAX), AfterValidator(_distinct_members)]
+    created_at: Timestamp
+    updated_at: Timestamp
+
+
+class GroupPage(_Contract):
+    """The campaign's live groups, by the name's fold, then id. One page:
+    ``next_cursor`` is always ``null`` today, and the key stays so that paging
+    can arrive without a version bump."""
+
+    schema_version: SchemaVersion
+    items: Annotated[list[Group], Field(max_length=GROUP_PAGE_MAX_ITEMS)]
+    next_cursor: Cursor | None
+
+
+class GroupCreateRequest(_Contract):
+    """``POST /campaigns/{id}/groups``: an empty group. Keyed: live names are
+    unique, so an unkeyed retry of a create that landed would be ``409
+    group_name_taken``. A repeat of the key answers the group it made, whatever
+    name the repeat sends. Members are added one by one, each its own change."""
+
+    schema_version: SchemaVersion
+    command_id: CommandId
+    name: GroupNameRequest
+
+
+class GroupPatchRequest(_Contract):
+    """``PATCH /campaigns/{id}/groups/{group_id}``: a rename, and only that.
+    Removal is its own route and cannot be undone, so there is no archive."""
+
+    schema_version: SchemaVersion
+    name: GroupNameRequest
+
+
 #: Name → validator, in the order ``contracts/workbench/v1/schemas.json`` lists them.
 CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "Timestamp": TypeAdapter(Timestamp, config=_HIDE_INPUT),
@@ -3309,6 +3784,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "FieldPatchRequest": TypeAdapter(FieldPatchRequest),
     "DocumentCreateRequest": TypeAdapter(DocumentCreateRequest),
     "RestoreRequest": TypeAdapter(RestoreRequest),
+    "DocumentDeleteRequest": TypeAdapter(DocumentDeleteRequest),
     "EditRequest": TypeAdapter(EditRequest),
     "EditInvocation": TypeAdapter(EditInvocation),
     "LibraryQuery": TypeAdapter(LibraryQuery),
@@ -3325,13 +3801,12 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "CuePage": TypeAdapter(CuePage),
     "CuePlayRequest": TypeAdapter(CuePlayRequest),
     "CueStopRequest": TypeAdapter(CueStopRequest),
-    "TableJoinRequest": TypeAdapter(TableJoinRequest),
-    "TableJoinResponse": TypeAdapter(TableJoinResponse),
-    "EnrolRequest": TypeAdapter(EnrolRequest),
-    "EnrolResponse": TypeAdapter(EnrolResponse),
     "TableSession": TypeAdapter(TableSession),
     "TableSessionRequest": TypeAdapter(TableSessionRequest),
     "TableSessionAnswer": TypeAdapter(TableSessionAnswer),
+    "ScreenMintRequest": TypeAdapter(ScreenMintRequest),
+    "ScreenMintAnswer": TypeAdapter(ScreenMintAnswer),
+    "TableLeaveRequest": TypeAdapter(TableLeaveRequest),
     "Capabilities": TypeAdapter(Capabilities),
     "RevealAudience": TypeAdapter(RevealAudience, config=_HIDE_INPUT),
     "RevealSlotRef": TypeAdapter(RevealSlotRef, config=_HIDE_INPUT),
@@ -3348,4 +3823,22 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "ConversationPage": TypeAdapter(ConversationPage),
     "ConversationCreateRequest": TypeAdapter(ConversationCreateRequest),
     "ConversationPatchRequest": TypeAdapter(ConversationPatchRequest),
+    "Campaign": TypeAdapter(Campaign),
+    "CampaignPage": TypeAdapter(CampaignPage),
+    "CampaignCreateRequest": TypeAdapter(CampaignCreateRequest),
+    "CampaignPatchRequest": TypeAdapter(CampaignPatchRequest),
+    "Seat": TypeAdapter(Seat),
+    "SeatPage": TypeAdapter(SeatPage),
+    "SeatCreateRequest": TypeAdapter(SeatCreateRequest),
+    "SeatOfferRequest": TypeAdapter(SeatOfferRequest),
+    "SeatRemoveRequest": TypeAdapter(SeatRemoveRequest),
+    "SeatOffer": TypeAdapter(SeatOffer),
+    "SeatOfferPage": TypeAdapter(SeatOfferPage),
+    "SeatDeclineRequest": TypeAdapter(SeatDeclineRequest),
+    "PlayerSeat": TypeAdapter(PlayerSeat),
+    "PlayerSeatPage": TypeAdapter(PlayerSeatPage),
+    "Group": TypeAdapter(Group),
+    "GroupPage": TypeAdapter(GroupPage),
+    "GroupCreateRequest": TypeAdapter(GroupCreateRequest),
+    "GroupPatchRequest": TypeAdapter(GroupPatchRequest),
 }

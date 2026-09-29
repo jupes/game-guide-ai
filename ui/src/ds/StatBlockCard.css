@@ -114,7 +114,7 @@
 .stat-block-card__details {
   padding: 16px 24px 18px;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr));
   gap: 6px 28px;
   border-bottom: 1px solid var(--md-sys-color-outline-variant);
 }

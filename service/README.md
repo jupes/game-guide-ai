@@ -115,10 +115,10 @@ Attachment **metadata** only (extracted text never leaves the server); health + 
 | --- | --- |
 | `401` | No / invalid / expired session, or the account no longer exists |
 | `403` | Wrong role for the channel (GM is DM-only), or another user's conversation |
-| `422` | Validation (empty prompt, unknown mode, bad upload body, bad credentials shape) |
+| `422` | Validation (empty prompt, unknown mode, bad upload body, bad credentials shape), or a request the model provider rejects as invalid, at generation or at query embedding (`invalid_request`) |
 | `429` | Auth attempt budget exhausted for this account or source — carries `Retry-After` and `X-Auth-Throttled: 1`. That header marks the response as *ours*: Cloud Run also returns 429 when no instance is available, and nothing else distinguishes them |
-| `502` | LLM upstream failed (timeout/rate limit) — retryable |
-| `503` | Retrieval backend, embedding (missing `OPENAI_API_KEY`), store or auth unavailable, `SESSION_SECRET` unusable, or hashing capacity exhausted |
+| `502` | Generation's LLM upstream failed (timeout, connection, 5xx, credentials, quota) — retryable where the body says so. Never an embedding failure: that is a `503` |
+| `503` | Retrieval backend (vector search, chunk fetch, the GM secondary corpus), embedding (a missing `OPENAI_API_KEY`, or any embeddings API failure except an invalid request), store or auth unavailable, the conversation routing store (strategy binding) unavailable, `SESSION_SECRET` unusable, or hashing capacity exhausted. A reranker failure is not an error: the answer keeps the vector order |
 | `500` | Bug in our code (full traceback logged) |
 
 History writes are **best-effort by design**: a failed persist logs a warning and never
@@ -207,8 +207,12 @@ fails CI if either front end is missing one; see also the proxy invariant in
 | `RAG_SNIPPET_MAX` | `240` | display-snippet length |
 | `RAG_ANSWERABLE_DISTANCE` | `0.50` | koz grounding gate (top-1 cosine distance) |
 | `RAG_FALLBACK_DISTANCE` | `0.42` | ipl filtered→unfiltered retry — **eval-only**, never used live |
+| `RAG_EMBED_REQUEST_TIMEOUT_S` | `10` | per-wait bound on one query-embedding attempt; the service makes 2 attempts on a transient fault, no SDK retries (30.5 s worst case against a silent provider) |
+| `RAG_EMBED_CONNECT_TIMEOUT_S` | `5` | connect bound for the same embeddings client |
 | `RAG_DEFAULT_MODEL` | `gpt-4o-mini` | generation model |
 | `RAG_TEMPERATURE` | `0.2` | generation temperature |
+| `RAG_LLM_REQUEST_TIMEOUT_S` | `60` | per-attempt provider request timeout (agent-forge-harness-ihz); must be finite and > 0 |
+| `RAG_LLM_CONNECT_TIMEOUT_S` | `5` | per-attempt provider connect timeout; must be finite and > 0 |
 | `RAG_HISTORY_LIMIT` | `50` | messages returned per conversation |
 | `RAG_ATTACHMENT_MAX_BYTES` | `2000000` | max decoded upload size |
 | `RAG_ATTACHMENT_MAX_CHARS` | `6000` | max attachment chars injected into the prompt |

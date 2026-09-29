@@ -3,8 +3,8 @@ Context assembly + grounded answer generation (gpt-4o-mini).
 
 `build_context` and `build_sources` are pure (no network) and operate on a
 `RetrievalResult` using **full** chunk text (the 120-char preview is too short to
-ground an answer — see the plan review). `generate_answer` calls the LLM and
-accepts an injected client for tests.
+ground an answer — see the plan review). `generate_answer` calls the LLM
+through the client it is handed (the ProviderClientFactory's, or a test fake).
 """
 
 from __future__ import annotations
@@ -14,14 +14,16 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+import httpx
 import openai
 from langchain_core.messages import HumanMessage, SystemMessage
 
 # Env-overridable tuning knobs live in the single top-level config module.
 # DEFAULT_MODEL is re-exported here for `from .generate import DEFAULT_MODEL`.
-from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX, TEMPERATURE
+from config import ATTACHMENT_MAX_CHARS, CONTEXT_TOP_N, DEFAULT_MODEL, SNIPPET_MAX
 from ingestion.retrieval import RetrievalResult
 
+from . import provider_deadline
 from .attachments import cap_text
 from .models import Source, SpellContent, StatBlockContent, Suggestion, SuggestionStyle
 
@@ -121,6 +123,31 @@ _MAX_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 0.5
 
 
+def _as_sdk_timeout(exc: BaseException) -> BaseException:
+    """The SDK turns an httpx timeout into APITimeoutError only while it sends
+    the request. A streamed body is read after that, so a provider that stalls
+    mid-stream escapes as httpx's own timeout (agent-forge-harness-ihz); one
+    type keeps the retry, the attempt record and /chat's mapping (timeout, 502,
+    retryable) identical for both. Anything else passes through unchanged."""
+    if not isinstance(exc, httpx.TimeoutException):
+        return exc
+    try:
+        request = exc.request
+    except RuntimeError:  # httpx raises it when no request was attached
+        request = httpx.Request("POST", "https://provider.invalid")
+    return openai.APITimeoutError(request=request)
+
+
+class TurnBudgetExhausted(openai.APITimeoutError):
+    """A provider call refused before it started: what is left of the /chat
+    turn's budget cannot afford it (agent-forge-harness-0u02). A timeout, so an
+    answer ends as /chat's 502 timeout (retryable) and a structuring call
+    degrades to None, like any timeout; no attempt is recorded, none was made."""
+
+    def __init__(self) -> None:
+        super().__init__(request=httpx.Request("POST", "https://provider.invalid"))
+
+
 def generate_result(
     messages: list[Any], *, alias: str, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
@@ -131,10 +158,16 @@ def generate_result(
     text. Records one attempt with `observer` per actual call — success or
     failure — including every retried attempt, so every attempt, latency, and
     charge stays attributable. The final failure re-raises unchanged after
-    being recorded. `alias` identifies which catalog entry made the call;
-    Checkpoint 1 has no per-request routing yet, so callers pass the
-    service's current model alias."""
+    being recorded, except that httpx's own timeout becomes the SDK's
+    APITimeoutError (`_as_sdk_timeout`). `alias` identifies which catalog
+    entry made the call; Checkpoint 1 has no per-request routing yet, so
+    callers pass the service's current model alias. Inside a /chat turn, a
+    call the turn's budget can no longer afford raises TurnBudgetExhausted
+    before any attempt, and a retry it cannot afford is not made: the last
+    attempt's own error re-raises instead."""
     obs = observer or NullAttemptObserver()
+    if not provider_deadline.turn_affords():
+        raise TurnBudgetExhausted()
     for attempt in range(1, max_attempts + 1):
         # Immediately before the call, and therefore AFTER the previous
         # attempt's backoff sleep below — which is what keeps the backoff out
@@ -144,11 +177,18 @@ def generate_result(
         try:
             resp = client.invoke(messages, config=config)
         except BaseException as exc:
-            obs.record(alias=alias, result=None, error=exc)
-            if isinstance(exc, _RETRYABLE_EXCEPTIONS) and attempt < max_attempts:
-                sleep(_RETRY_BACKOFF_SECONDS * attempt)
+            error = _as_sdk_timeout(exc)
+            obs.record(alias=alias, result=None, error=error)
+            backoff = _RETRY_BACKOFF_SECONDS * attempt
+            if (
+                isinstance(error, _RETRYABLE_EXCEPTIONS) and attempt < max_attempts
+                and provider_deadline.turn_affords(backoff)
+            ):
+                sleep(backoff)
                 continue
-            raise
+            if error is exc:
+                raise
+            raise error from exc
         content = resp.content
         text = content.strip() if isinstance(content, str) else str(content).strip()
         result = GenerationResult(
@@ -356,15 +396,11 @@ def parse_suggestions(text: str) -> list[Suggestion]:
 
 def generate_suggestions(
     question: str, context: str, *,
-    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    model: str = DEFAULT_MODEL, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> list[Suggestion]:
     """One structured LLM call for the three spell-usage ideas. Raises on any
     LLM or parse failure — the caller (graph suggest node) degrades to None."""
-    if client is None:  # pragma: no cover - live path mirrors generate_answer
-        from langchain_openai import ChatOpenAI
-
-        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
     result = generate_result(
         [
             SystemMessage(content=SUGGESTIONS_SYSTEM),
@@ -416,7 +452,7 @@ def parse_spell_content(text: str) -> SpellContent:
 
 def generate_spell_content(
     answer: str, *,
-    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    model: str = DEFAULT_MODEL, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> SpellContent:
     """One structured LLM call that extracts spell content from the already-
@@ -429,10 +465,6 @@ def generate_spell_content(
     call, no retry" behaviour — adding retries here would change cost and
     latency. `parse_spell_content` strips its input anyway, so handing it
     `GenerationResult.text` is behaviour-preserving."""
-    if client is None:  # pragma: no cover - live path mirrors generate_answer
-        from langchain_openai import ChatOpenAI
-
-        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
     result = generate_result(
         [
             SystemMessage(content=SPELL_CONTENT_SYSTEM),
@@ -512,7 +544,7 @@ def parse_stat_block(text: str) -> StatBlockContent:
 
 def generate_stat_block(
     answer: str, *,
-    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    model: str = DEFAULT_MODEL, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> StatBlockContent:
     """One structured LLM call that extracts a stat block from the already-
@@ -522,10 +554,6 @@ def generate_stat_block(
 
     Routed through `generate_result` with `max_attempts=1` for the same reasons
     as `generate_spell_content` above."""
-    if client is None:  # pragma: no cover - live path mirrors generate_answer
-        from langchain_openai import ChatOpenAI
-
-        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
     result = generate_result(
         [
             SystemMessage(content=STATBLOCK_SYSTEM),
@@ -538,25 +566,23 @@ def generate_stat_block(
 
 def generate_answer(
     question: str, context: str, *, mode: str = "sage",
-    model: str = DEFAULT_MODEL, client: LLMClient | None = None,
+    model: str = DEFAULT_MODEL, client: LLMClient,
     config: Any | None = None, observer: AttemptObserver | None = None,
 ) -> str:
     """Call gpt-4o-mini with a per-mode system prompt + grounded user message.
 
     `mode` selects the persona from PERSONA_PROMPTS (defaults to 'sage').
-    `client` is injectable for tests. `config` is the LangChain RunnableConfig
-    (Langfuse callbacks); forwarded to the model so the LLM call is traced (CP3).
+    `client` is required, here and in the three structured calls above: the
+    ProviderClientFactory's client (a fake in tests), never one built here,
+    which would skip the factory's timeouts, attempt deadline and retry
+    settings (agent-forge-harness-7gf). `config` is the LangChain
+    RunnableConfig (Langfuse callbacks); forwarded to the model so the LLM
+    call is traced (CP3).
     """
     # Defensive: callers reach here only past the grounding gate (non-empty
     # context). An empty context or question is a programming error, not input.
     if not context.strip() or not question.strip():
         raise ValueError("generate_answer requires non-empty question and context")
-    if client is None:
-        # langchain-openai ChatOpenAI — the wrapper that lets Langfuse (CP3)
-        # capture tokens/cost natively. Imported lazily so tests stay offline.
-        from langchain_openai import ChatOpenAI
-
-        client = ChatOpenAI(model=model, temperature=TEMPERATURE)
     system = PERSONA_PROMPTS.get(mode, PERSONA_PROMPTS["sage"])
     user_content = GROUNDED_TEMPLATE.format(context=context, question=question)
     result = generate_result(

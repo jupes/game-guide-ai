@@ -70,8 +70,13 @@ export function UserMenu(): React.JSX.Element {
   // descendant of `rootRef`, so Escape pressed on some other control on the
   // page (with the popover left open — it does not close on a mere Tab past
   // it, LAYOUT-10) is not this control's to intercept.
+  //
+  // agent-forge-harness-0rn: the Escape is marked handled, so the narrow
+  // workspace drawer this menu sits in (which ignores a handled Escape) stays
+  // open — the innermost surface closes first.
   function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>): void {
     if (e.key === 'Escape' && open) {
+      e.preventDefault()
       setOpen(false)
       triggerRef.current?.focus()
     }

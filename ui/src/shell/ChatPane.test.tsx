@@ -23,8 +23,32 @@ import type {
 import type { LoadHistoryFn, PostFn } from '../useChat'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import type { GetAttachmentsFn, UploadAttachmentFn } from './ChatPane'
+import { ModelPicker, type GetModelsFn } from './ModelPicker'
+import { ModelCatalogProvider } from './ModelCatalogContext'
 
 // ── CP-F5.3 — ChatPane behaviors (#21) ────────────────────────────────────────
+
+// agent-forge-harness-frc (pr126 M1): explicit ARIA roles that mark a node as
+// a live region. A plain `[role="status"]`-style selector only catches a
+// role written on the element — it misses a role an element carries
+// IMPLICITLY, such as <output> (implicit role="status"). screen.queryAllByRole
+// resolves implicit roles the same way Testing Library's underlying
+// accessibility-tree computation (and real assistive tech) does, so pairing
+// it with the explicit `[aria-live]` selector below counts every shape.
+const LIVE_REGION_ROLES = ['status', 'alert', 'log', 'marquee', 'timer'] as const
+
+// Census of every live region in `container`, regardless of whether the role
+// is written explicitly (`role="…"`) or carried implicitly by the element
+// (e.g. <output>), and regardless of whether it announces via a role or via a
+// bare `aria-live` attribute. Deduped, because an element can match both a
+// role query and the aria-live selector (e.g. role="status" aria-live="polite").
+function queryAllLiveRegions(container: HTMLElement): Element[] {
+  const byRole = LIVE_REGION_ROLES.flatMap((role) => screen.queryAllByRole(role))
+  const byAriaLive = Array.from(
+    container.querySelectorAll('[aria-live]:not([aria-live="off"])'),
+  )
+  return Array.from(new Set<Element>([...byRole, ...byAriaLive]))
+}
 
 function makeNavState(overrides: Partial<AppNavState> = {}): AppNavState {
   return {
@@ -317,7 +341,7 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
     expect(ta.value.length).toBe(CHAT_TEXT_MAX_CHARS + 1)
   })
 
-  it('agent-forge-harness-764 × 4oz: the over-length counter describes the field and adds no second live region', () => {
+  it('agent-forge-harness-764 × 4oz × agent-forge-harness-frc: the over-length counter describes the field and adds no second live region, counted by every live-region shape including implicit roles', () => {
     const { container } = render(<Wrapper />)
     // The pane's one announcer, captured at rest (the 4oz tests' own shape).
     const [announcer] = screen.getAllByRole('status')
@@ -329,13 +353,87 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
       `${CHAT_TEXT_MAX_CHARS + 1} of ${CHAT_TEXT_MAX_CHARS} characters — shorten your message to send it.`,
     )
     // 4oz: not by a second live region beside the announcer — counted in every
-    // live-region shape, not role="status" alone — and not by the announcer,
-    // whose text changes only when a turn is sent or settles.
-    const live = container.querySelectorAll(
-      '[role="status"], [role="alert"], [role="log"], [aria-live]:not([aria-live="off"])',
-    )
-    expect(Array.from(live)).toEqual([announcer])
-    expect(announcer.textContent).toBe('')
+    // live-region shape (explicit role, aria-live, OR an implicit role such
+    // as <output>'s implicit role="status" — see queryAllLiveRegions above).
+    const live = queryAllLiveRegions(container)
+    expect(live).toEqual([announcer])
+    // agent-forge-harness-8tt: crossing the bound now IS said, but on this
+    // SAME node — never a second one (ADR gm-workbench-interactions A-30).
+    // (Superseded pre-8tt behavior: the announcer stayed empty here.)
+    expect(announcer.textContent).toBe('Message is over the character limit.')
+  })
+
+  // agent-forge-harness-8tt: the owner's decision (ADR gm-workbench-interactions
+  // A-30) — crossing CHAT_TEXT_MAX_CHARS is announced, once each way, through
+  // the SAME single live region as every other event this pane announces.
+  // Never a second live region, and the counter above stays the textarea's
+  // accessible description, not itself announced.
+  describe('ChatPane — over-limit crossing is announced (agent-forge-harness-8tt)', () => {
+    it('announces once when the draft first crosses over the limit, through the SAME node the pane already uses', () => {
+      const { container } = render(<Wrapper />)
+      const [announcer] = screen.getAllByRole('status')
+      expect(announcer.textContent).toBe('')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+      // Still exactly one live region in the pane — no second one was added.
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+    })
+
+    it('announces once when the draft drops back under the limit, and does not just clear silently', () => {
+      const { container } = render(<Wrapper />)
+      const [announcer] = screen.getAllByRole('status')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS) } })
+
+      expect(announcer.textContent).toBe('Message is back under the character limit.')
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+    })
+
+    it('does not re-announce while the draft stays over the limit — only the visible counter keeps changing', () => {
+      const { container } = render(<Wrapper />)
+      const [announcer] = screen.getAllByRole('status')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+
+      // Grows well past the bound — still over, so the live region must not
+      // change again (a real screen reader would otherwise re-announce it on
+      // every keystroke of a long paste or continued typing).
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 50) } })
+
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+      // The visible counter DID keep up (it is not gated on the crossing).
+      expect(
+        screen.getByText(`${CHAT_TEXT_MAX_CHARS + 50} of ${CHAT_TEXT_MAX_CHARS} characters`, { exact: false }),
+      ).toBeInTheDocument()
+    })
+
+    it('crossing over and back under does not disturb the pending/settled announcement contract', async () => {
+      const post: PostFn = async () => GROUNDED
+      const { container } = render(<Wrapper post={post} />)
+      const [announcer] = screen.getAllByRole('status')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+      fireEvent.change(ta, { target: { value: 'a question' } })
+      expect(announcer.textContent).toBe('Message is back under the character limit.')
+
+      await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
+      await waitFor(() => expect(announcer.textContent).not.toBe('Message is back under the character limit.'))
+      await waitFor(() =>
+        expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+      )
+      expect(announcer.textContent).toBe('Answer received')
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+    })
   })
 })
 
@@ -522,6 +620,16 @@ describe('ChatPane — typing indicator (pp6q.1.5)', () => {
     await waitFor(() => expect(resolvers).toHaveLength(2))
     act(() => resolvers[1]({ kind: 'error', message: 'The GM service is busy.' }))
     await screen.findByText('The GM service is busy.')
+    expect(liveRegions(container)).toHaveLength(1)
+  })
+
+  // agent-forge-harness-8tt: crossing CHAT_TEXT_MAX_CHARS joins the states this
+  // census samples — it is announced (see the composer describe block below),
+  // so it is exactly the kind of state where a second live region could hide.
+  it('agent-forge-harness-8tt: exactly one live region while the composer is over the character limit', () => {
+    const { container } = render(<Wrapper />)
+    const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
     expect(liveRegions(container)).toHaveLength(1)
   })
 
@@ -1347,5 +1455,269 @@ describe('ChatPane (#21)', () => {
 
     await waitFor(() => expect(screen.getByText('Fireball')).toBeInTheDocument())
     expect(screen.getByText('Practical')).toBeInTheDocument()
+  })
+})
+
+describe('ChatPane — model preference wiring (agent-forge-harness-bta)', () => {
+  // b8o.2's AC ("ChatRequest sends an allowlisted model_preference") is unmet
+  // in the shipped UI unless the preference the picker shows actually reaches
+  // `post`. Before bta, ChatPane called useChat with no `modelPreference` at
+  // all, so useChat's own default ('auto') went out on every turn — which is
+  // also why every UI conversation first sent before bta is bound 'auto'
+  // server-side, whatever it stored. These tests mount the REAL picker and
+  // pane on one store, the way WorkspaceShell does, so "what the picker
+  // shows is what the pane sends" is proven about the two together.
+  const emptyHistory: LoadHistoryFn = async () => ({ kind: 'ok', messages: [] })
+  const noAttachments: GetAttachmentsFn = async () => ({ kind: 'ok', attachments: [] })
+  const CATALOG_AFTER_D9 = {
+    default: 'auto',
+    models: [
+      { id: 'auto', display_name: 'Automatic' },
+      { id: 'traveller', display_name: 'Traveller', tier: 'traveller', supports_attachments: true },
+    ],
+  }
+  const catalogDown: GetModelsFn = async () => { throw new Error('network error') }
+
+  function Workspace({ store, conversationId, post, getModels }: {
+    store: MemoryConversationStore
+    conversationId: string
+    post: PostFn
+    getModels: GetModelsFn
+  }): React.JSX.Element {
+    return (
+      <ThemeProvider>
+        <AppNavContext.Provider value={makeNavState({ conversationId })}>
+          <CurrentUserContext.Provider value={makeUserState()}>
+            <ConversationStoreProvider store={store}>
+              <ModelCatalogProvider>
+                <ModelPicker getModels={getModels} confirmChange={() => true} />
+                <ChatPane post={post} loadHistory={emptyHistory} getAttachments={noAttachments} />
+              </ModelCatalogProvider>
+            </ConversationStoreProvider>
+          </CurrentUserContext.Provider>
+        </AppNavContext.Provider>
+      </ThemeProvider>
+    )
+  }
+
+  const picker = () => screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement
+  const catalogServed = () => waitFor(() => expect(screen.getByRole('option', { name: 'Traveller' })).toBeInTheDocument())
+  async function ask(prompt: string): Promise<void> {
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), prompt)
+    await userEvent.keyboard('{Enter}')
+  }
+  const sent = (post: ReturnType<typeof vi.fn<PostFn>>) => post.mock.calls.map((call) => call[3])
+
+  it("sends the active conversation's stored modelPreference, not useChat's default", async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => CATALOG_AFTER_D9} />)
+    await catalogServed()
+
+    await ask('What is a basilisk?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post).toHaveBeenCalledWith('What is a basilisk?', 'sage', conv.id, 'traveller')
+  })
+
+  it('sends a model picked through the picker AFTER mount, then keeps sending it once bound', async () => {
+    // M2 of the review: seeding the store before mount cannot tell a live read
+    // of the store from a stale one; a pick made after mount can.
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => CATALOG_AFTER_D9} />)
+    await catalogServed()
+
+    await userEvent.selectOptions(picker(), 'traveller')
+    await ask('What is a basilisk?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    await ask('And a cockatrice?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+
+    expect(sent(post)).toEqual(['traveller', 'traveller'])
+    expect(store.get(conv.id)?.boundPreference).toBe('traveller')
+    expect(picker().value).toBe('traveller')
+  })
+
+  it("falls back to 'auto' for a conversation with no stored preference", async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => CATALOG_AFTER_D9} />)
+    await catalogServed()
+
+    await ask('What is a basilisk?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post).toHaveBeenCalledWith('What is a basilisk?', 'sage', conv.id, 'auto')
+  })
+
+  it.each([
+    ['served', true],
+    ['down (so the a6o reset never runs)', false],
+  ])("posts 'auto' for a conversation first sent before bta, whatever alias it stored, catalog %s (B1)", async (_catalog, up) => {
+    // Master's picker stored the model ALIAS and master's pane posted nothing,
+    // so the server bound this conversation ('auto', None). /chat refuses the
+    // alias on such a binding with a 422 — on every turn.
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', 'How does grappling work?', 'gpt-4o-mini')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    const getModels = vi.fn<GetModelsFn>(up ? async () => CATALOG_AFTER_D9 : catalogDown)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={getModels} />)
+    if (up) await catalogServed()
+    else await waitFor(() => expect(getModels).toHaveBeenCalled())
+    await act(async () => {})
+
+    await ask('And a shove?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect({ posted: sent(post), shown: picker().value }).toEqual({ posted: ['auto'], shown: 'auto' })
+  })
+
+  it.each(['gpt-4o-mini', 'traveller'])(
+    'with only the offline fallback catalog, posts what the picker shows — never the stored %s (B1)',
+    async (stored) => {
+      const store = new MemoryConversationStore()
+      const conv = store.create('sage', undefined, stored)
+      const post = vi.fn<PostFn>(async () => GROUNDED)
+      const getModels = vi.fn(catalogDown)
+      render(<Workspace store={store} conversationId={conv.id} post={post} getModels={getModels} />)
+      await waitFor(() => expect(getModels).toHaveBeenCalled())
+      await act(async () => {})
+
+      await ask('What is a basilisk?')
+
+      await waitFor(() => expect(post).toHaveBeenCalled())
+      expect({ posted: sent(post), shown: picker().value }).toEqual({ posted: ['auto'], shown: 'auto' })
+      expect(store.get(conv.id)?.boundPreference).toBe('auto')
+    },
+  )
+
+  it('keeps posting the preference a conversation was bound with, even when the catalog is down', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={catalogDown} />)
+
+    await ask('And a cockatrice?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(sent(post)).toEqual(['traveller'])
+  })
+
+  // ── Healing off a retired manual pick (agent-forge-harness-j9w) ───────────
+  // A conversation bound to a manual pick the server has since retired keeps
+  // sending that same public id forever (bta's D6 design, proven above) —
+  // unless the server's heal (routing.fallback_from on the response) moves
+  // the store onto the replacement. These prove the two ends together: the
+  // picker shows the heal, and the NEXT turn stops sending the retired id.
+
+  function healedOnce(fallbackFrom: string, effective: string): PostFn {
+    let calls = 0
+    return async () => {
+      calls += 1
+      return {
+        kind: 'ok',
+        response: {
+          ...(GROUNDED.kind === 'ok' ? GROUNDED.response : {}),
+          routing: {
+            requested: effective, effective, strategy: 'manual',
+            fallback_from: calls === 1 ? fallbackFrom : null,
+          },
+        },
+      } as ChatResult
+    }
+  }
+
+  it('a healed turn updates the picker and the store, without touching other conversations', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    const other = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(other.id, 'Unrelated', 'traveller')
+    const post = vi.fn<PostFn>(healedOnce('traveller', 'adventurer'))
+    const catalog = {
+      default: 'auto',
+      models: [
+        { id: 'auto', display_name: 'Automatic' },
+        { id: 'adventurer', display_name: 'Adventurer', tier: 'adventurer', supports_attachments: true },
+      ],
+    }
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => catalog} />)
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Adventurer' })).toBeInTheDocument())
+
+    await ask('And a cockatrice?')
+
+    await waitFor(() => expect(picker().value).toBe('adventurer'))
+    expect(store.get(conv.id)?.boundPreference).toBe('adventurer')
+    expect(store.get(other.id)?.boundPreference).toBe('traveller')
+  })
+
+  it('stops sending the retired id on the very next turn once healed', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    const post = vi.fn<PostFn>(healedOnce('traveller', 'adventurer'))
+    const catalog = {
+      default: 'auto',
+      models: [
+        { id: 'auto', display_name: 'Automatic' },
+        { id: 'adventurer', display_name: 'Adventurer', tier: 'adventurer', supports_attachments: true },
+      ],
+    }
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => catalog} />)
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Adventurer' })).toBeInTheDocument())
+
+    await ask('And a cockatrice?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    await ask('And a wyvern?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+
+    expect(sent(post)).toEqual(['traveller', 'adventurer'])
+  })
+
+  // pr156 H-1: a heal to 'auto' — every heal while no catalog entry names a
+  // successor — answers with requested 'auto' (the binding) and effective
+  // 'traveller' (the model that answered). The next turn must send 'auto';
+  // sending 'traveller' is the server's binding-mismatch 409, every turn.
+  it('after a heal to auto, sends auto (the binding) on the next turn, not the model that answered', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'adventurer')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'adventurer')
+    let calls = 0
+    const post = vi.fn<PostFn>(async () => {
+      calls += 1
+      return {
+        kind: 'ok',
+        response: {
+          ...(GROUNDED.kind === 'ok' ? GROUNDED.response : {}),
+          routing: {
+            requested: 'auto', effective: 'traveller', strategy: 'auto',
+            fallback_from: calls === 1 ? 'adventurer' : null,
+          },
+        },
+      } as ChatResult
+    })
+    const catalog = {
+      default: 'auto',
+      models: [
+        { id: 'auto', display_name: 'Automatic' },
+        { id: 'traveller', display_name: 'Traveller', tier: 'traveller', supports_attachments: true },
+      ],
+    }
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => catalog} />)
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Traveller' })).toBeInTheDocument())
+
+    await ask('And a cockatrice?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(store.get(conv.id)?.boundPreference).toBe('auto'))
+    await ask('And a wyvern?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+
+    expect(sent(post)).toEqual(['adventurer', 'auto'])
+    expect(picker().value).toBe('auto')
   })
 })

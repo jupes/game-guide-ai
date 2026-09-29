@@ -11,15 +11,20 @@ from __future__ import annotations
 import pytest
 
 from service.campaign_identity import (
+    ASSET,
     CAMPAIGN,
     DEVICE_CREDENTIAL,
     DIGEST_CHARS,
+    DISCLOSURE,
     DOCUMENT,
     ENROLMENT_CODE,
+    GROUP,
     ID_BODY_MAX,
     ID_BODY_MIN,
     PARTICIPANT,
     PREFIXES,
+    REVEAL_SLOT,
+    SEAT_OFFER,
     SECRET_CHARS,
     TABLE_CREDENTIAL,
     TABLE_SESSION,
@@ -73,6 +78,11 @@ def test_every_prefix_is_distinct_and_the_registry_is_the_whole_set():
         TABLE_SESSION,
         TABLE_CREDENTIAL,
         DOCUMENT,
+        SEAT_OFFER,
+        ASSET,
+        DISCLOSURE,
+        REVEAL_SLOT,
+        GROUP,
     }
 
 

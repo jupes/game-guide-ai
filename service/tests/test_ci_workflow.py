@@ -1,5 +1,6 @@
 """Repository-level contract for PR E2E gating and deploy safety."""
 
+import ast
 import re
 import tomllib
 from pathlib import Path
@@ -35,12 +36,24 @@ DB_BACKED_TESTS = [
     "tests/test_migrations_db.py",
     "tests/test_db_postgres.py",
     "tests/test_campaign_db.py",
+    "tests/test_campaign_summary_db.py",
     "tests/test_conversation_db.py",
+    "tests/test_seats_db.py",
     "tests/test_timeline_db.py",
+    "tests/test_tool_invocation_db.py",
     "tests/test_document_db.py",
+    "tests/test_documents_api_db.py",
     "tests/test_usage_ledger_db.py",
+    "tests/test_retired_model_binding_db.py",
     "tests/test_corpus_schema.py",
     "ingestion/tests/test_scrape_wikidot.py",
+    "tests/test_asset_db.py",
+    "tests/test_session_dividers_db.py",
+    "tests/test_reveal_db.py",
+    "tests/test_eligibility_db.py",
+    "tests/test_assets_api_db.py",
+    "tests/test_document_generation_db.py",
+    "tests/test_groups_api_db.py",
 ]
 
 
@@ -69,18 +82,52 @@ def _integration_step_run() -> str:
     return run.group(1)
 
 
+def _imports_pg_module(text: str) -> bool:
+    """True if `text` imports `_pg` or `tests._pg`, in any form Python accepts.
+
+    Minting `DSN`, `needs_db`, `throwaway_database` or `corpus_database` from
+    `_pg`/`tests._pg` is the gate a module takes on a real database, so the
+    import line alone is enough -- without guessing at which of those names it
+    uses (a bare `DSN` would also match an unrelated same-named local, e.g.
+    `tests/test_bootstrap_db.py`'s fake one).
+
+    AST-based, not a column-0-anchored regex: `^from\\s+(?:tests\\.)?_pg\\s+
+    import\\b` missed `import tests._pg as pg`, `from tests import _pg`, and
+    an import indented inside a `try:`/`if:` block, all of which are legal
+    Python imports that `ast.walk` finds regardless of indentation or import
+    style (agent-forge-harness-opn / #137 M-1).
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name in ("_pg", "tests._pg") for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if node.module in ("_pg", "tests._pg"):
+                return True
+            if node.module == "tests" and any(alias.name == "_pg" for alias in node.names):
+                return True
+    return False
+
+
 def _database_backed_test_files() -> list[str]:
     """Every test module under pytest's testpaths that gates on a real database.
 
-    A module is database-backed when it uses the `needs_db` marker or reads
-    DATABASE_URL itself. Discovered, not listed, so the next one cannot be added
-    without CI running it: the seven tests from #53 skipped on every run because
-    nobody added them to a list (agent-forge-harness-5fo).
+    A module is database-backed when it uses the `needs_db` marker, reads
+    DATABASE_URL itself, or imports from `_pg`/`tests._pg` at all (see
+    `_imports_pg_module`). Discovered, not listed, so the next one cannot be
+    added without CI running it: the seven tests from #53 skipped on every run
+    because nobody added them to a list (agent-forge-harness-5fo), and a
+    module using `tests._pg`'s own gate rather than `needs_db`/DATABASE_URL
+    directly in its own text was the same gap again (#124 M-2).
     """
     config = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     testpaths = config["tool"]["pytest"]["ini_options"]["testpaths"]
     reads_dsn = re.compile(
-        r"""(?:environ\.get|getenv)\(\s*["']DATABASE_URL["']|environ\[\s*["']DATABASE_URL["']\s*\]"""
+        r"""(?:environ\.get|getenv)\(\s*["']DATABASE_URL["']|environ\[\s*["']DATABASE_URL["']\s*\]""",
     )
     this_file = Path(__file__).resolve()
     found: list[str] = []
@@ -89,7 +136,7 @@ def _database_backed_test_files() -> list[str]:
             if path.resolve() == this_file:
                 continue
             text = path.read_text(encoding="utf-8")
-            if re.search(r"\bneeds_db\b", text) or reads_dsn.search(text):
+            if re.search(r"\bneeds_db\b", text) or reads_dsn.search(text) or _imports_pg_module(text):
                 found.append(path.as_posix())
     return found
 
@@ -219,6 +266,61 @@ def test_every_database_backed_test_file_runs_in_the_integration_step():
     assert not unlisted, f"add {unlisted} to DB_BACKED_TESTS"
 
 
+def test_pg_import_detection_matches_every_legal_import_form():
+    """The old column-0 regex only caught `from _pg import ...` / `from
+    tests._pg import ...`. These forms are equally real Python and equally
+    mint a database gate from the same module -- an AST scan must catch them
+    all (agent-forge-harness-opn / #137 M-1)."""
+    matches = [
+        "from _pg import connect, needs_db\n",
+        "from tests._pg import corpus_database, needs_db\n",
+        "import tests._pg as pg\n",
+        "import _pg\n",
+        "from tests import _pg\n",
+        "try:\n    from tests._pg import needs_db\nexcept ImportError:\n    pass\n",
+        "if True:\n    from _pg import needs_db\n",
+    ]
+    for text in matches:
+        assert _imports_pg_module(text), f"missed a real _pg import: {text!r}"
+
+    non_matches = [
+        "from typing import Any\n",
+        "import pg8000\n",  # a same-prefix, unrelated package must not match
+        "# from tests._pg import needs_db -- just a comment\n",
+    ]
+    for text in non_matches:
+        assert not _imports_pg_module(text), f"matched something that is not a _pg import: {text!r}"
+
+
+def test_the_ast_import_scan_actually_changes_discovery(tmp_path, monkeypatch):
+    """`_database_backed_test_files()` ORs three signals together: `needs_db`,
+    a `DATABASE_URL` read, or `_imports_pg_module`. Every file already in
+    `DB_BACKED_TESTS` also matches one of the first two, so dropping the
+    `_imports_pg_module` clause changes nothing there -- a mutant that deletes
+    it still passes the whole suite. This proves the clause is load-bearing,
+    against a fixture module that matches ONLY through the AST scan: no
+    `needs_db` marker, no DATABASE_URL read, just `import tests._pg as pg` --
+    one of the forms `test_pg_import_detection_matches_every_legal_import_form`
+    proves `_imports_pg_module` recognises but the older column-0 regex missed
+    (agent-forge-harness-8ug / #147 M-1)."""
+    testdir = tmp_path / "tests"
+    testdir.mkdir()
+    (testdir / "test_ast_only.py").write_text("import tests._pg as pg\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    discovered = _database_backed_test_files()
+
+    assert "tests/test_ast_only.py" in discovered, (
+        "a module that imports tests._pg only in a form the needs_db/DATABASE_URL "
+        "regexes miss must still be discovered through the AST scan -- dropping "
+        "the `_imports_pg_module` clause from `_database_backed_test_files` would "
+        "silently stop this and no other test would notice"
+    )
+
+
 def test_the_dsn_is_scoped_to_the_integration_step_not_the_whole_job():
     """A job-wide DATABASE_URL would change the app's startup path in every
     unrelated test (the lifespan builds a real auth store when it can connect),
@@ -302,9 +404,16 @@ def test_every_job_pins_its_runner_image():
 
 def test_every_action_is_on_a_node24_major():
     """Node.js 20 actions are deprecated on GitHub-hosted runners. Every `uses:`
-    names an owner/repo@v<major> at or above that action's first node24 major."""
-    uses = re.findall(r"^\s*(?:-\s+)?uses:\s*(\S+)\s*$", WORKFLOW.read_text(encoding="utf-8"), re.M)
-    assert len(uses) >= len(FIRST_NODE24_MAJOR), f"`uses:` parsing is broken: found {uses}"
+    names an owner/repo@v<major> at or above that action's first node24 major.
+
+    The regex allows an optional trailing comment (`uses: x@v4  # v4`, or a
+    future SHA-pin-with-a-version-comment) so such a line is still parsed and
+    checked, never silently skipped, and the count is checked exactly against
+    every `uses:` occurrence in the file -- `>= len(FIRST_NODE24_MAJOR)` is a
+    weak floor that a line dropped from parsing (12 vs 15 seen) cannot fail."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    uses = re.findall(r"^\s*(?:-\s+)?uses:\s*(\S+)(?:\s+#.*)?\s*$", text, re.M)
+    assert len(uses) == text.count("uses:"), f"`uses:` parsing is broken: found {uses}"
     stale: list[str] = []
     for ref in uses:
         parsed = re.fullmatch(r"([\w.-]+/[\w.-]+)@v(\d+)(?:\.\d+)*", ref)

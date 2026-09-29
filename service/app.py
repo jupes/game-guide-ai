@@ -33,10 +33,29 @@ from fastapi.exceptions import RequestValidationError
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
 
-from . import conversations_api, gcp_logging, job_driver, timeline_api, usage_capture
+from . import (
+    asset_jobs,
+    assets_api,
+    campaigns_api,
+    conversations_api,
+    document_lifecycle_api,
+    documents_api,
+    gcp_logging,
+    groups_api,
+    job_driver,
+    media_objects,
+    reconciliation,
+    seats_api,
+    table_api,
+    table_session_api,
+    timeline_api,
+    tool_invocations_api,
+    usage_capture,
+)
 from .attachments import UnsupportedAttachmentError, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .db import Database, PoolSettings
+from .evidence import RetrievalStageError
 from .hashing import (
     DUMMY_PASSWORD_HASH,
     HashingCapacityError,
@@ -60,9 +79,11 @@ from .metrics import (
 from .migrations import MigrationError, Mode, migrate
 from .model_catalog import (
     AUTO_PUBLIC_ENTRY,
+    CATALOG,
     CATALOG_REVISION,
     DEFAULT_ALIAS,
     PRE_D9_CATALOG_REVISION,
+    PUBLIC_MODELS,
     ModelProfile,
     enabled_profiles,
     get_profile,
@@ -84,6 +105,7 @@ from .models import (
     SignupRequest,
     SuggestionsRoutingInfo,
 )
+from .provider_deadline import begin_turn, end_turn
 from .rag import RagService
 from .ratelimit import (
     RateLimited,
@@ -100,9 +122,10 @@ from .security_headers import (
 )
 from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
+from .table_sessions import TableSessions
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
-from .workbench_api import gm_session, install_workbench
-from .workbench_contracts import CHAT_TEXT_MAX_CHARS, CONTRACT_VERSION, check_plain_text
+from .workbench_api import gm_session, install_workbench, reauth_failed
+from .workbench_contracts import CHAT_TEXT_MAX_CHARS, CONTRACT_VERSION, ErrorCode, check_plain_text
 
 log = logging.getLogger(__name__)
 
@@ -160,6 +183,25 @@ _ERROR_DETAIL: dict[str, str] = {
     "upstream_unavailable": "the model provider is temporarily unavailable",
     "unknown": "an unexpected upstream error occurred",
 }
+
+
+def _retrieval_stage_error(exc: RetrievalStageError) -> HTTPException:
+    """The /chat answer to a typed retrieval-stage fault (agent-forge-harness-xiu.2.3).
+
+    A request the provider refused as invalid (an over-long prompt the
+    embeddings API rejects, say) keeps the D4 `invalid_request` 422: retrying
+    cannot help, so a 503 "try again" would be false. Any other embed fault is
+    the embedding backend's 503, and any other stage the retrieval backend's.
+    Never the cause's `Retry-After`: the 429 belonged to a provider call the
+    client did not make."""
+    if exc.outcome == "rejected":
+        status_code, retryable = ERROR_STATUS["invalid_request"]
+        return HTTPException(status_code=status_code, detail={
+            "category": "invalid_request", "retryable": retryable, "message": _ERROR_DETAIL["invalid_request"],
+        })
+    if exc.stage == "embed":
+        return HTTPException(status_code=503, detail="embedding backend unavailable")
+    return HTTPException(status_code=503, detail="retrieval backend unavailable")
 
 
 def normalize_llm_error(exc: BaseException) -> str:
@@ -288,9 +330,62 @@ def _build_stores(db: Database) -> None:
     from .usage_ledger import LedgerWriter, PostgresUsageLedgerStore
 
     _state["ledger"] = LedgerWriter(PostgresUsageLedgerStore(), db)
-    # The job outbox's drivers (1kg.2.7). No kind is registered yet, so the hook
-    # stays off; a bead that adds one calls `runner.register(kind, handler)` here.
-    runner = JobRunner(PostgresJobQueue(db), single_flight=job_driver.JOB_LOCK)
+    # The job outbox's drivers (1kg.2.7), and the kinds this build registers,
+    # each retried until it succeeds (registering one turns the request hook on
+    # for every signed-in request): `campaign.reconcile`, which every revocation
+    # leaves behind (1kg.2.2, RQ-5), its slot step the reveal fill (1kg.7.1:
+    # `reveals.make_reconcile_slots`, which clears a dead session's slots and a
+    # removed seat's copy); `table_session.expire`
+    # (1kg.2.3), the delayed job a Start enqueues at `expires_at`; and
+    # `timeline.session_divider` (1kg.3.5), which a Start and an ending leave
+    # behind to write the session's dividers. End, Rotate and expiry enqueue their
+    # reconciliation through 1kg.2.2's helper, and the lifecycle its divider jobs
+    # through 1kg.3.5's enqueuer, never naming either kind here.
+    from .audit_log import PostgresAuditLog
+    from .campaign_store import PostgresCampaignStore
+    from .reveal_store import PostgresRevealStore
+    from .reveals import make_reconcile_slots, slot_clear_for
+    from .session_divider_store import PostgresSessionDividerStore
+    from .session_dividers import DIVIDER_KIND, SessionDividers, enqueuer
+    from .table_session_store import PostgresTableSessionStore
+    from .table_sessions import EXPIRE_KIND, TableSessions
+
+    queue = PostgresJobQueue(db)
+    runner = JobRunner(queue, single_flight=job_driver.JOB_LOCK)
+    # Every session store here clears what its narrowing invalidates (RQ-7).
+    reveal_rows = PostgresRevealStore()
+    sessions = PostgresTableSessionStore(slot_clear=slot_clear_for(reveal_rows))
+    runner.register(
+        reconciliation.RECONCILE_KIND,
+        reconciliation.handler(
+            db, slots=make_reconcile_slots(sessions, reveal_rows, clock=lambda: datetime.now(UTC))
+        ),
+    )
+    _state["job_queue"] = queue
+    table_sessions = TableSessions(
+        db,
+        campaigns=PostgresCampaignStore(),
+        sessions=sessions,
+        audit=PostgresAuditLog(),
+        jobs=queue,
+        reconcile=lambda unit, campaign_id: reconciliation.enqueue_reconciliation(unit, queue, campaign_id),
+        dividers=enqueuer(queue),
+    )
+    _state["table_sessions"] = table_sessions
+    runner.register(EXPIRE_KIND, table_sessions.expire_handler())
+    runner.register(
+        DIVIDER_KIND, SessionDividers(db, sessions=sessions, store=PostgresSessionDividerStore()).handler()
+    )
+    # Media (1kg.8.1.2): an object store only when the settings name one, and
+    # then its three job kinds whatever the capability switch says — a
+    # deployment switched off still owes the deletions it enqueued (MS-3). With
+    # none named nothing is built or registered: no bucket, no client, no cost.
+    objects = media_objects.build_object_store(_state.get("media_settings", media_objects.MediaSettings()))
+    if objects is not None:
+        from .asset_store import PostgresAssetStore
+
+        asset_jobs.register_jobs(runner, db=db, queue=queue, objects=objects)
+        _state["media"] = assets_api.MediaRuntime(objects, PostgresAssetStore(queue))
     _state["jobs"] = job_driver.JobDriver(runner, healthy=_schema_understood)
 
 
@@ -358,6 +453,9 @@ def recover_database() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # A media setting that cannot be used stops startup, like a migration
+    # verdict (1kg.8.1.2): retrying cannot change it. Off by default (Q-5).
+    _state["media_settings"] = media_objects.startup_settings()
     app.state.metrics_sink = build_metrics_sink()
     db = prepare_database()
     _state["db"] = db
@@ -456,6 +554,26 @@ def _auth_lookup[T](what: str, call: Callable[[], T]) -> T:
     except _AUTH_BACKEND_ERRORS as exc:
         log.warning("auth store unavailable (%s)", what, exc_info=True)
         raise HTTPException(status_code=503, detail="auth backend unavailable") from exc
+
+
+def _routing_store[T](conversation_id: str, call: Callable[[], T]) -> T:
+    """Run a conversation-routing (strategy binding) store call, failing CLOSED
+    on a backend outage with the ownership lookup's handled 503 (xiu.2.3, N-6).
+
+    The binding lives on the same `chat.conversations` row as ownership. An
+    outage here used to escape `chat()` before its `try:` as Starlette's raw
+    500, with no JSON body, no security headers and no chat metrics. Only
+    `_AUTH_BACKEND_ERRORS` are translated: the block's own 409 and 422 pass
+    through, and a bug stays a 500. The log line names the class, never the
+    message, and says which store it was, apart from the ownership lookup's."""
+    try:
+        return call()
+    except _AUTH_BACKEND_ERRORS as exc:
+        log.warning(
+            "conversation routing store unavailable (conversation_id=%s, error=%s)",
+            conversation_id, type(exc).__name__,
+        )
+        raise HTTPException(status_code=503, detail="authorization backend unavailable") from exc
 
 
 # Any secret shipped in an example/template is public by definition — copying it
@@ -1076,31 +1194,107 @@ def chat(
     # the plan was written), so every request already has a real key to bind
     # against; there's no stateless-single-turn path left to special-case.
     # Before the try for the same reason as ownership (409/422, not 500).
-    # D-9 (au3): the client names a model by its PUBLIC id, never the alias; a
-    # real alias sent here is as unknown as any other string (no oracle), save
-    # on a conversation bound by that alias before D-9 (a6o, _pre_d9_binding).
-    requested = req.model_preference
-    requested_profile = None if requested == "auto" else get_profile_by_public_id(requested)
-    if requested != "auto" and requested_profile is None:
-        requested_profile = _pre_d9_binding(store, conversation_id, requested)
-        if requested_profile is None:
-            raise HTTPException(
-                status_code=422, detail=f"unknown or disabled model: {requested!r}",
+    #
+    # Retired-binding recovery (agent-forge-harness-j9w): a conversation
+    # already bound to a manual pick the catalog no longer serves (disabled or
+    # removed since) gets ONE defined outcome — answered by that pick's own
+    # configured successor (`fallback_alias`) if THAT is itself enabled, else
+    # by auto — instead of a 422/409 on every further turn. Keyed on the
+    # EXISTING binding, never on what this request happens to send, because
+    # the client that bound it (D6's conversation affinity) never resends
+    # anything else: posting the retired id is the model-preference 422
+    # below, and posting anything different is the mismatch 409 below — both
+    # forever, with no recovery, unless the server heals it here.
+    #
+    # The stored binding moves only once the client has provably SEEN the
+    # heal: on the turn whose model_preference already names the successor
+    # (`routing.requested` of a healed turn). A healed turn whose provider
+    # call fails, or whose response never reaches the client, leaves the
+    # binding where the client still believes it is, so the next turn heals
+    # again instead of refusing a retired id the client was never told about
+    # (pr156 M-1). A client that ignores `routing` altogether keeps being
+    # answered by the successor on every turn.
+    existing_binding = (
+        _routing_store(conversation_id, lambda: store.conversation_binding(conversation_id))
+        if store is not None else None
+    )
+    strategy: Literal["auto", "manual"]
+    manual_alias: str | None
+    requested: str
+    retired_public_id: str | None = None
+    retired_alias = (
+        existing_binding[1]
+        if existing_binding is not None and existing_binding[0] == "manual"
+        and existing_binding[1] is not None
+        # A pre-D-9 (v1) binding to a never-served alias is _pre_d9_binding's
+        # own refusal below (test_legacy_model_preference.py's "any other
+        # pre-D-9 binding" row) — never this healing, which is only for a
+        # D-9-era manual pick that WAS served and has since been retired.
+        and existing_binding[2] != PRE_D9_CATALOG_REVISION
+        and get_profile(existing_binding[1]) is None
+        else None
+    )
+    if retired_alias is not None:
+        assert store is not None  # existing_binding only comes from a real store
+        # CATALOG.get, never CATALOG[...]: an alias removed from the catalog
+        # outright (not just disabled) has no row left to read a successor
+        # from, and heals to auto like one with no successor (pr156 H-2).
+        retired = CATALOG.get(retired_alias)
+        successor_alias = retired.fallback_alias if retired is not None else None
+        if successor_alias is not None and get_profile(successor_alias) is not None:
+            strategy, manual_alias = "manual", successor_alias
+        else:
+            strategy, manual_alias = "auto", None
+        # The binding this conversation moves to: what a client adopts as its
+        # preference from here on. Never `effective`, which for 'auto' is the
+        # model that answered and would be refused as a mismatch (pr156 H-1).
+        requested = public_model_id(manual_alias) if manual_alias is not None else "auto"
+        if req.model_preference == requested:
+            # The client already names the successor: it has seen a healed
+            # turn, so the stored binding follows it and this turn is ordinary.
+            _routing_store(conversation_id, lambda: store.rebind_conversation_strategy(
+                conversation_id, strategy=strategy, manual_alias=manual_alias,
+                catalog_revision=CATALOG_REVISION,
+            ))
+        else:
+            # A healed turn. `fallback_from` is the retired pick's public id;
+            # PUBLIC_MODELS.get, not public_model_id, since a removed alias
+            # has lost that row too (H-2) and would raise KeyError. With no id
+            # left to name, it carries this request's own preference back, so
+            # the client still learns to stop sending it; the server never
+            # names an alias either way (D-9).
+            retired_public = PUBLIC_MODELS.get(retired_alias)
+            retired_public_id = (
+                retired_public.id if retired_public is not None else req.model_preference
             )
-        requested = public_model_id(requested_profile.alias)
-    strategy: Literal["auto", "manual"] = "auto" if requested == "auto" else "manual"
-    manual_alias = None if requested_profile is None else requested_profile.alias
-    if store is not None:
-        bound_strategy, bound_alias = store.claim_conversation_strategy(
-            conversation_id, strategy=strategy, manual_alias=manual_alias,
-            catalog_revision=CATALOG_REVISION,
-        )
-        if (bound_strategy, bound_alias) != (strategy, manual_alias):
-            raise HTTPException(
-                status_code=409,
-                detail="this conversation is bound to a different model preference; "
-                       "start a new conversation to change it",
+    else:
+        # D-9 (au3): the client names a model by its PUBLIC id, never the alias; a
+        # real alias sent here is as unknown as any other string (no oracle), save
+        # on a conversation bound by that alias before D-9 (a6o, _pre_d9_binding).
+        requested = req.model_preference
+        requested_profile = None if requested == "auto" else get_profile_by_public_id(requested)
+        if requested != "auto" and requested_profile is None:
+            requested_profile = _routing_store(
+                conversation_id, lambda: _pre_d9_binding(store, conversation_id, requested),
             )
+            if requested_profile is None:
+                raise HTTPException(
+                    status_code=422, detail=f"unknown or disabled model: {requested!r}",
+                )
+            requested = public_model_id(requested_profile.alias)
+        strategy = "auto" if requested == "auto" else "manual"
+        manual_alias = None if requested_profile is None else requested_profile.alias
+        if store is not None:
+            bound_strategy, bound_alias = _routing_store(conversation_id, lambda: store.claim_conversation_strategy(
+                conversation_id, strategy=strategy, manual_alias=manual_alias,
+                catalog_revision=CATALOG_REVISION,
+            ))
+            if (bound_strategy, bound_alias) != (strategy, manual_alias):
+                raise HTTPException(
+                    status_code=409,
+                    detail="this conversation is bound to a different model preference; "
+                           "start a new conversation to change it",
+                )
     # Effective model resolution: Checkpoint 4 (b8o.4) adds the real per-turn
     # Auto classifier; until then 'auto' resolves to the catalog default and a
     # manual alias resolves to itself (already validated enabled above).
@@ -1112,8 +1306,12 @@ def chat(
     assert get_profile(effective_alias) is not None  # validated above; DEFAULT_ALIAS is always enabled
     # The alias and provider stay server-side (logs, traces and usage records
     # take them from generate.py); the client is told the public id only.
+    # `fallback_from` is set ONLY on a healed turn above — the one signal a
+    # client needs to stop sending the retired pick and adopt `requested`
+    # (never an alias the server names, D-9).
     routing = RoutingInfo(
         requested=requested, effective=public_model_id(effective_alias), strategy=strategy,
+        fallback_from=retired_public_id,
     )
 
     # yje.5.1.1: one usage-capture operation per turn, created AFTER every gate
@@ -1125,6 +1323,10 @@ def chat(
         mode=req.mode.value, billed_account_id=session.user_id,
         actor_kind=usage_capture.ACTOR_ACCOUNT, campaign_id=None, request=request,
     )
+    # 0u02: the turn's one provider budget, which every call below draws down,
+    # so the turn answers before Cloud Run's request timeout cuts it off.
+    # Beside the operation for the same reasons, and ended in the same finally.
+    turn_token = begin_turn()
     try:
         attachment_context, attachment_label = _fetch_attachment_context(
             store, conversation_id,
@@ -1165,14 +1367,26 @@ def chat(
             user_message_id=user_message_id, assistant_message_id=assistant_message_id,
         )
         return resp
+    except RetrievalStageError as exc:
+        # xiu.2.3: a typed retrieval-stage fault, never a generation error. One
+        # content-free line per lost stage the turn carries.
+        for attempt in exc.attempts or (exc.attempt(),):
+            log.warning(
+                "retrieval stage failed on /chat (mode=%s, conversation_id=%s, source=%s, stage=%s, "
+                "outcome=%s, error=%s)",
+                req.mode.value, conversation_id, attempt.source_kind, attempt.stage, attempt.outcome,
+                attempt.error_class,
+            )
+        raise _retrieval_stage_error(exc) from exc
     except _LLM_ERRORS as exc:
         # D4: normalize to a bounded category, then look up its status/
         # retryable pair — replaces the old blanket "LLM error -> 502".
         category = normalize_llm_error(exc)
         status_code, retryable = ERROR_STATUS[category]
+        # The class, never the message: a provider error can echo the prompt (N-1).
         log.warning(
-            "LLM error on /chat (mode=%s, conversation_id=%s, category=%s): %s: %s",
-            req.mode.value, conversation_id, category, type(exc).__name__, exc,
+            "LLM error on /chat (mode=%s, conversation_id=%s, category=%s, error=%s)",
+            req.mode.value, conversation_id, category, type(exc).__name__,
         )
         headers: dict[str, str] = {}
         if category == "rate_limit":
@@ -1191,16 +1405,16 @@ def chat(
     except _DB_ERRORS as exc:
         # Retrieval backend (Postgres/pgvector) unavailable — upstream, retryable.
         log.warning(
-            "retrieval backend error on /chat (mode=%s, conversation_id=%s): %s: %s",
-            req.mode.value, conversation_id, type(exc).__name__, exc,
+            "retrieval backend error on /chat (mode=%s, conversation_id=%s, error=%s)",
+            req.mode.value, conversation_id, type(exc).__name__,
         )
         raise HTTPException(status_code=503, detail="retrieval backend unavailable") from exc
     except EmbeddingUnavailableError as exc:
         # Embedding can't run (missing OPENAI_API_KEY) — service-side
         # unavailability, not a crash (1em.3; previously sys.exit killed the worker).
         log.warning(
-            "embedding unavailable on /chat (mode=%s, conversation_id=%s): %s",
-            req.mode.value, conversation_id, exc,
+            "embedding unavailable on /chat (mode=%s, conversation_id=%s, error=%s)",
+            req.mode.value, conversation_id, type(exc).__name__,
         )
         raise HTTPException(status_code=503, detail="embedding backend unavailable") from exc
     except Exception:
@@ -1208,6 +1422,7 @@ def chat(
         log.exception("internal error on /chat (mode=%s)", req.mode.value)
         raise HTTPException(status_code=500, detail="internal error") from None
     finally:
+        end_turn(turn_token)
         usage_capture.end_operation(op_token)
 
 
@@ -1441,18 +1656,162 @@ def me(
     return AuthUser(email=user.email, role=user.role)
 
 
-#: The GM gate every Workbench router is built with (agent-forge-harness-oe6).
-WORKBENCH_GM = gm_session(require_session)
-app.include_router(conversations_api.build_router(WORKBENCH_GM, get_timeline_database))
-app.include_router(timeline_api.build_router(WORKBENCH_GM, get_timeline_store, get_timeline_database))
-
-
 def _job_driver() -> job_driver.JobDriver | None:
     # A scheduler call may be the only traffic a degraded instance gets, so it
     # looks for the database like the other getters (it runs in the thread pool).
     if "jobs" not in _state:
         recover_database()
     return _state.get("jobs")
+
+
+def _job_queue() -> PostgresJobQueue | None:
+    """The outbox a revocation enqueues its reconciliation in (1kg.2.2)."""
+    if "job_queue" not in _state:
+        recover_database()
+    return _state.get("job_queue")
+
+
+def _media() -> assets_api.MediaRuntime | None:
+    """The media runtime, once a store exists (1kg.8.1.2); None otherwise."""
+    if "jobs" not in _state:
+        recover_database()
+    return _state.get("media")
+
+
+def _media_enabled() -> bool:
+    """The capability switch the media routes consult on every match: off
+    unless startup read it on (Q-5), so a test app with no lifespan is dark."""
+    settings = _state.get("media_settings")
+    return isinstance(settings, media_objects.MediaSettings) and settings.enabled
+
+
+def get_table_sessions() -> TableSessions | None:
+    """The live table session's lifecycle (1kg.2.3), built with the stores; None
+    on a degraded instance, which the table-session routes answer with a 503."""
+    if "table_sessions" not in _state:
+        recover_database()
+    return _state.get("table_sessions")
+
+
+def start_gate(caller: SessionData) -> None:
+    """The one check point for starting a live table (1kg.2.3, L-19; owner
+    decision D-3: running a live table is Paid, joining one is Free).
+
+    Start calls it once, before any database access, and nothing else calls it:
+    End, Rotate, the status read, a screen revoke, the screen mint and Leave are
+    never gated on a tier — a narrowing is never gated on payment, and a session
+    in progress runs to its end. Today it admits every account the `dm` gate
+    admits. `ubw` and `yje.4.1` replace its body and give its refusal a shape."""
+    return None
+
+
+#: The Workbench envelope of the auth throttle's 429 and of a hashing outage,
+#: for the Workbench routes that check a password (a seat's Remove and a
+#: document's delete, SEC-40).
+REAUTH_THROTTLED_MESSAGE = "Too many attempts. Wait, then try again."
+REAUTH_BUSY_MESSAGE = "That can't be checked right now. Try again."
+
+
+def reauthenticator(request: Request, store: AuthStore = Depends(get_auth_store)) -> Callable[[str], None]:
+    """The re-authentication of a seat's Remove and a document's delete
+    (SEC-40), as a dependency: it hands the route a `check(password)` bound to
+    this request's account and auth store. The store is the one
+    `require_session` already resolved for this request, so declaring it here
+    adds no lookup and no outage path of its own."""
+
+    def check(password: str) -> None:
+        reauthenticate(request, store, password)
+
+    return check
+
+
+def reauthenticate(request: Request, store: AuthStore, password: str) -> None:
+    """SEC-40: the password of the account this request signed in as, checked
+    again before a Remove or a document delete — BEFORE any transaction
+    opens, because argon2 never runs while a lock is held (bead 1kg.2.2, L-12).
+
+    In order: the auth attempt budget (`_throttle_auth`), whose legacy 429 is
+    answered in the Workbench envelope with both of its headers; the
+    credentials, whose outage is a 503; exactly one argon2 verification, against
+    `DUMMY_PASSWORD_HASH` when there are no credentials, as login does, whose
+    capacity refusal is a 503; and a wrong password is `reauth_failed()` — a
+    403 that names nothing, never the 401 the client would sign out on. The
+    password is never logged, echoed or chained into an exception."""
+    user = getattr(request.state, "auth_user", None)
+    if not isinstance(user, User):
+        reauth_failed()
+    throttled: HTTPException | None = None
+    try:
+        _throttle_auth(request, user.email)
+    except HTTPException as exc:
+        throttled = exc
+    if throttled is not None:
+        headers = dict(throttled.headers or {})
+        wait = headers.get("Retry-After", "")
+        raise campaigns_api.refusal(
+            429,
+            ErrorCode.THROTTLED_USER,
+            REAUTH_THROTTLED_MESSAGE,
+            retryable=True,
+            retry_after_s=int(wait) if wait.isdigit() else None,
+            headers=headers,
+        )
+    outage = False
+    try:
+        creds = _auth_lookup("credentials lookup", lambda: store.get_credentials(user.email))
+    except HTTPException:
+        outage, creds = True, None
+    if outage:
+        raise campaigns_api.unavailable(REAUTH_BUSY_MESSAGE)
+    stored_hash = creds[1] if creds is not None else None
+    busy = False
+    try:
+        matches = verify_password(stored_hash or DUMMY_PASSWORD_HASH, password)
+    except HashingCapacityError:
+        busy, matches = True, False
+    if busy:
+        raise campaigns_api.unavailable(REAUTH_BUSY_MESSAGE)
+    if creds is None or not matches or creds[0].id != user.id:
+        reauth_failed()
+
+
+def get_group_stores() -> groups_api.GroupStores:
+    """The group routes' stores (agent-forge-harness-btb). The campaigns, the
+    sessions and the ledger are `campaigns_api.get_campaign_stores()`'s own, so
+    whatever slot clear that module gives its sessions reaches the group routes
+    too; only this module may build a concrete eligibility store (T-G2). The
+    table-namespace narrowing is passed by name until `1ir.2.3` builds that
+    namespace. Tests override this dependency."""
+    from .document_store import PostgresDocumentStore
+    from .eligibility import no_table_namespace
+    from .eligibility_store import PostgresEligibilityStore
+
+    shared = campaigns_api.get_campaign_stores()
+    return groups_api.GroupStores(
+        campaigns=shared.campaigns,
+        eligibility=PostgresEligibilityStore(),
+        documents=PostgresDocumentStore(),
+        sessions=shared.sessions,
+        audit=shared.audit,
+        table_namespace=no_table_namespace,
+    )
+
+
+#: The GM gate every Workbench router is built with (agent-forge-harness-oe6).
+WORKBENCH_GM = gm_session(require_session)
+app.include_router(conversations_api.build_router(WORKBENCH_GM, get_timeline_database))
+app.include_router(timeline_api.build_router(WORKBENCH_GM, get_timeline_store, get_timeline_database))
+app.include_router(
+    campaigns_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator, _job_queue, _job_driver)
+)
+app.include_router(seats_api.build_router(require_session, get_timeline_database))
+app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
+app.include_router(document_lifecycle_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator))
+app.include_router(assets_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled))
+app.include_router(table_session_api.build_router(WORKBENCH_GM, get_table_sessions, _job_driver, start_gate))
+app.include_router(table_api.build_router(require_session, get_auth_store, _clear_session_cookie, get_table_sessions))
+app.include_router(tool_invocations_api.build_router(WORKBENCH_GM, get_timeline_database, get_message_store))
+app.include_router(groups_api.build_router(WORKBENCH_GM, get_timeline_database, get_group_stores))
 
 
 app.include_router(job_driver.build_router(_job_driver))

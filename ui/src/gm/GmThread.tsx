@@ -8,7 +8,10 @@
  *     renders on the player lane in this channel.
  *  3. **The assistant**, directly beneath the turn that asked. A tool entry is
  *     an `AssistantLane`, hydrated, so a stored `working` run is RAIL-21's
- *     `Checking on…` and never re-runs. A plain turn is answered here too
+ *     `Checking on…` and never re-runs — unless it is a run this client is
+ *     watching (a turn with `live`, from `pendingWork.ts`, 1kg.3.5): then it
+ *     is RAIL-15's working lane, or RAIL-21's checking once `lost`. The thread
+ *     still passes no lane actions (1kg.4.5). A plain turn is answered here too
  *     (RAIL-14): prose in the lane's sans, cards compact, citations compact, and
  *     the creative disclaimer kept.
  *
@@ -25,6 +28,18 @@
  * a button at the top of the thread, present only while `hasEarlier` is true.
  * It fetches nothing itself — `ChatPane` owns `useGmTimeline` and wires its
  * `loadEarlier`/`loadingEarlier`/`earlierError` straight through as props.
+ * When the last page lands and the control goes, keyboard focus moves to the
+ * first exchange that arrived (tabIndex -1), as VersionList's Load more does
+ * (1kg.3.7). Only a keyboard press scrolls to it; otherwise the reader's place,
+ * which ChatPane holds still as the older turns arrive, stays where it is.
+ *
+ * **Session dividers** (1kg.3.5) are drawn between exchanges, never inside
+ * one: a line of visible text with the boundary's `<time>`, between two
+ * decorative rules. A divider is text, not a widget (I-11): no
+ * `role="separator"` (its children would become presentational and hide the
+ * label from assistive technology), no live region (a hydrated divider is not
+ * news, A-29), and not in the Tab order. It takes `tabIndex={-1}` only so
+ * Load earlier's hand-off above can land on it when it is the first item.
  */
 
 import * as React from 'react'
@@ -38,8 +53,10 @@ import { parseDiceNotation } from '../shell/diceNotation'
 import { AssistantLane } from './AssistantLane'
 import { AssistantText } from './AssistantText'
 import { toSpellCardProps, toStatBlockCardProps } from './adapters'
+import type { ChatMode } from '../api'
 import type { DocumentLink } from './contracts'
-import type { AnswerState, GmTurn, LaneAnswer } from './gmTimeline'
+import { DIVIDER_COPY, formatDividerTime } from './gmTimeline'
+import type { AnswerState, DividerTurn, ExchangeTurn, GmTurn, LaneAnswer } from './gmTimeline'
 import { LANE_COPY } from './laneState'
 import { toolById } from './registry'
 import './AssistantLane.css'
@@ -69,6 +86,9 @@ export interface GmThreadProps {
   /** A failed walk (§12.2). STATE-1: the thread above stays exactly as it was. */
   earlierError?: string | null
   onLoadEarlier?: () => void
+  /** 1kg.3.5: how a divider writes its time. Defaults to the reader's locale
+   * (`formatDividerTime`); tests pin a zone and a locale. */
+  formatTime?: (iso: string) => string
 }
 
 export function GmThread({
@@ -78,18 +98,73 @@ export function GmThread({
   loadingEarlier = false,
   earlierError = null,
   onLoadEarlier,
+  formatTime = formatDividerTime,
 }: GmThreadProps): React.JSX.Element {
+  const buttonRef = React.useRef<HTMLButtonElement>(null)
+  const firstExchangeRef = React.useRef<HTMLDivElement>(null)
+  // 1kg.3.7, VersionList's hand-off: a press made here, whether its walk has
+  // been seen in flight (so focus moves only once that walk settles), and
+  // whether the keyboard made it.
+  const press = React.useRef<{ stage: 'pressed' | 'loading'; byKeyboard: boolean } | null>(null)
+
+  React.useEffect(() => {
+    const pressed = press.current
+    if (pressed === null) return
+    if (loadingEarlier) {
+      press.current = { ...pressed, stage: 'loading' }
+      return
+    }
+    if (pressed.stage !== 'loading') return
+    press.current = null
+    // Only focus the walk left nowhere — the control unmounted with the last
+    // page, or a browser dropped it off the disabled button — never focus the
+    // reader has since put somewhere else.
+    const active = document.activeElement
+    if (active !== null && active !== document.body) return
+    // focus() scrolls its target into view, and ChatPane has just held still
+    // the content the reader was looking at (1kg.3.6), so the hand-off must
+    // not scroll it away (PR #136 review H1). Back on the control, focus only
+    // repairs a browser dropping it off the disabled button: it never scrolls.
+    // On the first turn that arrived, it scrolls there for a keyboard press,
+    // whose reader follows the focus ring, and not for a pointer press.
+    if (hasEarlier) buttonRef.current?.focus({ preventScroll: true })
+    else firstExchangeRef.current?.focus({ preventScroll: !pressed.byKeyboard })
+  }, [loadingEarlier, hasEarlier, turns])
+
+  const handleLoadEarlier = React.useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      // A click made by Enter or Space counts no pointer clicks: detail is 0.
+      press.current = { stage: 'pressed', byKeyboard: event.detail === 0 }
+      onLoadEarlier?.()
+    },
+    [onLoadEarlier],
+  )
+
   return (
     <>
       {hasEarlier && onLoadEarlier && (
-        <LoadEarlier loading={loadingEarlier} error={earlierError} onLoadEarlier={onLoadEarlier} />
+        <LoadEarlier loading={loadingEarlier} error={earlierError} onLoadEarlier={handleLoadEarlier} buttonRef={buttonRef} />
       )}
-      {turns.map((turn) => (
-        <div key={turn.key} className="gm-thread__exchange">
-          <Narration turn={turn} />
-          <Outcome turn={turn} onOpenDocument={onOpenDocument} />
-        </div>
-      ))}
+      {turns.map((turn, index) =>
+        turn.kind === 'divider' ? (
+          <Divider
+            key={turn.key}
+            turn={turn}
+            formatTime={formatTime}
+            ref={index === 0 ? firstExchangeRef : undefined}
+          />
+        ) : (
+          <div
+            key={turn.key}
+            className="gm-thread__exchange"
+            tabIndex={-1}
+            ref={index === 0 ? firstExchangeRef : undefined}
+          >
+            <Narration turn={turn} />
+            <Outcome turn={turn} onOpenDocument={onOpenDocument} />
+          </div>
+        ),
+      )}
     </>
   )
 }
@@ -107,16 +182,19 @@ function LoadEarlier({
   loading,
   error,
   onLoadEarlier,
+  buttonRef,
 }: {
   loading: boolean
   error: string | null
-  onLoadEarlier: () => void
+  onLoadEarlier: (event: React.MouseEvent<HTMLButtonElement>) => void
+  buttonRef: React.Ref<HTMLButtonElement>
 }): React.JSX.Element {
   return (
     <div className="gm-thread__load-earlier">
       {error !== null && <p className="gm-thread__load-earlier-error">{error}</p>}
       <button
         type="button"
+        ref={buttonRef}
         className="gm-thread__load-earlier-button"
         onClick={onLoadEarlier}
         disabled={loading}
@@ -130,7 +208,42 @@ function LoadEarlier({
   )
 }
 
-function Narration({ turn }: { turn: GmTurn }): React.JSX.Element | null {
+/**
+ * A session boundary (1kg.3.5, I-10, I-11): the copy, then its `<time>`; a
+ * quiet session's span reads "… to …" through a visually hidden word, never a
+ * spoken dash. The rules are drawn with borders (they survive forced colours)
+ * and are `aria-hidden`. `tabIndex={-1}`: reachable by Load earlier's hand-off
+ * alone, never by Tab.
+ */
+function Divider({
+  turn,
+  formatTime,
+  ref,
+}: {
+  turn: DividerTurn
+  formatTime: (iso: string) => string
+  ref?: React.Ref<HTMLDivElement>
+}): React.JSX.Element {
+  return (
+    <div ref={ref} className="gm-thread__divider" data-boundary={turn.boundary} tabIndex={-1}>
+      <span className="gm-thread__divider-rule" aria-hidden="true" />
+      <p className="gm-thread__divider-label">
+        {DIVIDER_COPY[turn.boundary]} <time dateTime={turn.at}>{formatTime(turn.at)}</time>
+        {turn.boundary === 'span' && (
+          <>
+            {' '}
+            <span aria-hidden="true">–</span>
+            <span className="gm-thread__sr-only">to</span>{' '}
+            <time dateTime={turn.endedAt}>{formatTime(turn.endedAt)}</time>
+          </>
+        )}
+      </p>
+      <span className="gm-thread__divider-rule" aria-hidden="true" />
+    </div>
+  )
+}
+
+function Narration({ turn }: { turn: ExchangeTurn }): React.JSX.Element | null {
   if (turn.kind === 'chat') {
     return turn.prompt === null ? null : <ChatMessage role="dm" author={GM_AUTHOR}>{turn.prompt}</ChatMessage>
   }
@@ -149,17 +262,20 @@ function Outcome({
   turn,
   onOpenDocument,
 }: {
-  turn: GmTurn
+  turn: ExchangeTurn
   onOpenDocument: (link: DocumentLink) => void
 }): React.JSX.Element | null {
   switch (turn.kind) {
     case 'chat':
-      return <AnswerLane answer={turn.answer} />
+      return <AnswerLane answer={turn.answer} mode={turn.mode} />
     case 'tool':
+      // 1kg.3.5: a run the pending-work model holds is watched (RAIL-15's
+      // working lane, or RAIL-21's checking once lost); any other is hydrated.
       return (
         <AssistantLane
           invocation={turn.invocation}
-          hydrated
+          hydrated={turn.live === undefined}
+          lost={turn.live?.lost === true}
           sourceEntryId={turn.entryId}
           onOpenDocument={onOpenDocument}
         />
@@ -191,7 +307,7 @@ function LaneFrame({ state, children }: { state: string; children: React.ReactNo
 }
 
 /** RAIL-14: a plain GM turn is answered, and the answer sits in the lane. */
-function AnswerLane({ answer }: { answer: AnswerState }): React.JSX.Element | null {
+function AnswerLane({ answer, mode }: { answer: AnswerState; mode: ChatMode }): React.JSX.Element | null {
   switch (answer.state) {
     case 'none':
       return null
@@ -222,7 +338,7 @@ function AnswerLane({ answer }: { answer: AnswerState }): React.JSX.Element | nu
     case 'answered':
       return (
         <LaneFrame state="done">
-          <AnswerBody answer={answer.answer} />
+          <AnswerBody answer={answer.answer} mode={mode} />
         </LaneFrame>
       )
   }
@@ -234,8 +350,16 @@ function AnswerLane({ answer }: { answer: AnswerState }): React.JSX.Element | nu
  * visibly verbatim), then the evidence — the order a GM reads, and the order
  * it is announced. `answerable` of `null` (not recorded) earns neither the
  * creative notice nor citations.
+ *
+ * agent-forge-harness-ffz (pr120 review L-3): the creative notice is the GM
+ * channel's own wording for the GM's own improvisation — it does not fit a
+ * Sage or Rules entry hydrated into this thread (a mode chip keeps the same
+ * conversation, so those entries can land here too). Neither Sage nor Rules
+ * shows any such notice for an unanswerable reply (ChatPane.tsx), so a
+ * non-`gm` entry gets the same silent treatment here, matching `answerable
+ * === null`'s "no claim either way" rather than mislabeling it as invented.
  */
-function AnswerBody({ answer }: { answer: LaneAnswer }): React.JSX.Element {
+function AnswerBody({ answer, mode }: { answer: LaneAnswer; mode: ChatMode }): React.JSX.Element {
   const grounded = answer.answerable === true
   const dice = grounded ? parseDiceNotation(answer.text) : null
   return (
@@ -243,7 +367,7 @@ function AnswerBody({ answer }: { answer: LaneAnswer }): React.JSX.Element {
       {answer.text.trim() !== '' && <AssistantText source={answer.text} />}
       {answer.spell_content && <SpellCard {...toSpellCardProps(answer.spell_content)} density="compact" />}
       {answer.stat_block && <StatBlockCard {...toStatBlockCardProps(answer.stat_block)} density="compact" />}
-      {answer.answerable === false && <p className="gm-thread__creative">{CREATIVE_NOTICE}</p>}
+      {mode === 'gm' && answer.answerable === false && <p className="gm-thread__creative">{CREATIVE_NOTICE}</p>}
       {dice && (
         <div className="gm-thread__dice">
           <DiceRoll die={dice.die} value={dice.value} modifier={dice.modifier} />

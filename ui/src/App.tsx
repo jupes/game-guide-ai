@@ -81,7 +81,9 @@ export default function App(): React.JSX.Element {
           We couldn’t check your session. This is usually temporary — your
           sign-in is probably still fine.
         </p>
-        <button type="button" onClick={retryAuthCheck}>Try again</button>
+        <button type="button" className="auth-screen__retry" onClick={retryAuthCheck}>
+          Try again
+        </button>
       </div>
     )
   }

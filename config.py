@@ -14,6 +14,7 @@ packages import it, and ``ingestion`` is the lower layer: a config module in
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import Literal
@@ -47,6 +48,16 @@ def _float(name: str, default: float) -> float:
 
 def _str(name: str, default: str) -> str:
     return os.environ.get(name, default)
+
+
+def _seconds(name: str, default: float) -> float:
+    """A timeout in seconds, rejected at import unless finite and positive:
+    `float()` accepts "inf" and "nan", and either would quietly remove the
+    bound the value exists to set."""
+    value = _float(name, default)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite number of seconds above 0, got {value!r}")
+    return value
 
 
 SameSite = Literal["lax", "strict", "none"]
@@ -103,6 +114,19 @@ IPL_FALLBACK_DISTANCE: float = _float("RAG_FALLBACK_DISTANCE", 0.42)
 # out-of-corpus questions. (Name kept stable for existing importers.)
 KOZ_ANSWERABLE_DISTANCE: float = _float("RAG_ANSWERABLE_DISTANCE", 0.50)
 
+# Per-attempt timeout on the service's query-embeddings client
+# (agent-forge-harness-xiu.2.3): how long one read, write or pool wait may block
+# before the embed fails as a timeout. It used to be the SDK's 600 s with two
+# SDK retries, so a silent provider held a /chat worker for about 30 minutes.
+# One short query embeds in well under a second; 10 s leaves headroom for a slow
+# provider, and ingestion/retrieval.py's two attempts end within
+# 2 x (5 + 10) + 0.5 s of backoff = 30.5 s against a silent provider. The bound
+# is per wait, not wall-clock: a provider that trickles bytes can outlast it.
+# Read when the client is built, so a test can monkeypatch it.
+EMBED_REQUEST_TIMEOUT_S: float = _seconds("RAG_EMBED_REQUEST_TIMEOUT_S", 10.0)
+# Connect bound for the same client; 5 s is the OpenAI SDK's own default.
+EMBED_CONNECT_TIMEOUT_S: float = _seconds("RAG_EMBED_CONNECT_TIMEOUT_S", 5.0)
+
 
 # --- Generation / answer assembly (service) --------------------------------
 
@@ -122,6 +146,21 @@ DEFAULT_MODEL: str = _str("RAG_DEFAULT_MODEL", "gpt-4o-mini")
 # cited sources and largely deterministic while allowing minor phrasing
 # variation; higher values drift away from the source text.
 TEMPERATURE: float = _float("RAG_TEMPERATURE", 0.2)
+
+# Per-attempt timeout on every generation provider client (agent-forge-harness-ihz):
+# how long one read, write or pool wait may block, streamed or not, before the
+# call fails as a timeout. /chat is synchronous, so a provider that stalls holds
+# a worker thread for at most this long per attempt. 60 s lets a long answer
+# finish, and service/generate.py's three attempts still end within
+# 3 x (5 + 60) + 1.5 s of backoff = 196.5 s, under Cloud Run's 300 s request
+# timeout (scripts/deploy.sh; pinned in service/tests/test_providers.py).
+# Those bounds are per wait, so a provider that trickles a byte at a time would
+# outlast them; the two added together are also each attempt's wall-clock
+# deadline (agent-forge-harness-2bb, service/provider_deadline.py), which keeps
+# that sum true whatever the provider sends.
+LLM_REQUEST_TIMEOUT_S: float = _seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0)
+# Connect bound for the same clients; 5 s is the OpenAI SDK's own default.
+LLM_CONNECT_TIMEOUT_S: float = _seconds("RAG_LLM_CONNECT_TIMEOUT_S", 5.0)
 
 # --- Chat history (service) -------------------------------------------------
 
@@ -233,6 +272,19 @@ CHAT_RATE_LIMIT_PER_USER: int = _int("CHAT_RATE_LIMIT_PER_USER", 20)
 # survives the scale-to-zero that would reset an in-process daily count
 # exactly when testers come back after a break. Resets at UTC midnight.
 CHAT_DAILY_CAP: int = _int("CHAT_DAILY_CAP", 500)
+
+# --- GM tools (agent-forge-harness-1kg.4.1) -----------------------------------
+
+# The GM tools this deployment runs, as comma-separated registry ids ("npc,loot").
+# Empty, the default, runs none: every tool answers 409 tool_disabled. Setting it
+# in production needs E-8's owner-chosen limits, the tool's 1kg.4.6 threshold
+# and the SEC-39 terms record first. An id the registry does not know fails
+# startup (service/tool_invocations.py parses both variables).
+WORKBENCH_ENABLED_TOOLS: str = _str("WORKBENCH_ENABLED_TOOLS", "")
+# The registry capabilities switched on ("image_generation"). Empty by default;
+# portrait and map are paid under D-3, so image_generation stays unset in
+# production until yje.4.1's entitlement gate covers them.
+WORKBENCH_CAPABILITIES: str = _str("WORKBENCH_CAPABILITIES", "")
 # How many X-Forwarded-For entries our OWN infrastructure appends. X-Forwarded-For
 # is caller-writable — Google preserves what the client sent and appends to it —
 # so the source key is taken from the right-hand (trusted) end of the chain, this

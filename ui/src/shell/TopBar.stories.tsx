@@ -2,8 +2,10 @@
  * TopBar — brand, plus the open conversation's title when there is one.
  */
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import * as React from 'react'
 import { expect, within } from 'storybook/test'
 
+import { tabTo } from '../../.storybook/keyboard'
 import { withShell } from '../../.storybook/shellHarness'
 import { TopBar } from './TopBar'
 
@@ -71,4 +73,36 @@ export const Dark: Story = {
       mode: 'rules',
     }),
   ],
+}
+
+/**
+ * agent-forge-harness-0rn: the narrow layout's menu button, reached by Tab,
+ * shows the design system's 3px focus ring (it is a raw button, so it does
+ * not inherit IconButton's).
+ */
+export const MenuButtonFocusVisible: Story = {
+  decorators: [withShell()],
+  render: () => (
+    <>
+      <TopBar
+        navToggle={{
+          expanded: false,
+          controls: 'story-drawer',
+          onOpen: () => {},
+          buttonRef: React.createRef<HTMLButtonElement>(),
+        }}
+      />
+      <div id="story-drawer" hidden />
+    </>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const menu = canvas.getByRole('button', { name: 'Open navigation' })
+    await tabTo(menu)
+    const style = getComputedStyle(menu)
+    await expect(style.outlineStyle).not.toBe('none')
+    await expect(style.outlineWidth).toBe('3px')
+    // --md-sys-color-secondary (#7a5a23): a transparent ring paints nothing.
+    await expect(style.outlineColor).toBe('rgb(122, 90, 35)')
+  },
 }

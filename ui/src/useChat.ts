@@ -50,6 +50,16 @@ export interface UseChatOptions {
    * the user could never return to. Adopting it is what makes the id the server
    * chose the one the next turn continues. */
   onConversationAdopted?: (conversationId: string) => void
+  /** Called when a turn's response says the SERVER healed this conversation
+   * off a manual pick it has since retired (agent-forge-harness-j9w) —
+   * `routing.fallback_from` set, `preference` is `routing.requested`: the
+   * binding the server moves the conversation to, which the next turn must
+   * send. Never `routing.effective`: on a heal to 'auto' that is the model
+   * that answered, and sending it is a binding mismatch (pr156 H-1). The one
+   * legitimate way `boundPreference` changes after the first prompt; wire it
+   * to `ConversationStore.rebindPreference` so the next turn stops sending
+   * the retired id and ModelPicker shows the healed preference. */
+  onPreferenceRebound?: (conversationId: string, preference: string) => void
   /** Called exactly once per turn THIS hook sent, right after the commit in
    * which it settles (agent-forge-harness-ekf) — 'done' for an answer, 'error'
    * for a failed result or a rejection. Additive and optional: every existing
@@ -142,6 +152,7 @@ export function useChat({
   conversationId,
   modelPreference = 'auto',
   onConversationAdopted,
+  onPreferenceRebound,
   onTurnSettled,
   now = monotonicNow,
   recordMetric = recordBrowserMetric,
@@ -155,6 +166,13 @@ export function useChat({
     lastSettle: null,
   })
   const pendingRef = useRef(false)
+  /** 1kg.3.5 (I-14): whether THIS hook has a request in flight, in any
+   * conversation. `pending` below is the visible conversation's alone, so
+   * after a switch it is false while `send` would still refuse (`pendingRef`);
+   * this is what a composer asks before offering Send. State-backed, so a
+   * consumer re-renders when it flips: true from an accepted `send` until that
+   * send's settle, whatever its outcome and whether or not it is shown. */
+  const [inFlight, setInFlight] = useState(false)
   const nextId = useRef(1)
   /** The settle `onTurnSettled` last reported — each is reported exactly once. */
   const reportedSettle = useRef<SettleRecord | null>(null)
@@ -220,6 +238,7 @@ export function useChat({
       const trimmed = prompt.trim()
       if (!trimmed || pendingRef.current) return
       pendingRef.current = true
+      setInFlight(true)
       const startedAt = now()
 
       const id = nextId.current++
@@ -248,6 +267,7 @@ export function useChat({
         adoptedId: string | null = null,
       ) => {
         pendingRef.current = false
+        setInFlight(false)
         const labels = runtimeMetricLabels(mode)
         recordMetric({
           name: 'ui.interaction.chat_round_trip_ms',
@@ -306,6 +326,11 @@ export function useChat({
             if (adopted !== null) {
               onConversationAdopted?.(adopted)
             }
+            const routing = result.response.routing
+            const scopeId = conversationId ?? adopted
+            if (scopeId !== null && typeof routing?.fallback_from === 'string' && routing.fallback_from) {
+              onPreferenceRebound?.(scopeId, routing.requested)
+            }
             settle({ status: 'done', response: result.response }, 'success', adopted)
           } else {
             settle(
@@ -331,7 +356,10 @@ export function useChat({
         },
       )
     },
-    [post, mode, conversationId, modelPreference, now, recordMetric, onConversationAdopted],
+    [
+      post, mode, conversationId, modelPreference, now, recordMetric,
+      onConversationAdopted, onPreferenceRebound,
+    ],
   )
 
   // agent-forge-harness-ekf / agent-forge-harness-swg (pr129 M-1): report each
@@ -352,5 +380,5 @@ export function useChat({
     onTurnSettled?.(s.outcome, s.sentFor, shown)
   }, [lastSettle, scoped, scopeExchanges, conversationId, onTurnSettled])
 
-  return { exchanges, send, pending, historyError, loadingHistory }
+  return { exchanges, send, pending, inFlight, historyError, loadingHistory }
 }
