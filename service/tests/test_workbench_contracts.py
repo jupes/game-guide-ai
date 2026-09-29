@@ -1458,27 +1458,27 @@ def test_the_event_kind_vocabularies_are_the_unions() -> None:
         assert tags == kinds
 
 
-def test_a_table_secret_is_what_the_server_mints() -> None:
-    """SEC-5: 32 bytes from the CSPRNG, as ``secrets.token_urlsafe`` spells them."""
-    import secrets
-
-    adapter = TypeAdapter(wc.TableSecret)
-    for _ in range(20):
-        adapter.validate_python(secrets.token_urlsafe(32))
-    for wrong in (secrets.token_urlsafe(31), secrets.token_urlsafe(33), secrets.token_hex(32)):
-        with pytest.raises(ValidationError):
-            adapter.validate_python(wrong)
-
-
-def test_a_session_answer_carries_the_token_once_and_the_session_never_does() -> None:
+def test_no_session_answer_carries_a_token_and_no_screen_shape_carries_its_grant() -> None:
+    """Threat model 15.11: there is no table token, so no session answer and no
+    session carries one; SEC-48: the screen grant leaves in its cookie alone, so
+    neither ``ScreenMintAnswer`` nor a session's ``screens`` has a field for it
+    or for its digest. Read from the schemas, not from a list of names, so a
+    field added later under any of these words fails here."""
     fixture = json.loads((FIXTURES / "TableSessionAnswer.json").read_text(encoding="utf-8"))
-    started = next(e["value"] for e in fixture["valid"] if e["name"].startswith("started"))
-    answer = wc.TableSessionAnswer.model_validate(started)
-    dumped = answer.model_dump(mode="json")
-    assert dumped["token"] == started["token"]
-    assert "token" not in dumped["session"]
-    with pytest.raises(ValidationError):
-        wc.TableSession.model_validate({**started["session"], "token": started["token"]})
+    for example in fixture["valid"]:
+        dumped = wc.TableSessionAnswer.model_validate(example["value"]).model_dump(mode="json")
+        assert "token" not in dumped
+        assert dumped["session"] is None or "token" not in dumped["session"]
+    live = next(e["value"] for e in fixture["valid"] if e["value"]["session"] and e["value"]["session"]["screens"])
+    for smuggled in ({**live, "token": "t" * 43}, {**live, "session": {**live["session"], "token": "t" * 43}}):
+        with pytest.raises(ValidationError):
+            wc.TableSessionAnswer.model_validate(smuggled)
+    secret_words = re.compile(r"token|secret|grant|digest|credential", re.IGNORECASE)
+    for model in (wc.TableSessionAnswer, wc.TableSession, wc.TableScreen, wc.ScreenMintAnswer):
+        names = set(model.model_json_schema(ref_template="{model}")["properties"])
+        assert not {name for name in names if secret_words.search(name)}, model.__name__
+    assert set(wc.ScreenMintAnswer.model_fields) == {"schema_version", "ends_at"}
+    assert set(wc.TableScreen.model_fields) == {"screen_id", "created_at", "last_seen_at"}
 
 
 def test_an_asset_is_measured_only_once_it_is_ready() -> None:

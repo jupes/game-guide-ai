@@ -446,6 +446,17 @@ class ErrorCode(str, Enum):
     #: write that merges over it — a stored key or sub-key this build does not
     #: declare. Reachable only by the document's owner; fail closed, not retryable.
     DOCUMENT_UNSUPPORTED = "document_unsupported"
+    #: The table-session family (1kg.2.3). ``inactive`` is SEC-46's one table
+    #: answer — a 404 for every signed-in caller not entitled, whatever the
+    #: reason; ``cross_site`` is SEC-45's Fetch Metadata refusal, a 403 that
+    #: depends on nothing but those headers; ``screen_limit`` is SEC-48's
+    #: per-session bound on screens; ``live_elsewhere`` is a Start while the
+    #: GM's table is live in another campaign (REVEAL-2): the client ends that
+    #: one first, and Start never ends it on its own.
+    INACTIVE = "inactive"
+    CROSS_SITE = "cross_site"
+    SCREEN_LIMIT = "screen_limit"
+    LIVE_ELSEWHERE = "live_elsewhere"
 
 
 # ── Registry facts the validators need (pinned by registry.json) ─────────────
@@ -1766,8 +1777,6 @@ ALT_MAX_CHARS = 300
 CUE_TITLE_MAX_CHARS = 200
 CUE_PAGE_MAX_ITEMS = 50
 PRESENCE_MAX_PARTICIPANTS = 100
-#: ``secrets.token_urlsafe(32)``: 32 CSPRNG bytes are 43 base64url characters (SEC-5).
-TABLE_SECRET_CHARS = 43
 
 
 class AssetKind(str, Enum):
@@ -2041,9 +2050,11 @@ class CueStopRequest(_Contract):
 
 
 # ── Table sessions ───────────────────────────────────────────────────────────
-
-#: A table token or an enrolment code as it travels — once, in a POST body (SEC-8, SEC-11).
-TableSecret = Annotated[str, StringConstraints(strict=True, pattern=rf"^[A-Za-z0-9_-]{{{TABLE_SECRET_CHARS}}}$")]
+#
+# Reopened by threat model §15.11 and rebuilt by 1kg.2.3 (L-14): there is no
+# table link, no join and no enrolment, so no token is on the wire for any
+# account (SEC-41, SEC-43). The one bearer secret left, the screen grant
+# (SEC-48, D-13), leaves the server in a `Set-Cookie` header and is in no body.
 
 
 class TableRole(str, Enum):
@@ -2051,61 +2062,34 @@ class TableRole(str, Enum):
     GUEST = "guest"
 
 
-class JoinStatus(str, Enum):
-    """``inactive`` is the one answer for a wrong, ended, expired or rotated token
-    (TABLE-9); ``full`` is the device bound (SEC-10)."""
-
-    JOINED = "joined"
-    FULL = "full"
-    INACTIVE = "inactive"
-
-
-class TableJoinRequest(_Contract):
-    schema_version: SchemaVersion
-    token: TableSecret
-
-
-class TableJoinResponse(_Contract):
-    """One shape for every outcome, and the role the device joined with — a
-    participant, or a guest with TABLE-13's line — only when it joined."""
-
-    schema_version: SchemaVersion
-    status: JoinStatus
-    role: TableRole | None
-
-    @model_validator(mode="after")
-    def _role_only_when_joined(self) -> Self:
-        if (self.role is not None) != (self.status is JoinStatus.JOINED):
-            raise ValueError("a role comes with a join, and only with a join")
-        return self
-
-
-class EnrolStatus(str, Enum):
-    """``inactive`` covers used, replaced, expired and invalid alike (TABLE-16)."""
-
-    ENROLLED = "enrolled"
-    INACTIVE = "inactive"
-
-
-class EnrolRequest(_Contract):
-    schema_version: SchemaVersion
-    code: TableSecret
-
-
-class EnrolResponse(_Contract):
-    schema_version: SchemaVersion
-    status: EnrolStatus
-
-
 class SessionState(str, Enum):
+    """``ended`` covers an End and an expiry alike: a session past ``ends_at``
+    reads ``ended``, with ``ended_at`` its ``ends_at`` (SEC-42)."""
+
     LIVE = "live"
     ENDED = "ended"
 
 
+#: How many screens a ``TableSession`` may list. Above SEC-48's per-session
+#: bound (four, *suggested*), so that tuning the bound is not a contract change.
+TABLE_SCREENS_MAX = 16
+
+
+class TableScreen(_Contract):
+    """One live screen of a live session as its GM sees it (SEC-48, D-13): an id
+    to revoke it by, when it was made and when it was last seen. Never the grant,
+    its digest or its generation (SEC-5, SEC-15)."""
+
+    screen_id: OpaqueId
+    created_at: Timestamp
+    last_seen_at: Timestamp | None
+
+
 class TableSession(_Contract):
-    """The GM's view of a session (REVEAL-2, REVEAL-17): its state, its link
-    generation, when it ends, whether table audio is on, and how many devices
-    hold a credential (SEC-10). The token itself is not here — it travels once."""
+    """The GM's view of a session (REVEAL-2, REVEAL-17): its state, its
+    admission generation (``gen``, §15.11), when it ends, whether table audio is
+    on, and the screens that hold a live grant. No secret is here, and none is
+    anywhere else on the wire: a screen's grant travels in its cookie alone."""
 
     schema_version: SchemaVersion
     session_id: OpaqueId
@@ -2127,7 +2111,8 @@ class TableSession(_Contract):
     ends_at: Timestamp
     ended_at: Timestamp | None
     audio: StrictBool
-    devices: Annotated[WireInt, Field(ge=0, le=1000)]
+    #: The live grants of a live session, oldest first; none once it has ended.
+    screens: Annotated[list[TableScreen], Field(max_length=TABLE_SCREENS_MAX)]
 
     @model_validator(mode="after")
     def _times_agree(self) -> Self:
@@ -2135,6 +2120,8 @@ class TableSession(_Contract):
             raise ValueError("an ended session says when, and a live one does not")
         if self.ends_at <= self.started_at:
             raise ValueError("a session ends after it starts")
+        if self.screens and self.state is SessionState.ENDED:
+            raise ValueError("an ended session has no live screen")
         return self
 
 
@@ -2145,35 +2132,71 @@ class SessionAction(str, Enum):
 
 
 class TableSessionRequest(_Contract):
-    """Start, End and Rotate (REVEAL-17), idempotent by ``command_id``. Rotate may
-    also reset every personal link; nothing else may."""
+    """Start, End and Rotate (REVEAL-17), idempotent by ``command_id``. The
+    path names the campaign. End and Rotate name the session they act on, so a
+    retried End of yesterday's session can never end today's; Start names none,
+    because it makes one."""
 
     schema_version: SchemaVersion
     command_id: CommandId
-    campaign_id: OpaqueId
     action: SessionAction
-    reset_personal_links: StrictBool = False
+    session_id: OpaqueId | None = None
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def _sent_means_a_value(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("send a session id, or leave the key out")
+        return value
 
     @model_validator(mode="after")
-    def _reset_only_with_rotate(self) -> Self:
-        if self.reset_personal_links and self.action is not SessionAction.ROTATE:
-            raise ValueError("personal links are reset with a rotation, not with a start or an end")
+    def _a_session_for_end_and_rotate(self) -> Self:
+        if (self.session_id is not None) != (self.action is not SessionAction.START):
+            raise ValueError("End and Rotate name their session, and Start names none")
         return self
+
+    @model_serializer(mode="wrap")
+    def _no_session_key_for_start(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """A Start is emitted without the key, as it was sent: ``null`` is not a
+        value the contract accepts for it."""
+        emitted: dict[str, Any] = handler(self)
+        if emitted.get("session_id") is None:
+            emitted.pop("session_id", None)
+        return emitted
 
 
 class TableSessionAnswer(_Contract):
-    """The answer to a session request. A start or a rotation carries the new
-    table token — the one time it is in a body (SEC-8) — and an end carries none."""
+    """The answer to a session request and to the GM's status read: the session,
+    or ``null`` for the status of a campaign that never started one. No answer
+    carries a token (§15.11): there is none."""
 
     schema_version: SchemaVersion
-    session: TableSession
-    token: TableSecret | None
+    session: TableSession | None
 
-    @model_validator(mode="after")
-    def _token_only_while_live(self) -> Self:
-        if (self.token is not None) != (self.session.state is SessionState.LIVE):
-            raise ValueError("a live session answers with its token, and an ended one with none")
-        return self
+
+class ScreenMintRequest(_Contract):
+    """Make this browser a table screen (SEC-48, D-13): the owner names the
+    campaign whose live session it will show. The same answer signs the account
+    out of this browser."""
+
+    schema_version: SchemaVersion
+    campaign_id: OpaqueId
+
+
+class ScreenMintAnswer(_Contract):
+    """What a new screen is told: when its grant ends, with its session. No id,
+    no generation and no session id (SEC-15); the grant is in the answer's
+    ``Set-Cookie`` and nowhere else."""
+
+    schema_version: SchemaVersion
+    ends_at: Timestamp
+
+
+class TableLeaveRequest(_Contract):
+    """Leave (SEC-49): this browser stops being a screen. It names nothing — the
+    grant it ends is the cookie the request carries."""
+
+    schema_version: SchemaVersion
 
 
 class Capabilities(_Contract):
@@ -2981,9 +3004,9 @@ class TableSlotName(str, Enum):
 
     Deliberately *not* a ``RevealSlotRef``: a slot reference carries a
     participant id, and every table-side shape in this contract is id-free —
-    ``TableRole`` is an enum, ``TableJoinResponse`` answers with a role and no
-    id, ``EnrolResponse`` with a status alone. Which participant ``mine`` is,
-    the server resolves from the credential pair, "never from request fields"
+    ``TableRole`` is an enum, and ``ScreenMintAnswer`` carries a time alone.
+    Which participant ``mine`` is, the server resolves from the table principal,
+    "never from request fields"
     (eligibility ADR §4), so the id never has to be on the wire at all (SEC-15).
 
     It also carries no ``disclosure_id`` and no count: under owner decision O-3
@@ -3665,13 +3688,12 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "CuePage": TypeAdapter(CuePage),
     "CuePlayRequest": TypeAdapter(CuePlayRequest),
     "CueStopRequest": TypeAdapter(CueStopRequest),
-    "TableJoinRequest": TypeAdapter(TableJoinRequest),
-    "TableJoinResponse": TypeAdapter(TableJoinResponse),
-    "EnrolRequest": TypeAdapter(EnrolRequest),
-    "EnrolResponse": TypeAdapter(EnrolResponse),
     "TableSession": TypeAdapter(TableSession),
     "TableSessionRequest": TypeAdapter(TableSessionRequest),
     "TableSessionAnswer": TypeAdapter(TableSessionAnswer),
+    "ScreenMintRequest": TypeAdapter(ScreenMintRequest),
+    "ScreenMintAnswer": TypeAdapter(ScreenMintAnswer),
+    "TableLeaveRequest": TypeAdapter(TableLeaveRequest),
     "Capabilities": TypeAdapter(Capabilities),
     "RevealAudience": TypeAdapter(RevealAudience, config=_HIDE_INPUT),
     "RevealSlotRef": TypeAdapter(RevealSlotRef, config=_HIDE_INPUT),

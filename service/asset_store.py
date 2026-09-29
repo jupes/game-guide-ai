@@ -609,12 +609,26 @@ class AssetStore(Protocol):
         ...  # pragma: no cover - structural type
 
     def start_processing(
-        self, unit: UnitOfWork, campaign_id: str, asset_id: str, *, owner_id: int, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        asset_id: str,
+        *,
+        owner_id: int,
+        now: datetime | None = None,
+        transaction_timeout_s: float | None = None,
     ) -> AssetRecord:
         ...  # pragma: no cover - structural type
 
     def return_to_uploading(
-        self, unit: UnitOfWork, campaign_id: str, asset_id: str, *, owner_id: int, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        asset_id: str,
+        *,
+        owner_id: int,
+        now: datetime | None = None,
+        transaction_timeout_s: float | None = None,
     ) -> AssetRecord:
         ...  # pragma: no cover - structural type
 
@@ -627,6 +641,7 @@ class AssetStore(Protocol):
         owner_id: int,
         measured: Measured,
         now: datetime | None = None,
+        transaction_timeout_s: float | None = None,
     ) -> AssetRecord:
         """`processing` -> `ready`, replacing the declared reservation with the
         real size. If the real size no longer fits the quota, the row becomes
@@ -643,6 +658,7 @@ class AssetStore(Protocol):
         owner_id: int,
         failure: AssetFailure | str,
         now: datetime | None = None,
+        transaction_timeout_s: float | None = None,
     ) -> AssetRecord:
         ...  # pragma: no cover - structural type
 
@@ -735,21 +751,35 @@ class _Transitions:
         )
 
     def start_processing(
-        self, unit: UnitOfWork, campaign_id: str, asset_id: str, *, owner_id: int, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        asset_id: str,
+        *,
+        owner_id: int,
+        now: datetime | None = None,
+        transaction_timeout_s: float | None = None,
     ) -> AssetRecord:
         _check_types(campaign_id=campaign_id, asset_id=asset_id, owner_id=owner_id)
         moment = now_or(now)
-        row = self._held(unit, campaign_id, asset_id, owner_id, (_UPLOADING,))
+        row = self._held(unit, campaign_id, asset_id, owner_id, (_UPLOADING,), transaction_timeout_s)
         written = self._write_row(unit, _entered(row, _PROCESSING, moment), owner_id)
         self._seed_sweep(unit, written)
         return record_of(written)
 
     def return_to_uploading(
-        self, unit: UnitOfWork, campaign_id: str, asset_id: str, *, owner_id: int, now: datetime | None = None
+        self,
+        unit: UnitOfWork,
+        campaign_id: str,
+        asset_id: str,
+        *,
+        owner_id: int,
+        now: datetime | None = None,
+        transaction_timeout_s: float | None = None,
     ) -> AssetRecord:
         _check_types(campaign_id=campaign_id, asset_id=asset_id, owner_id=owner_id)
         moment = now_or(now)
-        row = self._held(unit, campaign_id, asset_id, owner_id, (_PROCESSING,))
+        row = self._held(unit, campaign_id, asset_id, owner_id, (_PROCESSING,), transaction_timeout_s)
         written = self._write_row(unit, _entered(row, _UPLOADING, moment), owner_id)
         self._seed_sweep(unit, written)
         return record_of(written)
@@ -763,10 +793,11 @@ class _Transitions:
         owner_id: int,
         measured: Measured,
         now: datetime | None = None,
+        transaction_timeout_s: float | None = None,
     ) -> AssetRecord:
         _check_types(campaign_id=campaign_id, asset_id=asset_id, owner_id=owner_id)
         moment = now_or(now)
-        row = self._held(unit, campaign_id, asset_id, owner_id, (_PROCESSING,))
+        row = self._held(unit, campaign_id, asset_id, owner_id, (_PROCESSING,), transaction_timeout_s)
         real = _check_measured(row, measured)
         if self._try_reserve(unit, row.campaign_id, owner_id, real.size_bytes - row.declared_size_bytes, 0):
             ready = _entered(
@@ -792,11 +823,12 @@ class _Transitions:
         owner_id: int,
         failure: AssetFailure | str,
         now: datetime | None = None,
+        transaction_timeout_s: float | None = None,
     ) -> AssetRecord:
         _check_types(campaign_id=campaign_id, asset_id=asset_id, owner_id=owner_id)
         reason = _failure(failure)
         moment = now_or(now)
-        row = self._held(unit, campaign_id, asset_id, owner_id, (_UPLOADING, _PROCESSING))
+        row = self._held(unit, campaign_id, asset_id, owner_id, (_UPLOADING, _PROCESSING), transaction_timeout_s)
         failed = self._write_row(unit, _entered(row, _FAILED, moment, failure=reason), owner_id)
         self._release(unit, row.campaign_id, owner_id, row.reservation, 1)
         return record_of(failed)

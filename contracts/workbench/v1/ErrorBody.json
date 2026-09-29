@@ -209,6 +209,46 @@
           "retry_after_s": 3600
         }
       }
+    },
+    {
+      "name": "SEC-46's one table answer (1kg.2.3): every signed-in caller not entitled, whatever the reason",
+      "value": {
+        "detail": {
+          "code": "inactive",
+          "message": "There's no live table here.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "SEC-45's Fetch Metadata refusal on a table route (1kg.2.3): it names nothing",
+      "value": {
+        "detail": {
+          "code": "cross_site",
+          "message": "That request didn't come from this application.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "SEC-48's per-session bound on screens (1kg.2.3)",
+      "value": {
+        "detail": {
+          "code": "screen_limit",
+          "message": "This table already has as many screens as it can.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "a Start while the GM's table is live in another campaign (1kg.2.3): End that one first",
+      "value": {
+        "detail": {
+          "code": "live_elsewhere",
+          "message": "Your table is live in another campaign. End it first.",
+          "retryable": false
+        }
+      }
     }
   ],
   "invalid": [
