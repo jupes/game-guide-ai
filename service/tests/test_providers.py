@@ -13,8 +13,15 @@ Run from repo root:
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
+import httpx
 import pytest
 
+import config
+from service import generate
+from service.model_catalog import CATALOG
 from service.providers import ProviderClientFactory, UnknownOrDisabledModelError
 
 
@@ -115,3 +122,48 @@ def test_missing_provider_credential_raises_a_clear_error(monkeypatch):
     profile = CATALOG["deepseek-v4-flash"]
     with pytest.raises(MissingProviderCredentialError, match="DEEPSEEK_API_KEY"):
         ProviderClientFactory()._build(profile)
+
+
+# ---------------------------------------------------------------------------
+# Request and connect timeouts (agent-forge-harness-ihz). Without them a
+# stalled provider held a /chat worker thread with no upper bound. Every alias
+# the catalog knows, enabled or not, carries them from config on the sync
+# client (invoke, stream) AND the async one (ainvoke, astream). Behaviour
+# against a stalled provider: service/tests/test_generation_timeout.py.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("alias", sorted(CATALOG))
+def test_every_alias_client_carries_the_configured_timeouts(monkeypatch, alias):
+    profile = CATALOG[alias]
+    monkeypatch.setenv(profile.secret_env, "sk-test-not-a-real-key")
+    monkeypatch.setattr(config, "LLM_REQUEST_TIMEOUT_S", 42.0)
+    monkeypatch.setattr(config, "LLM_CONNECT_TIMEOUT_S", 3.0)
+    client = ProviderClientFactory()._build(profile)
+    expected = httpx.Timeout(42.0, connect=3.0)
+    assert client.request_timeout == expected
+    assert client.root_client.timeout == expected
+    assert client.root_async_client.timeout == expected
+
+
+def test_the_timeouts_fit_the_retry_budget_inside_the_platform_request_timeout():
+    # A stalled provider costs connect + request per attempt; all of
+    # generate.py's attempts and backoffs must end before Cloud Run gives up
+    # on the request (which cancels the request, not the thread).
+    deploy = (Path(__file__).resolve().parents[2] / "scripts" / "deploy.sh").read_text()
+    platform = re.search(r"--timeout (\d+)", deploy)
+    assert platform is not None
+    backoff = sum(generate._RETRY_BACKOFF_SECONDS * n for n in range(1, generate._MAX_ATTEMPTS))
+    per_attempt = config.LLM_CONNECT_TIMEOUT_S + config.LLM_REQUEST_TIMEOUT_S
+    assert generate._MAX_ATTEMPTS * per_attempt + backoff < int(platform.group(1))
+
+
+def test_a_timeout_setting_reads_its_environment_override(monkeypatch):
+    monkeypatch.setenv("RAG_LLM_REQUEST_TIMEOUT_S", "12.5")
+    assert config._seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0) == 12.5
+
+
+@pytest.mark.parametrize("raw", ["inf", "nan", "0", "-1"])
+def test_a_timeout_setting_that_would_unbound_or_break_generation_is_refused(monkeypatch, raw):
+    monkeypatch.setenv("RAG_LLM_REQUEST_TIMEOUT_S", raw)
+    with pytest.raises(ValueError, match="RAG_LLM_REQUEST_TIMEOUT_S"):
+        config._seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0)

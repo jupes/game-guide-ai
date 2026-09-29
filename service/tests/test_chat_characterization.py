@@ -1041,6 +1041,14 @@ def test_gm_channel_refuses_a_non_dm_session_before_retrieval(post_chat: Callabl
     assert (run.response.status_code, run.response.json()) == (403, {"detail": "the GM channel requires the DM role"})
     assert_no_spend(run)
     assert_content_free(run, fault=False)
+    # T-23b (agent-forge-harness-816): assert_no_spend alone doesn't cover
+    # ownership/strategy, since neither touches embed/search/llm counts or
+    # message rows. A refused GM call must claim no ownership and bind no
+    # strategy (mutant R-3: moving this gate below `_authorize_conversation` /
+    # `claim_conversation_strategy` in service/app.py survives without this).
+    assert run.store.owner_of(CONV) is None
+    assert run.store.conversation_strategy(CONV) is None
+    assert run.store.calls["claim_conversation"] == 0
 
 
 def _strategy_claim_outage(post_chat: Callable[..., ChatRun]) -> ChatRun:

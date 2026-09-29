@@ -38,7 +38,7 @@ import traceback
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -665,7 +665,7 @@ def test_rotating_does_not_block_a_screen_grant_that_references_the_session(
     dsn: str, owner: int
 ) -> None:
     """Why `rotate_command_id` has no index at all, and the start index is
-    PARTIAL (0014, RQ-3).
+    PARTIAL (0015, RQ-3).
 
     PostgreSQL treats the columns of a non-partial unique index as key columns,
     so an index over `rotate_command_id` would turn Rotate's `UPDATE ... SET
@@ -1659,7 +1659,7 @@ def test_a_session_that_expires_before_it_starts_is_refused(world: World) -> Non
 
 
 def test_a_start_command_opens_one_session_per_campaign_in_both_worlds(world: World) -> None:
-    """0014's partial unique index over `(campaign_id, start_command_id)`, kept
+    """0015's partial unique index over `(campaign_id, start_command_id)`, kept
     by the twin too. A caller that holds the campaign lock reads the replay
     first; one that did not gets this named refusal, not a unique violation.
     The same command in another campaign is another command, and a command id
@@ -3560,7 +3560,14 @@ def test_the_invitee_page_is_newest_first_and_walks_once(world: World) -> None:
     with world.db.transaction() as unit:
         found = offers.find_for_invitee(unit, made[0], key, world.players[0], now=T0)
     assert found is not None and (found.campaign_name, found.alias) == ("C0", "Rook")
-    assert "C0" not in repr(found) and "Rook" not in repr(found)
+    # `repr(found)` also holds SeatOffer's random ids (secrets.token_urlsafe), so
+    # a short name like "C0" can appear there by chance. Check two things that
+    # do not depend on those ids: the dataclass marks both fields hidden, and
+    # what `repr(found)` prints outside the nested offer names neither of them
+    # (a hand-written `__repr__` would pass the first check but not this one).
+    assert {f.name for f in fields(found) if not f.repr} >= {"campaign_name", "alias"}
+    rendered = repr(found).replace(repr(found.offer), "")
+    assert "C0" not in rendered and "Rook" not in rendered
 
 
 def test_decline_block_and_the_repeat_readers(world: World) -> None:

@@ -15,7 +15,7 @@ they must fit the wire contract's ``OpaqueId`` (``^[A-Za-z0-9_-]{1,64}$``).
 the **screen grant** (SEC-48): 32 random bytes, of which the server stores
 **only a SHA-256 digest**, looked up by that digest. The table link token and
 the join credential are gone — threat model section 15 retired the join, and
-migration 0014 dropped the link's digest (`1kg.2.3`) — as the enrolment code
+migration 0015 dropped the link's digest (`1kg.2.3`) — as the enrolment code
 and the device credential went before them (the owner's decisions D-1 and D-4;
 bead `fma`, migration 0009). A screen grant is a row of
 `campaign.table_credentials`, which is why its prefix is still `tcr_`. A slow

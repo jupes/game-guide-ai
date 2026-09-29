@@ -13,7 +13,7 @@ a GM is one person at one table, and two live sessions would mean two displays
 claiming the same authority. PostgreSQL refuses the second with a partial unique
 index on `gm_user_id WHERE state = 'live'`, which also settles two racing
 starts; the twin refuses it in Python, so the two cannot disagree. A start
-records the client's `command_id` (`start_command_id`, migration 0014), and the
+records the client's `command_id` (`start_command_id`, migration 0015), and the
 twin keeps that partial unique index too (`StartReplayed`).
 
 **The GM is the campaign's owner** (AUD-1, `docs/migrations.md` section 4).
@@ -106,7 +106,7 @@ ROTATED = "rotated"
 #: contract's `screens` list allows more, so tuning this is not a contract change.
 SCREENS_PER_SESSION = 4
 
-#: The wire contract's `CommandId`, which 0014's two CHECKs spell too.
+#: The wire contract's `CommandId`, which 0015's two CHECKs spell too.
 COMMAND_ID = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 
 SlotClear = Callable[[UnitOfWork, str], None]
@@ -135,7 +135,7 @@ def check_expiry(started_at: datetime, expires_at: datetime) -> datetime:
 
 
 def check_command_id(command_id: str) -> str:
-    """The shape 0014's CHECK carries, in both worlds. The refusal does not
+    """The shape 0015's CHECK carries, in both worlds. The refusal does not
     repeat the value: a caller's string is not something to echo."""
     if not isinstance(command_id, str) or COMMAND_ID.fullmatch(command_id) is None:
         raise ValueError("a command id is 16 to 64 URL-safe characters")
@@ -445,7 +445,7 @@ def _grant(row: tuple) -> ScreenGrant:
 
 
 class PostgresTableSessionStore:
-    """`campaign.table_sessions` and `campaign.table_credentials` (0004, 0014).
+    """`campaign.table_sessions` and `campaign.table_credentials` (0004, 0015).
 
     It keeps no settings of its own: the two bounds come from the unit of work's
     `CampaignLockSettings`, which is the one a `Database` was built with, so a

@@ -15,6 +15,7 @@ import {
   atViewport,
   expectLeftEdge,
   expectNoPageOverflow,
+  expectNothingClipped,
   expectTheme,
   expectViewport,
   expectWorkspaceFits,
@@ -267,11 +268,14 @@ async function openDrawer(canvasElement: HTMLElement): Promise<HTMLElement> {
 }
 
 /** The drawer is on top, the scrim is between it and the page, and at least
- * 48px of scrim stays tappable on the right. */
+ * 48px of scrim stays tappable on the right. The drawer is a fixed scroller
+ * outside every workspace box, so it never scrolls sideways: its content
+ * fits its width (expectNothingClipped names what does not). */
 async function expectDrawerOverScrim(drawer: HTMLElement): Promise<void> {
   const box = drawer.getBoundingClientRect()
   await expect(box.left).toBe(0)
   await expect(box.right).toBeLessThanOrEqual(window.innerWidth - 48)
+  await expect(drawer.scrollWidth).toBe(drawer.clientWidth)
   const atCentre = document.elementFromPoint((box.left + box.right) / 2, (box.top + box.bottom) / 2)
   await expect(atCentre !== null && drawer.contains(atCentre)).toBe(true)
   const atEdge = document.elementFromPoint(window.innerWidth - 12, window.innerHeight / 2)
@@ -362,6 +366,8 @@ export const PhoneLandscapeDrawer667: Story = {
     await expectViewport('landscape667')
     const drawer = await openDrawer(canvasElement)
     await expect(drawer.scrollHeight).toBeGreaterThan(drawer.clientHeight)
+    // It scrolls down, never sideways.
+    await expectNothingClipped(canvasElement)
     for (const name of [SECOND, 'Open user menu']) {
       const control = within(drawer).getByRole('button', { name })
       control.scrollIntoView({ block: 'nearest' })

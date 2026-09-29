@@ -57,9 +57,9 @@ PARTICIPANT = "prt_" + "a" * 22
 AUDIT_SQL = (
     Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0005_audit_events.sql"
 ).read_text(encoding="utf-8")
-#: 0014 replaced 0005's actor-kind CHECK (`1kg.2.3`): `guest` went, `screen` came.
+#: 0015 replaced 0005's actor-kind CHECK (`1kg.2.3`): `guest` went, `screen` came.
 SESSION_ACCESS_SQL = (
-    Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0014_table_session_access.sql"
+    Path(__file__).resolve().parents[1] / "sql" / "migrations" / "0015_table_session_access.sql"
 ).read_text(encoding="utf-8")
 
 
@@ -491,12 +491,12 @@ def test_the_python_vocabularies_are_the_ones_the_migration_checks():
     assert decision is not None, "0005 no longer constrains decision with an IN list"
     in_sql = {value.strip().strip("'") for value in decision.group(1).split(",")}
     assert in_sql == {member.value for member in Decision}
-    # 0014 replaced 0005's actor-kind CHECK, so the one in force is 0014's.
+    # 0015 replaced 0005's actor-kind CHECK, so the one in force is 0015's.
     actor = re.search(
         r"ADD CONSTRAINT events_actor_kind_check\s+CHECK \(actor_kind IN \(([^)]*)\)\)",
         SESSION_ACCESS_SQL,
     )
-    assert actor is not None, "0014 no longer constrains actor_kind with an IN list"
+    assert actor is not None, "0015 no longer constrains actor_kind with an IN list"
     in_sql = {value.strip().strip("'") for value in actor.group(1).split(",")}
     assert in_sql == {member.value for member in ActorKind}
 

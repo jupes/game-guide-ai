@@ -43,7 +43,7 @@ AUDIT_SQL = (MIGRATIONS / "0005_audit_events.sql").read_text(encoding="utf-8")
 CONVERSATION_SQL = (MIGRATIONS / "0006_conversation_metadata.sql").read_text(encoding="utf-8")
 DOCUMENT_SQL = (MIGRATIONS / "0008_document_schema.sql").read_text(encoding="utf-8")
 SEAT_SQL = (MIGRATIONS / "0009_participant_accounts.sql").read_text(encoding="utf-8")
-SESSION_ACCESS_SQL = (MIGRATIONS / "0014_table_session_access.sql").read_text(encoding="utf-8")
+SESSION_ACCESS_SQL = (MIGRATIONS / "0015_table_session_access.sql").read_text(encoding="utf-8")
 
 #: Every migration, sorted and concatenated. The two identifier tests below read
 #: THIS rather than one file: the prefix registry is service-wide, so a prefix
@@ -352,7 +352,7 @@ def test_the_seat_migration_states_why_its_check_and_its_drops_are_safe():
 
 
 
-# ── 0014: the table session without a link or a join (1kg.2.3) ──────────────
+# ── 0015: the table session without a link or a join (1kg.2.3) ──────────────
 
 #: The wire contract's `CommandId` pattern, read off the contract itself.
 COMMAND_ID_PATTERN = get_args(workbench_contracts.CommandId)[1].pattern
