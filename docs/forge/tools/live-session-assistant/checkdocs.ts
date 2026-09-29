@@ -6,12 +6,14 @@
 //   4. backticked repository paths exist in the working tree or on origin/master;
 //   5. code fences are balanced;
 //   6. threat IDs cited in the threat model are defined in its catalog;
-//   7. the account identity record's own ids and invariants (identity.ts).
+//   7. the account identity record's own ids and invariants (identity.ts);
+//   8. the threat model record's own ids and cross-references (threatmodel.ts).
 //
 // Usage: bun checkdocs.ts [--snapshot <bd export>] [--tracker-cwd <dir>]
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { IDENTITY_DOC, checkIdentity } from './identity.ts'
+import { THREAT_MODEL_ADR, checkThreatModelFile } from './threatmodel.ts'
 import { BEADS } from './spec.ts'
 import { PREFIX, REPO_ROOT, ids, loadTracker } from './tracker.ts'
 
@@ -26,6 +28,8 @@ const DOCS = [
   // Not a plan document: the account identity record (yje.1.6), whose answer table the billing machines consume, so
   // its tables, cited paths and bead IDs get the same mechanical checks. Appended so DOCS[2] stays the threat model.
   IDENTITY_DOC,
+  // The threat model record (1ir.1.3) that refines the research draft; threatmodel.ts checks its cross-references.
+  THREAT_MODEL_ADR,
 ]
 // Paths cited on purpose that are not on master yet: the design archive (never in the repo), the Workbench decision
 // record and plans (PR #58) and wire contract (PR #59), and the billing and retrieval plans (committed separately).
@@ -112,6 +116,9 @@ stats['threats defined'] = defined.size
 
 // 7.
 problems.push(...checkIdentity(REPO_ROOT))
+
+// 8.
+problems.push(...checkThreatModelFile(REPO_ROOT))
 
 console.log(JSON.stringify(stats, null, 2))
 if (!tracker) console.log('\nno tracker available: skipped the bead ID check')
