@@ -7,6 +7,7 @@ against fake clients.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import socket
@@ -133,12 +134,19 @@ def test_embedding_arm_fold_log_scores_every_group_once():
     assert result.decisions[0].latency_ms >= 200.0  # recorded embedding latency + classifier time
 
 
-def test_embedding_arm_never_fits_or_tunes_on_a_group_it_scores(monkeypatch):
+@pytest.mark.parametrize("group_field", ["group", "category"])
+def test_embedding_arm_never_fits_or_tunes_on_a_group_it_scores(monkeypatch, group_field):
     """Checks what each classifier was given, not what the fold log says. For every
     NearestCentroid that run_embedding builds, no group it scores was among the vectors
     its centroids were fitted on or its temperature was tuned on. Its temperature is also
-    tuned on groups the centroids fitted just before had not seen."""
+    tuned on groups the centroids fitted just before had not seen.
+
+    With group_field="category" every item gets its own `group` and the pair shares a
+    `category` instead, so the outer AND the inner (temperature) split must both read
+    `category`: an inner split on `group` would tune on a sibling of what it fitted."""
     items, base = _clustered_items()
+    if group_field == "category":
+        items = [dataclasses.replace(it, group=f"solo-{it.id}", category=it.group) for it in items]
     # A fourth coordinate unique to each item, so that a vector identifies its item.
     emb = {it.id: db.Embedding([*base[it.id].vector, 0.001 * (i + 1)], base[it.id].tokens, base[it.id].latency_ms)
            for i, it in enumerate(items)}
@@ -150,7 +158,7 @@ def test_embedding_arm_never_fits_or_tunes_on_a_group_it_scores(monkeypatch):
     real_predict = db.NearestCentroid.predict_proba
 
     def groups(vectors):
-        return {item_of[tuple(v)].group for v in vectors}
+        return {getattr(item_of[tuple(v)], group_field) for v in vectors}
 
     def fit(self, vectors, labels):
         log.setdefault(self, []).append(("fit", groups(vectors)))
@@ -173,7 +181,7 @@ def test_embedding_arm_never_fits_or_tunes_on_a_group_it_scores(monkeypatch):
     monkeypatch.setattr(db.NearestCentroid, "fit_temperature", fit_temperature)
     monkeypatch.setattr(db.NearestCentroid, "predict_proba", predict_proba)
 
-    result = db.run_embedding(items, emb, k=5, seed=3)
+    result = db.run_embedding(items, emb, k=5, seed=3, group_field=group_field)
 
     scored: list[str] = []
     tuned = 0
@@ -191,7 +199,7 @@ def test_embedding_arm_never_fits_or_tunes_on_a_group_it_scores(monkeypatch):
             else:
                 last_fit = gs
                 seen |= gs
-    assert sorted(scored) == sorted(it.group for it in items)  # every item scored exactly once
+    assert sorted(scored) == sorted(getattr(it, group_field) for it in items)  # every item scored exactly once
     assert tuned == 5  # the temperature really was tuned in every fold, so the check above ran
     assert len(result.decisions) == len(items)
 
@@ -223,6 +231,22 @@ def test_run_embedding_grouped_by_category_keeps_a_template_family_in_one_fold()
     # Every category scored exactly once: had the code fallen back to per-instance `group`
     # fields (each item's own, unique group), this would instead list 30 one-item groups.
     assert sorted(tested) == sorted({it.category for it in items})
+
+
+def test_category_folds_at_the_cli_defaults_split_no_committed_group_of_the_committed_set():
+    """README Limitations: 8 committed `rules:*` groups span two categories, so grouping by
+    category can split one across folds; at the CLI defaults (--folds 5, --seed 7) it splits
+    none on the committed set. A dataset edit that breaks this fails here, before a Pilot 1 run
+    reads a leaked score. Folding on groups and categories together (agent-forge-harness-uhc)
+    retires this pin."""
+    items = db.load_items()
+    folds = db.grouped_folds([it.category for it in items], [it.label for it in items], 5, 7)
+    folds_of: dict[str, set[int]] = {}
+    for it, fold in zip(items, folds, strict=True):
+        folds_of.setdefault(it.group, set()).add(fold)
+    assert len({it.group for it in items if it.category == "prompt_injection"} & {
+        it.group for it in items if it.category == "rules_prose"}) == 8
+    assert {g: fs for g, fs in folds_of.items() if len(fs) > 1} == {}
 
 
 def _fake_openai_embeddings(dim: int = 4):
@@ -375,30 +399,33 @@ def test_evaluate_scores_only_the_adversarial_subset_as_adversarial():
 
 def test_evaluate_template_grouped_score_comes_from_the_template_run_not_the_committed_one():
     """Pins agent-forge-harness-69h: the report's `_template_grouped` sections must come from
-    the `template` ArmResult's own decisions. A regression that silently reused the committed
-    (per-instance) run's decisions instead would make every assertion below fail, because the
-    two runs are built here to disagree on every item."""
+    the `template` ArmResult's own decisions: its labels AND its confidences, each scored at
+    its own threshold. The two runs differ on every item's label and confidence, and the
+    template run's t-0 (stat_block at 0.93) sits between the thresholds, so it is held to
+    `none` at 0.95 and 0.99 but not at 0.90. Reusing the committed run's decisions, only its
+    confidences, or one threshold for every key each fails an assertion below."""
     items = [
         _item(0, "none", subset="adversarial", category="prose_ac_hp"),
         _item(1, "none", subset="adversarial", category="prose_ac_hp"),
         _item(2, "stat_block", subset="hard_positive", category="abbreviated_block"),
     ]
     committed = db.ArmResult("embedding", "ok", decisions=[
-        db.Decision("t-0", "none", {"none": 1.0}, 1.0),  # held
-        db.Decision("t-1", "none", {"none": 1.0}, 1.0),  # held
+        db.Decision("t-0", "none", {"none": 1.0}, 1.0),  # held at every threshold
+        db.Decision("t-1", "stat_block", {"stat_block": 1.0}, 1.0),  # held at none
         db.Decision("t-2", "stat_block", {"stat_block": 1.0}, 1.0),  # correct
     ], extra={"group_field": "group"})
     template = db.ArmResult("embedding", "ok", decisions=[
-        db.Decision("t-0", "stat_block", {"stat_block": 0.995}, 1.0),  # category held out: not held
-        db.Decision("t-1", "none", {"none": 1.0}, 1.0),  # still held
-        db.Decision("t-2", "none", {"none": 0.995}, 1.0),  # category held out: wrong
+        db.Decision("t-0", "stat_block", {"stat_block": 0.93, "none": 0.07}, 1.0),  # held at 0.95 and 0.99
+        db.Decision("t-1", "none", {"none": 0.97, "stat_block": 0.03}, 1.0),  # held at every threshold
+        db.Decision("t-2", "none", {"none": 0.995, "stat_block": 0.005}, 1.0),  # category held out: wrong
     ], extra={"group_field": "category"})
     report = db.evaluate(items, committed, {it.id: "none" for it in items}, template=template)
-    assert report["adversarial"]["held_to_none_at_0.99"] == pytest.approx(1.0)
+    assert report["adversarial"] == pytest.approx(
+        {"n": 2, "held_to_none_at_0.90": 0.5, "held_to_none_at_0.95": 0.5, "held_to_none_at_0.99": 0.5})
     assert report["hard_positive"]["accuracy"] == pytest.approx(1.0)
     assert report["adversarial_template_grouped"] == pytest.approx(
         {"n": 2, "group_field": "category", "held_to_none_at_0.90": 0.5,
-         "held_to_none_at_0.95": 0.5, "held_to_none_at_0.99": 0.5})
+         "held_to_none_at_0.95": 1.0, "held_to_none_at_0.99": 1.0})
     assert report["hard_positive_template_grouped"] == pytest.approx(
         {"n": 1, "group_field": "category", "accuracy": 0.0})
 
@@ -445,6 +472,10 @@ def test_run_prices_each_arm_by_its_own_tokens(tmp_path):
     # embedding: 42 input tokens × 0.5 per 1M = 0.000021 a decision → 0.021 per 1,000.
     # llm: 310 × 2.0 + 1 × 8.0 = 628 per 1M = 0.000628 a decision → 0.628 per 1,000.
     assert cost == pytest.approx({"embedding": 0.021, "llm": 0.628})
+    # Only the embedding arm trains, so only its report carries the category-grouped pass; the
+    # llm report must not borrow the embedding arm's template-grouped numbers.
+    grouped = {r["arm"]: sorted(key for key in r if key.endswith("_template_grouped")) for r in reports}
+    assert grouped == {"embedding": ["adversarial_template_grouped", "hard_positive_template_grouped"], "llm": []}
 
 
 def test_evaluate_passes_a_skipped_arm_through_without_scores():

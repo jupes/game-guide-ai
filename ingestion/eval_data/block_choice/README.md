@@ -138,11 +138,15 @@ Totals:
   favour the embedding arm over the zero-shot arms.
 
   `decision_bench.py` also runs the embedding arm a second time grouped by `category` — the
-  template family — so no fold trains on a near-duplicate of what it scores, and reports that
+  template family — so no fold trains on a template sibling of what it scores, and reports that
   pass beside the per-instance one, as `adversarial_template_grouped` and
   `hard_positive_template_grouped`. **Pilot 1 test 3 (`agent-forge-harness-dvy`) must read the
   `_template_grouped` score for the adversarial and hard-positive subsets, not the per-instance
-  `adversarial`/`hard_positive` score.** (`agent-forge-harness-69h`.)
+  `adversarial`/`hard_positive` score.** (`agent-forge-harness-69h`.) One caveat remains: 8
+  committed `rules:*` groups span two categories (`rules_prose` and `prompt_injection`, where
+  an injected answer reuses a core answer's text), and grouping by category splits them across
+  folds for most choices of `--folds` and `--seed`. On the current set the defaults (5 and 7)
+  keep each of them in one fold, so a Pilot 1 run must keep those defaults. Folding on groups and categories together is `agent-forge-harness-uhc`.
 - The adversarial subset is 60 items, so one item moves a share by about 1.7 points.
 
 ## Running the benchmark (`ingestion/decision_bench.py`)

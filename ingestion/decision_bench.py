@@ -13,9 +13,10 @@ Four arms decide {stat_block, spell_card, none} for every item of the block-choi
    one spell, one rules topic) on the same side, so no item is scored by a model that saw it
    or its near-duplicates. It runs twice: once grouped by the committed, per-instance ``group``
    (the report's ``adversarial``/``hard_positive`` sections), and once more grouped by
-   ``category`` — the template family — so no fold trains on a near-duplicate template sibling
-   of what it scores (the report's ``*_template_grouped`` sections; ``eval_data/block_choice/
-   README.md`` Limitations, ``agent-forge-harness-69h``).
+   ``category`` — the template family — so no fold trains on a template sibling of what it
+   scores (the report's ``*_template_grouped`` sections; ``eval_data/block_choice/README.md``
+   Limitations, ``agent-forge-harness-69h``; a committed group spanning two categories can
+   still be split there, ``agent-forge-harness-uhc``).
 3. ``llm`` — ``gpt-4o-mini`` answering one token (A/B/C) with ``logprobs``; the probabilities
    are the renormalised top-logprob mass of the three letters.
 4. ``jev`` — a stub. It refuses to run without ``TYPESAFE_API_KEY``, and even with one it has
@@ -320,9 +321,11 @@ def run_embedding(items: Sequence[Item], embeddings: Mapping[str, Embedding], k:
     """``group_field`` picks which ``Item`` attribute a grouped fold may never split:
     ``"group"`` (default) is the committed per-instance grouping (one creature, one spell, one
     rules topic). ``"category"`` is the template family: every item of one adversarial or
-    hard-positive template (for example all 8 ``prose_ac_hp`` items) then lands in the same
-    fold, so no fold trains on a near-duplicate of what it scores (README Limitations,
-    ``agent-forge-harness-69h``)."""
+    hard-positive template (for example all 12 ``prose_ac_hp`` items) then lands in the same
+    fold, so no fold trains on a template sibling of what it scores (README Limitations,
+    ``agent-forge-harness-69h``). Grouping by ``category`` can still split a committed group
+    that spans two categories (8 ``rules:*`` topics sit in both ``rules_prose`` and
+    ``prompt_injection``), depending on k and seed: ``agent-forge-harness-uhc``."""
     if group_field not in ("group", "category"):
         raise ValueError(f"group_field must be 'group' or 'category', got {group_field!r}")
     groups = [getattr(it, group_field) for it in items]
