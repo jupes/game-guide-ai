@@ -646,12 +646,13 @@ def _chat(at: datetime, n: int) -> dict[str, Any]:
 
 def test_dividers_read_back_in_their_place_at_every_page_size(world: DividerWorld) -> None:
     """MR-1 (a guard on the unchanged read model): legacy rows, stored chat
-    entries and dividers — one divider sharing its instant with a chat entry —
+    entries and dividers — a start divider sharing its instant with two chat
+    entries, and an end divider with one, so a tie outgrows the smallest page —
     walked at every page size equal the unpaged read, each divider once."""
     campaign = _campaign(world)
     t0 = datetime.now(UTC) - timedelta(hours=3)
     thread = _thread(world, campaign, t0 - timedelta(hours=1))
-    for n, offset in enumerate((-30, 0, 10, 45, 70)):
+    for n, offset in enumerate((-30, 0, 0, 10, 30, 45, 70)):
         entry = _chat(t0 + timedelta(minutes=offset), n)
         with world.db.transaction() as unit:
             world.timeline.append(unit, thread, entry, entry["created_at"], owner_id=world.owner)
@@ -669,7 +670,7 @@ def test_dividers_read_back_in_their_place_at_every_page_size(world: DividerWorl
     assert unpaged.next_cursor is None
     expected = [item.entry_id for item in unpaged.items]
     divider_ids = [item.entry_id for item in unpaged.items if item.entry_kind == "session_divider"]
-    assert len(divider_ids) == 4 and len(expected) == 5 + 3 + 4
+    assert len(divider_ids) == 4 and len(expected) == 7 + 3 + 4
     assert [
         item.boundary.value for item in reversed(unpaged.items) if isinstance(item, SessionDividerEntry)
     ] == ["start", "end", "start", "end"]
