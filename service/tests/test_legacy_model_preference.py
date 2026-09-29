@@ -145,3 +145,22 @@ def test_the_in_memory_store_reads_back_what_a_binding_recorded():
     messages.claim_conversation_strategy(CONV, strategy="manual", manual_alias="a", catalog_revision="r7")
     messages.claim_conversation_strategy(CONV, strategy="auto", manual_alias=None, catalog_revision="r8")
     assert messages.conversation_binding(CONV) == ("manual", "a", "r7"), "first writer wins, revision too"
+
+
+def test_rebind_conversation_strategy_overwrites_unlike_claim():
+    """Unlike `claim_conversation_strategy` (first-writer-wins),
+    `rebind_conversation_strategy` (agent-forge-harness-j9w) always writes —
+    it's the server's own healing of a retired manual pick, not a client
+    request racing another one for the first bind."""
+    messages = InMemoryMessageStore()
+    messages.claim_conversation_strategy(
+        CONV, strategy="manual", manual_alias="a", catalog_revision="r7",
+    )
+    messages.rebind_conversation_strategy(
+        CONV, strategy="manual", manual_alias="b", catalog_revision="r9",
+    )
+    assert messages.conversation_binding(CONV) == ("manual", "b", "r9")
+    messages.rebind_conversation_strategy(
+        CONV, strategy="auto", manual_alias=None, catalog_revision="r9",
+    )
+    assert messages.conversation_binding(CONV) == ("auto", None, "r9")

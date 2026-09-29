@@ -15,9 +15,16 @@ export interface Conversation {
   modelPreference: string
   /** The preference its FIRST prompt was sent with — what the server bound the
    * conversation to (D6) — recorded by `recordFirstPrompt` and never changed
-   * after. Null before the first prompt, and for a row that sent its first
-   * prompt before agent-forge-harness-bta, when the pane always posted 'auto'
-   * (so the server bound 'auto', whatever `modelPreference` says). */
+   * by the UI itself after. Null before the first prompt, and for a row that
+   * sent its first prompt before agent-forge-harness-bta, when the pane
+   * always posted 'auto' (so the server bound 'auto', whatever
+   * `modelPreference` says).
+   *
+   * The ONE exception: `rebindPreference` (agent-forge-harness-j9w), called
+   * when the SERVER itself moved this conversation off a manual pick it has
+   * since retired — never from a client request, so it does not reopen D6's
+   * "a later change fails or silently diverges" concern; it is the server
+   * telling this store what it already decided. */
   boundPreference: string | null
 }
 
@@ -144,6 +151,23 @@ function recordFirstPrompt(
   })
 }
 
+/** The server's own heal of a retired manual pick (j9w) — moves
+ * `boundPreference` (what the NEXT turn sends) and `modelPreference` (what
+ * ModelPicker shows) together onto the healed preference, so this
+ * conversation stops naming the retired one on its own. A no-op before the
+ * first prompt (nothing bound yet to heal) or once already at `preference`. */
+function rebindPreference(
+  rows: Conversation[],
+  id: string,
+  preference: string,
+): Conversation[] | null {
+  return updateConversation(rows, id, (conversation) => (
+    !conversation.hasFirstPrompt || conversation.boundPreference === preference
+      ? conversation
+      : { ...conversation, boundPreference: preference, modelPreference: preference }
+  ))
+}
+
 function renameConversation(
   rows: Conversation[],
   id: string,
@@ -164,6 +188,9 @@ export interface ConversationStore {
   recordFirstPrompt(id: string, prompt: string, sentPreference?: string): void
   rename(id: string, title: string): void
   setModelPreference(id: string, modelPreference: string): void
+  /** j9w: the server rebound this conversation off a retired manual pick —
+   * bring `boundPreference`/`modelPreference` onto what it rebound to. */
+  rebindPreference(id: string, preference: string): void
   remove(id: string): void
   subscribe(listener: () => void): () => void
   getSnapshot(): number
@@ -224,6 +251,13 @@ export class MemoryConversationStore
 
   setModelPreference(id: string, modelPreference: string): void {
     const next = setModelPreference(this.convs, id, modelPreference)
+    if (next === null) return
+    this.convs = next
+    this.notifyChanged()
+  }
+
+  rebindPreference(id: string, preference: string): void {
+    const next = rebindPreference(this.convs, id, preference)
     if (next === null) return
     this.convs = next
     this.notifyChanged()
@@ -349,6 +383,11 @@ export class LocalStorageConversationStore
 
   setModelPreference(id: string, modelPreference: string): void {
     const next = setModelPreference(this.load(), id, modelPreference)
+    if (next !== null && this.save(next)) this.notifyChanged()
+  }
+
+  rebindPreference(id: string, preference: string): void {
+    const next = rebindPreference(this.load(), id, preference)
     if (next !== null && this.save(next)) this.notifyChanged()
   }
 
