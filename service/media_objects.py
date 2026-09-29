@@ -601,12 +601,19 @@ def _check_bucket(name: object) -> str:
 
 def startup_settings(env: Mapping[str, str] | None = None) -> MediaSettings:
     """What the running service reads at startup (slice b, `1kg.8.1.2`):
-    `MediaSettings.from_env`, plus the one rule only a running service needs —
-    the routes cannot be switched on with no store to put bytes in. Refused by
-    name at startup, so a misconfigured deployment fails loudly (AC 11)."""
+    `MediaSettings.from_env`, plus the rules only a running service needs —
+    the routes cannot be switched on with no store to put bytes in, and a `gcs`
+    store needs a build that carries its client (`1kg.8.1.4`; asked without
+    importing it, since the factory's own refusal waits for the stores to be
+    built, which a database away at startup defers). Refused by name at
+    startup, so a misconfigured deployment fails loudly (AC 11)."""
     settings = MediaSettings.from_env(env)
     if settings.enabled and settings.store is None:
         raise MediaSettingsError("WORKBENCH_MEDIA_ENABLED needs WORKBENCH_MEDIA_STORE to name a store")
+    if settings.store == _GCS:
+        from .media_gcs import check_client_installed
+
+        check_client_installed()
     return settings
 
 

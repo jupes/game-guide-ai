@@ -55,6 +55,7 @@ with its fixed message; "not found" is the only status read from it.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import os
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -96,6 +97,9 @@ _LISTING_FIELDS = "items(name,updated),nextPageToken"
 #: bucket starts a thread that asks for `storage.buckets.get`, which the runtime
 #: account does not hold.
 NO_BUCKET_METADATA_READ = "DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA"
+#: The client library, found or imported by its module name only.
+_CLIENT_MODULE = "google.cloud.storage"
+_NOT_BUILT = "this build does not include the Cloud Storage client (the gcs extra)"
 
 _NOT_FOUND = 404
 _PRECONDITION_FAILED = 412
@@ -411,18 +415,33 @@ def _is_key_under(name: str, prefix: str) -> bool:
 # ── Building it ──────────────────────────────────────────────────────────────
 
 
+def check_client_installed() -> None:
+    """Refuses, by name, a build without the client, and imports nothing of it:
+    `find_spec` loads only the namespace packages above it. Startup asks this
+    for `gcs` (slice b's rule that a setting which cannot be used stops
+    startup), because the builder below runs only when the stores are built,
+    and a database that is away at startup defers that to recovery."""
+    found = None
+    try:
+        found = importlib.util.find_spec(_CLIENT_MODULE)
+    except (ImportError, ValueError):
+        found = None
+    if found is None:
+        raise MediaStoreNotBuilt(_NOT_BUILT)
+
+
 def build_gcs_store(bucket_name: str) -> CloudStorageObjectStore:
     """The store on `bucket_name`, with the runtime's own credentials. Imports
     the client here and nowhere else; a build without it is refused by name."""
     missing = False
     try:
         # By module name, so that what `sys.modules` says is what happens.
-        storage = importlib.import_module("google.cloud.storage")
-        retries = importlib.import_module("google.cloud.storage.retry")
+        storage = importlib.import_module(_CLIENT_MODULE)
+        retries = importlib.import_module(f"{_CLIENT_MODULE}.retry")
     except ImportError:
         missing = True
     if missing:
-        raise MediaStoreNotBuilt("this build does not include the Cloud Storage client (the gcs extra)")
+        raise MediaStoreNotBuilt(_NOT_BUILT)
     os.environ.setdefault(NO_BUCKET_METADATA_READ, "true")
     client = storage.Client()
     return CloudStorageObjectStore(

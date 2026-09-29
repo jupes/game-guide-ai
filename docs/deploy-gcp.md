@@ -938,7 +938,8 @@ lifecycle rule. An unauthenticated `curl` of any object URL must be refused.
 
 **The service side.** The Cloud Storage client is the optional `gcs` extra, so
 the default image has none, and a service told `WORKBENCH_MEDIA_STORE=gcs`
-without it refuses to build the store (`MediaStoreNotBuilt`). The object-store
+without it refuses to start (`MediaStoreNotBuilt`, at startup, whether or not
+the database is reachable). The object-store
 role is enough: the store creates, reads, lists and deletes objects and never
 reads the bucket itself (it switches off the client's own background read of
 bucket metadata, `DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA`). No key and

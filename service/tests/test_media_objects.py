@@ -695,6 +695,23 @@ def test_gcs_on_a_build_without_the_client_is_refused_by_name(monkeypatch: pytes
     assert "my-project-workbench-media" not in str(caught.value)
 
 
+def test_startup_refuses_gcs_on_a_build_without_the_client_before_any_store_is_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC 11(ii) at startup, where slice b's `startup_settings` meets slice d.
+    The factory refuses a build without the client only when the stores are
+    built, and a database that is away at startup defers that to recovery,
+    inside a request. So startup asks as well, without importing the client:
+    a build without it never starts, whatever the database is doing."""
+    env = {"WORKBENCH_MEDIA_STORE": "gcs", "WORKBENCH_MEDIA_BUCKET": "my-project-workbench-media"}
+    assert mo.startup_settings(env) == mo.MediaSettings(store="gcs", bucket="my-project-workbench-media")
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", None)
+    with pytest.raises(mo.MediaStoreNotBuilt) as caught:
+        mo.startup_settings(env)
+    assert "my-project-workbench-media" not in str(caught.value)
+    assert mo.startup_settings({}) == mo.MediaSettings(), "only a gcs store asks after the client"
+
+
 def test_gcs_builds_through_its_own_module_and_only_there(monkeypatch: pytest.MonkeyPatch) -> None:
     from service import media_gcs
 
@@ -714,13 +731,14 @@ def test_gcs_builds_through_its_own_module_and_only_there(monkeypatch: pytest.Mo
 _IMPORT_PROBE = """
 import sys, tempfile
 from service import media_objects as mo
-assert mo.build_object_store(mo.MediaSettings.from_env({})) is None
+assert mo.build_object_store(mo.startup_settings({})) is None
 with tempfile.TemporaryDirectory() as root:
     env = {"WORKBENCH_MEDIA_STORE": "filesystem", "WORKBENCH_MEDIA_DIR": root}
-    assert isinstance(mo.build_object_store(mo.MediaSettings.from_env(env)), mo.FilesystemObjectStore)
-    import service.asset_jobs, service.asset_store
+    assert isinstance(mo.build_object_store(mo.startup_settings(env)), mo.FilesystemObjectStore)
+    import service.asset_jobs, service.asset_store, service.assets_api, service.media_processing
 untouched = [m for m in ("google.cloud.storage", "service.media_gcs") if m in sys.modules]
 import service.media_gcs
+assert mo.startup_settings({"WORKBENCH_MEDIA_STORE": "gcs", "WORKBENCH_MEDIA_BUCKET": "media-a"}).bucket == "media-a"
 by_the_module = "google.cloud.storage" in sys.modules
 import importlib
 importlib.import_module("google.cloud.storage")
@@ -733,15 +751,17 @@ def test_no_store_and_the_filesystem_store_never_import_the_client() -> None:
     tests run (the `test` and `dev` extras pull it in), and the probe's last
     step imports it on purpose, so a probe that could not see an import would
     say so. Importing the adapter's own module imports no client either: only
-    its builder does. A fresh interpreter, because this process has long since
-    imported the client for the contract suite."""
+    its builder does. Nor do slice b's startup check (even when it asks whether
+    a `gcs` build carries the client) and its route and processing modules. A
+    fresh interpreter, because this process has long since imported the client
+    for the contract suite."""
     probe = subprocess.run(
         [sys.executable, "-c", _IMPORT_PROBE],
         capture_output=True, text=True, timeout=120, cwd=SERVICE.parent, check=False,
     )
     assert probe.returncode == 0, probe.stderr[-2000:]
     assert probe.stdout.split() == ["[]", "False", "True"], (
-        "choosing no store or the filesystem, or importing the adapter's module, imported the client"
+        "choosing no store or the filesystem, starting up, or importing the adapter's module, imported the client"
     )
 
 
@@ -767,7 +787,7 @@ def test_the_running_service_reads_these_settings_once_at_startup() -> None:
     place outside this module — `service/app.py`'s startup, through
     `startup_settings` — and no other module holds a variable's name as a
     string to read the environment with (a docstring may still name one)."""
-    variables = {"WORKBENCH_MEDIA_ENABLED", "WORKBENCH_MEDIA_STORE", "WORKBENCH_MEDIA_DIR"}
+    variables = {"WORKBENCH_MEDIA_ENABLED", "WORKBENCH_MEDIA_STORE", "WORKBENCH_MEDIA_DIR", "WORKBENCH_MEDIA_BUCKET"}
     readers: list[tuple[str, str]] = []
     naming: list[str] = []
     for path in sorted(SERVICE.glob("*.py")):

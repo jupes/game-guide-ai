@@ -782,8 +782,9 @@ in code only). "Off" means no route, no store, no bucket and no cost; the store
 setting is separate from `enabled` because a deployment switched off must still
 finish the deletions it owes. Every refusal names the variable, never its value.
 The running service reads them once, at startup, through `startup_settings`,
-which adds one rule: the capability cannot be on with no store (refused by
-name, so startup fails loudly). Every object-store call outside `service/media_objects.py` goes through
+which adds two rules: the capability cannot be on with no store, and `gcs`
+needs a build that carries the client (asked without importing it). Both are
+refused by name, so startup fails loudly, database or no database. Every object-store call outside `service/media_objects.py` goes through
 `via_store`, where slice c puts the thread limiter. The store's health signal
 for `1kg.9.2` is the read-only `reachable()`.
 
