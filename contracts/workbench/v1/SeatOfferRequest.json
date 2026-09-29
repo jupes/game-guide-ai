@@ -1,0 +1,80 @@
+{
+  "schema": "SeatOfferRequest",
+  "direction": "request",
+  "note": "POST /campaigns/{id}/participants/{id}/offer: an ADDRESS, never an account (SEC-50(1)). The answer is 204 with no body whatever the address holds.",
+  "valid": [
+    {
+      "name": "an address",
+      "value": {
+        "schema_version": 1,
+        "email": "wren@example.com"
+      }
+    },
+    {
+      "name": "an address trimmed and kept as typed",
+      "value": {
+        "schema_version": 1,
+        "email": " Wren@Example.com "
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no @",
+      "why": "service/models.py _validate_email's rule",
+      "value": {
+        "schema_version": 1,
+        "email": "wren.example.com"
+      }
+    },
+    {
+      "name": "an @ first",
+      "why": "the @ is neither first nor last",
+      "value": {
+        "schema_version": 1,
+        "email": "@example.com"
+      }
+    },
+    {
+      "name": "an @ last",
+      "why": "the @ is neither first nor last",
+      "value": {
+        "schema_version": 1,
+        "email": "wren@"
+      }
+    },
+    {
+      "name": "a space inside",
+      "why": "no U+0020 space",
+      "value": {
+        "schema_version": 1,
+        "email": "wren hidden@example.com"
+      }
+    },
+    {
+      "name": "too short",
+      "why": "3 to 254 characters",
+      "value": {
+        "schema_version": 1,
+        "email": "@"
+      }
+    },
+    {
+      "name": "an account id instead",
+      "why": "SEC-50(1): a GM names an address, never an account",
+      "value": {
+        "schema_version": 1,
+        "user_id": 7
+      }
+    },
+    {
+      "name": "an account id beside the address",
+      "why": "undeclared keys fail closed",
+      "value": {
+        "schema_version": 1,
+        "email": "wren@example.com",
+        "user_id": 7
+      }
+    }
+  ]
+}

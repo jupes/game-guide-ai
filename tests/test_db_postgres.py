@@ -389,6 +389,77 @@ def test_two_absorbing_enqueuers_never_wait_for_each_other(db, dsn):
     assert absorbed == first, "a second absorber went through while the first still held the row"
 
 
+def _someone_waits_on_a_lock(dsn: str, patience: float = 5.0) -> bool:
+    """Whether a backend on this database is blocked on a lock: the server's own
+    account, asked on a connection of its own and never from the pool. The shape
+    of `tests/test_campaign_db.py`'s helper of the same name."""
+    deadline = time.monotonic() + patience
+    with connect(dsn) as conn:
+        while time.monotonic() < deadline:
+            blocked = conn.execute(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            ).fetchone()[0]
+            if blocked:
+                return True
+            time.sleep(0.05)
+    return False
+
+
+class _RolledBack(Exception):
+    """Raised inside a transaction to roll it back."""
+
+
+@pytest.mark.parametrize("ending", ["commit", "rollback"])
+def test_an_enqueue_waits_for_another_transactions_uncommitted_enqueue_of_the_same_key(db, dsn, ending):
+    """e7a R1, the same-key half. `enqueue`'s INSERT ... ON CONFLICT meets
+    `jobs_dedupe_uidx`, and PostgreSQL makes an insert that would conflict with
+    another open transaction's uncommitted row wait for that transaction's
+    outcome. So an enqueue can wait for a caller's whole transaction, not only
+    for a claim's short one. Once the first transaction commits, the second
+    enqueue absorbs into its job; once it rolls back, the second inserts its own.
+
+    The in-memory twin cannot wait, so it refuses this case with `TwinWouldBlock`
+    (`service/tests/test_jobs.py`, `test_a_second_open_stager_is_refused_and_leaves_nothing[same-key]`).
+
+    The thread only records. The waiter is observed while the first transaction
+    is still open, on a connection of its own, since the pool's two belong to the
+    two transactions; every assertion runs here, after the join."""
+    queue = PostgresJobQueue(db)
+    seen: dict[str, object] = {}
+
+    def second() -> None:
+        try:
+            with db.transaction() as unit:
+                # `Database.transaction()` sets no timeout: a regression must fail, not hang CI.
+                unit.conn.execute("SET LOCAL lock_timeout = '10s'")
+                seen["id"] = queue.enqueue(unit, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0)
+        except Exception as exc:
+            seen["error"] = type(exc).__name__
+
+    thread = threading.Thread(target=second, daemon=True)
+    try:
+        with db.transaction() as unit:
+            first = queue.enqueue(unit, "upload.sweep", {"asset_id": "a-1"}, dedupe_key="session:S", now=T0)
+            thread.start()
+            waited = _someone_waits_on_a_lock(dsn)
+            if ending == "rollback":
+                raise _RolledBack
+    except _RolledBack:
+        pass
+    thread.join(15)
+
+    assert not thread.is_alive(), "the second enqueue was still waiting, so nothing it recorded can be trusted"
+    assert "error" not in seen, f"the second enqueue raised {seen.get('error')}"
+    assert waited, "nobody waited"
+    if ending == "commit":
+        assert seen["id"] == first, "committed first: the second enqueue absorbs into its job"
+    else:
+        assert seen["id"] != first, "rolled back first: the second enqueue inserts a job of its own"
+    same_key = "SELECT count(*) FROM app.jobs WHERE kind = %s AND dedupe_key = %s"
+    assert _count(dsn, same_key, ("upload.sweep", "session:S")) == 1, "one job for the key"
+
+
 def test_due_order_kinds_and_claim_by_id(db):
     queue = PostgresJobQueue(db)
     later = _enqueue(db, queue, run_after=T0 + timedelta(minutes=5))

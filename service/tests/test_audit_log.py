@@ -117,7 +117,7 @@ def test_the_action_set_is_closed_and_a_caller_cannot_invent_one():
             assert value not in str(refused.value), "a refusal never repeats what it refused"
 
 
-def test_the_fourteen_actions_sec38_names_are_the_ones_that_ship():
+def test_the_sixteen_actions_sec38_names_are_the_ones_that_ship():
     """Reveal's three and the export ones are not here: ED-18(a) makes the table
     shared, and they belong to the beads that will write them (1kg.7.1, 1kg.5.2),
     which add their own members without a migration.
@@ -131,6 +131,7 @@ def test_the_fourteen_actions_sec38_names_are_the_ones_that_ship():
         "session.started", "session.ended", "session.expired", "session.rotated",
         "participant.added", "participant.removed", "participant.linked",
         "participant.unlinked", "seat.offered", "seat.accepted",
+        "seat.declined", "seat.confirmed",
         "campaign.archived", "campaign.restored", "campaign.deleted",
         "join.burst_refused",
     }
@@ -151,7 +152,7 @@ def test_a_seat_row_carries_the_seat_and_nothing_else():
             check_detail(action, {"user_id": 7})
 
 
-_WORDS = {3: "three", 14: "fourteen"}
+_WORDS = {3: "three", 14: "fourteen", 16: "sixteen"}
 
 
 def test_the_module_docstrings_count_what_the_enums_hold():
@@ -563,3 +564,19 @@ def test_no_alias_title_or_secret_reaches_a_log_line_or_an_exception(caplog):
         ("join", joined.credential_digest),
     ):
         assert digest not in spoken, f"a {kind} digest reached a message"
+
+
+def test_a_decline_and_a_confirmation_carry_the_seat_and_nothing_else():
+    """1kg.2.2 (L-17): the invitee's decline names its seat and whether it
+    blocked, the GM's confirmation names the seat, and neither has a reason."""
+    assert ACTION_DETAIL[AuditAction.SEAT_DECLINED] == {
+        "participant_id": MintedId(ident.PARTICIPANT),
+        "blocked": Shape.FLAG,
+    }
+    assert ACTION_DETAIL[AuditAction.SEAT_CONFIRMED] == {"participant_id": MintedId(ident.PARTICIPANT)}
+    for action in (AuditAction.SEAT_DECLINED, AuditAction.SEAT_CONFIRMED):
+        assert ACTION_REASONS[action] == frozenset(), action
+        with pytest.raises(ValueError, match="no such detail key"):
+            check_detail(action, {"address": "wren@example.com"})
+    check_detail(AuditAction.SEAT_DECLINED, {"participant_id": "prt_" + "a" * 22, "blocked": True})
+    assert "seat.withdrawn" not in {a.value for a in AuditAction}, "participant.removed is the withdrawal record"

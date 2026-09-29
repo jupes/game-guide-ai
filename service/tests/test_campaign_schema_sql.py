@@ -23,7 +23,15 @@ from pathlib import Path
 
 import pytest
 
-from service import audit_log, campaign_store, participant_store, table_session_store
+from service import (
+    audit_log,
+    campaign_store,
+    campaigns_api,
+    participant_store,
+    reconciliation,
+    seat_offer_store,
+    table_session_store,
+)
 from service import campaign_identity as ident
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "sql" / "migrations"
@@ -42,7 +50,14 @@ ALL_SQL = "\n".join(
     path.read_text(encoding="utf-8") for path in sorted(MIGRATIONS.glob("*.sql"))
 )
 
-STORE_MODULES = (campaign_store, participant_store, table_session_store, audit_log)
+STORE_MODULES = (
+    campaign_store,
+    participant_store,
+    table_session_store,
+    audit_log,
+    seat_offer_store,
+    reconciliation,
+)
 
 
 # ── The identifier rule, spelled once ────────────────────────────────────────
@@ -375,3 +390,100 @@ def test_only_the_minting_methods_hand_back_a_plain_text_secret(module):
             returns = str(inspect.signature(method).return_annotation)
             if "str]" in returns and returns.startswith("tuple["):
                 assert name in MINTING_METHODS, f"{store.__name__}.{name} returns {returns}"
+
+
+# ── The seat confirmation and offers (bead 1kg.2.2) ──────────────────────────
+
+#: The one place this test file names the migration, so renumbering it at merge
+#: is one edit here.
+OFFER_MIGRATION = "0012_seat_confirmation_and_offers.sql"
+OFFER_SQL = (MIGRATIONS / OFFER_MIGRATION).read_text(encoding="utf-8")
+
+
+def test_the_offer_migration_adds_the_confirmation_its_one_check_and_the_unique_key():
+    body = _statements(OFFER_SQL)
+    assert "ALTER TABLE campaign.participants\n  ADD COLUMN confirmed_at TIMESTAMPTZ," in body
+    assert (
+        "ADD CONSTRAINT participants_confirmed_is_accepted_chk\n"
+        "    CHECK (confirmed_at IS NULL OR accepted_at IS NOT NULL)," in body
+    )
+    assert "ADD CONSTRAINT participants_id_campaign_key UNIQUE (id, campaign_id);" in body
+    assert re.findall(r"ADD COLUMN (\w+)", body) == ["confirmed_at"], "the only column added to an old table"
+    assert body.count("ADD CONSTRAINT") == 2
+
+
+def test_the_offer_table_carries_both_composite_keys_and_every_check():
+    body = _statements(OFFER_SQL)
+    assert (
+        "FOREIGN KEY (participant_id, campaign_id)\n"
+        "    REFERENCES campaign.participants (id, campaign_id) ON DELETE CASCADE," in body
+    )
+    assert (
+        "FOREIGN KEY (campaign_id, offered_by)\n"
+        "    REFERENCES campaign.campaigns (id, owner_id) ON DELETE CASCADE" in body
+    )
+    for check in (
+        "address        TEXT NOT NULL CHECK (length(address) BETWEEN 3 AND 254),",
+        "address_key    TEXT NOT NULL CHECK (length(address_key) BETWEEN 3 AND 254 AND address_key !~ '[A-Z]'),",
+        "outcome        TEXT CHECK (outcome IN ('accepted', 'declined', 'expired', 'withdrawn')),",
+        "CHECK (expires_at > created_at),",
+        "CHECK ((outcome IS NULL) = (answered_at IS NULL)),",
+    ):
+        assert check in body, check
+
+
+def test_the_offer_indexes_carry_their_predicates_and_none_reads_the_clock():
+    body = _statements(OFFER_SQL)
+    indexes = re.findall(r"CREATE (UNIQUE )?INDEX (\w+)\s+ON campaign\.seat_offers ([^;]+);", body)
+    assert [(unique.strip(), name, on.strip()) for unique, name, on in indexes] == [
+        ("UNIQUE", "seat_offers_one_open_per_seat_uidx", "(participant_id) WHERE outcome IS NULL"),
+        ("", "seat_offers_seat_latest_idx", "(participant_id, created_at)"),
+        ("", "seat_offers_open_by_address_idx", "(address_key) WHERE outcome IS NULL"),
+        ("", "seat_offers_campaign_address_idx", "(campaign_id, address_key)"),
+        ("", "seat_offers_throttle_idx", "(offered_by, created_at)"),
+    ]
+    assert "now()" not in " ".join(on for _, _, on in indexes)
+    assert "UNIQUE INDEX seat_offers_campaign_address" not in body, "deliberately no unique (campaign, key)"
+    assert "CONCURRENTLY" not in body
+    assert not re.search(r"\b(BEGIN|COMMIT|END|ROLLBACK)\s*;", body)
+
+
+def test_the_block_table_is_keyed_by_both_accounts_and_cascades_from_each():
+    body = _statements(OFFER_SQL)
+    assert "blocker_user_id  BIGINT NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE," in body
+    assert "blocked_owner_id BIGINT NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE," in body
+    assert "PRIMARY KEY (blocker_user_id, blocked_owner_id)," in body
+    assert "CHECK (blocker_user_id <> blocked_owner_id)" in body
+
+
+def test_the_offer_id_is_constrained_by_the_registrys_own_regex():
+    assert f"CHECK (id ~ '{ident.id_check_regex(ident.SEAT_OFFER)}')" in OFFER_SQL
+
+
+def test_the_offer_migration_states_why_its_check_and_its_key_are_safe():
+    prose = " ".join(line.lstrip("- ").strip() for line in OFFER_SQL.splitlines() if line.startswith("--"))
+    assert "The column it constrains is new in this file" in prose
+    assert "the previous build never writes confirmed_at" in prose
+    assert "Nothing updates a participant's id or campaign_id" in prose
+
+
+#: Everything the offer route runs, from ownership to the insert (L-6). None of
+#: it may name an account or a block: the answer must not depend on whether an
+#: account holds the address (SEC-50(2)).
+OFFER_PATH = (
+    seat_offer_store.PostgresSeatOfferStore.create,
+    seat_offer_store.PostgresSeatOfferStore.is_repeat,
+    seat_offer_store.PostgresSeatOfferStore.open_for_seat,
+    seat_offer_store.PostgresSeatOfferStore.expire_stale,
+    seat_offer_store.PostgresSeatOfferStore.count_recent,
+    participant_store.PostgresParticipantStore.hold,
+    campaign_store.PostgresCampaignStore.get,
+    campaigns_api.offer_seat,
+)
+
+
+@pytest.mark.parametrize("step", OFFER_PATH, ids=lambda f: f.__qualname__)
+def test_the_offer_path_names_no_account_and_no_block(step):
+    source = inspect.getsource(step)
+    for table in ("auth.users", "seat_blocks", "is_blocked", "get_credentials", "get_user"):
+        assert table not in source, f"{step.__qualname__} reads {table}"

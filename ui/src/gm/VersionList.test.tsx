@@ -286,6 +286,82 @@ describe('CANVAS-27 — paging, 20 at a time', () => {
       expect(lastFocusOptions(button)).toEqual({ preventScroll: true })
     })
   })
+
+  // agent-forge-harness-c1f, found in PR #142 review (M1, N2): the effect
+  // above returned early whenever `versions.length <= pending`, which is true
+  // both while a page is still in flight AND once it has settled with no new
+  // rows — so a further page that fails, or comes back empty, while more
+  // pages remain (loadingMore true -> false, hasMore unchanged) never ran the
+  // alf restore and never cleared `awaitingPage` either.
+  describe('a further page that fails or adds no rows (agent-forge-harness-c1f)', () => {
+    it('restores focus to Load more if the browser dropped it to body', async () => {
+      const first = page(HISTORY_PAGE_SIZE)
+      const { rerender } = render(
+        <VersionList versions={first} currentVersionNumber={100} hasMore onLoadMore={vi.fn()} />,
+      )
+      await userEvent.click(screen.getByRole('button', { name: 'Load more' }))
+      rerender(
+        <VersionList versions={first} currentVersionNumber={100} hasMore loadingMore onLoadMore={vi.fn()} />,
+      )
+      dropFocusToBody()
+      // The page settles with no new rows at all — a failed fetch, or one
+      // that came back empty — while the server still says more remain.
+      rerender(<VersionList versions={first} currentVersionNumber={100} hasMore onLoadMore={vi.fn()} />)
+      expect(screen.getByRole('button', { name: 'Load more' })).toHaveFocus()
+    })
+
+    it('never takes focus the reader moved elsewhere while the failed page loaded', async () => {
+      const first = page(HISTORY_PAGE_SIZE)
+      const { rerender } = render(
+        <VersionList versions={first} currentVersionNumber={100} hasMore onLoadMore={vi.fn()} />,
+      )
+      await userEvent.click(screen.getByRole('button', { name: 'Load more' }))
+      rerender(
+        <VersionList versions={first} currentVersionNumber={100} hasMore loadingMore onLoadMore={vi.fn()} />,
+      )
+      const elsewhere = document.createElement('input')
+      document.body.append(elsewhere)
+      try {
+        elsewhere.focus()
+        rerender(<VersionList versions={first} currentVersionNumber={100} hasMore onLoadMore={vi.fn()} />)
+        expect(document.activeElement).toBe(elsewhere)
+      } finally {
+        // A failing run must not leave a focused input behind for later
+        // tests (PR #142 review L1).
+        elsewhere.remove()
+      }
+    })
+
+    it('clears the press on every settle, so a later unrelated page never moves focus (N2)', async () => {
+      const first = page(HISTORY_PAGE_SIZE)
+      const { rerender } = render(
+        <VersionList versions={first} currentVersionNumber={100} hasMore onLoadMore={vi.fn()} />,
+      )
+      await userEvent.click(screen.getByRole('button', { name: 'Load more' }))
+      rerender(
+        <VersionList versions={first} currentVersionNumber={100} hasMore loadingMore onLoadMore={vi.fn()} />,
+      )
+      // The page this press was waiting for settles with no new rows. The
+      // press is over — nothing here should still be "awaiting" anything.
+      rerender(<VersionList versions={first} currentVersionNumber={100} hasMore onLoadMore={vi.fn()} />)
+      // A real browser drops focus to <body> for a reason of its own (an
+      // alt-tab, say), with no press pending at all.
+      dropFocusToBody()
+      // Some unrelated cause grows `versions` — not a fresh press on Load
+      // more. A stale `awaitingPage` left over from the settled press above
+      // would misread this as "the page it was waiting for finally arrived"
+      // and yank focus onto Load more; nothing here asked for that (N2).
+      rerender(
+        <VersionList
+          versions={[...first, ...page(3, 80)]}
+          currentVersionNumber={100}
+          hasMore
+          onLoadMore={vi.fn()}
+        />,
+      )
+      expect(document.body).toHaveFocus()
+    })
+  })
 })
 
 describe('§12.2 — the history list’s empty, loading and error rows', () => {
