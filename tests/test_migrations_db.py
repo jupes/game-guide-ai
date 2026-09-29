@@ -158,6 +158,8 @@ def test_a_fresh_database_gets_every_migration_once(dsn):
         "campaign.table_credentials",
         "campaign.seat_offers",
         "campaign.seat_blocks",
+        "campaign.reveal_disclosures",
+        "campaign.reveal_slots",
     ):
         assert _exists(dsn, relation), f"{relation} was not created"
     for retired in (
@@ -281,6 +283,8 @@ CAMPAIGN_TABLES = (
     "campaign.documents",
     "campaign.document_versions",
     "campaign.seat_offers",
+    "campaign.reveal_disclosures",
+    "campaign.reveal_slots",
 )
 
 #: A character sheet linked to the whole campaign's one participant.
@@ -290,8 +294,12 @@ PARTICIPANT_ID = "prt_" + "a" * 22
 
 def _a_whole_campaign(conn, owner: int) -> None:
     """One row in every table of 0004 that 0009 and the table-session migration
-    kept, and of the seat migration's offers, so the cascade has something to
-    lose."""
+    kept, of the seat migration's offers, and of the reveal migration's
+    disclosures and slots (1kg.7.1), so the cascade has something to lose. The
+    slot is the TABLE slot, which only the session's cascade reaches, and the
+    disclosure is ended: a live copy would make deleting its document fail by
+    design, which `tests/test_reveal_db.py` proves, together with an account's
+    deletion taking a live copy with it."""
     conn.execute(
         "INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Nocturne')",
         (CAMPAIGN_ID, owner),
@@ -327,6 +335,17 @@ def _a_whole_campaign(conn, owner: int) -> None:
         "INSERT INTO campaign.seat_offers (id, campaign_id, participant_id, offered_by, address, address_key, "
         "expires_at) VALUES (%s, %s, %s, %s, 'wren@example.com', 'wren@example.com', now() + interval '14 days')",
         ("sof_" + "a" * 22, CAMPAIGN_ID, PARTICIPANT_ID, owner),
+    )
+    conn.execute(
+        "INSERT INTO campaign.reveal_disclosures (id, campaign_id, session_id, document_id, version_number, "
+        "mask, audience_kind, command_id, created_at, ended_at, ended_reason) "
+        "VALUES (%s, %s, %s, %s, 1, ARRAY['name'], 'table', %s, now(), now(), 'gm_stop')",
+        ("dsc_" + "a" * 22, CAMPAIGN_ID, "ses_" + "a" * 22, DOCUMENT_ID, "c" * 22),
+    )
+    conn.execute(
+        "INSERT INTO campaign.reveal_slots (id, campaign_id, session_id, audience_kind, participant_id, seq, "
+        "disclosure_id, updated_at) VALUES (%s, %s, %s, 'table', NULL, 2, NULL, now())",
+        ("rsl_" + "a" * 22, CAMPAIGN_ID, "ses_" + "a" * 22),
     )
 
 

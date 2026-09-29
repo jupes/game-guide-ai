@@ -15,12 +15,14 @@ from service.campaign_identity import (
     CAMPAIGN,
     DEVICE_CREDENTIAL,
     DIGEST_CHARS,
+    DISCLOSURE,
     DOCUMENT,
     ENROLMENT_CODE,
     ID_BODY_MAX,
     ID_BODY_MIN,
     PARTICIPANT,
     PREFIXES,
+    REVEAL_SLOT,
     SEAT_OFFER,
     SECRET_CHARS,
     TABLE_CREDENTIAL,
@@ -77,6 +79,8 @@ def test_every_prefix_is_distinct_and_the_registry_is_the_whole_set():
         DOCUMENT,
         SEAT_OFFER,
         ASSET,
+        DISCLOSURE,
+        REVEAL_SLOT,
     }
 
 
