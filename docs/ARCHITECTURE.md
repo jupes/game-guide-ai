@@ -571,7 +571,8 @@ projection from them with its one builder.
 
 Storage for a GM's images and audio, added by `1kg.8.1.1` (slice a of `1kg.8.1`):
 the media migration (`*_media_assets.sql`), the asset store in `service/asset_store.py`
-and the object store in `service/media_objects.py`. **It ships dark.** No route
+and the object store in `service/media_objects.py`, with its Cloud Storage
+implementation in `service/media_gcs.py` (`1kg.8.1.4`, slice d). **It ships dark.** No route
 exists, nothing in `service/app.py` builds a store or registers a job kind, and
 nothing in the running service reads the media settings: slice b (`1kg.8.1.2`)
 wires them. Switching the capability on is the owner's decision (Q-5).
@@ -686,13 +687,36 @@ the bucket's own lifecycle rule for `tmp/` is production's backstop
 `MediaSettings.from_env` reads `WORKBENCH_MEDIA_ENABLED` (strictly `true`,
 `false`, `1`, `0` or unset; off by default) and `WORKBENCH_MEDIA_STORE` (unset
 by default, meaning no store is built; `filesystem` with an absolute
-`WORKBENCH_MEDIA_DIR`; `gcs` is refused by name until slice d; `memory` is built
+`WORKBENCH_MEDIA_DIR`; `gcs` with a `WORKBENCH_MEDIA_BUCKET`; `memory` is built
 in code only). "Off" means no route, no store, no bucket and no cost; the store
 setting is separate from `enabled` because a deployment switched off must still
 finish the deletions it owes. Every refusal names the variable, never its value.
 Every object-store call outside `service/media_objects.py` goes through
 `via_store`, where slice c puts the thread limiter. The store's health signal
 for `1kg.9.2` is the read-only `reachable()`.
+
+**The Cloud Storage store** (`service/media_gcs.py`) keeps the same contract,
+and the same suite runs over it, through the real `google-cloud-storage` client
+against an in-process emulator (`service/tests/_gcs_emulator.py`): no bucket and
+no credentials in any test. The client is the optional `gcs` extra, so the
+default image carries none, and it is imported only inside `build_gcs_store`,
+which the factory calls only for `gcs`; a build without it answers
+`MediaStoreNotBuilt`. Credentials come from the runtime service account through
+Application Default Credentials, never from code or configuration. An upload is
+one resumable upload fed in 1 MiB pieces, finalized only by the short read that
+ends a stream within its ceiling, so a body over its ceiling never becomes an
+object (Cloud Storage discards the unfinished session after a week). A read is
+a metadata read, then ranges of at most 256 KiB pinned to that generation. A
+listing maps onto Cloud Storage's lexicographic listing, skipping the key equal
+to the cursor and never examining a name outside the key grammar. `reachable()`
+lists one object under `tmp/`, because the runtime account holds object
+administration on the bucket and nothing more; for the same reason the builder
+turns off the client's own background read of bucket metadata. Every call is
+bounded (3 s to connect, 10 s to read, 20 s of retrying), inside a job's 30 s
+budget; a failure is `ObjectStoreUnavailable` with its fixed message and no
+driver text, since Cloud Storage's own messages name the bucket and the object.
+Creating the bucket, its IAM binding and its `tmp/` rule, and building the image
+with the extra, are `1kg.9.5`'s (`docs/deploy-gcp.md` section 13).
 
 **Table reads never use this store** (SEC-44(2)). A table's slot resolver finds
 its asset in its own `table_principal` query (SEC-16, SEC-41, `1kg.7.x`); the

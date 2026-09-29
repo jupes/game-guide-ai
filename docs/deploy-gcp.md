@@ -782,10 +782,11 @@ redeploy lands.
 ## 13. The media bucket (DEFERRED — `1kg.9.5`)
 
 **Documentation only. UNVERIFIED: none of these commands has been run.**
-Nothing reads a bucket yet: the Cloud Storage object store is slice d's
-(`1kg.8.1.4`), `WORKBENCH_MEDIA_STORE=gcs` is refused by name until then, and
-the media capability ships off (Q-5). `1kg.9.5` runs these steps, and checks
-each flag against the current `gcloud storage` reference, when slice d lands.
+Nothing reads a bucket yet: the Cloud Storage object store exists
+(`service/media_gcs.py`, `1kg.8.1.4`), but nothing in the running service builds
+it until slice b (`1kg.8.1.2`) wires the media settings into startup, and the
+media capability ships off (Q-5). `1kg.9.5` runs these steps, and checks each
+flag against the current `gcloud storage` reference.
 
 What the bucket must be (media ADR MS-1): **private**, **regional** (the
 service's region), **uniform bucket-level access**, **public access
@@ -824,6 +825,25 @@ Verify with `gcloud storage buckets describe "gs://${MEDIA_BUCKET}"`: the
 location, `uniform_bucket_level_access: true`, `public_access_prevention:
 enforced`, no versioning, a soft-delete retention of zero, and the one
 lifecycle rule. An unauthenticated `curl` of any object URL must be refused.
+
+**The service side.** The Cloud Storage client is the optional `gcs` extra, so
+the default image has none, and a service told `WORKBENCH_MEDIA_STORE=gcs`
+without it refuses to build the store (`MediaStoreNotBuilt`). The object-store
+role is enough: the store creates, reads, lists and deletes objects and never
+reads the bucket itself (it switches off the client's own background read of
+bucket metadata, `DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA`). No key and
+no credentials file: the client uses the runtime service account.
+
+```bash
+# UNVERIFIED — not run, and only when the owner switches media on (Q-5).
+# 5. Build the image with the client: in Dockerfile.cloud's export step, add the
+#    extra, e.g. EXTRAS="--extra gcs" (beside the INSTALL_RERANK switch).
+# 6. Point the service at the bucket (slice b reads these at startup).
+gcloud run services update game-guide-ai --region="$REGION"   --update-env-vars="WORKBENCH_MEDIA_STORE=gcs,WORKBENCH_MEDIA_BUCKET=${MEDIA_BUCKET}"
+```
+
+For Compose or a local run against `fake-gcs-server`, the client honours
+`STORAGE_EMULATOR_HOST` by itself and then uses no credentials at all.
 
 ## Cost
 
