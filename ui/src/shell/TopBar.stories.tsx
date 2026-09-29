@@ -102,5 +102,7 @@ export const MenuButtonFocusVisible: Story = {
     const style = getComputedStyle(menu)
     await expect(style.outlineStyle).not.toBe('none')
     await expect(style.outlineWidth).toBe('3px')
+    // --md-sys-color-secondary (#7a5a23): a transparent ring paints nothing.
+    await expect(style.outlineColor).toBe('rgb(122, 90, 35)')
   },
 }

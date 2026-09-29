@@ -28,6 +28,8 @@ from __future__ import annotations
 import base64
 import inspect
 import json
+import math
+import random
 import re
 import uuid
 from datetime import UTC, datetime
@@ -83,14 +85,133 @@ def test_every_minted_id_carries_at_least_sixteen_bytes(minted: list[str]) -> No
         assert len(decoded) >= store.CONVERSATION_ID_BYTES == 16
 
 
+#: The body alphabet `secrets.token_urlsafe` draws from (`ID_SHAPE` above pins
+#: the same 64 symbols). Two independent CSPRNG ids matching in their first
+#: `m` body characters happens with probability `1 / _BODY_ALPHABET_SIZE ** m`.
+_BODY_ALPHABET_SIZE = 64
+
+#: How many *body* characters (beyond the fixed `cnv_` prefix) two consecutive
+#: ids may share before the test calls it a monotone source. A union bound
+#: over the `SAMPLE - 1` consecutive pairs bounds the false-failure rate:
+#: `P(any pair shares more than _MAX_SHARED_BODY_CHARS)
+#:      <= (SAMPLE - 1) * _BODY_ALPHABET_SIZE ** -(_MAX_SHARED_BODY_CHARS + 1)`.
+#: At 4 that is `999 * 64 ** -5 ≈ 9.3e-7`. A counter shares far more than 4
+#: of the body's 22 characters between consecutive ids and is caught here,
+#: but a timestamp is NOT caught by this bound alone: a UUIDv1 leads with
+#: `time_low`'s top three bytes, which are exactly 4 body characters, so ids
+#: minted at least 4 ticks (400 ns) apart never share a fifth. The near-miss
+#: count below is what catches that source.
+_MAX_SHARED_BODY_CHARS = 4
+
+#: A pair of consecutive ids is a *near miss* when it shares more than this
+#: many body characters, which two CSPRNG ids do with probability
+#: `p = _BODY_ALPHABET_SIZE ** -(_NEAR_MISS_BODY_CHARS + 1) = 64 ** -3`.
+_NEAR_MISS_BODY_CHARS = 2
+
+#: How many of the `SAMPLE - 1` consecutive pairs may be near misses. Each id
+#: is drawn independently of every id before it, so whether it matches its
+#: predecessor's first 3 body characters has probability `p` whatever came
+#: before: the near-miss count is Binomial(999, p), and
+#: `P(count > 2) <= comb(999, 3) * p ** 3 ≈ 9.2e-9`. A timestamp source makes
+#: nearly every pair a near miss (a UUIDv1's first 3 body characters change
+#: only once every 2 ** 14 ticks, 1.6 ms), so it is caught even when its
+#: longest shared prefix stays at 4.
+_MAX_NEAR_MISSES = 2
+
+#: The false-failure rate the two bounds above are chosen to hold under,
+#: together: `9.3e-7 + 9.2e-9 < 1e-6`.
+_MAX_FALSE_FAILURE_RATE = 1e-6
+
+
 def test_minted_ids_are_not_sequential(minted: list[str]) -> None:
-    """A counter, a timestamp or any monotone source shows up two ways:
-    consecutive ids share a long common prefix, and the ids come out already
-    sorted. Neither is true of a CSPRNG."""
-    for earlier, later in zip(minted, minted[1:], strict=False):
-        shared = len(_common_prefix(earlier, later))
-        assert shared <= len(store.CONVERSATION_PREFIX) + 2, f"{earlier} then {later}"
-    assert minted != sorted(minted), "minted ids came out in order"
+    """A counter, a timestamp or any monotone source shows up three ways:
+    consecutive ids share a long common prefix, many consecutive ids share a
+    short one, and the ids come out already sorted. None of these is true of
+    a CSPRNG.
+
+    Bounding the shared prefix at `len(CONVERSATION_PREFIX) + 2` (i.e. two
+    body characters) on EVERY pair made this test fail by chance about 0.4%
+    of runs: with 999 consecutive pairs and a 64-symbol alphabet,
+    `999 * 64 ** -3 ≈ 3.8e-3`. `_MAX_SHARED_BODY_CHARS` raises that margin
+    for the longest prefix, and `_MAX_NEAR_MISSES` keeps the two-character
+    bound's power against a timestamp by counting the pairs over it instead
+    of failing on the first; the comments above both derive the
+    false-failure rate.
+    """
+    _assert_not_sequential(minted)
+
+
+def _assert_not_sequential(ids: list[str]) -> None:
+    """The check `test_minted_ids_are_not_sequential` runs, kept apart so the
+    tests below can run the same check against sources that must fail it."""
+    pairs = list(zip(ids, ids[1:], strict=False))
+    shared = [len(_common_prefix(earlier, later)) for earlier, later in pairs]
+    longest = max(shared)
+    worst_earlier, worst_later = pairs[shared.index(longest)]
+    bound = len(store.CONVERSATION_PREFIX) + _MAX_SHARED_BODY_CHARS
+    assert longest <= bound, f"{worst_earlier} then {worst_later} shared {longest} characters"
+    near = len(store.CONVERSATION_PREFIX) + _NEAR_MISS_BODY_CHARS
+    near_misses = sum(s > near for s in shared)
+    assert near_misses <= _MAX_NEAR_MISSES, (
+        f"{near_misses} of {len(pairs)} consecutive pairs shared more than {near} characters"
+    )
+    assert ids != sorted(ids), "minted ids came out in order"
+
+
+def _counter_ids(count: int) -> list[str]:
+    """A monotone source: a zero-padded counter rendered like a minted id."""
+    return [
+        store.CONVERSATION_PREFIX + base64.urlsafe_b64encode(n.to_bytes(16, "big")).rstrip(b"=").decode()
+        for n in range(count)
+    ]
+
+
+def _uuid1_layout_ids(count: int, *, min_ticks: int, max_ticks: int) -> list[str]:
+    """A timestamp source on a fine clock: RFC 4122 version-1 bytes over a
+    100 ns tick that advances `min_ticks..max_ticks` between ids (seeded, so
+    the sample is the same every run), rendered like a minted id. This is
+    the source a longest-prefix bound of 4 body characters lets through."""
+    steps = random.Random(20260929)
+    tick = 0x1EF_4D2C_8A3B_0000
+    ids = []
+    for _ in range(count):
+        tick += steps.randint(min_ticks, max_ticks)
+        time_low, time_mid, time_hi = tick & 0xFFFF_FFFF, (tick >> 32) & 0xFFFF, (tick >> 48) & 0x0FFF
+        stamp = uuid.UUID(fields=(time_low, time_mid, time_hi | 0x1000, 0x80, 0x2A, 0x0242AC110002))
+        ids.append(store.CONVERSATION_PREFIX + base64.urlsafe_b64encode(stamp.bytes).rstrip(b"=").decode())
+    return ids
+
+
+def test_the_check_catches_a_counter() -> None:
+    with pytest.raises(AssertionError, match="shared 25 characters"):
+        _assert_not_sequential(_counter_ids(SAMPLE))
+
+
+@pytest.mark.parametrize(("min_ticks", "max_ticks"), [(4, 8), (10, 20), (20, 60)])
+def test_the_check_catches_a_fine_clock_timestamp(min_ticks: int, max_ticks: int) -> None:
+    """Mutant Y3 of review pr192-l: with only the longest-prefix bound, every
+    one of these samples passed. Each pair shares at most 4 body characters
+    (asserted first, so the case keeps testing the near-miss count and not
+    the other bound), and nearly every pair is a near miss."""
+    ids = _uuid1_layout_ids(SAMPLE, min_ticks=min_ticks, max_ticks=max_ticks)
+    longest = max(len(_common_prefix(earlier, later)) for earlier, later in zip(ids, ids[1:], strict=False))
+    assert longest <= len(store.CONVERSATION_PREFIX) + _MAX_SHARED_BODY_CHARS
+    with pytest.raises(AssertionError, match="consecutive pairs shared more than"):
+        _assert_not_sequential(ids)
+
+
+def test_the_false_failure_rate_is_derived_correctly() -> None:
+    """Guards the arithmetic in `_MAX_SHARED_BODY_CHARS`'s docstring: recomputed
+    independently, so a change to the bound or the sample size that pushes the
+    false-failure rate back over the line is caught here rather than only in
+    a comment. The second assertion adds the near-miss count's binomial tail,
+    since either check failing fails the test."""
+    false_failure_rate = (SAMPLE - 1) * _BODY_ALPHABET_SIZE ** -(_MAX_SHARED_BODY_CHARS + 1)
+    assert false_failure_rate < _MAX_FALSE_FAILURE_RATE
+    near_miss = _BODY_ALPHABET_SIZE ** -(_NEAR_MISS_BODY_CHARS + 1)
+    too_many = _MAX_NEAR_MISSES + 1
+    near_miss_rate = math.comb(SAMPLE - 1, too_many) * near_miss**too_many
+    assert false_failure_rate + near_miss_rate < _MAX_FALSE_FAILURE_RATE
 
 
 def _common_prefix(left: str, right: str) -> str:

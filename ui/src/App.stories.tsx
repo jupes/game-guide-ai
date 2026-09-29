@@ -17,6 +17,7 @@ import {
   expectStacked,
   expectViewport,
   expectWorkspaceFits,
+  type ViewportName,
 } from '../.storybook/viewports'
 import App from './App'
 
@@ -181,19 +182,44 @@ export const DarkSessionCheckUnavailable: Story = {
  * side by side; under 600px they stack. "Try again" was an unstyled button
  * below the 44px floor at every width.
  */
+async function expectSessionCheckUnavailablePhone(
+  canvasElement: HTMLElement,
+  viewport: ViewportName,
+): Promise<void> {
+  await expectViewport(viewport)
+  const canvas = within(canvasElement)
+  await expectNoPageOverflow()
+  const heading = canvas.getByRole('heading', { name: 'Can’t reach the service' })
+  const paragraph = canvas.getByText(/We couldn’t check your session/)
+  const retry = canvas.getByRole('button', { name: 'Try again' })
+  await expectStacked([heading, paragraph, retry])
+  await expectTouchTarget(canvas, 'Try again')
+}
+
 export const SessionCheckUnavailablePhone320: Story = {
   ...atViewport('phone320'),
   decorators: [withShell({ authStatus: 'unavailable', retryAuthCheck: fn() })],
-  play: async ({ canvasElement }) => {
-    await expectViewport('phone320')
-    const canvas = within(canvasElement)
-    await expectNoPageOverflow()
-    const heading = canvas.getByRole('heading', { name: 'Can’t reach the service' })
-    const paragraph = canvas.getByText(/We couldn’t check your session/)
-    const retry = canvas.getByRole('button', { name: 'Try again' })
-    await expectStacked([heading, paragraph, retry])
-    await expectTouchTarget(canvas, 'Try again')
-  },
+  play: async ({ canvasElement }) => expectSessionCheckUnavailablePhone(canvasElement, 'phone320'),
+}
+
+/** agent-forge-harness-zh9 L-1: AC-1's own width list (320/375/390/599) had
+ * no session-unavailable story at 375, 390 or 599. */
+export const SessionCheckUnavailablePhone375: Story = {
+  ...atViewport('phone375'),
+  decorators: [withShell({ authStatus: 'unavailable', retryAuthCheck: fn() })],
+  play: async ({ canvasElement }) => expectSessionCheckUnavailablePhone(canvasElement, 'phone375'),
+}
+
+export const SessionCheckUnavailablePhone390: Story = {
+  ...atViewport('phone390'),
+  decorators: [withShell({ authStatus: 'unavailable', retryAuthCheck: fn() })],
+  play: async ({ canvasElement }) => expectSessionCheckUnavailablePhone(canvasElement, 'phone390'),
+}
+
+export const SessionCheckUnavailableEdge599: Story = {
+  ...atViewport('edge599'),
+  decorators: [withShell({ authStatus: 'unavailable', retryAuthCheck: fn() })],
+  play: async ({ canvasElement }) => expectSessionCheckUnavailablePhone(canvasElement, 'edge599'),
 }
 
 /** agent-forge-harness-0rn: the session-check hold on a 320px phone. A

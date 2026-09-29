@@ -10,7 +10,9 @@ import type { Exchange } from '../useChat'
 import {
   HYDRATE_TARGET,
   MAX_PAGES_PER_READ,
+  DIVIDER_COPY,
   answerFromResponse,
+  collapseSessionSpans,
   exchangesForExport,
   mergeEarlierItems,
   readEarlierTimeline,
@@ -19,14 +21,17 @@ import {
   turnsFromTimeline,
   useGmTimeline,
 } from './gmTimeline'
-import type { LoadTimelinePageFn } from './gmTimeline'
+import type { GmTurn, LoadTimelinePageFn } from './gmTimeline'
 import type { TimelineItem } from './contracts'
 import {
   CREATIVE_ANSWER,
   DIVIDER_ENTRY,
   EDIT_ENTRY,
+  END_DIVIDER_ENTRY,
   OPAQUE_ENTRY,
+  QUIET_SESSION,
   chatEntry,
+  dividerEntry,
   manyChatEntries,
   pagedTimeline,
   toolEntry,
@@ -171,7 +176,8 @@ describe('turnsFromTimeline — one turn per exchange, in order', () => {
       { kind: 'unknown', reason: 'invalid', entry_id: null },
     ])
     expect(turns.map((t) => [t.kind, t.key])).toEqual([
-      // The divider is 1kg.3.5's to label; it adds no exchange here.
+      // 1kg.3.5: a session divider is a divider turn, keyed by its entry id.
+      ['divider', 'entry:ent_5e55a001'],
       ['chat', 'entry:ent_chat'],
       ['tool', 'entry:ent_tool'],
       ['unsupported', 'entry:ent_ed170001'],
@@ -194,6 +200,115 @@ describe('turnsFromTimeline — one turn per exchange, in order', () => {
     const [turn] = turnsFromTimeline([toolEntry()])
     expect(turn).toMatchObject({ kind: 'tool', entryId: 'ent_77aa12bd', brief: 'CR 5, drowned' })
     if (turn.kind === 'tool') expect(turn.invocation.tool_id).toBe('monster')
+  })
+})
+
+/** Each turn as `kind:boundary:key`, the shape the collapse tests compare. */
+function shape(turns: readonly GmTurn[]): string[] {
+  return turns.map((t) => (t.kind === 'divider' ? `divider:${t.boundary}:${t.key}` : `${t.kind}:${t.key}`))
+}
+
+describe('session dividers (1kg.3.5)', () => {
+  it('a divider entry becomes a divider turn', () => {
+    expect(turnsFromTimeline([DIVIDER_ENTRY, END_DIVIDER_ENTRY])).toEqual([
+      { kind: 'divider', key: 'entry:ent_5e55a001', sessionId: 'ses_2c7d91aa', boundary: 'start', at: '2026-09-16T19:00:00Z' },
+      { kind: 'divider', key: 'entry:ent_5e55a002', sessionId: 'ses_2c7d91aa', boundary: 'end', at: '2026-09-16T23:00:00Z' },
+    ])
+  })
+
+  it('keeps each divider in its stored place among the turns', () => {
+    const turns = turnsFromTimeline([
+      DIVIDER_ENTRY,
+      chatEntry({ entry_id: 'ent_a' }),
+      END_DIVIDER_ENTRY,
+      chatEntry({ entry_id: 'ent_b' }),
+    ])
+    expect(shape(turns)).toEqual([
+      'divider:start:entry:ent_5e55a001',
+      'chat:entry:ent_a',
+      'divider:end:entry:ent_5e55a002',
+      'chat:entry:ent_b',
+    ])
+  })
+
+  it('has one line of copy per boundary, for the design lane', () => {
+    expect(DIVIDER_COPY).toEqual({ start: 'Session started', end: 'Session ended', span: 'Session played' })
+  })
+})
+
+describe('collapseSessionSpans (1kg.3.5, I-10)', () => {
+  it('collapses a start and its own end with nothing between', () => {
+    const turns = collapseSessionSpans(
+      turnsFromTimeline([chatEntry({ entry_id: 'ent_a' }), ...QUIET_SESSION, chatEntry({ entry_id: 'ent_b' })]),
+    )
+    expect(turns).toEqual([
+      expect.objectContaining({ kind: 'chat', key: 'entry:ent_a' }),
+      {
+        kind: 'divider',
+        key: 'entry:ent_5e55b001',
+        sessionId: 'ses_7f3e0b12',
+        boundary: 'span',
+        at: '2026-09-23T19:00:00Z',
+        endedAt: '2026-09-23T22:30:00Z',
+      },
+      expect.objectContaining({ kind: 'chat', key: 'entry:ent_b' }),
+    ])
+  })
+
+  it('never collapses across a turn: a session that was played keeps both its dividers', () => {
+    const turns = turnsFromTimeline([DIVIDER_ENTRY, chatEntry({ entry_id: 'ent_a' }), END_DIVIDER_ENTRY])
+    expect(shape(collapseSessionSpans(turns))).toEqual(shape(turns))
+    expect(shape(turns)).toEqual(['divider:start:entry:ent_5e55a001', 'chat:entry:ent_a', 'divider:end:entry:ent_5e55a002'])
+  })
+
+  it('never collapses across a live turn this pane sent either', () => {
+    const turns: GmTurn[] = [
+      ...turnsFromTimeline([QUIET_SESSION[0]]),
+      turnFromExchange({ id: 1, prompt: 'q', status: 'pending' }),
+      ...turnsFromTimeline([QUIET_SESSION[1]]),
+    ]
+    expect(shape(collapseSessionSpans(turns))).toEqual(shape(turns))
+  })
+
+  it('never collapses one session’s start with another session’s end', () => {
+    const turns = turnsFromTimeline([
+      DIVIDER_ENTRY,
+      dividerEntry({ entry_id: 'ent_5e55c002', session_id: 'ses_0d0d0d0d', boundary: 'end' }),
+    ])
+    expect(shape(collapseSessionSpans(turns))).toEqual([
+      'divider:start:entry:ent_5e55a001',
+      'divider:end:entry:ent_5e55c002',
+    ])
+  })
+
+  it('keeps a lone end (a thread created mid-session) and a lone start (a session still live)', () => {
+    const loneEnd = turnsFromTimeline([END_DIVIDER_ENTRY, chatEntry({ entry_id: 'ent_a' })])
+    expect(shape(collapseSessionSpans(loneEnd))).toEqual(['divider:end:entry:ent_5e55a002', 'chat:entry:ent_a'])
+    const loneStart = turnsFromTimeline([chatEntry({ entry_id: 'ent_a' }), DIVIDER_ENTRY])
+    expect(shape(collapseSessionSpans(loneStart))).toEqual(['chat:entry:ent_a', 'divider:start:entry:ent_5e55a001'])
+  })
+
+  it('never pairs an end with the start after it (an end, then a start, is two sessions)', () => {
+    const turns = turnsFromTimeline([END_DIVIDER_ENTRY, DIVIDER_ENTRY])
+    expect(shape(collapseSessionSpans(turns))).toEqual([
+      'divider:end:entry:ent_5e55a002',
+      'divider:start:entry:ent_5e55a001',
+    ])
+  })
+
+  it('collapses once both halves are drawn after Load earlier, and not before', () => {
+    // The newest page held the quiet session's end; Load earlier brings its start.
+    const drawn = [QUIET_SESSION[1], chatEntry({ entry_id: 'ent_b' })]
+    const older = [chatEntry({ entry_id: 'ent_a' }), QUIET_SESSION[0]]
+    expect(shape(collapseSessionSpans(turnsFromTimeline(drawn)))).toEqual([
+      'divider:end:entry:ent_5e55b002',
+      'chat:entry:ent_b',
+    ])
+    const merged = collapseSessionSpans(turnsFromTimeline(mergeEarlierItems(drawn, older)))
+    expect(shape(merged)).toEqual(['chat:entry:ent_a', 'divider:span:entry:ent_5e55b001', 'chat:entry:ent_b'])
+    // Per page, the pair would never meet.
+    const perPage = [...collapseSessionSpans(turnsFromTimeline(older)), ...collapseSessionSpans(turnsFromTimeline(drawn))]
+    expect(shape(perPage)).not.toEqual(shape(merged))
   })
 })
 
@@ -255,6 +370,16 @@ describe('exchangesForExport — a GM export keeps its history', () => {
       },
       { id: 1, prompt: 'Still running?', status: 'done' },
     ])
+  })
+
+  it('export still carries only exchanges: a session divider is not one (1kg.3.5)', () => {
+    const exported = exchangesForExport([
+      DIVIDER_ENTRY,
+      chatEntry({ entry_id: 'ent_a', answer: null, prompt: 'Who is at the gate?' }),
+      ...QUIET_SESSION,
+      END_DIVIDER_ENTRY,
+    ])
+    expect(exported).toEqual([{ id: 0, prompt: 'Who is at the gate?', status: 'done' }])
   })
 })
 

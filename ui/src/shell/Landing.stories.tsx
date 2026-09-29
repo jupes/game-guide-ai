@@ -120,6 +120,13 @@ export const PhoneDm320: Story = {
   },
 }
 
+/** agent-forge-harness-zh9 L-1: AC-1's own width list (320/375/390/599) had
+ * no Landing story at 375. */
+export const PhoneDm375: Story = {
+  ...atViewport('phone375'),
+  play: async ({ canvasElement }) => expectStackedCardActions(canvasElement, 'phone375', DM_CHIPS),
+}
+
 /** One pixel inside the phone rule: still one column. */
 export const Edge599: Story = {
   ...atViewport('edge599'),

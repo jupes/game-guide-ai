@@ -87,13 +87,19 @@ interface AppNavProviderProps {
    * unaffected.
    */
   initialScreen?: Screen
+  /**
+   * Cold-load mode (agent-forge-harness-1kg.2.5): `'gm'` when the URL carries a
+   * campaign to restore (`workspaceFragment.ts`'s `readCampaignRestore`). A
+   * provider prop, not state: `AppNavState` is unchanged. Defaults to `'sage'`.
+   */
+  initialMode?: ChatMode
 }
 
 export function AppNavProvider(
-  { children, initialScreen = 'landing' }: AppNavProviderProps,
+  { children, initialScreen = 'landing', initialMode = 'sage' }: AppNavProviderProps,
 ): React.JSX.Element {
   const [screen, setScreen] = useState<Screen>(initialScreen)
-  const [mode, setModeState] = useState<ChatMode>('sage')
+  const [mode, setModeState] = useState<ChatMode>(initialMode)
   const [conversationId, setConversationIdState] = useState<string | null>(null)
   // Starts 'replace' (agent-forge-harness-y40): the initial screen was
   // PLACED there by the boot computation, not pushed by a user action, so
