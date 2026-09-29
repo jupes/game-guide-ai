@@ -147,6 +147,10 @@ a generic failure.
 | `campaign_archived` | 409 | no | a seat added to, or an offer made in, an archived campaign (`1kg.2.2`), or a tool invocation started in one (`1kg.4.1`) |
 | `reauth_failed` | 403 | no | a Remove whose password did not check out (`1kg.2.2`, SEC-40). A 403, never a 401, because the client signs out on any 401; it names no resource |
 | `document_unsupported` | 409 | no | a stored document this build cannot read, or cannot write over: an unknown stored type, a stored type version this build does not write, stored data that is not an object or fails the tolerant read, or — for a patch or a restore — a stored key or sub-key this build does not declare (`1kg.5.2`). Fail closed; only the document's owner can reach it |
+| `inactive` | 404 | no | a table route's one answer for every signed-in caller who is not entitled, whatever the reason (`1kg.2.3`, SEC-46, TABLE-9): not the owner, no live session, a session that ended under the request, a screen asking to mint. Identical in status, body and headers |
+| `cross_site` | 403 | no | a table route's Fetch Metadata refusal (`1kg.2.3`, SEC-45): `Sec-Fetch-Site` present and not `same-origin`, or `Sec-Fetch-Mode: navigate`. It depends on nothing but those headers and runs before any cookie is read |
+| `screen_limit` | 409 | no | a screen minted for a session that already has as many live screens as SEC-48 allows (`1kg.2.3`). The owner revokes one; the account stays signed in |
+| `live_elsewhere` | 409 | no | a Start while the GM's table is live in another campaign (`1kg.2.3`, REVEAL-2). The client sends End for that session, then Start: Start never ends a table on its own |
 
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
@@ -215,6 +219,12 @@ Version 1 is still being assembled by `1kg.1.2`, family by family, and nothing
 consumes it yet. The rules below start to bind when that bead closes; until then
 a new family may add a member to a union without a bump.
 
+A family whose *Schema families* status is **open** is not bound by the table
+below until it is marked done again. The table-session family is one: threat
+model §15.11 reopened it, and no build, deployed or not, has ever served or
+parsed one of its shapes, so there is no producer and consumer that have met for
+a bump to protect (`1kg.2.3`, DV-3).
+
 | Change | Version |
 | --- | --- |
 | A new optional field; a new error code | **no bump** — old clients strip the field and treat the code as generic |
@@ -249,7 +259,7 @@ on both sides.
 | Per-type document fields | **done** | All eight types declare their fields, rules, reveal groups and default reveals (`1kg.5.3`). A key a type does not name fails closed — the same posture as card kinds |
 | Reveal | **done** | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealLive`, `RevealState`, `TableProjection`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
-| Table sessions | **done** | `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest`, `EnrolResponse`, `TableSession`, `TableSessionRequest`, `TableSessionAnswer` |
+| Table sessions | **open** — reopened by threat model §15.11; not bound by the bump table until marked done again (see *Versioning and forward compatibility*) | `TableSession`, `TableSessionRequest`, `TableSessionAnswer`, `ScreenMintRequest`, `ScreenMintAnswer`, `TableLeaveRequest`, and `inactive`, `cross_site`, `screen_limit` and `live_elsewhere` on the error envelope. `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest` and `EnrolResponse` are retired (`1kg.2.3`). See *The table-session family* below |
 | Realtime events | **done** | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect`), `TableEvent` (`session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect`), and the two snapshot resources `GmSnapshot` and `TableSnapshot`. `slot` and `snapshot` are the reveal family's; the transport is the media ADR's |
 | Tool and document-type registry | `1kg.3.1` | extends `registry.json` |
 | Conversations | **done** | `Conversation`, `ConversationPage`, `ConversationCreateRequest`, `ConversationPatchRequest`, and `already_linked` on the error envelope. See *The conversation family* below |
@@ -965,7 +975,7 @@ interactions ADR §19 A-31, which the owner may override.
 | `game_system` | yes | yes | `dnd5e`, the one system the service answers from |
 | `avatar_icon`, `avatar_tone` | yes | yes | a Material Symbols name and `ember` or `gold`: stable per campaign, the same for the owner and every seated player, until a GM can choose one |
 | `concluded_at` / `concluded` | timestamp or `null` | boolean | the GM's Mark concluded. **Not archive**: a concluded campaign keeps its seats, documents and table, stays in the list, and narrows or widens nothing |
-| `last_played_at` | yes | yes | when the table last met — an ended session's end, an expired one's expiry (whether or not the sweep has marked it yet), a live one's start — or `null` |
+| `last_played_at` | yes | yes | when the table last met — an ended session's end, an expired one's expiry (whether or not the sweep has marked it yet), a live one's start — or `null`. Never later than the session's expiry: an End pressed after it is not a later meeting |
 | `live` | as `badge` | yes | a table session is running now |
 | `badge` | `live`, `ready` or `null` | — | LIVE wins; READY is prepared material waiting (an unarchived document edited after the table last met, or any, for a campaign that has never met); `null` means idle |
 | `seat_count` | 0 to 40 | — | seats not removed, open, offered and accepted alike |
@@ -1105,21 +1115,30 @@ Stop all (AUDIO-9), and carries no epoch, because a Stop is never stale (X-3).
 
 ## The table-session family
 
-Four bearer secrets exist (threat model §6.2); two of them are on the wire, each
-exactly once, in a POST body: the **table token** a table link carries and the
-**enrolment code** a personal link carries. Both are 32 CSPRNG bytes as
-`secrets.token_urlsafe` spells them — 43 base64url characters — and the contract
-pins that length. Neither ever appears in a URL the server sees (REVEAL-19).
+There is **no table link, no join and no enrolment** (threat model §15, owner
+decisions D-1 and D-13): a player is an account, seated by the GM (SEC-41), and
+no bearer secret is on the wire for any account (SEC-43). The one bearer secret
+left is the **screen grant** (SEC-48): 32 CSPRNG bytes the owner mints on the
+browser they are signed in on. It leaves the server once, in the `Set-Cookie`
+of the answer that mints it, and is in no body, no URL and no list.
 
-| Request | Answer |
-| --- | --- |
-| `TableJoinRequest` — the token | `TableJoinResponse`: `joined` with the device's role (`participant`, or `guest` with TABLE-13's line), `full` (SEC-10), or `inactive` — the one answer for a wrong, ended, expired or rotated token (TABLE-9). No reason, ever |
-| `EnrolRequest` — the code | `EnrolResponse`: `enrolled` or `inactive` (TABLE-16). No reason, ever |
-| `TableSessionRequest` — `start`, `end` or `rotate`, idempotent by `command_id`; only `rotate` may also reset personal links (REVEAL-17) | `TableSessionAnswer`: the `TableSession` and, for a start or a rotation, the new token — the one time a token is in a body. An end carries `null` |
+| Route | Request | Answer |
+| --- | --- | --- |
+| `GET /campaigns/{campaign_id}/table-session` | — | `TableSessionAnswer`: the campaign's live session, else the one most recently started, else `session: null`. A session still `live` past `ends_at` reads `ended`, with `ended_at` its `ends_at`. Writes nothing |
+| `POST /campaigns/{campaign_id}/table-session` | `TableSessionRequest` — `start`, `end` or `rotate`, idempotent by `command_id`; End and Rotate name their `session_id`, Start names none | `TableSessionAnswer`: the session as it stands after the command. `409 live_elsewhere` for a Start while the GM is live in another campaign; `429 throttled_user` with `retry_after_s` for a Start or a Rotate past SEC-35's per-campaign bound (End is never refused); `503 backend_unavailable`, retryable |
+| `DELETE /campaigns/{campaign_id}/table-session/screens/{screen_id}` | — | `204`, a repeat too. Another GM's screen, or none, is the one `404` |
+| `POST /table/screen` | `ScreenMintRequest` — the campaign | `ScreenMintAnswer`: when the grant ends. The same answer sets the grant's cookie, deletes the account's session cookie and sends `Clear-Site-Data: "cache", "storage"` (D-13). `inactive` for anyone but the owner of a campaign with a live session, and for a screen; `409 screen_limit` at SEC-48's bound, with the account kept signed in |
+| `POST /table/leave` | `TableLeaveRequest` — nothing | `204`, always: a live grant is revoked and its cookie deleted, a dead one's cookie is deleted, and no account is ever signed out (SEC-49) |
 
-`TableSession` is the GM's view: state, link generation, when it started and
-ends, whether table audio is on, and how many devices hold a credential. It never
-carries the token: a token is not re-readable.
+`TableSession` is the GM's view: state, **admission generation** (`gen`, which
+§15.11 keeps), when it started and ends, whether table audio is on, and
+`screens` — the live grants of a live session, each as `{screen_id, created_at,
+last_seen_at}`, never the grant or its digest; an ended session lists none. The
+list carries up to 16, above SEC-48's per-session bound of four (*suggested*), so
+tuning the bound is not a contract change. The GM routes are Workbench GM routes
+(the `dm` gate, SEC-2, SEC-3); the two `/table/` routes are the table router's
+(SEC-44 to SEC-46): Fetch Metadata first, then SEC-7, then one principal — a
+live screen grant alone, else the account session.
 
 ## The realtime family
 
@@ -1361,10 +1380,9 @@ reveal happened, and a frame that arrives whenever something invisible changes
 is exactly the inference channel WT-7 and T-8 rule out.
 
 A table client is never told a participant id. Every table-side shape in this
-contract is already id-free — `TableRole` is an enum, `TableJoinResponse` answers
-with a role and no id, `EnrolResponse` with a status alone — and which
-participant `mine` is, the server resolves from the credential pair, *never from
-request fields*. A slot a device is not entitled to is **absent**, never marked:
+contract is already id-free — `TableRole` is an enum, `ScreenMintAnswer` carries
+a time alone — and which participant `mine` is, the server resolves from the
+table principal, *never from request fields*. A slot a device is not entitled to is **absent**, never marked:
 a marker would confirm both that the slot exists and that a private reveal is
 happening (WT-7, T-8, threat model §8.2).
 

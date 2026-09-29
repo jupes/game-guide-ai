@@ -119,6 +119,17 @@ PROTECTED_ROUTES: list[Route] = [
      {"schema_version": 1, "version_number": 1}),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/seal",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/seal", None),
+    # 1kg.2.3 PR-B (agent-forge-harness-1kg.2.10): the GM's table session.
+    ("GET", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session", None),
+    ("POST", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session",
+     {"schema_version": 1, "command_id": "cmd_aaaaaaaaaaaaaaaa", "action": "start"}),
+    ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session/screens/tcr_aaaaaaaaaaaaaaaaaaaaaa", None),
+    # The screen mint calls `require_session` directly from its table principal
+    # (a live screen grant decides without it, SEC-44), so the dependency walk
+    # below cannot see it as guarded; it is listed so both halves run on it.
+    ("POST", "/table/screen", "/table/screen", {"schema_version": 1, "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa"}),
+    # 1kg.4.1 slice B: the GM's tool invocations.
     ("POST", "/campaigns/{campaign_id}/tool-invocations", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations",
      {"schema_version": 1, "invocation_id": "inv_guard_0000000001", "tool_id": "npc", "brief": "a smith",
       "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa", "conversation_id": "cnv_aaaaaaaaaaaaaaaaaaaaaa"}),
@@ -134,6 +145,10 @@ PROTECTED_ROUTES: list[Route] = [
 OPEN_ROUTES: list[tuple[str, str, dict[str, object] | None]] = [
     ("GET", "/healthz", None),
     ("POST", "/metrics/ui", {"points": []}),
+    # Leave (SEC-49): a browser stops being a table screen. It never reads the
+    # account session and never signs an account out, so it is never a 401 —
+    # with no cookie at all it is a 204 that changes nothing.
+    ("POST", "/table/leave", {"schema_version": 1}),
 ]
 
 
