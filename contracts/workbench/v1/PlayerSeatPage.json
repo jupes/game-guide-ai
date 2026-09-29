@@ -1,0 +1,50 @@
+{
+  "schema": "PlayerSeatPage",
+  "direction": "response",
+  "note": "The caller's seats, newest acceptance first.",
+  "valid": [
+    {
+      "name": "two seats",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "schema_version": 1,
+            "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+            "campaign_name": "The Nocturne Heist",
+            "alias": "Rook",
+            "accepted_at": "2026-09-16T19:31:24Z",
+            "confirmed": false
+          },
+          {
+            "schema_version": 1,
+            "campaign_id": "cmp_9Zq1Ws2Ex3Rd4Tf5Yg6Hu7",
+            "campaign_name": "The Nocturne Heist",
+            "alias": "Rook",
+            "accepted_at": "2026-09-16T19:31:24Z",
+            "confirmed": true
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "none",
+      "value": {
+        "schema_version": 1,
+        "items": [],
+        "next_cursor": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no cursor key",
+      "why": "next_cursor is required",
+      "value": {
+        "schema_version": 1,
+        "items": []
+      }
+    }
+  ]
+}

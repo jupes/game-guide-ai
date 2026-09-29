@@ -1,0 +1,79 @@
+{
+  "schema": "CampaignCreateRequest",
+  "direction": "request",
+  "note": "POST /campaigns: the caller becomes its GM (D-5). No command_id: a retried create makes a second campaign, which archive recovers. Duplicate names are allowed.",
+  "valid": [
+    {
+      "name": "a name",
+      "value": {
+        "schema_version": 1,
+        "name": "The Nocturne Heist"
+      }
+    },
+    {
+      "name": "a name trimmed as the client trims",
+      "value": {
+        "schema_version": 1,
+        "name": "  Nocturne  "
+      }
+    },
+    {
+      "name": "a name of 120 characters",
+      "value": {
+        "schema_version": 1,
+        "name": "@repeat:n:120"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no name",
+      "why": "a campaign has a name",
+      "value": {
+        "schema_version": 1
+      }
+    },
+    {
+      "name": "a name that trims to nothing",
+      "why": "1 to 120 characters after trimming",
+      "value": {
+        "schema_version": 1,
+        "name": "   "
+      }
+    },
+    {
+      "name": "a name past 120",
+      "why": "0004's CHECK",
+      "value": {
+        "schema_version": 1,
+        "name": "@repeat:n:121"
+      }
+    },
+    {
+      "name": "a control character in a name",
+      "why": "stored text is plain text (check_plain_text)",
+      "value": {
+        "schema_version": 1,
+        "name": "Noc\u0007turne"
+      }
+    },
+    {
+      "name": "an owner in the request",
+      "why": "the owner is the session; a request is strict",
+      "value": {
+        "schema_version": 1,
+        "name": "Mine",
+        "owner_id": 7
+      }
+    },
+    {
+      "name": "a user_id in the request",
+      "why": "SEC-50(1): undeclared keys fail closed",
+      "value": {
+        "schema_version": 1,
+        "name": "Mine",
+        "user_id": 7
+      }
+    }
+  ]
+}

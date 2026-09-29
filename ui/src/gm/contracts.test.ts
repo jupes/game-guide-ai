@@ -26,6 +26,9 @@ import {
   COMMON_FIELDS,
   CONTRACT_SCHEMAS,
   CONTRACT_VERSION,
+  CAMPAIGN_NAME_MAX_CHARS,
+  CampaignCreateRequestSchema,
+  CampaignPatchRequestSchema,
   CONVERSATION_PAGE_MAX_ITEMS,
   CONVERSATION_TITLE_MAX_CHARS,
   ConversationCreateRequestSchema,
@@ -74,8 +77,15 @@ import {
   TOOL_RESULT_KIND,
   TableEventSchema,
   TableProjectionSchema,
+  SEAT_ALIAS_MAX_CHARS,
+  SEAT_STATUSES,
+  SeatCreateRequestSchema,
+  SeatDeclineRequestSchema,
+  SeatOfferRequestSchema,
+  SeatRemoveRequestSchema,
   ToolInvocationRequestSchema,
   codePointLength,
+  isEmailShaped,
   isKnownErrorCode,
   isWellFormedText,
   parseConversation,
@@ -1824,5 +1834,55 @@ describe('the conversation family (1kg.2.4)', () => {
     expect(isKnownErrorCode('already_linked')).toBe(true)
     expect(CONVERSATION_PAGE_MAX_ITEMS).toBe(100)
     expect(CONVERSATION_TITLE_MAX_CHARS).toBe(200)
+  })
+})
+
+describe('campaigns and seats (1kg.2.2)', () => {
+  it('restates the server\'s address rule exactly', () => {
+    for (const [value, shaped] of [
+      ['wren@example.com', true],
+      ['@example.com', false],
+      ['wren@', false],
+      ['wren hidden@example.com', false],
+      ['wren.example.com', false],
+      ['a@b', true],
+    ] as const) {
+      expect([value, isEmailShaped(value)]).toEqual([value, shaped])
+    }
+  })
+
+  it('bounds a name and an alias after trimming, as the server stores them', () => {
+    const create = (name: unknown) => CampaignCreateRequestSchema.safeParse({ schema_version: 1, name })
+    expect(create('  ' + 'n'.repeat(CAMPAIGN_NAME_MAX_CHARS) + '  ').success).toBe(true)
+    expect(create('n'.repeat(CAMPAIGN_NAME_MAX_CHARS + 1)).success).toBe(false)
+    expect(create('Noc' + String.fromCharCode(0x202e) + 'turne').success).toBe(false)
+    const seat = (alias: unknown) => SeatCreateRequestSchema.safeParse({ schema_version: 1, alias })
+    expect(seat('a'.repeat(SEAT_ALIAS_MAX_CHARS)).success).toBe(true)
+    expect(seat('a'.repeat(SEAT_ALIAS_MAX_CHARS + 1)).success).toBe(false)
+  })
+
+  it('refuses an account id in every request, and a null in a patch', () => {
+    for (const [schema, body] of [
+      [CampaignCreateRequestSchema, { schema_version: 1, name: 'Mine' }],
+      [SeatCreateRequestSchema, { schema_version: 1, alias: 'Rook' }],
+      [SeatOfferRequestSchema, { schema_version: 1, email: 'wren@example.com' }],
+      [SeatRemoveRequestSchema, { schema_version: 1, password: 'secret' }],
+      [SeatDeclineRequestSchema, { schema_version: 1, block: false }],
+    ] as const) {
+      expect(schema.safeParse(body).success).toBe(true)
+      expect(schema.safeParse({ ...body, user_id: 7 }).success).toBe(false)
+    }
+    expect(CampaignPatchRequestSchema.safeParse({ schema_version: 1 }).success).toBe(false)
+    expect(CampaignPatchRequestSchema.safeParse({ schema_version: 1, name: null }).success).toBe(false)
+  })
+
+  it('knows the six seat statuses and the new error codes', () => {
+    expect([...SEAT_STATUSES]).toEqual([
+      'open', 'offered', 'not_accepted', 'awaiting_confirmation', 'confirmed', 'removed',
+    ])
+    for (const code of ['alias_taken', 'seat_not_open', 'seat_not_accepted', 'seat_cap_reached',
+      'campaign_archived', 'reauth_failed']) {
+      expect(isKnownErrorCode(code)).toBe(true)
+    }
   })
 })

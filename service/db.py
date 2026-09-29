@@ -104,6 +104,10 @@ class AdvisoryLock(IntEnum):
     MIGRATIONS = 1
     #: Per table session, around the connection-bound checks (RT-8, 1kg.1.4).
     TABLE_SESSION = 2
+    #: Per campaign owner, around the seat-offer throttle (1kg.2.2, SEC-50(3)).
+    #: It serialises one owner's offers ACROSS campaigns, which the campaign lock
+    #: alone cannot, and it is the last lock an offer takes before its insert.
+    SEAT_OFFERS = 3
 
 
 def advisory_key(key: str) -> int:

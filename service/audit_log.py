@@ -12,9 +12,9 @@ reviewer sees, not a string a caller invents, so the ledger cannot quietly grow
 a vocabulary nobody agreed to. Reveal's three actions and the export ones are
 not here: ED-18(a) makes the table shared, and those belong to `1kg.7.1` and
 `1kg.5.2`, which add their own members without a migration. Nor is there one
-writer for the fifteen that are here: the session and screen rows are written
-by `service/table_sessions.py` (`1kg.2.3`), the rest by `1kg.2.2`'s campaign
-routes. The reason is ownership, not use.
+writer for the seventeen that are here: the session and screen rows are
+written by `service/table_sessions.py` (`1kg.2.3`), the rest by `1kg.2.2`'s
+campaign and seat routes. The reason is ownership, not use.
 
 **A row carries identifiers, never content** (SEC-20, ED-26) — and no hash of
 any content either: ED-26 is explicit that no value derived from field text may
@@ -123,6 +123,13 @@ class AuditAction(str, Enum):
     #: The account accepted the seat offered to it (actor `participant`). There
     #: is no `seat.removed`: `participant.removed` records a seat's removal.
     SEAT_ACCEPTED = "seat.accepted"
+    #: The invitee declined the offer, and may have blocked the owner with it
+    #: (actor `participant`, recorded by the seat it was offered; 1kg.2.2, D-12).
+    SEAT_DECLINED = "seat.declined"
+    #: The GM confirmed who accepted the seat (actor `gm`; SEC-50(5), D-12).
+    #: There is no `seat.withdrawn`: withdrawing an offer is the GM's Remove, and
+    #: `participant.removed` is its record (g3x, IDA-2).
+    SEAT_CONFIRMED = "seat.confirmed"
     CAMPAIGN_ARCHIVED = "campaign.archived"
     CAMPAIGN_RESTORED = "campaign.restored"
     CAMPAIGN_DELETED = "campaign.deleted"
@@ -148,7 +155,7 @@ class ActorKind(str, Enum):
 
 
 class ObjectKind(str, Enum):
-    """What the decision was **about** — one of the four things the fifteen
+    """What the decision was **about** — one of the four things the seventeen
     actions act on, and nothing else. A table screen's `object_ref` is its
     grant's `tcr_` id.
 
@@ -285,6 +292,8 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     # participant row, and a user id is personal data the ledger does not need.
     AuditAction.SEAT_OFFERED: {"participant_id": _PARTICIPANT},
     AuditAction.SEAT_ACCEPTED: {"participant_id": _PARTICIPANT},
+    AuditAction.SEAT_DECLINED: {"participant_id": _PARTICIPANT, "blocked": Shape.FLAG},
+    AuditAction.SEAT_CONFIRMED: {"participant_id": _PARTICIPANT},
     AuditAction.CAMPAIGN_ARCHIVED: {"campaign_id": _CAMPAIGN},
     AuditAction.CAMPAIGN_RESTORED: {"campaign_id": _CAMPAIGN},
     AuditAction.CAMPAIGN_DELETED: {
@@ -317,6 +326,8 @@ ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
     AuditAction.PARTICIPANT_UNLINKED: frozenset(),
     AuditAction.SEAT_OFFERED: frozenset(),
     AuditAction.SEAT_ACCEPTED: frozenset(),
+    AuditAction.SEAT_DECLINED: frozenset(),
+    AuditAction.SEAT_CONFIRMED: frozenset(),
     AuditAction.CAMPAIGN_ARCHIVED: frozenset(),
     AuditAction.CAMPAIGN_RESTORED: frozenset(),
     AuditAction.CAMPAIGN_DELETED: frozenset(),
