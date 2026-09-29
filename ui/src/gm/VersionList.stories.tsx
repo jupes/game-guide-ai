@@ -224,6 +224,56 @@ export const RestoresFocusAfterARealBrowserDropsIt: Story = {
   },
 }
 
+/**
+ * agent-forge-harness-c1f, found in PR #142 review (M1, N2): a further page
+ * that fails, or comes back empty, disables Load more for a real frame just
+ * like a successful one — Chromium drops focus to `<body>` the same way —
+ * but the old effect returned early whenever `versions.length` had not grown
+ * past what was on screen at the press, which is exactly what a failed or
+ * empty page looks like. Only a real-Chromium story can see the drop; this
+ * one never adds a row, so `hasMore` stays true and Load more survives for
+ * the reader to try again.
+ */
+type PagedLiveFailingProps = Omit<VersionListProps, 'versions' | 'hasMore' | 'loadingMore' | 'onLoadMore'> & {
+  first: readonly DocumentVersion[]
+}
+
+function PagedLiveFailing({ first, ...rest }: PagedLiveFailingProps): React.JSX.Element {
+  const [loadingMore, setLoadingMore] = React.useState(false)
+  return (
+    <VersionList
+      {...rest}
+      versions={first}
+      hasMore
+      loadingMore={loadingMore}
+      onLoadMore={() => {
+        setLoadingMore(true)
+        // The page fails (or the server returns no rows): nothing is
+        // appended, and `hasMore` stays true so the button survives.
+        setTimeout(() => setLoadingMore(false), 200)
+      }}
+    />
+  )
+}
+
+export const RestoresFocusAfterAFailedPage: Story = {
+  render: (args) => (
+    <PagedLiveFailing
+      {...args}
+      first={Array.from({ length: HISTORY_PAGE_SIZE }, (_, at) => version({ number: 100 - at }))}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: 'Load more' }))
+    // A real frame runs while the failed page is in flight, and Chromium
+    // drops focus off the disabled button to <body>. Once it settles — with
+    // no new rows at all — focus must be back on Load more, not left at
+    // <body> for the rest of the page (agent-forge-harness-c1f).
+    await waitFor(() => expect(canvas.getByRole('button', { name: 'Load more' })).toHaveFocus())
+  },
+}
+
 // ── Dark Tavern ──────────────────────────────────────────────────────────────
 // agent-forge-harness-27h, rework 1. This file had NO dark story, so strict axe
 // had never rendered the version list against the dark palette. `DarkFailed`
