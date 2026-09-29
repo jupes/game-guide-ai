@@ -18,6 +18,7 @@ from service.campaign_identity import (
     DISCLOSURE,
     DOCUMENT,
     ENROLMENT_CODE,
+    GROUP,
     ID_BODY_MAX,
     ID_BODY_MIN,
     PARTICIPANT,
@@ -81,6 +82,7 @@ def test_every_prefix_is_distinct_and_the_registry_is_the_whole_set():
         ASSET,
         DISCLOSURE,
         REVEAL_SLOT,
+        GROUP,
     }
 
 
