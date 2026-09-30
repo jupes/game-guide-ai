@@ -154,6 +154,7 @@ a generic failure.
 | `live_elsewhere` | 409 | no | a Start while the GM's table is live in another campaign (`1kg.2.3`, REVEAL-2). The client sends End for that session, then Start: Start never ends a table on its own |
 | `group_name_taken` | 409 | no | a group name another live group of the campaign already has, up to case (`btb`). The name is never echoed |
 | `group_cap_reached` | 409 | no | the 51st live group of a campaign (`btb`, SEC-35) |
+| `not_in_sources` | — | no | the rules tool's corpus did not ground the brief (`1kg.4.3`); seen on an invocation, never as a response status. Its message is `/chat`'s refusal sentence, and the lane offers *Edit brief* |
 
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
@@ -259,7 +260,7 @@ on both sides.
 | --- | --- | --- |
 | Error envelope | **done** | `ErrorBody` |
 | Tool invocation | **done** | `ToolInvocationRequest`, `ToolInvocation`, `ToolResult` (card, document, media), `ToolSuggestion`, `DocumentLink`, `AssetRef` |
-| Card payloads | `stat_block` **done**, reusing the `/chat` stat-block contract | loot, names, rules and hooks are `1kg.4.3`'s; until they exist those tools cannot produce a valid card, by design |
+| Card payloads | **done**: `stat_block` (reusing the `/chat` stat-block contract), `loot`, `names`, `rules` and `hooks` (`1kg.4.3`) | One kind per card tool; see *Card payloads* below. The four were added before v1 was declared complete and while no card tool is enabled in any deployment, so no producer and consumer had met: not a version bump |
 | Legacy guards | **done** | today's `/chat` and message-history responses, validated by the existing models |
 | Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The attached-cue entry arrives with the cue family; until v1 is declared complete, adding it is not a version bump |
 | Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `DocumentDeleteRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, and `conflict`, `document_unsupported` and `document_not_archived` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
@@ -348,6 +349,43 @@ An HTTP error is a refusal before any attempt starts — `422`, the one `404`,
 `409` (`campaign_archived`, `tool_disabled`, `nothing_to_recap`, `cap_reached`),
 `429` (`throttled_daily`; `throttled_user` with `retry_after_s` and a matching
 `Retry-After` header) — which creates nothing, or a `503`.
+
+### Card payloads (`1kg.4.3`)
+
+A card result's `card` is a closed union on `card_kind`, one kind per card tool,
+and the kind must be the registry's for the result's tool: `monster` →
+`stat_block`, and `loot`, `names`, `rules` and `hooks` each → their own id. An
+unknown kind fails closed on the server and is a neutral placeholder on the
+client (X-8). Every card text is plain text: a **line** is one line, a **text**
+may break lines, and both refuse the stored-text code points and a value that
+the contract's trim empties. Lengths are code points, and every list holds at
+least one item, so an empty card validates nowhere. Optional keys may be absent
+or `null`.
+
+| Kind | Key | Shape | Bound |
+| --- | --- | --- | --- |
+| `stat_block` | `stat_block` | the `/chat` `StatBlockContent`, unchanged | as `/chat`'s |
+| `loot` | `loot.title` | line | 200 |
+| | `loot.items[]` | `{name, quantity?, value?, note?}` | 1 to 20 |
+| | `name` / `value` / `note` | line / line / text | 200 / 60 / 500 |
+| | `quantity` | integer | 1 to 1,000,000 |
+| `names` | `names.title` | line | 200 |
+| | `names.entries[]` | `{name, note?}`, both lines | 1 to 20; 80 / 200 |
+| `hooks` | `hooks.title` | line | 200 |
+| | `hooks.entries[]` | `{title, text}`: a line and a text | 1 to 5; 120 / 1,000 |
+| `rules` | `rules.title` | line | 200 |
+| | `rules.answer` | text | 4,000 (`PROSE_MAX_CHARS`) |
+| | `rules.citations[]` | `{n, source}` | 1 to 8 |
+
+A rules citation's `n` is the number of a passage the **server** retrieved and
+handed to the model, 1 to 8; the model never supplies a source. `n` strictly
+increases, and every inline marker `[k]` in the answer — one or two ASCII digits,
+the pattern `\[(\d{1,2})\]` on both sides, so `[1d6]` and `[DC 15]` are not
+markers — must be some citation's `n`: a stored card never shows a marker that
+points nowhere. `source` has the `/chat` `Source` keys (`book`, `chapter`,
+`section`, `entity`, `page`, `snippet`), read strictly as the client already
+reads them: every key present, `null` for none, `page` an integer. Sources and
+snippets are GM-only (ED-5).
 
 ## The documents family
 

@@ -11,7 +11,7 @@
  * (timeline, documents, reveal, audio) adds its adapters here beside its schemas.
  */
 
-import type { ChatAnswer, InvocationStatus, ToolResult, ToolSuggestion } from './contracts'
+import type { CardContent, ChatAnswer, InvocationStatus, ToolSuggestion } from './contracts'
 import type { SpellCardProps } from '../ds/SpellCard'
 import type { StatBlockCardProps } from '../ds/StatBlockCard'
 
@@ -52,7 +52,7 @@ export function suggestionFor(
 }
 
 /** Taken from the contract rather than re-declared, so it cannot drift from the wire. */
-type StatBlockContent = Extract<ToolResult, { result_kind: 'card' }>['card']['stat_block']
+type StatBlockContent = Extract<CardContent, { card_kind: 'stat_block' }>['stat_block']
 type SpellContent = NonNullable<ChatAnswer['spell_content']>
 
 /**

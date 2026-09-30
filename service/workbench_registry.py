@@ -773,6 +773,8 @@ def validate(registry: Registry) -> None:
             problems.append(f"{tool.id.value}: only a document result names the type it creates")
         if tool.card_kind is not None and tool.result_kind is not ResultKind.CARD:
             problems.append(f"{tool.id.value}: only a card result names a card kind")
+        if tool.card_kind is None and tool.result_kind is ResultKind.CARD:
+            problems.append(f"{tool.id.value}: a card tool names its card kind")
         if tool.capability is not None and tool.capability not in capability_ids:
             problems.append(f"{tool.id.value}: unknown capability {tool.capability!r}")
     type_ids = [doc.id for doc in registry.document_types]
