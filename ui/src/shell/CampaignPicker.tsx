@@ -19,6 +19,8 @@
  * - All local state -- the typed name and the last announcement included --
  *   belongs to one account: the picker is keyed as the provider is, by whether
  *   the account can use campaigns and its user id (critic 21; vtb9).
+ *
+ * Mounted by `TavernScreen` at `/tavern` (`74j`), which passes `pageHeading`.
  */
 
 import * as React from 'react'
@@ -104,6 +106,10 @@ function listAnnouncement(list: CampaignList): string {
 export interface CampaignPickerProps {
   /** A campaign was selected here, from the list or by a create. Focus is then the host's. */
   onSelected?: (campaign: Campaign) => void
+  /** A host screen whose title this heading is (`74j`'s TavernScreen): the
+   * heading renders as the page's `h1` with this text. Unset, it stays this
+   * section's `h2`. */
+  pageHeading?: string
 }
 
 export function CampaignPicker(props: CampaignPickerProps): React.JSX.Element {
@@ -112,7 +118,7 @@ export function CampaignPicker(props: CampaignPickerProps): React.JSX.Element {
   return <Picker key={`${enabled}:${userId}`} {...props} />
 }
 
-function Picker({ onSelected }: CampaignPickerProps): React.JSX.Element {
+function Picker({ onSelected, pageHeading }: CampaignPickerProps): React.JSX.Element {
   const { enabled, list, selection, loadCampaigns, loadMoreCampaigns, selectCampaign, createCampaign } = useCampaign()
   const heading = React.useRef<HTMLHeadingElement>(null)
   const nameField = React.useRef<HTMLInputElement | HTMLTextAreaElement>(null)
@@ -170,7 +176,9 @@ function Picker({ onSelected }: CampaignPickerProps): React.JSX.Element {
 
   return (
     <section className="campaign-picker" aria-labelledby={`${ids}-heading`}>
-      <h2 id={`${ids}-heading`} ref={heading} tabIndex={-1} className="campaign-picker__heading">{HEADING}</h2>
+      {pageHeading === undefined
+        ? <h2 id={`${ids}-heading`} ref={heading} tabIndex={-1} className="campaign-picker__heading">{HEADING}</h2>
+        : <h1 id={`${ids}-heading`} ref={heading} tabIndex={-1} className="campaign-picker__heading">{pageHeading}</h1>}
       <p role="status" className="campaign-picker__status">{announcement}</p>
 
       {items.length > 0 && (
