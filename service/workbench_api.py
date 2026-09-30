@@ -24,7 +24,8 @@ the prefix an `include_router(..., prefix=...)` added. The two handlers
 `install_workbench` registers branch on that membership (SEC-23 and S-A say
 "by path"; route membership is the same rule with a key that can be
 implemented). Every other route — every legacy route, an unknown path, a 405
-— is answered by FastAPI's own default handler, byte for byte.
+— is answered by FastAPI's own default handler, byte for byte, but for a
+validation error, which echoes nothing (`legacy_validation_errors`).
 
 Two factories here. `workbench_router` applies the `dm` gate through
 `gm_session`, so it is for GM routes and nothing else. `account_router` is the
@@ -93,7 +94,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, params
 from fastapi.dependencies.models import Dependant
-from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute, iter_route_contexts
@@ -452,11 +453,9 @@ async def handle_validation_error(request: Request, exc: Exception) -> Response:
     A Workbench route answers `validation_error_body`, which echoes nothing it
     was sent, and logs `redacted_errors` with the method and route template —
     never the exception's text, its raw errors or the URL (SEC-20, SEC-21).
-    Every other route keeps FastAPI's default answer, `input` echo included (a
-    recorded residual) — unless that answer cannot be encoded: UTF-8 cannot
-    carry a lone surrogate, so repeating one was a 500. That failure alone
-    answers `redacted_errors` instead, which names the field and never the
-    value (bead 5mj); every default that could be sent is sent byte for byte.
+    Every other route keeps FastAPI's list shape, `legacy_validation_errors`:
+    its default repeated each error's `input`, a rejected password included
+    (agent-forge-harness-fhq9), and a lone surrogate in it was a 500 (5mj).
 
     Once answered, the error and every error it chains drop their tracebacks
     (agent-forge-harness-ust7, review H1). FastAPI's frame holds the error it
@@ -476,12 +475,21 @@ async def handle_validation_error(request: Request, exc: Exception) -> Response:
             link = link.__cause__ or link.__context__
 
 
+def legacy_validation_errors(errors: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """A legacy route's 422 list (agent-forge-harness-fhq9): `redacted_errors`,
+    each error's type, location and message, never its `input` or `ctx`. One
+    Pydantic message also repeats what was sent, a discriminated union's
+    unknown tag: it is answered without the tag."""
+    out = redacted_errors(errors)
+    for error in out:
+        if error["type"] == "union_tag_invalid":
+            error["msg"] = "Input tag does not match any of the expected tags"
+    return out
+
+
 async def _answer_validation_error(request: Request, exc: RequestValidationError) -> Response:
     if not is_workbench_route(request):
-        try:
-            return await request_validation_exception_handler(request, exc)
-        except UnicodeEncodeError:
-            return JSONResponse(status_code=422, content={"detail": redacted_errors(exc.errors())})
+        return JSONResponse(status_code=422, content={"detail": legacy_validation_errors(exc.errors())})
     errors = exc.errors()
     log.info("workbench request refused by validation: %s %s %s",
              request.method, _route_template(request), redacted_errors(errors))
