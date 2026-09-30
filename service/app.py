@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import binascii
 import email.message
+import json
 import logging
 import os
 import threading
@@ -25,12 +26,12 @@ from datetime import UTC, datetime
 from enum import Enum
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
@@ -1154,9 +1155,62 @@ def _pre_d9_binding(
     return get_profile(alias)
 
 
-@app.post("/chat", response_model=ChatResponse)
+def _require_json(request: Request) -> None:
+    """FastAPI's strict content type, for a body a route reads by hand: a body
+    that is not JSON is refused as FastAPI refuses it, echoing nothing."""
+    kind = email.message.Message()
+    kind["content-type"] = request.headers.get("content-type", "")
+    subtype = kind.get_content_subtype()
+    if kind.get_content_maintype() != "application" or not (subtype == "json" or subtype.endswith("+json")):
+        raise RequestValidationError([{"type": "model_attributes_type", "loc": ("body",),
+                                       "msg": "Input should be a valid dictionary or object to extract fields from"}])
+
+
+async def _chat_request(request: Request, _session: SessionData = Depends(require_session)) -> ChatRequest:
+    """The chat body, read only once the caller is signed in
+    (agent-forge-harness-dl7x, PR #211 review M1), as `_attachment_upload`
+    reads its own: a declared body model is parsed before any dependency runs,
+    so an anonymous caller could make the app parse a default body, about 27 MB
+    of objects, only to be refused. Parsed by the standard library, as FastAPI
+    parses it, so a lone surrogate still reaches the stored-text rule (5mj)."""
+    raw = await request.body()
+    if not raw:
+        raise RequestValidationError([{"type": "missing", "loc": ("body",), "msg": "Field required"}])
+    _require_json(request)
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        # A JSONDecodeError, bytes that are no Unicode text, or nesting past the
+        # recursion limit, which was a 500 (PR #217 second review M1).
+        # justification: RequestValidationError takes pydantic's untyped error dicts.
+        errors: list[Any] = [{"type": "json_invalid", "loc": ("body", getattr(exc, "pos", 0)),
+                              "msg": "JSON decode error"}]
+    else:
+        if parsed is None:  # FastAPI took a JSON null as no body at all (PR #217 second review L1).
+            raise RequestValidationError([{"type": "missing", "loc": ("body",), "msg": "Field required"}])
+        try:
+            # from_attributes, as FastAPI validates a declared body: JSON that is
+            # no object gets model_attributes_type, as it did (PR #217 review M1).
+            return ChatRequest.model_validate(parsed, from_attributes=True)
+        except ValidationError as exc:
+            errors = [{**error, "loc": ("body", *error["loc"])}
+                      for error in exc.errors(include_url=False, include_context=False, include_input=False)]
+    raise RequestValidationError(errors)
+
+
+# justification: FastAPI's openapi_extra is an untyped JSON dict.
+def _documented_body(model: type[BaseModel]) -> dict[str, Any]:
+    """A body read by hand, documented as FastAPI documents a declared one. Its
+    nested models are referred to as components, which each must already be:
+    ChatRequest's one, ChatMode, is, through ChatResponse."""
+    schema = model.model_json_schema(ref_template="#/components/schemas/{model}")
+    schema.pop("$defs", None)
+    return {"requestBody": {"required": True, "content": {"application/json": {"schema": schema}}}}
+
+
+@app.post("/chat", response_model=ChatResponse, openapi_extra=_documented_body(ChatRequest))
 def chat(
-    req: ChatRequest,
+    req: Annotated[ChatRequest, Depends(_chat_request)],
     request: Request,
     svc: RagService = Depends(get_service),
     store: MessageStore | None = Depends(get_message_store),
@@ -1508,12 +1562,7 @@ async def _attachment_upload(
     that is not JSON is refused as FastAPI's strict content type refused it, and
     no 422 repeats what it was sent."""
     raw = await request.body()
-    kind = email.message.Message()
-    kind["content-type"] = request.headers.get("content-type", "")
-    subtype = kind.get_content_subtype()
-    if kind.get_content_maintype() != "application" or not (subtype == "json" or subtype.endswith("+json")):
-        raise RequestValidationError([{"type": "model_attributes_type", "loc": ("body",),
-                                       "msg": "Input should be a valid dictionary or object to extract fields from"}])
+    _require_json(request)
     try:
         return AttachmentUploadRequest.model_validate_json(raw)
     except ValidationError as exc:
