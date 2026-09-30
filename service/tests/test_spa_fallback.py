@@ -111,7 +111,7 @@ def routed_client(tmp_dist: Path) -> TestClient:
 # ── A1 -- cold load of an allowlisted path ───────────────────────────────────
 
 
-@pytest.mark.parametrize("path", ["/profile", "/workspace", "/"])
+@pytest.mark.parametrize("path", ["/profile", "/workspace", "/", "/tavern"])
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
 def test_allowlisted_path_serves_index_html(
     routed_client: TestClient, tmp_dist: Path, path: str, method: str,
@@ -130,7 +130,7 @@ def test_allowlisted_path_serves_index_html(
     "path",
     # `/auth/nope`: an unknown subpath of a real API prefix (N-2) must not
     # fall through to index.html either.
-    ["/nope", "/verify", "/reset", "/billing/return", "/table/x", "/t/abc", "/profile/", "/auth/nope"],
+    ["/nope", "/verify", "/reset", "/billing/return", "/table/x", "/t/abc", "/profile/", "/auth/nope", "/tavern/", "/taverns"],
 )
 def test_unknown_path_is_a_json_404(routed_client: TestClient, path: str) -> None:
     response = routed_client.get(path)
