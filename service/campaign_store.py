@@ -40,7 +40,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from . import campaign_identity as ident
-from .db import InMemoryDatabase, InMemoryTransaction, PgTransaction, UnitOfWork
+from .db import AdvisoryLock, InMemoryDatabase, InMemoryTransaction, PgTransaction, UnitOfWork
 from .workbench_contracts import check_stored_text
 
 
@@ -138,6 +138,20 @@ class SeatNotAccepted(CampaignStoreError):
 
     def __init__(self) -> None:
         super().__init__(self.MESSAGE)
+
+
+class CampaignCapReached(CampaignStoreError):
+    """The account already holds as many campaigns as
+    `WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX` allows (agent-forge-harness-531x).
+
+    Archived and concluded campaigns count: rows are never deleted, so
+    excluding them would let an archive-then-create loop get around this cap
+    and, with it, every per-campaign cap behind it (seats, groups, media).
+
+    **Not a `ValueError`**: `create` raises none of its own, and the route
+    (`campaigns_api.create_campaign`) catches this one specifically and builds
+    its own fixed, number-free message (SEC-20) — never this exception's own
+    text, which is never rendered to a caller."""
 
 
 class InvalidCursor(CampaignStoreError, ValueError):
@@ -427,11 +441,21 @@ class CampaignStore(Protocol):
         name: str,
         tone: str | None = None,
         now: datetime | None = None,
+        max_per_owner: int | None = None,
     ) -> Campaign:
         """Make a campaign owned by `owner_id`, together with its `authz_state`
         row at revision 0 — in PostgreSQL the AFTER INSERT trigger writes it, so
         that no path can leave a campaign without one (RQ-1). A tone line is
-        optional (bead cfx)."""
+        optional (bead cfx).
+
+        **`max_per_owner`** (agent-forge-harness-531x): `None` (every existing
+        caller and test) behaves exactly as before. Given a number, this takes
+        `AdvisoryLock.ACCOUNT_STORAGE` first, counts that owner's campaigns
+        under the lock — archived and concluded ones included, since rows are
+        never deleted — and raises `CampaignCapReached` at or past it, all
+        before the insert and in the same transaction: two concurrent creates
+        at the cap serialise on the lock, and the second sees the first's
+        committed row (READ COMMITTED)."""
         ...  # pragma: no cover - structural type
 
     def get(self, unit: UnitOfWork, campaign_id: str, *, owner_id: int) -> Campaign | None:
@@ -543,8 +567,16 @@ class PostgresCampaignStore:
         name: str,
         tone: str | None = None,
         now: datetime | None = None,
+        max_per_owner: int | None = None,
     ) -> Campaign:
         moment = now_or(now)
+        if max_per_owner is not None:
+            pg(unit).lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner_id))
+            count = pg(unit).conn.execute(
+                "SELECT count(*) FROM campaign.campaigns WHERE owner_id = %s", (owner_id,)
+            ).fetchone()[0]
+            if count >= max_per_owner:
+                raise CampaignCapReached()
         row = pg(unit).conn.execute(
             f"INSERT INTO campaign.campaigns (id, owner_id, name, tone, created_at, updated_at) "
             f"VALUES (%s, %s, %s, %s, %s, %s) RETURNING {_COLUMNS}",
@@ -699,8 +731,15 @@ class InMemoryCampaignStore:
         name: str,
         tone: str | None = None,
         now: datetime | None = None,
+        max_per_owner: int | None = None,
     ) -> Campaign:
         moment = now_or(now)
+        twin = fake(unit)
+        if max_per_owner is not None:
+            twin.lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner_id))
+            count = sum(1 for c in self._rows.visible(twin).values() if c.owner_id == owner_id)
+            if count >= max_per_owner:
+                raise CampaignCapReached()
         campaign = Campaign(
             id=ident.new_id(ident.CAMPAIGN),
             owner_id=owner_id,
@@ -709,7 +748,6 @@ class InMemoryCampaignStore:
             updated_at=moment,
             tone=check_tone(tone),
         )
-        twin = fake(unit)
         self._rows.add(twin, campaign.id, campaign)
         # Staged, not written: in PostgreSQL the trigger's row is invisible to
         # every other reader until the insert commits, so a second reader must

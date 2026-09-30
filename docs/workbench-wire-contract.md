@@ -155,13 +155,29 @@ a generic failure.
 | `group_name_taken` | 409 | no | a group name another live group of the campaign already has, up to case (`btb`). The name is never echoed |
 | `group_cap_reached` | 409 | no | the 51st live group of a campaign (`btb`, SEC-35) |
 | `not_in_sources` | — | no | the rules tool's corpus did not ground the brief (`1kg.4.3`); seen on an invocation, never as a response status. Its message is `/chat`'s refusal sentence, and the lane offers *Edit brief* |
+| `account_limit_reached` | 409 | no | the account's campaign count or stored document bytes is at its limit (`agent-forge-harness-531x`, PR-B). Names no number; only the account itself can reach it |
 
-**Every state-changing Workbench route** may additionally answer `429
-throttled_user` — a per-account write budget (`agent-forge-harness-531x`),
+**Every state-changing Workbench route EXCEPT two** may additionally answer
+`429 throttled_user` — a per-account write budget (`agent-forge-harness-531x`),
 shared across every campaign, tab and route the account touches, guarding
 against a script that writes without bound. It carries `retry_after_s` and a
 matching `Retry-After` header, exactly as the existing per-user throttles do.
-No UI change: `throttled_user` is already a known code.
+No UI change: `throttled_user` is already a known code. The two exemptions:
+the library search (`POST /campaigns/{campaign_id}/library` reads only, and
+answers no body a write would) and `POST /table/leave` (the screen principal's
+own revoke, SEC-49) — `service/tests/test_workbench_write_throttle.py`'s pin
+asserts this exempt set is exactly what a walk of every non-GET Workbench
+route finds unthrottled, so a stale exemption fails CI too.
+
+**Two per-account STORAGE caps sit on top of the write throttle**
+(`agent-forge-harness-531x`, PR-B): `POST /campaigns` (the account's campaign
+count — archived and concluded campaigns count too) and the document family's
+create, patch and restore (the account's total document-and-version bytes,
+across every campaign it owns). All four answer `409 account_limit_reached`
+before anything is written; a write that would not grow stored bytes — a
+trim, at or over the cap — is always admitted, and delete is never capped. A
+document-creating GM tool (`npc`, `encounter`) answers the same code, from its
+own admission check, before any provider is called.
 
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the

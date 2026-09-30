@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from langchain_core.messages import AIMessage
 
+import config
 from service import (
     documents_api,
     generate,
@@ -67,6 +68,7 @@ from service.tool_invocations import (
 from service.workbench_contracts import (
     COMMON_FIELDS,
     DOC_TYPE_FIELDS,
+    Author,
     DocumentTypeId,
     FieldKind,
     ToolId,
@@ -316,6 +318,38 @@ def test_p3_ae13_a_failed_attempt_retried_creates_exactly_one_document(world: Wo
     assert (done["status"], done["attempt"]) == ("done", 2)
     assert (world.count("documents"), world.count("document_versions")) == (1, 1)
     assert len(world.entries(table)) == 1
+
+
+# ── PR-B: the account's stored-byte cap, soft-checked at precheck ────────────
+
+
+def test_a_document_tool_at_the_byte_cap_is_refused_before_admission(
+    world: World, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """agent-forge-harness-531x, PR-B: `DocumentToolExecutor.precheck` answers
+    `account_limit_reached` at the account's stored-byte cap, so T1 refuses
+    before any attempt is admitted and before the provider is ever called —
+    no attempt row, no ledger row, no provider call."""
+    table = world.table()
+    with world.db.transaction() as unit:
+        world.tools.documents.create(
+            unit, table.campaign, doc_type=DocumentTypeId.NPC, type_version=1, data={"name": "Already stored"},
+            author=Author.GM, now=world.now[0],
+        )
+    with world.db.transaction() as unit:
+        current = world.tools.documents.stored_bytes(unit, GM_A)
+    monkeypatch.setattr(config, "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", current)  # already at the cap
+
+    refused = post(client, table)
+
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert detail["code"] == "account_limit_reached"
+    assert detail["retryable"] is False
+    assert world.llm.calls == [], "the provider must never be called"
+    assert world.count("documents") == 1, "no second document, and no attempt or ledger row"
+    assert world.count("tool_invocations") == 0 and world.count("tool_attempts") == 0
+    assert world.sink.rows == []
 
 
 # ── Service-level steps, for the interleavings a synchronous route cannot show ─
