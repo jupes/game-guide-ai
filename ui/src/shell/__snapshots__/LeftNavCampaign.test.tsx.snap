@@ -5,6 +5,7 @@ exports[`legacy markup (T2-6) > GM with no campaign renders the sidebar exactly 
 button "auto_awesomeSpell" aria-pressed=false
 button "gavelRules" aria-pressed=false
 button "checkGM" aria-pressed=true
+button "Choose a campaign"
 paragraph "Conversations"
 button "New conversation" aria-pressed=false
 button "A legacy GM question about the heist" aria-pressed=false
@@ -19,6 +20,7 @@ exports[`legacy markup (T2-6) > every other channel renders the sidebar exactly 
 button "auto_awesomeSpell" aria-pressed=false
 button "gavelRules" aria-pressed=false
 button "checkGM" aria-pressed=true
+button "Choose a campaign"
 paragraph "Conversations"
 button "New conversation" aria-pressed=false
 button "A legacy GM question about the heist" aria-pressed=false

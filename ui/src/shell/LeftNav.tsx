@@ -34,6 +34,9 @@ const THREADS_LOADING = 'Loading conversations…'
 const THREADS_FAILED = "Couldn't load conversations"
 const RENAME_INVALID = 'A title is 1 to 200 characters on one line.'
 const RENAME_FAILED = "Couldn't rename the conversation."
+// Copy (agent-forge-harness-74j): the tavern entry, in every selection state.
+const CHOOSE_CAMPAIGN = 'Choose a campaign'
+const SWITCH_CAMPAIGN = 'Switch campaign'
 
 export interface LeftNavProps {
   /** Called AFTER a navigation action: a mode chip, a conversation button,
@@ -47,10 +50,10 @@ export interface LeftNavProps {
 }
 
 export function LeftNav({ onNavigate, settings }: LeftNavProps): React.JSX.Element {
-  const { mode, setMode, conversationId, setConversationId } = useAppNav()
+  const { mode, setMode, conversationId, setConversationId, openTavern } = useAppNav()
   const { user } = useCurrentUser()
   const store = useConversationStore()
-  const { selection } = useCampaign()
+  const { selection, enabled } = useCampaign()
   const campaignGm = mode === 'gm' && selection.kind !== 'none'
   const [renameState, setRenameState] = React.useState<{
     id: string
@@ -93,6 +96,14 @@ export function LeftNav({ onNavigate, settings }: LeftNavProps): React.JSX.Eleme
         ))}
       </div>
 
+      {mode === 'gm' && enabled && selection.kind === 'none' && (
+        <div className="left-nav__campaign">
+          <Button variant="text" onClick={() => {
+            openTavern?.()
+            onNavigate?.()
+          }}>{CHOOSE_CAMPAIGN}</Button>
+        </div>
+      )}
       {campaignGm ? <CampaignConversations onNavigate={onNavigate} /> : (
       /* Conversation list */
       <div className="left-nav__conversations">
@@ -183,7 +194,7 @@ interface RenameDraft {
  * (section 7.7, critic 5). Retry, Load more, rename and Continue without a
  * campaign never call `onNavigate`; choosing a thread and New conversation do. */
 function CampaignConversations({ onNavigate }: Pick<LeftNavProps, 'onNavigate'>): React.JSX.Element {
-  const { conversationId, setConversationId } = useAppNav()
+  const { conversationId, setConversationId, openTavern } = useAppNav()
   const { selection, retrySelection, clearCampaign } = useCampaign()
   const threads = useCampaignThreads()
   const line = React.useRef<HTMLParagraphElement>(null)
@@ -231,6 +242,10 @@ function CampaignConversations({ onNavigate }: Pick<LeftNavProps, 'onNavigate'>)
         {(selection.kind === 'failed' || selection.kind === 'unavailable') && (
           <Button variant="text" onClick={leave}>{CONTINUE_WITHOUT}</Button>
         )}
+        <Button variant="text" onClick={() => {
+          openTavern?.()
+          onNavigate?.()
+        }}>{selection.kind === 'selected' ? SWITCH_CAMPAIGN : CHOOSE_CAMPAIGN}</Button>
       </div>
 
       {selection.kind === 'selected' && (

@@ -7,7 +7,8 @@
  * with `fetch` replaced by a recorder that can hold an answer back and, like a
  * browser's, rejects with an AbortError once its signal aborts (pr178-mpost
  * N-2). The legacy-markup snapshot (T2-6) was recorded against LeftNav as it was BEFORE
- * this PR touched it, and its snapshot file never changes afterwards.
+ * this PR touched it, and its snapshot file changes only by 74j's GM entry button
+ * (74j brief, Addendum 2 R-4).
  */
 
 import * as React from 'react'
