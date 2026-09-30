@@ -178,6 +178,30 @@ describe('the thread store (critic 8)', () => {
     expect(h.s.lines().filter((l) => l.startsWith('POST'))).toHaveLength(2)
   })
 
+  it("never hands one scope's unopened thread to another scope's send (review pr212 H-1, P1)", async () => {
+    let made = 0
+    const h = harness(({ method, body }) => {
+      if (method !== 'POST') return { status: 200, body: page([]) }
+      made += 1
+      return { status: 201, body: thread(`cnv_new${made}`, { campaign_id: (body as { campaign_id: string }).campaign_id }) }
+    })
+    expect(await h.store.ensureThread(h.A1)).toBe('cnv_new1')
+    h.move('k2')
+    expect(await h.store.ensureThread({ campaignId: 'cmp_B', key: 'k2' })).toBe('cnv_new2')
+    expect(h.s.calls.filter((c) => c.method === 'POST').map((c) => (c.body as { campaign_id: string }).campaign_id)).toEqual(['cmp_A', 'cmp_B'])
+    expect(h.claimed).toEqual(['k1:cnv_new1', 'k2:cnv_new2'])
+  })
+
+  it('a create answered after its scope was left resolves null and claims nothing (review pr212 H-1, P2)', async () => {
+    const h = harness(({ method }) => (method === 'POST' ? 'defer' : { status: 200, body: page([]) }))
+    const made = h.store.ensureThread(h.A1)
+    h.move('k2')
+    h.s.calls[0].reply({ status: 201, body: thread('cnv_new') })
+    expect(await made).toBeNull()
+    expect(h.claimed).toEqual([])
+    expect(h.unavailable).toEqual([])
+  })
+
   it('a create refused with 404 marks the campaign unavailable; a 503 makes nothing and says null', async () => {
     const h = harness(({ method }) => (method === 'POST' ? { status: 404 } : { status: 200, body: page([]) }))
     expect(await h.store.ensureThread(h.A1)).toBeNull()
