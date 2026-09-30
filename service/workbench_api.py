@@ -213,8 +213,8 @@ WRITE_THROTTLED_MESSAGE = "You're saving a lot at once. Wait, then try again."
 #: cannot silently exempt it.
 _READS_ONLY = "_workbench_reads_only"
 #: Set on the throttle dependency itself, so the route-pin test
-#: (`test_workbench_api.py`) can find it in a route's effective dependant tree
-#: without depending on the dependency's name or module.
+#: (`test_workbench_write_throttle.py`) can find it in a route's effective
+#: dependant tree without depending on the dependency's name or module.
 _WRITE_THROTTLE = "_workbench_write_throttle"
 
 
