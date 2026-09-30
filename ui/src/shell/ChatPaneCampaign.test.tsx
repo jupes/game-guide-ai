@@ -29,6 +29,7 @@ import { ModelPicker } from './ModelPicker'
 import type { PostFn } from '../useChat'
 
 const PROMPT = 'Where did the smuggler queen hide the harbour ledger?'
+const NOT_STARTED = "Couldn't start a GM thread. Nothing was sent — try again."
 const campaignBody = (id: string) => CampaignSchema.parse({
   schema_version: 1, campaign_id: id, name: `Name of ${id}`, created_at: '2026-09-16T19:20:11Z',
   updated_at: '2026-09-16T19:31:24Z', archived_at: null, concluded_at: null, tone: null, game_system: 'dnd5e',
@@ -43,16 +44,16 @@ const threadBody = (id: string, campaign = 'cmp_A') => ({
 type Reply = { status: number; body?: unknown } | 'defer'
 interface Call { url: string; method: string; body: unknown }
 
-function serve(campaign: Reply = { status: 200, body: campaignBody('cmp_A') }) {
+function serve(campaign: Reply = { status: 200, body: campaignBody('cmp_A') }, create?: Reply) {
   const calls: Call[] = []
   const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
     const call = { url: String(input), method: init?.method ?? 'GET', body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined }
     calls.push(call)
     const answer = ((): Reply => {
-      if (call.method === 'POST' && call.url === '/conversations') return { status: 201, body: threadBody(`cnv_new${calls.filter((c) => c.method === 'POST').length}`, call.body.campaign_id) }
+      if (call.method === 'POST' && call.url === '/conversations') return create ?? { status: 201, body: threadBody(`cnv_new${calls.filter((c) => c.method === 'POST').length}`, call.body.campaign_id) }
       if (call.method === 'GET' && call.url === '/campaigns') return { status: 200, body: { schema_version: 1, items: [campaignBody('cmp_A'), campaignBody('cmp_B')], next_cursor: null } }
       const one = /^\/campaigns\/(cmp_\w+)$/.exec(call.url)
-      if (one !== null) return one[1] === 'cmp_A' ? campaign : { status: 200, body: campaignBody(one[1]) }
+      if (one !== null) return one[1] === 'cmp_A' ? campaign : one[1] === 'cmp_Gone' ? { status: 404 } : { status: 200, body: campaignBody(one[1]) }
       const list = /campaign_id=(cmp_\w+)/.exec(call.url)
       if (list !== null) return { status: 200, body: { schema_version: 1, items: [threadBody(`${list[1]}-1`, list[1])], next_cursor: null } }
       return { status: 404 }
@@ -84,10 +85,10 @@ function Probe(): null {
   return null
 }
 
-async function mount(options: { campaign?: Reply; turns?: ChatResult[] } = {}) {
+async function mount(options: { campaign?: Reply; create?: Reply; turns?: ChatResult[] } = {}) {
   vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
   const recordFirstPrompt = vi.spyOn(LocalStorageConversationStore.prototype, 'recordFirstPrompt')
-  const server = serve(options.campaign)
+  const server = serve(options.campaign, options.create)
   const turns = [...(options.turns ?? [])]
   const post = vi.fn<PostFn>(async (_prompt, _mode, id) => turns.shift() ?? { kind: 'ok', response: { answer: 'An answer', sources: [], answerable: true, conversation_id: id } })
   const read = { history: [] as string[], timeline: [] as string[], attachments: [] as string[] }
@@ -333,9 +334,33 @@ describe('a campaign switch scopes the pane (I-13, brief section 14; review pr21
     expect(screen.queryByText('Under the lighthouse stair.')).toBeNull()
     expect(live.stored.conversationId).toBeNull()
   })
+
+  it("a switch to a campaign that is not available drops A's failed first turn too (P10)", async () => {
+    await mount({ turns: [{ kind: 'error', message: 'The oracle is silent.' }] })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await sendTurn()
+    expect(await screen.findByText('The oracle is silent.')).toBeInTheDocument()
+    await act(async () => { await live.c.selectCampaign(campaignBody('cmp_Gone')) })
+    expect(live.c.selection.kind).toBe('unavailable')
+    expect(screen.queryByText(PROMPT)).toBeNull()
+    expect(screen.queryByText('The oracle is silent.')).toBeNull()
+  })
 })
 
 describe('the pane keeps its turns where no switch happened (review pr212 M-1, M-3, L-1)', () => {
+  it.each([403, 404])('a thread create refused with %i mid-send keeps the prompt, says why and announces it; a clear starts afresh (P5)', async (status) => {
+    const { post } = await mount({ create: { status } })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await sendTurn()
+    await waitFor(() => expect(live.c.selection.kind).toBe('unavailable'))
+    expect(await screen.findByText(NOT_STARTED)).toBeInTheDocument()
+    expect(screen.getByText(PROMPT)).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Answer failed')
+    expect(post).not.toHaveBeenCalled()
+    await act(async () => { await live.c.clearCampaign() })
+    expect(screen.queryByText(PROMPT)).toBeNull()
+  })
+
   it('leaving GM while a campaign turn is in flight keeps the turn on screen until it settles, then crosses without it (P8)', async () => {
     const { post } = await mount()
     await waitFor(() => expect(live.c.selection.kind).toBe('selected'))

@@ -153,10 +153,17 @@ export function ChatPane(props: ChatPaneProps): React.JSX.Element {
   // or a pick remounts it, so nothing of the scope it left -- a failed first
   // turn, or one still in flight -- is drawn under the next (brief section 14,
   // I-13). Read off the held side, so leaving GM still never drops a turn.
+  // Review pr212 M-1: `unavailable` names no campaign (SEC-3) and is no switch
+  // of its own -- a restore refused, or a thread create refused mid-send -- so
+  // the pane stays the one it was drawn over: a refused turn keeps its prompt
+  // and its announced failure until the next pick or a clear.
   const { selection, scope } = useCampaign()
-  const campaign = side !== 'gm' || selection.kind === 'none'
+  const owner = selection.kind === 'none' || selection.kind === 'unavailable'
     ? null
     : scope?.key ?? ('campaignId' in selection ? selection.campaignId : selection.kind)
+  const [kept, setKept] = React.useState(owner)
+  if (owner !== null && owner !== kept) setKept(owner)
+  const campaign = side !== 'gm' || selection.kind === 'none' ? null : owner ?? kept ?? selection.kind
   return (
     <ChatPaneBody
       key={campaign === null ? side : `${side}:${campaign}`}
