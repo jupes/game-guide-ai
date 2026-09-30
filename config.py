@@ -60,6 +60,22 @@ def _seconds(name: str, default: float) -> float:
     return value
 
 
+#: The most output any provider call may ask for (agent-forge-harness-nz78). The
+#: cost review put a 16k-token answer at 110-270 s, about 60 tokens a second
+#: at the slow end, so 3,000 finish in some 50 s, inside one attempt's 60 s.
+MAX_OUTPUT_TOKENS_CEILING = 3_000
+
+
+def _output_tokens(name: str, default: int) -> int:
+    """An output-token cap, rejected at import unless 1 to the ceiling: 0 or less
+    breaks every call, and more lets an answer outlast its attempt's deadline,
+    which bills it, fails it and leaves the turn uncounted."""
+    value = _int(name, default)
+    if not 1 <= value <= MAX_OUTPUT_TOKENS_CEILING:
+        raise ValueError(f"{name} must be from 1 to {MAX_OUTPUT_TOKENS_CEILING} tokens, got {value!r}")
+    return value
+
+
 SameSite = Literal["lax", "strict", "none"]
 _SAMESITE_VALUES: tuple[SameSite, ...] = ("lax", "strict", "none")
 
@@ -161,6 +177,14 @@ TEMPERATURE: float = _float("RAG_TEMPERATURE", 0.2)
 LLM_REQUEST_TIMEOUT_S: float = _seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0)
 # Connect bound for the same clients; 5 s is the OpenAI SDK's own default.
 LLM_CONNECT_TIMEOUT_S: float = _seconds("RAG_LLM_CONNECT_TIMEOUT_S", 5.0)
+
+# Output cap (agent-forge-harness-nz78) that every factory-built client sends as
+# max_tokens: the answer, the suggestions and the structuring calls alike.
+# Without one the model's own maximum applied, and a long answer outlasted its
+# attempt's deadline, was billed, retried and failed. Document generation keeps
+# its own per-call 3,000 (C-1). A structuring payload cut short at the cap is not
+# valid JSON, which the graph already degrades to no widget.
+LLM_MAX_OUTPUT_TOKENS: int = _output_tokens("RAG_LLM_MAX_OUTPUT_TOKENS", 2_000)
 
 # --- Chat history (service) -------------------------------------------------
 
