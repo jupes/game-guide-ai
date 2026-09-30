@@ -121,6 +121,20 @@ describe('postChat', () => {
     }
   })
 
+  it('maps the per-account cap to your own daily limit', async () => {
+    // agent-forge-harness-u2uj: distinct from 'daily' (the pilot's shared
+    // budget) and from 'busy' (the platform) -- this is the tester's own.
+    const result = await postChat('Q', 'sage', null, fakeFetchWithHeaders(
+      429, { 'X-Chat-Throttled': 'account' }, { detail: 'account cap reached' },
+    ))
+    expect(result.kind).toBe('error')
+    if (result.kind === 'error') {
+      expect(result.outcome).toBe('throttled')
+      expect(result.message).toMatch(/today|overnight/i)
+      expect(result.message).not.toMatch(/pilot|busy/i)
+    }
+  })
+
   it("does not blame the tester for the platform's own 429", async () => {
     // No marker header: Cloud Run had no instance available. Nothing the tester
     // did caused it and nothing they do fixes it faster.

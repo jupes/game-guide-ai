@@ -40,7 +40,14 @@ from service import (
     tracing,
     usage_capture,
 )
-from service.app import app, get_message_store, get_timeline_database, get_timeline_store, require_session
+from service.app import (
+    app,
+    get_message_store,
+    get_timeline_database,
+    get_timeline_store,
+    get_usage_day,
+    require_session,
+)
 from service.campaign_store import InMemoryCampaignStore, shared_rows
 from service.conversation_store import InMemoryConversationStore
 from service.db import InMemoryDatabase
@@ -64,6 +71,7 @@ from service.tool_invocations import (
     cancellation_probe,
     context_reader,
 )
+from service.usage_ledger import InMemoryUsageLedgerStore, UsageDay
 from service.workbench_contracts import (
     COMMON_FIELDS,
     DOC_TYPE_FIELDS,
@@ -110,12 +118,19 @@ class ScriptedLLM:
 
 
 class Sink:
-    def __init__(self) -> None:
+    """Also stores each write for real in the ledger twin
+    (agent-forge-harness-u2uj), so the day reader built over the same twin sees
+    what a turn or an attempt spent."""
+
+    def __init__(self, store: InMemoryUsageLedgerStore, db: InMemoryDatabase) -> None:
+        self._store = store
+        self._db = db
         self.rows: list[Any] = []
 
     def write(self, rows: Any) -> int:
         self.rows.extend(rows)
-        return len(rows)
+        with self._db.transaction() as unit:
+            return self._store.record_attempts(unit, rows)
 
 
 @dataclass(frozen=True)
@@ -135,6 +150,7 @@ class World:
     llm: ScriptedLLM
     factory: ProviderClientFactory
     sink: Sink
+    usage_day: UsageDay
     outcomes: list[str]
     settings: ToolSettings = field(default_factory=lambda: ToolSettings(frozenset(TOOLS)))
     now: list[datetime] = field(default_factory=lambda: [T0])
@@ -177,7 +193,19 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
     llm = ScriptedLLM()
     factory = ProviderClientFactory(client_builders={DEFAULT_ALIAS: llm})
     outcomes: list[str] = []
-    made = World(db, messages, stores, tools, dict(document_executors(tools)), llm, factory, Sink(), outcomes)
+    # The ledger's own InMemoryDatabase, deliberately NOT `db`: it seeds two
+    # plain (non-shared-rows) entries into its `.tables` registry (a revision-id
+    # counter and a seed flag), which `world.tables()` -- a generic walk of
+    # every `db.tables` key as a shared-rows table -- cannot tell from a real
+    # table. A separate instance mirrors the real schema separation (`metering`
+    # is its own Postgres schema) and keeps every existing "nothing else was
+    # written" assertion in this file meaningful.
+    ledger_db = InMemoryDatabase()
+    ledger_store = InMemoryUsageLedgerStore(ledger_db)
+    made = World(
+        db, messages, stores, tools, dict(document_executors(tools)), llm, factory, Sink(ledger_store, ledger_db),
+        UsageDay(ledger_store, ledger_db), outcomes,
+    )
     overrides: dict[Callable[..., Any], Callable[..., Any]] = {
         tool_invocations_api.get_invocation_stores: lambda: made.stores,
         tool_invocations_api.get_tool_executors: lambda: made.executors,
@@ -189,6 +217,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
         get_timeline_database: lambda: made.db,
         get_timeline_store: lambda: made.stores.timeline,
         get_message_store: lambda: made.messages,
+        get_usage_day: lambda: made.usage_day,
     }
     app.dependency_overrides.update(overrides)
     monkeypatch.setattr(usage_capture, "_ledger_provider", lambda: made.sink)

@@ -19,8 +19,8 @@ a refusal before any attempt starts — which creates nothing (I-4) — or a `50
 origin (403) → authentication (the one 401) → role (403) → the body, at most
 `TOOL_BODY_MAX_BYTES`, parsed by the contract (422, malformed JSON included:
 this route reads raw bytes, so there is no pre-dependency 422, C-2) → the body's
-campaign against the path's (422) → the database and the message store (503) →
-the path's shape (404) → the chat half of the pilot day, read before T1 opens
+campaign against the path's (422) → the database and the usage-day reader (503)
+→ the path's shape (404) → the chat half of the pilot day, read before T1 opens
 (503 when it cannot be read) → T1: the GM's in-flight lock, ownership (404),
 the stored key by state, then the guards (409, 429).
 
@@ -47,7 +47,6 @@ from .campaign_store import PostgresCampaignStore
 from .campaigns_api import invalid, logged_outage, parse_body
 from .conversation_store import PostgresConversationStore
 from .db import CampaignAuthzMissing, TransactionalDatabase
-from .history import MessageStore
 from .models import ChatMode
 from .providers import ProviderClientFactory
 from .session import SessionData
@@ -75,6 +74,7 @@ from .tool_invocations import (
     submit,
     tool_availability,
 )
+from .usage_ledger import UsageDayReader
 from .workbench_api import SessionDependency, body_reader, not_found, workbench_router
 from .workbench_contracts import ErrorBody, ErrorCode, InvocationId, ToolId, ToolInvocation, ToolInvocationRequest
 from .workbench_load import PostgresWorkbenchLoad
@@ -162,10 +162,11 @@ def _answered[T](work: Callable[[], T]) -> T:
     raise failure
 
 
-def _chat_turns_today(messages: MessageStore) -> int:
-    """The chat half of the pilot day, read before T1 opens. Fails closed."""
+def _chat_turns_today(day: UsageDayReader, now: datetime) -> int:
+    """The chat half of the pilot day, from the ledger (agent-forge-harness-u2uj),
+    read before T1 opens. Fails closed."""
     try:
-        return messages.calls_today()
+        return day.chat_turns(now=now)
     except Exception as exc:
         log.warning("tool route: the day's count is unavailable (%s)", type(exc).__name__)
     raise _unavailable()
@@ -193,10 +194,11 @@ def _shaped(campaign_id: str, invocation_id: str | None = None) -> None:
 def build_router(
     gm: SessionDependency,
     database: Callable[[], TransactionalDatabase | None],
-    messages: Callable[[], MessageStore | None],
+    usage_day: Callable[[], UsageDayReader | None],
 ) -> APIRouter:
     """The three routes on a `workbench_router`, given the app's GM gate, its
-    database getter and its message store getter (the pilot day's chat half)."""
+    database getter and its usage-day reader getter (the pilot day's chat half,
+    agent-forge-harness-u2uj)."""
     router = workbench_router(gm)
 
     @router.post("/campaigns/{campaign_id}/tool-invocations", response_model=ToolInvocation)
@@ -209,19 +211,20 @@ def build_router(
         executors: Mapping[ToolId, ToolExecutor] = Depends(get_tool_executors),
         settings: ToolSettings = Depends(get_tool_settings),
         db: TransactionalDatabase | None = Depends(database),
-        store: MessageStore | None = Depends(messages),
+        day: UsageDayReader | None = Depends(usage_day),
         clock: Clock = Depends(get_clock),
         factory: ProviderClientFactory = Depends(get_provider_factory),
     ) -> ToolInvocation:
         body = parse_body(ToolInvocationRequest, raw)
         if body.campaign_id != campaign_id:
             raise invalid("campaign_id")
-        if db is None or store is None:
+        if db is None or day is None:
             raise _unavailable()
         _shaped(campaign_id)
-        chat_turns = _chat_turns_today(store)
+        now = clock()
+        chat_turns = _chat_turns_today(day, now)
         admitted = _answered(lambda: submit(
-            db, stores, executors, settings, user, body, now=clock(), chat_turns_today=chat_turns,
+            db, stores, executors, settings, user, body, now=now, chat_turns_today=chat_turns,
         ))
         if isinstance(admitted, Replay):
             return admitted.invocation

@@ -80,6 +80,7 @@ from service.models import REFUSAL
 from service.rag import RagService, SecondaryResult
 from service.ratelimit import RateLimited
 from service.session import SessionData, encode_session
+from service.usage_ledger import DayCount
 from service.workbench_contracts import CHAT_TEXT_MAX_CHARS
 
 # ── Registries (see the module docstring) ─────────────────────────────────────
@@ -399,10 +400,6 @@ class ProbedStore(InMemoryMessageStore):
         self._enter("claim_conversation")
         return super().claim_conversation(conversation_id, user_id)
 
-    def calls_today(self) -> int:
-        self._enter("calls_today")
-        return super().calls_today()
-
     def claim_conversation_strategy(
         self, conversation_id: str, *, strategy: str, manual_alias: str | None, catalog_revision: str,
     ) -> tuple[str, str | None]:
@@ -424,6 +421,35 @@ class ProbedStore(InMemoryMessageStore):
         )
 
 
+@dataclass
+class ProbedDay:
+    """The usage-ledger day reader (agent-forge-harness-u2uj), counting calls
+    and raising an injected fault per method, on the same pattern as
+    `ProbedStore`. `pilot` and `account` are the counts it answers with when no
+    fault is injected."""
+
+    pilot: int = 0
+    account: int = 0
+    faults: dict[str, BaseException] = field(default_factory=dict)
+    calls: Counter[str] = field(default_factory=Counter)
+    raised: list[BaseException] = field(default_factory=list)
+
+    def _enter(self, name: str) -> None:
+        self.calls[name] += 1
+        exc = self.faults.get(name)
+        if exc is not None:
+            self.raised.append(exc)
+            raise exc
+
+    def chat_turns(self, *, now: object) -> int:
+        self._enter("chat_turns")
+        return self.pilot
+
+    def for_account(self, billed_account_id: int, *, now: object) -> DayCount:
+        self._enter("for_account")
+        return DayCount(pilot_chat_turns=self.pilot, account_operations=self.account)
+
+
 # ── Harness ───────────────────────────────────────────────────────────────────
 
 
@@ -436,6 +462,7 @@ class ChatRun:
     emb: FakeEmbeddings
     corpus: FakeCorpus
     store: ProbedStore
+    day: ProbedDay
     sink: RecordingSink
     reranker: CountingReranker | None
     secondary: FakeSecondary
@@ -459,7 +486,7 @@ class ChatRun:
 
     def raised(self) -> list[BaseException]:
         fakes: list[_Faulty | None] = [
-            self.llm, self.emb, self.corpus, self.store, self.secondary, self.reranker, self.auth,
+            self.llm, self.emb, self.corpus, self.store, self.day, self.secondary, self.reranker, self.auth,
         ]
         return [exc for fake in fakes if fake is not None for exc in fake.raised]
 
@@ -499,7 +526,8 @@ def post_chat(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., ChatRun
         corpus_fail: dict[str, BaseException] | None = None, fail_connect_on: int | None = None,
         emb_exc: BaseException | None = None, llm_exc: BaseException | None = None,
         reranker: CountingReranker | None = None, secondary: FakeSecondary | None = None,
-        store: ProbedStore | None = None, attachment: bool = False, real_embed_client: bool = False,
+        store: ProbedStore | None = None, day: ProbedDay | None = None, attachment: bool = False,
+        real_embed_client: bool = False,
         model_preference: str | None = None, session: SessionData | None = _DM,
         auth: FakeAuthStore | None = None, headers: dict[str, str] | None = None,
     ) -> ChatRun:
@@ -513,13 +541,16 @@ def post_chat(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., ChatRun
                          llm_client=llm, secondary_retriever=secondary)
         assert svc.factory.client_for(svc.model) is llm
         store = store if store is not None else ProbedStore()
+        day = day if day is not None else ProbedDay()
         if attachment:
             store.append_attachment(CONV, ATTACHMENT_NAME, "text/plain", ATTACHMENT_TEXT)
         store.calls.clear()
+        day.calls.clear()
         sink = RecordingSink()
         app.state.metrics_sink = sink
         override(service_app.get_service, lambda: svc)
         override(service_app.get_message_store, lambda: store)
+        override(service_app.get_usage_day, lambda: day)
         override(service_app.get_timeline_store, lambda: None)
         override(service_app.get_timeline_database, lambda: None)
         if session is None:
@@ -531,7 +562,7 @@ def post_chat(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., ChatRun
         if model_preference is not None:
             payload["model_preference"] = model_preference
         response = TestClient(app, raise_server_exceptions=False).post("/chat", json=payload, headers=headers)
-        return ChatRun(response, prompt, svc, llm, emb, corpus, store, sink, reranker, secondary, auth)
+        return ChatRun(response, prompt, svc, llm, emb, corpus, store, day, sink, reranker, secondary, auth)
 
     yield run
     # Only the keys this fixture set, each back to what it was (never .clear()).
@@ -1010,13 +1041,13 @@ _GATE_CASES = [
     pytest.param("unauthenticated", marks=pytest.mark.real_auth, id="unauthenticated"),
     pytest.param("session_backend_down", marks=pytest.mark.real_auth, id="session_backend_down"),
     "foreign_conversation", "ownership_backend_down", "daily_cap_backend_down", "daily_cap_reached",
-    "per_user_throttle", "over_length", "nul_in_prompt", "strategy_conflict", "unknown_model",
-    "control_reaches_retrieval",
+    "account_cap_reached", "per_user_throttle", "over_length", "nul_in_prompt", "strategy_conflict",
+    "unknown_model", "control_reaches_retrieval",
 ]
 
 
 def _arrange_gate(
-    case: str, monkeypatch: pytest.MonkeyPatch, store: ProbedStore, budget: CountingBudget,
+    case: str, monkeypatch: pytest.MonkeyPatch, store: ProbedStore, day: ProbedDay, budget: CountingBudget,
 ) -> tuple[Gate, dict[str, object]]:
     kwargs: dict[str, object] = {}
     if case == "unauthenticated":
@@ -1041,12 +1072,16 @@ def _arrange_gate(
         return Gate(503, {"detail": "authorization backend unavailable"},
                     probe=lambda: store.calls["claim_conversation"], fault=True), kwargs
     if case == "daily_cap_backend_down":
-        store.faults["calls_today"] = db_down("usage count")
+        day.faults["for_account"] = db_down("usage count")
         return Gate(503, {"detail": "usage backend unavailable"},
-                    probe=lambda: store.calls["calls_today"], fault=True), kwargs
+                    probe=lambda: day.calls["for_account"], fault=True), kwargs
     if case == "daily_cap_reached":
         monkeypatch.setattr(config, "CHAT_DAILY_CAP", 0)
-        return Gate(429, headers={"x-chat-throttled": "daily"}, probe=lambda: store.calls["calls_today"]), kwargs
+        return Gate(429, headers={"x-chat-throttled": "daily"}, probe=lambda: day.calls["for_account"]), kwargs
+    if case == "account_cap_reached":
+        monkeypatch.setattr(config, "CHAT_ACCOUNT_DAILY_CAP", 0)
+        return Gate(429, {"detail": service_app.ACCOUNT_CAP_DETAIL},
+                    headers={"x-chat-throttled": "account"}, probe=lambda: day.calls["for_account"]), kwargs
     if case == "per_user_throttle":
         budget.exc = RateLimited(7)
         return Gate(429, headers={"retry-after": "7", "x-chat-throttled": "user"}, probe=lambda: budget.calls), kwargs
@@ -1076,11 +1111,12 @@ def test_pre_retrieval_gates_fail_closed_without_spending_retrieval(
     post_chat: Callable[..., ChatRun], monkeypatch: pytest.MonkeyPatch, case: str,
 ) -> None:
     store = ProbedStore()
+    day = ProbedDay()
     budget = CountingBudget(service_app.check_chat_request)
     monkeypatch.setattr(service_app, "check_chat_request", budget)
-    gate, kwargs = _arrange_gate(case, monkeypatch, store, budget)
+    gate, kwargs = _arrange_gate(case, monkeypatch, store, day, budget)
     prompt = kwargs.pop("prompt", FAILING_PROMPT)
-    run = post_chat(prompt, rows=HIT, store=store, **kwargs)
+    run = post_chat(prompt, rows=HIT, store=store, day=day, **kwargs)
     assert run.response.status_code == gate.status, run.response.text
     if gate.budget is not None:
         assert budget.calls == gate.budget

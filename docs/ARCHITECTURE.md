@@ -1353,19 +1353,22 @@ else `failed attempt_expired`. An attempt's deadline is 150 s from its start,
 and every provider call an executor makes is bounded by what is left of it.
 
 **One clock.** Every time the service writes or compares is the route's clock,
-passed into SQL; no statement calls `now()`. The pilot day's chat half is
-`calls_today()`'s own database day, so the two agree except within seconds of
-UTC midnight.
+passed into SQL; no statement calls `now()`. The pilot day's chat half is the
+ledger's chat turns since the route clock's UTC midnight (`UsageDay.chat_turns`,
+agent-forge-harness-u2uj), so the two agree except within seconds of UTC
+midnight.
 
 **Cost guards.** The X-5 cap is two in-flight tool invocations per GM across
 every campaign and instance, counted in PostgreSQL under the advisory lock;
 `/chat` turns are not counted. The hourly window is `/chat`'s own per-user
-window, so a GM who spends it on tools is throttled on `/chat` too. The pilot
-day counts today's chat turns plus every GM's tool attempts against
-`CHAT_DAILY_CAP`, while `/chat`'s own daily check is unchanged and does not
-count tools. Two residuals follow, acceptable only because E-8 forbids enabling
-any tool before the owner chooses the limits: once a tool is enabled, the
-pilot's daily total can reach twice `CHAT_DAILY_CAP`; and admissions from
+window, so a GM who spends it on tools is throttled on `/chat` too. `/chat`
+checks the per-account day, then the pilot day, both from
+`metering.provider_attempts`; the pilot day counts today's chat turns plus
+every GM's tool attempts against `CHAT_DAILY_CAP`. The tool route does not
+check the per-account cap at all -- a deliberate follow-up, not an oversight
+(agent-forge-harness-u2uj). Two residuals follow, acceptable only because E-8
+forbids enabling any tool before the owner chooses the limits: once a tool is
+enabled, the pilot's daily total can reach twice `CHAT_DAILY_CAP`; and admissions from
 different GMs at the edge can overshoot, because the day check is serialised
 per GM only. Each provider attempt is recorded in the cost ledger under the
 operation `tool_invocation`, with the attempt row's `operation_id`.

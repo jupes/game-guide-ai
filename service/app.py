@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
@@ -128,6 +128,7 @@ from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
 from .table_sessions import TableSessions
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
+from .usage_ledger import UsageDayReader
 from .workbench_api import gm_session, install_workbench, reauth_failed
 from .workbench_contracts import CHAT_TEXT_MAX_CHARS, CONTRACT_VERSION, ErrorCode, check_plain_text
 
@@ -331,9 +332,13 @@ def _build_stores(db: Database) -> None:
     # The provider-attempt cost ledger (yje.5.1.2). A store like the others, so
     # it lives and dies with this registry; `usage_capture` finds it through the
     # provider registered below `_state`, because `chat()` does not change.
-    from .usage_ledger import LedgerWriter, PostgresUsageLedgerStore
+    # The daily caps' reader (agent-forge-harness-u2uj) shares the same store:
+    # one table, read by the caps and written by the turns that spend it.
+    from .usage_ledger import LedgerWriter, PostgresUsageLedgerStore, UsageDay
 
-    _state["ledger"] = LedgerWriter(PostgresUsageLedgerStore(), db)
+    ledger_store = PostgresUsageLedgerStore()
+    _state["ledger"] = LedgerWriter(ledger_store, db)
+    _state["usage_day"] = UsageDay(ledger_store, db)
     # The job outbox's drivers (1kg.2.7), and the kinds this build registers,
     # each retried until it succeeds (registering one turns the request hook on
     # for every signed-in request): `campaign.reconcile`, which every revocation
@@ -503,6 +508,14 @@ def get_message_store() -> MessageStore | None:
     if "store" not in _state:
         recover_database()
     return _state.get("store")
+
+
+def get_usage_day() -> UsageDayReader | None:
+    # Same posture as `get_message_store`: None is a valid state (no database
+    # at all, local dev) and means no caps (agent-forge-harness-u2uj).
+    if "usage_day" not in _state:
+        recover_database()
+    return _state.get("usage_day")
 
 
 def get_timeline_store() -> TimelineStore | None:
@@ -1104,32 +1117,52 @@ def _throttle_chat(request: Request, user_id: int) -> None:
         ) from exc
 
 
-def _enforce_daily_cap(store: MessageStore | None) -> None:
-    """Refuse once the pilot has spent its question budget for the day (x5bz.3.3).
+#: The per-account cap's refusal (agent-forge-harness-u2uj). Distinct wording
+#: from the pilot-wide one below, since the UI needs different words for "your
+#: own budget is gone" and "the pilot's shared budget is gone" (D-9: neither
+#: names a model, an alias or a provider).
+ACCOUNT_CAP_DETAIL: Final = "You have spent today's question limit. It resets overnight."
 
-    Counted from chat.messages rather than a counter, so it is exact across
-    instances and survives the scale-to-zero that would reset an in-process one.
 
-    **Fails closed**, in the style of `_conversation_lookup`: a count that cannot
-    be read becomes a 503, never an allowed request. The alternative — letting the
-    call through when the database hiccups — makes the ceiling optional at
-    precisely the moment nobody is watching.
+def _enforce_daily_caps(day: UsageDayReader | None, account_id: int) -> None:
+    """Refuse once this account, or the pilot, has spent its question budget for
+    the day (agent-forge-harness-u2uj, following x5bz.3.3).
 
-    `store is None` means no database is configured at all (local dev). There is
-    nothing to count and nothing to bill against a shared key, so there is no cap.
+    Counted from `metering.provider_attempts` rather than `chat.messages`: a
+    turn that reached a provider and then failed still spent it, and the count
+    is exact across instances and survives the scale-to-zero that would reset
+    an in-process one. It never names a model, an alias or a provider (D-9).
+
+    **Fails closed**, in the style of `_conversation_lookup`: a count that
+    cannot be read becomes a 503, never an allowed request. The alternative —
+    letting the call through when the database hiccups — makes the ceiling
+    optional at precisely the moment nobody is watching.
+
+    `day is None` means no database is configured at all (local dev). There is
+    nothing to count and nothing to bill against a shared key, so there is no
+    cap. No role exemption — the account most likely to run up a bill by
+    accident is the one being used to test.
     """
-    if store is None:
+    if day is None:
         return
     try:
-        spent = store.calls_today()
+        count = day.for_account(account_id, now=usage_capture.ledger_clock())
     except Exception as exc:
-        log.warning("daily cap check failed", exc_info=True)
+        log.warning("daily cap check failed (error=%s)", type(exc).__name__)
         raise HTTPException(
             status_code=503, detail="usage backend unavailable"
         ) from exc
-    if spent < config.CHAT_DAILY_CAP:
+    if count.account_operations >= config.CHAT_ACCOUNT_DAILY_CAP:
+        log.warning(
+            "account daily chat cap reached (account=%s, %s/%s)",
+            account_id, count.account_operations, config.CHAT_ACCOUNT_DAILY_CAP,
+        )
+        raise HTTPException(
+            status_code=429, detail=ACCOUNT_CAP_DETAIL, headers={CHAT_THROTTLE_HEADER: "account"},
+        )
+    if count.pilot_chat_turns < config.CHAT_DAILY_CAP:
         return
-    log.warning("daily chat cap reached (%s/%s)", spent, config.CHAT_DAILY_CAP)
+    log.warning("daily chat cap reached (%s/%s)", count.pilot_chat_turns, config.CHAT_DAILY_CAP)
     raise HTTPException(
         status_code=429,
         detail="The tavern is closed for today — the daily question limit is spent.",
@@ -1215,6 +1248,7 @@ def chat(
     session: SessionData = Depends(require_session),
     timeline: TimelineStore | None = Depends(get_timeline_store),
     tdb: Database | None = Depends(get_timeline_database),
+    day: UsageDayReader | None = Depends(get_usage_day),
 ) -> ChatResponse:
     # Stored-text rule (5mj): a prompt that cannot be stored is refused before
     # anything is spent on it — the budget below included.
@@ -1224,11 +1258,11 @@ def chat(
     # 429 raised inside it would be caught by the `except Exception` and
     # reported as an internal error.
     _throttle_chat(request, session.user_id)
-    # ...then the pilot-wide ceiling. Second because it costs a database read and
+    # ...then the per-account and pilot-wide day, counted from the ledger
+    # (agent-forge-harness-u2uj). Second because it costs a database read and
     # the per-tester budget above does not: a caller in a loop is already refused
-    # before this runs. No role exemption — the account most likely to run up a
-    # bill by accident is the one being used to test.
-    _enforce_daily_cap(store)
+    # before this runs.
+    _enforce_daily_caps(day, session.user_id)
     # Prompt length gate (agent-forge-harness-764): reuse the Workbench's own
     # request-side ceiling rather than a `Field(max_length=...)` on
     # ChatRequest.prompt, whose rejection would go through FastAPI's default
@@ -1906,7 +1940,7 @@ app.include_router(document_lifecycle_api.build_router(WORKBENCH_GM, get_timelin
 app.include_router(assets_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled))
 app.include_router(table_session_api.build_router(WORKBENCH_GM, get_table_sessions, _job_driver, start_gate))
 app.include_router(table_api.build_router(require_session, get_auth_store, _clear_session_cookie, get_table_sessions))
-app.include_router(tool_invocations_api.build_router(WORKBENCH_GM, get_timeline_database, get_message_store))
+app.include_router(tool_invocations_api.build_router(WORKBENCH_GM, get_timeline_database, get_usage_day))
 app.include_router(groups_api.build_router(WORKBENCH_GM, get_timeline_database, get_group_stores))
 
 
