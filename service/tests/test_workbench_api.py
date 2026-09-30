@@ -144,27 +144,22 @@ def legacy_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[InMemoryAuthStore]
 
 
 def test_legacy_validation_answers_are_byte_identical(legacy_store: InMemoryAuthStore) -> None:
-    """FastAPI's default 422 list — `input` echo included, a recorded residual —
-    and the timeline route's 422 (1kg.4.2), unchanged. Since oqx the timeline
-    is a Workbench route and the one validation handler answers it; the case
-    stays here because these bytes are exactly what the move must preserve."""
+    """FastAPI's default 422 list without its `input` and `ctx`, the echo
+    agent-forge-harness-fhq9 removed, and the timeline route's 422 (1kg.4.2),
+    unchanged. Since oqx the timeline is a Workbench route and the one
+    validation handler answers it; the case stays here because these bytes are
+    exactly what the move must preserve."""
     client = TestClient(app)
-    missing_prompt = b'{"detail":[{"type":"missing","loc":["body","prompt"],"msg":"Field required","input":{}}]}'
+    missing_prompt = b'{"detail":[{"type":"missing","loc":["body","prompt"],"msg":"Field required"}]}'
     bad_mode = (
         b'{"detail":[{"type":"enum","loc":["body","mode"],"msg":"Input should be \'sage\', \'spell\', '
-        b'\'rules\' or \'gm\'","input":"nope","ctx":{"expected":"\'sage\', \'spell\', \'rules\' or \'gm\'"}}]}'
+        b'\'rules\' or \'gm\'"}]}'
     )
-    malformed = (
-        b'{"detail":[{"type":"json_invalid","loc":["body",11],"msg":"JSON decode error","input":{},'
-        b'"ctx":{"error":"Expecting value"}}]}'
-    )
-    login_missing = (
-        b'{"detail":[{"type":"missing","loc":["body","password"],"msg":"Field required",'
-        b'"input":{"email":"a@example.com"}}]}'
-    )
+    malformed = b'{"detail":[{"type":"json_invalid","loc":["body",11],"msg":"JSON decode error"}]}'
+    login_missing = b'{"detail":[{"type":"missing","loc":["body","password"],"msg":"Field required"}]}'
     metrics_bad = (
         b'{"detail":[{"type":"union_tag_not_found","loc":["body","points",0],"msg":"Unable to extract '
-        b'tag using discriminator \'kind\'","input":{"name":"x"},"ctx":{"discriminator":"\'kind\'"}}]}'
+        b'tag using discriminator \'kind\'"}]}'
     )
     timeline_limit = (
         b'{"detail":{"code":"validation_failed","message":"That request isn\'t valid.",'
@@ -185,6 +180,35 @@ def test_legacy_validation_answers_are_byte_identical(legacy_store: InMemoryAuth
     ]
     for label, response, body in cases:
         assert _answer(response) == (422, body, _json_headers(body)), label
+
+
+#: What each case below sends is refused, and FastAPI's default 422 repeated it:
+#: a password too long or too short included (agent-forge-harness-fhq9).
+_SECRET = "hunter2-canary-fhq9"
+_SHORT = "Qz7#kW!"
+_EMAIL = "a@example.com"
+_POINT = {"name": "ui.interaction.chat_round_trip_ms", "kind": "numeric", "unit": "ms", "value": 1}
+_LEGACY_REJECTIONS = {
+    "login: password too long": ("/auth/login", {"email": _EMAIL, "password": _SECRET * 60}, _SECRET),
+    "login: password not text": ("/auth/login", {"email": _EMAIL, "password": [_SECRET]}, _SECRET),
+    "signup: password too long": ("/auth/signup", {"email": _EMAIL, "password": _SECRET * 60, "invite": "i"}, _SECRET),
+    "signup: password too short": ("/auth/signup", {"email": _EMAIL, "password": _SHORT, "invite": "i"}, _SHORT),
+    "chat: prompt not text": ("/chat", {"prompt": [_SECRET]}, _SECRET),
+    "chat: unknown mode": ("/chat", {"prompt": "hi", "mode": _SECRET}, _SECRET),
+    "metrics: unknown metric": ("/metrics/ui", {"points": [{**_POINT, "name": _SECRET}]}, _SECRET),
+    "metrics: unknown kind": ("/metrics/ui", {"points": [{**_POINT, "kind": _SECRET}]}, _SECRET),
+    "metrics: undeclared label": ("/metrics/ui", {"points": [{**_POINT, "labels": {_SECRET: "x"}}]}, _SECRET),
+    "attachment: name not text": ("/conversations/c1/attachments", {"filename": [_SECRET], "data": "aGk="}, _SECRET),
+}
+
+
+@pytest.mark.parametrize(("path", "body", "value"), list(_LEGACY_REJECTIONS.values()), ids=list(_LEGACY_REJECTIONS))
+def test_no_legacy_validation_answer_repeats_what_was_sent(
+        legacy_store: InMemoryAuthStore, path: str, body: dict[str, object], value: str) -> None:
+    r = TestClient(app).post(path, json=body)
+    assert r.status_code == 422, r.text[:300]
+    assert value not in r.text
+    assert all(set(error) == {"type", "loc", "msg"} for error in r.json()["detail"]), "no input, no ctx"
 
 
 @pytest.mark.real_auth
@@ -816,22 +840,21 @@ def test_a_workbench_validation_failure_echoes_nothing(world: _World) -> None:
     assert _CANARY not in r.text
 
 
-def test_a_legacy_validation_failure_keeps_fastapis_default(world: _World) -> None:
+def test_a_legacy_validation_failure_keeps_fastapis_list_and_echoes_nothing(world: _World) -> None:
     """The same handler, a non-Workbench route on the same app: FastAPI's list,
-    `input` echo included (a recorded residual, left as it is)."""
+    without the `input` its default repeated (agent-forge-harness-fhq9)."""
     r = world.client.post("/legacy/docs", json={"title": [_CANARY]})
     assert (r.status_code, r.json()) == (422, {"detail": [{
-        "type": "string_type", "loc": ["body", "title"], "msg": "Input should be a valid string",
-        "input": [_CANARY]}]})
+        "type": "string_type", "loc": ["body", "title"], "msg": "Input should be a valid string"}]})
+    assert _CANARY not in r.text
 
 
 def test_a_legacy_validation_failure_that_cannot_be_encoded_is_a_redacted_422(world: _World) -> None:
-    """The test above, with a lone surrogate in what is echoed. FastAPI's
+    """The test above, with a lone surrogate in what was echoed. FastAPI's
     default repeats `input`, and UTF-8 cannot carry a lone surrogate, so that
-    default was a 500 (bead 5mj). Such a failure — and only such a failure, the
-    test above keeps the rest — answers `redacted_errors`: the field named, the
-    value not. `ensure_ascii` sends the surrogate the way a browser's
-    `JSON.stringify` does."""
+    default was a 500 (bead 5mj). The answer names the field, never the value.
+    `ensure_ascii` sends the surrogate the way a browser's `JSON.stringify`
+    does."""
     client = TestClient(world.probe, raise_server_exceptions=False)
     body = json.dumps({"title": [_CANARY + chr(0xD800)]}).encode("ascii")
     r = client.post("/legacy/docs", content=body, headers={"content-type": "application/json"})

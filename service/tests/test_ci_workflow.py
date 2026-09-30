@@ -389,6 +389,20 @@ def test_contract_parity_gates_deploy():
     assert "needs.contract-parity.result == 'success'" in _deploy_gates()
 
 
+def test_python_tests_job_has_headroom_above_its_normal_runtime():
+    """agent-forge-harness-ky89: the job normally takes 10-12 min, but a slow
+    apt mirror or runner used to cancel it with no test failing (a 15-minute
+    cap, e.g. runs 36762529823 and 36762653761). 25 min leaves real headroom
+    without masking an actually-stuck job."""
+    job = _python_job()
+    timeout = re.search(r"^ {4}timeout-minutes:\s*(\d+)\s*$", job, re.M)
+    assert timeout, "python-tests must keep a job-level `timeout-minutes:`"
+    assert int(timeout.group(1)) >= 25, (
+        f"python-tests' timeout-minutes is {timeout.group(1)}, which is too close to "
+        "its normal 10-12 min runtime and risks cancelling a healthy run (ky89)"
+    )
+
+
 # ── Runner image and action runtimes (agent-forge-harness-7q6) ───────────────
 
 

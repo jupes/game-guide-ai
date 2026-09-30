@@ -44,7 +44,9 @@ concurrency:
 jobs:
   python-tests:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # The job normally takes 10-12 min. A slow apt mirror or runner used to
+    # cancel it with no test failing (agent-forge-harness-ky89).
+    timeout-minutes: 30
     # A real PostgreSQL, for the tests whose whole subject is behaviour no fake
     # reproduces: the atomic single-use invite guarantee (row locks), what the
     # schema actually enforces (cascades, SET NULL, NOT VALID), the migration
