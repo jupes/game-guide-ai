@@ -382,14 +382,17 @@ def test_anything_not_ready_and_anything_not_yours_is_the_one_identical_404(clie
 
 
 class Counting:
-    """The database, counting the transactions a request opens."""
+    """The database, counting the transactions a request opens and recording
+    the thread each one was opened on."""
 
     def __init__(self, inner: InMemoryDatabase) -> None:
         self.inner = inner
         self.opened = 0
+        self.threads: list[int] = []
 
     def transaction(self, *args: Any, **kwargs: Any) -> Any:
         self.opened += 1
+        self.threads.append(threading.get_ident())
         return self.inner.transaction(*args, **kwargs)
 
 
@@ -508,6 +511,31 @@ def test_the_seventh_concurrent_byte_response_is_503_retry_after_while_six_strea
         "every store call and every pull ran off the event loop's thread")
     after = TestClient(app).get(_path(campaign, asset))
     assert after.status_code == 200, "the tokens came back"
+
+
+def test_the_resolve_and_the_delete_transactions_run_off_the_event_loop(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review M-2 (pr197-m, carried to pr197-pr): a transaction on the loop's
+    own thread would stall every request on the instance while it waited on
+    PostgreSQL. One loop, the entered client's portal, as above; the database
+    double records the thread each transaction was opened on."""
+    campaign = world.campaign()
+    asset = world.asset(campaign)
+    counting = Counting(world.db)
+    world.database = cast(Any, counting)
+    monkeypatch.setattr(app.router, "lifespan_context", _no_lifespan)
+    with TestClient(app) as client:
+        portal = client.portal
+        assert portal is not None, "entered, the client runs every request on one loop"
+        loop_thread = portal.call(threading.get_ident)
+        read = client.get(_path(campaign, asset))
+        assert (read.status_code, read.content) == (200, IMAGE)
+        assert client.delete(_path(campaign, asset)).status_code == 204
+    assert counting.opened == 2, "the read and the delete each opened one transaction"
+    assert len(counting.threads) == 2 and loop_thread not in counting.threads, (
+        "no transaction ran on the event loop's thread")
+    assert world.state(asset) == "deleted"
 
 
 def test_every_store_call_in_the_serving_path_goes_through_the_chokepoint() -> None:
