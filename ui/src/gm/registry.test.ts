@@ -498,6 +498,7 @@ describe('a registry that breaks a rule cannot be built', () => {
     ['a duplicated tool', { ...REGISTRY, tools: [...REGISTRY.tools, REGISTRY.tools[2]] }, 'duplicate tool ids'],
     ['a card tool that claims to create a document', withTool({ creates_doc_type: 'npc' }), 'only a document result'],
     ['a document tool with a card kind', withTool({ card_kind: 'stat_block' }, 'npc'), 'only a card result'],
+    ['a card tool without its card kind (1kg.4.3)', withTool({ card_kind: null }, 'rules'), 'a card tool names its card kind'],
     ['a missing document type', { ...REGISTRY, document_types: REGISTRY.document_types.slice(1) }, 'creates an unknown document type'],
     ['a type icon that is not a ligature', withFirstType({ icon: 'Person!' }), 'not a ligature name'],
     ['six default pins', { ...REGISTRY, default_pinned: ['npc', 'monster', 'loot', 'names', 'rules', 'recap'] }, 'at most 5'],

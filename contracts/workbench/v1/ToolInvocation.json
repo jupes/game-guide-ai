@@ -103,6 +103,51 @@
         "result": null,
         "error": null
       }
+    },
+    {
+      "name": "a done rules invocation carries its cited card (1kg.4.3)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_4b1d7e2a9c3f5a6b",
+        "tool_id": "rules",
+        "status": "done",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:40:02Z",
+        "updated_at": "2026-09-16T19:40:09Z",
+        "result": {
+          "result_kind": "card",
+          "tool_id": "rules",
+          "prose": "From the rulebooks. The passages it quotes are listed on the card.",
+          "suggestions": [],
+          "card": {
+            "card_kind": "rules",
+            "rules": {
+              "title": "Held in place",
+              "answer": "A held creature's speed becomes 0 [1].",
+              "citations": [
+                { "n": 1, "source": { "book": "synthetic-5e", "chapter": "Conditions", "section": "Held", "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0…" } }
+              ]
+            }
+          }
+        },
+        "error": null
+      }
+    },
+    {
+      "name": "a rules corpus miss fails final with not_in_sources: the GM edits the brief (1kg.4.3 I-7)",
+      "value": {
+        "schema_version": 1,
+        "invocation_id": "inv_4b1d7e2a9c3f5a6b",
+        "tool_id": "rules",
+        "status": "failed",
+        "attempt": 1,
+        "cancel_requested": false,
+        "created_at": "2026-09-16T19:40:02Z",
+        "updated_at": "2026-09-16T19:40:05Z",
+        "result": null,
+        "error": { "code": "not_in_sources", "message": "I couldn't find that in the D&D 5e sources I have.", "retryable": false }
+      }
     }
   ],
   "invalid": [

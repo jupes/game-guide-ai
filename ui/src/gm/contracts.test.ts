@@ -497,10 +497,18 @@ describe('forward-version behaviour (RAIL-24, X-8)', () => {
     })
   })
 
-  it('turns an unknown card kind into the same placeholder (1kg.4.3 adds four)', () => {
-    const loot = { result_kind: 'card', tool_id: 'loot', prose: '', suggestions: [], card: { card_kind: 'loot', items: [] } }
-    expect(parseToolResult(loot)).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
-    expect(parseToolInvocation({ ...working, status: 'done', result: loot })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+  it('turns an unknown card kind into the same placeholder', () => {
+    const scroll = { result_kind: 'card', tool_id: 'loot', prose: '', suggestions: [], card: { card_kind: 'spell_scroll', items: [] } }
+    expect(parseToolResult(scroll)).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(parseToolInvocation({ ...working, status: 'done', result: scroll })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+  })
+
+  it('reads an empty loot card as invalid, never as a kind it does not know (1kg.4.3)', () => {
+    const empty = { result_kind: 'card', tool_id: 'loot', prose: '', suggestions: [], card: { card_kind: 'loot', loot: { title: 'A pouch', items: [] } } }
+    expect(parseToolResult(empty)).toEqual({ kind: 'unknown', reason: 'invalid' })
+    expect(parseToolInvocation({ ...working, status: 'done', result: empty })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    const one = { ...empty, card: { card_kind: 'loot', loot: { title: 'A pouch', items: [{ name: 'Copper pieces' }] } } }
+    expect(parseToolResult(one).kind).not.toBe('unknown')
   })
 
   it('reads a version as an integral number only', () => {
@@ -584,7 +592,7 @@ describe('reading a timeline (AE-43, RAIL-24)', () => {
         invocation: {
           ...invocation,
           status: 'done',
-          result: { result_kind: 'card', tool_id: 'monster', prose: '', suggestions: [], card: { card_kind: 'loot', items: [] } },
+          result: { result_kind: 'card', tool_id: 'monster', prose: '', suggestions: [], card: { card_kind: 'spell_scroll', items: [] } },
         },
       },
       'unknown_kind',

@@ -448,6 +448,43 @@
         "boundary": "start",
         "title": "Session 12"
       }
+    },
+    {
+      "name": "a tool turn whose done invocation carries a hooks card (1kg.4.3)",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "tool",
+        "entry_id": "ent_77aa12bd",
+        "created_at": "2026-09-16T19:45:02Z",
+        "brief": "trouble at the tide gate",
+        "invocation": {
+          "schema_version": 1,
+          "invocation_id": "inv_5c2e8f3b0d4a6b7c",
+          "tool_id": "hooks",
+          "status": "done",
+          "attempt": 1,
+          "cancel_requested": false,
+          "created_at": "2026-09-16T19:45:02Z",
+          "updated_at": "2026-09-16T19:45:11Z",
+          "result": {
+            "result_kind": "card",
+            "tool_id": "hooks",
+            "prose": "Invented for your campaign — none of it comes from the rulebooks.",
+            "suggestions": [{ "tool_id": "npc", "label": "An NPC for a hook", "icon": "person_add" }],
+            "card": {
+              "card_kind": "hooks",
+              "hooks": {
+                "title": "Trouble at the tide gate",
+                "entries": [
+                  { "title": "The keeper is missing", "text": "The gate has not closed in three nights." },
+                  { "title": "A debt comes due", "text": "A smuggler wants the gate open.\nShe pays in pearls." }
+                ]
+              }
+            }
+          },
+          "error": null
+        }
+      }
     }
   ],
   "invalid": [

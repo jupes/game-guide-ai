@@ -174,7 +174,9 @@ def _checked(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tuple
         raise EntryMismatch("the entry's id is not one this module mints")
     if validated.created_at != created_at:
         raise EntryMismatch("the entry's created_at is not the row's")
-    return validated, json.dumps(validated.model_dump(mode="json"))
+    # By alias (1kg.4.3 I-28): the stored JSON is the wire's, so a stat block's
+    # ability is `int`, never the Python attribute `int_`.
+    return validated, json.dumps(validated.model_dump(mode="json", by_alias=True))
 
 
 def validated_entry(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tuple[AnyEntry, str]:

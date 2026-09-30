@@ -268,6 +268,56 @@ def test_a_judged_result_keeps_only_suggestions_that_may_run() -> None:
     assert judge_result(produced, ToolId.ENCOUNTER, lambda tool: True) is None
 
 
+# ── 1kg.4.3 C-1..C-4: an executor's two markers ──────────────────────────────
+
+
+class _RefusedSubclass(tool_invocations.OutputRefused):
+    pass
+
+
+@pytest.mark.parametrize("marker", [tool_invocations.OutputRefused(), _RefusedSubclass()])
+def test_c1_a_refused_answer_is_a_retryable_provider_failure(marker: BaseException) -> None:
+    """Kills the marker unmapped (→ backend_unavailable) and `retryable` flipped."""
+    stored = failure_for(marker)
+    assert (stored.code, stored.message, stored.retryable) == (
+        ErrorCode.PROVIDER_FAILED, tool_invocations.PROVIDER_FAILED_MESSAGE, True)
+
+
+def test_c2_a_corpus_miss_is_final_with_the_products_refusal_sentence() -> None:
+    """Kills the wrong code, the wrong sentence, and a retryable miss."""
+    from service.models import REFUSAL
+
+    stored = failure_for(tool_invocations.NotInSources())
+    assert (stored.code, stored.message, stored.retryable) == (ErrorCode.NOT_IN_SOURCES, REFUSAL, False)
+    assert tool_invocations.NOT_IN_SOURCES_MESSAGE == REFUSAL
+
+
+class _TimeoutAndRefused(openai.APITimeoutError, tool_invocations.OutputRefused):
+    pass
+
+
+class _TimeoutAndMiss(openai.APITimeoutError, tool_invocations.NotInSources):
+    pass
+
+
+def test_c3_the_markers_are_read_before_the_provider_branch() -> None:
+    """Kills either marker placed after `openai.OpenAIError` in `failure_for`: a
+    timeout that is also a marker would otherwise be stored as `provider_timeout`."""
+    for dual in (_TimeoutAndRefused(request=_REQUEST), _TimeoutAndMiss(request=_REQUEST)):
+        assert provider_category(dual) == "timeout"
+    assert failure_for(_TimeoutAndRefused(request=_REQUEST)).code is ErrorCode.PROVIDER_FAILED
+    assert failure_for(_TimeoutAndMiss(request=_REQUEST)).code is ErrorCode.NOT_IN_SOURCES
+
+
+def test_c4_neither_marker_widens_what_a_plain_error_maps_to() -> None:
+    """Kills a marker that subclasses `ValueError` (or `RuntimeError`) and so
+    turns every such outage into a provider failure; the pinned `ValueError`
+    case above stays as it was."""
+    for marker in (tool_invocations.OutputRefused, tool_invocations.NotInSources):
+        assert marker.__mro__[1:] == (Exception, BaseException, object)
+        assert str(marker()) == "" and marker().args == ()
+
+
 # ── 1kg.4.4 I-3, I-4: what an executor may lean on ───────────────────────────
 
 
