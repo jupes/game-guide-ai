@@ -40,6 +40,27 @@ export const CHAT_TEXT_MAX_CHARS = 100_000
 export const MAX_SOURCES = 50
 export const TIMELINE_PAGE_MAX_ITEMS = 100
 
+/** The card payloads' bounds (1kg.4.3), in code points: the same numbers as
+ * workbench_contracts.py, pinned on both sides by the fixtures. Every list's
+ * minimum is 1, so an empty card validates nowhere. */
+export const CARD_TITLE_MAX_CHARS = 200
+export const LOOT_MAX_ITEMS = 20
+export const LOOT_VALUE_MAX_CHARS = 60
+export const LOOT_NOTE_MAX_CHARS = 500
+export const LOOT_QUANTITY_MAX = 1_000_000
+export const NAMES_MAX_ENTRIES = 20
+export const NAME_MAX_CHARS = 80
+export const NAME_NOTE_MAX_CHARS = 200
+export const HOOKS_MAX_ENTRIES = 5
+export const HOOK_TITLE_MAX_CHARS = 120
+export const HOOK_TEXT_MAX_CHARS = 1000
+export const RULES_ANSWER_MAX_CHARS = PROSE_MAX_CHARS
+export const RULES_MAX_CITATIONS = 8
+/** An inline citation marker in a rules answer; the pattern text is
+ * byte-identical in workbench_contracts.py. One or two digits, so `[1d6]` and
+ * `[DC 15]` are not markers. */
+export const RULES_MARKER = /\[(\d{1,2})\]/g
+
 /** Ceilings per field kind; 1kg.5.3 may set tighter caps per type. */
 export const TEXT_FIELD_MAX_CHARS = 200
 export const PROSE_FIELD_MAX_CHARS = 20_000
@@ -71,8 +92,8 @@ export type ToolId = (typeof TOOL_IDS)[number]
 export const RESULT_KINDS = ['card', 'document', 'media'] as const
 export type ResultKind = (typeof RESULT_KINDS)[number]
 
-/** A closed union. 1kg.4.3 adds loot, names, rules and hooks. */
-export const CARD_KINDS = ['stat_block'] as const
+/** A closed union, one kind per card tool (1kg.4.3). */
+export const CARD_KINDS = ['stat_block', 'loot', 'names', 'rules', 'hooks'] as const
 export type CardKind = (typeof CARD_KINDS)[number]
 
 export const DOCUMENT_TYPE_IDS = [
@@ -121,7 +142,7 @@ export const KNOWN_ERROR_CODES = [
   'attempt_expired', 'backend_unavailable', 'already_linked', 'alias_taken', 'seat_not_open',
   'seat_not_accepted', 'seat_cap_reached', 'campaign_archived', 'reauth_failed', 'document_unsupported',
   'document_not_archived', 'inactive', 'cross_site', 'screen_limit', 'live_elsewhere', 'group_name_taken',
-  'group_cap_reached',
+  'group_cap_reached', 'not_in_sources',
 ] as const
 export type KnownErrorCode = (typeof KNOWN_ERROR_CODES)[number]
 
@@ -165,7 +186,13 @@ export const TOOL_CREATES_DOC_TYPE: Partial<Record<ToolId, DocumentTypeId>> = {
   recap: 'session-notes',
 }
 
-export const TOOL_CARD_KIND: Partial<Record<ToolId, CardKind>> = { monster: 'stat_block' }
+export const TOOL_CARD_KIND: Partial<Record<ToolId, CardKind>> = {
+  monster: 'stat_block',
+  loot: 'loot',
+  names: 'names',
+  rules: 'rules',
+  hooks: 'hooks',
+}
 
 /** Decisions LIB-1 to LIB-6: membership is a registry fact, not a free field. */
 export const DOC_TYPE_LIBRARY_CATEGORY: Record<DocumentTypeId, LibraryCategory> = {
@@ -538,7 +565,80 @@ const StatBlockCardSchema = z.object({
   stat_block: StatBlockContentSchema,
 })
 
-const CardContentSchema = z.discriminatedUnion('card_kind', [StatBlockCardSchema])
+// Plain text only (X-10, SEC-33): a card renders as text nodes, never as
+// Markdown. Both shapes refuse the stored-text code points and a value the
+// contract's trim empties, exactly as the server's `_card_line`/`_card_text`.
+const NOT_BLANK = { message: 'must not be blank' }
+const cardLine = (max: number) => plainOneLine(1, max).refine((value) => trimWire(value) !== '', NOT_BLANK)
+const cardText = (max: number) => plainText(1, max).refine((value) => trimWire(value) !== '', NOT_BLANK)
+
+const LootContentSchema = z.object({
+  title: cardLine(CARD_TITLE_MAX_CHARS),
+  items: z
+    .array(
+      z.object({
+        name: cardLine(CARD_TITLE_MAX_CHARS),
+        quantity: z.number().int().min(1).max(LOOT_QUANTITY_MAX).nullish(),
+        value: cardLine(LOOT_VALUE_MAX_CHARS).nullish(),
+        note: cardText(LOOT_NOTE_MAX_CHARS).nullish(),
+      }),
+    )
+    .min(1)
+    .max(LOOT_MAX_ITEMS),
+})
+export type LootContent = z.infer<typeof LootContentSchema>
+
+const NamesContentSchema = z.object({
+  title: cardLine(CARD_TITLE_MAX_CHARS),
+  entries: z
+    .array(z.object({ name: cardLine(NAME_MAX_CHARS), note: cardLine(NAME_NOTE_MAX_CHARS).nullish() }))
+    .min(1)
+    .max(NAMES_MAX_ENTRIES),
+})
+export type NamesContent = z.infer<typeof NamesContentSchema>
+
+const HooksContentSchema = z.object({
+  title: cardLine(CARD_TITLE_MAX_CHARS),
+  entries: z
+    .array(z.object({ title: cardLine(HOOK_TITLE_MAX_CHARS), text: cardText(HOOK_TEXT_MAX_CHARS) }))
+    .min(1)
+    .max(HOOKS_MAX_ENTRIES),
+})
+export type HooksContent = z.infer<typeof HooksContentSchema>
+
+/** `n` is a passage the server retrieved; the model never supplies a source (I-5).
+ * `n` strictly increases, and every inline `[k]` in the answer is some `n`, so a
+ * card never shows a marker that points nowhere. */
+const RulesContentSchema = z
+  .object({
+    title: cardLine(CARD_TITLE_MAX_CHARS),
+    answer: cardText(RULES_ANSWER_MAX_CHARS),
+    citations: z
+      .array(z.object({ n: z.number().int().min(1).max(RULES_MAX_CITATIONS), source: SourceSchema }))
+      .min(1)
+      .max(RULES_MAX_CITATIONS),
+  })
+  .refine((rules) => rules.citations.every((citation, i) => i === 0 || citation.n > rules.citations[i - 1].n), {
+    path: ['citations'],
+    message: 'citation numbers must strictly increase',
+  })
+  .refine(
+    (rules) => {
+      const cited = new Set(rules.citations.map((citation) => citation.n))
+      return [...rules.answer.matchAll(RULES_MARKER)].every((marker) => cited.has(Number(marker[1])))
+    },
+    { path: ['answer'], message: 'every citation marker in the answer must name a citation' },
+  )
+export type RulesContent = z.infer<typeof RulesContentSchema>
+
+const CardContentSchema = z.discriminatedUnion('card_kind', [
+  StatBlockCardSchema,
+  z.object({ card_kind: z.literal('loot'), loot: LootContentSchema }),
+  z.object({ card_kind: z.literal('names'), names: NamesContentSchema }),
+  z.object({ card_kind: z.literal('rules'), rules: RulesContentSchema }),
+  z.object({ card_kind: z.literal('hooks'), hooks: HooksContentSchema }),
+])
+export type CardContent = z.infer<typeof CardContentSchema>
 
 const resultBase = {
   tool_id: ToolIdSchema,
@@ -2815,7 +2915,7 @@ function hasUnknownKind(raw: unknown, path: readonly string[], known: readonly s
   return typeof value === 'string' && !known.includes(value)
 }
 
-/** Every discriminator a result carries; 1kg.4.3 adds card kinds. */
+/** Every discriminator a result carries: its kind and, for a card, the card kind. */
 export const RESULT_DISCRIMINATORS: ReadonlyArray<[readonly string[], readonly string[]]> = [
   [['result_kind'], RESULT_KINDS],
   [['card', 'card_kind'], CARD_KINDS],

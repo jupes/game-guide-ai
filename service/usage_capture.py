@@ -97,6 +97,10 @@ OPERATION_CHAT_TURN = "chat_turn"
 #: `operation_id` is the attempt's own, minted before any provider work and
 #: stored on `campaign.tool_attempts`, which is how the ledger links to it.
 OPERATION_TOOL_INVOCATION = "tool_invocation"
+#: One attempt of an AI document edit (agent-forge-harness-1kg.5.5). Its
+#: `operation_id` is the attempt's own, minted before any provider work and
+#: stored on `campaign.document_edit_attempts`, as a tool attempt's is.
+OPERATION_DOCUMENT_EDIT = "document_edit"
 
 PURPOSE_EMBEDDING = "embedding"
 PURPOSE_ANSWER = "answer"
@@ -106,10 +110,13 @@ PURPOSE_STATBLOCK_STRUCTURING = "statblock_structuring"
 #: A GM tool's generated document (`1kg.5.4`, `service/document_generation.py`):
 #: both a provider-attempt purpose and a structuring-outcome purpose.
 PURPOSE_DOCUMENT_GENERATION = "document_generation"
+#: A GM card tool's generated card (`1kg.4.3`: monster, loot, names, rules and
+#: hooks): both a provider-attempt purpose and a structuring-outcome purpose.
+PURPOSE_CARD_GENERATION = "card_generation"
 PURPOSES = frozenset({
     PURPOSE_EMBEDDING, PURPOSE_ANSWER, PURPOSE_SUGGESTIONS,
     PURPOSE_SPELL_STRUCTURING, PURPOSE_STATBLOCK_STRUCTURING,
-    PURPOSE_DOCUMENT_GENERATION,
+    PURPOSE_DOCUMENT_GENERATION, PURPOSE_CARD_GENERATION,
 })
 
 ACTOR_ACCOUNT = "account"
@@ -160,7 +167,7 @@ OUTCOMES = frozenset({
 #: `embedding` or `answer`.
 STRUCTURING_PURPOSES = frozenset({
     PURPOSE_SUGGESTIONS, PURPOSE_SPELL_STRUCTURING, PURPOSE_STATBLOCK_STRUCTURING,
-    PURPOSE_DOCUMENT_GENERATION,
+    PURPOSE_DOCUMENT_GENERATION, PURPOSE_CARD_GENERATION,
 })
 
 #: A structuring-outcome record has exactly these keys, in every branch,

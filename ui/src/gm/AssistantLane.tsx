@@ -142,8 +142,12 @@ function ResultBody({
 }): React.JSX.Element {
   switch (result.result_kind) {
     case 'card':
-      // The lane supplies the chrome, so the card comes in compact.
-      return <StatBlockCard density="compact" {...toStatBlockCardProps(result.card.stat_block)} />
+      // The lane supplies the chrome, so the card comes in compact. The other
+      // card kinds render in 1kg.4.3's PR-C; until then they are neutral, never
+      // a borrowed stat block (RAIL-24, X-8).
+      return result.card.card_kind === 'stat_block'
+        ? <StatBlockCard density="compact" {...toStatBlockCardProps(result.card.stat_block)} />
+        : <p className="assistant-lane__placeholder">{LANE_COPY.unsupportedResult}</p>
     case 'document':
       return documentLinkMeta(result.document) === null
         ? <p className="assistant-lane__placeholder">{LANE_COPY.newerVersion}</p>

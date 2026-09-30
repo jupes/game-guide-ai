@@ -77,6 +77,7 @@ from .tool_invocations import (
 )
 from .workbench_api import SessionDependency, body_reader, not_found, workbench_router
 from .workbench_contracts import ErrorBody, ErrorCode, InvocationId, ToolId, ToolInvocation, ToolInvocationRequest
+from .workbench_load import PostgresWorkbenchLoad
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +97,7 @@ def get_invocation_stores() -> InvocationStores:
     """The stores every route uses. Tests override this dependency."""
     return InvocationStores(
         PostgresToolInvocationStore(), PostgresCampaignStore(), PostgresConversationStore(), PostgresTimelineStore(),
+        PostgresWorkbenchLoad(),
     )
 
 

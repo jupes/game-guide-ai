@@ -63,6 +63,7 @@ from service.tool_invocation_store import (
 )
 from service.tool_invocations import InvocationStores, ToolSettings
 from service.workbench_contracts import CONTRACT_VERSION, ToolId, ToolInvocationRequest
+from service.workbench_load import InMemoryWorkbenchLoad, PostgresWorkbenchLoad
 
 T0 = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
 TTL = timedelta(seconds=150)
@@ -1161,7 +1162,8 @@ class _Npc:
 
 
 def _service(world: World) -> tuple[InvocationStores, dict[ToolId, _Npc], ToolSettings]:
-    stores = InvocationStores(world.store, world.campaigns, world.conversations, world.timeline)
+    stores = InvocationStores(world.store, world.campaigns, world.conversations, world.timeline,
+                              InMemoryWorkbenchLoad(world.db) if world.kind == "fake" else PostgresWorkbenchLoad())
     return stores, {ToolId.NPC: _Npc()}, ToolSettings(frozenset({ToolId.NPC}))
 
 
@@ -1272,7 +1274,8 @@ def test_a_create_the_statement_refuses_leaves_no_entry_invocation_or_attempt(wo
         return real(unit, **kwargs)
 
     racing = InvocationStores(_Racing(world.store, archived_first), world.campaigns, world.conversations,
-                              world.timeline)
+                              world.timeline,
+                              InMemoryWorkbenchLoad(world.db) if world.kind == "fake" else PostgresWorkbenchLoad())
     with pytest.raises(tool_invocations.Refused) as refused:
         _attempt_with(world, table, T0, racing, executors, settings)
     assert refused.value.info.code.value == "campaign_archived"
