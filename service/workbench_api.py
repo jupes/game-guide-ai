@@ -52,6 +52,10 @@ The order of checks, as a client observes it
    entries in `workbench_router`'s dependency list.
 3. Authentication → the one 401 body, whatever `require_session` said.
 4. Role → 403 (`gm_session`), naming no resource.
+4b. Write throttle (agent-forge-harness-531x) → 429, the existing
+    `throttled_user` shape, before any route's own body is read. A GET, HEAD
+    or OPTIONS, and a route marked `reads_by_post` (a search sent by POST,
+    X-7), spend nothing from the caller's per-account budget.
 5. Ownership, in the statement → `not_found()`: missing, someone else's and
    deleted are one answer from one call.
 6. Validation that depends on the resource, then state (409). Both are
@@ -100,6 +104,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
+from . import ratelimit
 from .session import SessionData
 from .workbench_contracts import ErrorBody, ErrorCode, ErrorInfo, redacted_errors, validation_error_body
 
@@ -199,6 +204,86 @@ _STATE_CHANGING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
+# ── The write throttle (agent-forge-harness-531x) ────────────────────────────
+#: The write throttle's fixed sentence (SEC-3: a refusal names no resource).
+WRITE_THROTTLED_MESSAGE = "You're saving a lot at once. Wait, then try again."
+#: Set on an endpoint function by `reads_by_post`: it is state-changing by HTTP
+#: method (a search sent by POST, X-7) but writes nothing, so it spends no
+#: write budget. Checked by attribute, never by name, so renaming a route
+#: cannot silently exempt it.
+_READS_ONLY = "_workbench_reads_only"
+#: Set on the throttle dependency itself, so the route-pin test
+#: (`test_workbench_api.py`) can find it in a route's effective dependant tree
+#: without depending on the dependency's name or module.
+_WRITE_THROTTLE = "_workbench_write_throttle"
+
+
+def reads_by_post[F: Callable[..., object]](endpoint: F) -> F:
+    """Mark a POST route that writes nothing (`documents_api.library`, a
+    search sent by POST so its text stays out of URLs, X-7): it must not spend
+    a write from the caller's budget, or the GM's read would use up their
+    write budget."""
+    setattr(endpoint, _READS_ONLY, True)
+    return endpoint
+
+
+def spend_write(user_id: int) -> None:
+    """The ONE way a Workbench write throttle answers 429: the existing
+    Workbench throttle shape (`campaigns_api.refusal`, SEC's `throttled_user`),
+    naming no resource, logged with no body and no path id beyond the
+    template."""
+    try:
+        ratelimit.check_workbench_write(user_id)
+        return
+    except ratelimit.RateLimited as exc:
+        wait = min(exc.retry_after, 86_400)
+    log.info("workbench write throttled (user_id=%s, retry_after=%ss)", user_id, wait)
+    info = ErrorInfo(code=ErrorCode.THROTTLED_USER, message=WRITE_THROTTLED_MESSAGE, retryable=True, retry_after_s=wait)
+    body = ErrorBody(detail=info).model_dump(mode="json", exclude_none=True)
+    raise HTTPException(status_code=429, detail=body["detail"], headers={"Retry-After": str(wait)})
+
+
+def write_throttle(session: SessionDependency) -> Callable[..., None]:
+    """The router-level dependency that spends one write from the caller's
+    budget on every state-changing request, before any route's own body is
+    read. A GET, HEAD or OPTIONS, and a route marked `reads_by_post`, spend
+    nothing. Declares `Depends(session)` rather than calling it, exactly as
+    `gm_session` does, so the session is resolved once per request and a
+    test's `dependency_overrides` still reaches through it."""
+
+    def throttle(request: Request, caller: SessionData = Depends(session)) -> None:
+        if request.method not in _STATE_CHANGING:
+            return
+        route = request.scope.get("route")
+        endpoint = getattr(route, "endpoint", None)
+        if getattr(endpoint, _READS_ONLY, False):
+            return
+        spend_write(caller.user_id)
+
+    setattr(throttle, _WRITE_THROTTLE, True)
+    return throttle
+
+
+def mark_write_throttle[F: Callable[..., object]](dependency: F) -> F:
+    """Mark a dependency outside this module (`table_api.mint_throttle`) as a
+    write-throttle check, so the route-pin test finds it in a route's
+    effective dependant tree without importing this module's private marker."""
+    setattr(dependency, _WRITE_THROTTLE, True)
+    return dependency
+
+
+def is_write_throttle(dependency: object) -> bool:
+    """Whether a dependency's `call` is a write-throttle check — `write_throttle`'s
+    own, or one `mark_write_throttle` marked."""
+    return bool(getattr(dependency, _WRITE_THROTTLE, False))
+
+
+def is_reads_only(endpoint: object) -> bool:
+    """Whether a route's endpoint was marked `reads_by_post`: state-changing by
+    HTTP method, but writes nothing, so it spends no write-throttle budget."""
+    return bool(getattr(endpoint, _READS_ONLY, False))
+
+
 def _is_own_origin(origin: str, host: str | None) -> bool:
     """Whether `Origin` names the host this request was sent to.
 
@@ -284,14 +369,16 @@ def workbench_router(
 
     Router-level dependencies run in this order, before any route's own:
     `dependencies` (a capability switch that must answer like an unknown path
-    belongs here), then the origin check, then `gm`. A route cannot forget any
-    of them; a handler that needs the session declares `Depends(gm)` as well,
-    and FastAPI resolves it once per request.
+    belongs here), then the origin check, then `gm`, then the write throttle
+    (agent-forge-harness-531x) → 429. A route cannot forget any of them; a
+    handler that needs the session declares `Depends(gm)` as well, and FastAPI
+    resolves it once per request — the throttle's own `Depends(gm)` is the same
+    cached call, so the session is looked up only once.
     """
     return APIRouter(
         prefix=prefix,
         route_class=WorkbenchRoute,
-        dependencies=[*dependencies, Depends(origin_check(content_types)), Depends(gm)],
+        dependencies=[*dependencies, Depends(origin_check(content_types)), Depends(gm), Depends(write_throttle(gm))],
     )
 
 
@@ -305,15 +392,16 @@ def account_router(
     (bead 1kg.2.2, L-3): `workbench_router` without the `dm` gate.
 
     The same route class, so the one 401 body and the Workbench validation
-    handler apply, and the same order: the origin check, then `session`. There
-    is no role check — a player must reach these routes, and so must a GM who
-    holds a seat at another GM's table. Everything a route here reads is the
-    caller's own, found by the account in the statement.
+    handler apply, and the same order: the origin check, then `session`, then
+    the write throttle (agent-forge-harness-531x) → 429. There is no role
+    check — a player must reach these routes, and so must a GM who holds a
+    seat at another GM's table. Everything a route here reads is the caller's
+    own, found by the account in the statement.
     """
     return APIRouter(
         prefix=prefix,
         route_class=WorkbenchRoute,
-        dependencies=[Depends(origin_check(content_types)), Depends(session)],
+        dependencies=[Depends(origin_check(content_types)), Depends(session), Depends(write_throttle(session))],
     )
 
 
