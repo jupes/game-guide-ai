@@ -41,6 +41,7 @@ from . import (
     assets_api,
     body_limit,
     campaigns_api,
+    card_executors,
     conversations_api,
     document_lifecycle_api,
     documents_api,
@@ -238,6 +239,13 @@ _state: dict[str, Any] = {}
 # this registry holds when the turn ends (`_build_stores` puts it there, the
 # lifespan teardown clears it), or nowhere. Registered once, here.
 usage_capture.set_ledger_provider(lambda: _state.get("ledger"))
+
+# The rules card tool's corpus (agent-forge-harness-1kg.4.3, R-12): the same
+# pattern as the ledger provider above, so `card_executors` imports nothing
+# from this module. `_build_rag` installs `_state["rag"]` once the database
+# is ready; before that, or if it never builds, the rules tool sees `None`
+# and fails `backend_unavailable`, retryable (I-20).
+card_executors.set_rag_provider(lambda: _state.get("rag"))
 
 
 def build_reranker(enabled: bool | None = None) -> Any | None:

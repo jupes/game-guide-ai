@@ -586,6 +586,10 @@ FORBIDDEN_IMPORTS = frozenset({
     "conversations_api", "timeline_api", "table_session_api", "campaigns_api", "documents_api", "seats_api",
     "document_store", "document_wire", "history", "conversation_store", "timeline_store", "timeline",
     "asset_store", "asset_jobs", "media_objects", "attachments", "app",
+    # T-23, SEC-44 (1kg.4.3 I-27): a table route acts with table authority
+    # only, so it may never reach the Workbench tool modules either.
+    "tool_invocations", "tool_invocations_api", "document_generation", "document_tools",
+    "card_generation", "card_executors",
 })
 
 
