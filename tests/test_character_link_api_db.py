@@ -461,6 +461,59 @@ def test_step_two_narrows_a_session_started_after_step_one(dsn: str) -> None:
     assert _epoch(world, campaign) == session_epoch + 1, "the session that started after step one is narrowed too"
 
 
+def _counts(dsn: str) -> tuple[int, int]:
+    with connect(dsn) as conn:
+        events = conn.execute(
+            "SELECT count(*) FROM audit.events WHERE action LIKE 'participant.%'"
+        ).fetchone()[0]
+        linked = conn.execute(
+            "SELECT count(*) FROM campaign.documents WHERE linked_participant_id IS NOT NULL"
+        ).fetchone()[0]
+        return int(events), int(linked)
+
+
+@needs_db
+def test_an_audit_failure_rolls_back_the_link_and_the_advance(
+    dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D7: the lock, the store change, the revision advance and the audit row
+    share one transaction (SEC-38 audit completeness) — an audit failure
+    rolls back the whole unit, for both link and unlink step two. Kills: the
+    audit row written in a transaction of its own, after the locked unit."""
+    world = _pg_world(dsn)
+    campaign = _campaign(world, world.owner)
+    sheet = _document(world, campaign, "character-sheet")
+    seat = _seat(world, campaign, "Wren")
+    start = _revision(world, campaign)
+
+    # justification: stands in for PostgresAuditLog.append's full signature, which this
+    # stub never uses — it only ever raises.
+    def _broken_append(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("audit sink is down")
+
+    monkeypatch.setattr(PostgresAuditLog, "append", _broken_append)
+    with pytest.raises(RuntimeError):
+        link_sheet(world.db, world.stores, campaign_id=campaign, document_id=sheet, participant_id=seat,
+                  owner_id=world.owner, now=NOW)
+    assert _linked(world, campaign, sheet) is None
+    assert _revision(world, campaign) == start
+    assert _counts(dsn) == (0, 0)
+
+    monkeypatch.undo()
+    link_sheet(world.db, world.stores, campaign_id=campaign, document_id=sheet, participant_id=seat,
+              owner_id=world.owner, now=NOW)
+    assert _linked(world, campaign, sheet) == seat
+    assert _counts(dsn) == (1, 1)
+    assert _revision(world, campaign) == start + 1
+
+    monkeypatch.setattr(PostgresAuditLog, "append", _broken_append)
+    with pytest.raises(RuntimeError):
+        unlink_sheet(world.db, world.stores, campaign_id=campaign, document_id=sheet, owner_id=world.owner, now=NOW)
+    assert _linked(world, campaign, sheet) == seat, "the link is kept"
+    assert _revision(world, campaign) == start + 1
+    assert _counts(dsn) == (1, 1)
+
+
 @needs_db
 def test_the_ledger_row_in_postgresql_carries_ids_only(dsn: str) -> None:
     """D6: `object_kind='participant'`, `detail` keys exactly

@@ -193,7 +193,7 @@ names it starts fresh rather than reading another caller's status or result
 | Restore a document's version | none needed | restoring what the document already equals changes nothing and creates no version, and a restore that changes content always appends one sealed version |
 | Archive, unarchive a document | none needed | the state the document is already in answers `204` and changes nothing: no narrowing, no revision advance, no audit row — and, for unarchive, no lock |
 | Delete a document | none needed | a deleted document is a missing one, so a repeat is the one `404`; a client treats a `404` after a delete it sent as done |
-| Link, unlink a character sheet (`q156`) | none needed | a sheet already linked to that seat answers `204` and changes nothing; unlinking an unlinked sheet answers `204` with no narrowing, no lock, no revision advance and no audit row |
+| Link, unlink a character sheet (`q156`) | none needed | a sheet already linked to that seat answers `204` and changes nothing; unlinking an unlinked sheet answers `204` with no narrowing, no revision advance and no audit row (it still takes the lock briefly, so a busy lock answers the retryable `503`) |
 | Seal a document's open version | none needed | a document with no open version is answered as it is: nothing is sealed and nothing advances |
 | Create an asset, create a cue | `command_id`, minted by the client | opens the asset or cue already made; a retried upload sends its bytes to the same asset |
 | Play a cue | `command_id`, and the audio epoch it was issued under (AUDIO-28) | replays the first outcome; a stale epoch is `409 conflict` and is never retried automatically |

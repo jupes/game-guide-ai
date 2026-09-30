@@ -317,6 +317,9 @@ def test_link_locks_after_ownership_before_the_store(client: TestClient, world: 
     assert owned[3] == (), "ownership is read before any lock"
     assert linked[3] == ((campaign, "exclusive"),), "the store is called under the exclusive lock"
     assert world.calls.index(owned) < world.calls.index(linked)
+    audited = next(c for c in world.calls if c[1] == "audit.append")
+    assert audited[0] == linked[0], "the audit row is written in the unit that linked"
+    assert audited[3] == ((campaign, "exclusive"),)
 
 
 # ── T3: B-4's decision order through the route ──────────────────────────────
@@ -505,15 +508,21 @@ def test_unlink_lands_in_two_steps_and_audits(client: TestClient, world: World) 
     assert unlink_row.object_kind == ObjectKind.PARTICIPANT
     assert unlink_row.object_ref == seat, "names the seat it WAS linked to"
     assert dict(unlink_row.detail) == {"participant_id": seat, "document_id": sheet}
+    cleared = next(c for c in world.calls if c[1] == "documents.unlink_character_sheet")
+    audited = next(c for c in world.calls if c[1] == "audit.append")
+    assert audited[0] == cleared[0], "the audit row is written in the unit that unlinked"
+    assert audited[3] == ((campaign, "exclusive"),)
 
 
 def test_unlink_of_an_unlinked_sheet_is_a_noop_for_any_type(client: TestClient, world: World) -> None:
     """T6. Kills: unconditional narrowing; audit on None; a type check in
-    unlink."""
+    unlink; a step two that never takes the lock (docs, idempotency row:
+    a busy lock during this no-op answers the retryable 503)."""
     campaign = world.campaign()
     sheet = world.document(campaign)
     npc = world.document(campaign, "npc")
     session = world.session(campaign)
+    world.spy()
     for doc in (sheet, npc):
         before_epoch = world.epoch(session.id)
         before = (world.revision(campaign), len(world.ledger(campaign)))
@@ -521,6 +530,8 @@ def test_unlink_of_an_unlinked_sheet_is_a_noop_for_any_type(client: TestClient, 
         assert (answer.status_code, answer.content) == (204, b""), doc
         _unchanged(world, campaign, before)
         assert world.epoch(session.id) == before_epoch, "nothing narrowed"
+        cleared = next(c for c in reversed(world.calls) if c[1] == "documents.unlink_character_sheet")
+        assert cleared[3] == ((campaign, "exclusive"),), "step two still takes the lock even as a no-op"
 
 
 def test_unlink_survives_the_seats_removal(client: TestClient, world: World) -> None:
