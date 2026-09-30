@@ -50,6 +50,7 @@ from service.tool_invocations import (
     context_reader,
 )
 from service.workbench_contracts import ToolId, ToolInvocationRequest
+from service.workbench_load import PostgresWorkbenchLoad
 
 pytestmark = needs_db
 
@@ -117,7 +118,9 @@ def world() -> Iterator[World]:
             conversation = conversations.create(unit, owner_id=owner, campaign_id=campaign, title=None,
                                                 started_mode=None).id
         PostgresMessageStore(db=db).claim_conversation(conversation, owner)
-        stores = InvocationStores(PostgresToolInvocationStore(), campaigns, conversations, timeline)
+        stores = InvocationStores(
+            PostgresToolInvocationStore(), campaigns, conversations, timeline, PostgresWorkbenchLoad(),
+        )
         tools = DocumentToolStores(campaigns, conversations, timeline, PostgresDocumentStore())
         yield World(dsn, db, stores, tools, dict(document_executors(tools)), ScriptedLLM(fx.envelope(
             fx.BASE_FIELDS[fx.NPC])), owner, campaign, conversation)
@@ -192,7 +195,7 @@ def test_d2_a_settle_that_fails_after_the_document_was_written_leaves_no_documen
     admitted = _admit(world, T0)
     assert isinstance(admitted, Admission)
     world.stores = InvocationStores(world.stores.invocations, world.stores.campaigns, world.stores.conversations,
-                                    _Broken())
+                                    _Broken(), world.stores.load)
     ctx = _ctx(world, admitted, T0)
     outcome = _execute(world, admitted, ctx)
     with pytest.raises(TimelineStoreError):

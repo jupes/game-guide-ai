@@ -49,6 +49,7 @@ from service.tool_invocations import (
     submit,
 )
 from service.workbench_contracts import ResultKind, ToolId, ToolInvocation, ToolInvocationRequest
+from service.workbench_load import InMemoryWorkbenchLoad
 
 CONTRACTS_TS = Path(__file__).resolve().parents[2] / "ui" / "src" / "gm" / "contracts.ts"
 T0 = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
@@ -137,6 +138,7 @@ class _Twin:
         self.stores = InvocationStores(
             InMemoryToolInvocationStore(self.db), InMemoryCampaignStore(self.db),
             InMemoryConversationStore(self.db), InMemoryTimelineStore(self.db, messages=messages),
+            InMemoryWorkbenchLoad(self.db),
         )
         self.executor = executor
         with self.db.transaction() as unit:
