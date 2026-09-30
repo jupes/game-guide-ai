@@ -414,6 +414,42 @@ def test_a_signed_in_attachment_body_is_still_refused_as_before_and_not_echoed(c
     assert MARKER not in r.text
 
 
+class _Counting:
+    """A chat service that counts its calls: a refused body must reach none."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def answer(self, prompt, mode="sage", conversation_id=None, attachment_context=None, attachment_label=None):
+        self.calls += 1
+        return ChatResponse(answer="ok", sources=[], answerable=True, mode=mode, conversation_id=conversation_id)
+
+
+NOT_AN_OBJECT = [{"type": "model_attributes_type", "loc": ["body"],
+                  "msg": "Input should be a valid dictionary or object to extract fields from"}]
+
+
+@pytest.mark.parametrize(("headers", "body", "detail"), [
+    ({"content-type": "text/plain"}, json.dumps({"prompt": MARKER}), NOT_AN_OBJECT),
+    ({}, json.dumps({"prompt": MARKER}), NOT_AN_OBJECT),
+    (JSON, "", [{"type": "missing", "loc": ["body"], "msg": "Field required"}]),
+    (JSON, json.dumps([MARKER]), NOT_AN_OBJECT),
+    (JSON, json.dumps(MARKER), NOT_AN_OBJECT),
+], ids=["text-plain-json", "no-content-type", "empty", "json-array", "json-string"])
+def test_a_signed_in_chat_body_is_refused_as_fastapi_refused_it(
+        headers: dict[str, str], body: str, detail: list[dict[str, object]]) -> None:
+    """PR #217 review H1, M1 and M2. Since dl7x, /chat reads its own body, so
+    FastAPI's checks are the route's own to keep. The content type matters
+    most: a text/plain or header-less POST is a CORS simple request, sent
+    cross-site with no preflight, and /chat is cookie-authenticated."""
+    svc = _Counting()
+    app.dependency_overrides[get_service] = lambda: svc
+    app.dependency_overrides[get_message_store] = lambda: InMemoryMessageStore()
+    r = TestClient(app).post("/chat", content=body, headers=headers)
+    assert (r.status_code, r.json()) == (422, {"detail": detail})
+    assert svc.calls == 0
+
+
 @pytest.mark.parametrize("media_on", [False, True])
 def test_the_installed_app_asks_the_media_switch_for_the_upload_ceiling(
         monkeypatch: pytest.MonkeyPatch, media_on: bool) -> None:

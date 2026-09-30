@@ -1177,17 +1177,21 @@ async def _chat_request(request: Request, _session: SessionData = Depends(requir
     try:
         parsed = json.loads(raw)
     except ValueError as exc:  # a JSONDecodeError, or bytes that are no Unicode text
+        # justification: RequestValidationError takes pydantic's untyped error dicts.
         errors: list[Any] = [{"type": "json_invalid", "loc": ("body", getattr(exc, "pos", 0)),
                               "msg": "JSON decode error"}]
     else:
         try:
-            return ChatRequest.model_validate(parsed)
+            # from_attributes, as FastAPI validates a declared body: JSON that is
+            # no object gets model_attributes_type, as it did (PR #217 review M1).
+            return ChatRequest.model_validate(parsed, from_attributes=True)
         except ValidationError as exc:
             errors = [{**error, "loc": ("body", *error["loc"])}
                       for error in exc.errors(include_url=False, include_context=False, include_input=False)]
     raise RequestValidationError(errors)
 
 
+# justification: FastAPI's openapi_extra is an untyped JSON dict.
 def _documented_body(model: type[BaseModel]) -> dict[str, Any]:
     """A body read by hand, documented as FastAPI documents a declared one. Its
     nested models are referred to as components, which each must already be:

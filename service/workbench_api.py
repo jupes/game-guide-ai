@@ -475,6 +475,7 @@ async def handle_validation_error(request: Request, exc: Exception) -> Response:
             link = link.__cause__ or link.__context__
 
 
+# justification: pydantic's error dicts carry values of any type (redacted_errors takes the same).
 def legacy_validation_errors(errors: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """A legacy route's 422 list (agent-forge-harness-fhq9): `redacted_errors`,
     each error's type, location and message, never its `input` or `ctx`. One
