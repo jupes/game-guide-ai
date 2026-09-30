@@ -145,6 +145,14 @@ chat_user_limiter = _build(
     "CHAT_RATE_LIMIT_PER_USER", "CHAT_RATE_LIMIT_WINDOW_S",
 )
 
+# The Workbench write throttle (agent-forge-harness-531x) is a storage-abuse
+# control, not a cost control: keyed on the account, shared across every
+# campaign, tab and route so switching any of them gains nothing.
+workbench_write_limiter = _build(
+    config.WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT, config.WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S,
+    "WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT", "WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S",
+)
+
 if config.AUTH_TRUSTED_PROXY_HOPS < 0:
     raise ValueError(
         f"AUTH_TRUSTED_PROXY_HOPS must be >= 0, got {config.AUTH_TRUSTED_PROXY_HOPS!r}"
@@ -155,6 +163,12 @@ def reset_all() -> None:
     account_limiter.reset()
     source_limiter.reset()
     chat_user_limiter.reset()
+    workbench_write_limiter.reset()
+
+
+def check_workbench_write(user_id: int) -> None:
+    """Spend one write from `user_id`'s Workbench budget, or raise `RateLimited`."""
+    workbench_write_limiter.check(str(user_id))
 
 
 # An IPv6 address in text form is at most 45 characters; anything longer is not

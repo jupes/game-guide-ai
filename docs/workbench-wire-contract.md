@@ -155,6 +155,13 @@ a generic failure.
 | `group_name_taken` | 409 | no | a group name another live group of the campaign already has, up to case (`btb`). The name is never echoed |
 | `group_cap_reached` | 409 | no | the 51st live group of a campaign (`btb`, SEC-35) |
 
+**Every state-changing Workbench route** may additionally answer `429
+throttled_user` — a per-account write budget (`agent-forge-harness-531x`),
+shared across every campaign, tab and route the account touches, guarding
+against a script that writes without bound. It carries `retry_after_s` and a
+matching `Retry-After` header, exactly as the existing per-user throttles do.
+No UI change: `throttled_user` is already a known code.
+
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
 client has one error path.
