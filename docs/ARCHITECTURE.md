@@ -1331,6 +1331,21 @@ different GMs at the edge can overshoot, because the day check is serialised
 per GM only. Each provider attempt is recorded in the cost ledger under the
 operation `tool_invocation`, with the attempt row's `operation_id`.
 
+**The cap and the day are shared with AI edits** (bead `1kg.5.5`, I-3, I-4).
+Both counts are read through one reader, `service/workbench_load.py`'s
+`WorkbenchLoad`, which the tool admission (`InvocationStores.load`, a required
+field) and the AI edit admission both use: `in_flight` is one `UNION ALL` over
+`campaign.tool_invocations` and `campaign.document_edits`, and `attempts_since`
+counts `campaign.tool_attempts` and `campaign.document_edit_attempts`. So X-5's
+two slots are two operations of either kind, and the pilot day counts edit
+attempts too. Both admissions take the same lock, `(WORKBENCH_IN_FLIGHT, owner)`
+— the tool store's own member and key, taken by `WorkbenchLoad.hold_in_flight_lock`
+on the edit path — so they serialise across tabs and instances. The cap's
+sentence says what holds it: *Two tools are already running.* only when both
+slots are tools, otherwise *Two assistant tasks are already running.* (C-15).
+`tool_invocations.bounded_client` is the one builder of a Workbench provider
+client, for an admitted attempt only; a static test pins its callers (C-24).
+
 **The model.** `resolve_tool_model` is the one place the server chooses the
 model (D-8; bead `iov` gives it the tier mapping), and the client can send none.
 `model_catalog.WORKBENCH_PROVIDERS` is the provider allowlist (SEC-39, S-5:

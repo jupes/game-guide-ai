@@ -42,7 +42,7 @@ attempts — count distinct `operation_id` values if you want turns.
 | `event` | str | Always `provider_attempt`. **This is the filter key** — filter on it, never on message text. |
 | `record_version` | int | `1`. Bumped if the shape changes. |
 | `operation_id` | str | uuid4 hex, one per `/chat` turn, shared by every attempt of that turn. |
-| `operation` | str | `chat_turn` (slice b adds more). |
+| `operation` | str | `chat_turn`; `tool_invocation`, one attempt of a GM tool (bead `1kg.4.1`); or `document_edit`, one attempt of an AI document edit (bead `1kg.5.5`). A tool or edit attempt's `operation_id` is the attempt's own, stored on `campaign.tool_attempts` or `campaign.document_edit_attempts`. |
 | `purpose` | str | One of the six above. |
 | `mode` | str | `sage` \| `spell` \| `rules` \| `gm`. |
 | `alias` | str | The alias **actually handed to the provider client** — not the disclosure label the model picker shows the user. |
