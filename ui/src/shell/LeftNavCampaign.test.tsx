@@ -64,7 +64,8 @@ function stubServer(route: Route) {
   return { fetchImpl, calls, lines: () => calls.map((c) => `${c.method} ${c.url}`) }
 }
 
-const live = {} as { c: CampaignContextValue; nav: AppNavState; user: CurrentUserContextValue; lists: () => number }
+const live = {} as { c: CampaignContextValue; nav: AppNavState; user: CurrentUserContextValue; lists: () => number; onCommit?: (() => void) | undefined }
+/** Its layout effect runs after the DOM of the same commit is written: P11 reads each commit through `live.onCommit`. */
 function Probe(): null {
   const c = useCampaign()
   const nav = useAppNav()
@@ -75,6 +76,7 @@ function Probe(): null {
     live.nav = nav
     live.user = user
     live.lists = () => threads?.store.getSnapshot().size ?? -1
+    live.onCommit?.()
   })
   return null
 }
@@ -145,7 +147,21 @@ function expectNoLiveRegion(): void {
   expect(nav.querySelectorAll('[role="status"], [role="alert"], [role="log"], [aria-live]')).toHaveLength(0)
 }
 
+/** Counts added nodes (or changed text) holding `text`, read from the records
+ * themselves: a row added and removed inside one act() still counts. */
+function watchAdded(text: string): () => number {
+  let hits = 0
+  const scan = (records: MutationRecord[]) => records.forEach((record) => {
+    const nodes = record.type === 'characterData' ? [record.target] : Array.from(record.addedNodes)
+    if (nodes.some((node) => node.textContent?.includes(text) === true)) hits += 1
+  })
+  const observer = new MutationObserver(scan)
+  observer.observe(document.body, { subtree: true, childList: true, characterData: true })
+  return () => { scan(observer.takeRecords()); observer.disconnect(); return hits }
+}
+
 afterEach(() => {
+  live.onCommit = undefined
   vi.restoreAllMocks()
   window.history.replaceState(null, '', '/')
 })
@@ -281,25 +297,45 @@ describe('the campaign thread list', () => {
       ?.reply({ status: 200, body: threadPage([threadBody('cmp_A-1')]) }))
     const control = await mount({ route: heldA })
     await waitFor(() => expect(control.server.lines()).toContain('GET /conversations?campaign_id=cmp_A'))
+    const controlSeen = watchAdded('Thread cmp_A-')
     replyA(control.server.calls)
     expect(await screen.findByRole('button', { name: 'Thread cmp_A-1' })).toBeInTheDocument()
+    expect(controlSeen()).toBeGreaterThan(0)
     cleanup()
 
     const { server } = await mount({ route: heldA })
     await waitFor(() => expect(server.lines()).toContain('GET /conversations?campaign_id=cmp_A'))
-    const seen: string[] = []
-    const observer = new MutationObserver(() => {
-      if (document.body.textContent?.includes('Thread cmp_A-') === true) seen.push('an A row was drawn')
-    })
-    observer.observe(document.body, { subtree: true, childList: true, characterData: true })
+    const seen = watchAdded('Thread cmp_A-')
     await act(async () => { await live.c.selectCampaign(CampaignSchema.parse(campaignBody('cmp_B'))) })
     expect(await screen.findByRole('button', { name: 'Thread cmp_B-1' })).toBeInTheDocument()
     replyA(server.calls)
     await act(async () => {})
-    observer.disconnect()
-    expect(seen).toEqual([])
+    expect(seen()).toBe(0)
     expect(screen.getByRole('button', { name: 'Thread cmp_B-2' })).toBeInTheDocument()
   })
+
+  it.each(['a re-read', 'a pick from the loaded list'] as const)(
+    "after A's rows are drawn, a switch to B by %s never commits an A row beside B's line (P11, LIB-25)",
+    async (path) => {
+      const page = { schema_version: 1, items: [campaignBody('cmp_A'), campaignBody('cmp_B')], next_cursor: null }
+      const { server } = await mount({ route: serve(({ url }) => (url === '/campaigns' && path !== 'a re-read' ? { status: 200, body: page } : undefined)) })
+      expect(await screen.findByRole('button', { name: 'Thread cmp_A-1' })).toBeInTheDocument()
+      if (path !== 'a re-read') {
+        act(() => live.c.loadCampaigns())
+        await waitFor(() => expect(live.c.list.kind).toBe('ready'))
+      }
+      const commits: string[] = []
+      live.onCommit = () => {
+        const text = document.body.textContent ?? ''
+        if (text.includes('Campaign: Name of cmp_B')) commits.push(text.includes('Thread cmp_A-') ? 'B line with an A row' : 'B line')
+      }
+      await act(async () => { await live.c.selectCampaign(CampaignSchema.parse(campaignBody('cmp_B'))) })
+      expect(await screen.findByRole('button', { name: 'Thread cmp_B-1' })).toBeInTheDocument()
+      expect(server.lines().filter((l) => l === 'GET /campaigns/cmp_B')).toHaveLength(path === 'a re-read' ? 1 : 0)
+      expect(commits.length).toBeGreaterThan(0)
+      expect(commits.filter((c) => c !== 'B line')).toEqual([])
+    },
+  )
 
   it('loading, failure, Retry and Load more: visible text, focus kept, and none of them navigates (T2-11)', async () => {
     const onNavigate = vi.fn()
