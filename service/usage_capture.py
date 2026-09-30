@@ -97,6 +97,10 @@ OPERATION_CHAT_TURN = "chat_turn"
 #: `operation_id` is the attempt's own, minted before any provider work and
 #: stored on `campaign.tool_attempts`, which is how the ledger links to it.
 OPERATION_TOOL_INVOCATION = "tool_invocation"
+#: One attempt of an AI document edit (agent-forge-harness-1kg.5.5). Its
+#: `operation_id` is the attempt's own, minted before any provider work and
+#: stored on `campaign.document_edit_attempts`, as a tool attempt's is.
+OPERATION_DOCUMENT_EDIT = "document_edit"
 
 PURPOSE_EMBEDDING = "embedding"
 PURPOSE_ANSWER = "answer"
