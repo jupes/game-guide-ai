@@ -65,12 +65,13 @@ function stubServer(route: Route) {
 }
 
 const live = {} as { c: CampaignContextValue; nav: AppNavState; user: CurrentUserContextValue; lists: () => number; onCommit?: (() => void) | undefined }
-/** Its layout effect runs after the DOM of the same commit is written: P11 reads each commit through `live.onCommit`. */
+/** Re-renders on every campaign-context and thread-store change, and its layout effect runs after the DOM of the same commit is written: P11 reads each commit through `live.onCommit`. */
 function Probe(): null {
   const c = useCampaign()
   const nav = useAppNav()
   const user = useCurrentUser()
   const threads = React.useContext(CampaignThreadsContext)
+  React.useSyncExternalStore(threads?.store.subscribe ?? (() => () => {}), threads?.store.getSnapshot ?? (() => null))
   React.useLayoutEffect(() => {
     live.c = c
     live.nav = nav
