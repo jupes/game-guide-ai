@@ -142,6 +142,17 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     expect(await screen.findByText('Campaign: Name of cmp_A')).toBeInTheDocument()
   })
 
+  it("LeftNav's Choose a campaign opens the tavern from uncampaigned GM, and Back returns to it (T-8b)", async () => {
+    boot('/')
+    const before = window.history.length
+    await openTavernFromGm()
+    expect(window.location.pathname).toBe('/tavern')
+    expect(window.history.length).toBe(before + 2) // workspace, then tavern
+    act(() => { window.history.back() })
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace'))
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'GM' })[0]).toHaveAttribute('aria-pressed', 'true'))
+  })
+
   it('closes a legacy GM conversation on the pick; the first campaign send makes its own thread, naming neither the legacy id (RAIL-26)', async () => {
     const server = boot('/')
     await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
