@@ -384,6 +384,20 @@ def test_an_anonymous_attachment_is_refused_before_its_body_is_read(declared: bo
     assert channel.pulled == 0
 
 
+@pytest.mark.real_auth
+@pytest.mark.parametrize("declared", [True, False])
+@pytest.mark.parametrize("closed", [True, False], ids=["not-the-schema", "not-json"])
+def test_an_anonymous_chat_is_refused_before_its_body_is_read(declared: bool, closed: bool) -> None:
+    """PR #211 review M1 (agent-forge-harness-dl7x): after ust7, /chat was the
+    one route left that parsed an anonymous body, a whole default one."""
+    app.dependency_overrides[get_auth_store] = lambda: InMemoryAuthStore()
+    app.dependency_overrides[get_service] = lambda: _Answering()
+    channel = Channel(_empty_objects(DEFAULT_MAX_BODY_BYTES, closed=closed))
+    answer = drive(app, "POST", "/chat", channel, declared=declared)
+    assert (answer.status, answer.body) == (401, b'{"detail":"authentication required"}')
+    assert channel.pulled == 0
+
+
 MARKER = "private-marker-3f9c"
 
 

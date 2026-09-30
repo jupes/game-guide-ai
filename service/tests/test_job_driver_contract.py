@@ -180,8 +180,9 @@ _Row = tuple[str, str, str, int | None, bool, tuple[str, ...] | None]
 _PRE_BEAD: dict[tuple[str, str], _Row] = {
     ("GET", "/healthz"): ("APIRoute", "healthz", "dict", None, True, ()),
     ("GET", "/models"): ("APIRoute", "get_models", "dict", None, True, ()),
+    # The body is read by a dependency, after the session check (agent-forge-harness-dl7x).
     ("POST", "/chat"): ("APIRoute", "chat", "ChatResponse", None, True, (
-        "get_service", "get_message_store", "get_metrics_sink", "require_session",
+        "_chat_request", "get_service", "get_message_store", "get_metrics_sink", "require_session",
         "get_timeline_store", "get_timeline_database")),
     ("POST", "/metrics/ui"): ("APIRoute", "record_ui_metrics", "dict", 202, True, ("get_metrics_sink",)),
     ("GET", "/conversations/{conversation_id}/messages"): (
