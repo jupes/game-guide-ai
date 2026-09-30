@@ -20,8 +20,9 @@ or failure, including every retried attempt and the final failure. It is written
 `service/usage_capture.py` as one JSON line on stdout, which Cloud Run parses into
 `jsonPayload`.
 
-Five capture points produce them inside a live `POST /chat` turn, and a sixth
-(`document_generation`) inside a GM tool's invocation once `1kg.4.4` runs it:
+Five capture points produce them inside a live `POST /chat` turn, and two more
+inside a GM tool's invocation: `document_generation` once `1kg.4.4` runs it, and
+`card_generation` once a card tool (`1kg.4.3`) is enabled:
 
 | `purpose` | What it paid for |
 | --- | --- |
@@ -31,6 +32,7 @@ Five capture points produce them inside a live `POST /chat` turn, and a sixth
 | `spell_structuring` | The structured spell card (spell mode) |
 | `statblock_structuring` | The structured NPC/stat block (sage/GM, behind the cost heuristic) |
 | `document_generation` | A GM tool's generated document (`service/document_generation.py`, bead `1kg.5.4`): one record per attempt, retries included |
+| `card_generation` | A GM card tool's generated card — monster, loot, names, rules or hooks (bead `1kg.4.3`): one record per attempt, retries included. The rules tool's query embedding is recorded as `embedding` under the same tool operation |
 
 There is **no one-per-turn record**. The shared `operation_id` is what groups a turn's
 attempts — count distinct `operation_id` values if you want turns.
@@ -116,6 +118,8 @@ turn**, classifying what happened to it.
 
 `document_generation` (bead `1kg.5.4`) records exactly one outcome per generation that reached a provider: `produced`, `parse_failure` (the output failed a check; the record carries no reason, and the closed code exists only on the `InvalidGeneration` raised to the caller), or `none` (the provider call failed, or a cancellation stopped a retry). A request refused before any call records nothing, and it never produces `skipped_by_gate`.
 
+`card_generation` (bead `1kg.4.3`) follows the same rule — one outcome per generation that reached a provider: `produced`, `parse_failure` or `none` (a rules answer that cites none of the passages it was handed is `none`: the provider answered, and there is nothing to ground a card on). Its one gate is the rules tool's retrieval: when the corpus does not ground the brief, it records exactly one `skipped_by_gate` and no generation attempt, and the invocation fails `not_in_sources`. A request refused before any call records nothing.
+
 It shares `operation_id` with that turn's `provider_attempt` records (both
 come from the same `Operation`) — join on it to see "one call, no record" for
 a skip — but it is a **separate `event`, and therefore a separate filter**:
@@ -130,7 +134,7 @@ querying `jsonPayload.event="provider_attempt"` will never return a
 | `record_version` | int | `1`. |
 | `operation_id` | str | Shared with this turn's `provider_attempt` records. |
 | `operation` | str | `chat_turn`. |
-| `purpose` | str | One of `suggestions`, `spell_structuring`, `statblock_structuring`, `document_generation`. |
+| `purpose` | str | One of `suggestions`, `spell_structuring`, `statblock_structuring`, `document_generation`, `card_generation`. |
 | `mode` | str | `sage` \| `spell` \| `rules` \| `gm`. |
 | `outcome` | str | One of `produced`, `none`, `parse_failure`, `skipped_by_gate` — see the table above. |
 | `billed_account_id` | int | The account that pays. |
