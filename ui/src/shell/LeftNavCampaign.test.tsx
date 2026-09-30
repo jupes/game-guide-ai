@@ -138,6 +138,13 @@ function roleTree(): string {
     .join('\n')
 }
 
+/** Brief section 11 (review pr212 M-1): LeftNav's campaign states are visible
+ * text, never a live region; the pane's one announcer is ChatPane's. */
+function expectNoLiveRegion(): void {
+  const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+  expect(nav.querySelectorAll('[role="status"], [role="alert"], [role="log"], [aria-live]')).toHaveLength(0)
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
   window.history.replaceState(null, '', '/')
@@ -205,6 +212,7 @@ describe('the campaign line (section 7.7, critic 5)', () => {
     for (const answer of answers) {
       const { server } = await mount({ route: serve(({ url }) => (url === '/campaigns/cmp_A' ? answer : undefined)) })
       expect(await screen.findByText("That campaign isn't available.")).toBeInTheDocument()
+      expectNoLiveRegion()
       expect(server.lines().filter((l) => l.includes('/conversations'))).toEqual([])
       trees.push(roleTree())
       cleanup()
@@ -217,17 +225,21 @@ describe('the campaign line (section 7.7, critic 5)', () => {
   it('reads Loading campaign…, then the failure with a Retry that stays mounted and keeps focus through its request (§11)', async () => {
     const { server } = await mount({ route: serve(({ url }) => (url === '/campaigns/cmp_A' ? 'defer' : undefined)) })
     expect(screen.getByText('Loading campaign…')).toBeInTheDocument()
+    expectNoLiveRegion()
     act(() => server.calls[0].reply({ status: 503 }))
     const retry = await screen.findByRole('button', { name: 'Retry' })
     expect(screen.getByText("Couldn't load campaigns")).toBeInTheDocument()
+    expectNoLiveRegion()
     await userEvent.click(retry)
     expect(server.lines().filter((l) => l === 'GET /campaigns/cmp_A')).toHaveLength(2)
     expect(retry).toHaveAttribute('aria-disabled', 'true')
     expect(retry).toHaveFocus()
+    expectNoLiveRegion()
     await userEvent.click(retry)
     expect(server.lines().filter((l) => l === 'GET /campaigns/cmp_A')).toHaveLength(2)
     act(() => server.calls[1].reply({ status: 200, body: campaignBody('cmp_A') }))
     expect(await screen.findByText('Campaign: Name of cmp_A')).toHaveFocus()
+    expectNoLiveRegion()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
   })
 
@@ -304,13 +316,17 @@ describe('the campaign thread list', () => {
     })
     const retry = await screen.findByRole('button', { name: 'Retry' })
     expect(screen.getByText("Couldn't load conversations")).toBeInTheDocument()
+    expectNoLiveRegion()
     await userEvent.click(retry)
     expect(screen.getByText('Loading conversations…')).toBeInTheDocument()
     expect(retry).toHaveAttribute('aria-disabled', 'true')
     expect(retry).toHaveFocus()
+    expectNoLiveRegion()
     act(() => server.calls[server.calls.length - 1].reply({ status: 200, body: threadPage([threadBody('cmp_A-1')], 'more_1') }))
     expect(await screen.findByRole('button', { name: 'Thread cmp_A-1' })).toBeInTheDocument()
     expect(screen.getByText('Conversations')).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeInTheDocument()
+    expectNoLiveRegion()
     await userEvent.click(screen.getByRole('button', { name: 'Load more' }))
     expect(await screen.findByRole('button', { name: 'Thread cmp_A-3' })).toBeInTheDocument()
     expect(server.lines().at(-1)).toBe('GET /conversations?campaign_id=cmp_A&cursor=more_1')
@@ -330,9 +346,11 @@ describe('the campaign thread list', () => {
     await userEvent.type(input, 'The Smuggler Queen{Enter}')
     await waitFor(() => expect(input).toHaveAttribute('aria-invalid', 'true'))
     expect(input).toHaveAccessibleDescription('A title is 1 to 200 characters on one line.')
+    expectNoLiveRegion()
     await userEvent.type(input, 's{Enter}')
     expect(await screen.findByText("Couldn't rename the conversation.")).toBeInTheDocument()
     expect(input).toHaveValue('The Smuggler Queens')
+    expectNoLiveRegion()
     expect(input).not.toHaveAttribute('aria-invalid')
     expectNotStored('Smuggler Queen')
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
