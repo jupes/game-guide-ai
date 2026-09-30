@@ -15,7 +15,7 @@ from __future__ import annotations
 import ast
 import gc
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -137,6 +137,19 @@ def a_twin(*script: str | BaseException, finish_reason: str | None = None) -> Tw
 
 def good(tool: ToolId, **changes: Any) -> str:
     return fx.envelope({**FIELDS[tool], **changes})
+
+
+#: What no log, value or repr may carry, on any path: the private-text canary, and any
+#: name of a model, its provider or its public tier (SEC-20, D-9).
+PRIVATE_OR_MODEL = frozenset({
+    CANARY, *CATALOG, *(p.display_name for p in CATALOG.values()),
+    *(p.label for p in PUBLIC_MODELS.values()), "traveller", "adventurer", "loremaster", "openai",
+})
+
+
+def leaks(texts: Iterable[str]) -> list[tuple[str, str]]:
+    """Each (word, text) where a text carries a word of `PRIVATE_OR_MODEL`, ignoring case."""
+    return [(word, text) for text in texts for word in PRIVATE_OR_MODEL if word.casefold() in text.casefold()]
 
 
 @pytest.fixture(autouse=True)
@@ -266,16 +279,20 @@ _REACHABLE = [case for case in fx.INVALID_CASES if case.doc_type in (fx.NPC, fx.
 @pytest.mark.parametrize("case", _REACHABLE, ids=lambda c: f"{c.doc_type.value}-{c.code.value}")
 def test_n4_every_invalid_output_is_output_refused_unchained_and_logged_by_code(
         case: fx.InvalidCase, caplog: pytest.LogCaptureFixture) -> None:
-    """Kills: re-raising `InvalidGeneration` (→ backend); chaining the cause."""
+    """Kills: re-raising `InvalidGeneration` (→ backend); chaining the cause;
+    the brief, the campaign or the alias in any refusal log (SEC-20, D-9)."""
     tool = ToolId.NPC if case.doc_type is fx.NPC else ToolId.ENCOUNTER
     twin = a_twin(case.output, finish_reason=case.finish_reason)
+    caplog.set_level(logging.DEBUG)
     caplog.set_level(logging.DEBUG, logger="service.document_tools")
+    campaign = twin.campaign(name=f"Camp {CANARY}", tone=f"tone {CANARY}")
     with pytest.raises(OutputRefused) as raised:
-        DocumentToolExecutor(tool, twin.stores).run(twin.ctx(tool, twin.campaign()))
+        DocumentToolExecutor(tool, twin.stores).run(twin.ctx(tool, campaign, brief=f"brief {CANARY}"))
     assert (raised.value.__cause__, raised.value.__context__) == (None, None)
     assert failure_for(raised.value).code is ErrorCode.PROVIDER_FAILED
     [logged] = [r.getMessage() for r in caplog.records if r.name == "service.document_tools"]
     assert f"code={case.code.value}" in logged
+    assert leaks(r.getMessage() for r in caplog.records) == []
     assert twin.documents() == {}
 
 
@@ -291,6 +308,28 @@ def test_n5_a_refusal_other_than_the_deadline_propagates_as_itself_and_is_an_out
     assert raised.value.code is dg.GenerationRefusal.INVALID_CONTEXT
     assert failure_for(raised.value).code is ErrorCode.BACKEND_UNAVAILABLE
     assert any("code=invalid_context" in r.getMessage() for r in caplog.records)
+    assert twin.llm.calls == []
+
+
+@pytest.mark.parametrize("code", [c for c in dg.GenerationRefusal if c is not dg.GenerationRefusal.DEADLINE],
+                         ids=lambda c: c.value)
+def test_n5_a_refusal_before_the_provider_logs_its_code_and_nothing_private_or_a_model(
+        code: dg.GenerationRefusal, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """Kills: the brief, the campaign or the alias in the refusal log (SEC-20, D-9)."""
+
+    def refused(request: dg.GenerationRequest, **kwargs: Any) -> dg.GeneratedDocument:
+        raise dg.GenerationRefused(code)
+
+    monkeypatch.setattr(document_tools, "generate_document", refused)
+    twin = a_twin(good(ToolId.NPC))
+    caplog.set_level(logging.DEBUG)
+    ctx = twin.ctx(ToolId.NPC, twin.campaign(name=f"Camp {CANARY}", tone=f"tone {CANARY}"),
+                   brief=f"brief {CANARY}")
+    with pytest.raises(dg.GenerationRefused):
+        DocumentToolExecutor(ToolId.NPC, twin.stores).run(ctx)
+    logged = [record.getMessage() for record in caplog.records]
+    assert any(f"code={code.value}" in line for line in logged), "the positive control: the refusal was logged"
+    assert leaks(logged) == []
     assert twin.llm.calls == []
 
 
@@ -414,7 +453,8 @@ def test_n9_finish_refuses_anything_but_its_own_placeholder() -> None:
     placeholder = executor.run(ctx)
     real_link = placeholder.model_copy(update={"document": placeholder.document.model_copy(
         update={"document_id": "doc_" + "r" * 22})})
-    for wrong in (real_link, placeholder.model_dump(mode="json")):
+    another_tools = placeholder.model_copy(update={"tool_id": ToolId.ENCOUNTER})
+    for wrong in (real_link, another_tools, placeholder.model_dump(mode="json")):
         with pytest.raises(LookupError):
             twin.finish(executor, ctx, wrong)
     assert twin.documents() == {}
@@ -504,12 +544,10 @@ def test_n12_no_value_log_or_repr_carries_private_text_or_a_model(caplog: pytest
     placeholder = executor.run(ctx)
     carried = repr(executor._carried.get(ctx))
     finished = twin.finish(executor, ctx, placeholder)
-    words = {CANARY, *CATALOG, *(p.display_name for p in CATALOG.values()),
-             *(p.label for p in PUBLIC_MODELS.values()), "traveller", "adventurer", "loremaster", "openai"}
     seen = [placeholder.model_dump_json(), finished.model_dump_json(), repr(executor), carried,
             repr(twin.stores), repr(ctx), *(record.getMessage() for record in caplog.records)]
     assert any("document tool finished" in text for text in seen), "the positive control: the log was captured"
-    assert [(word, text) for text in seen for word in words if word.casefold() in text.casefold()] == []
+    assert leaks(seen) == []
 
 
 # ── N-13, N-14: which tools, and what the module may import ──────────────────
