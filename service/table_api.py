@@ -50,6 +50,13 @@ responses, TA-6/TA-7), added by `TableRoute` to whatever built the answer, once.
 No route-level `Content-Security-Policy` or `Referrer-Policy`: these are JSON
 answers that never redirect, and the table page's policy is `1kg.7.4`'s.
 
+**The digest lookup is throttled per source** (release review S6,
+agent-forge-harness-6621). A grant-shaped cookie costs a database round trip
+before anyone is known, so each one spends an attempt from the auth source
+budget (`ratelimit.source_limiter`) first; past it the answer is `429
+throttled_user` with its wait, and no lookup runs. A request with no cookie, or
+one that is not a grant, spends nothing.
+
 The grant is 32 CSPRNG bytes; only its digest is stored (SEC-5). It leaves the
 server in exactly one place, the mint's `Set-Cookie` — never a body, a URL, a
 log line or a metric label. The cookie's name is spelled here and nowhere else
@@ -75,6 +82,7 @@ from starlette.types import Message, Receive, Scope, Send
 import config
 
 from . import campaign_identity as ident
+from . import ratelimit
 from .auth_store import AuthStore
 from .campaign_store import MissingParent, ScreenLimit
 from .session import SessionData
@@ -111,6 +119,7 @@ _STALE = "stale_screen_grant"
 
 UNAVAILABLE_MESSAGE = "The table is briefly unavailable. Try again."
 SCREEN_LIMIT_MESSAGE = "This table already has as many screens as it can."
+THROTTLED_MESSAGE = "Too many requests just now. Wait, then try again."
 
 type SessionCheck = Callable[[Request, AuthStore], SessionData]
 
@@ -210,13 +219,33 @@ def fetch_metadata(request: Request) -> None:
 # ── Refusals this module builds (none of them a 401, 403 or 404) ─────────────
 
 
-def _refusal(status: int, code: ErrorCode, message: str, *, retryable: bool) -> StarletteHTTPException:
-    body = ErrorBody(detail=ErrorInfo(code=code, message=message, retryable=retryable))
-    return StarletteHTTPException(status_code=status, detail=body.model_dump(mode="json", exclude_none=True)["detail"])
+def _refusal(
+    status: int, code: ErrorCode, message: str, *, retryable: bool, retry_after_s: int | None = None
+) -> StarletteHTTPException:
+    info = ErrorInfo(code=code, message=message, retryable=retryable, retry_after_s=retry_after_s)
+    detail = ErrorBody(detail=info).model_dump(mode="json", exclude_none=True)["detail"]
+    headers = None if retry_after_s is None else {"Retry-After": str(retry_after_s)}
+    return StarletteHTTPException(status_code=status, detail=detail, headers=headers)
 
 
 def _unavailable() -> StarletteHTTPException:
     return _refusal(503, ErrorCode.BACKEND_UNAVAILABLE, UNAVAILABLE_MESSAGE, retryable=True)
+
+
+def _throttle(request: Request) -> None:
+    """One attempt from the auth source budget, before the digest lookup (S6).
+    Past it, `429 throttled_user` with its wait: like a 503, it decides nothing
+    about the grant and deletes nothing. Not logged — the platform's request log
+    already has every 429, and a line each is what a flood would multiply."""
+    refused: ratelimit.RateLimited | None = None
+    try:
+        ratelimit.source_limiter.check(ratelimit.client_source(request))
+    except ratelimit.RateLimited as exc:
+        refused = exc
+    if refused is not None:
+        raise _refusal(
+            429, ErrorCode.THROTTLED_USER, THROTTLED_MESSAGE, retryable=True, retry_after_s=refused.retry_after
+        )
 
 
 def _guarded[T](work: Callable[[], T]) -> T:
@@ -271,9 +300,10 @@ def build_router(
         sessions: TableSessions | None = Depends(lifecycle),
         now: datetime = Depends(get_clock),
     ) -> GrantCookie:
-        """The grant cookie, resolved with one digest lookup (SEC-46). One that
-        is not live is marked for deletion; a database that cannot answer
-        decides nothing, and deletes nothing."""
+        """The grant cookie, resolved with one digest lookup (SEC-46), which is
+        throttled per source (S6). One that is not live is marked for deletion;
+        a database that cannot answer, or a throttled source, decides nothing,
+        and deletes nothing."""
         secret = request.cookies.get(SCREEN_COOKIE)
         if secret is None:
             return GrantCookie()
@@ -282,6 +312,7 @@ def build_router(
             return GrantCookie(secret)
         if sessions is None:
             raise _unavailable()
+        _throttle(request)
         live = _guarded(lambda: sessions.resolve_screen(secret, now=now))
         if live is None:
             _forget(request)
