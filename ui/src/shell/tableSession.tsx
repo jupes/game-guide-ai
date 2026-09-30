@@ -11,9 +11,11 @@
  * never triggers an End (DV-6, TA-7(5), T4-4); a 403 offers no Retry and goes
  * to `onStartRefused` (`ecr`). End is offered whenever a live session is known,
  * whatever is pending, for any tier (X-3, T4-3), and delivered by an
- * `EndCourier` that outlives the scope and this provider. One status re-read
- * when the `ends_at` timer fires, never a poll, and from then on no
- * `liveSession` for that `ends_at`, whatever the re-read says (SEC-42, T4-7).
+ * `EndCourier` that outlives the scope and this provider, but not the account.
+ * A status read sent before a Start or End answer never overwrites it. No
+ * `liveSession` once `ends_at` is past on this clock: checked when an answer
+ * lands and again when the `ends_at` timer fires, which re-reads the status
+ * once, never a poll; a re-read with the same `ends_at` changes nothing (SEC-42, T4-7).
  * No Rotate, no screen UI, no timeline re-read, no web storage.
  */
 
@@ -47,9 +49,10 @@ export interface TableSessionView {
   readonly endedAt: string | null
 }
 
-/** For `1ir` and `1kg.7`: non-null while the session is live, until its
- * `ends_at` timer fires on this clock (SEC-42, T4-7). A late timer (a suspended
- * tab) withdraws it late; the server checks `ends_at` on every frame. */
+/** For `1ir` and `1kg.7`: non-null while the session is live and not past
+ * `ends_at` on this clock, checked when an answer lands and when the `ends_at`
+ * timer fires (SEC-42, T4-7). A late timer (a suspended tab) withdraws it late;
+ * the server checks `ends_at` on every frame. */
 export interface LiveSession {
   readonly sessionId: string
   readonly campaignId: string
@@ -84,15 +87,32 @@ interface Snap {
   readonly problem: SessionProblem | null
   /** `session_id@ends_at`, once re-read at expiry. */
   readonly expiryReadFor: string | null
+  /** `session_id@ends_at`, seen past `ends_at` on this clock: never live again. */
+  readonly expiredFor: string | null
 }
 
 /** A live session is past its `ends_at` once the timer for this mark has fired. */
 const expiryMark = (session: TableSession): string => `${session.session_id}@${session.ends_at}`
 
-const EMPTY: Snap = { token: null, read: 'loading', session: null, starting: false, startCommand: null, problem: null, expiryReadFor: null }
+/** Marks a live session already past `ends_at` on this clock as it is applied. */
+const pastDue = (session: TableSession | null): Partial<Snap> =>
+  session?.state === 'live' && Date.parse(session.ends_at) <= Date.now() ? { expiredFor: expiryMark(session) } : {}
+
+const EMPTY: Snap = {
+  token: null,
+  read: 'loading',
+  session: null,
+  starting: false,
+  startCommand: null,
+  problem: null,
+  expiryReadFor: null,
+  expiredFor: null,
+}
 
 class SessionStore extends Emitter {
   private snap: Snap = EMPTY
+  /** Start and End answers applied so far: a read sent before the last one is older than it. */
+  private answers = 0
 
   getSnapshot = (): Snap => this.snap
 
@@ -112,8 +132,10 @@ class SessionStore extends Emitter {
   }
 
   private async read(token: string, campaignId: string, fetchImpl: typeof fetch): Promise<void> {
+    const since = this.answers
     const result = await readTableSession(campaignId, fetchImpl)
-    if (result.kind === 'ok') this.patch(token, { read: 'ready', session: result.session, problem: null })
+    if (this.answers !== since) return
+    if (result.kind === 'ok') this.patch(token, { read: 'ready', session: result.session, problem: null, ...pastDue(result.session) })
     else if (result.kind === 'unavailable' || result.kind === 'refused') this.patch(token, { read: 'failed', problem: { kind: 'unavailable' } })
     else if (result.kind !== 'unauthorized') this.patch(token, { read: 'failed', problem: { kind: 'load_failed' } })
   }
@@ -122,7 +144,7 @@ class SessionStore extends Emitter {
     const { session } = this.snap
     const mark = session === null ? null : expiryMark(session)
     if (this.snap.token !== token || session?.state !== 'live' || this.snap.expiryReadFor === mark) return
-    this.patch(token, { expiryReadFor: mark, read: 'loading' })
+    this.patch(token, { expiryReadFor: mark, expiredFor: mark, read: 'loading' })
     void this.read(token, session.campaign_id, fetchImpl)
   }
 
@@ -140,10 +162,12 @@ class SessionStore extends Emitter {
     }
     switch (result.kind) {
       case 'ok':
-        return done('started', { startCommand: null, session: result.session, read: 'ready', problem: null })
+        this.answers += 1
+        return done('started', { startCommand: null, session: result.session, read: 'ready', problem: null, ...pastDue(result.session) })
       case 'refused':
+        done('refused', { startCommand: null, problem: { kind: 'start_refused' } })
         onRefused?.(result.code)
-        return done('refused', { startCommand: null, problem: { kind: 'start_refused' } })
+        return 'refused'
       case 'unavailable':
       case 'live_elsewhere':
         return done(result.kind, { startCommand: null, problem: { kind: result.kind } })
@@ -171,8 +195,12 @@ class SessionStore extends Emitter {
   ended(sessionId: string, outcome: EndOutcome): void {
     const { token, session } = this.snap
     if (token === null || session?.session_id !== sessionId) return
-    if (outcome.kind === 'gone') this.patch(token, { session: null, read: 'ready' })
-    if (outcome.kind !== 'ended') return
+    if (outcome.kind === 'signed_out') return
+    this.answers += 1
+    if (outcome.kind === 'gone') {
+      this.patch(token, { session: null, read: 'ready' })
+      return
+    }
     const stood: TableSession = outcome.session ?? { ...session, state: 'ended', ended_at: new Date().toISOString(), screens: [] }
     this.patch(token, { session: stood, read: 'ready', problem: null })
   }
@@ -227,6 +255,7 @@ export function TableSessionProvider({
   const ending = useSyncExternalStore(courier.subscribe, () => (known === null ? 'idle' : courier.status(known.session_id)))
 
   useEffect(() => store.enter(token, campaignId, fetchImpl), [store, token, campaignId, fetchImpl])
+  useEffect(() => courier.retain(userId), [courier, userId])
 
   const liveEndsAt = known?.state === 'live' ? known.ends_at : null
   useEffect(() => {
@@ -240,7 +269,7 @@ export function TableSessionProvider({
     if (token === null || campaignId === null) return INERT
     const shown = current ?? { ...EMPTY, token }
     const state = shown.read === 'failed' ? 'failed' : (known?.state ?? (shown.read === 'loading' ? 'loading' : 'none'))
-    const live = state === 'live' && known !== null && shown.expiryReadFor !== expiryMark(known)
+    const live = state === 'live' && known !== null && shown.expiredFor !== expiryMark(known)
     return {
       state,
       session: known && {
@@ -260,14 +289,14 @@ export function TableSessionProvider({
       start: () => store.start(token, campaignId, fetchImpl, onStartRefused),
       end: () => {
         if (known?.state !== 'live') return skipped()
-        return courier.send(known.campaign_id, known.session_id, fetchImpl).then((outcome) => {
+        return courier.send(known.campaign_id, known.session_id, fetchImpl, userId).then((outcome) => {
           store.ended(known.session_id, outcome)
           return outcome.kind
         })
       },
       retry: () => store.retry(token, campaignId, fetchImpl, onStartRefused),
     }
-  }, [token, campaignId, current, known, ending, store, courier, fetchImpl, onStartRefused])
+  }, [token, campaignId, current, known, ending, store, courier, fetchImpl, onStartRefused, userId])
 
   return <TableSessionContext.Provider value={value}>{children}</TableSessionContext.Provider>
 }

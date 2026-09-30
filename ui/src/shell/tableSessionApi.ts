@@ -122,6 +122,8 @@ const BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000]
 export const MAX_TIMER_MS = 2_147_483_647
 
 interface EndJob {
+  /** The account that pressed End; another account never sends it (I-5). */
+  readonly account: string | null
   readonly campaignId: string
   readonly sessionId: string
   readonly commandId: string
@@ -137,7 +139,8 @@ interface EndJob {
  * Delivers Ends: one command id per session, retried after 1, 2, 4, 8, 16 s and
  * then every 30 s (or a 429's longer `retry_after_s`) until a 2xx, a 404 or a
  * 401. Keyed by session, not scope or component, so it keeps going after a
- * campaign switch and after its provider unmounts, until then or the tab closes.
+ * campaign switch and after its provider unmounts, until then, an account
+ * change (`retain`) or the tab closes.
  */
 export class EndCourier extends Emitter {
   private readonly jobs = new Map<string, EndJob>()
@@ -148,7 +151,8 @@ export class EndCourier extends Emitter {
   }
 
   /** A second press joins an End in flight and sends a waiting one at once. */
-  send(campaignId: string, sessionId: string, fetchImpl: typeof fetch = fetch): Promise<EndOutcome> {
+  send(campaignId: string, sessionId: string, fetchImpl: typeof fetch = fetch, account: string | null = null): Promise<EndOutcome> {
+    this.retain(account)
     const known = this.jobs.get(sessionId)
     if (known !== undefined) {
       if (!known.sending) this.attempt(known)
@@ -156,10 +160,22 @@ export class EndCourier extends Emitter {
     }
     let settle: (outcome: EndOutcome) => void = () => undefined
     const done = new Promise<EndOutcome>((resolve) => (settle = resolve))
-    const job: EndJob = { campaignId, sessionId, commandId: mintCommandId(), fetchImpl, done, settle, failures: 0, sending: false, timer: null }
+    const job: EndJob = { account, campaignId, sessionId, commandId: mintCommandId(), fetchImpl, done, settle, failures: 0, sending: false, timer: null }
     this.jobs.set(sessionId, job)
     this.attempt(job)
     return done
+  }
+
+  /** Drops every End another account pressed: `signed_out`, never sent again,
+   * and an answer still in flight is ignored (I-5, as a 401 would). */
+  retain(account: string | null): void {
+    const others = [...this.jobs.values()].filter((job) => job.account !== account)
+    for (const job of others) {
+      if (job.timer !== null) clearTimeout(job.timer)
+      this.jobs.delete(job.sessionId)
+      job.settle({ kind: 'signed_out' })
+    }
+    if (others.length > 0) this.emit()
   }
 
   private attempt(job: EndJob): void {
@@ -172,6 +188,7 @@ export class EndCourier extends Emitter {
   }
 
   private answered(job: EndJob, result: TableSessionResult): void {
+    if (this.jobs.get(job.sessionId) !== job) return
     job.sending = false
     if (result.kind === 'ok' || result.kind === 'unavailable' || result.kind === 'unauthorized') {
       this.jobs.delete(job.sessionId)

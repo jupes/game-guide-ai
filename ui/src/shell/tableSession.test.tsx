@@ -422,6 +422,162 @@ describe('TableSessionProvider', () => {
   })
 })
 
+describe('TableSessionProvider: review #198 round 3', () => {
+  it('H-1: a Start after a finished Start is a new intent with a new command id (the server replays by command id)', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(null))
+    void t.now().start()
+    await flush()
+    await t.answer(200, envelope(LIVE))
+    void t.now().end()
+    await flush()
+    await t.answer(200, envelope(ENDED))
+    expect(t.now().state).toBe('ended')
+    void t.now().start()
+    await flush()
+    const starts = t.posts().filter((call) => call.body?.action === 'start')
+    expect(starts).toHaveLength(2)
+    expect(starts[1].body?.command_id).not.toBe(starts[0].body?.command_id)
+  })
+
+  it('M-1: a live read whose ends_at is already past on this clock never exposes a liveSession, and is still re-read once', async () => {
+    vi.setSystemTime(Date.parse('2026-09-29T22:00:00Z'))
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    expect(t.now()).toMatchObject({ state: 'live', liveSession: null })
+    expect(t.seen.every((value) => value.liveSession === null)).toBe(true)
+    await advance(0)
+    expect(t.gets()).toHaveLength(2)
+    await t.answer(200, envelope(LIVE))
+    await advance(24 * HOUR)
+    expect(t.gets()).toHaveLength(2)
+    expect(t.seen.every((value) => value.liveSession === null)).toBe(true)
+  })
+
+  it('M-1: a Start answer whose ends_at is already past on this clock never exposes a liveSession', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(null))
+    void t.now().start()
+    await flush()
+    await t.answer(200, envelope(stored({ ends_at: '2026-09-29T19:30:00Z' })))
+    expect(t.now()).toMatchObject({ state: 'live', liveSession: null })
+    expect(t.seen.every((value) => value.liveSession === null)).toBe(true)
+  })
+
+  it('M-2: a status read sent before a Start answer never overwrites it (Retry, then Start)', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(503)
+    void t.now().retry()
+    await flush()
+    void t.now().start()
+    await flush()
+    await t.answer(200, envelope(LIVE), 1)
+    expect(t.now().state).toBe('live')
+    await t.answer(200, envelope(null))
+    expect(t.now()).toMatchObject({ state: 'live', problem: null, liveSession: { sessionId: 'tss_1' } })
+    void t.now().end()
+    await flush()
+    expect(t.posts().map((call) => call.body?.action)).toEqual(['start', 'end'])
+  })
+
+  it('M-2: a status read sent before an End answer never overwrites it, nor does its failure', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    await advance(HOUR)
+    expect(t.gets()).toHaveLength(2)
+    void t.now().end()
+    await flush()
+    await t.answer(200, envelope(stored({ state: 'ended', ended_at: '2026-09-29T21:00:00Z' })), 1)
+    expect(t.now().state).toBe('ended')
+    await t.answer(503)
+    expect(t.now()).toMatchObject({ state: 'ended', problem: null })
+  })
+
+  it('M-3: an account change drops an End waiting to retry; it resolves signed_out and is never sent again', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    const ended = t.now().end()
+    await flush()
+    await t.answer(503)
+    t.rerender(A1, 'bob@example.com')
+    await flush()
+    await expect(ended).resolves.toBe('signed_out')
+    await advance(HOUR)
+    expect(t.posts()).toHaveLength(1)
+  })
+
+  it('M-3: an account change drops an End in flight; its late answer schedules nothing', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    const ended = t.now().end()
+    await flush()
+    t.rerender(A1, 'bob@example.com')
+    await flush()
+    await expect(ended).resolves.toBe('signed_out')
+    await t.answer(503)
+    await advance(HOUR)
+    expect(t.posts()).toHaveLength(1)
+    expect(t.now()).toMatchObject({ pending: null, endRetrying: false })
+  })
+
+  it('L-5: a throwing onStartRefused still ends the pending Start', async () => {
+    const t = mount({
+      scope: A1,
+      onStartRefused: () => {
+        throw new Error('host callback failed')
+      },
+    })
+    await t.answer(200, envelope(null))
+    const started = t.now().start().catch(() => 'threw')
+    await flush()
+    await t.answer(403, refusal('plan_required'))
+    await expect(started).resolves.toBe('threw')
+    expect(t.now()).toMatchObject({ pending: null, problem: { kind: 'start_refused' } })
+  })
+
+  it('L-6: a 401 status read offers no Retry', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(401, { detail: 'not signed in' })
+    expect(t.now().problem).toBeNull()
+    await act(async () => {
+      await expect(t.now().retry()).resolves.toBe('skipped')
+    })
+    await flush()
+    expect(t.gets()).toHaveLength(1)
+  })
+
+  it('L-7: after live_elsewhere the next Start is a new intent', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(null))
+    void t.now().start()
+    await flush()
+    await t.answer(409, refusal('live_elsewhere'))
+    void t.now().start()
+    await flush()
+    const starts = t.posts()
+    expect(starts).toHaveLength(2)
+    expect(starts[1].body?.command_id).not.toBe(starts[0].body?.command_id)
+  })
+
+  it('L-8: an End answered 2xx with no session marks the session ended', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    void t.now().end()
+    await flush()
+    await t.answer(200, envelope(null))
+    expect(t.now()).toMatchObject({ state: 'ended', liveSession: null, session: { sessionId: 'tss_1', state: 'ended' } })
+  })
+
+  it('L-9: a successful re-read clears load_failed', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(503)
+    void t.now().retry()
+    await flush()
+    await t.answer(200, envelope(null))
+    expect(t.now()).toMatchObject({ state: 'none', problem: null })
+  })
+})
+
 describe('TableSessionProvider in the app: the campaign context scopes it', () => {
   const CAMPAIGN = {
     schema_version: 1, campaign_id: 'cmp_A', name: 'The Sunken Crown', created_at: '2026-09-16T19:20:11Z',
