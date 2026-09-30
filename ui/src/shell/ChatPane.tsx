@@ -148,7 +148,23 @@ export function ChatPane(props: ChatPaneProps): React.JSX.Element {
   const [held, setHeld] = React.useState<Side | null>(null)
   const side: Side = held ?? (mode === 'gm' ? 'gm' : 'chat')
   const holdWhilePending = React.useCallback((pending: boolean) => setHeld(pending ? side : null), [side])
-  return <ChatPaneBody key={side} {...props} side={side} onPendingChange={holdWhilePending} />
+  // 1kg.2.5 PR-2 (review pr212 H-2): on the GM side with a campaign in any
+  // state, the pane belongs to that campaign's scope alone. A switch, a clear
+  // or a pick remounts it, so nothing of the scope it left -- a failed first
+  // turn, or one still in flight -- is drawn under the next (brief section 14,
+  // I-13). Read off the held side, so leaving GM still never drops a turn.
+  const { selection, scope } = useCampaign()
+  const campaign = side !== 'gm' || selection.kind === 'none'
+    ? null
+    : scope?.key ?? ('campaignId' in selection ? selection.campaignId : selection.kind)
+  return (
+    <ChatPaneBody
+      key={campaign === null ? side : `${side}:${campaign}`}
+      {...props}
+      side={side}
+      onPendingChange={holdWhilePending}
+    />
+  )
 }
 
 interface ChatPaneBodyProps extends ChatPaneProps {
@@ -213,20 +229,26 @@ function ChatPaneBody({
   // by the next send until a turn in it is opened (I-12); the id the turn went
   // to is the one useChat adopts. A campaign thread's prompt never reaches the
   // local store (RAIL-26: `handleSend` below).
-  const { selection } = useCampaign()
+  const { selection, scope, isCurrentScope } = useCampaign()
   const { ensureThread } = useCampaignThreads()
   const campaignPost = React.useMemo<PostFn | undefined>(() => {
     if (mode !== 'gm' || selection.kind === 'none') return undefined
     const base = post ?? postTurn
     const state = selection.kind
+    const key = scope?.key ?? null
     return async (prompt, turnMode, id, preference) => {
       if (state !== 'selected') return { kind: 'error', message: CAMPAIGN_NOT_READY[state] }
       const thread = id ?? (await ensureThread())
       if (thread === null) return { kind: 'error', message: THREAD_NOT_STARTED }
       const result = await base(prompt, turnMode, thread, preference)
-      return result.kind === 'ok' ? { ...result, response: { ...result.response, conversation_id: thread } } : result
+      if (result.kind !== 'ok') return result
+      // Review pr212 H-2: an answer that lands after its scope was left names
+      // no conversation, so useChat never adopts the old campaign's thread
+      // into the stored id; the remount above has already dropped the turn.
+      const current = key !== null && isCurrentScope(key)
+      return { ...result, response: { ...result.response, conversation_id: current ? thread : null } }
     }
-  }, [mode, selection.kind, post, ensureThread])
+  }, [mode, selection.kind, scope, isCurrentScope, post, ensureThread])
   const { exchanges, send, pending, inFlight, historyError, loadingHistory } = useChat({
     post: campaignPost ?? post,
     loadHistory: gm ? SKIP_RECALL : loadHistory,

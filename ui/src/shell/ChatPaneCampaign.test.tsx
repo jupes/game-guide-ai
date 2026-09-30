@@ -258,6 +258,48 @@ describe('a campaign thread id stays in its campaign (I-13, critic 7)', () => {
   })
 })
 
+describe('a campaign switch scopes the pane (I-13, brief section 14; review pr212 H-1, H-2)', () => {
+  it("drops A's failed first turn from the pane, and B's first send makes and posts to a thread of B's own (P3)", async () => {
+    const { server, post } = await mount({ turns: [{ kind: 'error', message: 'The oracle is silent.' }] })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await sendTurn()
+    expect(await screen.findByText('The oracle is silent.')).toBeInTheDocument()
+    expect(live.nav.conversationId).toBeNull()
+    await act(async () => { await live.c.selectCampaign(campaignBody('cmp_B')) })
+    expect(live.c.selection).toMatchObject({ kind: 'selected', campaign: { campaign_id: 'cmp_B' } })
+    expect(screen.queryByText(PROMPT)).toBeNull()
+    expect(screen.queryByText('The oracle is silent.')).toBeNull()
+    await sendTurn('A question for the second campaign')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+    expect(post.mock.calls.map((c) => c[2])).toEqual(['cnv_new1', 'cnv_new2'])
+    expect(server.posts().map((c) => (c.body as { campaign_id: string }).campaign_id)).toEqual(['cmp_A', 'cmp_B'])
+    await waitFor(() => expect(live.nav.conversationId).toBe('cnv_new2'))
+  })
+
+  it("drops A's first turn still in flight: never drawn under B, never adopted, and B's send is B's own (P4)", async () => {
+    const { post } = await mount()
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    let answer: (result: ChatResult) => void = () => {}
+    post.mockImplementationOnce(() => new Promise<ChatResult>((resolve) => { answer = resolve }))
+    await sendTurn()
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(post.mock.calls[0][2]).toBe('cnv_new1')
+    await act(async () => { await live.c.selectCampaign(campaignBody('cmp_B')) })
+    expect(screen.queryByText(PROMPT)).toBeNull()
+    await act(async () => {
+      answer({ kind: 'ok', response: { answer: 'Under the lighthouse stair.', sources: [], answerable: true, conversation_id: 'cnv_new1' } })
+    })
+    expect(screen.queryByText(PROMPT)).toBeNull()
+    expect(screen.queryByText('Under the lighthouse stair.')).toBeNull()
+    expect(live.stored.conversationId).toBeNull()
+    expect(live.nav.conversationId).toBeNull()
+    await sendTurn('A question for the second campaign')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+    expect(post.mock.calls[1][2]).toBe('cnv_new2')
+    await waitFor(() => expect(live.nav.conversationId).toBe('cnv_new2'))
+  })
+})
+
 describe('ModelPicker on a campaign thread (critic 16)', () => {
   it('is disabled while the active conversation is not in the local store, and enabled for a stored one', async () => {
     await mount()
