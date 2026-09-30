@@ -80,7 +80,7 @@ from .campaign_store import MissingParent, ScreenLimit
 from .session import SessionData
 from .table_session_store import LiveScreen
 from .table_sessions import BackendUnavailable, Inactive, TableSessions
-from .workbench_api import WorkbenchRoute, cross_site, inactive, origin_check
+from .workbench_api import WorkbenchRoute, cross_site, inactive, mark_write_throttle, origin_check, spend_write
 from .workbench_contracts import (
     CONTRACT_VERSION,
     ErrorBody,
@@ -299,7 +299,17 @@ def build_router(
             return Principal(screen=grant.live)
         return Principal(account=session(request, store))
 
-    @router.post("/table/screen", response_model=ScreenMintAnswer)
+    def mint_throttle(principal: Principal = Depends(table_principal)) -> None:
+        """The write throttle (agent-forge-harness-531x), on the account
+        alone: a screen principal mints nothing (it is answered `inactive`
+        below) and spends no write. `table_principal` is cached per request,
+        so this does not resolve the principal twice."""
+        if principal.account is not None:
+            spend_write(principal.account.user_id)
+
+    mark_write_throttle(mint_throttle)
+
+    @router.post("/table/screen", response_model=ScreenMintAnswer, dependencies=[Depends(mint_throttle)])
     def mint(
         body: ScreenMintRequest,
         principal: Principal = Depends(table_principal),

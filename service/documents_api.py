@@ -101,7 +101,7 @@ from .document_wire import (
     writable,
 )
 from .session import SessionData
-from .workbench_api import SessionDependency, not_found, workbench_router
+from .workbench_api import SessionDependency, not_found, reads_by_post, workbench_router
 from .workbench_contracts import (
     HISTORY_PAGE_MAX_ITEMS,
     VERSION_NUMBER_MAX,
@@ -536,6 +536,7 @@ def build_router(gm: SessionDependency, database: Callable[[], TransactionalData
             not_found()
 
     @router.post("/campaigns/{campaign_id}/library", response_model=LibraryPage)
+    @reads_by_post  # a search sent by POST (X-7); writes nothing, spends no write budget (531x)
     def library(
         campaign_id: str,
         user: SessionData = Depends(gm),
