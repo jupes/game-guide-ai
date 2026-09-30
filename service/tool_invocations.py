@@ -36,6 +36,12 @@ Workbench provider allowlist before any client is built (C-8). No message of
 this module names a model, a provider, a brief, a result or an invocation id,
 and no log line carries anything but an operation id, a tool id, a code, an
 attempt number and an exception's class (I-24).
+
+An executor's `run` reports a refused answer with one of two markers, which
+`failure_for` maps before any provider error: `OutputRefused` (the provider
+answered and the answer cannot become a result: `provider_failed`, retryable;
+1kg.4.4 I-3) and `NotInSources` (the rules corpus does not ground the brief:
+`not_in_sources`, final; 1kg.4.3 I-7). Neither carries a message of its own.
 """
 
 from __future__ import annotations
@@ -59,6 +65,7 @@ from .conversation_store import ConversationStore
 from .db import TransactionalDatabase, UnitOfWork
 from .generate import LLMClient
 from .model_catalog import DEFAULT_ALIAS, workbench_profile
+from .models import REFUSAL
 from .providers import ProviderClientFactory
 from .session import SessionData
 from .timeline_store import EntryNotStored, TimelineStore, ToolTurnStore, new_entry_id
@@ -114,6 +121,8 @@ PROVIDER_TIMEOUT_MESSAGE: Final = "The model took too long to answer."
 PROVIDER_FAILED_MESSAGE: Final = "The assistant couldn't finish that. Try again."
 PROVIDER_FINAL_MESSAGE: Final = "The assistant couldn't do that one. Edit the brief and try again."
 ATTEMPT_EXPIRED_MESSAGE: Final = "That took too long and was stopped. Try again."
+#: The product's one refusal sentence, `/chat`'s Rules mode's own (1kg.4.3 I-7).
+NOT_IN_SOURCES_MESSAGE: Final = REFUSAL
 _PRECHECK_MESSAGES: Final = {ErrorCode.NOTHING_TO_RECAP: NOTHING_TO_RECAP_MESSAGE}
 
 #: `/chat`'s provider-error categories (`service.app.normalize_llm_error`), in
@@ -180,6 +189,19 @@ class OutOfTime(Exception):
     less than `PROVIDER_CALL_MIN_S`. Stored as `provider_timeout` (C-7)."""
 
 
+class OutputRefused(Exception):
+    """The provider answered, and the answer cannot become a result (1kg.4.4 I-3;
+    the 1kg.5.4 Critic's C-7). Stored as `provider_failed`, retryable — the answer
+    `judge_result`'s refusal gets. Raised by an executor's `run` only; it carries
+    no message of its own."""
+
+
+class NotInSources(Exception):
+    """The corpus does not ground the request (1kg.4.3 I-7). Stored as
+    `not_in_sources`, final: the GM edits the brief (RAIL-19). Raised by an
+    executor's `run` only; it carries no message of its own."""
+
+
 @dataclass(frozen=True)
 class InvocationTarget:
     """What an executor's precheck and run see. For a retry it is the STORED
@@ -236,7 +258,8 @@ class ToolExecutor(Protocol):
     def run(self, ctx: ExecutionContext) -> Produced:
         """The provider work. NO unit of work is open. Every provider client
         comes from `ctx.client()`; call `ctx.check_cancelled()` between provider
-        calls. May raise `InvocationCancelled`."""
+        calls. May raise `InvocationCancelled`. May raise `OutputRefused` or
+        `NotInSources`; any other exception is an outage."""
         ...  # pragma: no cover - structural type
 
     def finish(self, unit: UnitOfWork, ctx: ExecutionContext, result: ToolResult) -> Produced:
@@ -438,7 +461,9 @@ def tool_entry(row: InvocationRow) -> dict[str, Any]:
     return {
         "schema_version": CONTRACT_VERSION, "entry_kind": "tool", "entry_id": row.entry_id,
         "created_at": _utc(row.created_at), "brief": row.brief, "source_entry_id": row.source_entry_id,
-        "invocation": to_wire(row).model_dump(mode="json"),
+        # By alias (I-28): the stored JSON is what a sender forwards, so a stat
+        # block's ability is `int`, the wire's spelling, never `int_`.
+        "invocation": to_wire(row).model_dump(mode="json", by_alias=True),
     }
 
 
@@ -470,11 +495,19 @@ def provider_category(exc: BaseException) -> str:
 def failure_for(exc: BaseException) -> ErrorInfo:
     """The stored error of a failed attempt (I-22, C-9). A provider timeout —
     or a call refused for want of time — is `provider_timeout`; any other
-    provider error is `provider_failed`, final only for a 422 category. A
-    database or embedding outage, and anything unexpected, is
-    `backend_unavailable`. All retryable except the final provider failures."""
+    provider error is `provider_failed`, final only for a 422 category. An
+    executor's `OutputRefused` is `provider_failed`, retryable, and its
+    `NotInSources` is `not_in_sources`, final. A database or embedding outage,
+    and anything unexpected, is `backend_unavailable`. All retryable except the
+    final provider failures and `not_in_sources`."""
     if isinstance(exc, OutOfTime):
         return ErrorInfo(code=ErrorCode.PROVIDER_TIMEOUT, message=PROVIDER_TIMEOUT_MESSAGE, retryable=True)
+    # The markers come before the provider branch: an executor's own verdict on
+    # an answer it received wins over any class the exception also has.
+    if isinstance(exc, OutputRefused):
+        return ErrorInfo(code=ErrorCode.PROVIDER_FAILED, message=PROVIDER_FAILED_MESSAGE, retryable=True)
+    if isinstance(exc, NotInSources):
+        return ErrorInfo(code=ErrorCode.NOT_IN_SOURCES, message=NOT_IN_SOURCES_MESSAGE, retryable=False)
     if isinstance(exc, openai.OpenAIError):
         category = provider_category(exc)
         if category == "timeout":
@@ -777,7 +810,7 @@ def _finished(
     judged = judge_result(finished, ctx.target.tool_id, lambda _tool: True)
     if judged is None:
         raise ExecutorFailed()
-    return judged.model_dump(mode="json")
+    return judged.model_dump(mode="json", by_alias=True)
 
 
 def complete(
