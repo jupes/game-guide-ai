@@ -40,8 +40,8 @@ const meta = {
   title: 'Shell/TavernScreen',
   component: TavernScreen,
   parameters: { layout: 'fullscreen' },
-  // The provider needs the shell's CurrentUser: a later decorator wraps an earlier one.
-  decorators: [withCampaigns, withShell({ screen: 'tavern', mode: 'gm' })],
+  // Critic 47: the shell only. Each story names exactly one provider decorator, which renders inside this one (the provider needs the shell's CurrentUser).
+  decorators: [withShell({ screen: 'tavern', mode: 'gm' })],
 } satisfies Meta<typeof TavernScreen>
 
 export default meta
@@ -51,6 +51,7 @@ type Play = (canvas: Canvas) => Promise<void>
 
 function state(route: (url: string, init: RequestInit | undefined) => Response | Promise<Response>, play: Play): Story {
   return {
+    decorators: [withCampaigns],
     beforeEach: stubFetch(route),
     play: async ({ canvasElement }) => {
       const canvas = within(canvasElement)
@@ -87,9 +88,8 @@ export const CouldNotLoad = state(() => json({}, 503), async (canvas) => {
 })
 export const CouldNotLoadDark = dark(CouldNotLoad)
 
-const withCampaignsMeta = { ...meta, decorators: [withCampaignRestored, withShell({ screen: 'tavern', mode: 'gm' })] }
 export const WithCampaigns: Story = {
-  ...withCampaignsMeta,
+  decorators: [withCampaignRestored],
   beforeEach: stubFetch((url) => (url === '/campaigns/cmp_1'
     ? json(campaign('cmp_1', 'The Drowned Crown'))
     : page([campaign('cmp_1', 'The Drowned Crown'), campaign('cmp_2', 'Ashes over Emberfall')]))),
@@ -106,6 +106,7 @@ export const WithCampaignsDark = dark(WithCampaigns)
 
 export const PhoneFirstRun: Story = {
   ...atViewport('phone390'),
+  decorators: [withCampaigns],
   beforeEach: stubFetch(() => page([])),
   play: async ({ canvasElement }) => {
     await expectViewport('phone390')
@@ -118,9 +119,8 @@ export const PhoneFirstRun: Story = {
 }
 
 export const PhoneWithCampaignsDark: Story = {
-  decorators: withCampaignsMeta.decorators,
-  parameters: { ...atViewport('phone390', 'dark').parameters, ...withCampaignsMeta.parameters },
-  globals: atViewport('phone390', 'dark').globals,
+  decorators: [withCampaignRestored],
+  ...atViewport('phone390', 'dark'),
   beforeEach: stubFetch((url) => (url === '/campaigns/cmp_1'
     ? json(campaign('cmp_1', 'The Drowned Crown'))
     : page([campaign('cmp_1', 'The Drowned Crown')]))),

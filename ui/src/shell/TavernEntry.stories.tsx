@@ -26,7 +26,7 @@ const thread = (id: string, campaignId: string) => ({
   created_at: '2026-09-16T19:20:11Z', updated_at: null, archived_at: null,
 })
 
-const withCampaign: Decorator = (Story) => (
+const withCampaigns: Decorator = (Story) => (
   <CampaignProvider>
     <Story />
   </CampaignProvider>
@@ -41,14 +41,15 @@ const meta = {
   title: 'Shell/LeftNav/TavernEntry',
   component: LeftNav,
   parameters: { layout: 'fullscreen' },
-  // The provider needs the shell's CurrentUser: a later decorator wraps an earlier one.
-  decorators: [withCampaign, withShell({ screen: 'landing', mode: 'gm' })],
+  // Critic 47: the shell only. Each story names exactly one provider decorator, which renders inside this one (the provider needs the shell's CurrentUser).
+  decorators: [withShell({ screen: 'landing', mode: 'gm' })],
 } satisfies Meta<typeof LeftNav>
 
 export default meta
 type Story = StoryObj<typeof meta>
 
 export const ChooseNone: Story = {
+  decorators: [withCampaigns],
   beforeEach: stubFetch(() => json({}, 404)),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
@@ -66,7 +67,7 @@ export const ChooseNoneDark: Story = {
 }
 
 export const SwitchSelected: Story = {
-  decorators: [withCampaignRestored, withShell({ screen: 'landing', mode: 'gm' })],
+  decorators: [withCampaignRestored],
   beforeEach: stubFetch((url) => (url === '/campaigns/cmp_1'
     ? json(campaign('cmp_1', 'The Drowned Crown'))
     : url.startsWith('/conversations?campaign_id=cmp_1')
@@ -93,6 +94,7 @@ export const SwitchSelectedDark: Story = {
 
 export const Phone320ChooseNone: Story = {
   ...atViewport('phone320'),
+  decorators: [withCampaigns],
   beforeEach: stubFetch(() => json({}, 404)),
   play: async ({ canvasElement }) => {
     await expectViewport('phone320')
