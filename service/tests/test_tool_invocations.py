@@ -10,6 +10,8 @@ Run from the repo root:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -264,3 +266,105 @@ def test_a_judged_result_keeps_only_suggestions_that_may_run() -> None:
     judged = judge_result(produced, ToolId.NPC, lambda tool: tool is ToolId.NPC)
     assert judged is not None and [s.tool_id for s in judged.suggestions] == [ToolId.NPC]
     assert judge_result(produced, ToolId.ENCOUNTER, lambda tool: True) is None
+
+
+# ── 1kg.4.4 I-3, I-4: what an executor may lean on ───────────────────────────
+
+
+def test_s1_an_output_the_executor_refused_is_a_retryable_provider_failure() -> None:
+    """Kills: the branch removed (→ backend); `retryable=False`; the final
+    message. A mutant mapping every `ValueError` there turns the pinned
+    `test_anything_unexpected_is_a_retryable_backend_outage` red."""
+    stored = tool_invocations.failure_for(tool_invocations.OutputRefused())
+    assert (stored.code, stored.message, stored.retryable) == (
+        ErrorCode.PROVIDER_FAILED, tool_invocations.PROVIDER_FAILED_MESSAGE, True)
+
+
+def test_s2_output_refused_from_run_is_stored_as_provider_failed_and_logged_by_class(
+        caplog: pytest.LogCaptureFixture) -> None:
+    """Kills: `execute` treating `OutputRefused` as a cancel."""
+
+    class _Refusing(_Executor):
+        def run(self, ctx: ExecutionContext) -> Any:
+            raise tool_invocations.OutputRefused()
+
+    ctx = ExecutionContext(_admission(), clock=lambda: T0, factory=_Factory(_Recorder()), probe=lambda: None)
+    caplog.set_level("DEBUG", logger="service.tool_invocations")
+    refusing: Any = _Refusing(ToolId.NPC)
+    outcome = tool_invocations.execute(refusing, ctx, available=lambda tool: True)
+    assert (outcome.cancelled, outcome.result) == (False, None)
+    assert outcome.error is not None and (outcome.error.code, outcome.error.retryable) == (
+        ErrorCode.PROVIDER_FAILED, True)
+    [logged] = [record.getMessage() for record in caplog.records]
+    assert "tool=npc" in logged and "error=OutputRefused" in logged and "a brief" not in logged
+
+
+class _SpyDatabase:
+    """A database that records each transaction's enter and exit."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.units: list[object] = []
+
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        unit = object()
+        self.units.append(unit)
+        self.events.append("enter")
+        try:
+            yield unit
+        finally:
+            self.events.append("exit")
+
+
+def test_s3_a_context_read_runs_in_its_own_transaction_closed_before_it_returns() -> None:
+    """Kills: reusing a shared unit; returning before the exit; swallowing the
+    exception."""
+    db = _SpyDatabase()
+    spied: Any = db
+    ctx = ExecutionContext(_admission(), clock=lambda: T0, factory=_Factory(_Recorder()), probe=lambda: None,
+                           reader=tool_invocations.context_reader(spied))
+    got: list[object] = []
+
+    def read(unit: object) -> str:
+        got.append(unit)
+        db.events.append("read")
+        return "marker"
+
+    assert ctx.read(read) == "marker"
+    assert db.events == ["enter", "read", "exit"]
+    assert ctx.read(read) == "marker"
+    assert got == db.units and got[0] is not got[1]
+
+    def broken(unit: object) -> str:
+        raise LookupError("x")
+
+    with pytest.raises(LookupError):
+        ctx.read(broken)
+    assert db.events[-2:] == ["enter", "exit"] and len(db.units) == 3
+
+
+def test_s4_a_context_without_a_reader_refuses_to_read_and_calls_nothing() -> None:
+    called: list[object] = []
+    ctx = ExecutionContext(_admission(), clock=lambda: T0, factory=_Factory(_Recorder()), probe=lambda: None)
+    with pytest.raises(RuntimeError):
+        ctx.read(called.append)
+    assert called == []
+    assert failure_for(RuntimeError()).code is ErrorCode.BACKEND_UNAVAILABLE
+
+
+def test_s5_the_contexts_now_is_the_routes_clock_and_moves_with_it() -> None:
+    now = [T0]
+    ctx = ExecutionContext(_admission(), clock=lambda: now[0], factory=_Factory(_Recorder()), probe=lambda: None)
+    assert ctx.now() == T0
+    now[0] = T0 + timedelta(seconds=41)
+    assert ctx.now() == T0 + timedelta(seconds=41)
+
+
+def test_s7_the_generation_bound_fits_inside_the_executor_context_bound() -> None:
+    """1kg.5.4's skipped B-5: the two bounds cannot drift apart."""
+    from service import document_generation
+
+    assert document_generation.GENERATION_CONTEXT_MAX_CHARS <= tool_invocations.CONTEXT_MAX_CHARS
+    ctx = ExecutionContext(_admission(), clock=lambda: T0, factory=_Factory(_Recorder()), probe=lambda: None)
+    assert ctx.context_max_chars == tool_invocations.CONTEXT_MAX_CHARS

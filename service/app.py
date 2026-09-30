@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import email.message
 import logging
 import os
 import threading
@@ -29,6 +30,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 
 import config
 from ingestion.retrieval import EmbeddingUnavailableError
@@ -36,6 +38,7 @@ from ingestion.retrieval import EmbeddingUnavailableError
 from . import (
     asset_jobs,
     assets_api,
+    body_limit,
     campaigns_api,
     conversations_api,
     document_lifecycle_api,
@@ -471,7 +474,17 @@ async def lifespan(app: FastAPI):
     del app.state.metrics_sink
 
 
-app = FastAPI(title="D&D 5e RAG — Agent Service", version="1.0", lifespan=lifespan)
+# /docs, /redoc and /openapi.json exist only for a local run that asks for them
+# (agent-forge-harness-ust7, release review S2). Tests read `app.openapi()`,
+# which needs none of the three.
+app = FastAPI(
+    title="D&D 5e RAG — Agent Service",
+    version="1.0",
+    lifespan=lifespan,
+    docs_url="/docs" if config.API_DOCS_ENABLED else None,
+    redoc_url="/redoc" if config.API_DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if config.API_DOCS_ENABLED else None,
+)
 install_workbench(app)
 
 
@@ -780,6 +793,12 @@ async def capture_chat_metrics(request: Request, call_next):
 # so it wraps `capture_chat_metrics` (job time never enters the chat duration)
 # and `set_security_headers` stays the outermost, as its docstring requires.
 app.add_middleware(job_driver.JobHookMiddleware, driver=lambda: _state.get("jobs"))
+
+# The body ceiling (agent-forge-harness-ust7, release review S1): declared after
+# the job hook, so it wraps every route and every other middleware except
+# `set_security_headers`, which stays the outermost and puts its headers on the
+# 413 too. The lambda defers the name, which is defined further down.
+app.add_middleware(body_limit.BodyLimitMiddleware, media_enabled=lambda: _media_enabled())
 
 
 @app.middleware("http")
@@ -1478,10 +1497,38 @@ def _to_attachment(sa: StoredAttachment) -> Attachment:
     )
 
 
-@app.post("/conversations/{conversation_id}/attachments", response_model=AttachmentResponse)
+async def _attachment_upload(
+    request: Request, _session: SessionData = Depends(require_session),
+) -> AttachmentUploadRequest:
+    """The upload body, read only once the caller is signed in
+    (agent-forge-harness-ust7, review H2). FastAPI reads and parses a declared
+    body model before any dependency runs, so an anonymous caller could make the
+    app parse a body up to the attachment ceiling, about 94 MB of objects each,
+    only to be refused. Read raw here, the body-limit middleware caps it; a body
+    that is not JSON is refused as FastAPI's strict content type refused it, and
+    no 422 repeats what it was sent."""
+    raw = await request.body()
+    kind = email.message.Message()
+    kind["content-type"] = request.headers.get("content-type", "")
+    subtype = kind.get_content_subtype()
+    if kind.get_content_maintype() != "application" or not (subtype == "json" or subtype.endswith("+json")):
+        raise RequestValidationError([{"type": "model_attributes_type", "loc": ("body",),
+                                       "msg": "Input should be a valid dictionary or object to extract fields from"}])
+    try:
+        return AttachmentUploadRequest.model_validate_json(raw)
+    except ValidationError as exc:
+        errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    raise RequestValidationError([{**error, "loc": ("body", *error["loc"])} for error in errors])
+
+
+@app.post(
+    "/conversations/{conversation_id}/attachments", response_model=AttachmentResponse,
+    openapi_extra={"requestBody": {"required": True, "content": {
+        "application/json": {"schema": AttachmentUploadRequest.model_json_schema()}}}},
+)
 def upload_attachment(
     conversation_id: str,
-    req: AttachmentUploadRequest,
+    req: AttachmentUploadRequest = Depends(_attachment_upload),
     store: MessageStore | None = Depends(get_message_store),
     session: SessionData = Depends(require_session),
 ) -> AttachmentResponse:

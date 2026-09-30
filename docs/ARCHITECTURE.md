@@ -715,6 +715,43 @@ names the campaign, so a live grant read under another campaign is the one
 and `version` are GM-side and never reach a table client; `1kg.7.2` builds the
 projection from them with its one builder.
 
+### Who may see what: the decision point and the principals
+
+`1ir.2.2` adds `service/policy.py`, pure functions over facts one snapshot read
+(read in SQL, decide in Python; the loaders, one statement each and no lock,
+follow in its PR-2 and PR-3). **Two functions, never one** (ED-25):
+`eligible_for_audience(facts, document, key, audience)` on identities (the
+table is `None`, else a participant id), first match deciding: a participant
+not active -> no; a key off the type version's allowlist -> no (an orphan row
+is never read); unclassified, gm_only -> no; public -> yes; the table -> no
+(TP-1: public-only); campaign -> yes; `participants`, `characters` (linked
+now), `groups` (a member now) -> by the list, an id that resolves to nothing
+admitting nobody. `ineligible_keys` (all or nothing over the audience) and
+`ineligible_copies` (ED-12's scan) compose it. `entitled(outcome, slot)`
+reads only the principal: every principal reads the table slot, a confirmed
+seat also its own, any other slot is `ABSENT`, exactly an empty table.
+
+`decide_table` follows the threat model's 15.2: a live screen grant decides
+alone (`SCREEN`, or `inactive` for another campaign's); then no account is
+401; then one live, unexpired session; then the owner (`OWNER_VIEWER`, a table
+viewer, never the GM) or one accepted, not-removed seat (`SEATED_AWAITING`, or
+`SEATED_CONFIRMED` once the GM confirmed it). Only a confirmed seat has a
+`scope`, sheets and groups (SEC-50(5)). `decide_gm` answers `GmPrincipal` for
+the owner, else the one `MissingParent`. A broken invariant denies. The
+registry seam is `registry_revealable`, the function `classifiable_keys` uses.
+
+`TablePrincipal` and `GmPrincipal` are **sealed**: built only inside the
+deciders, which refuse facts of any other type. `service/tests/test_policy.py`
+pins who may call them or build their facts, and that no other production
+module names anything private to `service/policy.py`. A principal is evidence
+of standing at the moment it was
+resolved; it authorises no content read by itself. A content read re-asserts
+the session, generation, seat, confirmation and grant in the query that reads
+(SEC-41, SEC-16); `participant_id` is never an entitlement, only `entitled()`
+or `scope` is. Consumers: `1kg.7.2` and `1kg.7.5` (table routes, streams),
+`1ir.2.3` (the transaction helper takes a principal, never loose ids),
+`1ir.2.5` (fingerprints over its carried revisions), `1ir.11.1` (the Confirm).
+
 ## Media assets (GM Workbench)
 
 Storage for a GM's images and audio, added by `1kg.8.1.1` (slice a of `1kg.8.1`):
@@ -1289,8 +1326,10 @@ scaffolding.
 
 **Off by default.** A tool runs only when `WORKBENCH_ENABLED_TOOLS` names it,
 its registry capability is in `WORKBENCH_CAPABILITIES`, and an executor is
-registered for it — and none is registered yet (`1kg.4.3`, `1kg.4.4` and
-`1kg.8.3` add theirs). Availability is decided in one function,
+registered for it. `npc` and `encounter` are registered (`1kg.4.4`; `recap`
+follows, and `1kg.4.3` and `1kg.8.3` add theirs), and registered is not
+enabled: with the variables unset every tool still answers `409 tool_disabled`.
+Availability is decided in one function,
 `tool_availability`, which `1kg.9.6` replaces. Setting `WORKBENCH_ENABLED_TOOLS`
 in production needs E-8's owner-chosen limits, the tool's `1kg.4.6` threshold
 and the SEC-39 terms record; `portrait` and `map` are paid under D-3, so
@@ -1337,3 +1376,41 @@ model (D-8; bead `iov` gives it the tier mapping), and the client can send none.
 OpenAI only), enforced at admission and on the one client an executor can ask
 for. No answer, entry or log line of these routes names a model or a provider
 (D-9), and no tracing callback rides on a tool call (SEC-24).
+
+### Document tools (1kg.4.4)
+
+`service/document_tools.py` is the executor of every tool whose result is a new
+document: `npc` and `encounter` today (`recap` follows with its session
+window). It holds no SQL, builds no client and adds no route; the generation is
+`document_generation`'s (1kg.5.4) and everything around the attempt is the
+invocation service's.
+
+- **`run` reads once, then spends.** The campaign's name and tone are read
+  through `ExecutionContext.read` — one short transaction of its own, closed
+  before any provider call — keyed by the fenced admission's owner. A cancel is
+  checked once, then the document is generated with `ctx.client()` (the one
+  allowlisted path), the ledger's config and as many attempts as the deadline
+  fits. The GM's brief and the campaign facts travel only in the nonce-fenced
+  data block. `run` writes nothing: it returns a placeholder result
+  (`doc_pending`) and carries the validated document to `finish`, keyed by the
+  context object itself (weakly, under a lock).
+- **`finish` creates the document inside the fenced T2.** Sealed version 1 by
+  `assistant`, with the admission's campaign and the route's clock, in the same
+  transaction that settles the invocation and rewrites its timeline entry. So
+  the document exists before a link to it can render (X-6), exactly once however
+  the attempt was retried, fenced out, expired or cancelled (RAIL-23, RAIL-27),
+  and a T2 that rolls back takes it with it. It takes no campaign lock and
+  writes no slot, disclosure, eligibility or audit row: every field starts
+  `unclassified`, and creation reveals nothing (M-5, X-2).
+- **The answer links; it does not carry.** The stored result is a
+  `DocumentResult` whose `document` is the link (id, type, `name` as the
+  title, category) and whose prose is closed server sentences — the tool's
+  lead sentence and `document_generation`'s disclosure — with no suggestions.
+  No other field of the document appears in a response, an entry or a log
+  line.
+- **Failures.** A model answer that cannot become a document raises
+  `tool_invocations.OutputRefused` and is stored as `provider_failed`,
+  retryable — never as an outage; a deadline too short for an attempt is
+  `provider_timeout`; any other refusal of the request, or a campaign gone
+  between admission and `run`, is `backend_unavailable`. None of them leaves a
+  document.
