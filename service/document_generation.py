@@ -733,14 +733,19 @@ def _takes_keyword_arguments(client: object) -> bool:
 
 class _OutputBounded:
     """Adds the output bound to every call (C-1): slice B's ``_BoundedClient``
-    forwards ``**kwargs`` and has no ``bind``."""
+    forwards ``**kwargs`` and has no ``bind``.
 
-    def __init__(self, inner: LLMClient) -> None:
+    ``max_tokens`` defaults to this module's own bound so every existing
+    caller and test is unchanged; ``1kg.5.5`` imports this class and passes
+    its own, larger bound for edits (I-20)."""
+
+    def __init__(self, inner: LLMClient, max_tokens: int = GENERATION_MAX_OUTPUT_TOKENS) -> None:
         self._inner = inner
+        self._max_tokens = max_tokens
 
     def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
         # justification: LLMClient's own structural signature.
-        return self._inner.invoke(input, config=config, **{**kwargs, "max_tokens": GENERATION_MAX_OUTPUT_TOKENS})
+        return self._inner.invoke(input, config=config, **{**kwargs, "max_tokens": self._max_tokens})
 
 
 class _BetweenAttempts:

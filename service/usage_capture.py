@@ -113,10 +113,14 @@ PURPOSE_DOCUMENT_GENERATION = "document_generation"
 #: A GM card tool's generated card (`1kg.4.3`: monster, loot, names, rules and
 #: hooks): both a provider-attempt purpose and a structuring-outcome purpose.
 PURPOSE_CARD_GENERATION = "card_generation"
+#: A scoped AI document edit (`1kg.5.5`, `service/document_editing.py`): both
+#: a provider-attempt purpose and a structuring-outcome purpose, mirroring
+#: `PURPOSE_DOCUMENT_GENERATION`.
+PURPOSE_DOCUMENT_EDIT = "document_edit"
 PURPOSES = frozenset({
     PURPOSE_EMBEDDING, PURPOSE_ANSWER, PURPOSE_SUGGESTIONS,
     PURPOSE_SPELL_STRUCTURING, PURPOSE_STATBLOCK_STRUCTURING,
-    PURPOSE_DOCUMENT_GENERATION, PURPOSE_CARD_GENERATION,
+    PURPOSE_DOCUMENT_GENERATION, PURPOSE_CARD_GENERATION, PURPOSE_DOCUMENT_EDIT,
 })
 
 ACTOR_ACCOUNT = "account"
@@ -167,7 +171,7 @@ OUTCOMES = frozenset({
 #: `embedding` or `answer`.
 STRUCTURING_PURPOSES = frozenset({
     PURPOSE_SUGGESTIONS, PURPOSE_SPELL_STRUCTURING, PURPOSE_STATBLOCK_STRUCTURING,
-    PURPOSE_DOCUMENT_GENERATION, PURPOSE_CARD_GENERATION,
+    PURPOSE_DOCUMENT_GENERATION, PURPOSE_CARD_GENERATION, PURPOSE_DOCUMENT_EDIT,
 })
 
 #: A structuring-outcome record has exactly these keys, in every branch,
