@@ -467,12 +467,20 @@ def test_a_signed_in_chat_body_is_refused_as_fastapi_refused_it(
 
 @pytest.mark.parametrize("body", [
     "[" * 100_000,
-    '{"prompt": ' + "[" * 5_000 + "]" * 5_000 + "}",
+    '{"prompt": ' + "[" * 100_000 + "]" * 100_000 + "}",
 ], ids=["deep-array", "deep-prompt"])
 def test_a_signed_in_chat_body_nested_too_deep_is_a_422_not_a_500(body: str) -> None:
     """PR #217 second review M1. The standard library's decoder raises
     RecursionError, not ValueError, past the recursion limit: uncaught, it was
-    a 500 with none of the app's security headers."""
+    a 500 with none of the app's security headers.
+
+    CI found what the prototype's Windows run did not: the C json scanner's
+    recursion is bounded by C stack depth, not sys.getrecursionlimit(), and
+    Linux's default thread stack is much deeper than Windows's. 5_000 levels
+    (deep-prompt's original depth) raised RecursionError locally but parsed
+    clean on CI's runner, landing a plain list in ``prompt`` and answering
+    pydantic's string_type instead. Both cases now nest to the same depth as
+    deep-array, which was already deep enough on both platforms."""
     svc = _Counting()
     app.dependency_overrides[get_service] = lambda: svc
     app.dependency_overrides[get_message_store] = lambda: InMemoryMessageStore()
