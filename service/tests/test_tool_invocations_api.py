@@ -1475,6 +1475,31 @@ def test_a7c_a_refused_results_own_field_is_never_logged(
     assert logged.endswith("at=[['document', 'document', 'type']])")
 
 
+@pytest.mark.parametrize("where", ["run", "finish"], ids=["run-mismatch", "finish-mismatch"])
+def test_a7c_a_result_for_another_tool_is_refused_without_its_text(
+        world: World, client: TestClient, caplog: pytest.LogCaptureFixture, where: str) -> None:
+    """H-1 (bead 8frw, mutants M5/M6): `judge_result` has a second refusal
+    site — a produced result that validates but names a different tool
+    (`result.tool_id is not tool_id`) — and that site must stay as blind to
+    the produced value as the validation-error site above. A canary in the
+    result's own (otherwise valid) fields pins the constant `[["tool_id"]]`
+    location against a mutant that logs `raw` or `result` instead."""
+    caplog.set_level(logging.DEBUG)
+    bad = npc_result(title=CANARY, tool="encounter", doc_type="encounter", category="documents")
+    table = world.table()
+    if where == "run":
+        world.executors[ToolId.NPC].behaviour = lambda ctx: bad
+    else:
+        world.executors[ToolId.NPC].finish = lambda unit, ctx, result: bad  # type: ignore[method-assign]
+    response = post(client, table)
+    assert response.status_code == (200 if where == "run" else 503)
+    assert CANARY not in response.text
+    [logged] = [record.getMessage() for record in caplog.records
+                if record.getMessage().startswith("tool result refused")]
+    assert CANARY not in caplog.text
+    assert logged.endswith("at=[['tool_id']])")
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
